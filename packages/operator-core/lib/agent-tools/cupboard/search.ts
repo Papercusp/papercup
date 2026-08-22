@@ -75,6 +75,8 @@ export default defineTool({
       ok: true,
       count: result.listings.length,
       listings: result.listings.map(project),
+      ...(result.total !== undefined ? { total: result.total } : {}),
+      ...(result.kind_facets ? { kindFacets: result.kind_facets } : {}),
       ...(result.next_cursor ? { nextCursor: result.next_cursor } : {}),
     });
   },

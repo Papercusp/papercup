@@ -183,7 +183,12 @@ pub enum Event {
     CupboardListings {
         kind: String,
         query: String,
+        requested_cursor: Option<String>,
+        append: bool,
         listings: Vec<crate::models::CupboardListing>,
+        next_cursor: Option<String>,
+        total: Option<usize>,
+        kind_facets: std::collections::BTreeMap<String, usize>,
     },
     /// The conversations list for the Conversations tab (Brief 25) — the result
     /// of a `FetchConversations` action under the current state/kind/topic filter.

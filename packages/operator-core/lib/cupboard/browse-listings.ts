@@ -26,7 +26,13 @@ export interface BrowseCupboardListingsInput {
 }
 
 export type BrowseCupboardListingsResult =
-  | { ok: true; listings: Record<string, unknown>[]; next_cursor?: string }
+  | {
+      ok: true;
+      listings: Record<string, unknown>[];
+      next_cursor?: string;
+      total?: number;
+      kind_facets?: Partial<Record<ListingKind, number>>;
+    }
   | { ok: false; status: number; error: string };
 
 export async function browseCupboardListings(
@@ -61,10 +67,20 @@ export async function browseCupboardListings(
       results?: Record<string, unknown>[];
       harnesses?: Record<string, unknown>[];
       listings?: Record<string, unknown>[];
-      next_cursor?: string;
+      next_cursor?: string | null;
+      total?: number;
+      kind_facets?: Partial<Record<ListingKind, number>>;
     };
     const listings = data.results ?? data.harnesses ?? data.listings ?? [];
-    return { ok: true, listings, ...(data.next_cursor ? { next_cursor: data.next_cursor } : {}) };
+    return {
+      ok: true,
+      listings,
+      ...(typeof data.next_cursor === 'string' ? { next_cursor: data.next_cursor } : {}),
+      ...(typeof data.total === 'number' && Number.isFinite(data.total) ? { total: data.total } : {}),
+      ...(data.kind_facets && typeof data.kind_facets === 'object'
+        ? { kind_facets: data.kind_facets }
+        : {}),
+    };
   } catch (e) {
     return { ok: false, status: 503, error: e instanceof Error ? e.message : String(e) };
   }

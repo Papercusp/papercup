@@ -313,30 +313,111 @@ export class FakeStore {
         .sort((a, b) => (a.created_at as number) - (b.created_at as number))
         .slice(0, limit);
     }
-    // listHarnesses: WHERE unlisted_at IS NULL AND review_status='approved'
-    //   [AND listing_kind=?] [AND project_ref=?] [AND cursor] [AND search×4]
-    //   [AND claim_status=?] ... LIMIT ?
-    if (upper.startsWith('SELECT * FROM HARNESSES WHERE') && upper.includes('UNLISTED_AT IS NULL')) {
+    // summarizePublicHarnesses: one CTE supplies exact matched total + kind facets.
+    if (upper.startsWith('WITH POPULATION AS')) {
       let i = 0;
-      const hasKind = upper.includes('LISTING_KIND = ?');
-      const kind = hasKind ? binds[i++] : undefined;
-      const hasProject = upper.includes('PROJECT_REF = ?');
+      const hasProject = upper.includes('H.PROJECT_REF = ?');
       const project = hasProject ? binds[i++] : undefined;
-      const hasCursor = upper.includes('LAST_ACTIVITY_AT < ?');
-      if (hasCursor) i++;
+      const hasSearch = upper.includes('H.TITLE LIKE ?');
+      const search = hasSearch ? String(binds[i++] ?? '').replaceAll('%', '').toLowerCase() : '';
+      if (hasSearch) i += 3;
+      const hasClaim = upper.includes('H.CLAIM_STATUS = ?');
+      const claim = hasClaim ? binds[i++] : undefined;
+      let rows = this.tables.harnesses.filter((r) => r.unlisted_at == null);
+      if (upper.includes("REVIEW_STATUS = 'APPROVED'")) {
+        rows = rows.filter((r) => r.review_status === 'approved');
+      }
+      if (upper.includes('NOT EXISTS (SELECT 1 FROM BANNED_PUBLISHER_PUBKEYS')) {
+        const banned = new Set(this.tables.banned_publisher_pubkeys.map((r) => r.pubkey));
+        rows = rows.filter((r) => !r.publisher_device_pubkey || !banned.has(r.publisher_device_pubkey));
+      }
+      if (hasProject) rows = rows.filter((r) => r.project_ref === project);
+      if (hasClaim) rows = rows.filter((r) => r.claim_status === claim);
+      if (hasSearch) {
+        rows = rows.filter((r) =>
+          [r.title, r.description, r.github_owner, r.github_name]
+            .some((value) => String(value ?? '').toLowerCase().includes(search)),
+        );
+      }
+      const hasMatchedKind = upper.includes('FROM POPULATION WHERE LISTING_KIND = ?');
+      const matchedKind = hasMatchedKind ? binds[i] : undefined;
+      const total = hasMatchedKind
+        ? rows.filter((r) => r.listing_kind === matchedKind).length
+        : rows.length;
+      const counts = new Map<unknown, number>();
+      for (const row of rows) counts.set(row.listing_kind, (counts.get(row.listing_kind) ?? 0) + 1);
+      return [
+        { metric: 'total', value: null, n: total },
+        ...[...counts.entries()].map(([value, n]) => ({ metric: 'kind', value, n })),
+      ];
+    }
+    // listHarnesses/listPublicHarnessesPage: normalized predicate, stable order,
+    // optional composite keyset cursor, and an optional pre-LIMIT publisher ban.
+    if (
+      (upper.startsWith('SELECT H.* FROM HARNESSES H WHERE') ||
+        upper.startsWith('SELECT * FROM HARNESSES WHERE')) &&
+      upper.includes('UNLISTED_AT IS NULL')
+    ) {
+      let i = 0;
+      const hasKind = upper.includes('H.LISTING_KIND = ?') || upper.includes(' LISTING_KIND = ?');
+      const kind = hasKind ? binds[i++] : undefined;
+      const hasProject = upper.includes('H.PROJECT_REF = ?') || upper.includes(' PROJECT_REF = ?');
+      const project = hasProject ? binds[i++] : undefined;
+      const compositeCursor = upper.includes('H.LAST_ACTIVITY_AT = ? AND H.ID > ?');
+      const nullCursor = upper.includes('H.LAST_ACTIVITY_AT IS NULL AND H.ID > ?');
+      const legacyCursor = !compositeCursor && !nullCursor && upper.includes('LAST_ACTIVITY_AT < ?');
+      let cursorActivity: number | null | undefined;
+      let cursorId: string | undefined;
+      if (compositeCursor) {
+        cursorActivity = binds[i++] as number;
+        i++; // repeated activity bind
+        cursorId = binds[i++] as string;
+      } else if (nullCursor) {
+        cursorActivity = null;
+        cursorId = binds[i++] as string;
+      } else if (legacyCursor) {
+        cursorActivity = binds[i++] as number;
+      }
       const hasSearch = upper.includes('TITLE LIKE ?');
-      if (hasSearch) i += 4;
+      const search = hasSearch ? String(binds[i++] ?? '').replaceAll('%', '').toLowerCase() : '';
+      if (hasSearch) i += 3;
       const hasClaim = upper.includes('CLAIM_STATUS = ?');
       const claim = hasClaim ? binds[i++] : undefined;
       const limit = binds[binds.length - 1] as number;
       let rows = this.tables.harnesses.filter((r) => r.unlisted_at == null);
-      // migration 008: public browse only sees approved listings.
       if (upper.includes("REVIEW_STATUS = 'APPROVED'")) {
         rows = rows.filter((r) => r.review_status === 'approved');
+      }
+      if (upper.includes('NOT EXISTS (SELECT 1 FROM BANNED_PUBLISHER_PUBKEYS')) {
+        const banned = new Set(this.tables.banned_publisher_pubkeys.map((r) => r.pubkey));
+        rows = rows.filter((r) => !r.publisher_device_pubkey || !banned.has(r.publisher_device_pubkey));
       }
       if (hasKind) rows = rows.filter((r) => r.listing_kind === kind);
       if (hasProject) rows = rows.filter((r) => r.project_ref === project);
       if (hasClaim) rows = rows.filter((r) => r.claim_status === claim);
+      if (hasSearch) {
+        rows = rows.filter((r) =>
+          [r.title, r.description, r.github_owner, r.github_name]
+            .some((value) => String(value ?? '').toLowerCase().includes(search)),
+        );
+      }
+      if (cursorActivity !== undefined) {
+        rows = rows.filter((r) => {
+          const activity = r.last_activity_at as number | null;
+          if (legacyCursor) return activity == null || activity < (cursorActivity as number);
+          if (cursorActivity == null) return activity == null && String(r.id) > String(cursorId);
+          return activity == null || activity < cursorActivity ||
+            (activity === cursorActivity && String(r.id) > String(cursorId));
+        });
+      }
+      rows.sort((a, b) => {
+        const aActivity = a.last_activity_at as number | null;
+        const bActivity = b.last_activity_at as number | null;
+        if (aActivity == null && bActivity != null) return 1;
+        if (aActivity != null && bActivity == null) return -1;
+        if (aActivity != null && bActivity != null && aActivity !== bActivity) return bActivity - aActivity;
+        return String(a.id).localeCompare(String(b.id));
+      });
       return rows.slice(0, limit);
     }
     if (upper.startsWith('SELECT COUNT FROM PUBLISH_RATE_LIMIT')) {

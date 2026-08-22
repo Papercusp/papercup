@@ -218,6 +218,8 @@ pub enum Action {
     FetchCupboard {
         kind: String,
         query: String,
+        cursor: Option<String>,
+        append: bool,
     },
     /// Execute the CONFIRMED per-kind Cupboard action (D-011): harness→join,
     /// blueprint→fork (install), snapshot→fork, plugin→install. The reducer
@@ -1293,6 +1295,10 @@ pub struct App {
     pub cupboard_search_open: bool,
     pub cupboard_search_input: String,
     pub cupboard_loading: bool,
+    pub cupboard_loading_more: bool,
+    pub cupboard_next_cursor: Option<String>,
+    pub cupboard_total: Option<usize>,
+    pub cupboard_kind_facets: std::collections::BTreeMap<String, usize>,
     pub cupboard_confirm: Option<String>,
     /// Conversations tab (Brief 25): the fetched conversation list under the
     /// active state/kind filter (`conv_state_idx` indexes `CONV_STATES`,
@@ -1662,6 +1668,10 @@ impl App {
             cupboard_search_open: false,
             cupboard_search_input: String::new(),
             cupboard_loading: false,
+            cupboard_loading_more: false,
+            cupboard_next_cursor: None,
+            cupboard_total: None,
+            cupboard_kind_facets: std::collections::BTreeMap::new(),
             cupboard_confirm: None,
             conversations: Vec::new(),
             conversation_sel: 0,
@@ -4518,13 +4528,45 @@ impl App {
             Event::CupboardListings {
                 kind,
                 query,
+                requested_cursor,
+                append,
                 listings,
+                next_cursor,
+                total,
+                kind_facets,
             } => {
-                // Stale-guard (D-011): drop a response whose (kind, query) the
-                // user has since changed — only the latest filter paints.
-                if kind == CUPBOARD_KINDS[self.cupboard_kind] && query == self.cupboard_query {
-                    self.cupboard = listings;
+                // Stale-guard (D-011 + P-012): an appended page must also match
+                // the cursor that was current when it was requested. A refresh
+                // clears that cursor, so an older append can never repaint it.
+                let active_filter =
+                    kind == CUPBOARD_KINDS[self.cupboard_kind] && query == self.cupboard_query;
+                let active_cursor = !append || requested_cursor == self.cupboard_next_cursor;
+                if active_filter && active_cursor {
+                    if append {
+                        let before = self.cupboard.len();
+                        let mut seen = self
+                            .cupboard
+                            .iter()
+                            .map(|listing| listing.id.clone())
+                            .collect::<std::collections::BTreeSet<_>>();
+                        self.cupboard.extend(
+                            listings
+                                .into_iter()
+                                .filter(|listing| seen.insert(listing.id.clone())),
+                        );
+                        self.cupboard_next_cursor = if self.cupboard.len() == before {
+                            None
+                        } else {
+                            next_cursor
+                        };
+                    } else {
+                        self.cupboard = listings;
+                        self.cupboard_next_cursor = next_cursor;
+                    }
+                    self.cupboard_total = total;
+                    self.cupboard_kind_facets = kind_facets;
                     self.cupboard_loading = false;
+                    self.cupboard_loading_more = false;
                     if self.cupboard_sel >= self.cupboard.len() {
                         self.cupboard_sel = self.cupboard.len().saturating_sub(1);
                     }
@@ -5696,6 +5738,7 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('r') if self.tab == Tab::Cupboard => self.refetch_cupboard(),
+            KeyCode::Char('n') if self.tab == Tab::Cupboard => self.load_next_cupboard(),
             KeyCode::Enter if self.tab == Tab::Cupboard => self.cupboard_activate(),
             KeyCode::Char('y') if self.tab == Tab::Cupboard => {
                 // Confirm the armed listing by id (independent of the cursor,
@@ -6151,9 +6194,33 @@ impl App {
     /// which the stale-guarded reducer arm applies.
     fn refetch_cupboard(&mut self) -> Action {
         self.cupboard_loading = true;
+        self.cupboard_loading_more = false;
+        self.cupboard_next_cursor = None;
+        self.cupboard_total = None;
+        self.cupboard_kind_facets.clear();
         Action::FetchCupboard {
             kind: CUPBOARD_KINDS[self.cupboard_kind].to_string(),
             query: self.cupboard_query.clone(),
+            cursor: None,
+            append: false,
+        }
+    }
+
+    /// Fetch the next bounded Cupboard page. No cursor means the server has
+    /// declared exhaustion, so `n` is a no-op rather than a page-one loop.
+    fn load_next_cupboard(&mut self) -> Action {
+        let Some(cursor) = self.cupboard_next_cursor.clone() else {
+            return Action::None;
+        };
+        if self.cupboard_loading || self.cupboard_loading_more {
+            return Action::None;
+        }
+        self.cupboard_loading_more = true;
+        Action::FetchCupboard {
+            kind: CUPBOARD_KINDS[self.cupboard_kind].to_string(),
+            query: self.cupboard_query.clone(),
+            cursor: Some(cursor),
+            append: true,
         }
     }
 
@@ -9566,17 +9633,62 @@ mod tests {
         a.update(Event::CupboardListings {
             kind: "all".into(),
             query: String::new(),
+            requested_cursor: None,
+            append: false,
             listings: vec![listing],
+            next_cursor: Some("v1:50:L1".into()),
+            total: Some(101),
+            kind_facets: std::collections::BTreeMap::from([
+                ("harness".into(), 100),
+                ("plugin".into(), 1),
+            ]),
         });
         assert_eq!(a.cupboard.len(), 1);
         assert!(!a.cupboard_loading);
+        assert_eq!(a.cupboard_total, Some(101));
+        assert_eq!(a.cupboard_kind_facets.get("plugin"), Some(&1));
+        // `n` carries the opaque cursor and appends rather than replacing.
+        let next = a.update(key('n', KeyModifiers::NONE));
+        assert!(matches!(
+            next,
+            Action::FetchCupboard {
+                cursor: Some(ref cursor),
+                append: true,
+                ..
+            } if cursor == "v1:50:L1"
+        ));
+        a.update(Event::CupboardListings {
+            kind: "all".into(),
+            query: String::new(),
+            requested_cursor: Some("v1:50:L1".into()),
+            append: true,
+            listings: vec![CupboardListing {
+                id: "L2".into(),
+                listing_kind: "plugin".into(),
+                title: Some("Deep worker".into()),
+                ..Default::default()
+            }],
+            next_cursor: None,
+            total: Some(101),
+            kind_facets: std::collections::BTreeMap::from([
+                ("harness".into(), 100),
+                ("plugin".into(), 1),
+            ]),
+        });
+        assert_eq!(a.cupboard.len(), 2);
+        assert!(a.cupboard_next_cursor.is_none());
         // A STALE event (a kind the user isn't on) is ignored.
         a.update(Event::CupboardListings {
             kind: "plugin".into(),
             query: String::new(),
+            requested_cursor: None,
+            append: false,
             listings: vec![],
+            next_cursor: None,
+            total: Some(0),
+            kind_facets: std::collections::BTreeMap::new(),
         });
-        assert_eq!(a.cupboard.len(), 1);
+        assert_eq!(a.cupboard.len(), 2);
         // Enter arms the selected listing; a second Enter fires CupboardAct.
         assert_eq!(enter(&mut a), Action::Render);
         assert_eq!(a.cupboard_confirm.as_deref(), Some("L1"));

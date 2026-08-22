@@ -80,8 +80,7 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
 
   beforeEach(() => {
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue(new Response(
-      JSON.stringify({
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
         listings: [
           listing({ id: 1, title: 'Harness listing', listing_kind: 'harness', hive_pubkey: HIVE_PK }),
           listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' }),
@@ -89,9 +88,10 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
           listing({ id: 4, title: 'Plan listing', listing_kind: 'plan' }),
           listing({ id: 5, title: 'Recipe listing', listing_kind: 'recipe' }),
         ],
-      }),
-      { status: 200 },
-    ));
+        next_cursor: null,
+        total: 5,
+        kind_facets: { harness: 1, plugin: 1, rubric: 1, plan: 1, recipe: 1 },
+      }), { status: 200 }));
     global.fetch = fetchMock as unknown as typeof fetch;
   });
 
@@ -99,16 +99,17 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
     global.fetch = originalFetch;
   });
 
-  it('does not refetch listings when switching kind tabs', async () => {
+  it('server-filters selected kind tabs instead of filtering page one as a corpus', async () => {
     withTooltips(<CupboardClient />);
 
     await waitFor(() => expect(screen.getByText('Plugin listing')).toBeTruthy());
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/cupboard/listings?');
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/cupboard/listings?limit=100');
 
     fireEvent.click(screen.getByTestId('cupboard-kind-tab-plugin'));
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(String(fetchMock.mock.calls[1][0])).toBe('/api/cupboard/listings?limit=100&kind=plugin');
     expect(screen.getByText('Plugin listing')).toBeTruthy();
     expect(screen.queryByText('Harness listing')).toBeNull();
   });
@@ -125,11 +126,19 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
       const tab = screen.getByTestId(`cupboard-kind-tab-${kind}`);
       expect(tab.textContent).toContain(label);
       fireEvent.click(tab);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(
+        kind === 'rubric' ? 2 : kind === 'plan' ? 3 : 4,
+      ));
       expect(screen.getByText(title)).toBeTruthy();
       expect(screen.queryByText('Plugin listing')).toBeNull();
     }
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(fetchMock.mock.calls.slice(1).map((call) => String(call[0]))).toEqual([
+      '/api/cupboard/listings?limit=100&kind=rubric',
+      '/api/cupboard/listings?limit=100&kind=plan',
+      '/api/cupboard/listings?limit=100&kind=recipe',
+    ]);
   });
 
   it('shows an explicit listings loading indicator while the fetch is in flight', () => {
@@ -142,6 +151,72 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
   });
 });
 
+describe('CupboardClient — corpus pagination and authoritative kind facets', () => {
+  const originalFetch = global.fetch;
+  const fetchMock = vi.fn();
+  const firstPage = Array.from({ length: 100 }, (_, i) => listing({
+    id: i + 1,
+    title: `Harness ${i + 1}`,
+    listing_kind: 'harness',
+    hive_pubkey: HIVE_PK,
+    github_repo: `o/r-${i + 1}`,
+  }));
+  const deepApp = listing({ id: 101, title: 'Deep page app', listing_kind: 'app' });
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('discovers and server-fetches a kind whose only row is beyond page one', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const appSelected = url.includes('kind=app');
+      return new Response(JSON.stringify({
+        listings: appSelected ? [deepApp] : firstPage,
+        next_cursor: appSelected ? null : 'v1:901:h-100',
+        total: appSelected ? 1 : 101,
+        kind_facets: { harness: 100, app: 1 },
+      }), { status: 200 });
+    });
+
+    withTooltips(<CupboardClient />);
+    await waitFor(() => expect(screen.getByTestId('cupboard-kind-count-all').textContent).toBe('101'));
+    expect(screen.getByTestId('cupboard-kind-count-app').textContent).toBe('1');
+    expect(screen.queryByText('Deep page app')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('cupboard-kind-tab-app'));
+    await waitFor(() => expect(screen.getByText('Deep page app')).toBeTruthy());
+    expect(String(fetchMock.mock.calls[1][0])).toBe('/api/cupboard/listings?limit=100&kind=app');
+  });
+
+  it('appends the next page and stops when the server reports exhaustion', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const nextPage = url.includes('cursor=');
+      return new Response(JSON.stringify({
+        listings: nextPage ? [deepApp] : firstPage,
+        next_cursor: nextPage ? null : 'v1:901:h-100',
+        total: 101,
+        kind_facets: { harness: 100, app: 1 },
+      }), { status: 200 });
+    });
+
+    withTooltips(<CupboardClient />);
+    const loadMore = await screen.findByTestId('cupboard-load-more');
+    expect(screen.getByTestId('cupboard-pagination').textContent).toContain('Showing 100 of 101');
+    fireEvent.click(loadMore);
+
+    await waitFor(() => expect(screen.getByText('Deep page app')).toBeTruthy());
+    expect(String(fetchMock.mock.calls[1][0])).toContain('cursor=v1%3A901%3Ah-100');
+    expect(screen.queryByTestId('cupboard-load-more')).toBeNull();
+  });
+});
+
 describe('CupboardClient — Pots tab always visible + empty state [owner 2026-07-14]', () => {
   const originalFetch = global.fetch;
   const fetchMock = vi.fn();
@@ -150,7 +225,7 @@ describe('CupboardClient — Pots tab always visible + empty state [owner 2026-0
     fetchMock.mockReset();
     // No pot (harness) listings at all — only a plugin. Pre-revival this hid the
     // Pots tab entirely (P-015 "empty tabs hide"); now it must still show.
-    fetchMock.mockResolvedValue(new Response(
+    fetchMock.mockImplementation(async () => new Response(
       JSON.stringify({ listings: [listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' })] }),
       { status: 200 },
     ));
@@ -188,7 +263,7 @@ describe('CupboardClient — Apps tab always visible + empty state [owner 2026-0
     // No app listings at all — only a plugin. The Apps tab must still show (it is
     // always-visible per the owner directive), and clicking it must explain the
     // feature rather than render a blank grid.
-    fetchMock.mockResolvedValue(new Response(
+    fetchMock.mockImplementation(async () => new Response(
       JSON.stringify({ listings: [listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' })] }),
       { status: 200 },
     ));

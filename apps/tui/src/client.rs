@@ -1772,7 +1772,8 @@ impl OperatorClient {
         kind: Option<&str>,
         q: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<models::CupboardListing>> {
+        cursor: Option<&str>,
+    ) -> Result<models::CupboardListingsResponse> {
         let mut path = format!("/api/cupboard/listings?limit={limit}");
         if let Some(k) = kind.filter(|k| !k.is_empty() && *k != "all") {
             path.push_str(&format!("&kind={}", urlencode(k)));
@@ -1780,12 +1781,12 @@ impl OperatorClient {
         if let Some(q) = q.filter(|q| !q.is_empty()) {
             path.push_str(&format!("&q={}", urlencode(q)));
         }
+        if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
+            path.push_str(&format!("&cursor={}", urlencode(cursor)));
+        }
         let v = self.get_json(&path).await?;
-        Ok(
-            serde_json::from_value::<models::CupboardListingsResponse>(v)
-                .context("decode cupboard listings")?
-                .listings,
-        )
+        serde_json::from_value::<models::CupboardListingsResponse>(v)
+            .context("decode cupboard listings")
     }
 
     /// Install a plugin listing (`POST /api/cupboard/install-plugin`).

@@ -1212,10 +1212,15 @@ async fn run<B: Backend>(
                 tokio::spawn(plugin_config_edit(harness, plugin, key, value, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::FetchCupboard { kind, query } => {
+            Action::FetchCupboard {
+                kind,
+                query,
+                cursor,
+                append,
+            } => {
                 // Cupboard browse (D-011): GET the listings for the active
                 // (kind, query) filter off the UI thread.
-                tokio::spawn(fetch_cupboard(kind, query, tx.clone()));
+                tokio::spawn(fetch_cupboard(kind, query, cursor, append, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::CupboardAct { listing } => {
@@ -2186,34 +2191,55 @@ fn random_topic_hex() -> Result<String> {
 /// `Event::CupboardListings` (stale-guarded in the reducer by kind+query). On
 /// error an empty page still ships so the loading state resolves; the error
 /// itself lands in the status bar.
-async fn fetch_cupboard(kind: String, query: String, tx: UnboundedSender<Event>) {
-    let empty = |kind: String, query: String| Event::CupboardListings {
-        kind,
-        query,
+async fn fetch_cupboard(
+    kind: String,
+    query: String,
+    cursor: Option<String>,
+    append: bool,
+    tx: UnboundedSender<Event>,
+) {
+    let empty = || Event::CupboardListings {
+        kind: kind.clone(),
+        query: query.clone(),
+        requested_cursor: cursor.clone(),
+        append,
         listings: Vec::new(),
+        next_cursor: None,
+        total: None,
+        kind_facets: std::collections::BTreeMap::new(),
     };
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(Event::Error(format!("cupboard: {e}")));
-            let _ = tx.send(empty(kind, query));
+            let _ = tx.send(empty());
             return;
         }
     };
     match client
-        .cupboard_listings(Some(kind.as_str()), Some(query.as_str()), 100)
+        .cupboard_listings(
+            Some(kind.as_str()),
+            Some(query.as_str()),
+            100,
+            cursor.as_deref(),
+        )
         .await
     {
-        Ok(listings) => {
+        Ok(page) => {
             let _ = tx.send(Event::CupboardListings {
                 kind,
                 query,
-                listings,
+                requested_cursor: cursor,
+                append,
+                listings: page.listings,
+                next_cursor: page.next_cursor,
+                total: page.total,
+                kind_facets: page.kind_facets,
             });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("cupboard: {e}")));
-            let _ = tx.send(empty(kind, query));
+            let _ = tx.send(empty());
         }
     }
 }

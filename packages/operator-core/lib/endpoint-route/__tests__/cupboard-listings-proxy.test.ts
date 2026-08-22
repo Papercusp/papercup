@@ -63,13 +63,31 @@ describe('GET /cupboard/listings — unknown-kind degradation', () => {
     expect((await res.json() as { error: string }).error).toContain('HTTP 400');
   });
 
-  it('a normal worker page passes through', async () => {
+  it('a normal worker page preserves cursor, exact total, and kind facets', async () => {
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ results: [{ id: 'a', listing_kind: 'pack' }] }), { status: 200 }),
+      new Response(JSON.stringify({
+        results: [{ id: 'a', listing_kind: 'pack' }],
+        next_cursor: 'v1:10:a',
+        total: 137,
+        kind_facets: { harness: 100, pack: 37 },
+      }), { status: 200 }),
     );
     const res = await get('?kind=pack');
     expect(res.status).toBe(200);
-    expect((await res.json() as { listings: unknown[] }).listings).toHaveLength(1);
+    expect(await res.json()).toEqual({
+      listings: [{ id: 'a', listing_kind: 'pack' }],
+      next_cursor: 'v1:10:a',
+      total: 137,
+      kind_facets: { harness: 100, pack: 37 },
+    });
+  });
+
+  it('does not invent exact metadata for a legacy worker response', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ harnesses: [{ id: 'old' }] }), { status: 200 }),
+    );
+    const res = await get('');
+    expect(await res.json()).toEqual({ listings: [{ id: 'old' }] });
   });
 });
 

@@ -148,10 +148,11 @@ const paneTab = (page: Page, pane: string) =>
 const bucketBtn = (page: Page, bucket: string) =>
   page
     .locator('[role="group"][aria-label="Filter design features by status"]')
-    // The button's accessible name is the label IMMEDIATELY followed by its
-    // count chip ("all47", "pending0") — digits are word chars, so a \b after
-    // the label never matches when the count is non-zero. Anchor label+digits.
-    .getByRole('button', { name: new RegExp(`^${bucket}\\d*$`) });
+    // P-011 gives the count node explicit corpus-evidence wording, so current
+    // accessible names read e.g. "pending 47 features in the Design feature
+    // queue". Keep accepting the legacy compact "pending47" form too: the
+    // lookahead handles a digit with no boundary, while \b handles scoped copy.
+    .getByRole('button', { name: new RegExp(`^${bucket}(?:\\b|(?=\\d))`, 'i') });
 
 /**
  * Navigate and report whether the dashboard mounted. 'notfound' means the

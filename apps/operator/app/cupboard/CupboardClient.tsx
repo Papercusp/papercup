@@ -71,6 +71,13 @@ type KindFilter = 'all' | ListingKind;
  *  app/aspect templates.) */
 type ViewFilter = KindFilter | 'tools';
 
+interface CupboardListingsEnvelope {
+  listings?: HarnessListing[];
+  next_cursor?: string | null;
+  total?: number;
+  kind_facets?: Partial<Record<ListingKind, number>>;
+}
+
 // cupboard-plan-rubric-recipe-sharing-2026-08-21 P-005: 'rubric', 'plan' and
 // 'recipe' get their own tabs. They sit AFTER the code kinds and before 'tools'
 // because they are the judgment/procedure family (what grades work, what work to
@@ -205,18 +212,31 @@ export default function CupboardClient() {
   );
   const [cat, setCat] = useQueryState('cat', parseAsString);
   const [listings, setListings] = useState<HarnessListing[]>([]);
+  const listingsRef = useRef<HarnessListing[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [kindFacets, setKindFacets] = useState<Partial<Record<ListingKind, number>> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const fetchListings = useCallback(async () => {
+  const fetchListings = useCallback(async (cursor?: string, append = false) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    setLoading(true);
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setLoadingMore(false);
+      setNextCursor(null);
+      setTotal(null);
+      setKindFacets(null);
+    }
     setError(null);
     try {
       const params = new URLSearchParams();
+      params.set('limit', '100');
       if (q) params.set('q', q);
       // The worker's filter param is `claim` (claimed|unclaimed) — `claim_status`
       // was silently ignored, so the filter pills never narrowed anything.
@@ -228,37 +248,59 @@ export default function CupboardClient() {
         // in this mode, so `kind` is intentionally not forwarded.
         params.set('project', hive);
       }
-      // WI-3259: `kind` is INTENTIONALLY never forwarded here (even outside the
-      // hive rollup). Every kind tab (all/harness/blueprint/hive-blueprint/
-      // plugin/pack/knowledge-pack) is a CLIENT-SIDE facet over ONE full
-      // fetch — see `viewListings` below — so switching tabs is a pure
-      // re-filter with ZERO network round-trip. Only q / claimFilter / hive
-      // (all real server-side params) trigger a refetch to the external
-      // Cupboard worker (the multi-second-latency hop the bug was about).
-      // Hive-pubkey rollup (comb-hive-native-sharing P-001): the worker has no
-      // hive filter, so fetch unfiltered and narrow client-side by hive_pubkey
-      // below — page-scoped, like the flat-browse grouping (P-002).
+      // A page is bounded. Server-filter selected kinds so a kind whose first
+      // row is beyond page one remains discoverable and fetchable.
+      if (!hive && kindFilter !== 'all' && kindFilter !== 'tools') {
+        params.set('kind', kindFilter);
+      }
+      // Hive-pubkey rollup has no worker filter yet, so it walks unfiltered
+      // pages and narrows client-side. Legacy project rollups use `project`.
+      if (cursor) params.set('cursor', cursor);
       const res = await fetch(`/api/cupboard/listings?${params}`, { signal: ctrl.signal });
       if (!res.ok) throw await cupboardHttpError(res);
-      const data = (await res.json()) as { listings: HarnessListing[] };
+      const data = (await res.json()) as CupboardListingsEnvelope;
       if (!ctrl.signal.aborted) {
-        setListings((data.listings ?? []).filter(isPubliclyVisible));
+        const incoming = (data.listings ?? []).filter(isPubliclyVisible);
+        const prior = append ? listingsRef.current : [];
+        const seen = new Set(prior.map((listing) => String(listing.id)));
+        const merged = [
+          ...prior,
+          ...incoming.filter((listing) => {
+            const id = String(listing.id);
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          }),
+        ];
+        const grew = merged.length > prior.length;
+        listingsRef.current = merged;
+        setListings(merged);
+        setNextCursor(
+          append && !grew
+            ? null
+            : typeof data.next_cursor === 'string'
+              ? data.next_cursor
+              : null,
+        );
+        setTotal(typeof data.total === 'number' && Number.isFinite(data.total) ? data.total : null);
+        setKindFacets(data.kind_facets && typeof data.kind_facets === 'object' ? data.kind_facets : null);
       }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         setError(String(err));
       }
     } finally {
-      if (!ctrl.signal.aborted) setLoading(false);
+      if (!ctrl.signal.aborted) {
+        if (append) setLoadingMore(false);
+        else setLoading(false);
+      }
     }
-  }, [q, claimFilter, hive]);
+  }, [q, claimFilter, hive, kindFilter]);
 
   useEffect(() => {
     // The Tools view has its own fetch (ToolsSection); skip the listings read.
     if (toolsView && !hive) return;
     void fetchListings();
-    // NOTE: `kindFilter` is deliberately NOT a dependency — see fetchListings.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchListings, toolsView, hive]);
 
   // Hive rollup: narrow to the one hive. A pubkey ref matches the member rows'
@@ -271,10 +313,8 @@ export default function CupboardClient() {
       )
     : [];
   const hiveGroups = hive ? groupListingsByKind(hiveListings) : [];
-  // WI-3259: EVERY kind tab is now a pure client-side facet over the one full
-  // (unfiltered) fetch (fetchListings no longer sends `kind` to the server —
-  // see above), so ALL tabs are re-filtered here with zero network cost. 'all'
-  // shows everything; every kind gets its own explicit client-side filter.
+  // The server already filters a selected kind. Keep a client guard for legacy
+  // workers that ignore `kind`, and for a page restored during a transition.
   // cupboard-public-release D-002: the old hive-blueprint/blueprint SPLIT is
   // gone — the single 'blueprint' tab now shows ALL blueprint listings (role +
   // pot), distinguished per-card by the pot-template badge. The hive ROLLUP
@@ -285,7 +325,7 @@ export default function CupboardClient() {
       : listings.filter((l) => listingKindOf(l) === kindFilter);
   const groupedListings = groupListingsByKind(viewListings);
   const facetCount = groupedListings.length;
-  // Per-kind counts over the full unfiltered fetch. A kind tab with ZERO
+  // Per-kind counts come from the server's corpus summary. A kind tab with ZERO
   // listings is HIDDEN (cupboard-public-release-2026-07-12 P-015: "all tabs
   // non-empty or hidden" — e.g. pack when nothing is published yet).
   // EXCEPTION: the Pots (harness) tab ALWAYS shows [owner 2026-07-14 "revive
@@ -294,14 +334,13 @@ export default function CupboardClient() {
   // rather than hide it until someone happens to publish the first public pot.
   // 'all' + the 'tools' discovery view always show; the currently-selected kind
   // stays visible even if empty so a URL-pinned `?kind=` filter isn't stranded.
-  const kindCounts = useMemo(() => {
-    const m = new Map<ListingKind, number>();
-    for (const l of listings) {
-      const k = listingKindOf(l);
-      m.set(k, (m.get(k) ?? 0) + 1);
-    }
-    return m;
-  }, [listings]);
+  const kindCounts = useMemo(
+    () => new Map(
+      Object.entries(kindFacets ?? {})
+        .filter((entry): entry is [ListingKind, number] => typeof entry[1] === 'number'),
+    ),
+    [kindFacets],
+  );
   const visibleFilters = VIEW_FILTERS.filter(
     (k) =>
       k === 'all' ||
@@ -313,8 +352,20 @@ export default function CupboardClient() {
       // must advertise it rather than hide it until someone publishes one.
       k === 'app' ||
       k === kindFilter ||
+      kindFacets == null ||
       (kindCounts.get(k as ListingKind) ?? 0) > 0,
   );
+  const allKindsTotal = kindFacets == null
+    ? null
+    : Object.values(kindFacets).reduce(
+        (sum, count) => sum + (typeof count === 'number' ? count : 0),
+        0,
+      );
+  const summaryMatchesView = !hive || !isHivePubkeyRef(hive);
+  const exactViewTotal = summaryMatchesView ? total : null;
+  const exactFacetCount = summaryMatchesView && kindFacets
+    ? Object.values(kindFacets).filter((count) => typeof count === 'number' && count > 0).length
+    : null;
   // Flat hive-first browse (P-002): harness member rows fold into ONE card per
   // owning hive; legacy (pre-hive) harness rows collapse into their own
   // section. Other kinds render as plain listing cards, unchanged.
@@ -420,8 +471,14 @@ export default function CupboardClient() {
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(92px, 1fr))', gap: 10, minWidth: 300, flex: '0 1 360px' }}>
-            <MetricTile label={toolsView && !hive ? 'Mode' : 'Listings'} value={toolsView && !hive ? 'Tools' : String(hive ? hiveListings.length : listings.length)} />
-            <MetricTile label="Facets" value={toolsView && !hive ? '1' : String(hive ? hiveGroups.length : facetCount)} />
+            <MetricTile
+              label={toolsView && !hive ? 'Mode' : exactViewTotal == null ? 'Loaded' : 'Listings'}
+              value={toolsView && !hive ? 'Tools' : String(exactViewTotal ?? (hive ? hiveListings.length : listings.length))}
+            />
+            <MetricTile
+              label={exactFacetCount == null ? 'Loaded facets' : 'Facets'}
+              value={toolsView && !hive ? '1' : String(exactFacetCount ?? (hive ? hiveGroups.length : facetCount))}
+            />
             <MetricTile label="View" value={activeViewLabel} />
           </div>
         </div>
@@ -458,6 +515,11 @@ export default function CupboardClient() {
                 <KindIcon kind={k} />
               ) : null}
               {VIEW_FILTER_LABEL[k]}
+              {k !== 'tools' && (
+                <span data-testid={`cupboard-kind-count-${k}`} style={{ opacity: 0.72 }}>
+                  {k === 'all' ? allKindsTotal ?? '—' : kindCounts.get(k as ListingKind) ?? '—'}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -553,8 +615,8 @@ export default function CupboardClient() {
         </div>}
 
         {!toolsView && <Tooltip label="Refresh"><button
-          onClick={fetchListings}
-          disabled={loading}
+          onClick={() => void fetchListings()}
+          disabled={loading || loadingMore}
           style={ghostButtonStyle}
 
         >
@@ -800,6 +862,31 @@ export default function CupboardClient() {
         </>
       )}
       </div>
+      {!loading && !error && nextCursor && (
+        <div
+          data-testid="cupboard-pagination"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+            marginTop: SIZES.lg, fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted,
+          }}
+        >
+          <span>
+            {exactViewTotal == null
+              ? `${hive ? hiveListings.length : listings.length} loaded`
+              : `Showing ${hive ? hiveListings.length : listings.length} of ${exactViewTotal}`}
+          </span>
+          <button
+            type="button"
+            data-testid="cupboard-load-more"
+            onClick={() => void fetchListings(nextCursor, true)}
+            disabled={loadingMore}
+            style={ghostButtonStyle}
+          >
+            {loadingMore ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : null}
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
+        </div>
+      )}
         </>
       )}
       </div>

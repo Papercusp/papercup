@@ -799,6 +799,12 @@ impl CupboardListing {
 pub struct CupboardListingsResponse {
     #[serde(default)]
     pub listings: Vec<CupboardListing>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+    #[serde(default)]
+    pub total: Option<usize>,
+    #[serde(default)]
+    pub kind_facets: std::collections::BTreeMap<String, usize>,
 }
 
 /// One discovered hive from `GET /api/discovery/pots` (p2p-hive-directory P-006).
@@ -3193,6 +3199,29 @@ mod tests {
         let e: TurnsPage = serde_json::from_str("{}").unwrap();
         assert!(e.turns.is_empty());
         assert!(!e.has_more_earlier);
+    }
+
+    #[test]
+    fn parses_cupboard_pagination_summary_beyond_one_page() {
+        let page: CupboardListingsResponse = serde_json::from_str(
+            r#"{
+                "listings":[{"id":"deep","listing_kind":"plugin","title":"Deep plugin"}],
+                "next_cursor":"v1:50:deep",
+                "total":137,
+                "kind_facets":{"harness":100,"plugin":37}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(page.listings.len(), 1);
+        assert_eq!(page.next_cursor.as_deref(), Some("v1:50:deep"));
+        assert_eq!(page.total, Some(137));
+        assert_eq!(page.kind_facets.get("plugin"), Some(&37));
+
+        let legacy: CupboardListingsResponse =
+            serde_json::from_str(r#"{"listings":[]}"#).unwrap();
+        assert!(legacy.next_cursor.is_none());
+        assert!(legacy.total.is_none());
+        assert!(legacy.kind_facets.is_empty());
     }
 
     #[test]

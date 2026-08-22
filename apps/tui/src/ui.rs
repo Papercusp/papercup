@@ -2484,25 +2484,41 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, k)| {
-            if i == app.cupboard_kind {
-                format!("[{k}]")
+            let count = if *k == "all" {
+                (!app.cupboard_kind_facets.is_empty()).then(|| {
+                    app.cupboard_kind_facets.values().sum::<usize>()
+                })
             } else {
-                k.to_string()
+                app.cupboard_kind_facets.get(*k).copied()
+            };
+            let label = count.map_or_else(|| k.to_string(), |n| format!("{k}:{n}"));
+            if i == app.cupboard_kind {
+                format!("[{label}]")
+            } else {
+                label
             }
         })
         .collect::<Vec<_>>()
         .join(" ");
+    let population = app.cupboard_total.map_or_else(
+        || format!("{} loaded", app.cupboard.len()),
+        |total| format!("{}/{}", app.cupboard.len(), total),
+    );
+    let next_hint = if app.cupboard_next_cursor.is_some() {
+        " n:next"
+    } else {
+        ""
+    };
     let title = if app.cupboard_query.is_empty() {
-        format!(" Cupboard · {kinds} · f:kind /:search ")
+        format!(" Cupboard · {kinds} · {population} · f:kind{next_hint} /:search ")
     } else {
         format!(
-            " Cupboard · {kinds} · \"{}\" ({}) ",
+            " Cupboard · {kinds} · \"{}\" ({population}){next_hint} ",
             trunc(&app.cupboard_query, 18),
-            app.cupboard.len()
         )
     };
 
-    let items: Vec<ListItem> = app
+    let mut items: Vec<ListItem> = app
         .cupboard
         .iter()
         .map(|l| {
@@ -2514,6 +2530,16 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
             )))
         })
         .collect();
+    if !items.is_empty() && app.cupboard_next_cursor.is_some() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            if app.cupboard_loading_more {
+                "… loading next page"
+            } else {
+                "n  load next page"
+            },
+            Theme::dim(),
+        ))));
+    }
     let body = if items.is_empty() {
         let hint = if app.cupboard_loading {
             "(loading the Cupboard…)"
@@ -4393,19 +4419,28 @@ mod tests {
             publisher_github_login: Some("papercupai".into()),
             ..Default::default()
         }];
-        let text = render(&app, 110, 18);
-        assert!(text.contains("[all]")); // active kind filter marker
+        app.cupboard_total = Some(137);
+        app.cupboard_next_cursor = Some("v1:50:deep".into());
+        app.cupboard_kind_facets = std::collections::BTreeMap::from([
+            ("harness".into(), 100),
+            ("plugin".into(), 37),
+        ]);
+        let text = render(&app, 240, 18);
+        assert!(text.contains("[all:137]")); // exact corpus count in the active filter
+        assert!(text.contains("1/137"));
+        assert!(text.contains("n:next"));
+        assert!(text.contains("load next page"));
         assert!(text.contains("Papercusp Worker"));
         assert!(text.contains("install")); // the plugin action label in detail
         assert!(text.contains("papercupai"));
         // Arming the confirm flips the detail title.
         app.cupboard_confirm = Some("11111111-1111-1111-1111-111111111111".into());
-        let armed = render(&app, 110, 18);
+        let armed = render(&app, 240, 18);
         assert!(armed.contains("press y to install"));
         // The search composer floats while open.
         app.cupboard_search_open = true;
         app.cupboard_search_input = "worker".into();
-        let search = render(&app, 110, 18);
+        let search = render(&app, 240, 18);
         assert!(search.contains("Search the Cupboard"));
     }
 

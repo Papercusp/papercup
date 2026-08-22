@@ -423,7 +423,7 @@ export async function getHarnessesByGithubRepoIds(
 
 export interface ListOpts {
   limit?: number;
-  cursor?: number | null;          // pagination by last_activity_at DESC, secondary id
+  cursor?: number | ListingCursor | null;
   search?: string;
   claim_status?: 'unclaimed' | 'claimed';
   /** Filter to one storefront kind (migration 004). Omit for all kinds. */
@@ -432,42 +432,207 @@ export interface ListOpts {
   project_ref?: string;
 }
 
+/**
+ * Opaque public-list cursor. `last_activity_at` alone is not unique, so the id
+ * is part of the keyset boundary even though older clients sent a bare numeric
+ * timestamp. The route still accepts that legacy timestamp form.
+ */
+export interface ListingCursor {
+  last_activity_at: number | null;
+  id: string;
+}
+
+export interface HarnessListPage {
+  results: HarnessRow[];
+  next_cursor: string | null;
+}
+
+export interface HarnessListSummary {
+  total: number;
+  kind_facets: Record<ListingKind, number>;
+}
+
+const LISTING_CURSOR_PREFIX = 'v1:';
+
+export function encodeListingCursor(row: Pick<HarnessRow, 'last_activity_at' | 'id'>): string {
+  const activity = row.last_activity_at == null ? 'null' : String(row.last_activity_at);
+  return `${LISTING_CURSOR_PREFIX}${activity}:${encodeURIComponent(row.id)}`;
+}
+
+export function parseListingCursor(raw: string): number | ListingCursor | null {
+  if (/^-?\d+$/.test(raw)) {
+    const legacy = Number(raw);
+    return Number.isSafeInteger(legacy) ? legacy : null;
+  }
+  if (!raw.startsWith(LISTING_CURSOR_PREFIX)) return null;
+  const separator = raw.indexOf(':', LISTING_CURSOR_PREFIX.length);
+  if (separator < 0) return null;
+  const activityRaw = raw.slice(LISTING_CURSOR_PREFIX.length, separator);
+  const encodedId = raw.slice(separator + 1);
+  if (!encodedId) return null;
+  const last_activity_at = activityRaw === 'null' ? null : Number(activityRaw);
+  if (last_activity_at !== null && !Number.isSafeInteger(last_activity_at)) return null;
+  try {
+    const id = decodeURIComponent(encodedId);
+    return id ? { last_activity_at, id } : null;
+  } catch {
+    return null;
+  }
+}
+
+interface ListPredicateOptions {
+  includeKind: boolean;
+  includeCursor: boolean;
+  excludeBanned: boolean;
+}
+
+/** Compile the one normalized public-list predicate used by rows + summary. */
+function compileHarnessListPredicate(
+  opts: ListOpts,
+  config: ListPredicateOptions,
+): { sql: string; binds: unknown[] } {
+  const where: string[] = [
+    'h.unlisted_at IS NULL',
+    `h.review_status = 'approved'`,
+  ];
+  const binds: unknown[] = [];
+  if (config.excludeBanned) {
+    where.push(
+      'NOT EXISTS (SELECT 1 FROM banned_publisher_pubkeys banned WHERE banned.pubkey = h.publisher_device_pubkey)',
+    );
+  }
+  if (config.includeKind && opts.kind) {
+    where.push('h.listing_kind = ?');
+    binds.push(opts.kind);
+  }
+  if (opts.project_ref) {
+    where.push('h.project_ref = ?');
+    binds.push(opts.project_ref);
+  }
+  if (config.includeCursor && opts.cursor != null) {
+    if (typeof opts.cursor === 'number') {
+      // Back-compat for deployed clients that used the old timestamp-only cursor.
+      where.push('(h.last_activity_at IS NULL OR h.last_activity_at < ?)');
+      binds.push(opts.cursor);
+    } else if (opts.cursor.last_activity_at == null) {
+      where.push('(h.last_activity_at IS NULL AND h.id > ?)');
+      binds.push(opts.cursor.id);
+    } else {
+      where.push(
+        '(h.last_activity_at < ? OR h.last_activity_at IS NULL OR (h.last_activity_at = ? AND h.id > ?))',
+      );
+      binds.push(opts.cursor.last_activity_at, opts.cursor.last_activity_at, opts.cursor.id);
+    }
+  }
+  if (opts.search) {
+    where.push(
+      '(h.title LIKE ? OR h.description LIKE ? OR h.github_owner LIKE ? OR h.github_name LIKE ?)',
+    );
+    const q = `%${opts.search}%`;
+    binds.push(q, q, q, q);
+  }
+  if (opts.claim_status) {
+    where.push('h.claim_status = ?');
+    binds.push(opts.claim_status);
+  }
+  return { sql: where.join(' AND '), binds };
+}
+
 export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<HarnessRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
   // Static SQL avoids D1's prepared-statement string concat tax; we filter
   // unlisted always — and non-approved always (knowledge-packs D-007: pending/
   // rejected policy-kind listings are invisible to public browse; the
   // publisher reads their own via GET /:id with auth, operators via /admin).
-  const where: string[] = ['unlisted_at IS NULL', `review_status = 'approved'`];
-  const binds: unknown[] = [];
-  if (opts.kind) {
-    where.push('listing_kind = ?');
-    binds.push(opts.kind);
-  }
-  if (opts.project_ref) {
-    where.push('project_ref = ?');
-    binds.push(opts.project_ref);
-  }
-  if (opts.cursor != null) {
-    where.push('(last_activity_at IS NULL OR last_activity_at < ?)');
-    binds.push(opts.cursor);
-  }
-  if (opts.search) {
-    where.push('(title LIKE ? OR description LIKE ? OR github_owner LIKE ? OR github_name LIKE ?)');
-    const q = `%${opts.search}%`;
-    binds.push(q, q, q, q);
-  }
-  if (opts.claim_status) {
-    where.push('claim_status = ?');
-    binds.push(opts.claim_status);
-  }
-  const sql = `SELECT * FROM harnesses WHERE ${where.join(' AND ')} ORDER BY last_activity_at DESC NULLS LAST, id ASC LIMIT ?`;
+  const predicate = compileHarnessListPredicate(opts, {
+    includeKind: true,
+    includeCursor: true,
+    excludeBanned: false,
+  });
+  const binds = [...predicate.binds];
+  const sql = `SELECT h.* FROM harnesses h WHERE ${predicate.sql} ORDER BY h.last_activity_at DESC NULLS LAST, h.id ASC LIMIT ?`;
   binds.push(limit);
   const stmt = db.prepare(sql);
   // .bind is variadic, spread the binds in one call
   const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(...binds);
   const res = await bound.all<HarnessRow>();
   return res.results ?? [];
+}
+
+/**
+ * Public browse page. Banned publishers are excluded before LIMIT, and one
+ * extra row is probed so next_cursor means there is actually another page.
+ */
+export async function listPublicHarnessesPage(
+  db: D1Database,
+  opts: ListOpts,
+): Promise<HarnessListPage> {
+  const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
+  const predicate = compileHarnessListPredicate(opts, {
+    includeKind: true,
+    includeCursor: true,
+    excludeBanned: true,
+  });
+  const binds = [...predicate.binds, limit + 1];
+  const stmt = db.prepare(
+    `SELECT h.* FROM harnesses h WHERE ${predicate.sql} ORDER BY h.last_activity_at DESC NULLS LAST, h.id ASC LIMIT ?`,
+  );
+  const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(
+    ...binds,
+  );
+  const res = await bound.all<HarnessRow>();
+  const fetched = res.results ?? [];
+  const results = fetched.slice(0, limit);
+  const next_cursor =
+    fetched.length > limit && results.length > 0
+      ? encodeListingCursor(results[results.length - 1])
+      : null;
+  return { results, next_cursor };
+}
+
+/**
+ * One companion-summary query: total honors the selected kind, while kind
+ * facets apply every other active filter and deliberately omit kind so each
+ * count predicts the result of drilling into that option.
+ */
+export async function summarizePublicHarnesses(
+  db: D1Database,
+  opts: ListOpts,
+): Promise<HarnessListSummary> {
+  const population = compileHarnessListPredicate(opts, {
+    includeKind: false,
+    includeCursor: false,
+    excludeBanned: true,
+  });
+  const matchedWhere = opts.kind ? 'WHERE listing_kind = ?' : '';
+  const binds = [...population.binds, ...(opts.kind ? [opts.kind] : [])];
+  const stmt = db.prepare(
+    `WITH population AS (
+       SELECT h.listing_kind
+       FROM harnesses h
+       WHERE ${population.sql}
+     )
+     SELECT 'total' AS metric, NULL AS value, COUNT(*) AS n
+     FROM population ${matchedWhere}
+     UNION ALL
+     SELECT 'kind' AS metric, listing_kind AS value, COUNT(*) AS n
+     FROM population
+     GROUP BY listing_kind`,
+  );
+  const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(
+    ...binds,
+  );
+  const res = await bound.all<{ metric: 'total' | 'kind'; value: ListingKind | null; n: number }>();
+  const kind_facets = Object.fromEntries(LISTING_KINDS.map((kind) => [kind, 0])) as Record<
+    ListingKind,
+    number
+  >;
+  let total = 0;
+  for (const row of res.results ?? []) {
+    if (row.metric === 'total') total = Number(row.n) || 0;
+    else if (row.value && isListingKind(row.value)) kind_facets[row.value] = Number(row.n) || 0;
+  }
+  return { total, kind_facets };
 }
 
 /**

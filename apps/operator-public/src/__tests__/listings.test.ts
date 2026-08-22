@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildApi } from '../routes/index.ts';
-import { makeEnv, stubGithub } from './fake-d1.ts';
+import { makeEnv, makeListingRow, stubGithub } from './fake-d1.ts';
 
 function publish(
   api: ReturnType<typeof buildApi>,
@@ -266,6 +266,99 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     // Invisible to public browse (under the canonical kind) until approval.
     const browse = await api.request('/listings?kind=knowledge-pack', {}, env);
     expect((await browse.json() as { results: unknown[] }).results).toHaveLength(0);
+  });
+});
+
+describe('Cupboard /listings — authoritative pagination summary', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  it('keeps totals/facets corpus-accurate beyond 100 and excludes banned publishers before LIMIT', async () => {
+    const { env, store } = makeEnv();
+    store.tables.harnesses.push(
+      ...Array.from({ length: 102 }, (_, i) => makeListingRow({
+        id: `h-${String(i).padStart(3, '0')}`,
+        title: `Harness ${i}`,
+        last_activity_at: 1_000 - i,
+      })),
+      makeListingRow({
+        id: 'deep-app',
+        listing_kind: 'app',
+        title: 'Deep Needle App',
+        last_activity_at: 1,
+      }),
+      makeListingRow({
+        id: 'banned-first',
+        listing_kind: 'plugin',
+        publisher_device_pubkey: 'banned-key',
+        last_activity_at: 2_000,
+      }),
+    );
+    store.tables.banned_publisher_pubkeys.push({ pubkey: 'banned-key' });
+
+    const first = await api.request('/listings?limit=100', {}, env);
+    const firstBody = await first.json() as {
+      results: Array<{ id: string }>;
+      next_cursor: string | null;
+      total: number;
+      kind_facets: Record<string, number>;
+    };
+    expect(firstBody.results).toHaveLength(100);
+    expect(firstBody.results.some((row) => row.id === 'deep-app')).toBe(false);
+    expect(firstBody.results.some((row) => row.id === 'banned-first')).toBe(false);
+    expect(firstBody.next_cursor).toMatch(/^v1:/);
+    expect(firstBody.total).toBe(103);
+    expect(firstBody.kind_facets.harness).toBe(102);
+    expect(firstBody.kind_facets.app).toBe(1);
+    expect(firstBody.kind_facets.plugin).toBe(0);
+
+    const second = await api.request(
+      `/listings?limit=100&cursor=${encodeURIComponent(firstBody.next_cursor!)}`,
+      {},
+      env,
+    );
+    const secondBody = await second.json() as typeof firstBody;
+    expect(secondBody.results.map((row) => row.id)).toEqual(['h-100', 'h-101', 'deep-app']);
+    expect(secondBody.next_cursor).toBe(null);
+    expect(secondBody.total).toBe(103);
+
+    const app = await api.request('/listings?kind=app&limit=100', {}, env);
+    const appBody = await app.json() as typeof firstBody;
+    expect(appBody.results.map((row) => row.id)).toEqual(['deep-app']);
+    expect(appBody.total).toBe(1);
+    // Facets omit their own kind filter, so they remain drill-down promises.
+    expect(appBody.kind_facets.harness).toBe(102);
+    expect(appBody.kind_facets.app).toBe(1);
+
+    const search = await api.request('/listings?q=needle&limit=100', {}, env);
+    const searchBody = await search.json() as typeof firstBody;
+    expect(searchBody.results.map((row) => row.id)).toEqual(['deep-app']);
+    expect(searchBody.total).toBe(1);
+    expect(searchBody.kind_facets.app).toBe(1);
+  });
+
+  it('walks equal-timestamp rows exactly once with the composite cursor', async () => {
+    const { env, store } = makeEnv();
+    store.tables.harnesses.push(
+      makeListingRow({ id: 'a', last_activity_at: 50 }),
+      makeListingRow({ id: 'b', last_activity_at: 50 }),
+      makeListingRow({ id: 'c', last_activity_at: 50 }),
+    );
+
+    const first = await api.request('/listings?limit=2', {}, env);
+    const firstBody = await first.json() as { results: Array<{ id: string }>; next_cursor: string };
+    expect(firstBody.results.map((row) => row.id)).toEqual(['a', 'b']);
+
+    const second = await api.request(
+      `/listings?limit=2&cursor=${encodeURIComponent(firstBody.next_cursor)}`,
+      {},
+      env,
+    );
+    const secondBody = await second.json() as { results: Array<{ id: string }>; next_cursor: null };
+    expect(secondBody.results.map((row) => row.id)).toEqual(['c']);
+    expect(secondBody.next_cursor).toBe(null);
   });
 });
 

@@ -61,7 +61,8 @@ const listCupboardListings = defineTool({
   async handler(req) {
     const url = new URL(req.url);
     // The Cupboard worker serves the generalized /listings surface (kind-aware,
-    // migration 004) and returns { results, next_cursor }. We forward all query
+    // migration 004) and returns the bounded page plus independent pagination
+    // and summary metadata. We forward all query
     // params verbatim — incl. `kind` (harness|blueprint|plugin|pack|all) and
     // `project` (project_ref) — plus q / claim / cursor / limit.
     const base = resolveCupboardBaseUrl();
@@ -104,9 +105,20 @@ const listCupboardListings = defineTool({
         );
       }
       const data = await res.json();
-      // Worker shape is { results: [...] }; tolerate legacy { harnesses }/{ listings }.
+      // Worker shape is { results, next_cursor, total, kind_facets }; tolerate
+      // legacy { harnesses }/{ listings } without fabricating exact metadata.
       const listings = data?.results ?? data?.harnesses ?? data?.listings ?? [];
-      return Response.json({ listings });
+      const envelope: Record<string, unknown> = { listings };
+      if (data && Object.prototype.hasOwnProperty.call(data, 'next_cursor')) {
+        envelope.next_cursor = typeof data.next_cursor === 'string' ? data.next_cursor : null;
+      }
+      if (typeof data?.total === 'number' && Number.isFinite(data.total)) {
+        envelope.total = data.total;
+      }
+      if (data?.kind_facets && typeof data.kind_facets === 'object' && !Array.isArray(data.kind_facets)) {
+        envelope.kind_facets = data.kind_facets;
+      }
+      return Response.json(envelope);
     } catch (err) {
       return Response.json({ error: String(err) }, { status: 503 });
     }

@@ -39,11 +39,13 @@ import {
   insertHarness,
   isListingKind,
   listBannedPubkeySet,
-  listHarnesses,
+  listPublicHarnessesPage,
   markHarnessUnlisted,
   normalizeListingKind,
+  parseListingCursor,
   REVIEW_POLICY_KINDS,
   setHarnessClaim,
+  summarizePublicHarnesses,
   type ListingKind,
 } from '../db.ts';
 import {
@@ -182,8 +184,13 @@ function registerListingEndpoints(
       throw e;
     }
     const url = new URL(c.req.url);
-    const limit = parseInt(url.searchParams.get('limit') ?? '30', 10);
-    const cursor = url.searchParams.get('cursor');
+    const rawLimit = Number.parseInt(url.searchParams.get('limit') ?? '30', 10);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 30;
+    const cursorRaw = url.searchParams.get('cursor');
+    const cursor = cursorRaw == null ? null : parseListingCursor(cursorRaw);
+    if (cursorRaw != null && cursor == null) {
+      return c.json({ error: 'invalid_field', field: 'cursor' }, 400);
+    }
     const search = url.searchParams.get('q') ?? undefined;
     const claim_status_raw = url.searchParams.get('claim');
     const claim_status =
@@ -203,24 +210,19 @@ function registerListingEndpoints(
       }
     }
     const project_ref = url.searchParams.get('project') ?? undefined;
-    const rows = await listHarnesses(c.env.DB, {
+    const filters = {
       limit,
-      cursor: cursor ? parseInt(cursor, 10) : null,
+      cursor,
       search,
       claim_status,
       kind,
       project_ref,
-    });
-    // Filter out listings whose publisher device pubkey is operator-banned
-    // (channel-2 ban-list, item 1). next_cursor stays keyed on the fetched
-    // page so pagination is stable even when a page is partially banned.
-    const banned = await listBannedPubkeySet(c.env.DB);
-    const results = rows.filter(
-      (r) => !r.publisher_device_pubkey || !banned.has(r.publisher_device_pubkey),
-    );
-    const next_cursor =
-      rows.length === limit ? rows[rows.length - 1].last_activity_at : null;
-    return c.json({ results, next_cursor });
+    };
+    const [{ results, next_cursor }, { total, kind_facets }] = await Promise.all([
+      listPublicHarnessesPage(c.env.DB, filters),
+      summarizePublicHarnesses(c.env.DB, filters),
+    ]);
+    return c.json({ results, next_cursor, total, kind_facets });
   });
 
   // GET base/:id — single listing.
