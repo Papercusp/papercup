@@ -19,6 +19,7 @@ import {
   type GcpDiskInsertInput,
   type GcpDiskObservation,
   type GcpFirewallInsertInput,
+  type GcpFirewallObservation,
   type GcpInstanceInsertInput,
   type GcpInstanceObservation,
   type GcpNetworkInsertInput,
@@ -77,7 +78,7 @@ function desired(network: 'managed' | 'existing' = 'managed'): WorkspaceHostDesi
   };
 }
 
-function context(): WorkspaceHostProviderContext {
+function context(provider: Readonly<Record<string, unknown>> = {}): WorkspaceHostProviderContext {
   return {
     workspaceId: 'workspace-gcp-1',
     requestId: 'request-gcp-1',
@@ -85,7 +86,7 @@ function context(): WorkspaceHostProviderContext {
       target: 'gcp',
       cloudCredentialRef: { kind: 'cloud', ref: 'adc://authorized_user' },
       scope: { kind: 'project', id: 'papercusp-dev-123' },
-      provider: { projectId: 'papercusp-dev-123', credentialSource: 'adc' },
+      provider: { projectId: 'papercusp-dev-123', credentialSource: 'adc', ...provider },
     },
   };
 }
@@ -107,7 +108,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   private readonly operationsByRequestId = new Map<string, GcpOperationRef>();
   private readonly networks = new Map<string, GcpResourceObservation>();
   private readonly subnetworks = new Map<string, GcpResourceObservation>();
-  private readonly firewalls = new Map<string, GcpResourceObservation>();
+  private readonly firewalls = new Map<string, GcpFirewallObservation>();
   private readonly disks = new Map<string, GcpDiskObservation>();
   private readonly instances = new Map<string, GcpInstanceObservation>();
   private readonly snapshots = new Map<string, GcpSnapshotObservation>();
@@ -115,7 +116,14 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   seedExistingNetwork(): void {
     this.networks.set('shared-vpc', { name: 'shared-vpc', observedAt: NOW });
     this.subnetworks.set('shared-subnet', { name: 'shared-subnet', observedAt: NOW });
-    this.firewalls.set('shared-iap-firewall', { name: 'shared-iap-firewall', observedAt: NOW });
+    this.firewalls.set('shared-iap-firewall', {
+      name: 'shared-iap-firewall',
+      direction: 'INGRESS',
+      sourceRanges: [GCP_IAP_TCP_FORWARDING_RANGE],
+      targetTags: ['shared-hosts'],
+      allowed: [{ IPProtocol: 'tcp', ports: ['22'] }],
+      observedAt: NOW,
+    });
   }
 
   rewriteDisk(name: string, patch: Partial<GcpDiskObservation>): void {
@@ -202,7 +210,14 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   async insertFirewall(_projectId: string, input: GcpFirewallInsertInput, requestId: string) {
     return this.mutation(requestId, 'global', undefined, () => {
       this.insertFirewallCalls.push({ input, requestId });
-      this.firewalls.set(input.name, { name: input.name, observedAt: NOW });
+      this.firewalls.set(input.name, {
+        name: input.name,
+        direction: input.direction,
+        sourceRanges: input.sourceRanges,
+        targetTags: input.targetTags,
+        allowed: input.allowed,
+        observedAt: NOW,
+      });
     });
   }
 
@@ -235,6 +250,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
         status: 'RUNNING',
         sourceImage: input.disks[0].initializeParams.sourceImage,
         attachedDiskNames: [dataDiskName],
+        internalIp: '10.132.12.2',
+        ...(input.networkInterfaces[0].accessConfigs ? { externalIp: '203.0.113.42' } : {}),
         agentOnline: true,
         labels: input.labels,
         recreateInput: input,
@@ -431,6 +448,90 @@ describe('GCP workspace-host provider planning', () => {
     expect(instance.metadata.items.find(({ key }) => key === 'startup-script')?.value).toContain(
       'resize2fs "$data_device"',
     );
+  });
+
+  it('provisions restricted direct SSH with only tcp/22 and returns a complete machine profile', async () => {
+    const { client, provider } = providerAndClient();
+    const spec = desired();
+    spec.transportPreference = 'gcp-direct-ssh';
+    spec.provider = { ...spec.provider, directSshSourceRanges: ['203.0.113.8/32'] };
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'direct', idempotencyKey: 'direct', desired: spec },
+      context(),
+    );
+    const firewall = (
+      plan.steps.find(({ id }) => id === 'create-firewall')!.input as unknown as { request: GcpFirewallInsertInput }
+    ).request;
+    expect(firewall.sourceRanges).toEqual(['203.0.113.8/32']);
+    expect(firewall.allowed).toEqual([{ IPProtocol: 'tcp', ports: ['22'] }]);
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+    expect(instance.networkInterfaces[0].accessConfigs).toEqual([
+      { name: 'External NAT', type: 'ONE_TO_ONE_NAT', networkTier: 'PREMIUM' },
+    ]);
+
+    const { host } = await provision(client, provider, spec);
+    const profile = await provider.getTransportProfile(host, context({ transportPreference: 'gcp-direct-ssh' }));
+    expect(profile).toMatchObject({
+      kind: 'gcp-direct-ssh',
+      audited: false,
+      features: { command: true, pty: true, tcpForward: true, fileTransfer: true },
+    });
+    expect(profile.endpoint).toContain('ssh://203.0.113.42:22?');
+    expect(profile.endpoint).toContain('project=papercusp-dev-123');
+  });
+
+  it('provisions Defguard without a public IP or inbound GCP firewall and emits an overlay profile', async () => {
+    const { client, provider } = providerAndClient();
+    const spec = desired();
+    spec.transportPreference = 'defguard-ssh';
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'defguard', idempotencyKey: 'defguard', desired: spec },
+      context(),
+    );
+    expect(plan.steps.map(({ id }) => id)).toEqual([
+      'create-network',
+      'create-subnetwork',
+      'create-data-disk',
+      'create-instance',
+    ]);
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+    expect(instance.networkInterfaces[0]).not.toHaveProperty('accessConfigs');
+
+    const { host } = await provision(client, provider, spec);
+    expect(client.insertFirewallCalls).toHaveLength(0);
+    const profile = await provider.getTransportProfile(
+      host,
+      context({ transportPreference: 'defguard-ssh', defguardAddress: '10.42.0.8' }),
+    );
+    expect(profile).toMatchObject({ kind: 'defguard-ssh', audited: true });
+    expect(profile.endpoint).toContain('ssh://10.42.0.8:22?');
+    expect(profile.constraints).toContain('No public IP or inbound GCP firewall rule');
+  });
+
+  it('rejects broad or caller-defined firewall policy instead of exposing operator services', async () => {
+    const { provider } = providerAndClient();
+    const broad = desired();
+    broad.transportPreference = 'gcp-direct-ssh';
+    broad.provider = { ...broad.provider, directSshSourceRanges: ['0.0.0.0/0'] };
+    await expect(
+      provider.plan({ action: 'provision', operationId: 'broad', idempotencyKey: 'broad', desired: broad }, context()),
+    ).rejects.toThrow('restricted IPv4 CIDRs');
+
+    const arbitraryPorts = desired();
+    arbitraryPorts.provider = {
+      ...arbitraryPorts.provider,
+      network: { ...(arbitraryPorts.provider!.network as object), allowedTcpPorts: ['22', '3070', '5432'] },
+    };
+    await expect(
+      provider.plan(
+        { action: 'provision', operationId: 'ports', idempotencyKey: 'ports', desired: arbitraryPorts },
+        context(),
+      ),
+    ).rejects.toThrow('sourceRanges/allowedTcpPorts are forbidden');
   });
 
   it('refuses dependent Compute Engine calls until prerequisite identities have been persisted', async () => {

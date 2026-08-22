@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import type {
   WorkspaceHostApplyRequest,
   WorkspaceHostApplyResult,
@@ -69,10 +70,20 @@ export interface GcpResourceObservation {
   labels?: Readonly<Record<string, string>>;
 }
 
+export interface GcpFirewallObservation extends GcpResourceObservation {
+  direction: 'INGRESS';
+  sourceRanges: readonly string[];
+  targetTags: readonly string[];
+  allowed: readonly [{ IPProtocol: 'tcp'; ports: readonly string[] }];
+}
+
 export interface GcpInstanceObservation extends GcpResourceObservation {
   status: GcpComputeInstanceStatus;
   sourceImage?: string;
   attachedDiskNames: readonly string[];
+  internalIp?: string;
+  externalIp?: string;
+  defguardIp?: string;
   agentOnline?: boolean;
   recreateInput?: GcpInstanceInsertInput;
 }
@@ -131,6 +142,7 @@ export interface GcpInstanceInsertInput {
       network: string;
       subnetwork: string;
       stackType: 'IPV4_ONLY';
+      accessConfigs?: readonly [{ name: 'External NAT'; type: 'ONE_TO_ONE_NAT'; networkTier: 'PREMIUM' }];
     },
   ];
   disks: readonly [
@@ -190,7 +202,7 @@ export interface GcpWorkspaceHostApiClient {
 
   getNetwork(projectId: string, name: string): Promise<GcpResourceObservation | undefined>;
   getSubnetwork(projectId: string, region: string, name: string): Promise<GcpResourceObservation | undefined>;
-  getFirewall(projectId: string, name: string): Promise<GcpResourceObservation | undefined>;
+  getFirewall(projectId: string, name: string): Promise<GcpFirewallObservation | undefined>;
   getDisk(projectId: string, zone: string, name: string): Promise<GcpDiskObservation | undefined>;
   getInstance(projectId: string, zone: string, name: string): Promise<GcpInstanceObservation | undefined>;
   getSnapshot(projectId: string, name: string): Promise<GcpSnapshotObservation | undefined>;
@@ -234,21 +246,46 @@ interface ManagedNetworkSettings {
   subnetworkName: string;
   firewallName: string;
   ipCidrRange: string;
-  sourceRanges: readonly string[];
-  allowedTcpPorts: readonly string[];
 }
 
 interface ExistingNetworkSettings {
   mode: 'existing';
   networkName: string;
   subnetworkName: string;
-  firewallName: string;
+  firewallName?: string;
 }
+
+export const GCP_WORKSPACE_HOST_TRANSPORTS = ['gcp-iap-ssh', 'gcp-direct-ssh', 'defguard-ssh'] as const;
+export type GcpWorkspaceHostTransport = (typeof GCP_WORKSPACE_HOST_TRANSPORTS)[number];
+
+interface GcpIapAccessSettings {
+  kind: 'gcp-iap-ssh';
+  firewallRequired: true;
+  sourceRanges: readonly [typeof GCP_IAP_TCP_FORWARDING_RANGE];
+  externalIp: false;
+}
+
+interface GcpDirectSshAccessSettings {
+  kind: 'gcp-direct-ssh';
+  firewallRequired: true;
+  sourceRanges: readonly string[];
+  externalIp: true;
+}
+
+interface GcpDefguardAccessSettings {
+  kind: 'defguard-ssh';
+  firewallRequired: false;
+  sourceRanges: readonly [];
+  externalIp: false;
+}
+
+type GcpAccessSettings = GcpIapAccessSettings | GcpDirectSshAccessSettings | GcpDefguardAccessSettings;
 
 export interface GcpWorkspaceHostDesiredProviderSettings {
   projectId: string;
   zone: string;
   network: ManagedNetworkSettings | ExistingNetworkSettings;
+  access: GcpAccessSettings;
   serviceAccountEmail: string;
   serviceAccountScopes: readonly string[];
   instanceName: string;
@@ -302,6 +339,7 @@ type GcpStepInput =
       firewallName: string;
       networkName: string;
       hostId: string;
+      expectedSourceRanges: readonly string[];
     }
   | {
       op: 'insert-disk';
@@ -318,6 +356,7 @@ type GcpStepInput =
       requestId: string;
       request: GcpInstanceInsertInput;
       hostId: string;
+      requiresFirewall: boolean;
     }
   | {
       op: 'start-instance' | 'stop-instance' | 'reset-instance' | 'repair-instance';
@@ -368,9 +407,12 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     repair: true,
     confirmedDestroy: true,
   },
-  transportKinds: ['gcp-iap-ssh'],
+  transportKinds: [...GCP_WORKSPACE_HOST_TRANSPORTS],
   constraints: [
-    'Instances have no external IP; interactive access uses IAP TCP forwarding with OS Login',
+    'IAP TCP forwarding with OS Login and no external IP is the default',
+    'Direct SSH requires an explicit restricted IPv4 CIDR allowlist and exposes only tcp/22',
+    'Defguard uses an enrolled overlay address and provisions no inbound GCP firewall rule',
+    'Operator, Postgres, MCP, and application ports are never exposed by the workspace-host provider',
     'Cloud authorization is a resolver reference; service-account key material is forbidden',
     'Data disks use a grow-only resize policy; shrinking requires snapshot-and-restore into a new disk',
     'Upgrade replaces the VM boot/runtime layer and reattaches the retained data disk',
@@ -412,6 +454,128 @@ function stringArray(value: unknown, label: string, fallback?: readonly string[]
   if (value === undefined && fallback) return fallback;
   if (!Array.isArray(value) || value.length === 0) throw new Error(`${label} must contain at least one string`);
   return [...new Set(value.map((item, index) => requireString(item, `${label}[${index}]`)))].sort();
+}
+
+function transportPreference(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostTransport {
+  const provider = desired.provider ?? {};
+  const desiredValue = desired.transportPreference;
+  const providerValue = provider.transportPreference;
+  if (desiredValue !== undefined && providerValue !== undefined && desiredValue !== providerValue) {
+    throw new Error('desired.transportPreference must match gcp.desired.provider.transportPreference');
+  }
+  const value = optionalString(desiredValue ?? providerValue, 'desired.transportPreference') ?? 'gcp-iap-ssh';
+  if (!(GCP_WORKSPACE_HOST_TRANSPORTS as readonly string[]).includes(value)) {
+    throw new Error(`GCP transportPreference must be one of ${GCP_WORKSPACE_HOST_TRANSPORTS.join(', ')}`);
+  }
+  return value as GcpWorkspaceHostTransport;
+}
+
+function restrictedDirectSshCidrs(value: unknown): readonly string[] {
+  const cidrs = stringArray(value, 'gcp.desired.provider.directSshSourceRanges');
+  for (const cidr of cidrs) {
+    const [address, prefixText, ...extra] = cidr.split('/');
+    const prefix = Number(prefixText);
+    if (extra.length > 0 || isIP(address) !== 4 || !Number.isInteger(prefix) || prefix < 1 || prefix > 32) {
+      throw new Error('gcp.desired.provider.directSshSourceRanges must contain restricted IPv4 CIDRs (never /0)');
+    }
+  }
+  return cidrs;
+}
+
+function accessSettings(desired: WorkspaceHostDesiredSpec): GcpAccessSettings {
+  const provider = desired.provider ?? {};
+  const kind = transportPreference(desired);
+  if (kind === 'gcp-direct-ssh') {
+    return {
+      kind,
+      firewallRequired: true,
+      sourceRanges: restrictedDirectSshCidrs(provider.directSshSourceRanges),
+      externalIp: true,
+    };
+  }
+  if (provider.directSshSourceRanges !== undefined) {
+    throw new Error('gcp.desired.provider.directSshSourceRanges is valid only for gcp-direct-ssh');
+  }
+  if (kind === 'defguard-ssh') {
+    return { kind, firewallRequired: false, sourceRanges: [], externalIp: false };
+  }
+  return {
+    kind,
+    firewallRequired: true,
+    sourceRanges: [GCP_IAP_TCP_FORWARDING_RANGE],
+    externalIp: false,
+  };
+}
+
+export interface GcpWorkspaceHostTransportProfileInput {
+  kind: GcpWorkspaceHostTransport;
+  projectId: string;
+  zone: string;
+  instanceName: string;
+  externalIp?: string;
+  defguardAddress?: string;
+}
+
+function profileEndpoint(scheme: string, address: string, input: GcpWorkspaceHostTransportProfileInput): string {
+  const query = new URLSearchParams({
+    project: requireString(input.projectId, 'GCP transport projectId'),
+    zone: requireString(input.zone, 'GCP transport zone'),
+    instance: requireString(input.instanceName, 'GCP transport instanceName'),
+  });
+  return `${scheme}://${address}?${query.toString()}`;
+}
+
+function sshAddress(value: string | undefined, label: string): string {
+  const address = requireString(value, label);
+  if (/[/?#@\s]/.test(address)) throw new Error(`${label} must be a host or IP address without URL syntax`);
+  return address.includes(':') && !address.startsWith('[') ? `[${address}]` : address;
+}
+
+/** Stable machine-readable profile consumed by psu and the desktop connection manager. */
+export function buildGcpWorkspaceHostTransportProfile(
+  input: GcpWorkspaceHostTransportProfileInput,
+): WorkspaceHostTransportProfile {
+  const common = {
+    supportedClientPlatforms: ['linux', 'macos', 'windows'],
+    features: { command: true, pty: true, tcpForward: true, fileTransfer: true, clipboard: false },
+    reconnect: 'recreate' as const,
+  };
+  if (input.kind === 'gcp-direct-ssh') {
+    const address = sshAddress(input.externalIp, 'GCP direct SSH external IP');
+    if (isIP(address.replace(/^\[|\]$/g, '')) !== 4)
+      throw new Error('GCP direct SSH requires an observed IPv4 address');
+    return {
+      kind: input.kind,
+      endpoint: profileEndpoint('ssh', `${address}:22`, input),
+      ...common,
+      prerequisites: ['OS Login permission', 'Verified SSH host key', 'Explicit restricted source CIDR allowlist'],
+      constraints: ['Public IPv4 is enabled', 'Only tcp/22 is exposed', 'No provider tunnel or session-content audit'],
+      audited: false,
+    };
+  }
+  if (input.kind === 'defguard-ssh') {
+    const address = sshAddress(input.defguardAddress, 'GCP Defguard address');
+    return {
+      kind: input.kind,
+      endpoint: profileEndpoint('ssh', `${address}:22`, input),
+      ...common,
+      prerequisites: ['Defguard enrollment', 'OS Login permission', 'Verified SSH host key'],
+      constraints: ['No public IP or inbound GCP firewall rule', 'Access requires the enrolled Defguard overlay'],
+      audited: true,
+    };
+  }
+  return {
+    kind: input.kind,
+    endpoint: profileEndpoint('gcp-iap-ssh', input.instanceName, input),
+    ...common,
+    prerequisites: ['IAP TCP forwarding permission', 'OS Login permission', 'gcloud or an IAP-capable client'],
+    constraints: [
+      'No public IP is provisioned',
+      'Only tcp/22 is allowed from 35.235.240.0/20',
+      'IAP/OS Login control events are auditable; SSH session contents are not provider-recorded',
+    ],
+    audited: true,
+  };
 }
 
 function stringRecord(value: unknown, label: string): Readonly<Record<string, string>> {
@@ -476,6 +640,12 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     throw new Error('gcp.desired.provider.network must select managed or existing mode');
   }
   const networkRecord = rawNetwork as Record<string, unknown>;
+  if (networkRecord.sourceRanges !== undefined || networkRecord.allowedTcpPorts !== undefined) {
+    throw new Error(
+      'GCP workspace-host firewall policy is transport-derived; network.sourceRanges/allowedTcpPorts are forbidden',
+    );
+  }
+  const access = accessSettings(desired);
   const mode = requireString(networkRecord.mode, 'gcp.desired.provider.network.mode');
   const base = stableName('pc', desired.hostId);
   let network: ManagedNetworkSettings | ExistingNetworkSettings;
@@ -487,22 +657,21 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
       subnetworkName:
         optionalString(networkRecord.subnetworkName, 'gcp.desired.provider.network.subnetworkName') ?? `${base}-subnet`,
       firewallName:
-        optionalString(networkRecord.firewallName, 'gcp.desired.provider.network.firewallName') ?? `${base}-iap`,
+        optionalString(networkRecord.firewallName, 'gcp.desired.provider.network.firewallName') ??
+        `${base}-${access.kind === 'gcp-iap-ssh' ? 'iap' : 'ssh'}`,
       ipCidrRange:
         optionalString(networkRecord.ipCidrRange, 'gcp.desired.provider.network.ipCidrRange') ?? '10.132.0.0/24',
-      sourceRanges: stringArray(networkRecord.sourceRanges, 'gcp.desired.provider.network.sourceRanges', [
-        GCP_IAP_TCP_FORWARDING_RANGE,
-      ]),
-      allowedTcpPorts: stringArray(networkRecord.allowedTcpPorts, 'gcp.desired.provider.network.allowedTcpPorts', [
-        '22',
-      ]),
     };
   } else if (mode === 'existing') {
+    const firewallName = optionalString(networkRecord.firewallName, 'gcp.desired.provider.network.firewallName');
+    if (access.firewallRequired && !firewallName) {
+      throw new Error(`gcp.desired.provider.network.firewallName is required for ${access.kind}`);
+    }
     network = {
       mode,
       networkName: requireString(networkRecord.networkName, 'gcp.desired.provider.network.networkName'),
       subnetworkName: requireString(networkRecord.subnetworkName, 'gcp.desired.provider.network.subnetworkName'),
-      firewallName: requireString(networkRecord.firewallName, 'gcp.desired.provider.network.firewallName'),
+      ...(firewallName ? { firewallName } : {}),
     };
   } else {
     throw new Error("gcp.desired.provider.network.mode must be 'managed' or 'existing'");
@@ -511,6 +680,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     projectId,
     zone,
     network,
+    access,
     serviceAccountEmail: requireString(provider.serviceAccountEmail, 'gcp.desired.provider.serviceAccountEmail'),
     serviceAccountScopes: stringArray(provider.serviceAccountScopes, 'gcp.desired.provider.serviceAccountScopes', [
       GCP_CLOUD_PLATFORM_SCOPE,
@@ -538,6 +708,20 @@ function labels(desired: WorkspaceHostDesiredSpec, workspaceId: string): Readonl
   entries.set('papercusp-managed', 'true');
   entries.set('papercusp-workspace-id', gcpLabel(workspaceId));
   return Object.fromEntries([...entries.entries()].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function assertExactSshFirewall(observed: GcpFirewallObservation, expectedSourceRanges: readonly string[]): void {
+  const actualSources = [...observed.sourceRanges].sort();
+  const expectedSources = [...expectedSourceRanges].sort();
+  const onlyRule = observed.allowed.length === 1 ? observed.allowed[0] : undefined;
+  if (
+    observed.direction !== 'INGRESS' ||
+    JSON.stringify(actualSources) !== JSON.stringify(expectedSources) ||
+    onlyRule?.IPProtocol !== 'tcp' ||
+    JSON.stringify([...onlyRule.ports].sort()) !== JSON.stringify(['22'])
+  ) {
+    throw new Error(`GCP firewall '${observed.name}' must allow exactly tcp/22 from ${expectedSources.join(', ')}`);
+  }
 }
 
 function assertManagedHostResource(observed: GcpResourceObservation, hostId: string, resourceLabel: string): void {
@@ -762,6 +946,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             zone,
             requestId: gcpWorkspaceHostRequestUuid(createKey),
             hostId: request.host.hostId,
+            requiresFirewall: request.host.resources.some((item) =>
+              [FIREWALL_KIND, EXISTING_FIREWALL_KIND].includes(item.kind),
+            ),
             request: {
               ...observed.recreateInput,
               disks: [
@@ -879,6 +1066,8 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const commonLabels = labels(desired, ctx.workspaceId);
     const hostTag = stableName('pc-host', desired.hostId);
     const steps: WorkspaceHostPlanStep[] = [];
+    let subnetworkStepId: string;
+    let firewallStepId: string | undefined;
     if (settings.network.mode === 'managed') {
       steps.push(
         {
@@ -924,8 +1113,12 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             },
           } satisfies GcpStepInput,
         },
-        {
-          id: 'create-firewall',
+      );
+      subnetworkStepId = 'create-subnetwork';
+      if (settings.access.firewallRequired) {
+        firewallStepId = 'create-firewall';
+        steps.push({
+          id: firewallStepId,
           action: 'provision',
           resourceKind: FIREWALL_KIND,
           dependsOn: ['create-network'],
@@ -941,13 +1134,13 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               name: settings.network.firewallName,
               network: settings.network.networkName,
               direction: 'INGRESS',
-              sourceRanges: settings.network.sourceRanges,
+              sourceRanges: settings.access.sourceRanges,
               targetTags: [hostTag],
-              allowed: [{ IPProtocol: 'tcp', ports: settings.network.allowedTcpPorts }],
+              allowed: [{ IPProtocol: 'tcp', ports: ['22'] }],
             },
           } satisfies GcpStepInput,
-        },
-      );
+        });
+      }
     } else {
       steps.push(
         {
@@ -980,8 +1173,12 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             hostId: desired.hostId,
           } satisfies GcpStepInput,
         },
-        {
-          id: 'record-existing-firewall',
+      );
+      subnetworkStepId = 'record-existing-subnetwork';
+      if (settings.access.firewallRequired) {
+        firewallStepId = 'record-existing-firewall';
+        steps.push({
+          id: firewallStepId,
           action: 'provision',
           resourceKind: EXISTING_FIREWALL_KIND,
           dependsOn: ['record-existing-network'],
@@ -990,12 +1187,13 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           input: {
             op: 'use-existing-firewall',
             projectId: settings.projectId,
-            firewallName: settings.network.firewallName,
+            firewallName: requireString(settings.network.firewallName, 'GCP existing firewall name'),
             networkName: settings.network.networkName,
             hostId: desired.hostId,
+            expectedSourceRanges: settings.access.sourceRanges,
           } satisfies GcpStepInput,
-        },
-      );
+        });
+      }
     }
     const diskKey = `${request.idempotencyKey}:data-disk`;
     steps.push({
@@ -1026,7 +1224,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       id: 'create-instance',
       action: 'provision',
       resourceKind: VM_KIND,
-      dependsOn: [steps[1].id, steps[2].id, 'create-data-disk'],
+      dependsOn: [subnetworkStepId, ...(firewallStepId ? [firewallStepId] : []), 'create-data-disk'],
       destructive: false,
       idempotencyKey: instanceKey,
       input: {
@@ -1035,6 +1233,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         zone: settings.zone,
         requestId: gcpWorkspaceHostRequestUuid(instanceKey),
         hostId: desired.hostId,
+        requiresFirewall: settings.access.firewallRequired,
         request: {
           name: settings.instanceName,
           zone: settings.zone,
@@ -1048,6 +1247,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               network: settings.network.networkName,
               subnetwork: settings.network.subnetworkName,
               stackType: 'IPV4_ONLY',
+              ...(settings.access.externalIp
+                ? { accessConfigs: [{ name: 'External NAT', type: 'ONE_TO_ONE_NAT', networkTier: 'PREMIUM' }] as const }
+                : {}),
             },
           ],
           disks: [
@@ -1191,6 +1393,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         requireKnownResource(request.knownResources, [NETWORK_KIND, EXISTING_NETWORK_KIND], request.step.id);
         const found = await this.client.getFirewall(input.projectId, input.firewallName);
         if (!found) throw new Error(`GCP existing firewall '${input.firewallName}' was not found`);
+        assertExactSshFirewall(found, input.expectedSourceRanges);
         return this.unchanged(
           request,
           resource(EXISTING_FIREWALL_KIND, found.name, { parentProviderId: input.projectId }),
@@ -1257,7 +1460,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       }
       case 'insert-instance': {
         requireKnownResource(request.knownResources, [SUBNETWORK_KIND, EXISTING_SUBNETWORK_KIND], request.step.id);
-        requireKnownResource(request.knownResources, [FIREWALL_KIND, EXISTING_FIREWALL_KIND], request.step.id);
+        if (input.requiresFirewall) {
+          requireKnownResource(request.knownResources, [FIREWALL_KIND, EXISTING_FIREWALL_KIND], request.step.id);
+        }
         requireKnownResource(request.knownResources, [DISK_KIND], request.step.id);
         const operation = await this.client.insertInstance(input.projectId, input.zone, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
@@ -1621,19 +1826,31 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
 
   async getTransportProfile(
     host: WorkspaceHostRef,
-    _ctx: WorkspaceHostProviderContext,
+    ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostTransportProfile> {
     const vm = requireKnownResource(host.resources, [VM_KIND], 'get-transport-profile');
-    return {
-      kind: 'gcp-iap-ssh',
-      endpoint: `gcp-iap-ssh://${vm.providerId}?zone=${encodeURIComponent(requireString(vm.zone, 'GCP VM zone'))}`,
-      supportedClientPlatforms: ['linux', 'macos', 'windows'],
-      features: { command: true, pty: true, tcpForward: true, fileTransfer: true, clipboard: false },
-      prerequisites: ['IAP TCP forwarding permission', 'OS Login permission', 'gcloud or an IAP-capable client'],
-      constraints: ['No public IP is provisioned', 'Clipboard integration is not provided by Compute Engine'],
-      reconnect: 'recreate',
-      audited: true,
-    };
+    const projectId = requireString(vm.parentProviderId ?? ctx.connection.scope?.id, 'GCP transport projectId');
+    const zone = requireString(vm.zone, 'GCP VM zone');
+    const provider = ctx.connection.provider ?? {};
+    const requested =
+      optionalString(provider.transportPreference, 'GCP connection transportPreference') ?? 'gcp-iap-ssh';
+    if (!(GCP_WORKSPACE_HOST_TRANSPORTS as readonly string[]).includes(requested)) {
+      throw new Error(`GCP transportPreference must be one of ${GCP_WORKSPACE_HOST_TRANSPORTS.join(', ')}`);
+    }
+    const kind = requested as GcpWorkspaceHostTransport;
+    const instance = kind === 'gcp-iap-ssh' ? undefined : await this.client.getInstance(projectId, zone, vm.providerId);
+    return buildGcpWorkspaceHostTransportProfile({
+      kind,
+      projectId,
+      zone,
+      instanceName: vm.providerId,
+      ...(instance?.externalIp ? { externalIp: instance.externalIp } : {}),
+      ...(instance?.defguardIp
+        ? { defguardAddress: instance.defguardIp }
+        : provider.defguardAddress !== undefined
+          ? { defguardAddress: requireString(provider.defguardAddress, 'GCP connection defguardAddress') }
+          : {}),
+    });
   }
 
   async attestHealth(
