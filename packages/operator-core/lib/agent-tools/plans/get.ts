@@ -736,9 +736,21 @@ export default defineTool({
               // make the recorded code-truth audit discoverable from the same plan
               // read as its definition-of-done rubric. The stored item entries carry
               // their own auditedSha/auditedAt/blobSha provenance (D-006/D-007).
+              //
+              // EI-21124863090048444: pass ONLY workspaceId here, never row.harnessSlug.
+              // `row.harnessSlug` is the plan's Hive-HOME slug (resolvePlanScope collapses
+              // a member/sub-harness caller to it — see plan-writers-must-not-re-derive-
+              // the-tenant.md). `plan_audits.harness_slug` records something different: the
+              // CITATION-CONTEXT harness `plans:audit` was run from (needed later to
+              // re-resolve citations against the right repo root at ship time), which for a
+              // Hive with member/sub-harnesses (a "SideStage"-shaped pot) is routinely a
+              // DIFFERENT slug than the plan's own Hive home. Filtering strictly on
+              // row.harnessSlug therefore misses a real, canonical plan_audits row whenever
+              // the audit was recorded from anything but the Hive home itself — recordPlanAudit's
+              // own audit_seq computation and getEffectiveItemAudits both already treat
+              // (workspaceId, planSlug) alone as the audit ledger's scope; match that here too.
               getLatestPlanAudit(row.planSlug, {
                 workspaceId: row.workspaceId,
-                harnessSlug: row.harnessSlug,
               }),
             ]);
             const structured = {
