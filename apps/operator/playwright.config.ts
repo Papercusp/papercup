@@ -37,7 +37,11 @@ export default defineConfig({
   webServer: reuseExisting
     ? undefined
     : {
-        command: 'npm run dev',
+        // The first `--` lets the outer npm script forward arguments; the second
+        // reaches the nested workspace npm command so Vite receives them. Keeping
+        // the selected port explicit makes a collision fail instead of letting Vite
+        // walk to a different port that Playwright never polls.
+        command: `npm run dev -- -- --port ${PORT} --strictPort`,
         url: BASE_URL,
         // WI-5603: this branch is reached exactly when the caller asked for
         // an ISOLATED, dedicated server (OPERATOR_E2E_REUSE_SERVER unset /
@@ -56,7 +60,7 @@ export default defineConfig({
         // shared, contended instance.
         reuseExistingServer: false,
         timeout: 120_000,
-        stdout: 'ignore',
+        stdout: 'pipe',
         stderr: 'pipe',
         // PAPERCUSP_ENABLE_HMR=1 is REQUIRED for the SPA to render under Vite.
         // Without it the dev server serves a noop `/@vite/client` stub (the
