@@ -139,7 +139,11 @@ describe('executeGoalStop', () => {
     const report = await run();
 
     expect(report.loopsStopped).toEqual(['su-1', 'su-2']);
-    expect(deactivateLoop).toHaveBeenCalledWith('su-1', { sql: expect.anything() });
+    expect(deactivateLoop).toHaveBeenCalledWith('su-1', {
+      sql: expect.anything(),
+      actor: 'goal-stop-fanout',
+      reason: 'goal g1 entered paused — goal-stop fan-out',
+    });
   });
 
   it('does not count a session that had no armed loop as stopped', async () => {

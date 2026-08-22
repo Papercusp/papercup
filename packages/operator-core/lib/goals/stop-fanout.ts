@@ -133,7 +133,15 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
   for (const ownerId of owners) {
     // deactivateLoop is guarded `AND active = TRUE`, so a false return means the
     // session had no armed loop — not a failure.
-    if (await deactivateLoop(ownerId, { sql })) loopsStopped.push(ownerId);
+    if (
+      await deactivateLoop(ownerId, {
+        sql,
+        actor: 'goal-stop-fanout',
+        reason: `goal ${goalId} entered ${status} — goal-stop fan-out`,
+      })
+    ) {
+      loopsStopped.push(ownerId);
+    }
   }
 
   // ── Tier 3: retire the GOAL-mode rows, but ONLY once the goal is OVER ──────

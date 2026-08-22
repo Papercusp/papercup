@@ -520,9 +520,15 @@ export async function materializeLoop(
  */
 export const LOOP_END_PAUSE_PREFIX = 'loop:end (WI-39786): owner-deliberate:';
 
-export async function deactivateLoop(ownerId: string, opts: { sql?: Sql; reason?: string } = {}): Promise<boolean> {
+export async function deactivateLoop(
+  ownerId: string,
+  opts: { sql?: Sql; reason?: string; actor?: string } = {},
+): Promise<boolean> {
   const sql = opts.sql ?? getOrgPg().sql;
   const reason = opts.reason?.trim() || 'loop:end — deactivated by its owner';
+  // Keep direct loop:end calls backward-compatible while allowing supervisory callers
+  // (for example goal-stop fan-out) to preserve who actually caused the disarm.
+  const actor = opts.actor?.trim() || 'loop-end';
   const pauseReason = `${LOOP_END_PAUSE_PREFIX} ${reason}`;
   // The already-inactive stamp runs FIRST: after the deactivation UPDATE below flips the row,
   // this predicate would also match the row just ended and overwrite the superseded-copy key
@@ -581,11 +587,12 @@ export async function deactivateLoop(ownerId: string, opts: { sql?: Sql; reason?
     RETURNING id, workspace_id, install_slug, name, target_role, reschedule_interval_sec
   `;
 
-  // WI-37571 — record the deliberate `loop:end` disarm, the third path the `event` column
-  // comment already advertises ("guard disarm / cost-cap / loop:end") and the only one an
-  // AGENT chooses. Distinguishing it from a guard reaping matters most when reconstructing
-  // why a loop went quiet: an agent that ended its own loop is a healthy outcome, a reaped
-  // one is not, and until now the durable record was identical (absent) for both.
+  // WI-37571 — record the deliberate disarm, the third path the `event` column comment
+  // already advertises ("guard disarm / cost-cap / loop:end") and the only one an AGENT
+  // chooses. Distinguishing the caller matters when reconstructing why a loop went quiet:
+  // an agent ending its own loop is a healthy outcome, while a supervisory fan-out is a
+  // deliberate external stop. Keep the direct loop:end default, but do not mislabel other
+  // callers that use this shared primitive.
   //
   // No `was_active` check is needed here, unlike autoPauseLoopRoutine: this UPDATE is already
   // guarded `AND active = TRUE`, so every returned row genuinely crossed TRUE -> FALSE.
@@ -600,7 +607,7 @@ export async function deactivateLoop(ownerId: string, opts: { sql?: Sql; reason?
       targetRole: row.target_role,
       targetOwnerId: ownerId,
       event: 'disarmed',
-      actor: 'loop-end',
+      actor,
       newNextFireAt: null,
       intervalSec: row.reschedule_interval_sec,
       detail: { reason },

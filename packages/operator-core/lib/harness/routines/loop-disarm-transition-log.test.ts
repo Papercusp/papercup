@@ -184,6 +184,24 @@ describe('WI-37571: loop disarms are recorded in routine_loop_transitions', () =
       expect(JSON.parse(detail).reason).toBe('fleet lane drained; no further admitted work');
     });
 
+    it('preserves a supervisory caller instead of mislabeling it as loop-end', async () => {
+      const sql = fakeSql();
+      await deactivateLoop('su-145fd', {
+        sql: sql as any,
+        actor: 'goal-stop-fanout',
+        reason: 'goal g1 entered paused — goal-stop fan-out',
+      });
+      await flush();
+
+      const row = sql.transitions()[0]!;
+      expect(row.values).toContain('goal-stop-fanout');
+      expect(row.values).not.toContain('loop-end');
+      const detail = row.values.find(
+        (v) => typeof v === 'string' && v.includes('goal-stop fan-out'),
+      ) as string;
+      expect(JSON.parse(detail).reason).toBe('goal g1 entered paused — goal-stop fan-out');
+    });
+
     it('accepts reason while keeping the owner-scoped no-harness contract explicit', () => {
       const tool = endTool as unknown as {
         description?: string;
