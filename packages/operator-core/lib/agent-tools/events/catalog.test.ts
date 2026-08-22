@@ -63,6 +63,17 @@ describe('events:catalog — live_awaiters', () => {
     expect(out.families[0].live_awaiters).toBeUndefined();
   });
 
+  it('surfaces the consult reply park key family', async () => {
+    const out = await call({ family: 'consult-reply', announced: false, installed: false });
+    expect(out.families).toEqual([
+      expect.objectContaining({
+        family: 'consult-reply',
+        key: 'consult:reply:<conversationId>',
+        awaitable_now: true,
+      }),
+    ]);
+  });
+
   it('unfiltered call requests counts for every rendered family in one round trip', async () => {
     const out = await call({});
     expect(out.count).toBe(EVENT_CATALOG.length);

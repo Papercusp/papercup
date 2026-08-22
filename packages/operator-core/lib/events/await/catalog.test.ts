@@ -57,6 +57,7 @@ describe('buildKey', () => {
     expect(buildKey('plan-item', { slug: 'my-plan', id: 'P-014' })).toBe('plan-item:done:my-plan:P-014');
     expect(buildKey('external-trigger', { source: 'gmail', event: 'message.received' }))
       .toBe('ext:gmail:message.received');
+    expect(buildKey('consult-reply', { conversationId: 'conv-123' })).toBe('consult:reply:conv-123');
   });
 
   it('throws when a required param is missing', () => {
@@ -131,6 +132,7 @@ describe('renderCatalog', () => {
     expect(byFamily['service-down'].awaitable_now).toBe(true); // service:down:<name> — P-104 LANDED (service-health tick)
     expect(byFamily['plan-item'].awaitable_now).toBe(true); // plan-item:done:<slug>:<id> — P-105 LANDED (set-status)
     expect(byFamily['claim-released'].awaitable_now).toBe(true); // claim:released:<id> — P-105 LANDED (releaseWorkItem)
+    expect(byFamily['consult-reply'].awaitable_now).toBe(true); // consult:reply:<conversationId> — already emitted by consult verbs
     expect(byFamily['fleet-drained'].awaitable_now).toBe(true); // fleet:drained:<slug> — WI-1830 LANDED (set-status plan-drain edge)
     expect(byFamily['session-compacted'].awaitable_now).toBe(true); // session:compacted:<owner> — P-103 LANDED (psu-host → emit-session-compacted CLI)
     expect(byFamily['spawn-slot'].awaitable_now).toBe(true); // spawn-slot:freed:<ws> — EI-13072: emitter has always fired (announceSpawnSlotFreed + reclaim sweep + boot reconcile); only the catalog registration was missing

@@ -469,6 +469,16 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(registerAwait).toHaveBeenCalledTimes(1);
   });
 
+  it('recognizes consult reply park keys as catalogued emitter-backed awaits', async () => {
+    const out = await call({ event: 'consult:reply:consult-123' });
+
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.uncatalogued_event_key).toBeUndefined();
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+
   describe('EI-18676056143796303 — fire-history evidence overrides the membership verdict', () => {
     it('SUPPRESSES the orphan warning when a SIBLING key in the family has fired (the coord:inbox-wake case)', async () => {
       // The incident: an agent was woken BY coord:inbox-wake:<self>, re-registered

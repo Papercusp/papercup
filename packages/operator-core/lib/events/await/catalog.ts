@@ -541,6 +541,20 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'conversations:get re-polling for an answer',
   },
   {
+    // EI-20820601355235127: consult responders already emit this latched key, but
+    // the family was absent from the registry. That made the await primitive
+    // report a false discoverability warning and kept events:catalog from showing
+    // the park key returned by consult:get_feedback.
+    family: 'consult-reply',
+    keyTemplate: 'consult:reply:<conversationId>',
+    params: [{ name: 'conversationId', required: true, describe: 'the consult conversation id whose requester should wake' }],
+    describe: 'A consult responder replied, declined, closed, or the consult expiry sweep reached a terminal outcome.',
+    emitter:
+      'consult verbs (packages/operator-core/lib/consult/consult-verbs-core.ts) + consult expiry sweep (packages/operator-core/lib/consult/consult-expiry-core.ts)',
+    exists: true,
+    replacesPoll: 're-polling consult state for a responder reply or terminal expiry',
+  },
+  {
     family: 'handoff-accepted',
     keyTemplate: 'handoff:accepted:<acceptMsgId>',
     params: [{ name: 'acceptMsgId', required: true, describe: 'the accept msg_id the handoff returned' }],
