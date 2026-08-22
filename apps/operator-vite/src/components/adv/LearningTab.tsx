@@ -1207,6 +1207,12 @@ type LearningServerFilters = Pick<
   "kinds" | "severities" | "scopes" | "stages" | "ideaTypes" | "lenses" | "score" | "ageDays"
 >;
 
+// `useSyncQuery` accepts a generic JSON-ish argument record, while the resolver
+// exposes a closed interface so callers get exact field names and values. Keep
+// both guarantees at this transport boundary instead of weakening the resolver
+// contract with a string index signature.
+type LearningImprovementsQueryArgs = LearningImprovementsArgs & Record<string, unknown>;
+
 /** Provenance scope — the mockup's scope bar (owner-approved 2026-07-27).
  *
  *  It filters by WHERE A ROW CAME FROM, and it is the single control that makes
@@ -1386,10 +1392,19 @@ function ImprovementsView({
       (kind): kind is NonNullable<LearningImprovementsArgs["kinds"]>[number] =>
         kind === "bug" || kind === "change" || kind === "feature",
     );
-    const severities = valuesFor("severity").filter(
-      (severity): severity is NonNullable<LearningImprovementsArgs["severities"]>[number] =>
-        ["critical", "major", "minor", "nit"].includes(severity),
-    );
+    const severities: Array<
+      NonNullable<LearningImprovementsArgs["severities"]>[number]
+    > = [];
+    for (const severity of valuesFor("severity")) {
+      if (
+        severity === "critical" ||
+        severity === "major" ||
+        severity === "minor" ||
+        severity === "nit"
+      ) {
+        severities.push(severity);
+      }
+    }
     const scopes = valuesFor("scope").filter((scopeValue) => scopeValue !== "—");
     const stages = valuesFor("stage").flatMap((label) => {
       if (label in PIPELINE_STATES) {
@@ -1420,7 +1435,7 @@ function ImprovementsView({
       ...(ageDays ? { ageDays } : {}),
     };
   }, [filterState]);
-  const serverArgs = useMemo<LearningImprovementsArgs>(() => ({
+  const serverArgs = useMemo<LearningImprovementsQueryArgs>(() => ({
     ...(hive ? { hive } : {}),
     ...(scope === "all" ? { scope: "all" as const } : {}),
     ...(lane !== "all" ? { lanes: [lane] } : {}),
