@@ -44,9 +44,14 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "work-items",
     label: "Work Items list",
     classification: "active-defect",
-    evidence: "window",
-    pageCap: 2_000,
+    evidence: "corpus",
+    pageCap: 500,
     sourcePaths: ["apps/operator/app/adv/harnesses/WorkItemsPanel.tsx"],
+    behaviorGuard: {
+      planItem: "P-004",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts",
+    },
     columnFilterCalls: {
       "apps/operator/app/adv/harnesses/WorkItemsPanel.tsx": 1,
     },
@@ -55,9 +60,14 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "dependency-graph",
     label: "Dependency Graph",
     classification: "active-defect",
-    evidence: "window",
-    pageCap: 2_000,
+    evidence: "corpus",
+    pageCap: 500,
     sourcePaths: ["apps/operator/app/adv/harnesses/DepGraphPanel.tsx"],
+    behaviorGuard: {
+      planItem: "P-004",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts",
+    },
     columnFilterCalls: {
       "apps/operator/app/adv/harnesses/DepGraphPanel.tsx": 1,
     },
@@ -223,12 +233,10 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
 export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
   "agent-runs",
   "cupboard",
-  "dependency-graph",
   "design-feature-queue",
   "learning-improve",
   "learning-retain",
   "observations",
   "rubric-history",
   "sessions-history",
-  "work-items",
 ] as const;

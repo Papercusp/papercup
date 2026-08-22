@@ -101,6 +101,7 @@
     "@papercusp/docs-engine": "file:../../packages/docs-engine",
     "@papercusp/embedded-pg-discovery": "file:../../libs/generic/embedded-pg-discovery",
     "@papercusp/embedded-postgres-server": "file:../../libs/papercusp/packages/embedded-postgres-server",
+    "@papercusp/facets": "file:../../libs/generic/facets",
     "@papercusp/file-claim": "file:../../libs/papercusp/packages/file-claim",
     "@papercusp/flags": "file:../../libs/flags",
     "@papercusp/git-graph": "file:../../libs/generic/git-graph",

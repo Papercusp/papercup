@@ -207,6 +207,16 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'Searches a catalog of installable listings by kind/name, not prose. The useful ranking signal ' +
       'is structural (kind, install state), not semantic similarity over a body.',
   },
+  {
+    id: 'personal:search',
+    entry: 'agent-tools/personal/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'Runs the Personal Vault\'s authorization-gated hybrid reader, which fuses local ' +
+      'EmbeddingGemma similarity with its own lexical document query over an owner-private corpus. ' +
+      'It deliberately does not route through the workspace @papercusp/search engine: that engine ' +
+      'has neither the vault grant boundary nor its scope/participant/time filters.',
+  },
 
   // ─── NOT in the `*:search` naming class — added by hand (P-030) ───────────
   // Discovery cannot see any of these. Each was traced with the same import

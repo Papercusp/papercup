@@ -77,6 +77,7 @@ import { fileURLToPath } from 'node:url';
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { writeStdoutSync } from './lib/write-stdout-sync.mjs';
 import { buildBaselineDocument, evaluateBaselineReseed } from './lib/mug-kettle-baseline.mjs';
+import { substrateRemediationLines } from './lib/mug-kettle-substrate.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(REPO_ROOT, 'scripts', 'ungated-mug-kettle-baseline.json');
@@ -457,8 +458,7 @@ if (offenders.length) {
   console.error(`    import { isRetiredTierRole } from '<...>/pot/retired-tier-roles';`);
   console.error(`    import { mugKettleSystemEnabled } from '<...>/pot/started';`);
   console.error(`    if (isRetiredTierRole(role) && !(await mugKettleSystemEnabled())) return <refusal>;`);
-  console.error(`\nIf this site is genuinely SHARED SUBSTRATE the su system runs on (D-003 population (b)),`);
-  console.error(`it belongs in the census's SUBSTRATE_SYMBOLS — not in this baseline.`);
+  for (const line of substrateRemediationLines(offenders)) console.error(line);
   console.error(`Plan: retire-mug-kettle-su-only-2026-08-09 (D-017/D-018/D-019/D-020/D-021/D-022).`);
   process.exit(1);
 }

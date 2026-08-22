@@ -52,6 +52,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { offersTierRoute } from './lib/mug-kettle-ui-route.mjs';
+import { findDanglingSubstrateSymbols } from './lib/mug-kettle-substrate.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -684,6 +685,13 @@ const D8_FNS = [
   // shared substrate (D-003 population (b)) — detected so the retirement can SEE them
   'resolvePotHomeSlug', 'recentWatchdogFires', 'recordFire',
 ];
+const danglingSubstrateSymbols = findDanglingSubstrateSymbols(SUBSTRATE_SYMBOLS, D8_FNS);
+if (danglingSubstrateSymbols.length > 0) {
+  throw new Error(
+    'mug-kettle-surface-census: SUBSTRATE_SYMBOLS contains names outside the wake/function detector vocabulary; ' +
+      `the entries are no-ops: ${danglingSubstrateSymbols.join(', ')}`,
+  );
+}
 let d8Rejected = 0;
 for (const abs of codeFiles) {
   const src = code(abs);
