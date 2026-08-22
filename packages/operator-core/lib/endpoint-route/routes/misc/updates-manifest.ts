@@ -592,9 +592,12 @@ export default defineTool({
       }
     }
 
-    return Response.json(
-      { error: `no asset for ${target}/${arch} (${product}) in ${candidate.tag_name}` },
-      { status: 404 },
-    );
+    // A release can legitimately omit a platform/product artifact (for
+    // example, the current release may publish desktop installers but no
+    // Linux asset). This is an expected no-update result for the updater, not
+    // a malformed request: returning 404 makes tauri-plugin-updater log a
+    // failed check on every poll. Keep the wire contract at 204 and preserve
+    // the diagnostic reason for plain fetch callers.
+    return cannotCheckResponse('no_candidate');
   },
 });

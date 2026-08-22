@@ -401,9 +401,17 @@ describe('GET /api/updates/manifest — manifest contract with tauri-plugin-upda
     expect(linux.url).toContain('name=Papercusp_GUI_0.0.4_amd64.AppImage');
   });
 
-  it('404s with a clear error when the platform has no asset anywhere', async () => {
+  it('returns an expected no-update result when the selected release has no platform asset', async () => {
     vi.mocked(releaseHostBase).mockReturnValue(null);
-    expect(await manifestStatus('?target=linux&arch=aarch64&current_version=0.0.3&channel=alpha')).toBe(404);
+    const res = await manifestResponse(
+      '?target=linux&arch=aarch64&current_version=0.0.3&channel=alpha',
+    );
+    // A missing release artifact is not an invalid request. 204 keeps the
+    // Tauri updater quiet; the reason header lets acceptance/ops fetch callers
+    // distinguish this expected no-update from an endpoint failure.
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+    expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
   });
 });
 
