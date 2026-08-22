@@ -132,6 +132,24 @@ function declaredPaths(spec: CellSpec): Array<{ label: string; path: string; opt
   return out;
 }
 
+/**
+ * A resolver may deliberately refuse one declared answer when it cannot establish
+ * the question's subject (for example, `judgingContainsPath` for a run-probe
+ * candidate). That is readable only when the SAME payload's declared unknown hoist
+ * names the exact path and marks it `resolver-failed`; an unhoisted omission remains
+ * registration drift and must fail this guard.
+ */
+function hasHoistedResolverRefusal(payload: unknown, spec: CellSpec, path: string): boolean {
+  if (!spec.unknownHoist) return false;
+  const hoist = pathExists(payload, spec.unknownHoist);
+  if (!hoist.exists || !Array.isArray(hoist.value)) return false;
+  return hoist.value.some((entry) => {
+    if (entry === null || typeof entry !== 'object') return false;
+    const candidate = entry as { leg?: unknown; unknown?: { code?: unknown } };
+    return candidate.leg === path && candidate.unknown?.code === 'resolver-failed';
+  });
+}
+
 const PIPELINE_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:pipeline_position');
 const GOAL_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'coord:goal');
 const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
@@ -227,11 +245,12 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
         const target = optional ? path.split('.').slice(0, -1).join('.') : path;
         if (optional && target === '') continue;
         const r = pathExists(payload, target);
+        const intentionallyRefused = !r.exists && hasHoistedResolverRefusal(payload, spec, path);
         expect(
-          r.exists,
+          r.exists || intentionallyRefused,
           `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload ` +
             `(missing at "${r.missingAt}"${optional ? `; checked its container "${target}" because this path is optional-by-design` : ''}). ` +
-            `The cell is unreadable: readCell would report insufficient-data. ` +
+            `${intentionallyRefused ? 'The payload explicitly hoists a resolver-failed refusal for this path, so the omission is intentional. ' : 'The cell is unreadable: readCell would report insufficient-data. '}` +
             `Either the resolver's shape changed or the declaration has a typo — a declaration test cannot tell you.`,
         ).toBe(true);
       }
