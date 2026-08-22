@@ -110,6 +110,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__search:query',
   'mcp__agentmcp__search:fulltext',
   'mcp__agentmcp__search:semantic',
+  // Personal Vault is NOT part of general recall. This explicit tool remains
+  // server-side default-deny and resolves the plan-template/binding grant.
+  'mcp__agentmcp__personal:search',
 
   // Pipeline state, read-only (state-plane-adoption-2026-08-02 P-004 / D-006). ONE
   // door onto the registered cells — today all five are release-pipeline cells

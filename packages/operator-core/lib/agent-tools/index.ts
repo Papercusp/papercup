@@ -252,6 +252,9 @@ import './chat/ask_choice';
 import './coordination/wire-agent-question-gate';
 import './search/fulltext';
 import './search/semantic';
+// personal-vault-2026-08-22: default-deny owner-local recall + owner-only purge.
+import './personal/search';
+import './personal/purge';
 import './memory/remember';
 import './memory/search';
 import './memory/list';

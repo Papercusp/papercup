@@ -581,6 +581,51 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
 }
 
 /**
+ * EI-21025158485847408 — is this infra `crit` caused ONLY by ambient host pressure
+ * (D-007's `ambientHost` attribution — e.g. multi-tenant PSI memory/cpu pressure
+ * from peer agents sharing the box) with NO operator-defect leg and no OTHER
+ * independently-crit infra leg (MCP transport, a broken tool handler, disk, an
+ * unreachable gateway)?
+ *
+ * `infraStatus` ORs several independent crit conditions and short-circuits on the
+ * first true one, so its boolean return alone can never say WHICH leg(s) fired —
+ * this walks every leg explicitly instead (kept in the same precedence/leg set as
+ * `infraStatus`/`infraSummary` above, so the three can never silently disagree
+ * about what a `crit` verdict means).
+ *
+ * WI-38449/D-007 already drew this exact distinction for the DEPLOY gate
+ * (`evaluatePerfGate`'s `critAttribution` split, so ambient host load never holds
+ * a release). The infra-liveness ALARM (system-health/liveness-alarm.ts) never
+ * inherited it: its catch-all pages a `blocker` escalation for ANY `crit` infra
+ * panel, so ordinary multi-tenant RAM pressure — which recurs by design under
+ * fleet load and was never the operator's to fix (measured 2026-08-16: the SOLE
+ * crit reason on a live capture, "nothing wrong with any candidate") — repeatedly
+ * opens/resolves a `panel:infra` blocker as PSI oscillates across the threshold.
+ * That oscillation is the "PSI thrashing" EI-21025158485847408 reports recurring
+ * even after WI-5471 (a DIFFERENT bug — bg-host event-loop/PG-pool starvation)
+ * was fixed: the two were never the same failure, and this alarm had no way to
+ * tell an ambient reading apart from a genuine operator defect.
+ *
+ * FAIL-SAFE: a `perf` verdict with no `critAttribution` at all (an older
+ * projection, or a hand-built fixture that never called `evaluatePerfSignals`)
+ * is treated as NOT ambient-only — the expensive direction (still pages) — per
+ * the same fail-safe stance `evaluatePerfSignals` itself documents for this split.
+ */
+export function infraCritAmbientOnly(d: InfraHealth): boolean {
+  if (d.perf?.status !== 'crit') return false;
+  const attribution = d.perf.critAttribution;
+  if (!attribution || attribution.operatorDefect.length > 0) return false;
+  if ((d.mcpProxy?.hardFailures ?? 0) >= MCP_PROXY_HARD_FAIL_CRIT) return false;
+  if (d.toolFailures?.rating === 'broken') return false;
+  if (worstDiskBand(d.disk) === 'crit') return false;
+  // Mirrors infraStatus's own gatewayReachable leg, which it only reaches once PG
+  // is readable (pg === null short-circuits to 'unknown' before this leg) — so a
+  // genuine gateway-down condition alongside an ambient perf crit must still page.
+  if (d.pg !== null && d.gatewayReachable === false) return false;
+  return true;
+}
+
+/**
  * Overwatch (#15) — the autonomous supervisor's OWN loop health (the
  * who-watches-the-watcher panel, D-004). The role ships default-OFF until proven
  * (D-009), so flag-off — and an owner-paused proven loop — are the INTENDED-dark

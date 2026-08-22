@@ -21,6 +21,7 @@ import {
   deriveQueenAlive,
   infraStatus,
   infraSummary,
+  infraCritAmbientOnly,
   statusSeverity,
   ackCovers,
   reconcilePausedQueen,
@@ -570,6 +571,60 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   });
   it('a perf crit still dominates a PG-pool warn', () => {
     expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'], pool: { probeMs: 5000, band: 'critical' } }))).toBe('crit');
+  });
+});
+
+describe('infraCritAmbientOnly — EI-21025158485847408 (ambient-host infra crit vs a genuine operator defect)', () => {
+  const ambientPerf = {
+    status: 'crit',
+    critAttribution: { operatorDefect: [], ambientHost: ['PSI memory full avg60 10.13 ≥ 5 — all tasks stalled on memory reclaim/swap'] },
+  } as unknown as InfraHealth['perf'];
+  const mixedPerf = {
+    status: 'crit',
+    critAttribution: {
+      operatorDefect: ['event-loop lag p95 1200ms ≥ 1000ms'],
+      ambientHost: ['PSI memory full avg60 10.13 ≥ 5 — all tasks stalled on memory reclaim/swap'],
+    },
+  } as unknown as InfraHealth['perf'];
+
+  it('true when perf crit is caused ONLY by ambient-host attribution and no other leg is crit', () => {
+    expect(infraCritAmbientOnly(infra({ perf: ambientPerf }))).toBe(true);
+  });
+  it('false when perf is not crit at all', () => {
+    expect(infraCritAmbientOnly(infra({ perf: null }))).toBe(false);
+    expect(infraCritAmbientOnly(infra({ perf: { status: 'warn' } as InfraHealth['perf'] }))).toBe(false);
+  });
+  it('false when the perf crit carries an operator-defect leg too', () => {
+    expect(infraCritAmbientOnly(infra({ perf: mixedPerf }))).toBe(false);
+  });
+  it('FAIL-SAFE: false when critAttribution is entirely absent (older projection / hand-built fixture)', () => {
+    expect(infraCritAmbientOnly(infra({ perf: { status: 'crit' } as InfraHealth['perf'] }))).toBe(false);
+  });
+  it('false when a broken tool handler is ALSO crit, even with an ambient-only perf reason', () => {
+    expect(
+      infraCritAmbientOnly(
+        infra({
+          perf: ambientPerf,
+          toolFailures: { rating: 'broken', evidence: 'facts:assert 100% (500)', brokenTools: ['facts:assert'], windowMin: 15, worstPct: 100, totalCalls: 20 },
+        }),
+      ),
+    ).toBe(false);
+  });
+  it('false when an MCP-proxy hard-failure SLO breach is ALSO crit', () => {
+    expect(
+      infraCritAmbientOnly(infra({ perf: ambientPerf, mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) })),
+    ).toBe(false);
+  });
+  it('false when disk is ALSO crit', () => {
+    expect(
+      infraCritAmbientOnly(infra({ perf: ambientPerf, disk: [{ path: '/', usedPct: DISK_USED_CRIT_PCT }] })),
+    ).toBe(false);
+  });
+  it('false when the gateway is ALSO down (PG readable)', () => {
+    expect(infraCritAmbientOnly(infra({ perf: ambientPerf, gatewayReachable: false }))).toBe(false);
+  });
+  it('true even when PG is unreadable — the gatewayReachable leg only applies when PG is readable', () => {
+    expect(infraCritAmbientOnly(infra({ perf: ambientPerf, pg: null, gatewayReachable: false }))).toBe(true);
   });
 });
 

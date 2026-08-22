@@ -1608,6 +1608,21 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   }
   await _runSweepLogged('periodic');
 
+  // Personal Vault D-001: a separate, bounded LOCAL-ONLY leg. It deliberately
+  // rides this existing governed 5-minute tick instead of creating a scheduler,
+  // but it never inherits the general prose embedder cascade (which can select
+  // OpenAI). The personal module hard-pins EmbeddingGemma document mode and the
+  // database rejects any non-gemma mode stamp.
+  try {
+    const { runPersonalVaultEmbedBackfillOnce } = await import('../personal-vault/embedding');
+    const personal = await runPersonalVaultEmbedBackfillOnce();
+    if ('embedded' in personal && personal.embedded > 0) {
+      console.log(`[embed-backfill] personal vault=${personal.embedded}/${personal.scanned}`);
+    }
+  } catch (err) {
+    console.warn('[embed-backfill] personal-vault sweep failed (non-fatal):', (err as Error).message);
+  }
+
   // Memory write-journal drain (memory-write-journal-auto-recovery P-003):
   // replay memory writes parked during an embedder outage. Rides this tick
   // (plan D-002 — both drains want the embedder back). An on-battery pause

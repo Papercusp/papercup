@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 763,
+  "count": 765,
   "tools": [
     {
       "name": "ablation:report",
@@ -16618,6 +16618,56 @@
       "guidance": {
         "when": "User asks \"what's queued up?\", \"what events are pending?\", or you need to inspect the hook-event backlog.",
         "notWhen": "For approvals (plan reviews, escalations awaiting user yes/no), use `pending_reviews_list`. Pending EVENTS are hook plumbing; pending REVIEWS are user-facing decisions."
+      }
+    },
+    {
+      "name": "personal:purge",
+      "http": {
+        "path": "/api/agent-tools/personal/purge",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "OWNER-only verified deletion of Personal Vault data. Deletes a source (documents including vectors, sync cursor, source aliases) or the whole vault corpus; retained grant history is untouched. Requires confirm:true.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "The owner asks to remove one imported source or erase all Personal Vault content.",
+        "notWhen": "Revoking agent access without deleting data — use the Personal Vault settings UI grant controls."
+      }
+    },
+    {
+      "name": "personal:search",
+      "http": {
+        "path": "/api/agent-tools/personal/search",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Search the owner-local Personal Vault with hybrid lexical + local EmbeddingGemma retrieval. DEFAULT DENY: the server resolves this call's plan-template/binding/role identity and refuses without a live owner grant. Coding roles are refused even if a grant row exists.",
+      "capabilities": [
+        "search:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep",
+        "kettle"
+      ],
+      "guidance": {
+        "when": "A granted plan or binding needs the owner's imported Gmail, Calendar, Contacts, Facebook/Instagram, or X context. Pass scopes and participant/time filters as narrowly as possible.",
+        "notWhen": "General workspace memory/search — use memory:search or search:semantic. Never use from coding/review work; those roles are hard-denied.",
+        "chaining": "The result contains bounded snippets only. Use the returned source/externalId as provenance in the consuming brief."
       }
     },
     {
