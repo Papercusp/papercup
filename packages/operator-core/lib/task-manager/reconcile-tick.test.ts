@@ -154,13 +154,14 @@ describe('reconcileTick — happy path', () => {
     const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
       sent.push(msg);
     });
+    const cgroupPath = `${OURS}/papercusp-bash-job.slice`;
     const out = await reconcileTick({
       listLive: async () => [],
       scan: () =>
         scanResult([
           proc({
             pid: 99,
-            cgroupPath: `${OURS}/papercusp-bash-job.slice`,
+            cgroupPath,
             processIdentity: 'linux:b:99',
             cmdline: 'rogue',
           }),
@@ -171,6 +172,8 @@ describe('reconcileTick — happy path', () => {
     expect(out.unaccountedPersisted).toBe(1);
     expect(notify).toHaveBeenCalledOnce();
     expect(sent[0]!.summary).toMatch(/unaccounted cgroup/);
+    expect(sent[0]!.summary).toContain(`cgroup=${cgroupPath}`);
+    expect(sent[0]!.summary).toContain('pids=99');
   });
 
   /**

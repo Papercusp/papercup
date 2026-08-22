@@ -286,9 +286,20 @@ async function maybeNotify(
     if (managedScopesWithoutLiveRow > 0) {
       why.push(`${managedScopesWithoutLiveRow} in managed scope(s) with no live ledger row`);
     }
+    const evidence = ctx.result.unaccounted
+      .slice(0, 8)
+      .map((group) => {
+        const pids = group.pids.slice(0, 12).join(',') || 'none';
+        const morePids = group.pids.length > 12 ? `,+${group.pids.length - 12} more` : '';
+        const scope = group.scopeUnit ? ` scope=${group.scopeUnit}` : '';
+        return `cgroup=${group.cgroupPath}${scope} pids=${pids}${morePids}`;
+      })
+      .join('; ');
+    const moreGroups =
+      ctx.result.unaccounted.length > 8 ? `; +${ctx.result.unaccounted.length - 8} more cgroup(s)` : '';
     parts.push(
       `${ctx.summary.unaccounted} unaccounted cgroup(s) holding ${ctx.summary.unaccountedPids} process(es) — ` +
-        `${why.join('; ')}`,
+        `${why.join('; ')}; evidence: ${evidence}${moreGroups}`,
     );
   }
   if (ctx.summary.overdue > 0) parts.push(`${ctx.summary.overdue} task(s) past deadline`);
