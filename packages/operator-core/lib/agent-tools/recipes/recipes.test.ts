@@ -371,8 +371,20 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       requiresContext: true,
       runnable: true,
     };
-    const parsed = findTool('recipes:run').args.safeParse({ id: 'metadata-bound', authority: metadata });
-    expect(parsed.success).toBe(true);
+    const schema = findTool('recipes:run').inputSchema as {
+      properties?: { authority?: { anyOf?: Array<{ properties?: Record<string, unknown> }> } };
+    };
+    expect(schema.properties?.authority?.anyOf).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            refs: expect.any(Object),
+            requiresContext: expect.any(Object),
+            runnable: expect.any(Object),
+          }),
+        }),
+      ]),
+    );
 
     const accepted = await findTool('recipes:run').fn(
       { id: 'metadata-bound', authority: metadata },
