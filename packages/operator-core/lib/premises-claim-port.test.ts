@@ -120,6 +120,15 @@ describe('detectAbsencePremises', () => {
       expect(derive('There is no such helper, but that premise was false.')).toEqual([]);
     });
 
+    it('does not fire when an absence claim is explicitly documented as false', () => {
+      expect(
+        derive(
+          '**EI-6971** — its load-bearing ABSENCE claim "there is no persistent outcome memory" is FALSE: ' +
+            'last_released_at 7395, terminal_reason 6758, requeue_count>0 1496.',
+        ),
+      ).toEqual([]);
+    });
+
     it('does not fire on a first-person reporting frame preceding the claim', () => {
       expect(derive('Earlier I claimed there is no exported read helper for that table.')).toEqual([]);
     });

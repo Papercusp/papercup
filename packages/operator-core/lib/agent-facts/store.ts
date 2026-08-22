@@ -19,8 +19,8 @@
  * Upsert identity: (workspace, scope, coalesce(ref,''), key). Soft-retract.
  * Hygiene: mandatory TTL (default 7d), per-scope cap, expiry sweep on the
  * routines tick. The cap evicts by the ranking at the ORDER BY around L1221 —
- * confidence, then `expires_at DESC`, with `updated_at DESC` only as a
- * tiebreak — so the SOONEST-EXPIRING incumbent is the victim. It is NOT
+ * confidence, then the remaining fraction of declared TTL, with
+ * `updated_at DESC` only as a tiebreak. It is NOT
  * "LRU-ish / oldest-updated", which is what this line said until 2026-08-04
  * and which stopped being true at WI-7292; two agents chased that stale
  * sentence to opposite wrong conclusions about a live eviction. Read the
@@ -1112,8 +1112,9 @@ export function clampFactBody(raw: string): string {
 
 /** Upsert a fact by identity; refreshes body/TTL/source on re-assert. Enforces
  *  the per-scope cap by evicting the LOWEST-RANKED live incumbents past the cap
- *  — confidence, then `expires_at DESC` (see the ORDER BY below), so the
- *  soonest-expiring loses. Not oldest-updated; that ended at WI-7292. */
+ *  — confidence, then remaining declared-TTL fraction (see the ORDER BY below),
+ *  so a fact near the end of its own life loses. Not oldest-updated; that ended
+ *  at WI-7292. */
 export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AssertFactResult> {
   // EI-7463: these are CALLER-input mistakes (a bad scope/ref pairing, an
   // empty key/body after trim), not server faults — throw InvalidInputError
@@ -1592,7 +1593,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     // 2026-08-03, EVERY scope at or near the cap held exactly ONE confidence
     // tier (harness/papercusp 50/50 verified, workspace 50/50 verified,
     // harness/oddsmith 41/41), so the confidence key is INERT precisely where
-    // this sweep runs and `expires_at DESC` decides alone. Evicted verified
+    // this sweep runs and remaining-TTL fraction decides alone. Evicted verified
     // facts in that scope averaged 8.9 days of TTL against 61.5 for survivors.
     //
     // One cheap aggregate, and ONLY on a write that actually evicted — the

@@ -450,7 +450,7 @@ const REPORTED_SPEECH = new Set([
  *    would trade this false positive for a false negative on a genuine claim.
  */
 const SELF_RETRACTION =
-  /\b(?:i (?:was|am) (?:wrong|mistaken)|retract(?:s|ed|ing|ion)?|falsified|premise (?:is|was) (?:false|wrong)|turned out to exist)\b/i;
+  /\b(?:i (?:was|am) (?:wrong|mistaken)|retract(?:s|ed|ing|ion)?|falsified|premise (?:is|was) (?:false|wrong)|(?:absence|absent)\s+claim[^.;\n]{0,120}\b(?:is|was)\s+(?:false|wrong)|turned out to exist)\b/i;
 
 /** A first-person reporting frame just before the hit — "I claimed there is no X". */
 const REPORTING_FRAME =
