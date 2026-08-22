@@ -1,0 +1,144 @@
+import {
+  ALLOW_OVER_BUDGET,
+  BUDGET,
+  HARD_CAP,
+  budgetViolations,
+  type NamedToolWeight,
+} from './tool-guidance-budget';
+
+export interface ToolWeightRow {
+  name: string;
+  weight: number;
+  budget: number;
+  hardCap: number;
+  overBudget: boolean;
+  overHardCap: boolean;
+  grandfathered: boolean;
+  cutAtLeast: number | null;
+}
+
+export interface ToolWeightCliArgs {
+  all: boolean;
+  json: boolean;
+  selector?: string;
+}
+
+export function parseToolWeightArgs(args: readonly string[]): ToolWeightCliArgs {
+  let all = false;
+  let json = false;
+  let selector: string | undefined;
+
+  for (const arg of args) {
+    if (arg === '--all') {
+      all = true;
+    } else if (arg === '--json') {
+      json = true;
+    } else if (arg === '--help' || arg === '-h') {
+      throw new Error('usage: npm run tool-weight -- [--json] [--all | <tool-name>]');
+    } else if (arg.startsWith('-')) {
+      throw new Error(`unknown option ${arg}`);
+    } else if (selector !== undefined) {
+      throw new Error('expected at most one tool name; use --all to list the catalog');
+    } else {
+      selector = arg;
+    }
+  }
+
+  if (all && selector !== undefined) {
+    throw new Error('use either --all or a tool name, not both');
+  }
+
+  return { all, json, ...(selector === undefined ? {} : { selector }) };
+}
+
+export function measureToolWeights(
+  weights: readonly NamedToolWeight[],
+  selector?: string,
+): ToolWeightRow[] {
+  const violations = new Map(budgetViolations(weights).map((violation) => [violation.name, violation]));
+  return weights
+    .filter((tool) => selector === undefined || tool.name === selector)
+    .map((tool) => {
+      const grandfathered = ALLOW_OVER_BUDGET.has(tool.name);
+      const overBudget = tool.weight > BUDGET && !grandfathered;
+      const overHardCap = tool.weight > HARD_CAP;
+      const violation = violations.get(tool.name);
+      return {
+        name: tool.name,
+        weight: tool.weight,
+        budget: BUDGET,
+        hardCap: HARD_CAP,
+        overBudget,
+        overHardCap,
+        grandfathered,
+        cutAtLeast: violation?.cutAtLeast ?? null,
+      };
+    });
+}
+
+export function formatToolWeightReport(
+  rows: readonly ToolWeightRow[],
+  catalogSize: number,
+  options: { json?: boolean; selector?: string } = {},
+): string {
+  if (options.json) {
+    return JSON.stringify(
+      {
+        catalogSize,
+        budget: BUDGET,
+        hardCap: HARD_CAP,
+        tools: rows,
+      },
+      null,
+      2,
+    );
+  }
+
+  const lines = [
+    `tool-weight: ${catalogSize} runtime-projected tools (budget ${BUDGET}, hard cap ${HARD_CAP})`,
+  ];
+  for (const row of rows) {
+    let status: string;
+    if (row.overHardCap) {
+      status = `OVER HARD CAP; cut at least ${row.cutAtLeast} chars`;
+    } else if (row.overBudget) {
+      status = `OVER BUDGET; cut at least ${row.cutAtLeast} chars`;
+    } else if (row.grandfathered) {
+      status = 'GRANDFATHERED';
+    } else {
+      status = `OK; ${BUDGET - row.weight} chars of headroom`;
+    }
+    lines.push(`${row.name}: ${row.weight} chars (${status})`);
+  }
+  if (options.selector !== undefined && rows.length === 0) {
+    lines.push(`No runtime-projected tool named ${options.selector}`);
+  }
+  return lines.join('\n');
+}
+
+export function runToolWeightCli(
+  args: readonly string[],
+  weights: readonly NamedToolWeight[],
+  write: (text: string) => void = console.log,
+  error: (text: string) => void = console.error,
+): number {
+  let parsed: ToolWeightCliArgs;
+  try {
+    parsed = parseToolWeightArgs(args);
+  } catch (err) {
+    error(err instanceof Error ? err.message : String(err));
+    return 2;
+  }
+
+  const measured = measureToolWeights(weights, parsed.selector);
+  if (parsed.selector !== undefined && measured.length === 0) {
+    error(`No runtime-projected tool named ${parsed.selector}`);
+    return 1;
+  }
+
+  const rows = parsed.selector || parsed.all
+    ? [...measured].sort((a, b) => b.weight - a.weight)
+    : [...measured].sort((a, b) => b.weight - a.weight).slice(0, 20);
+  write(formatToolWeightReport(rows, weights.length, { json: parsed.json, selector: parsed.selector }));
+  return 0;
+}

@@ -133,6 +133,7 @@
     "gen:tool-catalog:check": "tsx scripts/gen-tool-catalog.ts --check",
     "gen:tool-routing": "tsx scripts/gen-tool-routing.ts",
     "gen:tool-routing:check": "tsx scripts/gen-tool-routing.ts --check",
+    "tool-weight": "tsx scripts/tool-weight.ts",
     "gen:declarations": "tsx scripts/gen-declarations.ts",
     "gen:declarations:check": "tsx scripts/gen-declarations.ts --check",
     "seed:substitutions": "tsx scripts/seed-substitution-registry.ts",
