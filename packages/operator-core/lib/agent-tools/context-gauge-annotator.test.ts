@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { contextGaugeAnnotator } from './context-gauge-annotator';
+import { contextGaugeAnnotator, resetContextGaugeEmissionStateForTests } from './context-gauge-annotator';
 import {
   recordContextUsage,
   resetContextUsageCacheForTests,
@@ -34,6 +34,7 @@ function trackOwner(ownerId: string, tokens: number, limit: number): void {
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauge-annotator-'));
+  resetContextGaugeEmissionStateForTests();
 });
 
 afterEach(() => {
@@ -94,6 +95,25 @@ describe('contextGaugeAnnotator (P-013 wiring logic)', () => {
     const texts = gaugeText(out);
     expect(texts[1]).toBe('context: 210000/300000 (70%)');
     expect(texts[1]).not.toContain('⚠');
+  });
+
+  it('coalesces until the band changes or usage moves five points', () => {
+    const owner = 'su-coalesced';
+    trackOwner(owner, 270_000, 300_000);
+    expect(gaugeText(contextGaugeAnnotator(ok('one'), ctx(owner)))).toHaveLength(2);
+    expect(contextGaugeAnnotator(ok('same'), ctx(owner))).toEqual(ok('same'));
+
+    trackOwner(owner, 279_000, 300_000);
+    expect(contextGaugeAnnotator(ok('small delta'), ctx(owner))).toEqual(ok('small delta'));
+    trackOwner(owner, 288_000, 300_000);
+    expect(gaugeText(contextGaugeAnnotator(ok('large delta'), ctx(owner)))).toHaveLength(2);
+
+    trackOwner(owner, 255_000, 300_000);
+    expect(gaugeText(contextGaugeAnnotator(ok('band'), ctx(owner)))).toHaveLength(2);
+    trackOwner(owner, 60_000, 300_000);
+    expect(contextGaugeAnnotator(ok('quiet'), ctx(owner))).toEqual(ok('quiet'));
+    trackOwner(owner, 210_000, 300_000);
+    expect(gaugeText(contextGaugeAnnotator(ok('re-enter'), ctx(owner)))).toHaveLength(2);
   });
 
   it('renders the CURRENT transcript state, not the cached tokens (WI-4154)', () => {

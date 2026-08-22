@@ -179,22 +179,27 @@ if coord_fold:
         try:
             with open(cursor_path()) as f:
                 v = json.load(f)
-            gen = v.get('generation')
-            return gen if isinstance(gen, str) and gen else None
+            return v if isinstance(v, dict) else {}
         except Exception:
-            return None
+            return {}
 
-    def write_cursor(gen):
+    def write_cursor(gen, gauge_state):
         try:
             p = cursor_path()
             tmp = p + '.tmp-' + str(os.getpid())
+            value = {'generation': gen}
+            if gauge_state:
+                value['gauge_pct'], value['gauge_band'] = gauge_state
             with open(tmp, 'w') as f:
-                f.write(json.dumps({'generation': gen}))
+                f.write(json.dumps(value))
             os.replace(tmp, p)
         except Exception:
             pass
 
-    generation = read_cursor()
+    cursor = read_cursor()
+    generation = cursor.get('generation')
+    if not isinstance(generation, str) or not generation:
+        generation = None
 
     args['hook_bundle'] = {
         'generation': generation,
@@ -240,6 +245,36 @@ complete = bundle.get('complete') is True
 changed = bundle.get('changed') is True
 
 out_text = None
+previous_gauge = None
+if coord_fold:
+    pct = cursor.get('gauge_pct')
+    band = cursor.get('gauge_band')
+    if isinstance(pct, int) and band in ('loud', 'critical'):
+        previous_gauge = (pct, band)
+next_gauge = previous_gauge
+
+
+def gauge_state(text):
+    if not isinstance(text, str) or not text.strip():
+        return None
+    first_line = text.strip().splitlines()[0]
+    if not re.match(r'^(?:⚠\s+)?context(?::|\s)', first_line):
+        return None
+    match = re.search(r'(\d+)%', first_line)
+    if not match:
+        return None
+    pct = int(match.group(1))
+    return (pct, 'critical' if pct >= 90 else 'loud' if pct >= 80 else 'quiet')
+
+
+def admit_gauge(candidate):
+    if not candidate or candidate[1] == 'quiet':
+        return False, None
+    if previous_gauge is None:
+        return True, candidate
+    changed_band = candidate[1] != previous_gauge[1]
+    changed_pct = abs(candidate[0] - previous_gauge[0]) >= 5
+    return changed_band or changed_pct, candidate if changed_band or changed_pct else previous_gauge
 
 if changed:
     surfaces = bundle.get('surfaces') if isinstance(bundle.get('surfaces'), dict) else {}
@@ -248,7 +283,16 @@ if changed:
         summ = inbox.get('summary') if isinstance(inbox.get('summary'), dict) else {}
         injection = inbox.get('injection')
         if isinstance(injection, str) and injection.strip():
-            out_text = injection
+            candidate = gauge_state(injection)
+            pure_gauge = candidate is not None and len(injection.strip().splitlines()) == 1
+            if pure_gauge:
+                emit, next_gauge = admit_gauge(candidate)
+                if emit:
+                    out_text = injection
+            else:
+                out_text = injection
+                if candidate:
+                    next_gauge = None if candidate[1] == 'quiet' else candidate
         else:
             # DUMB PIPE parity with the deleted coord-inbox hook (P-015): no new
             # entries, but still surface the ≥80% LOUD context gauge so a
@@ -257,12 +301,14 @@ if changed:
             if isinstance(entries, list) and not entries:
                 gauge = inbox.get('context_gauge')
                 if isinstance(gauge, str) and gauge.strip():
-                    out_text = gauge
+                    emit, next_gauge = admit_gauge(gauge_state(gauge))
+                    if emit:
+                        out_text = gauge
 
 # Only a COMPLETE fold advances the generation — an incomplete one (partial
 # hydrate failure) must retry the FULL hydrate next call, mirroring the OMP
 # consumer (consumeActivityHookBundle: `bundle.complete ? bundle.generation : null`).
-write_cursor(new_generation if complete else None)
+write_cursor(new_generation if complete else None, next_gauge)
 
 if not out_text:
     sys.exit(0)

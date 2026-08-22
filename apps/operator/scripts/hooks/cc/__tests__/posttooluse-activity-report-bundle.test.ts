@@ -229,7 +229,58 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
       hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: '⚠ context 82%' },
     });
     const cur = cursorFor(sid);
-    expect(cur).toEqual({ generation: 'host-a:3' });
+    expect(cur).toEqual({ generation: 'host-a:3', gauge_pct: 82, gauge_band: 'loud' });
+
+    nextResult = {
+      ok: true,
+      id: 5,
+      hook_bundle: {
+        schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
+        generation: 'host-a:4',
+        changed: true,
+        complete: true,
+        surfaces: {
+          inbox: { entries: [], injection: 'context: 249000/300000 (83%)', summary: { newest_ts: null } },
+        },
+      },
+    };
+    const suppressed = await run(sid);
+    expect(suppressed.stdout).toBe('');
+    expect(cursorFor(sid)).toEqual({ generation: 'host-a:4', gauge_pct: 82, gauge_band: 'loud' });
+
+    nextResult = {
+      ok: true,
+      id: 6,
+      hook_bundle: {
+        schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
+        generation: 'host-a:5',
+        changed: true,
+        complete: true,
+        surfaces: {
+          inbox: { entries: [], injection: 'context: 261000/300000 (87%)', summary: { newest_ts: null } },
+        },
+      },
+    };
+    const material = await run(sid);
+    expect(JSON.parse(material.stdout).hookSpecificOutput.additionalContext).toContain('(87%)');
+    expect(cursorFor(sid)).toEqual({ generation: 'host-a:5', gauge_pct: 87, gauge_band: 'loud' });
+
+    nextResult = {
+      ok: true,
+      id: 7,
+      hook_bundle: {
+        schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
+        generation: 'host-a:6',
+        changed: true,
+        complete: true,
+        surfaces: {
+          inbox: { entries: [], injection: 'context: 270000/300000 (90%)', summary: { newest_ts: null } },
+        },
+      },
+    };
+    const crossing = await run(sid);
+    expect(JSON.parse(crossing.stdout).hookSpecificOutput.additionalContext).toContain('(90%)');
+    expect(cursorFor(sid)).toEqual({ generation: 'host-a:6', gauge_pct: 90, gauge_band: 'critical' });
   });
 
   it('an INCOMPLETE fold (partial hydrate failure) resets generation to null so the next call retries fully', async () => {

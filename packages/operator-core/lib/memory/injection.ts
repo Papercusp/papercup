@@ -186,6 +186,11 @@ export interface MemoryInjectionInput {
    */
   budgetChars?: number;
   /**
+   * Optional budget for the separate corpus-pointer leg. High-frequency ports
+   * use this to request a handle-sized teaser without shrinking turn-start.
+   */
+  corpusBudgetChars?: number;
+  /**
    * P-005 telemetry override: the recall-stats `surface` label for this call,
    * for a port that has NO dedup session to carry `session.port` — the Mug/cup
    * brief ('brief'), whose long-lived loop must NOT permanently dedup (no
@@ -808,6 +813,9 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         harnessSlugs: input.harnessSlugs ?? [],
         declaredWorkItemId,
         ambientExcludedRefs,
+        ...(input.corpusBudgetChars && input.corpusBudgetChars > 0
+          ? { budgetChars: input.corpusBudgetChars }
+          : {}),
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native
         // transcript session id — `session.sessionId` is the per-agent epoch-dedup
         // identity, as claim-port.ts spells out. It used to be passed as
