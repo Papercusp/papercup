@@ -149,13 +149,13 @@ describe('reconcileTick — happy path', () => {
     expect(store.stranded[0]!.taskId).toBe('bbb222');
   });
 
-  it('persists an unaccounted group and reports it', async () => {
+  it('persists an unaccounted group but reports it only after two scans confirm it', async () => {
     const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
     const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
       sent.push(msg);
     });
     const cgroupPath = `${OURS}/papercusp-bash-job.slice`;
-    const out = await reconcileTick({
+    const args = {
       listLive: async () => [],
       scan: () =>
         scanResult([
@@ -168,12 +168,31 @@ describe('reconcileTick — happy path', () => {
         ]),
       fs: memFs({}),
       notify,
-    });
-    expect(out.unaccountedPersisted).toBe(1);
+    };
+    const first = await reconcileTick(args);
+    expect(first.unaccountedPersisted).toBe(1);
+    expect(notify).not.toHaveBeenCalled();
+
+    const second = await reconcileTick(args);
+    expect(second.unaccountedPersisted).toBe(1);
     expect(notify).toHaveBeenCalledOnce();
     expect(sent[0]!.summary).toMatch(/unaccounted cgroup/);
+    expect(sent[0]!.summary).toContain('confirmed across 2 consecutive healthy scans');
     expect(sent[0]!.summary).toContain(`cgroup=${cgroupPath}`);
     expect(sent[0]!.summary).toContain('pids=99');
+  });
+
+  it('suppresses a one-scan residue that vanishes before confirmation', async () => {
+    const notify = vi.fn();
+    const cgroupPath = `${OURS}/papercusp-bash-job.slice`;
+    await reconcileTick({
+      listLive: async () => [],
+      scan: () => scanResult([proc({ pid: 99, cgroupPath, processIdentity: 'linux:b:99', cmdline: 'short-lived' })]),
+      fs: memFs({}),
+      notify,
+    });
+    await reconcileTick({ listLive: async () => [], scan: () => scanResult([]), fs: memFs({}), notify });
+    expect(notify).not.toHaveBeenCalled();
   });
 
   /**
@@ -186,7 +205,7 @@ describe('reconcileTick — happy path', () => {
    */
   it('does NOT alarm on a human console window that can never hold a ledger row', async () => {
     const notify = vi.fn();
-    await reconcileTick({
+    const args = {
       listLive: async () => [],
       scan: () =>
         scanResult([
@@ -199,7 +218,8 @@ describe('reconcileTick — happy path', () => {
         ]),
       fs: memFs({}),
       notify,
-    });
+    };
+    await reconcileTick(args);
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -208,7 +228,7 @@ describe('reconcileTick — happy path', () => {
     // ledger insert ever succeeded. The notification must stick to present-tense
     // evidence instead of inventing registration history from the scope name.
     const sent: { summary: string }[] = [];
-    await reconcileTick({
+    const args = {
       listLive: async () => [],
       scan: () =>
         scanResult([
@@ -231,7 +251,9 @@ describe('reconcileTick — happy path', () => {
       notify: async (msg: { summary: string }) => {
         sent.push(msg);
       },
-    });
+    };
+    await reconcileTick(args);
+    await reconcileTick(args);
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.summary).toMatch(/1 outside any managed task scope/);
@@ -486,9 +508,11 @@ describe('reconcileTick — notification discipline', () => {
     };
     const clear = { listLive: async () => [], scan: () => scanResult([]), fs: memFs({}), notify };
 
-    await reconcileTick(withResidue); // opens  -> notify #1
+    await reconcileTick(withResidue); // first observation — hold
+    await reconcileTick(withResidue); // opens after confirmation -> notify #1
     await reconcileTick(clear); // closes -> resets the debounce key, no message
-    await reconcileTick(withResidue); // re-opens -> notify #2 (a real new event)
+    await reconcileTick(withResidue); // first observation — hold
+    await reconcileTick(withResidue); // re-opens after confirmation -> notify #2
 
     expect(notify).toHaveBeenCalledTimes(2);
   });

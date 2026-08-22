@@ -20,7 +20,14 @@
  */
 
 import { absCgroupDir, nodeCgroupFs, sampleCgroup, type CgroupFs } from './cgroup-read';
-import { reconcile, summarizeReconcile, scopeUnitOf, type ReconcileResult, type ScannedProcess } from './reconcile';
+import {
+  reconcile,
+  summarizeReconcile,
+  scopeUnitOf,
+  type ReconcileResult,
+  type ResidueGroup,
+  type ScannedProcess,
+} from './reconcile';
 import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
 import { checkScopesReleased } from './scope-terminal-state';
 import {
@@ -239,6 +246,34 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
  */
 const lastNotified = { key: '', at: 0 };
 const RENOTIFY_MS = 30 * 60_000;
+const RESIDUE_CONFIRMATION_SCANS = 2;
+const residueObservations = new Map<string, number>();
+
+/**
+ * A cgroup that exists for only one scan can be a short-lived command which is
+ * already gone by the time an operator follows the alert with the authoritative
+ * live inventory. Keep recording those rows, but require the same cgroup identity
+ * to survive two healthy scans before broadcasting it as an actionable residue.
+ * A managed scope is the stable identity even when its leaf child cgroup changes;
+ * an unmanaged group has only its cgroup path to identify it.
+ */
+function residueObservationKey(group: ResidueGroup): string {
+  return group.scopeUnit ? `scope:${group.scopeUnit}` : `cgroup:${group.cgroupPath}`;
+}
+
+function confirmedResidueGroups(result: ReconcileResult): ResidueGroup[] {
+  const currentKeys = new Set(result.unaccounted.map(residueObservationKey));
+  for (const key of residueObservations.keys()) {
+    if (!currentKeys.has(key)) residueObservations.delete(key);
+  }
+
+  return result.unaccounted.filter((group) => {
+    const key = residueObservationKey(group);
+    const observations = (residueObservations.get(key) ?? 0) + 1;
+    residueObservations.set(key, observations);
+    return observations >= RESIDUE_CONFIRMATION_SCANS;
+  });
+}
 
 async function maybeNotify(
   deps: ReconcileTickDeps,
@@ -246,7 +281,12 @@ async function maybeNotify(
 ): Promise<void> {
   if (!deps.notify) return;
   const now = (deps.now ?? Date.now)();
-  const noteworthy = ctx.degraded || ctx.summary.unaccounted > 0 || ctx.summary.overdue > 0;
+  // A degraded scan cannot confirm either presence or absence, so preserve the
+  // prior residue observations until the next healthy scan. Degraded state itself
+  // remains immediately actionable.
+  const confirmedUnaccounted = ctx.degraded ? [] : confirmedResidueGroups(ctx.result);
+  const confirmedUnaccountedPids = confirmedUnaccounted.reduce((n, group) => n + group.pids.length, 0);
+  const noteworthy = ctx.degraded || confirmedUnaccounted.length > 0 || ctx.summary.overdue > 0;
   // EI-20108913085212631: the key must identify the CONDITION, never its MAGNITUDE.
   // This used to interpolate the raw counts, so ordinary churn in residue cgroups
   // (6 -> 5 -> 6 as processes come and go — the healthy case, not an event) minted a
@@ -260,7 +300,7 @@ async function maybeNotify(
   // per-tick broadcast.
   const key = ctx.degraded
     ? `degraded:${ctx.degradedReason}`
-    : `unaccounted:${ctx.summary.unaccounted > 0}/overdue:${ctx.summary.overdue > 0}`;
+    : `unaccounted:${confirmedUnaccounted.length > 0}/overdue:${ctx.summary.overdue > 0}`;
 
   if (!noteworthy) {
     lastNotified.key = '';
@@ -272,21 +312,21 @@ async function maybeNotify(
 
   const parts: string[] = [];
   if (ctx.degraded) parts.push(`scan DEGRADED — ${ctx.degradedReason}`);
-  if (ctx.summary.unaccounted > 0) {
+  if (confirmedUnaccounted.length > 0) {
     // A `pc-<taskId>.scope` proves managed provenance, but not ledger history:
     // synchronous spawn seams mint the scope before their fire-and-forget insert.
     // Describe only what this scan proves — whether residue is under a managed
     // scope and whether that scope currently has a live ledger row.
-    const managedScopesWithoutLiveRow = ctx.result.unaccounted.filter(
+    const managedScopesWithoutLiveRow = confirmedUnaccounted.filter(
       (g) => g.scopeUnit && taskIdFromScopeUnit(g.scopeUnit),
     ).length;
-    const outsideManagedScope = ctx.summary.unaccounted - managedScopesWithoutLiveRow;
+    const outsideManagedScope = confirmedUnaccounted.length - managedScopesWithoutLiveRow;
     const why: string[] = [];
     if (outsideManagedScope > 0) why.push(`${outsideManagedScope} outside any managed task scope`);
     if (managedScopesWithoutLiveRow > 0) {
       why.push(`${managedScopesWithoutLiveRow} in managed scope(s) with no live ledger row`);
     }
-    const evidence = ctx.result.unaccounted
+    const evidence = confirmedUnaccounted
       .slice(0, 8)
       .map((group) => {
         const pids = group.pids.slice(0, 12).join(',') || 'none';
@@ -296,9 +336,10 @@ async function maybeNotify(
       })
       .join('; ');
     const moreGroups =
-      ctx.result.unaccounted.length > 8 ? `; +${ctx.result.unaccounted.length - 8} more cgroup(s)` : '';
+      confirmedUnaccounted.length > 8 ? `; +${confirmedUnaccounted.length - 8} more cgroup(s)` : '';
     parts.push(
-      `${ctx.summary.unaccounted} unaccounted cgroup(s) holding ${ctx.summary.unaccountedPids} process(es) — ` +
+      `${confirmedUnaccounted.length} unaccounted cgroup(s) holding ${confirmedUnaccountedPids} process(es) ` +
+        `(confirmed across ${RESIDUE_CONFIRMATION_SCANS} consecutive healthy scans) — ` +
         `${why.join('; ')}; evidence: ${evidence}${moreGroups}`,
     );
   }
@@ -313,4 +354,5 @@ async function maybeNotify(
 export function resetNotifyDebounce(): void {
   lastNotified.key = '';
   lastNotified.at = 0;
+  residueObservations.clear();
 }
