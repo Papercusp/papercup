@@ -345,4 +345,25 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
       SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
     expect(rows[0]?.status).toBe('killed');
   });
+
+  it('does not auto-kill from an executor-owned domain tripwire the platform did not measure', async () => {
+    await seedGoal({ budgetCents: 100_000 });
+    await setTripwires([
+      {
+        metric: 'openReleaseWalls',
+        label: 'Signed release walls still open',
+        threshold: 0,
+        current: 2,
+        unit: 'walls',
+      },
+    ]);
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, written: 1, tripwiresAdvanced: 0, errors: [] });
+
+    const rows = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(rows[0]?.status).toBe('active');
+    expect((await goalMetadata())?.autoKilled).toBeUndefined();
+  });
 });

@@ -189,19 +189,29 @@ export function refreshTripwireCurrents(
 }
 
 /**
- * Which advanced tripwires are now AT OR PAST their threshold.
+ * Which PLATFORM-MEASURED tripwires are now AT OR PAST their threshold.
  *
  * The point of advancing `current` at all: a kill criterion that scores itself
  * can fire. This reports the breaches for the caller to log/surface — it does
  * NOT act on them. Killing a goal on a measured breach is a separate, deliberate
  * decision (and an owner-facing one); silently escalating a reporting sweep into
  * a terminal action is exactly the kind of leap this plan is written against.
+ *
+ * Executor-owned domain metrics are deliberately excluded. The platform has no
+ * resolver for them, so their stored `current` may be a seeded value, a stale
+ * snapshot, or a decreasing-to-zero progress count. Treating every numeric value
+ * as an upper-bound measurement previously auto-killed goals such as
+ * `openReleaseWalls: current=2, threshold=0` even though zero had not been
+ * reached. Only metrics in RESOLVERS have the measurement semantics required for
+ * a platform-side terminal transition; executors remain responsible for acting
+ * on their own domain tripwires.
  */
 export function breachedTripwires(
   tripwires: readonly GoalTripwireLike[],
 ): Array<{ metric: string; current: number; threshold: number; unit?: string }> {
   const out: Array<{ metric: string; current: number; threshold: number; unit?: string }> = [];
   for (const t of tripwires) {
+    if (!RESOLVERS[t.metric]) continue;
     const current = readCurrent(t);
     if (current === null || !Number.isFinite(t.threshold)) continue;
     if (current >= t.threshold) {

@@ -266,6 +266,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   // ── spends ───────────────────────────────────────────────────────────────
   'system:blueprint-run': { spend: 'llm', why: 'Launches a blueprint agent (the Mug/Cup hive launch path)' },
   'system:plan-run': { spend: 'llm', why: 'Mints a plan run and dispatches its items to agents' },
+  'system:external-trigger-dispatch': {
+    spend: 'llm',
+    why: 'Launches event-triggered plan runs and wakes their claimable work',
+  },
   'system:overwatch-launch': { spend: 'llm', why: 'Launches the overwatch (Kettle) session' },
   'system:gym-cycle': { spend: 'llm', why: 'Runs one bounded gym cycle' },
   'system:improvement-implement': { spend: 'llm', why: 'Returns durableSpawns — dispatches an implementer agent' },

@@ -139,10 +139,18 @@ const ACTION_VERB: Record<AnomalyActionType, string> = {
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { critical: 0, warning: 1, info: 2 };
 
 /** Append a capped list section; emits a "+N more" overflow line when truncated. */
-function section(out: string[], heading: string, lines: readonly string[], cap: number, drillHint?: string): void {
+function section(
+  out: string[],
+  heading: string,
+  lines: readonly string[],
+  cap: number,
+  drillHint?: string,
+  intro?: string,
+): void {
   if (lines.length === 0) return;
   out.push('');
   out.push(`### ${heading}`);
+  if (intro) out.push(intro);
   for (const line of lines.slice(0, cap)) out.push(line);
   const overflow = lines.length - cap;
   if (overflow > 0) out.push(`…+${overflow} more${drillHint ? ` (${drillHint})` : ''}`);
@@ -231,6 +239,7 @@ export function renderSentinelContext(input: SentinelContextInput): string {
     (input.signals ?? []).map(renderSignalLine),
     caps.signals,
     'curation:feed to drill down',
+    'These lines are internal engineering context for tool use. They may contain exact work-item, session, actor, or repository identifiers. Use them to investigate, but paraphrase those identifiers in owner-facing replies unless the owner explicitly asks for the exact value.',
   );
 
   // OPEN DELEGATIONS — hard-thinking work already in flight. Follow-up questions

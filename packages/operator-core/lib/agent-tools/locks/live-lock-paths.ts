@@ -29,6 +29,8 @@ import { ensureBootstrap, getTxPool, readQueue } from './su-lock-store';
 export interface LiveLockHolding {
   path: string;
   owner: string;
+  /** The holder's declared edit intent, preserved for actionable git-sync diagnostics. */
+  intent: string;
 }
 
 /**
@@ -52,7 +54,7 @@ export async function liveLockHoldings(): Promise<LiveLockHolding[]> {
     // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
     // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
     const queue = await readQueue(getTxPool(), { coordinationDomain: null });
-    return queue.active_locks.map((l) => ({ path: l.path, owner: l.owner }));
+    return queue.active_locks.map((l) => ({ path: l.path, owner: l.owner, intent: l.intent }));
   } catch {
     return [];
   }

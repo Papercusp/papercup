@@ -321,7 +321,7 @@ async function claimPendingTriggerRuns(
 ): Promise<ClaimedTriggerRun[]> {
   return sql.begin(async (tx) => tx<ClaimedTriggerRun[]>`
     WITH candidates AS (
-      SELECT tr.id
+      SELECT tr.workspace_id, tr.id
         FROM harness_shared.trigger_runs tr
        WHERE tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
          AND (
@@ -337,7 +337,7 @@ async function claimPendingTriggerRuns(
          SET status = 'running', attempts = tr.attempts + 1, error = NULL,
              started_at = now(), completed_at = NULL, updated_at = now()
         FROM candidates c
-       WHERE tr.id = c.id AND tr.workspace_id = current_setting('app.workspace_id'::text, true)
+       WHERE tr.workspace_id = c.workspace_id AND tr.id = c.id
       RETURNING tr.*
     )
     SELECT c.id,

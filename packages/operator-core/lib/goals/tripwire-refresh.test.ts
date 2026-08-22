@@ -205,4 +205,22 @@ describe('breachedTripwires', () => {
     // is the whole condition P-004 exists to remove. It must never render as OK.
     expect(breachedTripwires(DESKTOP_GOAL_TRIPWIRES)).toEqual([]);
   });
+
+  it('never treats an executor-owned decreasing metric as a platform-measured breach', () => {
+    // Regression for EI-21120596206391308: this exact shape falsely killed a
+    // live goal because the generic >= comparison read "2 reached 0". The
+    // platform has no resolver for openReleaseWalls, so only the goal executor
+    // may decide whether/how its decreasing value trips the kill criterion.
+    const executorOwned: GoalTripwireLike[] = [
+      {
+        metric: 'openReleaseWalls',
+        label: 'Signed release walls still open',
+        threshold: 0,
+        current: 2,
+        unit: 'walls',
+      },
+    ];
+
+    expect(breachedTripwires(executorOwned)).toEqual([]);
+  });
 });

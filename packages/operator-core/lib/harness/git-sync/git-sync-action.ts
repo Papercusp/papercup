@@ -41,7 +41,7 @@ import {
   tryReleaseResource,
   type ResourceAcquireResult,
 } from '../../agent-tools/locks/su-lock-store';
-import { liveLockedPaths } from '../../agent-tools/locks/live-lock-paths';
+import { liveLockHoldings } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
@@ -1128,6 +1128,8 @@ async function recordOutcome(
   // status used to drop the error list entirely, e.g. a libs/papercusp push failure
   // hidden behind a libs/generic/sync conflict).
   const errors = 'errors' in outcome ? outcome.errors : [];
+  const skippedPaths = outcome.skippedPaths ?? [];
+  const skippedLocked = outcome.status === 'skipped-locked';
   const localSyncRecordedAt = Date.now();
   await patchRoutineMetadata(slug, workspaceId, {
     last_status: outcome.status,
@@ -1145,8 +1147,9 @@ async function recordOutcome(
     // `last_skip_reason: remote_hive_view`). That stale pair caused readers to
     // compare a commit-only/P2P worktree head with origin and diagnose a false
     // remote-sync failure (EI-20269018542485023).
-    last_skip_reason: null,
-    last_skipped_at: null,
+    last_skip_reason: skippedLocked ? 'locked-path' : null,
+    last_skipped_at: skippedLocked ? localSyncRecordedAt : null,
+    last_skipped_paths: skippedLocked ? skippedPaths : [],
     last_pushed: pushed,
     // EI-18812945811758018: rides the SAME single write, so `last_pushed` is never
     // readable without the mode that says what an empty one MEANS for this member.
@@ -1781,7 +1784,8 @@ async function handleGitSync(
   // File locks are the automatic edit-plane authority. Keep git-sync's broad
   // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
   // maps these superproject-root-relative paths into each submodule before add.
-  const liveLockPaths = await liveLockedPaths();
+  const liveLockHoldingRows = await liveLockHoldings();
+  const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
@@ -1796,6 +1800,7 @@ async function handleGitSync(
       deletionGuard: deletionGuardOn,
       diffSubjects: diffSubjectsOn,
       ...(liveLockPaths.length > 0 ? { excludePaths: liveLockPaths } : {}),
+      ...(liveLockHoldingRows.length > 0 ? { liveLockHoldings: liveLockHoldingRows } : {}),
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
@@ -4308,6 +4313,7 @@ async function recordAndEscalateTick(a: {
       errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
       oversized: outcome.oversized.length,
       contentErrors: outcome.contentErrors.length,
+      skippedPaths: outcome.skippedPaths ?? [],
       consecutiveErrorTicks: errTicks,
       ...(outcome.status === 'synced' ? { headSha: outcome.headSha } : {}),
     },

@@ -28,6 +28,7 @@ import {
   type PipelineWindowSummary,
   type PipelineEventRow,
 } from './harness/git-sync/pipeline-events';
+import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
 import {
@@ -77,6 +78,8 @@ export interface GitPipelineSnapshot {
     lastMerged: string[];
     lastConflicts: string[];
     lastErrors: string[];
+    /** Live-lock paths that caused a whole repo commit group to defer. */
+    skippedPaths?: GitSyncSkippedPath[];
     /**
      * The member's EFFECTIVE push mode this tick: `'push'`, or `'commit-only:<reason>'`
      * where reason is the hive git mode (`bridged` / `p2p-only`) or `config`.
@@ -495,6 +498,14 @@ function num(v: unknown): number | null {
 }
 function strArr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is GitSyncSkippedPath => {
+    if (!x || typeof x !== 'object') return false;
+    const r = x as Record<string, unknown>;
+    return typeof r.scope === 'string' && typeof r.path === 'string' && typeof r.owner === 'string' && typeof r.intent === 'string';
+  });
 }
 function dateMs(v: unknown): number | null {
   if (v instanceof Date) return v.getTime();
@@ -1027,6 +1038,7 @@ export async function gitPipelineSnapshot(
       lastMerged: strArr(meta.last_merged),
       lastConflicts: strArr(meta.last_conflicts),
       lastErrors: strArr(meta.last_errors),
+      skippedPaths: skippedPathArr(meta.last_skipped_paths),
       // EI-18812945811758018: 'push' | 'commit-only:<reason>' | null (older rows, before
       // git-sync recorded it). NEVER default this to 'push' — an absent mode is UNKNOWN,
       // and guessing "it pushes" is what made an empty lastPushed read as a fault.

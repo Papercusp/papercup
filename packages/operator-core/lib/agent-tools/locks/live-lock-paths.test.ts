@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const ensureBootstrap = vi.fn(async () => {});
 const getTxPool = vi.fn(() => ({}) as never);
 const readQueue = vi.fn(async (_sql: unknown, _params: unknown) => ({
-  active_locks: [] as Array<{ path: string; owner: string }>,
+  active_locks: [] as Array<{ path: string; owner: string; intent: string }>,
   waiting: [] as Array<{ path: string; owner: string }>,
 }));
 
@@ -25,7 +25,7 @@ vi.mock('./su-lock-store', () => ({
 
 import { liveLockHoldings, liveLockedPaths } from './live-lock-paths';
 
-const holding = (path: string, owner: string) => ({ path, owner });
+const holding = (path: string, owner: string, intent = `edit ${path}`) => ({ path, owner, intent });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -33,14 +33,14 @@ beforeEach(() => {
 });
 
 describe('liveLockHoldings', () => {
-  it('returns each live holder with its path', async () => {
+  it('returns each live holder with its path and intent', async () => {
     readQueue.mockResolvedValue({
       active_locks: [holding('a.ts', 'su-1'), holding('b.ts', 'su-2')],
       waiting: [],
     });
     expect(await liveLockHoldings()).toEqual([
-      { path: 'a.ts', owner: 'su-1' },
-      { path: 'b.ts', owner: 'su-2' },
+      { path: 'a.ts', owner: 'su-1', intent: 'edit a.ts' },
+      { path: 'b.ts', owner: 'su-2', intent: 'edit b.ts' },
     ]);
   });
 

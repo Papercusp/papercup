@@ -348,6 +348,26 @@ const arg = (k, d) => {
     : d;
 };
 const has = (k) => args.includes(k);
+const VALUE_FLAGS = new Set([
+  "--base",
+  "--range-from",
+  "--range-to",
+  "--changed-paths",
+  "--exclude",
+]);
+
+// This CLI has no positional-argument mode. Walk the argv tokens while skipping
+// values belonging to the flags that accept them, so a second path after
+// `--changed-paths first/path` cannot be silently discarded and narrow the run.
+const positionalArgs = [];
+for (let i = 0; i < args.length; i += 1) {
+  const token = args[i];
+  if (token.startsWith("--")) {
+    if (VALUE_FLAGS.has(token) && args[i + 1] && !args[i + 1].startsWith("--")) i += 1;
+    continue;
+  }
+  positionalArgs.push(token);
+}
 
 const base = arg("--base", process.env.AFFECTED_BASE || "origin/main");
 const runIntegration = has("--integration");
@@ -473,6 +493,14 @@ if (unknownFlags.length > 0) {
   );
   errSync(
     "Refusing to run rather than silently ignoring the flag and running the full default job.",
+  );
+  process.exit(1);
+}
+
+if (positionalArgs.length > 0) {
+  errSync(`affected-tests.mjs: unexpected positional argument(s): ${positionalArgs.join(", ")}`);
+  errSync(
+    "This command accepts flags only; pass --changed-paths as one comma-delimited value rather than separate positional paths.",
   );
   process.exit(1);
 }

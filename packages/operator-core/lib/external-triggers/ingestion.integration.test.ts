@@ -107,6 +107,7 @@ describe('external trigger ingestion core', () => {
     expect(rows).toEqual([
       { sink_kind: 'event-bus', outcome: 'delivered' },
       { sink_kind: 'personal-vault', outcome: 'delivered' },
+      { sink_kind: 'trigger-bindings', outcome: 'delivered' },
     ]);
   });
 
@@ -158,6 +159,7 @@ describe('external trigger ingestion core', () => {
     expect(rows).toEqual([
       { sink_kind: 'event-bus', outcome: 'delivered', attempts: 1 },
       { sink_kind: 'personal-vault', outcome: 'delivered', attempts: 2 },
+      { sink_kind: 'trigger-bindings', outcome: 'delivered', attempts: 1 },
     ]);
   });
 
@@ -195,7 +197,47 @@ describe('external trigger ingestion core', () => {
     const rows = await sql<{ sink_kind: string; outcome: string; error: string }[]>`
       SELECT sink_kind, outcome, error FROM harness_shared.trigger_deliveries
        WHERE dedupe_key = 'gmail:m-2' ORDER BY sink_kind`;
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows.every((row) => row.outcome === 'failed' && /invalid_email-message_payload/.test(row.error))).toBe(true);
+  });
+
+  it('matches armed bindings, evaluates canonical payload filters, and enforces the storm window', async () => {
+    await sql`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+         event_filter, action, armed, storm_policy)
+      VALUES ('papercusp-workspace', ${sourceId}, 'papercusp', 'inbox-triage',
+              'ext:gmail:message.*', ${JSON.stringify({ subject: 'Launch me' })}::text::jsonb,
+              '{"type":"launch-plan"}'::jsonb, TRUE,
+              '{"maxRuns":1,"windowSeconds":60}'::jsonb)`;
+    const emit = vi.fn(async () => ({
+      ok: true as const, key: 'ext:gmail:message.received', woken: 0,
+      notified: [], msgId: null, waiters: 0,
+    }));
+
+    for (const [externalId, subject] of [
+      ['m-bind-1', 'Launch me'],
+      ['m-bind-no-match', 'Ignore me'],
+      ['m-bind-2', 'Launch me'],
+    ] as const) {
+      const result = await ingestExternalTriggerEvent(sql, {
+        workspaceId: 'papercusp-workspace', sourceId, source: 'gmail',
+        event: 'message.received', externalId, datatypeId: 'email-message',
+        adapterPayload: {}, normalize: () => ({ id: externalId, subject }),
+      }, { emit });
+      expect(result.ok).toBe(true);
+    }
+
+    const runs = await sql<Array<{ status: string; args: { trigger: { key: string; externalId: string } }; error: string | null }>>`
+      SELECT status, args, error FROM harness_shared.trigger_runs ORDER BY triggered_at, id`;
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatchObject({
+      status: 'pending',
+      args: { trigger: { key: 'ext:gmail:message.received', externalId: 'm-bind-1' } },
+      error: null,
+    });
+    expect(runs[1].status).toBe('skipped');
+    expect(runs[1].args.trigger.externalId).toBe('m-bind-2');
+    expect(runs[1].error).toMatch(/external_trigger_storm_limit/);
   });
 });

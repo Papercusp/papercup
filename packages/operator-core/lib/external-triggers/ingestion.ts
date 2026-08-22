@@ -16,6 +16,7 @@ import {
   type EmitResult,
 } from '../events/await/engine';
 import type { NormalizedExternalEvent } from '../personal-vault/live-sink';
+import { createTriggerBindingSink } from './binding-engine';
 
 const SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
 const EVENT_NAME = /^[a-z0-9][a-z0-9.-]*$/;
@@ -250,7 +251,10 @@ export async function ingestExternalTriggerEvent(
       });
     },
   };
-  const sinks = [eventBusSink, ...(input.additionalSinks ?? [])];
+  // The binding engine is a first-class sink, ordered after the event bus so it
+  // can attach trigger_runs to the already-delivered event-bus ledger row. Its
+  // own delivery row makes enqueue replay/dedupe independent of other sinks.
+  const sinks = [eventBusSink, createTriggerBindingSink(sql), ...(input.additionalSinks ?? [])];
   const identities = new Set<string>();
   for (const sink of sinks) {
     const identity = sinkIdentity(sink);

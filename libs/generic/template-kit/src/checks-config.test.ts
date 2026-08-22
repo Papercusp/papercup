@@ -211,6 +211,9 @@ describe("validateChecksConfig", () => {
       "androidShell.paths.appGradle: required non-empty string",
     );
     expect(errors).toContain(
+      "androidShell.paths.proguardRules: required non-empty string",
+    );
+    expect(errors).toContain(
       "androidShell.paths.unitTestRoots: must be non-empty",
     );
     expect(errors).toContain(

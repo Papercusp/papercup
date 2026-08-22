@@ -120,6 +120,24 @@ describe('renderSentinelContext heading scoping', () => {
     expect(line).toBeTruthy();
     expect(line).not.toContain('[conditionKey');
   });
+
+  it('marks raw signal identifiers as internal context and keeps the voice boundary explicit', () => {
+    const sessionId = 'su-90cc5cbd-6f87-49b6-a475-71c31cc08341';
+    const block = renderSentinelContext({
+      potSlug: 'papercusp',
+      signals: [
+        {
+          kind: 'blocker',
+          title: `held by ended session ${sessionId}`,
+          ref: `wi:${sessionId}`,
+        },
+      ],
+    });
+
+    expect(block).toContain('These lines are internal engineering context for tool use.');
+    expect(block).toContain(sessionId);
+    expect(block).toContain('paraphrase those identifiers in owner-facing replies');
+  });
 });
 
 describe('gatherSentinelContext', () => {

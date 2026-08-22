@@ -181,6 +181,26 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(typo.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
     });
 
+    it('refuses trailing positional paths instead of silently narrowing --changed-paths', () => {
+      const narrowed = runAffected([
+        '--changed-paths',
+        'scripts/affected-tests.mjs',
+        'packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts',
+        'packages/operator-core/lib/__tests__/affected-tests-changed-path-provenance.test.ts',
+        '--dry',
+      ]);
+
+      expect(narrowed.status).toBe(1);
+      expect(narrowed.stderr).toContain(
+        'unexpected positional argument(s): packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts, packages/operator-core/lib/__tests__/affected-tests-changed-path-provenance.test.ts',
+      );
+      expect(narrowed.stderr).toContain(
+        'pass --changed-paths as one comma-delimited value rather than separate positional paths',
+      );
+      expect(narrowed.stdout).not.toContain('AFFECTED_DERIVATION');
+      expect(narrowed.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
+    });
+
     it('carries the full field set a caller parses, on every early-exit path', () => {
       const unrouted = 'some/unrouted/path.txt';
       const invocations: string[][] = [

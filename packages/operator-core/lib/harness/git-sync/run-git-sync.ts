@@ -757,6 +757,21 @@ export interface StrandedSubmodule {
   files: string[];
 }
 
+/** A live edit lock that must be preserved as structured, actionable provenance. */
+export interface GitSyncLockHolding {
+  path: string;
+  owner: string;
+  intent: string;
+}
+
+/** A dirty path that caused an entire repo commit group to defer. */
+export interface GitSyncSkippedPath {
+  scope: string;
+  path: string;
+  owner: string;
+  intent: string;
+}
+
 /**
  * The aggregate result of one whole-repo pass. `pushed`/`merged` name the scopes
  * ('superproject' or submodule paths) that were pushed to / merged from origin, so
@@ -789,6 +804,8 @@ export type GitSyncOutcome = {
    *  failure mode this whole field exists to prevent, reintroduced one level up. The
    *  nullable type forces every consumer to decide which it is. */
   strandedSubmodules: StrandedSubmodule[] | null;
+  /** Live-lock paths that deferred their whole repo commit group this pass. */
+  skippedPaths?: GitSyncSkippedPath[];
   /**
    * Scopes whose fetch+merge stage completed successfully this pass, even when a
    * later push failed. This is distinct from `merged`: it proves that the merge
@@ -839,6 +856,8 @@ export interface RunGitSyncOpts {
    * submodule paths are mapped to that repo's relative coordinate space below.
    */
   excludePaths?: string[];
+  /** Structured live lock holdings. `excludePaths` remains the staging filter for clean-held paths. */
+  liveLockHoldings?: GitSyncLockHolding[];
   /** Override the content-guard detector registry (tests / future extension).
    *  Defaults to DEFAULT_CONTENT_DETECTORS (mdx + smart-quotes). Pass [] to disable. */
   contentDetectors?: ContentDetector[];
@@ -1950,10 +1969,16 @@ export function newStashEntries(current: StashEntry[], knownShas: readonly strin
   return current.filter((e) => !known.has(e.sha));
 }
 
-type RepoSyncResult = { oversized: OversizedFile[]; contentErrors: ContentOffender[]; mergeCompleted?: boolean } & (
+type RepoSyncResult = {
+  oversized: OversizedFile[];
+  contentErrors: ContentOffender[];
+  mergeCompleted?: boolean;
+  skippedPaths?: GitSyncSkippedPath[];
+} & (
   | { status: 'nothing' }
   | { status: 'synced'; pushed: boolean; merged: boolean }
   | { status: 'conflict'; conflictedFiles: string[] }
+  | { status: 'skipped-locked' }
   | { status: 'error'; message: string }
 );
 
@@ -2134,6 +2159,8 @@ export async function commitAttributedGroups(
 
 /** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
 interface CommitRepoOpts {
+  /** Public scope name used in skipped-path diagnostics. */
+  scope: string;
   remote: string;
   defaultBranch: string;
   message: string;
@@ -2148,6 +2175,8 @@ interface CommitRepoOpts {
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
   /** Caller-supplied protected paths in THIS repo's relative coordinate space. */
   excludePaths: string[];
+  /** Protected paths in this repo's coordinate space, with holder provenance. */
+  protectedHoldings: GitSyncLockHolding[];
   /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
    *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
@@ -2162,6 +2191,7 @@ interface CommitRepoResult {
   committedLocal: boolean;
   oversized: OversizedFile[];
   contentErrors: ContentOffender[];
+  skippedPaths?: GitSyncSkippedPath[];
   /** A REAL add/commit failure (index.lock race, corrupt index, embedded-repo fatal) —
    *  surfaced by the caller as a repo error. `nothing to commit` is NOT an error. */
   error?: string;
@@ -2178,6 +2208,29 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   let committedLocal = false;
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
+  const dirty = await dirtyFiles(runGit, repoPath);
+  const skippedPaths = o.protectedHoldings
+    .filter((holding) =>
+      dirty.some(
+        (file) =>
+          file === holding.path ||
+          file.startsWith(`${holding.path}/`) ||
+          holding.path.startsWith(`${file}/`),
+      ),
+    )
+    .map((holding) => ({
+      scope: o.scope,
+      path: holding.path,
+      owner: holding.owner,
+      intent: holding.intent,
+    }));
+  if (skippedPaths.length > 0) {
+    o.log(
+      `[git-sync] ${o.scope}: deferring the whole commit group because live lock(s) hold dirty path(s): ` +
+        skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
+    );
+    return { committedLocal: false, oversized: [], contentErrors: [], skippedPaths };
+  }
   if (await isDirty(runGit, repoPath)) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
     if ('error' in attachment) {
@@ -2806,6 +2859,14 @@ async function syncOneRepo(
   o: CommitRepoOpts & { remote: string; defaultBranch: string; doPush: boolean },
 ): Promise<RepoSyncResult> {
   const c = await commitOneRepo(runGit, repoPath, o);
+  if (c.skippedPaths && c.skippedPaths.length > 0) {
+    return {
+      status: 'skipped-locked',
+      skippedPaths: c.skippedPaths,
+      oversized: c.oversized,
+      contentErrors: c.contentErrors,
+    };
+  }
   if (c.error) {
     return { status: 'error', message: c.error, oversized: c.oversized, contentErrors: c.contentErrors };
   }
@@ -2874,6 +2935,13 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const toolCatalogRegenerator = opts.toolCatalogRegenerator ?? regenerateToolCatalogBeforeCommit;
   const toolRoutingChecker = opts.toolRoutingChecker ?? checkToolRoutingBeforeCommit;
   const protectedPaths = [...new Set((opts.excludePaths ?? []).map((path) => path.trim()).filter(Boolean))];
+  const protectedHoldings = (opts.liveLockHoldings ?? [])
+    .map((holding) => ({
+      path: holding.path.trim(),
+      owner: holding.owner,
+      intent: holding.intent,
+    }))
+    .filter((holding) => holding.path.length > 0);
   const repoO = {
     remote,
     defaultBranch: branch,
@@ -2922,6 +2990,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     mergeCompleted: string[];
     oversized: ScopedOversized[];
     contentErrors: ScopedContentError[];
+    skippedPaths: GitSyncSkippedPath[];
     /** Checkpoint the census with the phase. Outer mutable state disappears on replay,
      *  turning a measured [] into null and changing the reconstructed outcome. */
     strandedSubmodules: StrandedSubmodule[] | null;
@@ -2938,6 +3007,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     mergeCompleted: [],
     oversized: [],
     contentErrors: [],
+    skippedPaths: [],
     strandedSubmodules: null,
     submodulePaths: [],
     didSomething: false,
@@ -2961,6 +3031,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         `[git-sync] ${scope}: QUARANTINED ${r.contentErrors.length} broken file(s) from the auto-commit (${r.contentErrors.map((c) => `${c.file} [${c.detectorKey}]`).join(', ')}) — content-fixer dispatched (${slug})`,
       );
     }
+    if (r.skippedPaths && r.skippedPaths.length > 0) into.skippedPaths.push(...r.skippedPaths);
     if (r.status === 'conflict') {
       into.conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
       log(
@@ -3054,6 +3125,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         s,
         await syncOneRepo(runGit, join(repo, s), {
           ...repoO,
+          scope: s,
           doPush: doSubPush,
           defaultBranch: 'main',
           // The caller supplies workspace/superproject-root-relative paths, while
@@ -3063,6 +3135,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
             .filter((path) => path.startsWith(`${s}/`))
             .map((path) => path.slice(s.length + 1))
             .filter(Boolean),
+          protectedHoldings: protectedHoldings
+            .filter((holding) => holding.path.startsWith(`${s}/`))
+            .map((holding) => ({ ...holding, path: holding.path.slice(s.length + 1) }))
+            .filter((holding) => holding.path.length > 0),
           attribution: attributionMapForRepo(roster, s, repo),
         }),
       );
@@ -3101,6 +3177,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const superprojectExcludePaths = protectedPaths.filter(
     (path) => !submodulePaths.some((s) => path === s || path.startsWith(`${s}/`)),
   );
+  const superprojectProtectedHoldings = protectedHoldings.filter(
+    (holding) => !submodulePaths.some((s) => holding.path === s || holding.path.startsWith(`${s}/`)),
+  );
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
@@ -3127,17 +3206,27 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     }
     return commitOneRepo(runGit, repo, {
       ...repoO,
+      scope: 'superproject',
       excludePaths: superprojectExcludePaths,
+      protectedHoldings: superprojectProtectedHoldings,
       attribution: attributionMapForRepo(roster, '', repo),
     });
   });
   let repoResult: RepoSyncResult;
-  if (commitRes.error) {
+  if (commitRes.skippedPaths && commitRes.skippedPaths.length > 0) {
+    repoResult = {
+      status: 'skipped-locked',
+      skippedPaths: commitRes.skippedPaths,
+      oversized: commitRes.oversized,
+      contentErrors: commitRes.contentErrors,
+    };
+  } else if (commitRes.error) {
     repoResult = {
       status: 'error',
       message: commitRes.error,
       oversized: commitRes.oversized,
       contentErrors: commitRes.contentErrors,
+      skippedPaths: commitRes.skippedPaths,
     };
   } else if (pushBlocked) {
     // Committed locally (or there was nothing to commit); the network half waits for a
@@ -3151,8 +3240,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           merged: false,
           oversized: commitRes.oversized,
           contentErrors: commitRes.contentErrors,
+          skippedPaths: commitRes.skippedPaths,
         }
-      : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+      : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
     log(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
@@ -3187,6 +3277,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         message: releaseBridge.message,
         oversized: commitRes.oversized,
         contentErrors: commitRes.contentErrors,
+        skippedPaths: commitRes.skippedPaths,
       };
     } else {
       if (releaseBridge.status === 'declined') {
@@ -3200,8 +3291,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
             merged: bridged,
             oversized: commitRes.oversized,
             contentErrors: commitRes.contentErrors,
+            skippedPaths: commitRes.skippedPaths,
           }
-        : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+        : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
     }
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
@@ -3210,7 +3302,12 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       headSha: await headSha(runGit, repo),
     }));
     superHeadSha = pushRes.headSha;
-    repoResult = { ...pushRes, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    repoResult = {
+      ...pushRes,
+      oversized: commitRes.oversized,
+      contentErrors: commitRes.contentErrors,
+      skippedPaths: commitRes.skippedPaths,
+    };
   }
   absorb(supr, 'superproject', repoResult);
 
@@ -3221,16 +3318,19 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const mergeCompleted = [...sub.mergeCompleted, ...supr.mergeCompleted];
   const oversized = [...sub.oversized, ...supr.oversized];
   const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
+  const skippedPaths = [...sub.skippedPaths, ...supr.skippedPaths];
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)
-    return { status: 'conflict', conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+    return { status: 'conflict', conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
   if (errors.length > 0)
-    return { status: 'error', errors, pushed, merged, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+    return { status: 'error', errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+  if (skippedPaths.length > 0)
+    return { status: 'skipped-locked', skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
   // is invisible — so this is the last status that should omit it.
-  if (!didSomething) return { status: 'nothing', mergeCompleted, oversized, contentErrors, strandedSubmodules };
+  if (!didSomething) return { status: 'nothing', skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
@@ -3241,6 +3341,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     mergeCompleted,
     oversized,
     contentErrors,
+    skippedPaths,
     strandedSubmodules,
   };
 }
