@@ -13,6 +13,10 @@ import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+const devWrapper = readFileSync(
+  resolve(__dirname, '../../../papercusp-desktop/bin/dev-operator-ifneeded.sh'),
+  'utf8',
+);
 const launchTemplate = src.match(
   /cat > "\$WORK\/launch\.sh" <<LAUNCH\n([\s\S]*?)\nLAUNCH/,
 )?.[1];
@@ -28,6 +32,18 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
     );
     expect(launchTemplate).toContain(
       'PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0',
+    );
+  });
+
+  it('pins the private verifier host to loopback instead of inheriting a dev .env bind', () => {
+    // EI-21140610191173818: apps/operator/.env.local legitimately configures a
+    // remote-capable dev host with PAPERCUSP_BIND_HOST=0.0.0.0. The isolated
+    // verifier must override it or remote-auth-policy fails closed before the
+    // desktop starts (eight supervised crash-loop attempts in the live repro).
+    expect(launchTemplate).toContain('PAPERCUSP_BIND_HOST=127.0.0.1');
+    expect(devWrapper).toContain('if [ -n "${PAPERCUSP_BIND_HOST:-}" ]; then');
+    expect(devWrapper).toContain(
+      'env ${DEV_BIND_OVERRIDE}PAPERCUSP_HONO_PORT=$PORT',
     );
   });
 });
