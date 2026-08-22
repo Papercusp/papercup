@@ -13,7 +13,7 @@
 import { getGhAuthToken } from '../identity/gh-token';
 import { resolveCupboardBaseUrl } from './base-url';
 import { resolvePublisherAttestation } from './publisher-attestation';
-import type { ListingKind } from './types';
+import type { ListingKind, RubricRequirement } from './types';
 import type { ProvidedEventFamily, RequiredEventFamily } from '@papercusp/blueprint-distribution';
 
 /** A validated listing-publish payload (mirrors the Cupboard `/listings` body). */
