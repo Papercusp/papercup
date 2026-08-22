@@ -25,7 +25,7 @@ export default defineTool({
   capability: 'harness:read',
   guidance: {
     when: 'User asks about a specific harness by name ("tell me about sheets", "what\'s the status of forms") and you need its row + feature counts.',
-    notWhen: 'For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `escalations:get` — `harness:get` is the static record.',
+    notWhen: 'For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `coord:escalations` — `harness:get` is the static record.',
     chaining: 'Follow `harness:list` if you don\'t have the slug. Follow with `harness:status` if you also need live counts.',
   },
   args: z.object({

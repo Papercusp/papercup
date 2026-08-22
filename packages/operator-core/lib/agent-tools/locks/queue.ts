@@ -110,7 +110,10 @@ export default defineTool({
               queued_ts: w.queued_ts.toISOString(),
               wait_until: w.wait_until.toISOString(),
             })),
-            completed: result.completed?.map((w) => ({
+            // Keep the machine-readable shape stable when terminal waiters were
+            // not requested. Consumers commonly project `.completed[]`; an
+            // omitted field turns an empty diagnostic into a projection error.
+            completed: (result.completed ?? []).map((w) => ({
               ...w,
               queued_ts: w.queued_ts.toISOString(),
               wait_until: w.wait_until.toISOString(),

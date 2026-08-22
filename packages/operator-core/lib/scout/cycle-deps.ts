@@ -38,6 +38,7 @@ import {
   type CapturePort,
   type GoalAmendmentDispatchPort,
   type GoalDispatchPort,
+  type GoalFeedbackConsultPort,
   type RouterPorts,
 } from './router';
 import {
@@ -51,9 +52,14 @@ import {
   type PlanDraftCreator,
 } from './router-deps';
 import { gatherSteppingStones, type ArchivePort } from './gym-bridge';
-import { gatherGraderFeedbackPriming, type GradedIdeaView } from './ideator-feedback-priming';
+import {
+  gatherGraderFeedbackPriming,
+  gatherRecentScoutFilingPriming,
+  type GradedIdeaView,
+  type RecentScoutFilingView,
+} from './ideator-feedback-priming';
 import { getScoutLensWeights, readLensRecency } from './routed-ledger';
-import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { CREATIVE_LENSES, type CreativeLens, type Proposal } from './types';
 import { DEFAULT_SCOUT_CONFIG, type ScoutConfig } from './config';
 import type { CorpusEntry } from './critique-core';
 import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
@@ -61,6 +67,7 @@ import type { ExperimentDispatchPort } from './experiment-rail';
 import { activeWorkspaceId } from '../workspace-registry';
 import { getOwnerSteering } from '../owner-steering';
 import { resolveFederatedPrimingConfig, type FederatedPrimingConfig } from './federated-priming';
+import { buildGoalFeedbackConsultPort, readResolvedGoalConsultProposals } from './goal-consult';
 
 export interface BuildScoutCycleDepsOptions {
   /** Harness this cycle runs for — scopes the concrete-rail improvement capture. */
@@ -102,6 +109,8 @@ export interface BuildScoutCycleDepsOptions {
    * (tests). Default: prod `readRoutedIdeas` (B-02's reader), harness-scoped.
    */
   graderFeedbackReader?: () => Promise<GradedIdeaView[]>;
+  /** Override the bounded recent Scout-filing read behind self-dedup priming (tests). */
+  recentScoutFilingReader?: () => Promise<RecentScoutFilingView[]>;
   /** Override the dark experiment-rail dispatch port (tests). Default: the dry-run-only
    *  buildExperimentDispatchPort. Only consulted when SCOUT_EXPERIMENT_RAIL is ON. */
   experimentDispatch?: ExperimentDispatchPort;
@@ -111,6 +120,10 @@ export interface BuildScoutCycleDepsOptions {
   /** Override the existing-goal amendment dispatch (tests/drills). Default: the
    * production adapter over the registered goals:update tool (D-004/D-013). */
   goalAmendmentDispatch?: GoalAmendmentDispatchPort;
+  /** Override D-010's get_feedback adapter (tests/drills). */
+  goalFeedbackConsult?: GoalFeedbackConsultPort;
+  /** Override the stage-artifact continuation read (tests/drills). */
+  resolvedGoalConsultReader?: () => Promise<Proposal[]>;
   /** Called when a deterministic Scout side rail authors a new draft plan that needs Queen review. */
   onScoutDraftCreated?: (draft: { slug: string; title: string }) => Promise<void>;
   /**
@@ -159,9 +172,7 @@ export function rosterForBudget(
     return lenses === CREATIVE_LENSES ? {} : { lenses: [...lenses] };
   }
   const n = Math.max(1, Math.floor(maxIdeators));
-  const ordered = lensRecency
-    ? [...lenses].sort((a, b) => (lensRecency[a] ?? 0) - (lensRecency[b] ?? 0))
-    : [...lenses];
+  const ordered = lensRecency ? [...lenses].sort((a, b) => (lensRecency[a] ?? 0) - (lensRecency[b] ?? 0)) : [...lenses];
   return { lenses: ordered.slice(0, n) };
 }
 
@@ -360,6 +371,21 @@ export function buildScoutCycleDeps(
   // back by the cycle runner AFTER runScoutCycle resolves (via the getter on the returned
   // deps) so the scheduler can persist them on the 'ran' tick detail.
   let lastIdeation: IdeationSlotOutcome[] | undefined;
+  const goalFeedbackConsult =
+    opts.goalFeedbackConsult ??
+    buildGoalFeedbackConsultPort({
+      harnessSlug: opts.harnessSlug,
+      cycleId: opts.cycleId ?? 'scout-cycle-unscoped',
+      workspaceId: activeWorkspaceId(),
+    });
+  const resolvedGoalConsultReader =
+    opts.resolvedGoalConsultReader ??
+    (() =>
+      readResolvedGoalConsultProposals({
+        harnessSlug: opts.harnessSlug,
+        workspaceId: activeWorkspaceId(),
+      }));
+  let goalConsultContinuationDrained = false;
   const routerPorts: RouterPorts = {
     plansNew: buildPlansNewPort(opts.createPlanDraft),
     gymDispatch: buildGymDispatchPort(opts.archive),
@@ -375,6 +401,8 @@ export function buildScoutCycleDeps(
     // This is deliberately a sibling port on the SAME rail, not a sixth rail.
     goalAmendmentDispatch:
       opts.goalAmendmentDispatch ?? buildGoalAmendmentDispatchPort({ harnessSlug: opts.harnessSlug }),
+    // D-010: independent feedback before either goal-rail write shape.
+    goalFeedbackConsult,
   };
 
   const baseReaders = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
@@ -694,9 +722,7 @@ export function buildScoutCycleDeps(
       // mistake. Runs LAST so every digest lane is populated and the pattern refs
       // are complete. Fail-soft by contract (the helper never throws).
       if (opts.cycleId) {
-        const { recordObservationConsumption } = await import(
-          '../harness/improvements/observation-consumption'
-        );
+        const { recordObservationConsumption } = await import('../harness/improvements/observation-consumption');
         const res = await recordObservationConsumption({
           workspaceId: activeWorkspaceId(),
           readIds: lastFrictionIds,
@@ -746,6 +772,15 @@ export function buildScoutCycleDeps(
         harnessSlug: opts.harnessSlug,
         ...(opts.graderFeedbackReader ? { readRows: opts.graderFeedbackReader } : {}),
       });
+      // EI-20220012252019651: remind each ideator of recent Scout-origin filings
+      // from this harness so a repeated standing query becomes an amendment (or
+      // a consciously new angle) instead of another near-duplicate. The reader
+      // is bounded and fail-open like grader priming, so history availability
+      // never blocks a cycle.
+      const recentScoutFilings = await gatherRecentScoutFilingPriming({
+        harnessSlug: opts.harnessSlug,
+        ...(opts.recentScoutFilingReader ? { readRows: opts.recentScoutFilingReader } : {}),
+      });
       const { foreignSeeds } = await readFederatedArchive();
       const nicheMapPriming = buildNicheMapPriming(digest.nicheMap ?? [], federatedPriming);
       const federatedSeedPriming = buildFederatedSeedPriming(foreignSeeds, federatedPriming);
@@ -753,6 +788,7 @@ export function buildScoutCycleDeps(
         ...(federatedSeedPriming ? [federatedSeedPriming] : []),
         ...(stones.length ? [priming] : []),
         ...(grader.priming ? [grader.priming] : []),
+        ...(recentScoutFilings.priming ? [recentScoutFilings.priming] : []),
       ];
       const ideated = await runIdeators(digest, {
         llmCall: ctx.llmCall,
@@ -861,12 +897,28 @@ export function buildScoutCycleDeps(
       // construction (goal bumps 'plan'-hinted proposals, instance bumps 'gym'-hinted).
       const goalOverride = makeGoalScaleOverride(scoutConfig.routing.goalScaleMarkers);
       const instanceOverride = makeWholeSystemInstanceOverride(scoutConfig.routing.wholeSystemMarkers);
-      const result = await routeProposals(proposals, routerPorts, {
+      // D-010 continuation: terminal consults from older stage-artifact rows
+      // re-enter BEFORE new proposals, so the one-goal-per-cycle cap favors the
+      // already-reviewed work. Open consults remain deferred and are not polled.
+      let resumedGoalProposals: Proposal[] = [];
+      if (!goalConsultContinuationDrained) {
+        goalConsultContinuationDrained = true;
+        try {
+          resumedGoalProposals = await resolvedGoalConsultReader();
+        } catch (err) {
+          console.warn(
+            '[scout/cycle-deps] goal-consult continuation read failed — new goal proposals still consult normally:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+      const result = await routeProposals([...resumedGoalProposals, ...proposals], routerPorts, {
         override: (p) => goalOverride(p) ?? instanceOverride(p),
         defaultRail: scoutConfig.routing.defaultRail,
         gymEnabled,
         goalEnabled,
         goalBudgetCentsCap: scoutConfig.routing.goalBudgetCentsCap,
+        cycleId: opts.cycleId,
       });
       // Dark Scout→experiment rail (SCOUT_EXPERIMENT_RAIL, default OFF — #2 "close the
       // loop"): ADDITIVELY express each testable (gym-rail) proposal as a DRY-RUN

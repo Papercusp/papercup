@@ -77,7 +77,12 @@ import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
 import { ScoutIdeatorsTransportError } from './ideators';
 import { resolveScoutConfig } from './config';
 import { makeFakeScoutLlm, fixtureProposal, fakeStateOfHiveReaders } from './test-support';
-import { GRADER_FEEDBACK_HEADING, type GradedIdeaView } from './ideator-feedback-priming';
+import {
+  GRADER_FEEDBACK_HEADING,
+  RECENT_SCOUT_FILINGS_HEADING,
+  type GradedIdeaView,
+  type RecentScoutFilingView,
+} from './ideator-feedback-priming';
 import type { StateOfHiveReaders } from './corpus-digest';
 import type { CorpusEntry } from './critique-core';
 import type { ArchiveEliteView, ArchivePort } from './gym-bridge';
@@ -203,7 +208,19 @@ describe('buildScoutCycleDeps — route wiring (ctx-bound plan creator)', () => 
       goalId: targetGoalId,
     }));
     const goalDispatch = vi.fn(async () => ({ goalId: 'wrong-new-goal' }));
-    const { deps } = build({ goalAmendmentDispatch, goalDispatch });
+    const goalFeedbackConsult = vi.fn(async ({ proposal }: { proposal: ReturnType<typeof fixtureProposal> }) => {
+      const consultation = {
+        originCycleId: 'cyc-deps-1',
+        originalProposalId: proposal.id,
+        conversationId: 'conv-test',
+        status: 'unavailable' as const,
+        state: 'no_qualified_responder',
+        verdict: 'no_qualified_responder' as const,
+        reason: 'unit fixture has no live reviewer',
+      };
+      return { proposal: { ...proposal, consultation }, consultation };
+    });
+    const { deps } = build({ goalAmendmentDispatch, goalDispatch, goalFeedbackConsult });
     const proposal = fixtureProposal({
       id: 'prop-amend',
       routeHint: 'goal',
@@ -219,6 +236,7 @@ describe('buildScoutCycleDeps — route wiring (ctx-bound plan creator)', () => 
     });
     expect(goalAmendmentDispatch).toHaveBeenCalledWith({ proposal, targetGoalId: 'goal-existing' });
     expect(goalDispatch).not.toHaveBeenCalled();
+    expect(goalFeedbackConsult).toHaveBeenCalledWith({ proposal, targetGoalId: 'goal-existing' });
   });
 });
 
@@ -248,6 +266,14 @@ describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading
       humanFeedback: 'exactly the right altitude',
       gradedBy: 'owner',
       gradedAt: '2026-06-12T10:00:00.000Z',
+    },
+  ];
+  const RECENT_FILINGS: RecentScoutFilingView[] = [
+    {
+      lens: 'reframing',
+      ideaId: 'idea-recent-1',
+      title: 'Retry diff summaries',
+      routedAt: '2026-06-12T10:00:00.000Z',
     },
   ];
 
@@ -295,7 +321,10 @@ describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading
       {
         ...DIGEST,
         nicheMap: [
-          { summary: 'crowded niche module|sync|low — 4 elites across 3 hives', ref: 'niche:v1:crowded:module|sync|low' },
+          {
+            summary: 'crowded niche module|sync|low — 4 elites across 3 hives',
+            ref: 'niche:v1:crowded:module|sync|low',
+          },
           { summary: 'empty niche module|docs|low — adjacent to local winners', ref: 'niche:v1:empty:module|docs|low' },
         ],
       },
@@ -331,6 +360,22 @@ describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading
     for (const prompt of seen) {
       expect(prompt).not.toContain(GYM_HEADING);
       expect(prompt).not.toContain(GRADER_FEEDBACK_HEADING);
+    }
+  });
+
+  it('primes every ideator with recent Scout filings from the injected reader', async () => {
+    const { deps } = build({
+      archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) },
+      graderFeedbackReader: async () => [],
+      recentScoutFilingReader: async () => RECENT_FILINGS,
+    });
+    const { seen, llmCall } = capturingLlm();
+    await deps.ideate(DIGEST, { llmCall, maxIdeators: 2 });
+    expect(seen).toHaveLength(2);
+    for (const prompt of seen) {
+      expect(prompt).toContain(RECENT_SCOUT_FILINGS_HEADING);
+      expect(prompt).toContain('Retry diff summaries');
+      expect(prompt).toContain('Do not re-file one as-is');
     }
   });
 });
@@ -382,7 +427,14 @@ describe('buildScoutCycleDeps — P-010 per-blueprint scout framing', () => {
   it('threads framing.criticMission into the critic system prompt', async () => {
     const { deps } = build({ scoutConfig: resolveScoutConfig({ framing: WORK }) });
     const { systems, llmCall } = capturingSystems();
-    const i: Idea = { id: 'i1', lens: 'first-principles', title: 'x', body: 'y', mechanism: 'z', addressesPatternRefs: [] };
+    const i: Idea = {
+      id: 'i1',
+      lens: 'first-principles',
+      title: 'x',
+      body: 'y',
+      mechanism: 'z',
+      addressesPatternRefs: [],
+    };
     await deps.critique([i], { llmCall, corpus: [] });
     expect(systems).toHaveLength(1);
     expect(systems[0]).toContain(WORK.criticMission);
@@ -424,7 +476,13 @@ describe('buildScoutCycleDeps — per-blueprint model overrides', () => {
       models.push(opts.model);
       const system = opts.system ?? '';
       if (system.includes('NOVELTY critic')) {
-        return { text: '', json: { conceptualNovelty: 0.9, feasibility: 0.9, rationale: 'ok' }, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+        return {
+          text: '',
+          json: { conceptualNovelty: 0.9, feasibility: 0.9, rationale: 'ok' },
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        };
       }
       if (system.includes('Scout proposer')) {
         return {
@@ -453,9 +511,10 @@ describe('buildScoutCycleDeps — per-blueprint model overrides', () => {
 
     const ideas = await deps.ideate(DIGEST, { llmCall, maxIdeators: 1 });
     await deps.critique(ideas, { llmCall, corpus: [] });
-    await deps.recombine([
-      { idea: ideas[0], novelty: 0.9, feasibility: 0.9, noveltyMatches: [], verdict: 'keep', notes: 'ok' },
-    ], { llmCall });
+    await deps.recombine(
+      [{ idea: ideas[0], novelty: 0.9, feasibility: 0.9, noveltyMatches: [], verdict: 'keep', notes: 'ok' }],
+      { llmCall },
+    );
 
     expect(models).toEqual([MODEL, MODEL, MODEL]);
   });
@@ -537,8 +596,9 @@ describe('rosterForBudget', () => {
   describe('lens rotation by recency (WI-5041)', () => {
     it('a capped roster runs the stalest lenses first (never-routed = most stale)', () => {
       // analogical/first-principles routed recently; the other two never routed.
-      expect(rosterForBudget(2, undefined, { analogical: 1000, 'first-principles': 900 }))
-        .toEqual({ lenses: ['reframing', 'constraint-removal'] });
+      expect(rosterForBudget(2, undefined, { analogical: 1000, 'first-principles': 900 })).toEqual({
+        lenses: ['reframing', 'constraint-removal'],
+      });
     });
 
     it('alternates through the whole set across cycles (4 distinct within two capped cycles)', () => {
@@ -564,8 +624,9 @@ describe('rosterForBudget', () => {
     });
 
     it('unknown lens keys in the recency map are harmless', () => {
-      expect(rosterForBudget(1, undefined, { 'not-a-lens': 5, analogical: 10 }))
-        .toEqual({ lenses: ['first-principles'] });
+      expect(rosterForBudget(1, undefined, { 'not-a-lens': 5, analogical: 10 })).toEqual({
+        lenses: ['first-principles'],
+      });
     });
   });
 });
@@ -609,8 +670,8 @@ describe('readNoveltyCorpus routed-ledger leg (EI-18697783591503819)', () => {
 
   it('does not reintroduce the bare recency window that caused the regression', () => {
     // The exact prior shape: a top-level recency sort with no dedup ahead of it.
-    const bareRecencyWindow = /ORDER BY routed_at DESC\s+LIMIT/.test(legSql)
-      && !/DISTINCT ON \(routed_ref\)/.test(legSql);
+    const bareRecencyWindow =
+      /ORDER BY routed_at DESC\s+LIMIT/.test(legSql) && !/DISTINCT ON \(routed_ref\)/.test(legSql);
     expect(bareRecencyWindow).toBe(false);
   });
 });

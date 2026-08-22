@@ -6,7 +6,7 @@
  * bee to read-only without a deploy), merged OVER the baked ROLE_ENVELOPES. DARK behind
  * papercusp-capability-envelope-overrides (off ⇒ inert) + gated by the existing CAPABILITY_ENVELOPE
  * enforcement flag. The universal floor (secrets:* / processes:kill) ALWAYS applies and is never
- * loosenable here (use capability_envelope:set_protected to TIGHTEN it further). Audited + revertible.
+ * loosenable here. Audited + revertible.
  */
 import { z } from 'zod';
 import { defineTool, entityRef, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
@@ -26,7 +26,7 @@ export default defineTool({
   capability: 'operator:write',
   guidance: {
     when: 'Incident response: confine a hallucinating/misbehaving role to read-only (denyCapabilities: capability:fs-write/capability:bash) or restore it, live. get to inspect the active override.',
-    notWhen: 'To TIGHTEN the universal protected floor use capability_envelope:set_protected (tighten-only). To change quota use quota tools; tiers use capability_tier:set. Loosening cannot bypass the protected floor.',
+    notWhen: 'The universal protected floor is not mutable through this role override. To change quota use quota tools; tiers use capability_tier:set. Loosening cannot bypass the protected floor.',
     chaining: 'config:list-overrides shows the active envelope overrides; config:reset-overrides reverts them. Needs the owner to flip papercusp-capability-envelope-overrides + CAPABILITY_ENVELOPE to enforce.',
     seeAlso: [
       'capability:grant_role (grant one capability to a role)',

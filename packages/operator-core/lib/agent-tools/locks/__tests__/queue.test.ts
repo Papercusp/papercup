@@ -80,6 +80,11 @@ describe('locks:queue handler', () => {
     expect(out.waiting[0]).toMatchObject({ waiter_id: 'w1', queued_ts: queued.toISOString(), wait_until: waitUntil.toISOString() });
   });
 
+  it('serializes an empty completed list when terminal waiters were not requested', async () => {
+    const out = payload((await tool.handler({}, ctx)) as never);
+    expect(out).toMatchObject({ active_locks: [], waiting: [], completed: [] });
+  });
+
   it('maps the optional completed list when present', async () => {
     const queued = new Date('2026-06-01T00:00:00.000Z');
     const waitUntil = new Date('2026-06-01T00:01:00.000Z');

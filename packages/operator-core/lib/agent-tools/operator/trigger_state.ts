@@ -16,9 +16,9 @@ export default defineTool({
   capability: 'operator:read',
   guidance: {
     when: `Read scanner trigger state — when the next scan fires, what's pending.`,
-    notWhen: `For LIVE scan results, use \`operator:last_scan\` or \`operator:scans_list\`.`,
+    notWhen: `For LIVE scan findings and their current triage state, use \`improvements:digest\`.`,
     seeAlso: [
-      'operator:last_scan (live scan results)',
+      'improvements:digest (live scan findings)',
       'operator:dedup_check (dedup a scan candidate)',
     ],
   },

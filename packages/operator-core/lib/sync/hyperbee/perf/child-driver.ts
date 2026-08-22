@@ -240,13 +240,25 @@ export function spawnPeerChild(
   // harden-shared-hive-to-256-peers-2026-06-29 P-012 / D-024; see
   // perf/no-pg-hooks.mjs for the full rationale and why this is a rig-local
   // loader rather than ~40 lazy imports across production projection modules.
+  //
+  // GATED ON `!cfg.hivePubkey`, and that gate is load-bearing rather than
+  // cautious. A paired smoke (one reader, local testnet, `ready` reached in both
+  // arms) measured VmRSS 312.6MB without the loader and 179.4MB with it, boot
+  // 8.4s vs 7.6s — but it also showed the ONE behavioural difference: with the
+  // stub in place `buildHiveRekeyBootDeps` fail-opens (logged loudly as
+  // `epoch_gate_skipped`) where the control completed it. For a `kind:'local'`
+  // peer that resolves to the same null rekeyDeps either way, since the re-key is
+  // inert without a hive. For a HIVE-bound peer it would not: those scenarios
+  // exercise the re-key path deliberately and must keep the real db-org. So a
+  // hive peer pays the memory and a local peer does not — the >64-peer mesh
+  // ladder this exists for is local-bound.
+  const noPgLoader = !cfg.hivePubkey;
   const argv = [
     ...(opts.execPrefix ?? []),
     process.execPath,
     '--import',
     'tsx',
-    '--import',
-    NO_PG_REGISTER_PATH,
+    ...(noPgLoader ? ['--import', NO_PG_REGISTER_PATH] : []),
     CHILD_PATH,
   ];
   const proc = spawn(argv[0], argv.slice(1), {

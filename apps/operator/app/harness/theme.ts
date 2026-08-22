@@ -3,6 +3,8 @@
  * Dense, low-chrome, keyboard-first.
  */
 
+import type { ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
+
 export const COLORS = {
   bg: 'var(--pot-harness-bg, #0b0e14)',
   surface: 'var(--pot-harness-surface, #0f1420)',
@@ -308,7 +310,7 @@ export interface CategoryTone {
 
 // Cupboard listing kinds use a three-part categorical treatment. This belongs
 // beside the other central kind tables rather than inside the storefront.
-export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
+export const CUPBOARD_LISTING_KIND_TONE: Record<ListingKind, CategoryTone> = {
   harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   blueprint: { fg: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 86%)', border: 'color-mix(in srgb, var(--good), transparent 74%)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
@@ -327,6 +329,23 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
   // (good/green), pack (accent-cool), knowledge-pack (warn), template (rose).
   // Without this entry KindBadge/ListingCard crash on `tone.fg` for an app row.
   app: { fg: 'var(--gold-400)', bg: 'color-mix(in srgb, var(--gold-400), transparent 86%)', border: 'color-mix(in srgb, var(--gold-400), transparent 74%)' },
+  // Judgment/procedure kinds (cupboard-plan-rubric-recipe-sharing-2026-08-21).
+  // These use the fixed categorical palette because kind is identity, not state.
+  rubric: {
+    fg: CATEGORICAL.violet400.hex,
+    bg: `color-mix(in srgb, ${CATEGORICAL.violet400.hex}, transparent 86%)`,
+    border: `color-mix(in srgb, ${CATEGORICAL.violet400.hex}, transparent 74%)`,
+  },
+  plan: {
+    fg: CATEGORICAL.teal400.hex,
+    bg: `color-mix(in srgb, ${CATEGORICAL.teal400.hex}, transparent 86%)`,
+    border: `color-mix(in srgb, ${CATEGORICAL.teal400.hex}, transparent 74%)`,
+  },
+  recipe: {
+    fg: CATEGORICAL.orange500.hex,
+    bg: `color-mix(in srgb, ${CATEGORICAL.orange500.hex}, transparent 86%)`,
+    border: `color-mix(in srgb, ${CATEGORICAL.orange500.hex}, transparent 74%)`,
+  },
 };
 
 // Memory-kind chip hues (settings/user/memory). Categorical, not status —

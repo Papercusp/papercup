@@ -5,7 +5,7 @@
  * grows before it steers toward a clean stopping point and self-compacts. The
  * limit is a SOFT target below the model's hard window; the live usage signal
  * (`context: N/limit (X%)`) is injected each turn, and near it the agent should
- * reach a stopping point and call `session:request_compaction`. Persisted per
+ * reach a stopping point and call `session:request-compaction`. Persisted per
  * session on `coord_presence.compaction_limit` (keyed by the session owner id).
  *
  * Runtime writes are accepted only when the requested value is within the
@@ -34,13 +34,13 @@ export const DEFAULT_COMPACTION_LIMIT_TOKENS = 160_000;
 export default defineTool({
   name: 'config:set-compaction-limit',
   description:
-    "Set a soft compaction limit (tokens) — a target below the model window; near it, reach a stopping point and call session:request_compaction. Defaults to THIS session; pass `ownerId` to set a MEMBER's limit as its fleet leader (or queen/owner) — no more dispatching \"set your own limit\". Persisted per session; visible in coord:presence.",
+    "Set a soft compaction limit (tokens) — a target below the model window; near it, reach a stopping point and call session:request-compaction. Defaults to THIS session; pass `ownerId` to set a MEMBER's limit as its fleet leader (or queen/owner) — no more dispatching \"set your own limit\". Persisted per session; visible in coord:presence.",
   capability: 'coord:write',
   guidance: {
     when: 'Tune how large a session\'s context grows before it self-compacts — raise it for wide-context work, lower it to stay sharp on a tight task. As a fleet leader, pass ownerId to set a member\'s limit directly.',
     notWhen:
-      'To compact right now — use session:request_compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`. To set a member you do NOT lead — you cannot (leader/queen/owner only).',
-    seeAlso: ['session:request_compaction (compact now, at a stopping point)'],
+      'To compact right now — use session:request-compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`. To set a member you do NOT lead — you cannot (leader/queen/owner only).',
+    seeAlso: ['session:request-compaction (compact now, at a stopping point)'],
   },
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

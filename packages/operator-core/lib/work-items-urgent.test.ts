@@ -98,6 +98,7 @@ vi.mock('./issues-engineer', () => ({
   // makes vitest throw "No listIssueScopes export is defined on the mock" during COLLECTION
   // — which aborts the whole file batch, not just this test.
   listIssueScopes: vi.fn(async () => [] as string[]),
+  projectAllIssuesForBoundedRead: vi.fn(async () => []),
   countIssues: vi.fn(async () => 0),
   searchIssuesForDedup: vi.fn(async () => []),
   findIssuesByWatchdogKeys: vi.fn(async () => []),

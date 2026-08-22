@@ -10,12 +10,19 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   formatGraderFeedbackPriming,
+  formatRecentScoutFilingPriming,
   gatherGraderFeedbackPriming,
+  gatherRecentScoutFilingPriming,
   GRADER_FEEDBACK_HEADING,
+  RECENT_SCOUT_FILINGS_HEADING,
+  MAX_RECENT_SCOUT_FILINGS,
+  MAX_RECENT_SCOUT_FILINGS_BLOCK_CHARS,
+  MAX_RECENT_SCOUT_FILING_ENTRY_CHARS,
   MAX_FEEDBACK_BLOCK_CHARS,
   MAX_FEEDBACK_ENTRIES,
   MAX_FEEDBACK_ENTRY_CHARS,
   type GradedIdeaView,
+  type RecentScoutFilingView,
 } from './ideator-feedback-priming';
 
 function graded(over: Partial<GradedIdeaView> = {}): GradedIdeaView {
@@ -195,6 +202,73 @@ describe('gatherGraderFeedbackPriming — the reader seam', () => {
   it('degrades to an empty block when the read fails (never crashes a cycle)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await gatherGraderFeedbackPriming({
+      readRows: async () => {
+        throw new Error('PG down');
+      },
+    });
+    expect(res).toEqual({ entries: [], priming: '' });
+  });
+});
+
+function filed(over: Partial<RecentScoutFilingView> = {}): RecentScoutFilingView {
+  return {
+    lens: 'reframing',
+    ideaId: 'idea-filed-1',
+    title: 'Retry diff summaries',
+    routedAt: '2026-06-12T10:00:00.000Z',
+    ...over,
+  };
+}
+
+describe('formatRecentScoutFilingPriming — EI-20220012252019651', () => {
+  it('surfaces the newest routed filings with amendment guidance', () => {
+    const { priming, entries } = formatRecentScoutFilingPriming([
+      filed({ title: 'older', routedAt: '2026-06-10T00:00:00.000Z' }),
+      filed({ title: 'newer', routedAt: '2026-06-12T00:00:00.000Z' }),
+    ]);
+    expect(priming.startsWith(`${RECENT_SCOUT_FILINGS_HEADING}\n`)).toBe(true);
+    expect(priming).toContain('Do not re-file one as-is');
+    expect(entries).toEqual([
+      '- [reframing · 2026-06-12] newer',
+      '- [reframing · 2026-06-10] older',
+    ]);
+  });
+
+  it('bounds the filing window and each entry', () => {
+    const rows = Array.from({ length: MAX_RECENT_SCOUT_FILINGS + 4 }, (_, i) =>
+      filed({
+        ideaId: `idea-${i}`,
+        title: 'T'.repeat(300),
+        routedAt: `2026-06-12T10:${String(i).padStart(2, '0')}:00.000Z`,
+      }),
+    );
+    const { entries, priming } = formatRecentScoutFilingPriming(rows);
+    expect(entries.length).toBeLessThanOrEqual(MAX_RECENT_SCOUT_FILINGS);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((entry) => entry.length <= MAX_RECENT_SCOUT_FILING_ENTRY_CHARS)).toBe(true);
+    expect(priming.length).toBeLessThanOrEqual(MAX_RECENT_SCOUT_FILINGS_BLOCK_CHARS);
+  });
+
+  it('is empty for an empty or title-less read', () => {
+    expect(formatRecentScoutFilingPriming([])).toEqual({ entries: [], priming: '' });
+    expect(formatRecentScoutFilingPriming([filed({ title: undefined, ideaId: undefined })])).toEqual({
+      entries: [],
+      priming: '',
+    });
+  });
+});
+
+describe('gatherRecentScoutFilingPriming — the reader seam', () => {
+  it('reads through the injected bounded-history seam', async () => {
+    const readRows = vi.fn(async () => [filed()]);
+    const res = await gatherRecentScoutFilingPriming({ readRows, harnessSlug: 'papercusp' });
+    expect(readRows).toHaveBeenCalledTimes(1);
+    expect(res.entries).toEqual(['- [reframing · 2026-06-12] Retry diff summaries']);
+  });
+
+  it('degrades to an empty block when history is unavailable', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await gatherRecentScoutFilingPriming({
       readRows: async () => {
         throw new Error('PG down');
       },

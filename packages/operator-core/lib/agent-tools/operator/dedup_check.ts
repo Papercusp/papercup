@@ -20,9 +20,9 @@ export default defineTool({
   capability: 'operator:read',
   guidance: {
     when: `Check whether a suggestion / scan candidate duplicates a recent one before committing it to the panel.`,
-    notWhen: `For listing existing scans, use \`operator:scans_list\`.`,
+    notWhen: `For listing existing scan findings, use \`improvements:digest\`.`,
     seeAlso: [
-      'operator:scans_list (list existing scans)',
+      'improvements:digest (list existing scan findings)',
       'operator:trigger_state (scan trigger state)',
     ],
   },

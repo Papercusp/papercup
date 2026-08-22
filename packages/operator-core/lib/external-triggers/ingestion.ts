@@ -17,6 +17,7 @@ import {
 } from '../events/await/engine';
 import type { NormalizedExternalEvent } from '../personal-vault/live-sink';
 import { createTriggerBindingSink } from './binding-engine';
+import { getExternalTriggerSource } from './source-store';
 
 const SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
 const EVENT_NAME = /^[a-z0-9][a-z0-9.-]*$/;
@@ -197,13 +198,10 @@ export async function ingestExternalTriggerEvent(
   const datatypeId = required(input.datatypeId, 'datatype_id');
   assertKeySegments(source, eventName);
 
-  const sourceRows = await sql<{ kind: string }[]>`
-    SELECT kind FROM harness_shared.trigger_sources
-     WHERE workspace_id = ${workspaceId} AND id = ${sourceId}
-     LIMIT 1`;
-  if (!sourceRows[0]) throw new Error(`external_trigger_unknown_source:${sourceId}`);
-  if (sourceRows[0].kind !== source) {
-    throw new Error(`external_trigger_source_kind_mismatch:${sourceRows[0].kind}:${source}`);
+  const sourceRow = await getExternalTriggerSource(sql, workspaceId, sourceId);
+  if (!sourceRow) throw new Error(`external_trigger_unknown_source:${sourceId}`);
+  if (sourceRow.kind !== source) {
+    throw new Error(`external_trigger_source_kind_mismatch:${sourceRow.kind}:${source}`);
   }
 
   const payload = await input.normalize(input.adapterPayload);

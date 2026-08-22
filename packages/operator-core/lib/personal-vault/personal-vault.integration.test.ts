@@ -13,7 +13,10 @@ import {
   setPersonalVaultEnabled,
   upsertPersonalDocuments,
 } from './store';
-import { createPersonalVaultExternalSink, syncGoogleContacts } from './live-sink';
+import {
+  createPersonalVaultExternalSinkForSource,
+  syncGoogleContacts,
+} from './live-sink';
 
 let org: OrgTestDb;
 let userId: string;
@@ -33,6 +36,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_sync_state WHERE user_id = ${userId}`;
@@ -169,7 +173,12 @@ describe('Personal Vault core', () => {
   });
 
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
-    const sink = createPersonalVaultExternalSink(org.adminSql, WS, userId);
+    const sources = await org.adminSql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_sources
+        (workspace_id, kind, owner_user_id, status)
+      VALUES (${WS}, 'gmail', ${userId}, 'ready')
+      RETURNING id`;
+    const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, sources[0].id);
     expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}` });
     await sink.deliver({
       key: 'ext:gmail:message-received', externalId: 'live-m1', occurredAt: '2026-08-22T00:00:00Z',

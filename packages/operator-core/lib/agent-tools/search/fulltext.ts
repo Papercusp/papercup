@@ -37,13 +37,12 @@ export default defineTool({
   guidance: {
     when: 'User references prose past the chat history budget ("remember when we decided pricing", "the X discussion from last week"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:["work_item"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.',
     notWhen:
-      'For STRUCTURED queries on harness state, features, or tasks — use the dedicated tools (harness:status, tasks:list, etc), faster/more precise when the schema matches. For CODE recall, use `gitnexus:context` for an exact symbol you have — NOT `gitnexus:query`/`cypher`, both broken (0 results always, WI-35557); use grep for keyword code search until fixed. For tasks/goals/projects text, use `search:query`. `scope:["work_item"]` covers only the ISSUE family (bug/change/task) — not feature-family (F-NNN).',
+      'For STRUCTURED queries on harness state, features, or tasks — use the dedicated tools (harness:status, tasks:list, etc), faster/more precise when the schema matches. For CODE recall, use repository source search; this tool indexes workspace prose, not source files. For tasks/goals/projects text, use `search:query`. `scope:["work_item"]` covers only the ISSUE family (bug/change/task) — not feature-family (F-NNN).',
     chaining:
       'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit; pair `scope:["work_item"]` hits with `work_items:get { id }` for the full record. The result `excerpt` is just the first 200 chars for ranking display.',
     seeAlso: [
       'search:semantic (embedding-based recall)',
       'search:query (structured tasks / goals / projects rows)',
-      'gitnexus:context (exact-symbol code lookup — NOT gitnexus:query/cypher, see notWhen)',
     ],
   },
   requirePrincipal: false,

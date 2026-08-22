@@ -41,11 +41,18 @@ beforeAll(async () => {
       updated_at timestamptz NOT NULL DEFAULT now(), review_status text NOT NULL DEFAULT 'none',
       pot_slug text, PRIMARY KEY (workspace_id, id)
     );
+    CREATE TABLE harness_shared.users (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      username text NOT NULL UNIQUE,
+      display_name text NOT NULL DEFAULT ''
+    );
     INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
     VALUES ('papercusp-workspace', 'papercusp', 'inbox-triage');
   `);
   await sql.unsafe(migration(877, 'canonical-external-datatypes'));
   await sql.unsafe(migration(876, 'external-trigger-core'));
+  await sql.unsafe(migration(879, 'trigger-source-owner-user'));
+  await sql.unsafe(migration(879, 'trigger-source-owner-user'));
   const [source] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
     VALUES ('papercusp-workspace', 'gmail', 'connected') RETURNING id`;

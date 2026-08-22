@@ -3162,7 +3162,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Incident response: confine a hallucinating/misbehaving role to read-only (denyCapabilities: capability:fs-write/capability:bash) or restore it, live. get to inspect the active override.",
-        "notWhen": "To TIGHTEN the universal protected floor use capability_envelope:set_protected (tighten-only). To change quota use quota tools; tiers use capability_tier:set. Loosening cannot bypass the protected floor.",
+        "notWhen": "The universal protected floor is not mutable through this role override. To change quota use quota tools; tiers use capability_tier:set. Loosening cannot bypass the protected floor.",
         "chaining": "config:list-overrides shows the active envelope overrides; config:reset-overrides reverts them. Needs the owner to flip papercusp-capability-envelope-overrides + CAPABILITY_ENVELOPE to enforce."
       }
     },
@@ -4070,7 +4070,7 @@
           "POST"
         ]
       },
-      "description": "Set a soft compaction limit (tokens) — a target below the model window; near it, reach a stopping point and call session:request_compaction. Defaults to THIS session; pass `ownerId` to set a MEMBER's limit as its fleet leader (or queen/owner) — no more dispatching \"set your own limit\". Persisted per session; visible in coord:presence.",
+      "description": "Set a soft compaction limit (tokens) — a target below the model window; near it, reach a stopping point and call session:request-compaction. Defaults to THIS session; pass `ownerId` to set a MEMBER's limit as its fleet leader (or queen/owner) — no more dispatching \"set your own limit\". Persisted per session; visible in coord:presence.",
       "capabilities": [
         "coord:write"
       ],
@@ -4132,7 +4132,7 @@
       ],
       "guidance": {
         "when": "Tune how large a session's context grows before it self-compacts — raise it for wide-context work, lower it to stay sharp on a tight task. As a fleet leader, pass ownerId to set a member's limit directly.",
-        "notWhen": "To compact right now — use session:request_compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`. To set a member you do NOT lead — you cannot (leader/queen/owner only)."
+        "notWhen": "To compact right now — use session:request-compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`. To set a member you do NOT lead — you cannot (leader/queen/owner only)."
       }
     },
     {
@@ -12045,14 +12045,14 @@
           "POST"
         ]
       },
-      "description": "When to use: User asks about a specific harness by name (\"tell me about sheets\", \"what's the status of forms\") and you need its row + feature counts.\n\nWhen NOT to use: For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `escalations:get` — `harness:get` is the static record.\n\nChaining: Follow `harness:list` if you don't have the slug. Follow with `harness:status` if you also need live counts.",
+      "description": "When to use: User asks about a specific harness by name (\"tell me about sheets\", \"what's the status of forms\") and you need its row + feature counts.\n\nWhen NOT to use: For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `coord:escalations` — `harness:get` is the static record.\n\nChaining: Follow `harness:list` if you don't have the slug. Follow with `harness:status` if you also need live counts.",
       "capabilities": [
         "harness:read"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "User asks about a specific harness by name (\"tell me about sheets\", \"what's the status of forms\") and you need its row + feature counts.",
-        "notWhen": "For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `escalations:get` — `harness:get` is the static record.",
+        "notWhen": "For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `coord:escalations` — `harness:get` is the static record.",
         "chaining": "Follow `harness:list` if you don't have the slug. Follow with `harness:status` if you also need live counts."
       }
     },
@@ -15933,7 +15933,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Check whether a suggestion / scan candidate duplicates a recent one before committing it to the panel.",
-        "notWhen": "For listing existing scans, use `operator:scans_list`."
+        "notWhen": "For listing existing scan findings, use `improvements:digest`."
       }
     },
     {
@@ -16269,7 +16269,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Read scanner trigger state — when the next scan fires, what's pending.",
-        "notWhen": "For LIVE scan results, use `operator:last_scan` or `operator:scans_list`."
+        "notWhen": "For LIVE scan findings and their current triage state, use `improvements:digest`."
       }
     },
     {
@@ -24023,7 +24023,7 @@
       ],
       "guidance": {
         "when": "User references prose past the chat history budget (\"remember when we decided pricing\", \"the X discussion from last week\"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:[\"work_item\"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.",
-        "notWhen": "For STRUCTURED queries on harness state, features, or tasks — use the dedicated tools (harness:status, tasks:list, etc), faster/more precise when the schema matches. For CODE recall, use `gitnexus:context` for an exact symbol you have — NOT `gitnexus:query`/`cypher`, both broken (0 results always, WI-35557); use grep for keyword code search until fixed. For tasks/goals/projects text, use `search:query`. `scope:[\"work_item\"]` covers only the ISSUE family (bug/change/task) — not feature-family (F-NNN).",
+        "notWhen": "For STRUCTURED queries on harness state, features, or tasks — use the dedicated tools (harness:status, tasks:list, etc), faster/more precise when the schema matches. For CODE recall, use repository source search; this tool indexes workspace prose, not source files. For tasks/goals/projects text, use `search:query`. `scope:[\"work_item\"]` covers only the ISSUE family (bug/change/task) — not feature-family (F-NNN).",
         "chaining": "Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit; pair `scope:[\"work_item\"]` hits with `work_items:get { id }` for the full record. The result `excerpt` is just the first 200 chars for ranking display."
       }
     },
@@ -24035,13 +24035,13 @@
           "POST"
         ]
       },
-      "description": "When to use: User asks an open-ended question that could match anything in the workspace (\"anything about auth?\", \"find references to budget guard\"). Cross-resource full-text search over tasks, goals, projects, audit.\n\nWhen NOT to use: For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For code-graph queries, use `gitnexus:query`.",
+      "description": "When to use: User asks an open-ended question that could match anything in the workspace (\"anything about auth?\", \"find references to budget guard\"). Cross-resource full-text search over tasks, goals, projects, audit.\n\nWhen NOT to use: For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For repository text, use `search:fulltext`.",
       "capabilities": [
         "search:read"
       ],
       "guidance": {
         "when": "User asks an open-ended question that could match anything in the workspace (\"anything about auth?\", \"find references to budget guard\"). Cross-resource full-text search over tasks, goals, projects, audit.",
-        "notWhen": "For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For code-graph queries, use `gitnexus:query`."
+        "notWhen": "For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For repository text, use `search:fulltext`."
       }
     },
     {
@@ -24953,12 +24953,12 @@
           "POST"
         ]
       },
-      "description": "When to use: User asks \"what tasks do I have?\", \"what's on my plate\", or you need a task id before calling `tasks:get`/`tasks:update`/`tasks:close`.\n\nWhen NOT to use: For ONE task by id, use `tasks:get`. For creating a task, use `tasks:create`. For PROJECTS / FEATURES (work the harness is doing), use `harness:*` — tasks are separate from harness features.\n\nChaining: Pair with `tasks:get` for detail on a specific row.",
+      "description": "When to use: User asks \"what tasks do I have?\", \"what's on my plate\", or you need a task id before calling `tasks:get`.\n\nWhen NOT to use: For ONE task by id, use `tasks:get`. For creating a task, use `tasks:create`. For PROJECTS / FEATURES (work the harness is doing), use `harness:*` — tasks are separate from harness features.\n\nChaining: Pair with `tasks:get` for detail on a specific row.",
       "capabilities": [
         "tasks:read"
       ],
       "guidance": {
-        "when": "User asks \"what tasks do I have?\", \"what's on my plate\", or you need a task id before calling `tasks:get`/`tasks:update`/`tasks:close`.",
+        "when": "User asks \"what tasks do I have?\", \"what's on my plate\", or you need a task id before calling `tasks:get`.",
         "notWhen": "For ONE task by id, use `tasks:get`. For creating a task, use `tasks:create`. For PROJECTS / FEATURES (work the harness is doing), use `harness:*` — tasks are separate from harness features.",
         "chaining": "Pair with `tasks:get` for detail on a specific row."
       }

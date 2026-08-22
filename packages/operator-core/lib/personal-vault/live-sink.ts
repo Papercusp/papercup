@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { requireExternalTriggerSourceOwner } from '../external-triggers/source-store';
 import type { PersonalDocumentInput } from './types';
 import { setPersonalSyncState, upsertPersonalDocuments } from './store';
 
@@ -76,6 +77,21 @@ export function createPersonalVaultExternalSink(
     ref: `user:${normalizedUserId}`,
     deliver: (event) => ingestPersonalExternalEvent(sql, workspaceId, normalizedUserId, event),
   };
+}
+
+/**
+ * Resolve a source's server-owned local principal and construct its Personal
+ * Vault sink. Adapters call this before passing the sink through
+ * `ingestExternalTriggerEvent.additionalSinks`; no provider payload field can
+ * nominate or widen the target user.
+ */
+export async function createPersonalVaultExternalSinkForSource(
+  sql: Sql,
+  workspaceId: string,
+  sourceId: string,
+): Promise<PersonalVaultExternalSink> {
+  const userId = await requireExternalTriggerSourceOwner(sql, workspaceId, sourceId);
+  return createPersonalVaultExternalSink(sql, workspaceId, userId);
 }
 
 export async function syncGoogleContacts(
