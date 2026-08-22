@@ -566,6 +566,17 @@ export default defineTool({
       }
     }
 
+    type WakeOutcome =
+      | {
+          woken: number;
+          staged: number;
+          stagedTargets?: string[];
+          fanoutCapped?: string[];
+          timedOutTargets?: string[];
+        }
+      | { failed: true };
+    let wakeOutcome: WakeOutcome | null = null;
+
     // Peer-set: deliver the why (+ contract on enable) — or the downgraded
     // REQUEST when the owner-sticky guard refused the write. Fail-soft: a
     // delivery hiccup never rolls back an applied mode change.
@@ -628,12 +639,23 @@ export default defineTool({
          pre-existing behavior — the agent reads it on its next turn. */
       try {
         const { wakeRecipients } = await import('../coordination/inbox-wake');
-        await wakeRecipients([target], {
+        const result = await wakeRecipients([target], {
           summary: `mode '${def.id}' ${enabled ? 'set' : 'cleared'} by ${ident.ownerId}`,
           source: 'mode:set',
           workspaceId: ident.workspaceId ?? undefined,
         });
-      } catch { /* fail-soft — the durable inbox row already landed above */ }
+        wakeOutcome = {
+          woken: result.woken,
+          staged: result.staged,
+          ...(result.stagedTargets?.length ? { stagedTargets: result.stagedTargets } : {}),
+          ...(result.fanoutCapped?.length ? { fanoutCapped: result.fanoutCapped } : {}),
+          ...(result.timedOutTargets?.length ? { timedOutTargets: result.timedOutTargets } : {}),
+        };
+      } catch {
+        // Fail-soft — the durable inbox row already landed above, but callers
+        // must still be able to distinguish a wake failure from a fired wake.
+        wakeOutcome = { failed: true };
+      }
     }
 
     const payload: Record<string, unknown> = {
@@ -676,6 +698,7 @@ export default defineTool({
       ...(instructionsFact
         ? { instructionsFact, instructionsFactKey: modeInstructionsFactKey(def.id) }
         : {}),
+      ...(wakeOutcome ? { wake: wakeOutcome } : {}),
       ...(wakeWarning ? { wakeSource: 'owner-only', wakeSourceWarning: wakeWarning } : {}),
       ...(control ? { controlGeneration: control.generation } : {}),
       ...(res.error ? { error: res.error } : {}),

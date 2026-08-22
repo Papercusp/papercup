@@ -53,6 +53,13 @@ const h = vi.hoisted(() => ({
   deactivateLoopForGoal: vi.fn(async (..._args: unknown[]) => false),
   assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
   retractFact: vi.fn(async (_args: unknown) => true),
+  wakeRecipients: vi.fn(async (..._args: unknown[]) => ({
+    woken: 0,
+    staged: 0,
+    stagedTargets: [],
+    fanoutCapped: [],
+    timedOutTargets: [],
+  })),
   // EI-20015592992797890: set.ts reads the INCUMBENT subject before refusing a
   // subject-requiring mode, so this binding must exist on the mock or the named
   // import breaks at module load rather than in a test.
@@ -99,6 +106,7 @@ vi.mock('../../agent-facts/store', () => ({
 vi.mock('../coordination/control-anchor', () => ({
   refreshControlAnchorAfterMutation: h.refreshControlAnchorAfterMutation,
 }));
+vi.mock('../coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));
 
 let currentIdentity: AgentIdentity = {
   ownerId: 'su-me',
@@ -147,6 +155,13 @@ beforeEach(() => {
   h.deactivateLoopForGoal.mockClear().mockResolvedValue(false);
   h.assertFact.mockClear().mockResolvedValue({ ok: true });
   h.retractFact.mockClear().mockResolvedValue(true);
+  h.wakeRecipients.mockClear().mockResolvedValue({
+    woken: 0,
+    staged: 0,
+    stagedTargets: [],
+    fanoutCapped: [],
+    timedOutTargets: [],
+  });
   h.getModeSubject.mockClear().mockResolvedValue(null);
   // Default: the goal exists and HAS declared a policy, so the pre-P-003 tests
   // above observe exactly the behaviour they always did.
@@ -678,6 +693,54 @@ describe('mode:set handler — callerIsOwnerAuthority wiring', () => {
     expect(h.sendMessage).toHaveBeenCalledTimes(1);
     const [, sendOpts] = h.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
     expect(sendOpts.to).toEqual([ME]);
+  });
+});
+
+describe('mode:set handler — wake outcome reporting', () => {
+  beforeEach(() => {
+    currentIdentity = { ownerId: PEER, ownerLabel: 'su · peer', source: 'omp-hook-session', workspaceId: 'default', userId: null };
+  });
+
+  it('reports a fired wake alongside the durable mode result', async () => {
+    h.wakeRecipients.mockResolvedValueOnce({
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    });
+
+    const body = parse(await run({ mode: 'auto', reason: 'wake peer', agent: ME }));
+
+    expect(body.ok).toBe(true);
+    expect(body.wake).toEqual({ woken: 1, staged: 0 });
+    expect(h.wakeRecipients).toHaveBeenCalledWith(
+      [ME],
+      expect.objectContaining({ source: 'mode:set' }),
+    );
+  });
+
+  it('names a staged target so manual wake-mode is not mistaken for delivery', async () => {
+    h.wakeRecipients.mockResolvedValueOnce({
+      woken: 0,
+      staged: 1,
+      stagedTargets: [ME],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    });
+
+    const body = parse(await run({ mode: 'auto', reason: 'wake paused peer', agent: ME }));
+
+    expect(body.wake).toEqual({ woken: 0, staged: 1, stagedTargets: [ME] });
+  });
+
+  it('reports a wake failure without failing the already-applied mode change', async () => {
+    h.wakeRecipients.mockRejectedValueOnce(new Error('await store unavailable'));
+
+    const body = parse(await run({ mode: 'auto', reason: 'wake peer', agent: ME }));
+
+    expect(body.ok).toBe(true);
+    expect(body.wake).toEqual({ failed: true });
   });
 });
 
