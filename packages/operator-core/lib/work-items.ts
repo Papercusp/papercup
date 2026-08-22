@@ -120,6 +120,7 @@ import {
   getIssueDetail,
   getIssueThreadWindow,
   listIssues,
+  listAllIssuesForFileExport,
   countIssues,
   countIssuesByState,
   setIssueState,
@@ -139,6 +140,7 @@ import {
   mergeIssuePayload,
   markIssueProgress,
   type EngineerIssue,
+  type ListIssuesFilter,
 } from './issues-engineer';
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from './search/prose-vector-dims';
@@ -960,10 +962,12 @@ function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
   };
 }
 
-export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
+async function listWorkItemsWithLimit(
+  filter: ListWorkItemsFilter,
+  rowLimit: number | null,
+): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
   const q = filter.q?.trim();
-  const limit = Math.min(filter.limit ?? 100, WORK_ITEMS_MAX_LIMIT);
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
   const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
@@ -1026,13 +1030,13 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
              : sql`TRUE`
          }
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
-       LIMIT ${limit}`;
+       ${rowLimit === null ? sql`` : sql`LIMIT ${rowLimit}`}`;
     out.push(...rows.map(featureRowToWorkItem));
   }
 
   // Issues are always top-level (no parent edge today), so a `parent` filter excludes them.
   if (wantIssue && !filter.parent) {
-    const issues = await listIssues({
+    const issueFilter: ListIssuesFilter = {
       // A specific issue-family kind, else ALL issue-family kinds (incl. `task`) — the
       // unified surface includes delegated tasks; the issues:* surface (its own default)
       // does not.
@@ -1055,13 +1059,31 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
       audit: filter.audit,
       completionAuthority: filter.completionAuthority,
-      limit,
-    });
+    };
+    const issues = rowLimit === null
+      ? await listAllIssuesForFileExport(issueFilter)
+      : await listIssues({ ...issueFilter, limit: rowLimit });
     out.push(...issues.map(issueToWorkItem));
   }
 
   out.sort(filter.orderByRank ? compareByHeadOfLine : compareByRecency);
-  return out.slice(0, limit);
+  return rowLimit === null ? out : out.slice(0, rowLimit);
+}
+
+export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
+  return listWorkItemsWithLimit(filter, Math.min(filter.limit ?? 100, WORK_ITEMS_MAX_LIMIT));
+}
+
+/**
+ * Complete cross-family read for file-backed exporters. Unlike
+ * {@link listWorkItems}, this does not apply the UI/result-payload ceiling.
+ * Callers must keep the rows off the model transport and return bounded
+ * metadata only.
+ */
+export async function listAllWorkItemsForFileExport(
+  filter: ListWorkItemsFilter = {},
+): Promise<WorkItem[]> {
+  return listWorkItemsWithLimit(filter, null);
 }
 
 /**

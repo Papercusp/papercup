@@ -39,6 +39,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import {
   getWorkItem,
   listWorkItems,
+  listAllWorkItemsForFileExport,
   TERMINAL_WORK_ITEM_STATES,
   WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
@@ -75,7 +76,7 @@ const argsSchema = z.object({
     .positive()
     .max(WORK_ITEMS_MAX_LIMIT)
     .optional()
-    .describe(`Max rows when enumerating by harness. Default ${WORK_ITEMS_MAX_LIMIT} (the ceiling), because an exporter silently capped at a small default is the same class of bug this tool exists to remove.`),
+    .describe(`Optional row cap when enumerating by harness. Omit for a complete file export; an explicit value is capped at ${WORK_ITEMS_MAX_LIMIT} and reported via truncatedByLimit when filled.`),
 });
 
 /**
@@ -132,7 +133,6 @@ export default defineTool({
       };
     }
 
-    const limit = args.limit ?? WORK_ITEMS_MAX_LIMIT;
     const missing: string[] = [];
     let rows: WorkItem[];
     let truncatedByLimit = false;
@@ -150,16 +150,17 @@ export default defineTool({
         else missing.push(id);
       }
     } else {
-      rows = await listWorkItems({
+      const filter = {
         harness: args.harness,
         ...(args.terminalOnly === false ? {} : { states: TERMINAL_WORK_ITEM_STATES }),
         ...(args.includeObservations ? { includeObservations: true } : {}),
-        limit,
-      });
-      // A harness enumeration that exactly fills `limit` may have more behind it.
-      // Reporting that is the whole difference between a partial export and a
-      // silently short one — the failure mode this tool was built to end.
-      truncatedByLimit = rows.length >= limit;
+      };
+      rows = args.limit === undefined
+        ? await listAllWorkItemsForFileExport(filter)
+        : await listWorkItems({ ...filter, limit: args.limit });
+      // An explicitly capped enumeration that exactly fills `limit` may have more
+      // behind it. Omitted limit uses the exporter-only complete path instead.
+      truncatedByLimit = args.limit !== undefined && rows.length >= args.limit;
     }
 
     await fs.mkdir(args.toDir, { recursive: true });

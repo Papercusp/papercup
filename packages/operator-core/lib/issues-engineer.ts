@@ -1478,7 +1478,10 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   )`;
 }
 
-export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
+async function listIssuesWithLimit(
+  filter: ListIssuesFilter,
+  rowLimit: number | null,
+): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
   const q = filter.q?.trim();
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
@@ -1578,8 +1581,25 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- post-filter a recency window rather than a set.
        AND ${filter.watchdogKeyed ? sql`payload->>'watchdogKey' IS NOT NULL` : sql`TRUE`}
      ORDER BY created_at DESC
-     LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
+     ${rowLimit === null ? sql`` : sql`LIMIT ${rowLimit}`}`;
   return rows.map(toIssue);
+}
+
+export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
+  return listIssuesWithLimit(filter, Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT));
+}
+
+/**
+ * Complete issue-family read for a file exporter. Normal/UI reads must use
+ * {@link listIssues}, whose per-read ceiling protects response and render cost.
+ * This path is intentionally not exposed as an agent tool: its caller writes
+ * rows to files and returns only counts, so no unbounded result crosses the
+ * model transport.
+ */
+export async function listAllIssuesForFileExport(
+  filter: ListIssuesFilter = {},
+): Promise<EngineerIssue[]> {
+  return listIssuesWithLimit(filter, null);
 }
 
 /**
