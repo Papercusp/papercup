@@ -11,6 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const stateMocks = vi.hoisted(() => ({
   signState: vi.fn(async () => 'test-state-token'),
 }));
+const authMocks = vi.hoisted(() => ({
+  getSessionUserOrDefault: vi.fn(async () => ({
+    id: '22222222-2222-4222-8222-222222222222',
+    username: 'owner',
+    display_name: 'Owner',
+    has_password: false,
+  })),
+}));
 
 vi.mock('../../oauth/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../oauth/providers')>();
@@ -21,6 +29,12 @@ vi.mock('../../oauth/providers', async (importOriginal) => {
 // signState so the test is hermetic (no DB).
 vi.mock('../../oauth/state', () => ({
   signState: stateMocks.signState,
+}));
+vi.mock('../../auth', () => ({
+  getSessionUserOrDefault: authMocks.getSessionUserOrDefault,
+}));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'workspace-1',
 }));
 
 import startRoute from '../routes/oauth/start';
@@ -54,6 +68,7 @@ const stubProvider: OAuthProvider = {
 beforeEach(() => {
   __resetRegistryForTest();
   stateMocks.signState.mockClear();
+  authMocks.getSessionUserOrDefault.mockClear();
 });
 
 afterEach(() => {
@@ -107,5 +122,56 @@ describe('GET /api/oauth/start', () => {
       new Request('http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok&scopes=scope:admin'),
     );
     expect(denied.status).toBe(400);
+  });
+
+  it('captures the local user and workspace only for the Google Workspace connection', async () => {
+    const buildAuthorizeUrl = vi.fn(() => 'https://accounts.google.com/o/oauth2/v2/auth');
+    registerProvider({
+      ...stubProvider,
+      id: 'google',
+      defaultScopes: ['scope:mail', 'scope:calendar'],
+      allowedScopes: ['scope:mail', 'scope:calendar'],
+      createFlowContext: () => ({ codeVerifier: 'server-only-verifier' }),
+      buildAuthorizeUrl,
+    });
+
+    const response = await GET(new Request(
+      'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=scope:mail',
+      { headers: { cookie: 'papercusp_session=opaque' } },
+    ));
+    expect(response.status).toBe(302);
+    expect(authMocks.getSessionUserOrDefault).toHaveBeenCalledTimes(1);
+    expect(stateMocks.signState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'google',
+        plugin: 'google-workspace',
+        harness: 'papercusp',
+        field: 'owner',
+      }),
+      {
+        privateContext: {
+          codeVerifier: 'server-only-verifier',
+          ownerUserId: '22222222-2222-4222-8222-222222222222',
+          workspaceId: 'workspace-1',
+        },
+      },
+    );
+    expect(buildAuthorizeUrl).toHaveBeenCalledWith(
+      ['scope:mail', 'scope:calendar'],
+      'test-state-token',
+      expect.objectContaining({
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        workspaceId: 'workspace-1',
+      }),
+    );
+  });
+
+  it('rejects a non-Google provider under the reserved Workspace plugin id', async () => {
+    registerProvider(stubProvider);
+    const response = await GET(new Request(
+      'http://x/api/oauth/start?provider=github&plugin=google-workspace&harness=papercusp&field=owner',
+    ));
+    expect(response.status).toBe(400);
+    expect(authMocks.getSessionUserOrDefault).not.toHaveBeenCalled();
   });
 });

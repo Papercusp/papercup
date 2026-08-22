@@ -79,17 +79,23 @@ describe('external trigger source ownership', () => {
   });
 
   it('lists only pollable owned sources and persists cursor/status transitions', async () => {
+    const extraOwners = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.users (username, display_name)
+      VALUES
+        (${'trigger-disabled-' + Date.now()}, 'Disabled Trigger Owner'),
+        (${'trigger-recovering-' + Date.now()}, 'Recovering Trigger Owner')
+      RETURNING id`;
     const pollable = await createOwnedExternalTriggerSource(sql, {
       workspaceId: WS,
       kind: 'gcal',
-      ownerUserId: userId,
+      ownerUserId: extraOwners[0].id,
       credentialRef: 'google-workspace:owner',
       status: 'ready',
     });
     await createOwnedExternalTriggerSource(sql, {
       workspaceId: WS,
       kind: 'gcal',
-      ownerUserId: userId,
+      ownerUserId: extraOwners[1].id,
       credentialRef: 'google-workspace:disabled-owner',
       status: 'disabled',
     });

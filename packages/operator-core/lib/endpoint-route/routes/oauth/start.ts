@@ -10,6 +10,9 @@
  */
 import { getProvider, loadAndRegisterProvidersFromDisk } from '../../../oauth/providers';
 import { signState } from '../../../oauth/state';
+import { getSessionUserOrDefault } from '../../../auth';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../../../external-triggers/google-workspace';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
@@ -35,6 +38,14 @@ export default defineTool({
     if (!providerId || !plugin || !harness || !field) {
       return Response.json({ ok: false, error: 'provider, plugin, harness, field all required' }, { status: 400 });
     }
+    const connectsGoogleWorkspace =
+      providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
+    if (plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN && !connectsGoogleWorkspace) {
+      return Response.json(
+        { ok: false, error: 'google-workspace plugin requires provider google' },
+        { status: 400 },
+      );
+    }
     const provider = getProvider(providerId);
     if (!provider) {
       return Response.json({ ok: false, error: `unknown provider "${providerId}"` }, { status: 404 });
@@ -54,9 +65,30 @@ export default defineTool({
         { status: 400 },
       );
     }
-    const scopes = requestedScopes.length > 0 ? requestedScopes : [...(provider.defaultScopes ?? [])];
+    // The reserved Workspace connection backs Gmail, Calendar, and Contacts as
+    // one consent. A caller-supplied subset must not create source rows that look
+    // connected but cannot actually read one of those provider surfaces.
+    const scopes = connectsGoogleWorkspace
+      ? [...(provider.defaultScopes ?? [])]
+      : requestedScopes.length > 0
+        ? requestedScopes
+        : [...(provider.defaultScopes ?? [])];
+    if (connectsGoogleWorkspace && scopes.length === 0) {
+      return Response.json(
+        { ok: false, error: 'google-workspace provider has no default scopes' },
+        { status: 500 },
+      );
+    }
     const providerHost = new URL(provider.config.authorizeUrl).host;
-    const privateContext = (await provider.createFlowContext?.()) ?? {};
+    let privateContext = { ...((await provider.createFlowContext?.()) ?? {}) };
+    if (connectsGoogleWorkspace) {
+      const owner = await getSessionUserOrDefault(req.headers);
+      privateContext = {
+        ...privateContext,
+        ownerUserId: owner.id,
+        workspaceId: activeWorkspaceId(),
+      };
+    }
     const state = await signState(
       {
         plugin,

@@ -12,6 +12,12 @@
 import { getProvider, loadAndRegisterProvidersFromDisk } from '../../../oauth/providers';
 import { verifyAndConsumeState } from '../../../oauth/state';
 import { fsTokenStorage } from '../../../oauth/storage-fs';
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+  assertGoogleWorkspaceOwnerUserId,
+  provisionOwnedGoogleWorkspaceSources,
+} from '../../../external-triggers/google-workspace';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
@@ -53,6 +59,23 @@ export default defineTool({
       return Response.json({ ok: false, error: `provider ${providerId} not registered` }, { status: 500 });
     }
 
+    const connectsGoogleWorkspace =
+      providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
+    let googleOwner: { ownerUserId: string; workspaceId: string } | null = null;
+    if (connectsGoogleWorkspace) {
+      try {
+        const ownerUserId = assertGoogleWorkspaceOwnerUserId(
+          verified.privateContext?.ownerUserId,
+        );
+        const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
+        if (!workspaceId) throw new Error('google_workspace_workspace_id_required');
+        googleOwner = { ownerUserId, workspaceId };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return Response.json({ ok: false, error: message }, { status: 400 });
+      }
+    }
+
     let tokens;
     try {
       tokens = await provider.exchangeCode(code, verified.privateContext);
@@ -72,6 +95,25 @@ export default defineTool({
     if (tokens.expiresAt !== undefined) patch[`${field}_expires_at`] = tokens.expiresAt;
     patch[`${field}_expired`] = false;
     await fsTokenStorage.update(plugin, harness, patch);
+    if (googleOwner) {
+      try {
+        await provisionOwnedGoogleWorkspaceSources(getOrgPg().sql, {
+          workspaceId: googleOwner.workspaceId,
+          ownerUserId: googleOwner.ownerUserId,
+          field,
+          createdBy: `owner:${googleOwner.ownerUserId}`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return Response.redirect(
+          new URL(
+            `/harness/${encodeURIComponent(harness)}?panel=config&oauth_error=${encodeURIComponent(message)}`,
+            req.url,
+          ).toString(),
+          307,
+        );
+      }
+    }
 
     return Response.redirect(
       new URL(

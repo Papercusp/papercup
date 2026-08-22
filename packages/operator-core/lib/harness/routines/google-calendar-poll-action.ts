@@ -10,13 +10,14 @@ import {
   listPollableExternalTriggerSources,
   updateExternalTriggerSourceSyncState,
 } from '../../external-triggers/source-store';
+import {
+  GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+  googleWorkspaceOAuthField,
+} from '../../external-triggers/google-workspace';
 import { getProvider, loadAndRegisterProvidersFromDisk } from '../../oauth/providers';
 import { fsTokenStorage } from '../../oauth/storage-fs';
 import { getOAuthToken } from '../../oauth/token';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-
-export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
-const OAUTH_FIELD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export interface GoogleCalendarPollFailure {
   sourceId: string;
@@ -43,21 +44,6 @@ export interface GoogleCalendarPollDeps {
   ) => Promise<string>;
   syncSource?: typeof syncGoogleCalendarSource;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
-}
-
-/**
- * The opaque source reference is the OAuth substrate's plugin + field pair.
- * Keeping the plugin fixed prevents a database row from selecting an arbitrary
- * plugin-config path; the suffix is the per-connection token field.
- */
-export function googleWorkspaceOAuthField(credentialRef: string | null): string {
-  const prefix = `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`;
-  if (!credentialRef?.startsWith(prefix)) {
-    throw new Error('google_workspace_credential_ref_invalid');
-  }
-  const field = credentialRef.slice(prefix.length);
-  if (!OAUTH_FIELD.test(field)) throw new Error('google_workspace_credential_ref_invalid');
-  return field;
 }
 
 async function defaultResolveAccessToken(

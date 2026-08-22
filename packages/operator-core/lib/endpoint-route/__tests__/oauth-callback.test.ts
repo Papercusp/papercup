@@ -15,6 +15,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
+const sourceMocks = vi.hoisted(() => ({
+  provision: vi.fn(async () => []),
+  sql: { test: true },
+}));
+
 vi.mock('../../plugin-configs-pg', () => ({
   mirrorPluginConfig: async () => undefined,
 }));
@@ -22,10 +27,37 @@ vi.mock('../../oauth/providers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../oauth/providers')>()),
   loadAndRegisterProvidersFromDisk: async () => {},
 }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sourceMocks.sql }),
+}));
+vi.mock('../../external-triggers/google-workspace', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../external-triggers/google-workspace')>()),
+  provisionOwnedGoogleWorkspaceSources: sourceMocks.provision,
+}));
 vi.mock('../../oauth/state', () => ({
   verifyAndConsumeState: async (token: string) => {
     if (!token.includes('.') || token === 'garbage.sig') {
       return { ok: false, error: 'bad-signature' };
+    }
+    if (token === 'google.valid' || token === 'google.missing') {
+      return {
+        ok: true,
+        privateContext: {
+          codeVerifier: 'persisted-verifier',
+          ...(token === 'google.missing' ? {} : {
+            ownerUserId: '22222222-2222-4222-8222-222222222222',
+            workspaceId: 'workspace-1',
+          }),
+        },
+        claims: {
+          plugin: 'google-workspace',
+          harness: 'papercusp',
+          field: 'owner',
+          providerHost: 'accounts.google.com',
+          provider: 'google',
+        },
+      };
     }
     return {
       ok: true,
@@ -58,6 +90,7 @@ beforeEach(async () => {
   TMP_HOME = await fs.mkdtemp(join(tmpdir(), 'paperhome-callback-'));
   process.env.PAPERCUSP_HOME = TMP_HOME;
   providers.__resetRegistryForTest();
+  sourceMocks.provision.mockClear();
 });
 
 afterEach(async () => {
@@ -138,5 +171,64 @@ describe('GET /api/oauth/callback', () => {
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=valid.token'));
     expect(response.status).toBe(307);
     expect(exchangeCode).toHaveBeenCalledWith('authorization-code', { codeVerifier: 'persisted-verifier' });
+  });
+
+  it('provisions the owned Gmail and Calendar sources after Google token storage', async () => {
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({
+        accessToken: 'google-access',
+        refreshToken: 'google-refresh',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'),
+    );
+    expect(response.status).toBe(307);
+    expect(sourceMocks.provision).toHaveBeenCalledWith(sourceMocks.sql, {
+      workspaceId: 'workspace-1',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      field: 'owner',
+      createdBy: 'owner:22222222-2222-4222-8222-222222222222',
+    });
+    const cfgPath = join(TMP_HOME, 'harnesses/papercusp/plugin-configs/google-workspace.json');
+    const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+    expect(cfg.owner).toBe('google-access');
+    expect(cfg.owner_refresh).toBe('google-refresh');
+  });
+
+  it('fails closed when a Google Workspace callback lacks server-owned identity context', async () => {
+    const exchangeCode = vi.fn(async () => ({ accessToken: 'must-not-store' }));
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode,
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?code=authorization-code&state=google.missing'),
+    );
+    expect(response.status).toBe(400);
+    expect(exchangeCode).not.toHaveBeenCalled();
+    expect(sourceMocks.provision).not.toHaveBeenCalled();
   });
 });

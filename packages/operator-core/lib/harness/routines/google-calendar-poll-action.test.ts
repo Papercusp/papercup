@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  googleWorkspaceOAuthField,
   runGoogleCalendarPoll,
 } from './google-calendar-poll-action';
+import { googleWorkspaceOAuthField } from '../../external-triggers/google-workspace';
 import { getSystemAction } from './system-actions';
 import type { ExternalTriggerSourceRow } from '../../external-triggers/source-store';
 

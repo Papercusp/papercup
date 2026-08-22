@@ -73,6 +73,51 @@ export async function createOwnedExternalTriggerSource(
   return rows[0];
 }
 
+/**
+ * Idempotently connect the one owned source of a given kind. Re-consent may
+ * rotate the OAuth field/reference, but it must not discard provider cursors or
+ * non-secret source config accumulated by an already-connected adapter.
+ */
+export async function upsertOwnedExternalTriggerSource(
+  sql: postgres.Sql,
+  input: CreateOwnedExternalTriggerSourceInput,
+): Promise<ExternalTriggerSourceRow> {
+  const workspaceId = required(input.workspaceId, 'workspace_id');
+  const kind = required(input.kind, 'source_kind');
+  const ownerUserId = required(input.ownerUserId, 'owner_user_id');
+  const credentialRef = required(input.credentialRef ?? '', 'credential_ref');
+  const status = input.status?.trim() || 'connected';
+  const config = JSON.stringify(input.config ?? {});
+  const cursor = JSON.stringify(input.cursor ?? {});
+  const rows = await sql<ExternalTriggerSourceRow[]>`
+    INSERT INTO harness_shared.trigger_sources
+      (workspace_id, kind, owner_user_id, credential_ref, status, config, cursor,
+       last_connected_at, last_error, created_by)
+    VALUES (
+      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${credentialRef}, ${status},
+      ${config}::text::jsonb, ${cursor}::text::jsonb, now(), NULL,
+      ${input.createdBy?.trim() || null}
+    )
+    ON CONFLICT (workspace_id, kind, owner_user_id)
+      WHERE owner_user_id IS NOT NULL
+    DO UPDATE SET
+      credential_ref = EXCLUDED.credential_ref,
+      status = EXCLUDED.status,
+      last_connected_at = now(),
+      last_error = NULL,
+      updated_at = now()
+    RETURNING id::text,
+              workspace_id AS "workspaceId",
+              kind,
+              owner_user_id::text AS "ownerUserId",
+              credential_ref AS "credentialRef",
+              status,
+              config,
+              cursor`;
+  if (!rows[0]) throw new Error('external_trigger_source_upsert_failed');
+  return rows[0];
+}
+
 /** Read one source and its persisted local principal. */
 export async function getExternalTriggerSource(
   sql: postgres.Sql,
