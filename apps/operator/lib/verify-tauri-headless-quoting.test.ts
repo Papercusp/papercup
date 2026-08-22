@@ -95,7 +95,12 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     expect(countSurfacesSrc).toContain('to: "/cupboard"');
     expect(countSurfacesSrc).toContain('[data-testid=wi-count]');
     expect(countSurfacesSrc).toContain('[data-testid=observations-count]');
-    expect(countSurfacesSrc).toContain('.pc-learning__matchcount');
+    expect(countSurfacesSrc).toContain(
+      '.pc-learning__inlinetools .pc-learning__matchcount',
+    );
+    expect(countSurfacesSrc).not.toContain(
+      'document.querySelector(".pc-learning__matchcount")',
+    );
     expect(countSurfacesSrc).toContain('.pc-learning__retained .pc-advpanel__count');
     expect(countSurfacesSrc).toContain('.pc-adv-gitgrid__count');
     expect(countSurfacesSrc).toContain('Filter option counts cover latest 300 events.');

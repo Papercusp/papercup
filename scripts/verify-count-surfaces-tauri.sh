@@ -101,7 +101,10 @@ p014_capture learning-observations 'JSON.stringify({ route: location.pathname + 
 # unique session id is a fixture value that cannot be present in an authored
 # idea/work-item row unless this exact verifier run wrote it (this script is
 # read-only). The server-authored companion must therefore settle at 0 of 0;
-# the title records the full Improve corpus and the 500-row wire cap.
+# the title records the full Improve corpus and the 500-row wire cap. Scope the
+# count to the inline tools: the scope banner intentionally reuses the visual
+# match-count class, so a document-wide query selects the wrong element when
+# the default `loop` scope is active.
 p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/adv", search: { tab: "learning", lview: "improvements" } })'
 "$P014_TAURI_POLL" --selector 'input[aria-label="Search ideas and work"]'
 P014_IMPROVE_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
@@ -115,10 +118,10 @@ P014_IMPROVE_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
   --pid "$P014_TAURI_PID" \
   --strict \
   --timeout 30000 \
-  --eval 'document.querySelector(".pc-learning__matchcount")?.textContent?.trim() === "0 of 0"'
-p014_assert '(() => { const e = document.querySelector(".pc-learning__matchcount"); if (!e) return false; const visible = (e.textContent || "").trim(); const title = e.getAttribute("title") || ""; return visible === "0 of 0" && /^Exact server-authored match count over \d[\d,]* merged Improve rows; at most 500 rows cross the sync wire\.$/.test(title); })()'
+  --eval 'document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim() === "0 of 0"'
+p014_assert '(() => { const e = document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount"); if (!e) return false; const visible = (e.textContent || "").trim(); const title = e.getAttribute("title") || ""; return visible === "0 of 0" && /^Exact server-authored match count over \d[\d,]* merged Improve rows; at most 500 rows cross the sync wire\.$/.test(title); })()'
 p014_console_clean
-p014_capture learning-improve 'JSON.stringify({ route: location.pathname + location.search, selector: ".pc-learning__matchcount", query: document.querySelector("input[aria-label=\"Search ideas and work\"]")?.value, visible: document.querySelector(".pc-learning__matchcount")?.textContent?.trim(), title: document.querySelector(".pc-learning__matchcount")?.getAttribute("title"), expected: "unique impossible-match predicate settles to exact server-authored 0 of 0 over the full Improve corpus; at most 500 rows cross the wire" })'
+p014_capture learning-improve 'JSON.stringify({ route: location.pathname + location.search, selector: ".pc-learning__inlinetools .pc-learning__matchcount", query: document.querySelector("input[aria-label=\"Search ideas and work\"]")?.value, visible: document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim(), title: document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.getAttribute("title"), expected: "unique impossible-match predicate settles to exact server-authored 0 of 0 over the full Improve corpus; at most 500 rows cross the wire" })'
 
 # 4. Learning Retain uses the same impossible-match fixture. Its shared count
 # formatter must expose exact zero against the complete selected Retain corpus;
