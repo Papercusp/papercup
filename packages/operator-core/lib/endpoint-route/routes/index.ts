@@ -462,6 +462,7 @@ import userMemoryReembed from './user/memory-reembed';
 import userKnowledgePackSettings from './user/knowledge-pack-settings';
 import userMemoryRelinkEntities from './user/memory-relink-entities';
 import userMemoryAudit from './user/memory-audit';
+import userPersonalVault from './user/personal-vault';
 import devSql from './dev/sql';
 import devProcessesKill from './dev/processes-kill';
 import devTables from './dev/tables';
@@ -934,6 +935,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userKnowledgePackSettings as AnyRoute[]),
   ...flatten(userMemoryRelinkEntities as AnyRoute),
   ...flatten(userMemoryAudit as AnyRoute),
+  ...flatten(userPersonalVault as AnyRoute[]),
   ...flatten(devSql as AnyRoute),
   ...flatten(devProcessesKill as AnyRoute),
   ...flatten(devTables as AnyRoute),
