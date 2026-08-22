@@ -72,6 +72,8 @@ import {
 } from '../substrate-sidecar-host';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
+import type { PeerLogOp } from '../peer-log';
+import type { AdmittedLog } from '../read-merge';
 import { _resetBootHistoryForTests } from '../boot-history';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { drainOutboxOnce } from '../outbox-drain';
@@ -377,6 +379,150 @@ async function countFeature(sql: postgres.Sql, slug: string, featureId: string):
   return Number(rows[0]?.n ?? 0);
 }
 
+type CaptureDisposition = 'present' | 'absent' | 'unknown';
+
+interface CapturedPeerLog {
+  disposition: CaptureDisposition;
+  sourceLogKey: string | null;
+  scannedOps: number;
+  matchingOp?: PeerLogOp;
+  reason?: string;
+}
+
+interface ConcurrentLwwCapture {
+  finalRows: { a: SeenFeature | null; b: SeenFeature | null };
+  incoming: { bOnA: CapturedPeerLog; aOnB: CapturedPeerLog };
+  /** The real boot path exposes only aggregate merge counts, not per-op apply outcomes. */
+  directApplyDisposition: 'unknown';
+}
+
+const CAPTURE_GET_TIMEOUT_MS = 250;
+const CAPTURE_MAX_LOG_OPS = 10_000;
+const FEATURE_LOG_TABLES = new Set(['features-by-id', 'features_consolidated', 'harness_features_consolidated']);
+
+type BoundedResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: 'timeout' | 'error' };
+
+async function settleBounded<T>(work: Promise<T>, timeoutMs: number): Promise<BoundedResult<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<BoundedResult<T>>((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      work.then((value) => ({ ok: true as const, value }), () => ({ ok: false as const, reason: 'error' as const })),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Read one peer log conservatively for a feature key. A missing log, failed refresh,
+ * timed-out block, or truncated scan is `unknown`, never `absent`; only a complete
+ * bounded scan with no matching op establishes absence.
+ */
+async function scanAdmittedLogForFeature(
+  log: AdmittedLog | undefined,
+  featureId: string,
+): Promise<CapturedPeerLog> {
+  if (!log) {
+    return {
+      disposition: 'unknown',
+      sourceLogKey: null,
+      scannedOps: 0,
+      reason: 'source-log-not-admitted',
+    };
+  }
+
+  const refreshable = log as AdmittedLog & { update?: () => Promise<void> };
+  if (refreshable.update) {
+    const refreshed = await settleBounded(Promise.resolve().then(() => refreshable.update!()), CAPTURE_GET_TIMEOUT_MS);
+    if (!refreshed.ok) {
+      return {
+        disposition: 'unknown',
+        sourceLogKey: log.keyHex,
+        scannedOps: 0,
+        reason: `log-refresh-${refreshed.reason}`,
+      };
+    }
+  }
+
+  let length: number;
+  try {
+    length = Math.max(0, log.length);
+  } catch {
+    return {
+      disposition: 'unknown',
+      sourceLogKey: log.keyHex,
+      scannedOps: 0,
+      reason: 'log-length-error',
+    };
+  }
+
+  const scanLength = Math.min(length, CAPTURE_MAX_LOG_OPS);
+  for (let index = 0; index < scanLength; index += 1) {
+    const read = await settleBounded(
+      Promise.resolve().then(() => log.get(index)),
+      CAPTURE_GET_TIMEOUT_MS,
+    );
+    if (!read.ok) {
+      return {
+        disposition: 'unknown',
+        sourceLogKey: log.keyHex,
+        scannedOps: index,
+        reason: `op-${index}-${read.reason}`,
+      };
+    }
+    const op = read.value;
+    if (op && op.hbKey === featureId && FEATURE_LOG_TABLES.has(op.table)) {
+      return {
+        disposition: 'present',
+        sourceLogKey: log.keyHex,
+        scannedOps: index + 1,
+        matchingOp: op,
+      };
+    }
+  }
+
+  return {
+    disposition: length > scanLength ? 'unknown' : 'absent',
+    sourceLogKey: log.keyHex,
+    scannedOps: scanLength,
+    ...(length > scanLength ? { reason: `scan-cap-${CAPTURE_MAX_LOG_OPS}` } : {}),
+  };
+}
+
+/** Capture failure-time evidence without claiming whether the projection guard applied an op. */
+async function captureConcurrentLwwState(args: {
+  dbA: postgres.Sql;
+  dbB: postgres.Sql;
+  peerA: PeerControl;
+  peerB: PeerControl;
+  harnessSlug: string;
+  featureId: string;
+}): Promise<ConcurrentLwwCapture> {
+  const [finalA, finalB, bOnA, aOnB] = await Promise.all([
+    readFeature(args.dbA, args.harnessSlug, args.featureId),
+    readFeature(args.dbB, args.harnessSlug, args.featureId),
+    scanAdmittedLogForFeature(
+      args.peerA.handle.admitted.get(args.peerB.handle.ownLog.keyHex),
+      args.featureId,
+    ),
+    scanAdmittedLogForFeature(
+      args.peerB.handle.admitted.get(args.peerA.handle.ownLog.keyHex),
+      args.featureId,
+    ),
+  ]);
+  return {
+    finalRows: { a: finalA ?? null, b: finalB ?? null },
+    incoming: { bOnA, aOnB },
+    directApplyDisposition: 'unknown',
+  };
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -541,6 +687,32 @@ function lwwGreater(
 // ─────────────────────────────────── tests ───────────────────────────────────
 
 describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence on ONE hive (two devices, real swarm + migrated PG, no membership stubs) — D-053/D-054', () => {
+  it('failure capture distinguishes a present op from a peer log that was not admitted', async () => {
+    const op: PeerLogOp = {
+      type: 'put',
+      table: 'features-by-id',
+      hbKey: 'F-capture',
+      value: { status: 'status-a' },
+      ts: 1,
+      schema_version: 1,
+      author_pubkey: 'author-a',
+    };
+    const log: AdmittedLog = {
+      keyHex: 'a'.repeat(64),
+      length: 1,
+      get: async () => op,
+    };
+
+    await expect(scanAdmittedLogForFeature(log, 'F-capture')).resolves.toMatchObject({
+      disposition: 'present',
+      matchingOp: op,
+    });
+    await expect(scanAdmittedLogForFeature(undefined, 'F-capture')).resolves.toMatchObject({
+      disposition: 'unknown',
+      reason: 'source-log-not-admitted',
+    });
+  });
+
   it(
     'DIFFERENT keys authored ~simultaneously on both peers → after merge BOTH peers hold BOTH features (the other peer\'s at origin=remote), no loss',
     async () => {
@@ -629,9 +801,21 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
         },
         { timeoutMs: 40_000, intervalMs: 300 },
       );
+      let capture: ConcurrentLwwCapture | undefined;
+      if (!converged) {
+        capture = await captureConcurrentLwwState({
+          dbA: dbA.adminSql,
+          dbB: dbB.adminSql,
+          peerA,
+          peerB,
+          harnessSlug: hiveHome,
+          featureId: FID,
+        });
+      }
       expect(
         converged,
-        'the two peers did NOT converge to the same LWW winner (split-brain: each kept its own concurrent write)',
+        'the two peers did NOT converge to the same LWW winner (split-brain: each kept its own concurrent write)' +
+          (capture ? `; failure capture=${JSON.stringify(capture)}` : ''),
       ).toBeTruthy();
 
       // CONVERGENCE: identical value on BOTH peers, and the LWW winner is the higher-HLC writer.
