@@ -2279,7 +2279,7 @@
           "POST"
         ]
       },
-      "description": "Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output. Operator-authority callers may bind encrypted integration credentials into named child-only environment variables by reference; exact values are redacted from all returned/streamed/spilled output.",
+      "description": "Run `bash -c` in the project dir; stream output and spill large output to a log. Use `run_in_background` for long jobs, then `capability:bash_output`. Operator callers may bind redacted integration credentials.",
       "capabilities": [
         "capability:bash"
       ],
@@ -2340,9 +2340,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run shell commands for builds, tests, status checks, file inspection, or scripts. For literal searches, use fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick fails before `rg` runs. For repository text/regex searches, ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Do not run an unbounded search from the repository root when generated output is not the target. For jobs over 1–2 minutes, set run_in_background:true and read with capability:bash_output. Background jobs have deadlines (4h default, 12h max); raise `timeout` when needed.",
-        "notWhen": "To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.",
-        "chaining": "run_in_background:true → returns a bash_id plus durable task_id → preserve task_id across carry and read with capability:bash_output { task_id } (bash_id also works in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused)."
+        "when": "Run builds, tests, checks, or scripts. Use fixed-string `rg -F` for literal searches; for repository regex searches, ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Avoid unbounded generated output. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.",
+        "notWhen": "Use capability:read/write/edit for one-file operations, dev:pg_query for read-only operator DB queries, and capability:git for git.",
+        "chaining": "run_in_background:true returns bash_id + durable task_id; read with capability:bash_output { task_id }, stop with processes:kill { taskId }. Never push."
       }
     },
     {
@@ -3437,7 +3437,7 @@
           "POST"
         ]
       },
-      "description": "Package code as EVIDENCE for a reviewer or another model, using pinned engines (Repomix 1.18.0 / code2prompt 4.2.0 — never `npx latest`, so every pack names the exact engine that produced it). op:\"pack\" packs the files matching `include`; op:\"diff\" packs the git diff instead. `include` is REQUIRED and non-empty: an unscoped pack of this monorepo is gigabytes, and it reads exactly like a correctly-scoped one until someone opens it. Only op:\"pack\" is secret-scanned — code2prompt ships no scanner at all — so the two are NOT interchangeable on a tree that may hold credentials. Never writes to the workspace, cannot disable secret scanning, and puts the pack body in a scratch file outside the tree rather than into your context.",
+      "description": "Package code as review evidence with pinned Repomix 1.18.0/code2prompt 4.2.0 (never `npx latest`). `op:\"pack\"` selects a non-empty `include`; `op:\"diff\"` packs the git diff. Only pack secret-scans; diff uses the deny-set. Read-only; the full body goes to a scratch file, not context.",
       "capabilities": [
         "intel:read"
       ],
@@ -3498,9 +3498,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need a whole subsystem in one document for a human reviewer or another model to reason over — a review request, an audit, a refactor brief. op:\"diff\" when only what CHANGED matters.",
-        "notWhen": "You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. first, and pack only once you know what a reader needs to see.",
-        "chaining": "gitnexus.query for the impact radius → code:pack include:<that radius>, so the pack is scoped by a measured answer rather than a guess. Quote provenance.commit + dirty whenever you cite a pack as evidence."
+        "when": "Need a scoped subsystem document for review, audit, or refactor; use `diff` for changed code only.",
+        "notWhen": "Packing follows retrieval: use lsp:query, gitnexus.query, code:structural, or ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. first, then pack the measured radius.",
+        "chaining": "gitnexus.query → code:pack include:<radius>; cite provenance.commit + dirty."
       }
     },
     {
@@ -15100,7 +15100,7 @@
           "POST"
         ]
       },
-      "description": "Compiler-accurate, READ-ONLY code intelligence from the pinned language server (TypeScript/Rust). `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns { sites:[{path,line1,kind,detail}], truncation, freshness:{health}, latencyMs, error }; `line1` is ALWAYS one-indexed (the LSP wire is zero-indexed — this converts, so a cited line matches grep). NEVER writes: refactor_preview reports the sites a rename would touch and applies nothing. CRITICAL: an empty `sites` proves absence ONLY when error===null AND freshness.health===\"healthy\" — a disabled flag, a still-loading project, an unhandled file type and a dead server each return sites:[] WITH an error naming which.",
+      "description": "Compiler-accurate READ-ONLY TypeScript/Rust intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. `refactor_preview` reports rename sites only. Empty `sites` proves absence only when `error===null` and `freshness.health===\"healthy\"`; unavailable servers return an error.",
       "capabilities": [
         "intel:read"
       ],
@@ -15161,9 +15161,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need the truth about TS/Rust code rather than a text match: where a symbol is really declared (across package boundaries and re-exports), every reference, implementations of an interface, a file's diagnostics, or the exact sites a rename would hit.",
-        "notWhen": "Exhaustive text/regex search (ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.",
-        "chaining": "op:\"workspace_symbols\" { name } to find a position → op:\"symbol\"/\"references\" { file, line1, character }. On a degraded answer, op:\"health\" reports each server + the taskId processes:kill takes."
+        "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
+        "notWhen": "Use text/regex search (ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
+        "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
       }
     },
     {
