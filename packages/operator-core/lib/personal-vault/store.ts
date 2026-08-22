@@ -91,7 +91,7 @@ export async function upsertPersonalDocuments(
       ON CONFLICT (workspace_id, user_id, source, dedupe_key) DO UPDATE
         SET kind = EXCLUDED.kind,
             external_id = EXCLUDED.external_id,
-            occurred_at = EXCLUDED.occurred_at,
+            occurred_at = COALESCE(EXCLUDED.occurred_at, personal_documents.occurred_at),
             participants = EXCLUDED.participants,
             participant_ids = EXCLUDED.participant_ids,
             title = EXCLUDED.title,
