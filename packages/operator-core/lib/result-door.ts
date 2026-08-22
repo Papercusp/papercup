@@ -575,6 +575,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         originalChars: totalChars,
         targetChars: budgetChars,
         recovery,
+        // coord:orient's self/recovery legs are the only model-facing bootstrap
+        // state that cannot be reconstructed from the generic identity fields.
+        // Keep them visible even if projection metadata forces the final
+        // identity-only fallback; ordinary tools retain the generic behavior.
+        ...(opts.toolName === 'coord:orient'
+          ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
+          : {}),
       },
     );
     const structuralText = JSON.stringify(projected);
