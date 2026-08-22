@@ -107,7 +107,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'shadowed-symbol-no-cross-contamination',
     file: 'packages/operator-core/lib/pty-bridge.ts',
-    line1: 166,
+    line1: 174,
     symbol: 'managedSetInterval',
     rationale:
       'Ask from a real USE site. The single correct definition must come back and ' +

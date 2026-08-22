@@ -965,15 +965,13 @@ const advSessionsListQueryPair = createCompanionListQueryPair({
           workspaceId: activeWorkspaceId(),
         });
     const page = await readAdvSessionsPageFromStore(getOrgPg().sql, scoped);
-    const rows = await Promise.all(
-      page.rows.map(async (row) => ({
-        ...row,
-        summary:
-          row.mode === 'omp' && row.ompThreadId
-            ? getOmpSessionRowSummary({ id: row.ompThreadId })
-            : null,
-      })),
-    );
+    const rows = page.rows.map((row) => ({
+      ...row,
+      summary:
+        row.mode === 'omp' && row.ompThreadId
+          ? getOmpSessionRowSummary({ id: row.ompThreadId })
+          : null,
+    }));
     return { ...page, rows };
   },
   readSummaryAggregateRows: async ({ predicate }) => {
