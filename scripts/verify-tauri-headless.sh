@@ -200,6 +200,19 @@
 #                                owner's live desktop.
 set -uo pipefail
 
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  cat <<EOF
+Usage:
+  $0 -- <assertion-command...>
+  $0 --boot-only
+
+Boot an isolated headless Tauri verifier, run an assertion command, and tear
+the verifier down. The --boot-only form prints a sourceable environment and
+keeps the verifier alive until its stop script is run.
+EOF
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PAPERCUSP_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"

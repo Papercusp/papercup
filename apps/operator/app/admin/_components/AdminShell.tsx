@@ -3,12 +3,14 @@
 import Link from '@/lib/router-compat/link';
 import { usePathname } from '@/lib/router-compat/navigation';
 import * as Tabs from '@radix-ui/react-tabs';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 
 /**
  * Admin section shell — route-backed admin tabs wrapped in the shared Radix
  * Tabs primitive so the chrome matches the rest of the design system.
  */
-const TABS = [
+const BASE_TABS = [
   { href: '/admin/run', label: 'Run' },
   { href: '/admin/features', label: 'Features' },
   { href: '/admin/dbos', label: 'DBOS' },
@@ -21,8 +23,12 @@ export default function AdminShell({
   title?: string;
   children: React.ReactNode;
 }) {
+  const triggersEnabled = useFlag(FLAGS.TRIGGERS_ADMIN);
   const pathname = usePathname() || '/admin/run';
-  const activeTab = TABS.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? TABS[0];
+  const tabs = triggersEnabled
+    ? [BASE_TABS[0], BASE_TABS[1], { href: '/admin/triggers', label: 'Triggers' }, BASE_TABS[2]]
+    : [...BASE_TABS];
+  const activeTab = tabs.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? tabs[0];
 
   return (
     <div className="pc-adminshell">
@@ -33,7 +39,7 @@ export default function AdminShell({
         </div>
         <Tabs.Root value={activeTab.href} className="pc-adminshell__tabs">
           <Tabs.List className="pc-adminshell__tablist" aria-label="Admin sections">
-            {TABS.map((t) => (
+            {tabs.map((t) => (
               <Tabs.Trigger key={t.href} value={t.href} asChild className="pc-adminshell__tab">
                 <Link href={t.href}>{t.label}</Link>
               </Tabs.Trigger>

@@ -28,6 +28,7 @@ function flagLabels(t: BoundLexicon): Partial<Record<FlagKey, string>> {
     [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
     [FLAGS.HARNESS_PHASES]: `${t('pot')} phases`,
     [FLAGS.DESIGN]: 'Design tab',
+    [FLAGS.TRIGGERS_ADMIN]: 'External triggers admin',
     // WI-37561. An unlabelled flag falls back to its raw wire key
     // (`labels[key] ?? key`), so it is still listed and still togglable — but
     // "papercusp-conversations-rail-tab" is not a thing an owner scans a list
@@ -53,6 +54,8 @@ function flagBlurbs(t: BoundLexicon): Partial<Record<FlagKey, string>> {
       'The 💬 Convos tab in the middle steering rail. OFF (default): the rail ends at Spend. ON: Convos returns to its owner-set last position. Nothing is lost while it is off — /adv keeps its own Conversations tab on the same data.',
     [FLAGS.HARNESS_PHASES]: `Multi-phase ${t('pot')} (staging / testing / production). Cut for V1 ship.`,
     [FLAGS.DESIGN]: `In-${t('pot')} design tab + /design route. Cut for V1 ship.`,
+    [FLAGS.TRIGGERS_ADMIN]:
+      'Owner-local /admin/triggers surface for source health, plan bindings, deliberate arm/disarm, storm policy, and recent runs.',
     [FLAGS.TESTING]:
       'Testing-only surfaces: pi tab, + add plugin button, Oracle assistant (tutorial dock + menubar button + /api/oracle). Cut for V1 ship.',
     [FLAGS.INBOX_DURABLE_ESCALATIONS]:

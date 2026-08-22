@@ -406,33 +406,39 @@ describe("<ObservationsPanel />", () => {
     expect(bodyNode?.textContent ?? "").toContain(tail.trim());
   });
 
-  it("grows the server window at the virtualized scroll edge and shows the authoritative total", async () => {
+  it("advances the server cursor at the virtualized scroll edge and shows the authoritative total", async () => {
     sync.data = [
-      { ...mkRow({ id: "a", title: "First" }), _meta: { total: 450 } },
+      {
+        ...mkRow({ id: "a", title: "First" }),
+        _meta: { nextCursor: "cursor-2", hasMore: true },
+      },
       mkRow({ id: "b", title: "Second" }),
     ];
+    setSummary(450);
     renderPanel();
-    expect(sync.args).toEqual({ limit: 200 });
+    expect(sync.args).toEqual({ q: "", filters: {}, limit: 200 });
     expect(screen.getByTestId("observations-count").textContent).toBe("450");
     fireEvent.click(screen.getByText("load-more"));
-    await waitFor(() => expect(sync.args).toEqual({ limit: 400 }));
+    await waitFor(() =>
+      expect(sync.args).toEqual({
+        q: "",
+        filters: {},
+        limit: 200,
+        cursor: "cursor-2",
+      }),
+    );
   });
 
-  it("declares a filtered count as window-scoped until server filtering lands", () => {
-    sync.data = [
-      { ...mkRow({ id: "a", title: "alpha match" }), _meta: { total: 36096 } },
-      mkRow({ id: "b", title: "beta" }),
-      mkRow({ id: "c", title: "gamma" }),
-    ];
+  it("declares a filtered count as exact corpus evidence", () => {
+    sync.data = [mkRow({ id: "a", title: "alpha match" })];
+    setSummary(36096, 1);
     renderPanel("?obsq=alpha");
     expect(screen.getByTestId("observations-count").textContent).toBe(
-      "1 of 3 · latest 3 loaded observations",
+      "1 of 36,096",
     );
     expect(
       screen.getByTestId("observations-count").getAttribute("aria-label"),
-    ).toBe(
-      "1 of 3 match in latest 3 loaded observations; 36,096 in the full corpus",
-    );
+    ).toBe("1 of 36,096 match in the observation corpus");
   });
 
   // D-004 (owner 2026-08-17, on the sibling Retain pane: "it just says 'loading
@@ -481,17 +487,14 @@ describe("<ObservationsPanel />", () => {
       screen.getByRole("button", { name: "Refresh observations" }),
     );
     expect(sync.invalidate).toHaveBeenCalledTimes(1);
-    expect(counts.invalidate).toHaveBeenCalledTimes(1);
+    expect(summary.invalidate).toHaveBeenCalledTimes(1);
   });
 
-  // ── WI-4374: New tests for COUNT query, 500+ guard, staleness tone ──
+  // ── P-005: summary facets, 500+ guard, staleness tone ──
 
-  it("fetches real database counts via learning.observations.counts", () => {
+  it("renders signal counts from learning.observations.summary", () => {
     sync.data = [mkRow({ id: "a", kind: "friction" })];
-    counts.data = [
-      { kind: "friction", count: 500 },
-      { kind: "gap", count: 600 },
-    ];
+    setSummary(1100, 1100, [["friction", 500], ["gap", 600]]);
     renderPanel();
     // Signal distribution should show database counts, not loaded counts
     const frictionBtn = screen.getByRole("button", {
@@ -506,11 +509,11 @@ describe("<ObservationsPanel />", () => {
 
   it("applies 500+ render guard to counts >= 500", () => {
     sync.data = [mkRow()];
-    counts.data = [
-      { kind: "friction", count: 500 },
-      { kind: "gap", count: 501 },
-      { kind: "surprise", count: 499 },
-    ];
+    setSummary(1500, 1500, [
+      ["friction", 500],
+      ["gap", 501],
+      ["surprise", 499],
+    ]);
     renderPanel();
     expect(
       screen.getByRole("button", { name: "Filter by Friction, 500" })
@@ -532,7 +535,7 @@ describe("<ObservationsPanel />", () => {
     const stale = new Date(now - 90 * 60_000).toISOString(); // 90min ago
     const veryStale = new Date(now - 3 * 60_60_000).toISOString(); // 3+ hours ago
 
-    counts.data = [{ kind: "other", count: 1 }];
+    setSummary(1, 1, [["other", 1]]);
 
     // Fresh: newest <30min ago
     sync.data = [mkRow({ id: "a", createdAt: fresh })];

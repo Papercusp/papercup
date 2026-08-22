@@ -275,6 +275,11 @@ const RULES: ReadonlyArray<{
       { method: 'DELETE', path: '/admin/tables/:exportName', auth: VTL },
       { method: 'GET',    path: '/admin/dbos/status', auth: VTL },
       { method: 'GET',    path: '/admin/schedules/inventory', auth: VTL },
+      // External-trigger admin shares the same cookie-less owner desktop path.
+      // PATCH is CSRF-guarded and additionally requires explicit owner confirm
+      // for both arm and disarm mutations (admin/external-triggers.ts).
+      { method: 'GET',    path: '/admin/triggers', auth: VTL },
+      { method: 'PATCH',  path: '/admin/triggers', auth: VTL },
     ],
   },
 ];

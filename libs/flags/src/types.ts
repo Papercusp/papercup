@@ -20,6 +20,13 @@ export const FLAGS = {
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
+  // external-triggers-gmail-slack-2026-08-22 P-004: the owner-local
+  // /admin/triggers surface for sources, bindings, arming, storm policy, and
+  // recent runs. Default ON (derived FLAG_DEFAULTS — deliberately NOT in
+  // DARK_FLAGS): the screen is additive and every arm/disarm mutation still
+  // requires an explicit owner confirmation at the server boundary. OFF hides
+  // the tab and makes the route return its disabled shape without touching data.
+  TRIGGERS_ADMIN: "papercusp-triggers-admin",
   // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
   // + the /res allocation board): hand account pools + local GPUs to the fleets
   // inside the workspace hive tree, each with a share %. Default ON (derived
