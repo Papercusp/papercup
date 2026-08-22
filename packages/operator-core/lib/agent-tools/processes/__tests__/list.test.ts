@@ -31,6 +31,37 @@ function makeTx() {
 }
 
 describe('processes:list structured output', () => {
+  it('accepts the singular state filter used by sibling task surfaces', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    vi.mocked(listTasks).mockClear();
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { state: 'running' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-singular-state-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(
+      expect.objectContaining({ states: ['running'] }),
+    );
+  });
+
   it('advertises an object result and preserves a large task inventory', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     mockResolvedTyped(

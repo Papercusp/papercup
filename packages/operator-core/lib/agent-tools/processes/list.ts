@@ -95,7 +95,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
-    states: z.array(z.enum(TASK_STATES)).optional().describe('filter by lifecycle state'),
+    state: z.enum(TASK_STATES).optional().describe('filter by one lifecycle state (shorthand for `states: [state]`)'),
+    states: z.array(z.enum(TASK_STATES)).optional().describe('filter by one or more lifecycle states'),
     classes: z.array(z.string().min(1)).max(20).optional().describe('filter by task class'),
     launchedBy: z.string().max(120).optional().describe('only tasks this agent id launched'),
     workItemId: z.string().max(120).optional().describe('only tasks attributed to this work-item'),
@@ -166,7 +167,7 @@ export default defineTool({
     }
 
     const rows = await listTasks({
-      states: args.states,
+      states: args.states ?? (args.state == null ? undefined : [args.state]),
       classes: args.classes,
       launchedBy: args.launchedBy,
       workItemId: args.workItemId,
