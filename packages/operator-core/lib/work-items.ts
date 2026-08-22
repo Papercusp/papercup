@@ -93,7 +93,7 @@ import { classifySettledCompletionEvidence } from './work-item-settled-completio
 import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
-import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
+import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
@@ -3243,6 +3243,12 @@ export async function setWorkItemState(
       RETURNING ${tx.unsafe(FEATURE_COLS)}`,
     );
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+    // A terminal feature write releases the PRE-write holder. Clear only that
+    // holder's matching cached goal: the same owner may have claimed newer work
+    // before a delayed lifecycle callback reaches this point.
+    if (result && isSettledWorkItemState(result.state) && priorAssignee) {
+      clearGoalClaimedIfMatches(priorAssignee, id);
+    }
   }
   // work-item-status-full-unify (P-003 writer-flip): preserve the collapsed
   // passed/resolved (→done) vs deprecated/closed (→dropped) nuance in terminal_reason.
@@ -6734,9 +6740,7 @@ export async function releaseWorkItem(
       // must not wipe the goal the agent is actually working under. `wi.assignee`
       // is the PRE-release holder (read above, before the UPDATE).
       const priorHolder = wi.assignee;
-      if (priorHolder && readAgentStateStamp(priorHolder).goalRef === released.id) {
-        noteGoalClaimed(priorHolder, null);
-      }
+      if (priorHolder) clearGoalClaimedIfMatches(priorHolder, released.id);
       // P-007: emitClaimReleasedEvent internally co-fires `work-item:claimable`
       // for a row that returned to a claimable state — one hook here. EI-15019:
       // thread announceClaimable through so an internal quarantine release can
