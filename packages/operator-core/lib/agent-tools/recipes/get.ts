@@ -27,17 +27,23 @@ export default defineTool({
     'Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect ' +
     'what they do before recipes:run-ning them, including entity bindings and the current revision. Pass `id` for one or `ids` for several. Returns ' +
     '{ ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a ' +
-    'missing id comes back as that item\'s { ok:false } without failing the rest. Read-only.',
+    'missing id comes back as that item\'s { ok:false } without failing the rest. Read-only. Recipes are ' +
+    'global/fleet-wide; this tool accepts only `id`/`ids` and does not accept a `harness` argument.',
   guidance: {
     when:
       'When you have one or more recipe ids (from recipes:list / recipes:search / a code:run result\'s ' +
-      'similarRecipes) and want to read their script + metadata before reusing. Pass every id at once via `ids`.',
+      'similarRecipes) and want to read their script + metadata before reusing. Recipes are global/fleet-wide; ' +
+      'pass only `id` or `ids` (not `harness`).',
     notWhen:
       'To EXECUTE the recipe — use recipes:run (it runs the script under YOUR role-scoped envelope). ' +
       'To discover recipes by intent — recipes:search.',
     chaining:
       'recipes:search / recipes:list → recipes:get { ids:[…] } (inspect) → recipes:run { id } (reuse). ' +
-      'Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+      'Recipes are global, so omit `harness`; this tool accepts only `id`/`ids`. Bulk: single | ids[] → ' +
+      '{ ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+    argRedirects: {
+      harness: 'recipes:get is a global recipe read; omit `harness` and pass only `id` or `ids`.',
+    },
     seeAlso: [
       'recipes:run (EXECUTE the recipe under your role-scoped envelope)',
       'recipes:search (discover recipes by intent)',

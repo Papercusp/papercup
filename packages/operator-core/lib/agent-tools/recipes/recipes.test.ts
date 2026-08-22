@@ -74,7 +74,7 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 
 // Side-effect: register the recipes:* tools AFTER the mocks are hoisted.
 import './list';
-import './get';
+import recipeGetTool from './get';
 import './search';
 import './run';
 import './candidates';
@@ -106,6 +106,15 @@ describe('recipes:* registration (P-005, P-013)', () => {
     const tool = findTool('recipes:candidates');
     expect(tool.effect).toBe('read');
     expect(tool.capabilities).toContain('recipes:read');
+  });
+
+  it('recipes:get advertises its global scope and rejects harness scoping', () => {
+    const tool = findTool('recipes:get');
+    expect(tool.description).toContain('global/fleet-wide');
+    expect(tool.guidance?.when).toContain('not `harness`');
+    expect(tool.guidance?.chaining).toContain('omit `harness`');
+    expect(tool.guidance?.argRedirects?.harness).toContain('global recipe read');
+    expect(recipeGetTool.args.safeParse({ id: 'recipe-1', harness: 'papercusp' }).success).toBe(false);
   });
 
   // Phase 4 hygiene tools (P-010 / D-015): curation actions, SU-only (no bee), write-effect.
