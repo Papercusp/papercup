@@ -674,7 +674,7 @@ function renderDownloadTable(list: ReleaseArtifact[]): string {
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(
       (a) => `      <tr>
-        <td><a href="${escapeHtml(a.url)}">${escapeHtml(a.name)}</a></td>
+        <td><a href="${escapeHtml(encodeArtifactPath(a.url))}">${escapeHtml(a.name)}</a></td>
         <td>${escapeHtml(formatBytes(a.size))}</td>
         <td class="sha">${escapeHtml(a.sha256 || '—')}</td>
       </tr>`,
@@ -686,6 +686,14 @@ function renderDownloadTable(list: ReleaseArtifact[]): string {
 ${rows}
   </tbody>
 </table>`;
+}
+
+/** Encode registry artifact paths for an HTML href without encoding separators. */
+function encodeArtifactPath(url: string): string {
+  return url
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
 }
 
 /** The GUI↔Server requirement note for ONE desktop platform section. Linux GUI is

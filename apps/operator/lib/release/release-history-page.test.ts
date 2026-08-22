@@ -361,6 +361,31 @@ describe('the page renders with JavaScript disabled', () => {
     expect(html).toContain('abc123');
   });
 
+  it('percent-encodes spaces in artifact hrefs while keeping the release path relative', () => {
+    const html = renderIndexHtml(
+      [
+        hydrated({
+          row: row({
+            artifacts: [
+              {
+                product: 'gui',
+                platform: 'linux-x86_64',
+                name: 'Papercusp GUI_0.0.16_amd64.deb',
+                url: 'desktop-v0.0.16-alpha/Papercusp GUI_0.0.16_amd64.deb',
+                size: 4_200_000_000,
+                sha256: 'space-safe',
+              },
+            ],
+          }),
+        }),
+      ],
+      { generatedAt: GENERATED_AT, analytics: null, redact: [] },
+    );
+
+    expect(html).toContain('href="desktop-v0.0.16-alpha/Papercusp%20GUI_0.0.16_amd64.deb"');
+    expect(html).not.toContain('href="desktop-v0.0.16-alpha/Papercusp GUI_0.0.16_amd64.deb"');
+  });
+
   it('bakes the changelog in as rendered HTML, not markdown awaiting a renderer', () => {
     expect(html).toContain('Auto-update actually works now.');
     expect(html).toContain('<h2');
