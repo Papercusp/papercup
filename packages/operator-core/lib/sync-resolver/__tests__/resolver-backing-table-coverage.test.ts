@@ -235,7 +235,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'learning.efficacy', 'learning.ekg', 'learning.experiments', 'learning.frontier', 'learning.gym',
   'learning.health', 'learning.hive', 'learning.hiveEvalTrend', 'learning.hiveList',
   'learning.hiveThroughput', 'learning.improvements', 'learning.knowledge', 'learning.mugWakeEfficiency',
-  'learning.observations', 'learning.observations.counts', 'learning.redQueen',
+  'learning.redQueen',
   'learning.releaseReadiness', 'learning.retain', 'learning.scout', 'learning.scoutDrafts',
   'network.board', 'network.federationStatus', 'network.fleet.wakes',
   'network.hive.asks', 'network.hive.beacons', 'network.hive.wakes', 'network.hiveDirectory', 'notes.list',
