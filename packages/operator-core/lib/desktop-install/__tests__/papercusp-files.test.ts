@@ -1053,6 +1053,12 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     expect(text, 'coupling note must teach the DECOUPLE trigger (D-062)').toContain('coord:decouple');
     expect(text, 'peer-wake note').toMatch(/wake/i);
     expect(text, 'state-plane note').toContain('state:read');
+    // EI-20684628463114889: gateway-routed psu sessions cannot use Claude's native
+    // Artifact connector. Keep the capability wall and durable fallback in the
+    // live rendered prompt so an empty WebFetch shell is not mistaken for content.
+    expect(text, 'gateway Artifact capability guard').toContain('ANTHROPIC_AUTH_TOKEN');
+    expect(text, 'gateway Artifact capability guard').toContain('native `Artifact` connector is unavailable');
+    expect(text, 'gateway Artifact capability guard').toContain('empty client-rendered shell');
     // No internal marker may ever reach a rendered prompt (psu-prompt-isolation).
     expect(text).not.toContain('PAPERCUSP-SU:SHARED-BASE-NOTES');
   });
