@@ -667,3 +667,153 @@ describe("threadLimit — bounded diagnostic thread stays consumable", () => {
     expect(out.results[0]).toMatchObject({ threadWindow: null, threadWindowReadFailed: true });
   });
 });
+
+/**
+ * P-017 — the prior-attempt brief through the shaper.
+ *
+ * Two hazards, and the first is structural: projectRow rebuilds each row from a
+ * WHITELIST, so a field the handler adds and the shaper does not know about is
+ * dropped SILENTLY at every tier. That is not a smaller answer — an agent asking
+ * "what was already tried here" gets a payload with no prior-attempt field at
+ * all, which reads as "nothing was tried".
+ *
+ * The second is the clip. A prior attempt whose body reads "tried X; X was the
+ * wrong lead" becomes, truncated at the wrong place, a recommendation to try X —
+ * the same misreading EI-19447969329510166 pinned for the checkpoint, in a field
+ * whose whole purpose is to stop a successor repeating a dead end.
+ */
+function briefRow(over: Record<string, unknown> = {}, records = 1, textChars = 40) {
+  return row({
+    workItem: { id: "WI-1", kind: "task", state: "open", title: "t" },
+    priorAttempts: {
+      schemaVersion: "prior-attempt-brief-v1",
+      fingerprint: "fp-1",
+      authority: [],
+      residue: [],
+      attempts: Array.from({ length: records }, (_, i) => ({
+        authority: "attempt",
+        scope: "same-plan-item",
+        rawRef: `WI-${i + 2}#checkpoint`,
+        text: "T".repeat(textChars),
+      })),
+      rawRefs: Array.from({ length: records }, (_, i) => `WI-${i + 2}#checkpoint`),
+      protectedRefs: { authority: [], residue: [] },
+      omission: {
+        omittedRecords: 2,
+        omittedByAuthority: { attempt: 2 },
+        omittedRefs: [{ authority: "attempt", scope: "plan-wide", rawRef: "WI-99#checkpoint" }],
+        omittedRefsTruncated: false,
+        sourceCount: 3,
+        deduplicatedCount: 3,
+        truncated: true,
+      },
+      estimatedTokens: 40,
+      serializedChars: 160,
+    },
+    ...over,
+  });
+}
+
+describe("shapeWorkItemsGet — priorAttempts survives, and says what it cut", () => {
+  it("carries the brief through the row WHITELIST at all (the silent-drop trap)", () => {
+    const out = shapeWorkItemsGet(envelope([briefRow()]), "trimmed") as Envelope;
+    const pa = out.results[0].priorAttempts as Record<string, any>;
+    expect(pa).toBeTruthy();
+    expect(pa.fingerprint).toBe("fp-1");
+    expect(pa.attempts).toHaveLength(1);
+  });
+
+  it("MARKS a text it clipped, so a truncated dead end cannot read as a recommendation", () => {
+    const out = shapeWorkItemsGet(envelope([briefRow({}, 1, 5_000)]), "trimmed") as Envelope;
+    const rec = (out.results[0].priorAttempts as any).attempts[0];
+    expect(rec.text.length).toBeLessThan(5_000);
+    expect(rec.textTruncated).toBe(true);
+    // The pre-clip length, so the reader can size the drill-down before paying
+    // for it — and the rawRef that makes the drill-down possible at all.
+    expect(rec.fullTextChars).toBe(5_000);
+    expect(rec.rawRef).toBe("WI-2#checkpoint");
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["priorAttempts.attempts(text clipped)"]),
+    );
+  });
+
+  it("keeps the OMISSION accounting whole while cutting records — the qualifier outlives what it qualifies", () => {
+    const out = shapeWorkItemsGet(envelope([briefRow({}, 25, 40)]), "trimmed") as Envelope;
+    const pa = out.results[0].priorAttempts as Record<string, any>;
+    expect(pa.attempts.length).toBeLessThan(25);
+    expect(out._shapeNote?.dropped).toEqual(expect.arrayContaining(["priorAttempts.attempts"]));
+    // Dropping this to make room for records would leave a record list that
+    // reads as the complete history — the exact failure `lifecycle.coverage`
+    // exists to prevent, one field over.
+    expect(pa.omission).toMatchObject({ omittedRecords: 2, truncated: true });
+    expect(pa.omission.omittedRefs[0].rawRef).toBe("WI-99#checkpoint");
+  });
+
+  it("flips omittedRefsTruncated IN BAND when it cuts the ref list itself", () => {
+    const many = briefRow();
+    (many.priorAttempts as any).omission.omittedRefs = Array.from({ length: 40 }, (_, i) => ({
+      authority: "attempt",
+      scope: "plan-wide",
+      rawRef: `WI-${100 + i}#checkpoint`,
+    }));
+    const out = shapeWorkItemsGet(envelope([many]), "trimmed") as Envelope;
+    const omission = (out.results[0].priorAttempts as any).omission;
+    expect(omission.omittedRefs.length).toBeLessThan(40);
+    // Without this an exhausted ref list is indistinguishable from a complete
+    // one, and the reader stops asking after the last ref it can see.
+    expect(omission.omittedRefsTruncated).toBe(true);
+  });
+
+  it("leaves a 100-row read with briefs under the MCP result door", () => {
+    const rows = Array.from({ length: 100 }, (_, i) => {
+      const r = briefRow({ id: `WI-${i}` }, 6, 2_000);
+      (r.workItem as Record<string, unknown>).id = `WI-${i}`;
+      return r;
+    });
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(
+      RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE,
+    );
+    expect(out.results.map((r) => r.id)).toEqual(rows.map((r) => r.id));
+  });
+});
+
+describe("shapeWorkItemsGet — priorAttemptRefResolution", () => {
+  const resolutionRow = (records: number, textChars: number) =>
+    row({
+      workItem: { id: "WI-1", kind: "task", state: "open", title: "t" },
+      priorAttemptRefResolution: {
+        schemaVersion: "prior-attempt-refs-v1",
+        records: Array.from({ length: records }, (_, i) => ({
+          authority: "attempt",
+          scope: "plan-wide",
+          rawRef: `WI-${i + 2}#checkpoint`,
+          text: "R".repeat(textChars),
+        })),
+        unresolved: ["WI-9#gone"],
+        fingerprint: "fp-1",
+      },
+    });
+
+  it("carries the resolution through the whitelist and keeps `unresolved`", () => {
+    const out = shapeWorkItemsGet(envelope([resolutionRow(1, 20)]), "trimmed") as Envelope;
+    const res = out.results[0].priorAttemptRefResolution as Record<string, any>;
+    expect(res.records).toHaveLength(1);
+    // "the ref you asked for is gone" and "the shaper cut it" are different
+    // answers; only this field separates them.
+    expect(res.unresolved).toEqual(["WI-9#gone"]);
+    expect(res.fingerprint).toBe("fp-1");
+  });
+
+  it("bounds a large drill-down and discloses BOTH the cut and the clip", () => {
+    const out = shapeWorkItemsGet(envelope([resolutionRow(9, 9_000)]), "trimmed") as Envelope;
+    const res = out.results[0].priorAttemptRefResolution as Record<string, any>;
+    expect(res.records.length).toBeLessThan(9);
+    expect(res.recordsTruncated).toMatchObject({ total: 9 });
+    expect(res.records[0].textTruncated).toBe(true);
+    expect(res.records[0].fullTextChars).toBe(9_000);
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["priorAttemptRefResolution.records"]),
+    );
+  });
+});

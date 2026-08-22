@@ -127,6 +127,11 @@ const FIELD_CAPS = {
     checkpointMin: 400,
     citedFacts: 3,
     citedExcerpt: 120,
+    priorAttemptRecords: 3,
+    priorAttemptText: 300,
+    priorAttemptRefs: 6,
+    priorAttemptResolved: 2,
+    priorAttemptResolvedText: 600,
   },
   standard: {
     title: 300,
@@ -135,6 +140,11 @@ const FIELD_CAPS = {
     checkpointMin: 800,
     citedFacts: 6,
     citedExcerpt: 240,
+    priorAttemptRecords: 8,
+    priorAttemptText: 700,
+    priorAttemptRefs: 20,
+    priorAttemptResolved: 5,
+    priorAttemptResolvedText: 1_400,
   },
 } as const;
 
@@ -340,6 +350,107 @@ function projectThreadWindow(raw: unknown, tier: WorkItemsGetTier, dropped: Set<
   };
 }
 
+/**
+ * P-017. The prior-attempt brief is ALREADY bounded by its own compiler, so this
+ * is a second, tier-relative bound — a brief cut to fit a claim reply can still
+ * be too large for a 100-row `trimmed` read.
+ *
+ * Two invariants, both inherited from the failures the fields above encode:
+ *
+ * 1. The OMISSION block is never dropped to make room for records. It is the
+ *    same class of field as `lifecycle.coverage` — the qualifier that says what
+ *    is NOT here — and a record list without it reads as the complete history.
+ *    If anything gives way it is the records, whose refs survive regardless.
+ * 2. A text this shaper clips is MARKED `textTruncated`, even when the compiler
+ *    delivered it whole. An unmarked clip is the checkpoint failure in a new
+ *    field: a prior attempt whose body says "tried X, X was wrong" reads,
+ *    truncated at "tried X", as a recommendation to try X.
+ */
+function projectPriorAttempts(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const b = raw as Row;
+  const clipRecords = (value: unknown, label: string): unknown => {
+    if (!Array.isArray(value)) return value;
+    if (value.length > caps.priorAttemptRecords) dropped.add(`priorAttempts.${label}`);
+    return value.slice(0, caps.priorAttemptRecords).map((rec) => {
+      if (!rec || typeof rec !== "object") return rec;
+      const record = rec as Row;
+      const text = record.text;
+      if (typeof text !== "string" || text.length <= caps.priorAttemptText) return record;
+      dropped.add(`priorAttempts.${label}(text clipped)`);
+      return {
+        ...record,
+        text: clip(text, caps.priorAttemptText),
+        // Invariant 2. `fullTextChars` may already be set by the compiler; when it
+        // is not, this shaper is the only thing that knows the pre-clip length.
+        textTruncated: true,
+        fullTextChars:
+          typeof record.fullTextChars === "number" ? record.fullTextChars : text.length,
+      };
+    });
+  };
+  const omission = (b.omission ?? null) as Row | null;
+  const omittedRefs = Array.isArray(omission?.omittedRefs) ? omission.omittedRefs : [];
+  const refsCut = omittedRefs.length > caps.priorAttemptRefs;
+  if (refsCut) dropped.add("priorAttempts.omission.omittedRefs");
+  const rawRefs = Array.isArray(b.rawRefs) ? b.rawRefs : [];
+  if (rawRefs.length > caps.priorAttemptRefs) dropped.add("priorAttempts.rawRefs");
+  return {
+    schemaVersion: b.schemaVersion ?? null,
+    fingerprint: b.fingerprint ?? null,
+    authority: clipRecords(b.authority, "authority"),
+    residue: b.residue ?? [],
+    attempts: clipRecords(b.attempts, "attempts"),
+    rawRefs: rawRefs.slice(0, caps.priorAttemptRefs),
+    protectedRefs: b.protectedRefs ?? null,
+    // Invariant 1 — kept whole apart from the independently-bounded ref list,
+    // whose own cut is disclosed IN BAND via `omittedRefsTruncated` so an
+    // exhausted list never reads as a complete one.
+    ...(omission
+      ? {
+          omission: {
+            ...omission,
+            omittedRefs: omittedRefs.slice(0, caps.priorAttemptRefs),
+            omittedRefsTruncated: Boolean(omission.omittedRefsTruncated) || refsCut,
+          },
+        }
+      : {}),
+  };
+}
+
+/** The raw drill-down. `unresolved` is never dropped: it is the answer to "why
+ * is the ref I asked for missing", and without it an absent record is
+ * indistinguishable from one this shaper cut. */
+function projectPriorAttemptRefResolution(
+  raw: unknown,
+  caps: FieldCaps,
+  dropped: Set<string>,
+): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const res = raw as Row;
+  const records = Array.isArray(res.records) ? res.records : [];
+  if (records.length > caps.priorAttemptResolved) dropped.add("priorAttemptRefResolution.records");
+  return {
+    ...res,
+    records: records.slice(0, caps.priorAttemptResolved).map((rec) => {
+      if (!rec || typeof rec !== "object") return rec;
+      const record = rec as Row;
+      const text = record.text;
+      if (typeof text !== "string" || text.length <= caps.priorAttemptResolvedText) return record;
+      dropped.add("priorAttemptRefResolution.records(text clipped)");
+      return {
+        ...record,
+        text: clip(text, caps.priorAttemptResolvedText),
+        textTruncated: true,
+        fullTextChars: text.length,
+      };
+    }),
+    ...(records.length > caps.priorAttemptResolved
+      ? { recordsTruncated: { shown: caps.priorAttemptResolved, total: records.length } }
+      : {}),
+  };
+}
+
 function projectRow(
   r: Row,
   caps: FieldCaps,
@@ -410,6 +521,18 @@ function projectRow(
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
     ...(r.holder ? { holder: r.holder } : {}),
     ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
+    ...(r.priorAttempts
+      ? { priorAttempts: projectPriorAttempts(r.priorAttempts, caps, dropped) }
+      : {}),
+    ...(r.priorAttemptRefResolution
+      ? {
+          priorAttemptRefResolution: projectPriorAttemptRefResolution(
+            r.priorAttemptRefResolution,
+            caps,
+            dropped,
+          ),
+        }
+      : {}),
   };
 }
 
