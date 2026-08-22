@@ -173,7 +173,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'work-item',
     keyTemplate: 'work-item:status:<id>',
     params: [{ name: 'id', required: true, describe: 'the work-item id, e.g. WI-1234' }],
-    describe: 'ANY status transition of a work item (todo/wip/blocked/done/…) — wake on every change of WI-X.',
+    describe: 'ANY status transition of a work item (todo/wip/blocked/done/…) — wake on every change of WI-X. Use only for a DIFFERENT assignee\'s item: events:await refuses your own current work item before registration because it cannot unblock itself.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts)',
     exists: true, // P-101: emitWorkItemStatusEvent fires from setWorkItemState on every transition
     replacesPoll: 'polling work_items:get for a peer/dependency item',
@@ -183,7 +183,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'work-item-done',
     keyTemplate: 'work-item:done:<id>',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
-    describe: 'A work item SETTLED (feature→passed/deprecated, issue→resolved/closed).',
+    describe: 'A work item SETTLED (feature→passed/deprecated, issue→resolved/closed). Use only for a DIFFERENT assignee\'s item: events:await refuses your own current work item before registration because it cannot unblock itself.',
     emitter: 'work-items-events',
     exists: true,
   },

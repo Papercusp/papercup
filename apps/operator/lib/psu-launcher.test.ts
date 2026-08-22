@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync, lstatSync, realpathSync, readlinkSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
@@ -9,6 +10,7 @@ import {
 } from '../../../packages/operator-core/lib/model-context-budget.mjs';
 import {
   parseArgs,
+  PSU_HELP_TEXT,
   planValue,
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
@@ -1511,6 +1513,30 @@ describe('applyGithubTokenEnv (GitHub MCP plugin token)', () => {
 });
 
 describe('psu-launcher arg parsing', () => {
+  it('recognizes --help and -h as terminal parser results without warning', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(parseArgs(['--help', '--model=not-a-real-model'])).toMatchObject({ help: true });
+      expect(parseArgs(['-h'])).toMatchObject({ help: true });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('runs --help without entering the picker or launch flow', () => {
+    const launcher = join(__dirname, '..', 'scripts', 'psu-launcher.mjs');
+    const result = spawnSync(process.execPath, [launcher, '--help', '--model=not-a-real-model'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(PSU_HELP_TEXT);
+    expect(result.stderr).not.toContain('unrecognized flag');
+  });
+
   it('defaults to the interactive picker', () => {
     expect(parseArgs([])).toEqual({
       picker: true,

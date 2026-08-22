@@ -141,6 +141,15 @@ describe('renderCatalog', () => {
     expect(byFamily['fleet-admission-blocked'].awaitable_now).toBe(true);
     expect(byFamily['fleet-admission-blocked'].key).toBe('fleet:admission-blocked:<slug>');
   });
+
+  it('makes the self-assignee restriction discoverable for both work-item await families', () => {
+    const rows = renderCatalog();
+    for (const family of ['work-item', 'work-item-done']) {
+      const description = rows.find((row) => row.family === family)?.describe;
+      expect(description, family).toMatch(/DIFFERENT assignee/);
+      expect(description, family).toMatch(/refuses your own current work item before registration/);
+    }
+  });
 });
 
 describe('catalogEntry', () => {
