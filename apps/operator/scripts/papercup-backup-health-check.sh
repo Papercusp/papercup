@@ -643,6 +643,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" BACKUP_NO_FILE=1 \
+        PATH="$selftest_df_bin:$PATH" \
         bash "$self" 2>&1 >/dev/null)"
     if printf '%s' "$out" | grep -qE "$want_re"; then
       printf '  ok    %s\n' "$name"; p=$((p+1))
@@ -651,33 +652,50 @@ if [ "${1:-}" = "--self-test" ]; then
         "$name" "$want_re" "$(printf '%s' "$out" | grep -i 'data-volume usage' | head -1)"; f=$((f+1))
     fi
   }
-  # Anchor the synthetic history to the REAL current free space, so the expected
-  # rate is exact rather than dependent on whatever this host happens to have.
-  trend_now_s="$(date +%s)"
-  trend_avail_kb="$(df -Pk "$t" 2>/dev/null | tail -n1 | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit }}')"
+  # Trend arithmetic must not depend on the host's live free-space changing while a
+  # concurrent test is writing its own temporary files. The level/parser checks above
+  # still use the real df; these arithmetic-only cases use a stable fixture instead.
+  selftest_df_bin="$t/fake-bin"
+  mkdir -p "$selftest_df_bin"
+  cat >"$selftest_df_bin/df" <<'EOF'
+#!/usr/bin/env bash
+target="${2:-/self-test-fixture}"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'self-test-fixture 1000000000 500000000 500000000 50%% %s\n' "$target"
+EOF
+  chmod +x "$selftest_df_bin/df"
+  selftest_avail_kb=500000000
+  # Compute each synthetic timestamp immediately before its case. A single timestamp
+  # captured here made the expected 5 GiB/h rate drift below the assertion while a
+  # concurrent test occupied the host long enough for the self-test itself to age.
+  trend_seed() {
+    local age_s="$1" delta_kb="$2" now_s
+    now_s="$(date +%s)"
+    printf '%s %s' "$((now_s - age_s))" "$((selftest_avail_kb + delta_kb))"
+  }
   # 13. No history at all: seeds a baseline and says so — no rate from one sample.
   check_trend "trend with no prior sample: seeds baseline, invents no rate" \
         "" "no prior sample yet"
   # 14. A 2h-old baseline with 10 GiB more free space = losing exactly 5 GiB/h.
   check_trend "trend over a 2h baseline: reports the rate AND an ETA" \
-        "$((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
+        "$(trend_seed 7200 10485760)" \
         "losing 5\.0[0-9] GiB/h .* ETA TO FULL ~[0-9]+h"
   # 15. A stale recovery must not hide a current decline: the newest prior sample
   # is the actionable baseline, even when the oldest retained sample shows net gain.
   check_trend "trend uses the newest prior sample after an older recovery" \
-        "$((trend_now_s - 14400)) $((trend_avail_kb - 10485760))
-$((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
+        "$(trend_seed 14400 -10485760)
+$(trend_seed 7200 10485760)" \
         "losing 5\.0[0-9] GiB/h .* ETA TO FULL ~[0-9]+h"
   # 16. Space FREED must never render as a countdown to full.
   check_trend "trend when the volume is recovering: NOT shrinking, no ETA" \
-        "$((trend_now_s - 7200)) $((trend_avail_kb - 10485760))" \
+        "$(trend_seed 7200 -10485760)" \
         "NOT shrinking"
   # 17. A corrupt history degrades to no-baseline, not to a garbage rate.
   check_trend "trend with a corrupt history: degrades to no-baseline" \
         "not-a-timestamp garbage" "no prior sample yet"
   # 18. A baseline minutes old cannot support an hourly extrapolation.
   check_trend "trend with a 6-minute baseline: refuses to extrapolate" \
-        "$((trend_now_s - 360)) $((trend_avail_kb + 10485760))" \
+        "$(trend_seed 360 10485760)" \
         "baseline too recent"
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
 
@@ -696,6 +714,7 @@ $((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
+        PATH="$selftest_df_bin:$PATH" \
         "$@" bash "$self" 2>&1 >/dev/null)"
     [ -f "$t/state/backup-volume-red-ei-filed" ] && got_marker=yes
     if [ "$got_marker" = "$want_marker" ] && printf '%s' "$out" | grep -qE "$want_re"; then
@@ -708,9 +727,11 @@ $((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
     fi
   }
 
-  backup_now_s="$(date +%s)"
-  backup_df_line="$(df -Pk "$t" 2>/dev/null | tail -n1)"
-  backup_avail_kb="$(printf '%s' "$backup_df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit }}')"
+  backup_seed() {
+    local age_s="$1" delta_kb="$2" now_s
+    now_s="$(date +%s)"
+    printf '%s %s' "$((now_s - age_s))" "$((selftest_avail_kb + delta_kb))"
+  }
 
   check_backup_volume "backup volume green: no marker" \
         100 no "" "Backup-volume usage" BACKUP_NO_FILE=1
@@ -719,10 +740,10 @@ $((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
   check_backup_volume "backup trend with no baseline: refuses an ETA" \
         100 no "" "no prior sample yet" BACKUP_NO_FILE=1
   check_backup_volume "backup trend falling: counts down to the 2% floor" \
-        100 no "$((backup_now_s - 7200)) $((backup_avail_kb + 10485760))" \
+        100 no "$(backup_seed 7200 10485760)" \
         "losing 5\\.0[0-9] GiB/h .* ETA TO 2% FLOOR" BACKUP_NO_FILE=1
   check_backup_volume "backup trend recovering: no countdown" \
-        100 no "$((backup_now_s - 7200)) $((backup_avail_kb - 10485760))" \
+        100 no "$(backup_seed 7200 -10485760)" \
         "NOT shrinking" BACKUP_NO_FILE=1
   printf '  ---- %d passed, %d failed (post backup-volume block)\n' "$p" "$f"
 
