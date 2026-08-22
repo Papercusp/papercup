@@ -33,6 +33,15 @@ describe('composeLaunchContext', () => {
     expect(out).not.toContain("pass `harness: 'papercusp'` to `docs:*`");
   });
 
+  it('distinguishes Vitest routing from registered non-Vitest test runners', () => {
+    const out = composeLaunchContext({ harnessSlug: 'papercusp', planSlug: null });
+
+    expect(out).toContain('Vitest files use `npm run test:file -- <test paths>`');
+    expect(out).toContain('registered non-Vitest files');
+    expect(out).toContain('`papercusp-desktop` Node tests');
+    expect(out).toContain('`test:file` is Vitest-only');
+  });
+
   it('no harness but a plan → workspace-level block + plan block', () => {
     const out = composeLaunchContext({ harnessSlug: null, planSlug: 'my-plan' });
     expect(out).toContain('workspace level');

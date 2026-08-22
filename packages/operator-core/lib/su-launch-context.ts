@@ -107,7 +107,7 @@ export function composeLaunchContext(input: LaunchContextInput): string {
   if ((input.profile ?? 'engineer') === 'engineer') {
     lines.push(
       '<!-- papercusp-rule:test-router=test-file -->',
-      '- **Exact tests:** `npm run test:file -- <test paths>` routes files to their owning Vitest configs.',
+      '- **Exact tests:** Vitest files use `npm run test:file -- <test paths>`, which routes each file to its owning Vitest config; registered non-Vitest files (for example `papercusp-desktop` Node tests) use their package\'s documented runner because `test:file` is Vitest-only.',
       '<!-- papercusp-rule:app-runtime=tauri -->',
       '- **UI verification:** drive the Tauri shell; server-side staging changes run on `:3170`.',
       '<!-- papercusp-rule:git-ownership=background-sync -->',
