@@ -14,7 +14,15 @@ import { join } from 'node:path';
 import { dispatchWorkspaceSwitch } from '@papercusp/agent-mcp';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const REGISTRY_PATH = join(workspacesRoot(), 'registry.json');
+// Resolved LAZILY (WI-40369). This module is imported for registration by
+// endpoint-route/routes/index.ts, so it evaluates inside any suite that pulls
+// in the route registry — including the many that install a PARTIAL
+// `vi.mock('../workspace-registry', ...)`. Under vitest, reading an export the
+// mock factory does not define is a HARD throw, so calling `workspacesRoot()`
+// at module-eval time strands the ENTIRE unrelated suite file at import.
+// Deferring the call means only a request that actually reaches the handler
+// touches the seam.
+const registryPath = () => join(workspacesRoot(), 'registry.json');
 
 export default defineTool({
   method: 'POST',
@@ -32,7 +40,7 @@ export default defineTool({
     if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(id)) {
       return Response.json({ ok: false, error: `invalid workspace id "${id}"` }, { status: 400 });
     }
-    if (!existsSync(REGISTRY_PATH)) {
+    if (!existsSync(registryPath())) {
       return Response.json({ ok: false, error: 'no workspace registry on disk' }, { status: 404 });
     }
     const reg = readRegistry();
