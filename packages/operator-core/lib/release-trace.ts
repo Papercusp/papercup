@@ -527,7 +527,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
         `The exact candidate ${candidateVerdict.candidate ?? targetSha} rendered no code verdict (green:null; ` +
         `reason=${candidateVerdict.reason ?? 'unknown'}). ` +
         (candidateVerdict.reason === 'repair-in-progress' || candidateVerdict.reason === 'repair-staging-mismatch'
-          ? 'The frozen repair queue owns progress; await its next checkpoint outcome instead of opening a testing:flakiness diagnosis.'
+          ? 'The frozen repair queue owns progress; await its next checkpoint outcome instead of opening a new gate-failure diagnosis.'
           : 'Await the next checkpoint outcome instead of treating the prior gate state as a verdict for this candidate.'),
     };
   }
