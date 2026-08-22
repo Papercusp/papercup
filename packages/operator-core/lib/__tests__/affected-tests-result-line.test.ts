@@ -166,6 +166,21 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(status).toBe(0);
     });
 
+    it('accepts --dry-run as a preview alias and refuses unknown flags before scheduling work', () => {
+      const preview = runAffected(['--changed-paths', 'scripts/affected-tests.mjs', '--dry-run']);
+      const previewFields = parseMarker(markerLines(preview.stdout)[0]);
+      expect(preview.status).toBe(0);
+      expect(previewFields.status).toBe('dry-run');
+      expect(Number(previewFields.tasks)).toBeGreaterThan(0);
+
+      const typo = runAffected(['--changed-paths', 'scripts/affected-tests.mjs', '--dry-rnu']);
+      expect(typo.status).toBe(1);
+      expect(typo.stderr).toContain('unrecognized flag(s): --dry-rnu');
+      expect(typo.stderr).toContain('did you mean --dry-run?');
+      expect(typo.stderr).toContain('Refusing to run rather than silently ignoring the flag');
+      expect(typo.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
+    });
+
     it('carries the full field set a caller parses, on every early-exit path', () => {
       const unrouted = 'some/unrouted/path.txt';
       const invocations: string[][] = [
