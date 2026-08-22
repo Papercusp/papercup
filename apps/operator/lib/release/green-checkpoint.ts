@@ -109,6 +109,7 @@ import { STANDALONE_PACKAGE_DIRS } from "../../../../scripts/lib/test-runner-cla
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
+// @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
 } from "../../../../scripts/lib/batch-watchdog.mjs";
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.

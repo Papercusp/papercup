@@ -113,7 +113,7 @@ describe('isListingKind', () => {
   });
 
   it('rejects an unknown string', () => {
-    expect(isListingKind('recipe')).toBe(false);
+    expect(isListingKind('bogus-listing-kind')).toBe(false);
     expect(isListingKind('')).toBe(false);
     expect(isListingKind('HARNESS')).toBe(false); // case-sensitive
   });
@@ -143,7 +143,7 @@ describe('listingKindOf (row → kind, defaulting to harness)', () => {
   });
 
   it('defaults an INVALID listing_kind to harness (forward-compat / corrupt row)', () => {
-    expect(listingKindOf(makeListing({ listing_kind: 'recipe' as unknown as ListingKind }))).toBe('harness');
+    expect(listingKindOf(makeListing({ listing_kind: 'bogus-listing-kind' as unknown as ListingKind }))).toBe('harness');
     expect(listingKindOf(makeListing({ listing_kind: '' as unknown as ListingKind }))).toBe('harness');
   });
 

@@ -38,12 +38,7 @@ export default defineTool({
     await writeIntegrationCredentials({ [args.name]: args.value });
     const all = await readIntegrationCredentials();
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ ok: true, name: args.name, masked: maskIntegrationKey(all[args.name]) }),
-        },
-      ],
+      data: { ok: true, name: args.name, masked: maskIntegrationKey(all[args.name]) },
     };
   },
 });
