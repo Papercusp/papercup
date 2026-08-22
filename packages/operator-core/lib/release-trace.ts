@@ -16,6 +16,15 @@ export interface ReleaseTraceGate {
   authoritative: boolean;
   consecutiveReds: number;
   failingTests: string[];
+  /** The writer's own verdict marker for the candidate named by observedCandidate. */
+  recordedVerdict?: 'green' | 'not-green' | null;
+  /**
+   * When a frozen repair queue owns the exact candidate, these names are carried from the
+   * prior gate-red blob. They are context for the queue, never failures produced by this
+   * candidate, so they must not remain in `failingTests`.
+   */
+  inheritedRepairQueueFailingTests?: string[];
+  inheritedRepairQueueFailingTestsSource?: 'prior-gate-verdict' | null;
   fireStale: boolean;
   fireStaleReason: string | null;
   verdictStale: boolean;
@@ -95,6 +104,20 @@ export interface ReleaseTraceInput {
   workItem?: string;
 }
 
+export interface ReleaseTraceCandidateVerdict {
+  /** The verdict for the exact requested candidate, not the aggregate gate state. */
+  state: 'green' | 'red' | 'inconclusive' | 'unknown';
+  /** `null` is deliberate: the producer did not judge this candidate. */
+  green: boolean | null;
+  candidate: string | null;
+  /** Normalized projection state (`inconclusive`, `green`, `red`, or `unknown`). */
+  status: 'green' | 'red' | 'inconclusive' | 'unknown';
+  /** Producer reason when the verdict is inconclusive, otherwise the explanatory reason. */
+  reason: string | null;
+  detail: string | null;
+  observedAtMs: number | null;
+}
+
 function sameSha(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
   const left = a.toLowerCase();
@@ -108,6 +131,92 @@ function gateJudgedTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): 
   // while the fallback keeps older callers safe during the field rollout.
   const observedCandidate = input.gate.observedCandidate ?? input.position.gate.observedCandidate;
   return sameSha(input.position.targetSha, observedCandidate);
+}
+
+function exactCandidateInconclusive(input: Pick<ReleaseTraceInput, 'position' | 'gate'>) {
+  const inconclusive = input.gate.inconclusive ?? input.position.gate.inconclusive;
+  return input.position.targetSha && sameSha(input.position.targetSha, inconclusive?.candidate) ? inconclusive : null;
+}
+
+/**
+ * Project the verdict for the requested SHA without inheriting the global gate's older
+ * counters. In particular, `gate_health.inconclusive` intentionally leaves a previous
+ * red streak in place while the frozen repair queue progresses; that streak is not a
+ * verdict about the repair candidate.
+ */
+function classifyCandidateVerdict(input: ReleaseTraceInput): ReleaseTraceCandidateVerdict {
+  const targetSha = input.position.targetSha;
+  const inconclusive = exactCandidateInconclusive(input);
+  if (inconclusive) {
+    return {
+      state: 'inconclusive',
+      status: 'inconclusive',
+      green: null,
+      candidate: inconclusive.candidate,
+      reason: inconclusive.status,
+      detail: inconclusive.detail,
+      observedAtMs: inconclusive.observedAtMs,
+    };
+  }
+
+  const observedCandidate = input.gate.observedCandidate ?? input.position.gate.observedCandidate;
+  if (!targetSha || !sameSha(targetSha, observedCandidate)) {
+    return {
+      state: 'unknown',
+      status: 'unknown',
+      green: null,
+      candidate: observedCandidate ?? null,
+      reason: targetSha ? 'the gate verdict does not name this exact candidate' : 'target-unresolved',
+      detail: null,
+      observedAtMs: null,
+    };
+  }
+  if (input.gate.verdictStale) {
+    return {
+      state: 'unknown',
+      status: 'unknown',
+      green: null,
+      candidate: observedCandidate,
+      reason: input.gate.verdictStaleReason ?? 'the recorded gate verdict is stale',
+      detail: null,
+      observedAtMs: null,
+    };
+  }
+
+  // Newer writers state their own green-ness. Keep the red fallback for older callers that
+  // supplied an exact observed candidate but predate the marker; a zero counter alone is not
+  // enough to manufacture a green verdict.
+  if (input.gate.recordedVerdict === 'green') {
+    return {
+      state: 'green',
+      status: 'green',
+      green: true,
+      candidate: observedCandidate,
+      reason: null,
+      detail: null,
+      observedAtMs: null,
+    };
+  }
+  if (input.gate.recordedVerdict === 'not-green' || (input.gate.authoritative && input.gate.consecutiveReds > 0)) {
+    return {
+      state: 'red',
+      status: 'red',
+      green: false,
+      candidate: observedCandidate,
+      reason: null,
+      detail: null,
+      observedAtMs: null,
+    };
+  }
+  return {
+    state: 'unknown',
+    status: 'unknown',
+    green: null,
+    candidate: observedCandidate,
+    reason: 'the candidate verdict marker is unavailable',
+    detail: null,
+    observedAtMs: null,
+  };
 }
 
 function gateIsActivelyJudgingTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): boolean {
@@ -249,6 +358,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   const terminalInconclusive = checkpointRunTerminalInconclusive(input);
   const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
+  const candidateVerdict = classifyCandidateVerdict(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
   if (terminalInconclusive) {
@@ -292,7 +402,20 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
         : 'The target commit is not present on origin/staging, so the green gate cannot test it.',
     );
   }
-  if (gate.verdictStale) {
+  if (candidateVerdict.state === 'inconclusive') {
+    const inherited = gate.inheritedRepairQueueFailingTests ?? [];
+    add(
+      'gate-inconclusive',
+      true,
+      `The exact candidate ${candidateVerdict.candidate ?? position.targetSha ?? 'this target'} has no gate verdict ` +
+        `(green:null; reason=${candidateVerdict.reason ?? 'unknown'}). ${
+          candidateVerdict.detail ?? 'The checkpoint rendered no code verdict.'
+        }` +
+        (inherited.length > 0
+          ? ` The ${inherited.length} failingTests shown below are inherited repair-queue context from the prior gate verdict, not failures produced by this candidate.`
+          : ''),
+    );
+  } else if (gate.verdictStale) {
     add(
       'gate-verdict-stale',
       true,
@@ -345,6 +468,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   const terminalInconclusive = checkpointRunTerminalInconclusive(input);
   const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
+  const candidateVerdict = classifyCandidateVerdict(input);
   if (!targetSha) {
     return {
       name: 'dev:pipeline_position',
@@ -392,7 +516,19 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       reason:
         `The checkpoint for ${cancelledNoProducer.candidate ?? targetSha} was externally cancelled without a verdict, ` +
         'and the measured run-lock is idle; do not await a candidate-bound result from that stopped producer. ' +
-        'Launch one fresh guarded verdict after the cancellation cause is resolved.',
+      'Launch one fresh guarded verdict after the cancellation cause is resolved.',
+    };
+  }
+  if (candidateVerdict.state === 'inconclusive') {
+    return {
+      name: 'checkpoint:await',
+      args: { pipeline, candidateSha: targetSha },
+      reason:
+        `The exact candidate ${candidateVerdict.candidate ?? targetSha} rendered no code verdict (green:null; ` +
+        `reason=${candidateVerdict.reason ?? 'unknown'}). ` +
+        (candidateVerdict.reason === 'repair-in-progress' || candidateVerdict.reason === 'repair-staging-mismatch'
+          ? 'The frozen repair queue owns progress; await its next checkpoint outcome instead of opening a testing:flakiness diagnosis.'
+          : 'Await the next checkpoint outcome instead of treating the prior gate state as a verdict for this candidate.'),
     };
   }
   if (!position.positions.onStaging && !targetWasGateTested) {
@@ -508,6 +644,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
 export function buildReleaseTrace(input: ReleaseTraceInput) {
   const canonicalOwner = canonicalRedOwner(input);
   const effectiveInput = canonicalOwner ? { ...input, gate: { ...input.gate, redOwner: canonicalOwner } } : input;
+  const candidateVerdict = classifyCandidateVerdict(effectiveInput);
   const targetSha = input.position.targetSha;
   const requesterWakes = input.requesterId
     ? input.wakes.filter((wake) => wake.subscriberId === input.requesterId)
@@ -541,7 +678,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       presence: input.position.positions,
       runtime: input.position.runtime,
     },
-    gate: effectiveInput.gate,
+    gate: { ...effectiveInput.gate, candidateVerdict },
     greenPin: {
       sha: testedSha,
       targetIncluded: input.position.positions.inMain,

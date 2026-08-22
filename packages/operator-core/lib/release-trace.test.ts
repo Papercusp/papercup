@@ -323,6 +323,56 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.name).toBe('testing:flakiness');
   });
 
+  it('projects an exact repair-in-progress candidate as inconclusive over an older red gate', () => {
+    const repairCandidate = sha.slice(0, 8);
+    const inconclusive = {
+      status: 'repair-in-progress',
+      candidate: repairCandidate,
+      detail: 'frozen repair fixer fixer-1 dispatched; no suite run',
+      observedAtMs: 123,
+    };
+    const inherited = ['historical-red.test.ts', 'older-lint.test.ts'];
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        }),
+        gate: {
+          ...input().gate,
+          state: 'gate-red',
+          authoritative: false,
+          consecutiveReds: 18,
+          failingTests: [],
+          observedCandidate: 'older-candidate',
+          recordedVerdict: 'not-green',
+          inconclusive,
+          inheritedRepairQueueFailingTests: inherited,
+          inheritedRepairQueueFailingTestsSource: 'prior-gate-verdict',
+        },
+      }),
+    );
+
+    expect(out.gate.candidateVerdict).toMatchObject({
+      state: 'inconclusive',
+      status: 'inconclusive',
+      green: null,
+      candidate: repairCandidate,
+      reason: 'repair-in-progress',
+      detail: inconclusive.detail,
+    });
+    expect(out.gate.failingTests).toEqual([]);
+    expect(out.gate.inheritedRepairQueueFailingTests).toEqual(inherited);
+    expect(out.gate.inheritedRepairQueueFailingTestsSource).toBe('prior-gate-verdict');
+    expect(out.constraints.map((c) => c.code)).toContain('gate-inconclusive');
+    expect(out.constraints.map((c) => c.code)).not.toContain('gate-red');
+    expect(out.constraints.map((c) => c.code)).not.toContain('no-force-past-red');
+    expect(out.nextVerb).toMatchObject({
+      name: 'checkpoint:await',
+      args: { pipeline: 'papercusp', candidateSha: sha },
+    });
+    expect(out.nextVerb?.reason).not.toContain('testing:flakiness');
+  });
+
   it('uses exact local gate provenance before directing recovery to origin/staging', () => {
     const out = buildReleaseTrace(
       input({
