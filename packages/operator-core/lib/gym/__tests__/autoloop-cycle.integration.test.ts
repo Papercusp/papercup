@@ -21,7 +21,10 @@ import { runOneAutoloopCycle, maskDsn } from '../autoloop-cycle';
 // A per-process port + slug so a parallel runner (or a live :3070/:3170) never collides.
 const PORT = 3900 + (process.pid % 80);
 const SLUG = `gymloop-e2e-${process.pid}`;
-const BOOT_TIMEOUT_MS = 300_000;
+// The real corpus now runs baseline + candidate task pipelines serially. Keep the
+// explicit per-test budget above the current 17-task corpus on a loaded host; the
+// runner's own per-pipeline timeout remains the hang guard.
+const E2E_TIMEOUT_MS = 1_200_000;
 
 describe('runOneAutoloopCycle — live-boot E2E (fake mode, zero LLM)', () => {
   it(
@@ -63,6 +66,6 @@ describe('runOneAutoloopCycle — live-boot E2E (fake mode, zero LLM)', () => {
       expect(outcome.report).toHaveProperty('trainByVariant');
       expect(outcome.report).toHaveProperty('realAnchorByVariant');
     },
-    BOOT_TIMEOUT_MS,
+    E2E_TIMEOUT_MS,
   );
 });
