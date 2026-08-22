@@ -455,6 +455,19 @@ suite".
 desktop/delta gates and the `main` fast-forward still have to clear; an agent asserted "gate green"
 off the suite result that same morning and had to retract it.
 
+## Gate failure triage — re-run named files individually
+
+`GATE_HELD_BY` / `AFFECTED_TESTS_FAILING_FILES` are a list of candidates, not proof that every
+named file is failing at the current HEAD. Re-verify each path in its own invocation (for
+example, `npm run test:file -- <one-path>`; with `testing:run`, submit one file per call).
+A multi-file Vitest invocation can abort during collection when one file's mock or module graph
+crashes, so its result must not be attributed to every requested path.
+
+If a batch emits `TEST_FILE_ROUTE_ERROR` or `matched=0`, treat the result as **undetermined**:
+zero files were measured. Re-run the paths individually and attribute red/green/fixed status
+only from those per-file results. Never use a batch `matched=0` as evidence that the named files
+are red, green, or fixed.
+
 ## Server-side edits and the two-port model — no hot-reload
 
 The Hono host (`bin/hono-host.ts`, MCP tools, `lib/endpoint-route`,
