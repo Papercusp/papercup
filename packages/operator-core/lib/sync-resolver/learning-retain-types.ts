@@ -21,6 +21,31 @@ export type RetainFeedTab = (typeof RETAIN_FEED_TABS)[number];
 export const RETAIN_FEED_FILTERS = ['all', 'shipped', 'inflight'] as const;
 export type RetainFeedFilter = (typeof RETAIN_FEED_FILTERS)[number];
 
+/** Column-filter state the Retain client compiles from its `rtf` URL param.
+ * Text/numeric presentation columns without a server predicate stay out of
+ * this shape; these are exactly the persisted axes the six feed legs support. */
+export interface RetainFeedColumnFilters {
+  /** Case-insensitive substring match over the rendered row title. */
+  title?: string;
+  /** OR within status, AND with every other active dimension. */
+  statuses?: readonly string[];
+  /** Origin-idea lens. Rows without an origin idea fail an active lens filter. */
+  lenses?: readonly string[];
+}
+
+/** Wire arguments shared by `learning.retainFeed` and its companion summary.
+ * `hive` is resolved to concrete store scopes by the registry layer. */
+export interface RetainFeedQueryArgs {
+  tab?: RetainFeedTab;
+  filter?: RetainFeedFilter;
+  cursor?: string | null;
+  limit?: number;
+  hive?: string;
+  /** Quick search over id + title + server-stamped status. */
+  q?: string;
+  filters?: RetainFeedColumnFilters;
+}
+
 export const RETAIN_KIND_FOR_TAB: Record<Exclude<RetainFeedTab, 'all'>, RetainFeedKind> = {
   memories: 'memory',
   plans: 'plan',

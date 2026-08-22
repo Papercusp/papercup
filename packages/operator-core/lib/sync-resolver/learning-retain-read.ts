@@ -24,6 +24,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Sql } from 'postgres';
+import type { CompanionSummaryAggregateRow, FacetSelection } from '@papercusp/facets';
 import { ISSUE_ABANDONED_STATUSES, ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
 import { createReadDeadline, type WithinBudget } from './read-deadline';
 import {
@@ -36,10 +37,12 @@ import {
   RETAIN_KIND_FOR_TAB,
   type RetainDetail,
   type RetainFeedCounts,
+  type RetainFeedColumnFilters,
   type RetainFeedCursor,
   type RetainFeedFilter,
   type RetainFeedKind,
   type RetainFeedPage,
+  type RetainFeedQueryArgs,
   type RetainFeedRow,
   type RetainFeedTab,
   type RetainLegWindow,
@@ -49,10 +52,12 @@ import {
 export type {
   RetainDetail,
   RetainFeedCounts,
+  RetainFeedColumnFilters,
   RetainFeedCursor,
   RetainFeedFilter,
   RetainFeedKind,
   RetainFeedPage,
+  RetainFeedQueryArgs,
   RetainFeedRow,
   RetainFeedTab,
   RetainPlanChild,
