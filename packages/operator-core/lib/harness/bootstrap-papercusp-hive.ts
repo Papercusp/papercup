@@ -160,7 +160,14 @@ export interface BootstrapPapercuspHiveDeps {
     ws: string,
     opts?: { fresh?: boolean },
   ) => Promise<{
-    projects: Array<{ slug: string; path?: string; self_repo?: boolean; remote_hive?: boolean }>;
+    projects: Array<{
+      slug: string;
+      path?: string;
+      self_repo?: boolean;
+      remote_hive?: boolean;
+      hive_pubkey?: string;
+      owner_device_pubkey?: string;
+    }>;
   }>;
   clone?: typeof cloneGithubRepo;
   ensureHive?: typeof ensurePapercuspHive;
@@ -297,11 +304,34 @@ export function defaultSetHomeWorkspace(ws: string): void {
 /** P-005 default: has THIS box already joined the canonical hive? joinHiveAsView's
  *  identity upsert writes a hives row keyed on the hive pubkey; a row keyed on the
  *  baked canonical pubkey means a prior boot already joined. Best-effort → null. */
-async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug: string } | null> {
+function isIncompleteRemoteHiveView(project: {
+  remote_hive?: boolean;
+  hive_pubkey?: string;
+  owner_device_pubkey?: string;
+}): boolean {
+  return (
+    project.remote_hive === true &&
+    Boolean(project.hive_pubkey?.trim()) &&
+    !project.owner_device_pubkey?.trim()
+  );
+}
+
+async function defaultFindJoinedCanonical(
+  pubkeyBase64: string,
+  loadRegistry: NonNullable<BootstrapPapercuspHiveDeps['loadRegistry']> = loadHarnessRegistry,
+): Promise<{ slug: string } | null> {
   try {
     const { getHiveByPubkey } = await import('../hive-store');
     const row = await getHiveByPubkey(PAPERCUSP_WORKSPACE_ID, pubkeyBase64);
-    return row ? { slug: row.homeSlug } : null;
+    if (!row) return null;
+
+    // The hives row is the identity latch, but it can predate the registry's
+    // owner-device binding. A partial remote view must fall through to the
+    // idempotent join so the verified announce can backfill the missing field.
+    const registry = await loadRegistry(PAPERCUSP_WORKSPACE_ID, { fresh: true }).catch(() => null);
+    const view = registry?.projects.find((project) => project.slug === row.homeSlug);
+    if (view && isIncompleteRemoteHiveView(view)) return null;
+    return { slug: row.homeSlug };
   } catch {
     return null;
   }
@@ -926,7 +956,7 @@ export async function bootstrapPapercuspHive(
   try {
     const reg = await loadRegistry(PAPERCUSP_WORKSPACE_ID);
     const existing = reg.projects.find((p) => p.slug === PAPERCUSP_HIVE_SLUG);
-    if (existing) {
+    if (existing && !isIncompleteRemoteHiveView(existing)) {
       // WI-3288: self-heal — ensure papercusp-workspace is LISTED in registry.json
       // workspaces[] on every boot (an install self-admitted before this fix homed it
       // without listing it → the pot stayed invisible). ensurePapercuspWorkspace is idempotent.
@@ -979,7 +1009,8 @@ export async function bootstrapPapercuspHive(
     // fires on a FRESH appearance, but on a reboot the canonical hive is already in the
     // discovered set, so the join would report "not announcing yet" every boot forever.
     // (The OWNER box never reaches here: step 1 finds its own slug:'papercusp' hive.)
-    const findJoinedCanonical = deps.findJoinedCanonical ?? defaultFindJoinedCanonical;
+    const findJoinedCanonical =
+      deps.findJoinedCanonical ?? ((pubkeyBase64: string) => defaultFindJoinedCanonical(pubkeyBase64, loadRegistry));
     const alreadyJoined = await findJoinedCanonical(canonicalInvite.pubkeyBase64).catch(() => null);
     if (alreadyJoined) {
       setHome(PAPERCUSP_WORKSPACE_ID);

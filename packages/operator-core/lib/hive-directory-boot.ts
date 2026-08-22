@@ -66,7 +66,15 @@ export interface InviteAnnounceConfirm {
    *  Carries the joiner-side memberLinks + hivePubkey so the caller can JOIN straight
    *  off the confirm, instead of a second listDiscovered lookup + pubkey re-match
    *  (which fails when the owner's actual pubkey differs from the baked one) — P-004. */
-  hive?: { potId: string; title: string; visibility: string; memberLinks?: string[]; hivePubkey?: string };
+  hive?: {
+    potId: string;
+    title: string;
+    visibility: string;
+    memberLinks?: string[];
+    hivePubkey?: string;
+    /** Verified owner device binding carried by the signed directory announce. */
+    ownerDevicePubkey?: string;
+  };
   /** Swarm peers currently paired on the invite topic (0 = nobody is home — the
    *  announce can never arrive). Informational; `found` is the decision. */
   peersOnTopic: number;
@@ -354,6 +362,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
               // Surface the join targets so the caller skips the listDiscovered re-match.
               ...(h.memberLinks ? { memberLinks: h.memberLinks } : {}),
               ...(h.hivePubkey ? { hivePubkey: h.hivePubkey } : {}),
+              ...(h.ownerDevicePubkey ? { ownerDevicePubkey: h.ownerDevicePubkey } : {}),
             }
           : null;
       };

@@ -49,6 +49,9 @@ function fakes(initialProjects: HarnessRegistry['projects'] = []) {
       return { seeded: true, active: false, push: false, pushReason: 'joiner_side', cron: '0 0 * * * *' };
     },
     resolveHivePubkey: async () => HIVE_PUBKEY,
+    // Normal announced links carry the verified owner binding. Tests that
+    // exercise the degraded partial-stamp path override this seam to null.
+    resolveOwnerDevicePubkey: async () => 'OD_directory',
     upsertHiveIdentity: async (input) => {
       calls.identities.push(input);
     },
@@ -521,6 +524,28 @@ describe('verified hive identity coords stamped on the view (owner-bootstrap adm
     const view = calls.registry.find((p) => p.slug === 'shop-hive')!;
     expect(view.hive_pubkey).toBeUndefined();
     expect(view.owner_device_pubkey).toBeUndefined();
+  });
+
+  it('reports a partial identity stamp as degraded when the hive key lacks the owner binding', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { deps, calls } = fakes();
+      deps.resolveOwnerDevicePubkey = async () => null;
+      const res = await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+
+      expect(res).toMatchObject({ ok: false, potSlug: 'shop-hive', error: 'partial_identity_stamp' });
+      expect(calls.registry.find((p) => p.slug === 'shop-hive')).toMatchObject({
+        remote_hive: true,
+        hive_pubkey: HIVE_PUBKEY,
+      });
+      expect(calls.registry.find((p) => p.slug === 'shop-hive')).not.toHaveProperty('owner_device_pubkey');
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('degraded join'));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

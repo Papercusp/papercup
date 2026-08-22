@@ -74,18 +74,27 @@ export interface JoinCanonicalDeps {
     confirmInviteAnnounce?: (secret: string, opts?: { timeoutMs?: number }) => Promise<{
       found?: boolean;
       peersOnTopic?: number;
-      hive?: { potId?: string; memberLinks?: string[]; hivePubkey?: string } | null;
+      hive?: {
+        potId?: string;
+        memberLinks?: string[];
+        hivePubkey?: string;
+        ownerDevicePubkey?: string;
+      } | null;
     } | null>;
   } | null>;
   /** List discovered hives (fallback memberLinks source if the confirm omits them).
    *  Default: hive-directory listDiscoveredHives. */
-  listDiscovered?: () => Promise<Array<{ potId: string; hivePubkey?: string; memberLinks?: string[] }>>;
+  listDiscovered?: () => Promise<
+    Array<{ potId: string; hivePubkey?: string; ownerDevicePubkey?: string; memberLinks?: string[] }>
+  >;
   /** The hive join. Default: harness/join-hive joinHiveAsView. */
   joinHive?: (opts: {
     potId: string;
     title?: string;
     /** The hive's Ed25519 pubkey (base64) — keys the joiner's hives-row identity (P-005). */
     hivePubkey?: string;
+    /** Verified owner device pubkey from the directory announce — stamps the remote view. */
+    ownerDevicePubkey?: string;
     memberLinks: string[];
     workspaceId: string;
   }) => Promise<{
@@ -110,13 +119,20 @@ async function defaultEnsureWired(workspaceId: string) {
 }
 
 async function defaultListDiscovered(): Promise<
-  Array<{ potId: string; hivePubkey?: string; memberLinks?: string[] }>
+  Array<{ potId: string; hivePubkey?: string; ownerDevicePubkey?: string; memberLinks?: string[] }>
 > {
   const { getHiveDirectory } = await import('../hive-directory-deps');
   return getHiveDirectory().listDiscoveredHives({ includeExpired: true });
 }
 
-async function defaultJoinHive(opts: { potId: string; title?: string; memberLinks: string[]; workspaceId: string }) {
+async function defaultJoinHive(opts: {
+  potId: string;
+  title?: string;
+  hivePubkey?: string;
+  ownerDevicePubkey?: string;
+  memberLinks: string[];
+  workspaceId: string;
+}) {
   const { joinHiveAsView } = await import('./join-hive');
   return joinHiveAsView(opts);
 }
@@ -243,10 +259,12 @@ export async function joinCanonicalPapercuspHive(
     //    2026-07-01). Never match on potId; never trust the announced pubkey over
     //    the baked one.
     let memberLinks: string[] = [];
+    let ownerDevicePubkey: string | undefined;
     let potId: string = PAPERCUSP_HIVE_SLUG;
     if (confirm?.found && confirm.hive?.hivePubkey === invite.pubkeyBase64) {
       memberLinks = confirm.hive.memberLinks ?? [];
       potId = confirm.hive.potId ?? PAPERCUSP_HIVE_SLUG;
+      ownerDevicePubkey = confirm.hive.ownerDevicePubkey;
     }
     if (memberLinks.length === 0) {
       const hives = await listDiscovered().catch(() => []);
@@ -254,6 +272,7 @@ export async function joinCanonicalPapercuspHive(
       if (match) {
         potId = match.potId;
         memberLinks = match.memberLinks ?? [];
+        ownerDevicePubkey = match.ownerDevicePubkey ?? ownerDevicePubkey;
       } else if (!confirm?.found) {
         // Neither a live announce NOR a cached pubkey-pinned one — the honest
         // "owner offline / dead secret" skip (G-002 stays honest: an invite
@@ -291,6 +310,7 @@ export async function joinCanonicalPapercuspHive(
       // memberLinks above were pinned to, and it keys the P-005 fire-once latch
       // (getHiveByPubkey on the baked pubkey) so the next boot finds the join.
       hivePubkey: invite.pubkeyBase64,
+      ...(ownerDevicePubkey ? { ownerDevicePubkey } : {}),
       memberLinks,
       workspaceId: PAPERCUSP_WORKSPACE_ID,
     });
