@@ -5,6 +5,7 @@ import {
   planWorkItemLeaseReap,
   planResourceLockLeaseReap,
   reapResourceLockRows,
+  reapFileLockRows,
   classifyLiveIdle,
   terminateIdleLiveSessions,
   planZombieReap,
@@ -21,6 +22,7 @@ import {
   type ReapableSession,
   type WorkItemLeaseRow,
   type ResourceLockLeaseRow,
+  type FileLockLeaseRow,
   type LiveIdleCandidate,
   type IdleLiveSession,
   type TerminateDeps,
@@ -54,6 +56,13 @@ const resourceLease = (
   coordinationDomain,
   resource: 'dev-server',
 });
+const fileLease = (
+  path: string,
+  lockId: string,
+  owner: string,
+  acquiredAtMs: number | null,
+  coordinationDomain = 'file-domain',
+): FileLockLeaseRow => ({ path, lockId, owner, acquiredAtMs, coordinationDomain });
 
 describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-process ghosts)', () => {
   it('reaps an open session whose owner is dead (not protected) and past the grace floor', () => {
@@ -339,6 +348,54 @@ describe('reapResourceLockRows (EI-20980648124299591 — owner/domain cleanup)',
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('reapFileLockRows (EI-21156392600672822 — dead-owner file locks)', () => {
+  it('releases only old dead-owner paths and groups them by owner/domain', async () => {
+    const deadA = fileLease('a.ts', 'lock-dead', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const deadB = fileLease('b.ts', 'lock-dead', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const live = fileLease('live.ts', 'lock-live', 'su-live', old(2 * IDLE_SESSION_GRACE_MS));
+    const fresh = fileLease('fresh.ts', 'lock-fresh', 'su-new', old(IDLE_SESSION_GRACE_MS - 1));
+    const groups: FileLockLeaseRow[][] = [];
+
+    const result = await reapFileLockRows({
+      leases: [deadA, deadB, live, fresh],
+      liveOwners: new Set(['su-live']),
+      nowMs: NOW,
+      dryRun: false,
+      releaseGroup: async (group) => {
+        groups.push(group);
+        return group.map((lease) => lease.path);
+      },
+    });
+
+    expect(groups.map((group) => group.map((lease) => lease.path))).toEqual([['a.ts', 'b.ts']]);
+    expect(result).toMatchObject({
+      scanned: 4,
+      reaped: 2,
+      reapedPaths: ['a.ts', 'b.ts'],
+      keptLive: 1,
+      keptFresh: 1,
+      failedOwners: 0,
+      dryRun: false,
+    });
+  });
+
+  it('dry-run reports dead paths without invoking cleanup', async () => {
+    const dead = fileLease('dead.ts', 'lock-dry', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const releaseGroup = vi.fn(async () => [dead.path]);
+
+    const result = await reapFileLockRows({
+      leases: [dead],
+      liveOwners: new Set(),
+      nowMs: NOW,
+      dryRun: true,
+      releaseGroup,
+    });
+
+    expect(releaseGroup).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ scanned: 1, reaped: 1, reapedPaths: ['dead.ts'], dryRun: true });
   });
 });
 

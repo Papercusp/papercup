@@ -51,7 +51,7 @@ import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 import { probeProcessLiveness } from './agent-tools/coordination/presence';
 import { nodeCgroupFs } from './task-manager/cgroup-read';
 import { cgroupWindowProtects, isPidInLiveWindowScope } from './task-manager/terminal-residue-census';
-import { ensureBootstrap, getTxPool, tryReleaseResource } from './agent-tools/locks/su-lock-store';
+import { ensureBootstrap, getTxPool, tryRelease, tryReleaseResource } from './agent-tools/locks/su-lock-store';
 import { inWorkspaceTxn } from './agent-tools/locks/in-workspace-txn';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
@@ -524,6 +524,14 @@ export interface ResourceLockLeaseRow {
   acquiredAtMs: number | null;
 }
 
+export interface FileLockLeaseRow {
+  coordinationDomain: string;
+  path: string;
+  lockId: string;
+  owner: string;
+  acquiredAtMs: number | null;
+}
+
 export interface ResourceLockLeaseReapPlan {
   /** Dead owner (not protected) AND past the grace floor → release the lock. */
   reap: ResourceLockLeaseRow[];
@@ -581,6 +589,95 @@ const emptyResourceLockLeaseReapResult = (dryRun: boolean): ResourceLockLeaseRea
   failedOwners: 0,
   dryRun,
 });
+
+export interface FileLockLeaseReapResult {
+  scanned: number;
+  reaped: number;
+  reapedPaths: string[];
+  keptLive: number;
+  keptFresh: number;
+  failedOwners: number;
+  dryRun: boolean;
+}
+
+const emptyFileLockLeaseReapResult = (dryRun: boolean): FileLockLeaseReapResult => ({
+  scanned: 0,
+  reaped: 0,
+  reapedPaths: [],
+  keptLive: 0,
+  keptFresh: 0,
+  failedOwners: 0,
+  dryRun,
+});
+
+/**
+ * Apply the dead-owner lease decision to file-lock rows. This is deliberately
+ * independent of work-item ownership: a request-release or failed carry-respawn
+ * can clear the last work-item lease before the backstop sees the dead owner.
+ * The production callback deletes by owner + lock id + path, so a row released
+ * and reacquired after the snapshot cannot be mistaken for the predecessor's.
+ */
+export async function reapFileLockRows(opts: {
+  leases: FileLockLeaseRow[];
+  liveOwners: ReadonlySet<string>;
+  dryRun: boolean;
+  graceMs?: number;
+  nowMs: number;
+  releaseGroup?: (leases: FileLockLeaseRow[]) => Promise<string[]>;
+}): Promise<FileLockLeaseReapResult> {
+  const plan = planResourceLockLeaseReap({
+    leases: opts.leases.map((lease) => ({ ...lease, resource: lease.path })),
+    liveOwners: opts.liveOwners,
+    nowMs: opts.nowMs,
+    graceMs: opts.graceMs,
+  });
+  if (opts.dryRun) {
+    return {
+      scanned: opts.leases.length,
+      reaped: plan.reap.length,
+      reapedPaths: plan.reap.map((lease) => lease.resource),
+      keptLive: plan.keptLive.length,
+      keptFresh: plan.keptFresh.length,
+      failedOwners: 0,
+      dryRun: true,
+    };
+  }
+  if (!opts.releaseGroup) return emptyFileLockLeaseReapResult(false);
+
+  const reapKeys = new Set(plan.reap.map((lease) => `${lease.coordinationDomain}\u0000${lease.owner}\u0000${lease.lockId}\u0000${lease.resource}`));
+  const byOwnerAndDomain = new Map<string, FileLockLeaseRow[]>();
+  for (const lease of opts.leases) {
+    const reapKey = `${lease.coordinationDomain}\u0000${lease.owner}\u0000${lease.lockId}\u0000${lease.path}`;
+    if (!reapKeys.has(reapKey)) continue;
+    const groupKey = `${lease.coordinationDomain}\u0000${lease.owner}`;
+    const group = byOwnerAndDomain.get(groupKey);
+    if (group) group.push(lease);
+    else byOwnerAndDomain.set(groupKey, [lease]);
+  }
+
+  const reapedPaths: string[] = [];
+  let failedOwners = 0;
+  for (const leasesForOwner of byOwnerAndDomain.values()) {
+    try {
+      reapedPaths.push(...(await opts.releaseGroup(leasesForOwner)));
+    } catch (e) {
+      failedOwners += 1;
+      console.warn(
+        `[file-lock-lease-reap] release failed for ${leasesForOwner[0].owner} in ${leasesForOwner[0].coordinationDomain} (non-fatal):`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+  return {
+    scanned: opts.leases.length,
+    reaped: reapedPaths.length,
+    reapedPaths,
+    keptLive: plan.keptLive.length,
+    keptFresh: plan.keptFresh.length,
+    failedOwners,
+    dryRun: false,
+  };
+}
 
 /**
  * Apply the named-resource dead-owner decision to a lock snapshot. The
@@ -717,6 +814,67 @@ async function reapResourceLocksForDeadOwners(opts: {
   }
 }
 
+/** File-lock counterpart to reapResourceLocksForDeadOwners. */
+async function reapFileLocksForDeadOwners(opts: {
+  liveOwners: ReadonlySet<string>;
+  dryRun: boolean;
+  graceMs?: number;
+  nowMs: number;
+}): Promise<FileLockLeaseReapResult> {
+  const empty = emptyFileLockLeaseReapResult(opts.dryRun);
+  try {
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const rows = await sql<
+      Array<{
+        coordination_domain: string;
+        path: string;
+        lock_id: string;
+        owner: string;
+        acquired_ts: string | Date | null;
+      }>
+    >`
+      SELECT coordination_domain, path, lock_id::text AS lock_id, owner, acquired_ts
+        FROM agent_file_locks
+       WHERE expires_ts > clock_timestamp()
+    `;
+    const leases: FileLockLeaseRow[] = rows.map((row) => ({
+      coordinationDomain: row.coordination_domain,
+      path: row.path,
+      lockId: row.lock_id,
+      owner: row.owner,
+      acquiredAtMs: row.acquired_ts == null ? null : new Date(row.acquired_ts).getTime(),
+    }));
+    return reapFileLockRows({
+      leases,
+      liveOwners: opts.liveOwners,
+      dryRun: opts.dryRun,
+      graceMs: opts.graceMs,
+      nowMs: opts.nowMs,
+      releaseGroup: async (leasesForOwner) => {
+        const coordinationDomain = leasesForOwner[0].coordinationDomain;
+        const owner = leasesForOwner[0].owner;
+        const reapedPaths: string[] = [];
+        await inWorkspaceTxn(coordinationDomain, owner, async (tx) => {
+          for (const lease of leasesForOwner) {
+            const released = await tryRelease(tx, {
+              coordinationDomain,
+              owner,
+              lockId: lease.lockId,
+              paths: [lease.path],
+            });
+            reapedPaths.push(...released.released);
+          }
+        });
+        return reapedPaths;
+      },
+    });
+  } catch (e) {
+    console.warn('[file-lock-lease-reap] sweep failed (non-fatal):', (e as Error)?.message ?? e);
+    return empty;
+  }
+}
+
 export interface WorkItemLeaseReapResult {
   /** False when the flag is off (a no-op). */
   enabled: boolean;
@@ -732,6 +890,8 @@ export interface WorkItemLeaseReapResult {
   keptFresh: number;
   /** Named-resource lease backstop results from the same liveness snapshot. */
   resourceLocks: ResourceLockLeaseReapResult;
+  /** File-lock lease backstop results from the same liveness snapshot. */
+  fileLocks: FileLockLeaseReapResult;
   dryRun: boolean;
 }
 
@@ -740,9 +900,9 @@ export interface WorkItemLeaseReapResult {
  * liveness, then (unless dryRun) force-releases every dead-owner work-item
  * lease AND clears that owner's stale `work_item_claims` rows. When
  * `includeResourceLocks` is enabled by the production action, it also reads
- * the separate SU-lock database and releases dead-owner named-resource rows
- * from the same liveness snapshot. Best-effort: a PG failure returns a zero
- * result rather than throwing (must never wedge the routine engine).
+ * the separate SU-lock database and releases dead-owner file + named-resource
+ * rows from the same liveness snapshot. Best-effort: a PG failure returns a
+ * zero result rather than throwing (must never wedge the routine engine).
  */
 export async function runWorkItemLeaseReap(
   opts: { dryRun?: boolean; graceMs?: number; includeResourceLocks?: boolean } = {},
@@ -757,6 +917,7 @@ export async function runWorkItemLeaseReap(
     keptLive: 0,
     keptFresh: 0,
     resourceLocks: emptyResourceLockLeaseReapResult(dryRun),
+    fileLocks: emptyFileLockLeaseReapResult(dryRun),
     dryRun,
   };
   const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
@@ -822,19 +983,27 @@ export async function runWorkItemLeaseReap(
         if (rel.claimsCleared) ownersReconciled += 1;
       }
     }
-    // The named-resource leg is opt-in because this function is also used by
-    // isolated work-item lease tests/environments that do not own the SU-lock
-    // side database. The production idle-session action enables it, using this
-    // exact liveness snapshot; callers that only need work-item cleanup keep
-    // the historic single-database behavior.
-    const resourceLocks = opts.includeResourceLocks
-      ? await reapResourceLocksForDeadOwners({
-          liveOwners,
-          dryRun,
-          graceMs: opts.graceMs,
-          nowMs,
-        })
-      : emptyResourceLockLeaseReapResult(dryRun);
+    // The SU-lock legs are opt-in because this function is also used by isolated
+    // work-item lease tests/environments that do not own the SU-lock side
+    // database. The production idle-session action enables both file and named-
+    // resource cleanup from this exact liveness snapshot; callers that only need
+    // work-item cleanup keep the historic single-database behavior.
+    const [resourceLocks, fileLocks] = opts.includeResourceLocks
+      ? await Promise.all([
+          reapResourceLocksForDeadOwners({
+            liveOwners,
+            dryRun,
+            graceMs: opts.graceMs,
+            nowMs,
+          }),
+          reapFileLocksForDeadOwners({
+            liveOwners,
+            dryRun,
+            graceMs: opts.graceMs,
+            nowMs,
+          }),
+        ])
+      : [emptyResourceLockLeaseReapResult(dryRun), emptyFileLockLeaseReapResult(dryRun)];
     return {
       enabled: true,
       scanned: leases.length,
@@ -844,6 +1013,7 @@ export async function runWorkItemLeaseReap(
       keptLive: plan.keptLive.length,
       keptFresh: plan.keptFresh.length,
       resourceLocks,
+      fileLocks,
       dryRun,
     };
   } catch (e) {
