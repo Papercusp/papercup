@@ -563,12 +563,14 @@ export function selectGuardScripts(scripts) {
 /**
  * The implementation file(s) a script command runs — `node scripts/x.mjs`,
  * `tsx scripts/x.mjs`, `npx tsx path/to/x.ts`, … Returns repo-relative paths.
+ * TypeScript's module-suffixed forms (`.mts`/`.cts`) are included because generator
+ * guards use them in the root package scripts.
  * A guard with no resolvable implementation (a bare `knip`, a shell pipeline) yields
  * an empty list and is then matched by npm NAME only.
  */
 export function resolveImplementationPaths(command) {
   const out = new Set();
-  for (const m of String(command).matchAll(/(?:^|\s)((?:scripts|apps|packages|libs)\/[\w./-]+\.(?:mjs|cjs|js|ts))/g)) {
+  for (const m of String(command).matchAll(/(?:^|\s)((?:scripts|apps|packages|libs)\/[\w./-]+\.(?:mjs|cjs|js|mts|cts|ts))/g)) {
     out.add(m[1]);
   }
   return [...out];

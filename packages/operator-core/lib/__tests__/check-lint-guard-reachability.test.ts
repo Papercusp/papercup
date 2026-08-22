@@ -256,6 +256,9 @@ describe('resolveImplementationPaths', () => {
     expect(resolveImplementationPaths('node apps/operator/scripts/check-c.mjs')).toEqual([
       'apps/operator/scripts/check-c.mjs',
     ]);
+    expect(resolveImplementationPaths('tsx scripts/project-authored-docs.mts --check')).toEqual([
+      'scripts/project-authored-docs.mts',
+    ]);
   });
 
   it('returns nothing for a guard with no script file, so it is matched by name alone', () => {
