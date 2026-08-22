@@ -84,6 +84,11 @@ import { OUTBOX_GC_AGE_MS, OUTBOX_GC_BATCH, OUTBOX_GC_MAX_BATCHES } from '../../
 // substrate handle for a scope — see the `residentInProcess` opt threaded into
 // runSharedHiveMonitorPass/scanOutboxHealth below for why this matters.
 import { getBootedHarness } from '../../sync/hyperbee/boot-all';
+// EI-21111467164675531: a harness_slug with no registry entry / started bit
+// can NEVER boot a drain loop, so it must never reach the per-harness scans
+// below either — see `filterSharedHiveScopes`'s `knownOwnerSlugs` doc.
+import { loadKnownOutboxOwnerSlugs } from '../../substrate-outbox-backstop-gc';
+import { listStartedPots } from '../../pot/started';
 import { captureImprovement } from '../improvements/capture-core';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
 import { isWorkspaceGlobalLabel } from '../../pot-membership';
@@ -1216,9 +1221,26 @@ export function looksLikeWorkItemId(slug: string): boolean {
 export function filterSharedHiveScopes(
   rawScopes: readonly RawSharedHiveScope[],
   workspaceId: string,
+  /**
+   * EI-21111467164675531 — harness slugs with a possible drain-loop owner
+   * right now (a `harness_registry` entry or a currently-started pot; see
+   * `loadKnownOutboxOwnerSlugs`, substrate-outbox-backstop-gc.ts). A scope
+   * whose harness_slug is ABSENT from this set can never boot a drain loop —
+   * its undrained rows are the backstop GC's job alone (that module's
+   * NON_REGISTRY reap leg), not a genuine per-harness defect this monitor can
+   * ever get anyone to fix. `undefined` (the default) preserves today's
+   * unconditional scope-inclusion behavior — e.g. when the registry lookup
+   * itself failed, this MUST fail OPEN (scan every scope) rather than
+   * silently suppressing all of them, the same "omitted preserves prior
+   * behavior" contract `scanOutboxHealth`'s `residentInProcess` already uses.
+   */
+  knownOwnerSlugs?: ReadonlySet<string>,
 ): RawSharedHiveScope[] {
   return rawScopes.filter(
-    (s) => !isWorkspaceGlobalLabel(s.harness_slug, workspaceId) && !looksLikeWorkItemId(s.harness_slug),
+    (s) =>
+      !isWorkspaceGlobalLabel(s.harness_slug, workspaceId) &&
+      !looksLikeWorkItemId(s.harness_slug) &&
+      (knownOwnerSlugs === undefined || knownOwnerSlugs.has(s.harness_slug)),
   );
 }
 
