@@ -101,9 +101,136 @@ export interface ConvergenceStats {
   convergedMs: MetricSummary | null;
 }
 
+/** One subject directory's newest write, as of a provenance capture. */
+export interface SubjectTreeStamp {
+  /** Repo-RELATIVE directory that was walked. Never absolute — see RunProvenance. */
+  dir: string;
+  /** Source files found under it. */
+  fileCount: number;
+  /** Newest mtime over those files (ms since epoch); null when unreadable. */
+  newestMtimeMs: number | null;
+  /** Repo-relative path of the newest file — names WHAT moved, not just that something did. */
+  newestPath: string | null;
+}
+
+/**
+ * What code produced this artifact
+ * (harden-shared-hive-to-256-peers-2026-06-29 D-026).
+ *
+ * Captured ONCE at run start by `provenance.ts` and stamped onto each artifact
+ * at emit. Read `provenance.ts`'s header before quoting any field here — it
+ * states, in full, the five things this instrument cannot tell you. The two
+ * that bite hardest:
+ *
+ *  - `lastCommitSha` is the SUPERPROJECT's last commit. It does not pin
+ *    submodule code. A non-empty `submodulesDivergedFromGitlink` means it
+ *    positively does not describe all the code that ran.
+ *  - A null field means the probe did not answer (see `unavailable`), NEVER a
+ *    negative finding. Null `worktree` is not "the tree was clean".
+ *
+ * ⚠ EVERY PATH HERE IS REPO-RELATIVE, AND THAT IS LOAD-BEARING, NOT TIDINESS.
+ * Absolute paths on this box embed the build box's identity, which
+ * `lint:no-identity-literals` fails the build on for any tracked file. This
+ * struct is per-RUN data and must never reach a committed baseline — see the
+ * allowlist note on `baselineFromArtifacts` (compare.ts) and the guard test
+ * `baseline-excludes-run-provenance.test.ts` that holds that seam shut.
+ */
+export interface RunProvenance {
+  /** When this snapshot was taken — RUN START, not artifact emit. ISO, UTC. */
+  capturedAt: string;
+  /**
+   * The checkout's LAST COMMIT — explicitly NOT the state of the working tree,
+   * which on this shared checkout routinely carries other lanes' uncommitted
+   * edits. `worktree` is what describes the tree.
+   */
+  lastCommitSha: string | null;
+  /** Committer date of `lastCommitSha`, rendered UTC. */
+  lastCommitAt: string | null;
+  /**
+   * The last commit touching the SUBJECT SCOPE — a more precise answer than
+   * the checkout tip, which here is usually an unrelated agent's sweep.
+   */
+  subjectLastCommitSha: string | null;
+  subjectLastCommitAt: string | null;
+  /**
+   * Submodules whose checked-out HEAD differs from the gitlink the
+   * superproject records (prefixed with git's own status char). NON-EMPTY
+   * MEANS `lastCommitSha` IS AN INCOMPLETE ANSWER. Null ⇒ not probed.
+   */
+  submodulesDivergedFromGitlink: string[] | null;
+  /**
+   * Working-tree dirtiness at run start. Null ⇒ not probed — never "clean".
+   */
+  worktree: {
+    /**
+     * sha256 prefix of the whole-tree `git status --porcelain`. A FINGERPRINT,
+     * not a comparison key: on a ~90-agent box this is effectively unique per
+     * run, so it can distinguish two runs and can never establish that two
+     * runs saw the same code.
+     */
+    dirtyDigest: string | null;
+    dirtyFileCount: number | null;
+    /** Dirty paths under `scope` — the field that carries information. */
+    dirtyPathsInScope: string[];
+    /** True when `dirtyPathsInScope` was capped. */
+    scopedTruncated: boolean;
+    /**
+     * The repo-relative prefixes actually consulted. Recorded so that this
+     * leg's under-reporting is VISIBLE rather than implied by silence: an
+     * empty `dirtyPathsInScope` means "nothing dirty under these", never "the
+     * tree was clean".
+     */
+    scope: string[];
+  } | null;
+  /** Newest-write stamp per subject tree at run start. Null ⇒ not probed. */
+  subjects: SubjectTreeStamp[] | null;
+  /**
+   * Subject trees whose newest mtime ADVANCED between the run-start capture
+   * and THIS artifact's emit — the falsifier for "the snapshot still describes
+   * this artifact".
+   *
+   * Non-empty means the tree moved mid-run and the run must not be quoted as
+   * one code state. Empty means no forward mtime movement was seen, which is a
+   * suspicion cleared, not a content diff (mtime over-reports on a rewrite of
+   * identical bytes and cannot see a change that never touched the file).
+   * Null on the run-level snapshot (nothing to compare yet) and whenever the
+   * re-check could not run.
+   */
+  subjectDriftSinceCapture: string[] | null;
+  /**
+   * Host contention AT RUN START, carried onto the artifact instead of being
+   * spent only on the runner's internal health verdict (D-026). These are the
+   * figures `runner.ts` already sampled — not a second, differently-timed
+   * sample. The run-level max(start,end) verdict stays in the report and
+   * `summary.json`; what an artifact needs is the state its own scenario
+   * started under.
+   */
+  hostAtStart: {
+    loadavg1m: number;
+    cpus: number;
+    /** loadavg1m / cpus — the EI-8843 oversubscription ratio. */
+    ratio1m: number;
+    /** PSI memory `some avg60` (%), null when /proc/pressure is unreadable. */
+    psiMemSome60: number | null;
+    psiCpuSome60: number | null;
+    /** vmstat swap pages in+out at start; the EI-9145 fallback's baseline. */
+    swapPagesAtStart: number | null;
+  };
+  /** One line per probe that could not answer. Empty ⇒ every leg reported. */
+  unavailable: string[];
+}
+
 export interface PerfArtifact {
-  /** Artifact schema version — bump on breaking shape changes. */
-  schema: 1;
+  /**
+   * Artifact schema version — bump on breaking shape changes.
+   *
+   * 2 (D-026): added required-and-nullable `provenance`. Artifacts written at
+   * schema 1 carry no provenance field at all, which is exactly the condition
+   * that makes every pre-D-026 number unattributable; a reader encountering
+   * `schema: 1` should treat the code that produced it as unknown rather than
+   * assuming it matches anything.
+   */
+  schema: 2;
   /** Scenario id, e.g. 'merge.idle-tick' / 'replication.sustained' / 'tier3.cross-region'. */
   scenario: string;
   /** 1 = local loopback, 2 = netem WAN sim, 3 = real machines. */
@@ -154,6 +281,22 @@ export interface PerfArtifact {
   cpu: { userMs: number; systemMs: number };
   /** Peak RSS observed over the scenario (bytes). */
   rss: { peakBytes: number };
+  /**
+   * What code produced this number (D-026). Stamped by the runner at emit, so
+   * it covers child-produced artifacts (netem, mesh peers) too — `ctx.emit` is
+   * the single funnel every artifact passes through.
+   *
+   * REQUIRED-AND-NULLABLE on purpose, matching `convergence` above and for the
+   * same reason: an OPTIONAL field is precisely what lets the next writer of a
+   * PerfArtifact omit it without the typechecker ever objecting, which is how
+   * this hole existed at all. Null states "not captured" — a claim a reader
+   * can act on. Absent states nothing.
+   *
+   * ⚠ Null is NOT "the tree was clean" and NOT "this is attributable". An
+   * artifact with `provenance: null` is exactly as unquotable as every
+   * pre-D-026 artifact.
+   */
+  provenance: RunProvenance | null;
   /** Total ops decoded/applied across the scenario, when the scenario counts them. */
   opsDecoded?: number;
   /** Free-form observations (capability skips, capped logs, anomalies). */

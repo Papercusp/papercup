@@ -200,7 +200,8 @@ describe('parsePsiSome (EI-19301664378023382)', () => {
 describe('collectConvergenceViolations (EI-20576392705164447)', () => {
   const cell = (over: Partial<PerfArtifact>): PerfArtifact =>
     ({
-      schema: 1,
+      schema: 2,
+      provenance: null,
       scenario: 'replication.sustained',
       tier: 1,
       params: { peers: 64, rate: 10 },

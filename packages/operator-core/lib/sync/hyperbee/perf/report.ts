@@ -31,6 +31,83 @@ function headlineMetric(a: PerfArtifact): { name: string; p95: number; unit: str
   return main ? { name: main[0], p95: main[1].p95, unit: main[1].unit } : null;
 }
 
+/**
+ * The "what code produced this" block (D-026).
+ *
+ * Rendered from the FIRST artifact's run-level provenance, because the stamp
+ * is a run-level capture — but the drift line is derived across ALL artifacts,
+ * since drift is per-artifact by construction and a run where only the last
+ * scenario ran different code is exactly the case a first-artifact-only read
+ * would miss.
+ *
+ * Deliberately loud in three places, each of which is a way a reader could
+ * otherwise quote a number that is not attributable: no provenance at all, a
+ * submodule diverging from the recorded gitlink (so the sha is incomplete),
+ * and a subject tree that moved mid-run (so the run is not one code state).
+ */
+export function renderProvenanceLines(artifacts: PerfArtifact[]): string[] {
+  const p = artifacts.find((a) => a.provenance)?.provenance ?? null;
+  if (!p) {
+    return [
+      '- code: **UNATTRIBUTED** — no run provenance on these artifacts. Do not quote these numbers as' +
+        ' a property of any particular code state (D-026).',
+    ];
+  }
+  const lines: string[] = [];
+  const sha = p.lastCommitSha ? p.lastCommitSha.slice(0, 12) : '(unknown)';
+  lines.push(
+    `- code: last commit \`${sha}\`${p.lastCommitAt ? ` (${p.lastCommitAt})` : ''}` +
+      ` — LAST COMMIT, not tree state; see dirty below`,
+  );
+  if (p.subjectLastCommitSha && p.subjectLastCommitSha !== p.lastCommitSha) {
+    lines.push(
+      `- code (subject scope): last commit touching the code under test \`${p.subjectLastCommitSha.slice(0, 12)}\`` +
+        `${p.subjectLastCommitAt ? ` (${p.subjectLastCommitAt})` : ''}`,
+    );
+  }
+  if (p.submodulesDivergedFromGitlink === null) {
+    lines.push('- submodules: **not probed** — the last-commit sha may be an incomplete description');
+  } else if (p.submodulesDivergedFromGitlink.length) {
+    lines.push(
+      `- submodules: **${p.submodulesDivergedFromGitlink.length} DIVERGE from the recorded gitlink**` +
+        ` (${p.submodulesDivergedFromGitlink.slice(0, 6).join(', ')}) —` +
+        ' the last-commit sha above does NOT describe all the code that ran',
+    );
+  }
+  if (p.worktree === null) {
+    lines.push('- worktree: **not probed** — this is NOT evidence the tree was clean');
+  } else {
+    const inScope = p.worktree.dirtyPathsInScope;
+    lines.push(
+      `- worktree: ${p.worktree.dirtyFileCount ?? '?'} dirty path(s) tree-wide, digest \`${p.worktree.dirtyDigest ?? '?'}\`` +
+        ` (fingerprint only — unique per run on a shared box, never a comparison key)`,
+    );
+    lines.push(
+      inScope.length
+        ? `- worktree (code under test): **${inScope.length} dirty${p.worktree.scopedTruncated ? '+' : ''}** — ${inScope.slice(0, 8).join(', ')}`
+        : `- worktree (code under test): none dirty under ${p.worktree.scope.join(', ')}` +
+            ' (scoped read — not a whole-tree clean verdict)',
+    );
+  }
+  const drifted = [...new Set(artifacts.flatMap((a) => a.provenance?.subjectDriftSinceCapture ?? []))];
+  if (drifted.length) {
+    lines.push(
+      `- ⚠ **subject tree moved mid-run** (${drifted.join(', ')}) — the run-start snapshot does not` +
+        ' describe every artifact here; this run is not one code state',
+    );
+  }
+  lines.push(
+    `- host at run start: loadavg ${p.hostAtStart.loadavg1m.toFixed(1)} / ${p.hostAtStart.cpus} cpus` +
+      ` (ratio ${p.hostAtStart.ratio1m.toFixed(2)}×), PSI some avg60 mem=` +
+      `${p.hostAtStart.psiMemSome60 !== null ? `${p.hostAtStart.psiMemSome60.toFixed(1)}%` : 'n/a'}` +
+      ` cpu=${p.hostAtStart.psiCpuSome60 !== null ? `${p.hostAtStart.psiCpuSome60.toFixed(1)}%` : 'n/a'}`,
+  );
+  if (p.unavailable.length) {
+    lines.push(`- provenance gaps: ${p.unavailable.join('; ')}`);
+  }
+  return lines;
+}
+
 export function renderPerfReport(opts: RenderReportOpts): string {
   const { runId, profile, artifacts, compareText } = opts;
   const tiers = [...new Set(artifacts.map((a) => a.tier))].sort();
@@ -45,6 +122,7 @@ export function renderPerfReport(opts: RenderReportOpts): string {
       ? `- host: ${host.hostname} (${host.platform}, ${host.cpus} cpus, node ${host.node})`
       : '- host: (none)',
     `- artifacts: ${artifacts.length}`,
+    ...renderProvenanceLines(artifacts),
     '',
     // Two SEPARATE verdict columns: host responsiveness vs whether replication
     // kept up. They diverge, and merging them hid a collapse (EI-20576392705164447).

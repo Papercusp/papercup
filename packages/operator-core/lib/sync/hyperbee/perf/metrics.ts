@@ -260,7 +260,14 @@ export class ScenarioMeter {
               this.convergedMsSamples.length > 0 ? summarize(this.convergedMsSamples, 'ms') : null,
           };
     return {
-      schema: 1,
+      schema: 2,
+      // Null here is CORRECT and not a gap: the meter runs in-process (often
+      // in a spawned peer child) and cannot know the run's provenance. The
+      // runner stamps it at `ctx.emit`, the single funnel every artifact —
+      // including child-produced ones — passes through (D-026). An artifact
+      // that reaches disk still carrying null was emitted outside that funnel,
+      // and says so honestly rather than inventing an attribution.
+      provenance: null,
       scenario: this.opts.scenario,
       tier: this.opts.tier,
       params: this.opts.params,

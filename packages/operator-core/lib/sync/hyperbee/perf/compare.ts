@@ -144,6 +144,30 @@ export function entryKey(scenario: string, params: Record<string, string | numbe
   return `${scenario}|${paramsKey(params)}`;
 }
 
+/**
+ * Project a run's artifacts into the committed baseline shape.
+ *
+ * ⛔ THE FIELD LIST BELOW IS AN ALLOWLIST, AND IT IS A SAFETY BOUNDARY — NEVER
+ * REPLACE IT WITH A SPREAD (D-026).
+ *
+ * Artifacts under `test-results/p2p-perf/` are gitignored; `baselines/` is
+ * COMMITTED to tracked source and ships inside the release bundle. So this
+ * function is the exact seam where per-RUN data would cross into permanently
+ * committed data, and two different guards live on the far side of it:
+ * `lint:no-identity-literals` scans every tracked file for build-box identity
+ * (a committed baseline carrying a raw hostname red-pinned the
+ * green-checkpoint gate on 2026-07-26), and the release cut's box-identity
+ * audit fails later and more expensively.
+ *
+ * `PerfArtifact.provenance` is per-run by construction — a dirty-tree digest,
+ * dirty file paths, mtimes, and this box's load at that instant. None of it
+ * describes a regression THRESHOLD, all of it changes every run, and it is
+ * exactly the shape of data that leaks identity if a path ever resolves
+ * absolute. It is therefore deliberately absent below, and
+ * `baseline-excludes-run-provenance.test.ts` fails if it (or an absolute path,
+ * or a raw hostname) ever appears in a serialized baseline. Adding a field
+ * here means asking whether it belongs in tracked source forever.
+ */
 export function baselineFromArtifacts(
   artifacts: PerfArtifact[],
   profile: string,
