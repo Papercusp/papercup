@@ -120,6 +120,13 @@ describe('flags:get (bulk keyed-array, P-006)', () => {
     expect(b.results[0].error).toMatch(/unknown flag key/i);
     expect(getFlag).not.toHaveBeenCalled();
   });
+
+  it('makes the host-global contract explicit and rejects scope selectors', async () => {
+    const { default: tool } = await import('../get');
+    expect(tool.description).toMatch(/host-global/i);
+    expect((tool as typeof tool & { guidance?: { notWhen?: string } }).guidance?.notWhen).toMatch(/scope/i);
+    expect(() => tool.args.parse({ key: KEY, scope: 'system' } as never)).toThrow(/unrecognized key/i);
+  });
 });
 
 describe('flags:list', () => {

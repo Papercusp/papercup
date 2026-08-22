@@ -41,8 +41,16 @@ export default defineTool({
   name: 'flags:get',
   profile: 'engineer',
   description:
-    'Resolve one OR many Papercusp feature flags to booleans for this host — pass `key` for one or `keys` for several. Returns { ok, results:[{ ok, key, enabled | error }], counts } — correlate each result by its key, not by position.',
+    'Resolve one OR many Papercusp feature flags to booleans for this host. This is a host-global read; scope selectors are not supported. Pass `key` for one or `keys` for several. Returns { ok, results:[{ ok, key, enabled | error }], counts } — correlate each result by its key, not by position.',
   capability: 'intel:read',
+  guidance: {
+    when: 'Read the current host-wide value of one or more feature flags before diagnosing or executing gated work.',
+    notWhen: 'Do not pass a `scope` selector: this tool accepts only `key` or `keys`, and its read is host-global.',
+    seeAlso: [
+      'flags:list (all flags + resolved values)',
+      'flags:set (flip a flag)',
+    ],
+  },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z
@@ -52,7 +60,8 @@ export default defineTool({
     })
     .refine((a) => Boolean(a.key) || (a.keys?.length ?? 0) > 0, {
       message: 'pass `key` (one) or `keys` (many)',
-    }),
+    })
+    .strict(),
   async handler(args) {
     const fakeReq = new Request('http://localhost/agent-tool');
     const distinctId = resolveDistinctId(fakeReq);
