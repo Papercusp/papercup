@@ -48,6 +48,7 @@ function baseInput(over: Partial<ReindexDecisionInput> = {}): ReindexDecisionInp
     commitsBehind: 50,
     loadPerCore: 0.5,
     secondsSinceIndexed: 4 * 3600,
+    memoryPressure: 'ok',
     minCommitsBehind: DEFAULT_MIN_COMMITS_BEHIND,
     maxLoadPerCore: DEFAULT_MAX_LOAD_PER_CORE,
     minIntervalSec: DEFAULT_MIN_INTERVAL_SEC,
@@ -323,6 +324,46 @@ describe('decideReindex', () => {
     const d = decideReindex(baseInput({ loadPerCore: 2.0 }));
     expect(d.run).toBe(false);
     expect(d.reason).toContain('oversubscribed');
+  });
+
+  it('defers a warning-band memory-pressure capture before admitting a full analyze', () => {
+    const d = decideReindex(
+      baseInput({
+        memoryPressure: 'warn',
+        memoryPressureReason: 'PSI memory some avg60 18.51 ≥ 10 — sustained memory reclaim pressure',
+      }),
+    );
+    expect(d.run).toBe(false);
+    expect(d.reason).toContain('memory pressure warn');
+    expect(d.reason).toContain('PSI memory some avg60 18.51');
+  });
+
+  it('defers the critical thrashing band even when the graph is missing', () => {
+    const d = decideReindex(
+      baseInput({
+        registered: false,
+        memoryPressure: 'crit',
+        memoryPressureReason: 'PSI memory full avg60 11.96 ≥ 5 — all tasks stalled on memory reclaim/swap',
+      }),
+    );
+    expect(d.run).toBe(false);
+    expect(d.reason).toContain('memory pressure crit');
+    expect(d.reason).not.toContain('cold build');
+  });
+
+  it('keeps load precedence when both load and memory pressure are unsafe', () => {
+    const d = decideReindex(baseInput({ loadPerCore: 2, memoryPressure: 'crit' }));
+    expect(d.run).toBe(false);
+    expect(d.reason).toContain('oversubscribed');
+    expect(d.reason).not.toContain('memory pressure');
+  });
+
+  it('fails soft when the perf writer has no usable pressure band', () => {
+    // null covers absent, stale, and incomplete PSI captures because the shared writer
+    // intentionally keeps those cases unknown instead of inventing a reassuring zero.
+    const d = decideReindex(baseInput({ memoryPressure: null, memoryPressureReason: null }));
+    expect(d.run).toBe(true);
+    expect(d.reason).toContain('50 commits behind');
   });
 
   it('lets load OUTRANK a missing index — protecting the box beats a cold build', () => {

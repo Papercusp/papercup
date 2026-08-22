@@ -15,7 +15,8 @@
  * this box at **309s cold / 234s against an already-fresh index** (an unforced re-run
  * still costs 76% of a cold build). So the cadence cannot be "run it every hour" — the
  * routine fires hourly but the EXPENSIVE part is conditional: each tick reads the
- * registry + git + loadavg (all cheap) and only then decides to spawn. `decideReindex`
+ * registry + git + loadavg and the latest perf-signals capture (all cheap) and only
+ * then decides to spawn. `decideReindex`
  * is the whole policy, kept pure so it is testable without a 4-minute subprocess.
  *
  * ⚠ `--skip-agents-md` IS MANDATORY AND IS HARDCODED HERE ON PURPOSE. Without it,
@@ -194,6 +195,13 @@ export interface ReindexDecisionInput {
   loadPerCore: number;
   /** Age of the current index in seconds; `null` when unknown. */
   secondsSinceIndexed: number | null;
+  /**
+   * The memory-pressure band returned by the shared perf-budget writer. `null` means
+   * the capture is absent/stale/unmeasured; do not turn that uncertainty into a block.
+   */
+  memoryPressure?: 'ok' | 'warn' | 'crit' | null;
+  /** The writer's first reason, retained for an actionable skip log. */
+  memoryPressureReason?: string | null;
   minCommitsBehind: number;
   maxLoadPerCore: number;
   minIntervalSec: number;
@@ -210,17 +218,31 @@ export interface ReindexDecision {
  *  1. LOAD FIRST — it protects the box, so it outranks even a missing index. Deferring
  *     costs one hour; piling a 4-minute indexer onto an already-queueing box costs
  *     everyone.
- *  2. NO INDEX ⇒ build. A missing graph is the WI-6445 failure mode (every lookup
+ *  2. PSI MEMORY PRESSURE ⇒ defer. The perf-budget writer is the canonical owner of
+ *     `some avg60 ≥ 10%` (sustained reclaim) and `full avg60 ≥ 5%` (thrashing). A full
+ *     GitNexus analyze is a large memory consumer, so starting it during either band
+ *     recreates the host-pressure incident this routine is meant to avoid. A null band
+ *     means the capture is absent, stale, or missing a leg; it is intentionally fail-soft
+ *     and does not invent pressure from missing data.
+ *  3. NO INDEX ⇒ build. A missing graph is the WI-6445 failure mode (every lookup)
  *     returns "Symbol not found" while every call still looks well-formed), so it
  *     bypasses both the interval floor and the staleness check.
- *  3. INTERVAL FLOOR — bounds steady-state cost regardless of how fast commits land.
- *  4. STALENESS — the ordinary skip: nothing changed, nothing to do.
+ *  4. INTERVAL FLOOR — bounds steady-state cost regardless of how fast commits land.
+ *  5. STALENESS — the ordinary skip: nothing changed, nothing to do.
  */
 export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
   if (i.loadPerCore > i.maxLoadPerCore) {
     return {
       run: false,
       reason: `box oversubscribed (load/core ${i.loadPerCore.toFixed(2)} > ${i.maxLoadPerCore}) — deferring to the next tick`,
+    };
+  }
+  if (i.memoryPressure === 'warn' || i.memoryPressure === 'crit') {
+    return {
+      run: false,
+      reason:
+        `memory pressure ${i.memoryPressure} — deferring GitNexus analyze to the next tick` +
+        (i.memoryPressureReason ? ` (${i.memoryPressureReason})` : ''),
     };
   }
   if (!i.registered) {
@@ -864,11 +886,31 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const secondsSinceIndexed = Number.isFinite(indexedAtMs) ? (Date.now() - indexedAtMs) / 1000 : null;
   const cores = Math.max(1, os.cpus().length);
 
+  // Reuse the same writer and thresholds that power the infra panel and
+  // host.memoryPressure. This is an admission guard, not a second PSI policy:
+  // `warn` (memory some >= 10%) and `crit` (memory full >= 5%) both defer a full
+  // GitNexus analyze; absent/stale/unmeasured captures return null and remain
+  // fail-soft, matching the writer's in-band unknown contract.
+  let memoryPressure: ReindexDecisionInput['memoryPressure'] = null;
+  let memoryPressureReason: string | null = null;
+  try {
+    const { evaluateMemoryPressure, readLatestPerfSignals } = await import('../../system-health/perf-budgets');
+    const memory = evaluateMemoryPressure(await readLatestPerfSignals(), Date.now());
+    memoryPressure = memory.pressure;
+    memoryPressureReason = memory.reasons[0] ?? null;
+  } catch (e) {
+    // A missing/unreadable perf surface must not wedge the routine itself. Load/core
+    // and the remaining staleness gates still protect the ordinary path.
+    console.warn(`[gitnexus-reindex] memory-pressure admission unavailable: ${e instanceof Error ? e.message : e}`);
+  }
+
   const decision = decideReindex({
     registered: entry != null,
     commitsBehind,
     loadPerCore: os.loadavg()[0] / cores,
     secondsSinceIndexed,
+    memoryPressure,
+    memoryPressureReason,
     minCommitsBehind: num(cfg, 'min_commits_behind', DEFAULT_MIN_COMMITS_BEHIND),
     maxLoadPerCore: num(cfg, 'max_load_per_core', DEFAULT_MAX_LOAD_PER_CORE),
     minIntervalSec: num(cfg, 'min_interval_sec', DEFAULT_MIN_INTERVAL_SEC),
