@@ -148,11 +148,13 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
   episodic?: boolean;
   /**
    * WI-20039196108947848: systemd's persisted enablement state. `disabled` or
-   * `masked` means an inactive unit is intentionally paused, not unhealthy.
+   * `masked` distinguishes an administratively disabled unit from an enabled
+   * unit that stopped. It does not prove who disabled it or that the pause is
+   * authorized, so `healthy` remains the liveness verdict.
    */
   unitFileState?: string;
-  /** Explicit companion to `unitFileState` so callers need not reimplement the
-   * `disabled`/`masked` check when deciding whether a down-looking row is actionable. */
+  /** Explicit companion to `unitFileState`; this is a systemd state marker, not
+   * proof that the pause is intended or safe to ignore. */
   administrativelyPaused?: boolean;
 };
 
@@ -197,17 +199,19 @@ export async function overlaySystemdRestartRecency(
       // definition of "down" maintained here.
       const episodic = row?.episodic === true;
       // WI-20039196108947848: `ActiveState=inactive` is also the expected read
-      // after `systemctl --user disable --now`. Read the persisted enablement
-      // state before applying the persistent-unit down rule so a deliberate
-      // pause cannot become a permanent false alarm. The timer remains
-      // non-episodic: an ENABLED inactive timer is still genuinely unhealthy.
+      // after `systemctl --user disable --now`. Preserve the persisted
+      // enablement state so callers can distinguish that condition from an
+      // enabled unit that stopped, but do not infer authorization or intent
+      // from `disabled`/`masked`; an unattributed pause must remain visible as
+      // unhealthy. The timer remains non-episodic: an ENABLED inactive timer is
+      // still genuinely unhealthy too.
       const administrativelyPaused = isAdministrativelyPaused(info.unitFileState);
       const healthy = !isActiveStateDown(info.activeState, { episodic });
       const stated: SupervisionStatusEntryWithRecency = {
         ...entry,
         active,
         activeState: info.activeState,
-        healthy: administrativelyPaused ? true : healthy,
+        healthy,
         ...(episodic ? { episodic: true } : {}),
         ...(info.unitFileState !== undefined ? { unitFileState: info.unitFileState } : {}),
         ...(administrativelyPaused ? { administrativelyPaused: true } : {}),
