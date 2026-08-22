@@ -585,8 +585,15 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       if (redOwner?.covered) {
         return {
           name: 'checkpoint:await',
-          args: { pipeline, candidateSha: targetSha },
-          reason: `${redOwner.label} Await this red's outcome rather than opening a second diagnosis of it.`,
+          // The current red event is already latched. A candidate-bound
+          // checkpoint:await probes that same terminal red and returns
+          // already_judged, so it cannot observe the fixer’s successor verdict.
+          // Await the next pipeline verdict instead; the trace still carries the
+          // exact live owner above for a paced liveness re-check.
+          args: { pipeline },
+          reason:
+            `${redOwner.label} The current red event is already latched; await the next checkpoint verdict ` +
+            'without candidate binding and re-check the live owner/fixer at a paced cadence rather than opening a second diagnosis.',
         };
       }
       return {

@@ -611,8 +611,11 @@ describe('buildReleaseTrace', () => {
           }),
         }),
       );
-      expect(out.nextVerb?.name).toBe('checkpoint:await');
+      expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+      expect(out.nextVerb?.args).not.toHaveProperty('candidateSha');
       expect(out.nextVerb?.reason).toContain('spawn-77');
+      expect(out.nextVerb?.reason).toContain('already latched');
+      expect(out.nextVerb?.reason).toContain('paced cadence');
       // The red is still a blocker and force is still refused — this narrows WHO investigates,
       // it does not soften the gate.
       expect(out.constraints.map((c) => c.code)).toContain('gate-red');
