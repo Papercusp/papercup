@@ -59,7 +59,10 @@ describe('ensureHiveDirectoryWired', () => {
 
     vi.doMock('./sync/hyperbee/local-announce-identity', () => ({ resolveLocalAnnounceIdentity }));
     vi.doMock('./hive-directory-meta', () => ({ listOwnedHiveMeta: vi.fn(async () => []) }));
-    vi.doMock('./identity/hive-keypair', () => ({ loadHivePubkey: vi.fn(async () => null) }));
+    vi.doMock('./identity/hive-keypair', () => ({
+      loadHiveKeyStatus: vi.fn(async () => ({ kind: 'not_found' })),
+      hiveKeychainId: vi.fn((workspaceId: string, potId: string) => `${workspaceId}:${potId}`),
+    }));
     vi.doMock('./hive-member-repos', () => ({ deriveHiveMemberRepoRefs: vi.fn(async () => []) }));
     vi.doMock('./sync/hyperbee/swarm', () => ({ getSharedSwarm: vi.fn(async () => fakeSwarm()) }));
 
@@ -142,7 +145,10 @@ describe('ensureHiveDirectoryWired', () => {
 
     vi.doMock('./sync/hyperbee/local-announce-identity', () => ({ resolveLocalAnnounceIdentity }));
     vi.doMock('./hive-directory-meta', () => ({ listOwnedHiveMeta: vi.fn(async () => []) }));
-    vi.doMock('./identity/hive-keypair', () => ({ loadHivePubkey: vi.fn(async () => null) }));
+    vi.doMock('./identity/hive-keypair', () => ({
+      loadHiveKeyStatus: vi.fn(async () => ({ kind: 'not_found' })),
+      hiveKeychainId: vi.fn((workspaceId: string, potId: string) => `${workspaceId}:${potId}`),
+    }));
     vi.doMock('./hive-member-repos', () => ({ deriveHiveMemberRepoRefs: vi.fn(async () => []) }));
     vi.doMock('./sync/hyperbee/swarm', () => ({ getSharedSwarm: vi.fn(async () => fakeSwarm()) }));
 
