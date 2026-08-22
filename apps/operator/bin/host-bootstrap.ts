@@ -16,7 +16,7 @@
  * so even an accidental double-call from a different bootstrap path is safe.
  */
 import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import cluster from 'node:cluster';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -50,7 +50,11 @@ import { configureCpuWorkerBreakerNotifier } from '@papercusp/operator-core/lib/
 import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFreshInstallGap } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
-import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
+import {
+  gracefulStopChild,
+  isSidecarEnabledFromEnv,
+  registerSidecarShutdownHooks,
+} from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
 import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/dbos/work-items-contract';
 // The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
 // must not give up while the proxy is still retrying on its behalf. Static (unlike the lazy
@@ -59,6 +63,10 @@ import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
+const PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+let packagedMcpProxyProcess: ChildProcess | null = null;
+let packagedMcpProxyShutdownRequested = false;
 
 // Injected by the esbuild host/desktop-sidecar recipes. It is absent under tsx/dev/test;
 // read through typeof so source boot and unit tests never evaluate an undeclared global.
@@ -82,9 +90,19 @@ async function packagedMcpProxyAlive(port = 9071): Promise<boolean> {
 }
 
 function startPackagedMcpProxy(): void {
+  registerSidecarShutdownHooks({
+    label: 'packaged-mcp-proxy',
+    mode: 'async-with-exit',
+    stop: stopPackagedMcpProxy,
+  });
+
   const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT || 9071);
   void (async () => {
+    if (packagedMcpProxyShutdownRequested) return;
     if (await packagedMcpProxyAlive(port)) return;
+    // The health probe is asynchronous. A shutdown can begin while it is in
+    // flight; never start a new child after the host has begun draining.
+    if (packagedMcpProxyShutdownRequested) return;
     const sidecarDir = dirname(process.argv[1] || '');
     const proxyEntry = join(sidecarDir, 'mcp-proxy.mjs');
     if (!existsSync(proxyEntry)) {
@@ -97,8 +115,10 @@ function startPackagedMcpProxy(): void {
       // operator.json target. It dies with this operator (unlike the detached
       // packaged child), but the next boot re-arms it and the sticky operator
       // port keeps direct pins valid across the gap.
+      if (packagedMcpProxyShutdownRequested) return;
       try {
         const { startMcpProxy, readOperatorJsonTarget } = await import('../lib/mcp-proxy/proxy');
+        if (packagedMcpProxyShutdownRequested) return;
         const staticPort = Number(
           process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT || process.env.PAPERCUSP_HONO_PORT || 3070,
         );
@@ -126,7 +146,9 @@ function startPackagedMcpProxy(): void {
       return;
     }
     const child = spawn(process.execPath, [proxyEntry], {
-      detached: true,
+      // Keep the packaged child in this process's lifecycle. The shutdown hook
+      // below drains it and force-kills it after a bounded grace period.
+      detached: false,
       stdio: 'ignore',
       env: {
         ...process.env,
@@ -138,11 +160,31 @@ function startPackagedMcpProxy(): void {
         PAPERCUSP_MCP_PROXY_BASE: process.env.PAPERCUSP_MCP_PROXY_BASE || `http://127.0.0.1:${port}`,
       },
     });
-    child.unref();
+    packagedMcpProxyProcess = child;
+    child.once('exit', () => {
+      if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+    });
+    child.once('error', (e) => {
+      if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+      console.warn('[mcp-proxy] packaged proxy child failed:', (e as Error)?.message ?? e);
+    });
     console.log(`[mcp-proxy] packaged proxy spawned on 127.0.0.1:${port} (dynamic operator.json target)`);
   })().catch((e) => {
     console.warn('[mcp-proxy] packaged proxy spawn failed:', (e as Error)?.message ?? e);
   });
+}
+
+async function stopPackagedMcpProxy(): Promise<void> {
+  // Set this before the first await so an in-flight health probe cannot spawn
+  // a fresh child after SIGTERM/SIGINT has begun draining the operator.
+  packagedMcpProxyShutdownRequested = true;
+  const child = packagedMcpProxyProcess;
+  if (!child) return;
+  await gracefulStopChild(child, {
+    timeoutMs: PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS,
+    kill: (sig) => child.kill(sig),
+  });
+  if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
 }
 
 /**

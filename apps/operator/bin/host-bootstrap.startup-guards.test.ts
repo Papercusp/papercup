@@ -188,6 +188,32 @@ describe('host-bootstrap keeps one owner for the endpoint IPC tool registry', ()
   });
 });
 
+describe('host-bootstrap owns the packaged MCP proxy child lifecycle (EI-21106306876206131)', () => {
+  const lifecycleSrc = (() => {
+    const start = bootSrc.indexOf('const PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS');
+    const end = bootSrc.indexOf('\n/**', start);
+    return bootSrc.slice(start, end > start ? end : undefined);
+  })();
+
+  it('tracks a non-detached child and registers a bounded graceful shutdown hook', () => {
+    expect(lifecycleSrc).toContain('let packagedMcpProxyProcess: ChildProcess | null = null');
+    expect(lifecycleSrc).toContain('registerSidecarShutdownHooks({');
+    expect(lifecycleSrc).toContain("label: 'packaged-mcp-proxy'");
+    expect(lifecycleSrc).toContain("mode: 'async-with-exit'");
+    expect(lifecycleSrc).toContain('gracefulStopChild(child');
+    expect(lifecycleSrc).toContain('PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS');
+    expect(lifecycleSrc).toContain('detached: false');
+    expect(lifecycleSrc).toContain('packagedMcpProxyProcess = child');
+    expect(lifecycleSrc).toContain("child.once('exit'");
+    expect(lifecycleSrc).not.toContain('child.unref()');
+  });
+
+  it('does not spawn after shutdown wins the asynchronous health-probe race', () => {
+    expect(lifecycleSrc).toContain('packagedMcpProxyShutdownRequested = true');
+    expect(lifecycleSrc.match(/if \(packagedMcpProxyShutdownRequested\) return;/g) ?? []).toHaveLength(4);
+  });
+});
+
 /**
  * EI-19305266463631270 — per-HOST singletons must be started under `cluster.isPrimary`.
  *
