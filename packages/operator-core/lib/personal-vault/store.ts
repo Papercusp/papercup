@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type {
   PersonalDocumentInput,
   PersonalPrincipalType,
@@ -133,7 +133,7 @@ export async function setPersonalSyncState(
 }
 
 export async function createPersonalGrant(
-  sql: Sql,
+  sql: Sql | TransactionSql,
   input: {
     workspaceId: string;
     userId: string;

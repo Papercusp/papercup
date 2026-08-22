@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
   upsert: vi.fn(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: mocks.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: mocks.sql }),
+}));
 vi.mock('@papercusp/plan-parser', () => ({ parsePlan: mocks.parsePlan }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: mocks.getUser }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));

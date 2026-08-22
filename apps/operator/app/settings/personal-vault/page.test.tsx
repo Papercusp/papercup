@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PersonalVaultSettingsPage from './page';
 
 vi.mock('sonner', () => ({
@@ -48,13 +50,15 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
 });
 
+afterEach(() => cleanup());
+
 describe('PersonalVaultSettingsPage', () => {
   it('renders the local-only posture and imported source status', async () => {
     render(<PersonalVaultSettingsPage />);
-    expect(await screen.findByRole('heading', { name: 'Personal Vault' })).toBeInTheDocument();
-    expect(screen.getByText(/vectors are produced only by the local EmbeddingGemma model/i)).toBeInTheDocument();
-    expect(screen.getByText('personal:gmail')).toBeInTheDocument();
-    expect(screen.getByText('12')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Personal Vault' })).toBeTruthy();
+    expect(screen.getByText(/vectors are produced only by the local EmbeddingGemma model/i)).toBeTruthy();
+    expect(screen.getAllByText('personal:gmail').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('12')).toBeTruthy();
   });
 
   it('uses the owner kill-switch endpoint without deleting data', async () => {
@@ -67,16 +71,16 @@ describe('PersonalVaultSettingsPage', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: false }) }),
       );
     });
-    expect(screen.getByText(/It does not delete anything/i)).toBeInTheDocument();
+    expect(screen.getByText(/It does not delete anything/i)).toBeTruthy();
   });
 
   it('previews the plan declaration before the owner can approve it', async () => {
     render(<PersonalVaultSettingsPage />);
     fireEvent.change(await screen.findByLabelText('Plan slug'), { target: { value: 'meeting-prep-brief' } });
     fireEvent.click(screen.getByRole('button', { name: 'Review access' }));
-    expect(await screen.findByRole('heading', { name: 'Approve access for meeting-prep-brief' })).toBeInTheDocument();
-    expect(screen.getByText('personal:gmail')).toBeInTheDocument();
-    expect(screen.getByText('personal:calendar')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve declared scopes' })).toBeEnabled();
+    expect(await screen.findByRole('heading', { name: 'Approve access for meeting-prep-brief' })).toBeTruthy();
+    expect(screen.getAllByText('personal:gmail').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('personal:calendar')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Approve declared scopes' }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
