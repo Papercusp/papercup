@@ -10,11 +10,16 @@
  * would drift exactly the way the pre-filter tokens drifted from the resource
  * `match_patterns` (the hazard migration 665's own comment names).
  *
- * Everything here is PURE and synchronous — no DB, no I/O. The rows come from
+ * Everything here is synchronous and database/network-free. The rows come from
  * the caller, so the hook can match against a cached snapshot and the server
- * against a live read, with byte-identical semantics.
+ * against a live read, with byte-identical semantics. Cwd-aware policy matching
+ * performs only local path normalization against the canonical edit tree.
  */
 
+import { realpathSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+
+import { fileLockCoordinationDomain } from '../agent-tools/locks/coordination-domain';
 import { atomize, atomizePipeline } from './atomize';
 import type { EquivalenceVerdict, SubstitutionTier } from './types';
 
@@ -41,6 +46,62 @@ export interface SubstitutionMatch {
   advisoryText: string | null;
   /** The specific normalised atom that matched — what an `observe` tier logs. */
   atom: string;
+}
+
+/** Optional execution context used by policies whose scope is a specific tree. */
+export interface MatchCommandOptions {
+  cwd?: string;
+}
+
+const UNSAFE_DEPENDENCY_INSTALL_INTENT = 'policy-violation:unsafe-dependency-install';
+
+/**
+ * A deliberately conservative prefix parser for the one cwd-changing shell
+ * form the matcher can prove without executing a shell: `cd <literal> &&` (or
+ * `;`) before the command. Variables, substitutions, and other shell syntax
+ * are left unresolved and therefore fall back to the caller-supplied cwd.
+ */
+const LEADING_LITERAL_CD_RE =
+  /^\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))\s*(?:&&|;|\n)/;
+
+function normalizedPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    // A not-yet-created scratch directory is still provably outside the
+    // canonical tree when its lexical path is outside it.
+    return absolute;
+  }
+}
+
+function pathIsInside(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}${sep}`);
+}
+
+function effectiveCommandCwd(command: string, cwd?: string): string | null {
+  if (!cwd || !cwd.trim()) return null;
+
+  let effective = cwd.trim();
+  let remaining = command;
+  // Bound the prefix walk; this is a matcher, not a shell interpreter.
+  for (let i = 0; i < 16; i += 1) {
+    const match = LEADING_LITERAL_CD_RE.exec(remaining);
+    if (!match) break;
+    const target = match[1] ?? match[2] ?? match[3];
+    if (target === undefined) break;
+    effective = resolve(effective, target);
+    remaining = remaining.slice(match[0].length);
+  }
+
+  return normalizedPath(effective);
+}
+
+function shouldSuppressUnsafeDependencyInstall(command: string, cwd?: string): boolean {
+  const effective = effectiveCommandCwd(command, cwd);
+  if (!effective) return false;
+  const canonical = normalizedPath(fileLockCoordinationDomain());
+  return !pathIsInside(effective, canonical);
 }
 
 /**
@@ -117,15 +178,22 @@ export function normalizeRegistryFlags(flags = ''): string {
 export function matchCommandToSubstitutions(
   command: string,
   rows: SubstitutionRow[],
+  options?: MatchCommandOptions,
 ): SubstitutionMatch[] {
   const out: SubstitutionMatch[] = [];
   const pipedOut = atomsWhoseStdoutFeedsAPipe(command);
+  const suppressUnsafeDependencyInstall = rows.some(
+    (row) => row.intentLabel === UNSAFE_DEPENDENCY_INSTALL_INTENT,
+  ) && shouldSuppressUnsafeDependencyInstall(command, options?.cwd);
   // First matching atom wins: one row speaks about one intent, so a command
   // reading two files should produce ONE `file-whole-read` advisory, not two
   // copies of the same sentence. That dedup is an ADVISORY concern — see
   // matchAtomsToSubstitutions for why COUNTING must not inherit it.
   const seen = new Set<string>();
   for (const m of matchAtomsToSubstitutions(atomsOf(command), rows)) {
+    if (suppressUnsafeDependencyInstall && m.intentLabel === UNSAFE_DEPENDENCY_INSTALL_INTENT) {
+      continue;
+    }
     if (seen.has(m.intentLabel)) continue;
     if (RENDERED_OUTPUT_TOOLS.has(m.toolName) && pipedOut.has(m.atom)) continue;
     seen.add(m.intentLabel);

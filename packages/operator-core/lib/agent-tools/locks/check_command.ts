@@ -45,13 +45,14 @@ async function substitutionVerdict(
   command: string,
   workspaceId: string,
   ownerId: string | null,
+  cwd?: string,
 ): Promise<{
   substitutions: (SubstitutionMatch & { invoke?: InvokeEnvelope; invokeLine?: string })[];
   substitutionTier: string | null;
 }> {
   try {
     const rows = await getSubstitutionRows(workspaceId);
-    const matches = matchCommandToSubstitutions(command, rows);
+    const matches = matchCommandToSubstitutions(command, rows, { cwd });
 
     // P-003: record the fire. DETACHED and unawaited — the advisory is already
     // computed and an agent is blocked on this response, so making them wait on
@@ -95,6 +96,7 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     command: z.string().min(1).max(32000),
+    cwd: z.string().max(4096).optional(),
   }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
@@ -105,7 +107,7 @@ export default defineTool({
     // gate on the hot path and the two reads are independent.
     const [verdict, substitution] = await Promise.all([
       checkBashCommand({ command: args.command, coordinationDomain, ownerId }),
-      substitutionVerdict(args.command, workspaceId, ownerId ?? null),
+      substitutionVerdict(args.command, workspaceId, ownerId ?? null, args.cwd),
     ]);
 
     return {

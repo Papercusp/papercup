@@ -745,6 +745,12 @@ interface HookSessionLinkContext {
   };
 }
 
+function contextCwd(ctx: unknown): string | undefined {
+  const c = ctx as HookSessionLinkContext | undefined;
+  const cwd = c?.cwd ?? c?.sessionManager?.getCwd?.();
+  return typeof cwd === 'string' && cwd.trim() ? cwd : undefined;
+}
+
 function currentSessionLinkFromContext(ctx: unknown): {
   advSessionId: number;
   sessionId: string;
@@ -761,7 +767,7 @@ function currentSessionLinkFromContext(ctx: unknown): {
   if (!sessionId) return null;
 
   const filePath = c?.sessionManager?.getSessionFile?.();
-  const cwd = c?.cwd ?? c?.sessionManager?.getCwd?.();
+  const cwd = contextCwd(c);
   return {
     advSessionId,
     sessionId,
@@ -1820,10 +1826,13 @@ export interface CheckCommandVerdict {
  * they stub the operator with JSON, which is the one thing it does not send).
  * The parity is deliberate: the shell hook declares the same `_meta.format`.
  */
-export async function checkCommandVerdict(command: string): Promise<CheckCommandVerdict | null> {
+export async function checkCommandVerdict(
+  command: string,
+  cwd?: string,
+): Promise<CheckCommandVerdict | null> {
   const res = await callMcpTool(
     'locks:check_command',
-    { command },
+    { command, ...(cwd && cwd.trim() ? { cwd } : {}) },
     { timeoutMs: 3000, meta: { format: 'json' } },
   );
   return res && typeof res === 'object' ? (res as CheckCommandVerdict) : null;
@@ -4066,6 +4075,7 @@ export function loopBreakReason(toolName: string, count: number): string {
 
 export async function onToolCall(
   event: ToolCallEvent,
+  ctx?: unknown,
 ): Promise<{ block?: boolean; reason?: string }> {
   const blockedTaskTools = new Set(['task', 'taskcreate', 'taskupdate', 'taskget', 'tasklist']);
   if (blockedTaskTools.has(event.toolName.toLowerCase())) {
@@ -4212,7 +4222,9 @@ export async function onToolCall(
     if (cmd && (resourcePrefilterHit(cmd) || (agent && substitutionPrefilterHit(cmd)))) {
       // Fail-open throughout: a null verdict (detached / slow / malformed
       // operator) leaves the command exactly as it was before this block.
-      const verdict = await checkCommandVerdict(cmd);
+      const inputCwd = typeof event.input?.cwd === 'string' ? event.input.cwd.trim() : '';
+      const cwd = inputCwd || contextCwd(ctx) || process.cwd();
+      const verdict = await checkCommandVerdict(cmd, cwd);
       if (verdict) {
         if (verdict.decision === 'block') {
           return { block: true, reason: resourceBlockReason(verdict.matched) };
@@ -4902,7 +4914,7 @@ export default function register(pi: HookApi): void {
     // (build/test) EXTENDS the watchdog instead of tripping it, then rearm.
     noteStallToolInFlight(true);
     pokeStallWatchdog();
-    const result = await safe(() => onToolCall(event), {});
+    const result = await safe(() => onToolCall(event, ctx), {});
     if (!result.block) stageActivityReport(event);
     return result;
   });

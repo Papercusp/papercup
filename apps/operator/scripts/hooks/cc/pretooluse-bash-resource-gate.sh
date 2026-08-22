@@ -3388,6 +3388,7 @@ _PRETTIER_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 _PRETTIER_WRITE_FLAG_RE = re.compile(r'^(?:--write|-w)$', re.IGNORECASE)
+_PRETTIER_CHECK_FLAG_RE = re.compile(r'^--check$', re.IGNORECASE)
 
 # Prettier options whose next token is an option value rather than a file to
 # format.  An option value may itself be an in-tree path (`--config foo.mjs`),
@@ -3436,6 +3437,39 @@ def _prettier_write_targets(seg):
             continue
         if _write_seen:
             _targets.append(_tok)
+    return _targets
+
+
+# EI-20511008504632401 — the release helpers contain an intentionally legacy
+# formatting baseline.  An unconfigured `npx prettier --check` reports that
+# baseline as dirty, and the obvious follow-up (`--write`) creates broad,
+# unrelated churn during a focused repair.  Keep this guard narrow: it only
+# applies to `--check`, only to the release helper tree, and an explicit
+# `--config` opts into the caller's known formatter configuration.
+def _prettier_check_targets(seg):
+    """Return positional Prettier check targets when no config was supplied."""
+    try:
+        _tokens = _strip_redirect_tokens(seg.split())
+    except Exception:
+        return []
+    if not any(_PRETTIER_CHECK_FLAG_RE.match(_tok) for _tok in _tokens):
+        return []
+    if any(_tok.lower() == '--config' or _tok.lower().startswith('--config=')
+           for _tok in _tokens):
+        return []
+    _targets, _after_double_dash, _skip_value = [], False, False
+    for _tok in _tokens:
+        if _skip_value:
+            _skip_value = False
+            continue
+        if not _after_double_dash and _tok == '--':
+            _after_double_dash = True
+            continue
+        if not _after_double_dash and _tok.startswith('-'):
+            if '=' not in _tok and _tok.lower() in _PRETTIER_VALUE_OPTIONS:
+                _skip_value = True
+            continue
+        _targets.append(_tok)
     return _targets
 
 
@@ -3695,6 +3729,33 @@ def _shell_write_guard():
         _pos = [t for t in _strip_redirect_tokens(_toks) if not t.startswith('-')]
         if len(_pos) >= 2:
             _targets.append((_pos[-1], '`cp`', _m.start()))
+
+    # An unconfigured whole-file `prettier --check` against the legacy release
+    # helpers is not useful focused-repair verification: it reports pre-existing
+    # drift and nudges the caller toward broad `--write` churn.  Refuse only the
+    # release helper subtree and only when no explicit formatter config is given;
+    # `--write` remains covered by the in-place shell-write guard below.
+    _prettier_release_root = os.path.realpath(os.path.join(
+        _canon, 'apps', 'operator', 'lib', 'release'
+    ))
+    for _m in _PRETTIER_COMMAND_RE.finditer(_clean):
+        for _tok in _prettier_check_targets(_m.group(1)):
+            _effective_cwd = _effective_cwd_before(_m.start(), _cwd, _clean, _has_paren)
+            _resolved = _resolve_write_target(_tok, _effective_cwd)
+            if (_resolved and (_resolved == _prettier_release_root
+                               or _resolved.startswith(_prettier_release_root + os.sep))):
+                _DENY_VIEW['clean'], _DENY_VIEW['at'] = _clean, _m.start()
+                _DENY_VIEW['inReason'] = True  # shell text — safe to quote back
+                deny(
+                    'Prettier check guard (EI-20511008504632401): this unconfigured '
+                    '`prettier --check` targets `%s` under `apps/operator/lib/release`. '
+                    'That legacy formatting baseline can report pre-existing drift and '
+                    'turn a focused repair into broad unrelated `--write` churn. Use '
+                    '`git diff --check` or a hunk-scoped formatter check instead. If a '
+                    'whole-file Prettier check is genuinely required, re-issue it with '
+                    'an explicit `--config <path>`. NOTHING in this Bash call ran — the '
+                    'whole command was rejected before execution.' % _tok
+                )
 
     # `prettier --write FILE` / `prettier -w FILE` — unlike `--check`, these
     # mutate each positional file in place.  This catches the common `npx`
@@ -4970,11 +5031,13 @@ owner = (
 # JSON, which is the one thing it does not send. `_meta.format` is the
 # documented negotiation channel for exactly this (a MACHINE parser declaring
 # what it can decode); the OMP hook declares the same thing on its own call.
+_payload_cwd = payload.get('cwd')
+_request_cwd = _payload_cwd if isinstance(_payload_cwd, str) and _payload_cwd.strip() else os.getcwd()
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
     'params': {
         'name': 'locks:check_command',
-        'arguments': {'command': command},
+        'arguments': {'command': command, 'cwd': _request_cwd},
         '_meta': {'format': 'json'},
     },
 }).encode()
