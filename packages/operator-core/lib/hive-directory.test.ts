@@ -160,6 +160,37 @@ describe('HiveDirectory.announceLocalHive — routes by visibility (D-004)', () 
     attestationGistId: 'g',
   };
 
+  it('emits enrichment diagnostics only for workspace-bound production descriptors', async () => {
+    const kp = keypair();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const synthetic = new HiveDirectory(
+        makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) }),
+      );
+      synthetic.registerLocalHive({
+        ...localBase,
+        visibility: 'public',
+        ownerDevicePubkey: kp.pubkey,
+      });
+      await synthetic.buildOwnedAnnounces();
+      expect(warn).not.toHaveBeenCalled();
+
+      const production = new HiveDirectory(
+        makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) }),
+      );
+      production.registerLocalHive({
+        ...localBase,
+        workspaceId: 'papercusp-workspace',
+        visibility: 'public',
+        ownerDevicePubkey: kp.pubkey,
+      });
+      await production.buildOwnedAnnounces();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('NO enrichDescriptor seam'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('public → broadcasts on the GLOBAL directory topic', async () => {
     const kp = keypair();
     const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });

@@ -263,6 +263,11 @@ function classifySegment(segment) {
   if (/\bnode\b[^\n]*\s--test\b/.test(segment) || /--experimental-test-runner\b/.test(segment)) {
     return 'node-test';
   }
+  // The shared workspace launcher is a thin argv router, not a bespoke test harness. Package
+  // `test` scripts call it with no test-file arguments, and that exact branch runs
+  // `npx vitest run` (scripts/workspace-test.mjs). Classify the runner it deterministically
+  // launches so a Vitest failure remains attributable instead of becoming `no-file-rows`.
+  if (/\bnode\b[^\n]*\bworkspace-test\.mjs\b/.test(segment)) return 'vitest';
   if (/\bcargo\b[^\n]*\btest\b/.test(segment)) return 'cargo';
   if (/\brun-selftests\.sh\b/.test(segment)) return 'bash-selftests';
   if (/\bastro\b\s+check\b/.test(segment)) return 'astro-check';

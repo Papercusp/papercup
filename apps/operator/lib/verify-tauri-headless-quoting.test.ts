@@ -108,9 +108,22 @@ case "$command" in
     [ "$window_id" = 4242002 ] || exit 32
     mkdir -p "$capture_output"
     if [ "\${P014_FAKE_CAPTURE_MODE:-failure}" != failure ]; then
-      printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d > "$capture_output/screenshot.png"
-      if [ "\${P014_FAKE_CAPTURE_MODE}" = success ]; then
+      if [ "\${P014_FAKE_CAPTURE_MODE}" = duplicate ]; then
+        printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d > "$capture_output/screenshot.png"
         printf '%s' "$capture_output" >> "$capture_output/screenshot.png"
+      else
+        case "$(basename "$capture_output")" in
+          work-items) color='#e6194b' ;;
+          learning-observations) color='#3cb44b' ;;
+          learning-improve) color='#ffe119' ;;
+          learning-retain) color='#4363d8' ;;
+          git-history) color='#f58231' ;;
+          logs) color='#911eb4' ;;
+          coordination-history) color='#46f0f0' ;;
+          cupboard) color='#f032e6' ;;
+          *) exit 34 ;;
+        esac
+        convert -size 2x2 "xc:$color" "$capture_output/screenshot.png"
       fi
       printf '{"errorCount":0,"files":{"screenshot.png":"%s"}}\\n' "$capture_output/screenshot.png"
     else
@@ -169,7 +182,7 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
       },
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(evalCapture, 'utf8')).toBe(EXPRESSION);
     expect(readFileSync(pollCapture, 'utf8')).toBe(
       '--selector\nbody\n--text\nPeer\n--no-errors\n',
@@ -250,6 +263,7 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     expect(countSurfacesSrc).toContain('list-windows --json');
     expect(countSurfacesSrc).toContain('DISPLAY="$P014_TAURI_DISPLAY"');
     expect(countSurfacesSrc).toContain('--window-id "$P014_TAURI_WINDOW_ID"');
+    expect(countSurfacesSrc).toContain("'rgba:-'");
     expect(countSurfacesSrc).not.toContain('--title Papercusp');
     expect(countSurfacesSrc).toContain('--no-errors');
     expect(countSurfacesSrc).toContain('/loaded/i.test');
@@ -272,16 +286,18 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     expect(result.status).not.toBe(0);
     expect(result.stdout).not.toContain('P014_TAURI_ACCEPTANCE_OK');
     expect(result.stderr).toContain(
-      'P014_TAURI_SCREENSHOT_SET_INVALID reason=duplicate-hash=',
+      'P014_TAURI_SCREENSHOT_SET_INVALID reason=duplicate-pixels=',
     );
   });
 
   it('emits the terminal marker only after eight validated PNG captures', () => {
     const { output, result } = runFakeCountSurfacesAcceptance('success');
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe('');
-    expect(result.stdout).toContain('P014_TAURI_SCREENSHOT_SET_OK unique=8');
+    expect(result.stdout).toContain(
+      'P014_TAURI_SCREENSHOT_SET_OK uniquePixels=8',
+    );
     expect(result.stdout.match(/P014_TAURI_ACCEPTANCE_OK/g)).toHaveLength(1);
     const selected = JSON.parse(
       readFileSync(join(output, 'window-selected.json'), 'utf8'),

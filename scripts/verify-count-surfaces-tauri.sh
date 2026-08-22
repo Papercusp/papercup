@@ -207,6 +207,7 @@ NODE
 
 p014_validate_screenshot_set() {
   node - "$P014_ACCEPTANCE_OUTPUT" "${P014_CAPTURE_NAMES[@]}" <<'NODE'
+const { spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -222,7 +223,7 @@ if (names.length !== 8) {
   fail(`capture-count=${names.length}`);
 }
 
-const byHash = new Map();
+const byPixelSignature = new Map();
 for (const name of names) {
   let result;
   try {
@@ -236,18 +237,36 @@ for (const name of names) {
   if (typeof screenshot !== 'string') {
     fail(`${name}:missing-screenshot`);
   }
-  const hash = crypto.createHash('sha256').update(fs.readFileSync(screenshot)).digest('hex');
-  const duplicates = byHash.get(hash) ?? [];
+  const decoded = spawnSync(
+    'convert',
+    [screenshot, '-alpha', 'on', '-depth', '8', 'rgba:-'],
+    {
+      encoding: null,
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+  if (decoded.error || decoded.status !== 0 || decoded.stdout.length === 0) {
+    fail(
+      `${name}:pixel-decode:${decoded.error?.message ?? decoded.stderr.toString().trim() ?? `exit=${decoded.status}`}`,
+    );
+  }
+  const pixelSignature = crypto
+    .createHash('sha256')
+    .update(decoded.stdout)
+    .digest('hex');
+  const duplicates = byPixelSignature.get(pixelSignature) ?? [];
   duplicates.push(name);
-  byHash.set(hash, duplicates);
+  byPixelSignature.set(pixelSignature, duplicates);
 }
 
-const duplicate = [...byHash.entries()].find(([, namesForHash]) => namesForHash.length > 1);
+const duplicate = [...byPixelSignature.entries()].find(
+  ([, namesForSignature]) => namesForSignature.length > 1,
+);
 if (duplicate) {
-  fail(`duplicate-hash=${duplicate[0]} routes=${duplicate[1].join(',')}`);
+  fail(`duplicate-pixels=${duplicate[0]} routes=${duplicate[1].join(',')}`);
 }
 
-console.log(`P014_TAURI_SCREENSHOT_SET_OK unique=${byHash.size}`);
+console.log(`P014_TAURI_SCREENSHOT_SET_OK uniquePixels=${byPixelSignature.size}`);
 NODE
 }
 

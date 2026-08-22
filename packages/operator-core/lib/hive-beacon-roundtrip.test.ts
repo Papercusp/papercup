@@ -159,8 +159,9 @@ describe('publish gate — announce carries a beacon IFF the enrich seam yields 
   };
 
   it('attaches the beacon when buildBeacon (consent ON) yields one', async () => {
+    const hivePubkey = keypair().pubkey;
     const enriched = await enrichLocalHiveDescriptor(base, {
-      loadPubkey: async () => null,
+      loadPubkey: async () => hivePubkey,
       deriveMemberRepos: async () => [],
       loadRegistry: async () => ({ projects: [] }),
       buildBeacon: async () => BEACON,
@@ -169,8 +170,9 @@ describe('publish gate — announce carries a beacon IFF the enrich seam yields 
   });
 
   it('omits the beacon when buildBeacon (consent OFF) yields undefined', async () => {
+    const hivePubkey = keypair().pubkey;
     const enriched = await enrichLocalHiveDescriptor(base, {
-      loadPubkey: async () => null,
+      loadPubkey: async () => hivePubkey,
       deriveMemberRepos: async () => [],
       loadRegistry: async () => ({ projects: [] }),
       buildBeacon: async () => undefined,
@@ -187,7 +189,7 @@ describe('publish gate — announce carries a beacon IFF the enrich seam yields 
       broadcast: async (_topic, frame) => { broadcasts.push(frame); },
       now: () => NOW,
       // the enrich seam the directory calls at build time — consent ON here.
-      enrichDescriptor: async (d) => ({ ...d, beacon: BEACON }),
+      enrichDescriptor: async (d) => ({ ...d, hivePubkey: kp.pubkey, beacon: BEACON }),
     });
     dir.registerLocalHive({ ...base, ownerDevicePubkey: kp.pubkey });
     await dir.announceLocalHive('hive-pub');

@@ -132,15 +132,26 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
     expect(gate.match(/red_tracked=0/g) ?? []).toHaveLength(1);
   });
 
-  it('clears last-red on BOTH non-red outcomes (green and starvation-downgrade)', () => {
+  it('clears last-red on every non-red outcome (green, starvation, and build-lock skip)', () => {
     // Otherwise the longer red TTL keeps governing after the state has moved on.
     const clears = gate.match(/rm -f[^\n]*last-red/g) ?? [];
-    expect(clears).toHaveLength(2);
+    expect(clears).toHaveLength(3);
     const green = extractLine(/^\s*echo "\$\(now_s\)" >"\$STATE_DIR\/last-green"[^\n]*$/m, 'the GREEN stamp line');
     expect(green, 'the GREEN path must clear the red backoff').toContain('last-red');
-    const idxStarvation = gate.indexOf('>"$STATE_DIR/last-downgrade"');
-    const idxStarvationClear = gate.indexOf('rm -f "$STATE_DIR/last-red"');
-    expect(idxStarvationClear).toBeGreaterThan(idxStarvation);
+
+    const buildLockStart = gate.indexOf('if [ -n "$BUILD_LOCK_CONTENTION" ]; then');
+    const buildLockEnd = gate.indexOf('\n  fi', buildLockStart);
+    const buildLockBranch = gate.slice(buildLockStart, buildLockEnd);
+    expect(buildLockBranch).toContain('>"$STATE_DIR/last-downgrade"');
+    expect(buildLockBranch).toContain('rm -f "$STATE_DIR/last-red"');
+    expect(buildLockBranch).toContain('GATE: SKIPPED-BUILD-LOCK-CONTENTION');
+
+    const starvationStart = gate.indexOf('if [ "$MATRIXFULL_RES" = SKIPPED-STARVATION ]; then');
+    const starvationEnd = gate.indexOf('\n  fi', starvationStart);
+    const starvationBranch = gate.slice(starvationStart, starvationEnd);
+    expect(starvationBranch).toContain('>"$STATE_DIR/last-downgrade"');
+    expect(starvationBranch).toContain('rm -f "$STATE_DIR/last-red"');
+    expect(starvationBranch).toContain('GATE: SKIPPED-STARVATION');
   });
 
   it('checks the red LAST of the three fresh-exit legs, so it can never mask a fresher green or downgrade', () => {

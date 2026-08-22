@@ -67,6 +67,16 @@ describe('the runner population is real, and non-empty', () => {
 });
 
 describe('every runner the repo runs is declared', () => {
+  it('classifies the shared workspace-test launcher by its deterministic Vitest branch', () => {
+    expect(
+      [...
+        classifyRunnerClasses('test', {
+          test: 'node ../../scripts/workspace-test.mjs --passWithNoTests',
+        }),
+      ],
+    ).toEqual(['vitest']);
+  });
+
   it('classifies every task into a declared runner class', () => {
     const undeclared = tasks
       .filter((t) => t.classes.some((c) => !RUNNER_CLASSES[c]))
