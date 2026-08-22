@@ -13,6 +13,7 @@ import {
 } from '../../testing-flakiness';
 import { searchWorkItems } from '../../work-items';
 import { createOneWorkItem } from '../work_items/_create-core';
+import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'testing:flakiness',
@@ -27,7 +28,11 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    harness: z.string().max(80).optional().describe('scope to one harness (harness_slug). Omit for workspace-wide.'),
+    harness: z
+      .string()
+      .max(80)
+      .optional()
+      .describe('scope to one harness (harness_slug). Omit for workspace-wide reads; autoFile requires a concrete slug.'),
     lookbackDays: z.number().int().min(1).max(90).optional().describe('default 14'),
     minRuns: z.number().int().min(1).max(500).optional().describe('minimum run count per file to be considered. default 4'),
     limit: z.number().int().min(1).max(100).optional().describe('max ranked rows returned. default 20'),
@@ -37,7 +42,16 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const harnessSlug = args.harness ?? ctx.harnessSlug ?? undefined;
+    // The transport uses `'*'` as the operator/superuser ctx sentinel. It is a
+    // valid scope selector for a workspace-wide read, but never a work-item
+    // harness: passing it through to createOneWorkItem makes every auto-file
+    // attempt fail downstream after the candidate has already been ranked.
+    // Auto-file therefore requires the caller to name the concrete harness;
+    // ordinary reads retain their workspace-wide behavior when none resolves.
+    const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+    if (args.autoFile && !harnessSlug) {
+      return harnessRequiredResult('testing:flakiness', ctx);
+    }
     const rows = await computeFlakiness({
       harnessSlug,
       workspaceId: ctx.workspaceId,
@@ -67,7 +81,7 @@ export default defineTool({
               severity: 'minor',
               payload: { filePath: c.filePath, flipRate: c.flipRate, totalRuns: c.totalRuns, source: 'testing:flakiness' },
             },
-            { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug },
+            { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug },
           );
           return res.ok ? { filePath: c.filePath, id: res.workItem.id } : { filePath: c.filePath, skipped: res.error };
         }),
