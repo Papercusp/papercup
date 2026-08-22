@@ -6,9 +6,9 @@
  * body without a plans:edit string-replace. This is the structured setter: it
  * replaces everything after the `### D-NNN — title` head line (up to the next
  * heading) with the caller's new body, PRESERVING the head line (the title is
- * unchanged) and re-emitting the existing `Date:` line (creation metadata). Any
- * `Related:`/ref line is part of the body — include it in the new body to keep it.
- * Inside the plan lock; records a revision.
+ * unchanged), the existing `Date:` line (creation metadata), and the existing
+ * generated `Related:` line by default. Pass `refs` to replace that line, or an
+ * empty array to clear it. Inside the plan lock; records a revision.
  */
 
 import { z } from 'zod';
@@ -23,15 +23,17 @@ import { hardText, softText, clampText, LIMITS } from '../limits';
 /**
  * Replace a decision's body. Locates the `### D-NNN` head line against the
  * fence-masked body, finds the block end (the next `###`/`##`/`#` heading or EOF),
- * and rebuilds the block as: head line + (preserved `Date:` line) + the new body.
- * `date` is the parsed decision date (re-emitted, or omitted when null). Returns the
- * prior body (minus head + date) for transparency. Exported for tests.
+ * and rebuilds the block as: head line + (preserved `Date:` line) + the new body +
+ * (preserved or explicitly replaced `Related:` line). `date` is the parsed decision
+ * date (re-emitted, or omitted when null). Returns the prior body (minus head + date)
+ * for transparency. Exported for tests.
  */
 export function setDecisionBodyInBody(
   body: string,
   decisionId: string,
   newDecisionBody: string,
   date: string | null,
+  refs?: string[],
 ): { newBody: string; found: boolean; oldBody: string } {
   const headRe = new RegExp(
     String.raw`^###\s+` + decisionId.replace(/-/g, '\\-') + String.raw`\b[^\n]*$`,
@@ -49,6 +51,13 @@ export function setDecisionBodyInBody(
 
   const oldBlock = body.slice(headLineEnd, blockEnd);
   const datePiece = date ? `Date: ${date}\n` : '';
+  // `plans:add-decision` writes refs as a generated trailing `Related:` line.
+  // Preserve that line unless the caller explicitly supplies `refs`; this keeps
+  // a body edit from silently unlinking the decision from its plan items while
+  // still allowing an intentional replacement or clear (`refs: []`).
+  const existingRelated = oldBlock.match(/^\s*Related:[^\n]*$/im)?.[0]?.trim() ?? null;
+  const relatedLine =
+    refs === undefined ? existingRelated : refs.length > 0 ? `Related: ${refs.join(', ')}` : null;
   // One blank line before a following heading (matches add-decision's block spacing);
   // none at EOF.
   const trailing = blockEnd < body.length ? '\n' : '';
@@ -56,8 +65,15 @@ export function setDecisionBodyInBody(
   // `## Decisions` section (EI-18804290731494084) — same structural guard
   // add-decision applies, so both decision writers are safe by construction
   // rather than only the one that happened to be fixed.
-  const { body: safeBody } = normalizeDecisionBodyHeadings(newDecisionBody.trim());
-  const rebuilt = `\n${datePiece}${safeBody}\n${trailing}`;
+  const { body: normalizedBody } = normalizeDecisionBodyHeadings(newDecisionBody.trim());
+  // Callers that still include the old Related line (per the former contract)
+  // must not get a duplicate after preservation is applied. Only remove a
+  // trailing line; `Related:` in ordinary prose remains untouched.
+  const safeBody = relatedLine
+    ? normalizedBody.replace(/\n\s*Related:[^\n]*\s*$/i, '').trim()
+    : normalizedBody;
+  const relatedPiece = relatedLine ? `\n${relatedLine}` : '';
+  const rebuilt = `\n${datePiece}${safeBody}${relatedPiece}\n${trailing}`;
   const newBody = body.slice(0, headLineEnd) + rebuilt + body.slice(blockEnd);
 
   // oldBody (for the result) = the prior block minus its leading blank + Date line.
@@ -70,8 +86,13 @@ const argsSchema = z.object({
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
   decisionId: z.string().regex(/^D-\d{3,}$/, 'D-NNN form required'),
   body: hardText(5000).describe(
-    "The decision's new body (replaces the prior body). HARD CAP 5000 chars — over-length is REJECTED, not truncated. The `### D-NNN — title` head and the `Date:` line are preserved; everything else is replaced. To keep a `Related:` line, include it in the new body.",
+    "The decision's new body (replaces the prior body). HARD CAP 5000 chars — over-length is REJECTED, not truncated. The `### D-NNN — title`, `Date:`, and existing generated `Related:` line are preserved by default. Pass refs to replace the related item refs, or refs: [] to clear them.",
   ),
+  refs: z
+    .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
+    .max(40)
+    .optional()
+    .describe("Replace the decision's generated Related: item refs. Omit to preserve existing refs; pass [] to clear them."),
   rationale: softText(LIMITS.ANNOTATION)
     .optional()
     .describe('Optional — why the decision body changed (a correction, an added caveat). Stored on the plan revision (D-009). Auto-truncated to 2000 chars if longer.'),
@@ -90,9 +111,9 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 export default defineTool({
   name: 'plans:set-decision-body',
   description:
-    "Replace an existing decision's body — preserves the `### D-NNN — title` head and the `Date:` line, replaces everything else with the new body. Inside the plan lock, records a revision. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
+    "Replace an existing decision's body — preserves the `### D-NNN — title` head, the `Date:` line, and existing generated `Related:` refs by default. Pass refs to replace them or [] to clear them. Inside the plan lock, records a revision. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
   guidance: {
-    when: "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, and date. The structured alternative to a plans:edit on the decision block.",
+    when: "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, date, and related item refs. Pass refs only when intentionally changing those refs. The structured alternative to a plans:edit on the decision block.",
     notWhen:
       'Recording a NEW decision (plans:add-decision). Changing a decision title (plans:edit — title lives on the head line). A whole-document rewrite (plans:set-content).',
     chaining: 'plans:get (the decision body) → plans:set-decision-body → plans:get to confirm.',
@@ -141,6 +162,7 @@ export default defineTool({
           args.decisionId,
           args.body,
           decision.date,
+          args.refs,
         );
         if (!found) return { newBody: null, value: { ok: false, code: 'decision_not_found' } };
         return {

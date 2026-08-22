@@ -1,7 +1,7 @@
 /**
  * plans:set-decision-body — the pure helper setDecisionBodyInBody
  * (plan-templates-and-rubric-v2-2026-06-20 P-003). Replaces a decision's body while
- * preserving the `### D-NNN — title` head + the `Date:` line. The handler wiring
+ * preserving the `### D-NNN — title` head + the `Date:` and `Related:` lines. The handler wiring
  * (withPlanLock + revision + legacy/not-found guards) mirrors the tested
  * plans:add-decision.
  */
@@ -44,6 +44,7 @@ describe('setDecisionBodyInBody', () => {
     expect(d1?.date).toBe('2026-06-19'); // Date preserved
     expect(d1?.body).toContain('New body content.');
     expect(d1?.body).not.toContain('Original body text.');
+    expect(d1?.itemRefs).toEqual(['P-001']); // generated refs survive a body edit
     // sibling untouched
     const d2 = parsed.decisions.find((d) => d.id === 'D-002');
     expect(d2?.title).toBe('Second decision');
@@ -59,10 +60,22 @@ describe('setDecisionBodyInBody', () => {
     expect(parsed.decisions.find((d) => d.id === 'D-001')?.body).toContain('Original body text.');
   });
 
-  it('keeps a Related line only if the new body includes it', () => {
+  it('preserves the existing Related line when refs are omitted', () => {
     const { newBody } = setDecisionBodyInBody(PLAN, 'D-001', 'Body without refs.', '2026-06-19');
     const d1 = parsePlan(newBody).decisions.find((d) => d.id === 'D-001');
-    expect(d1?.itemRefs).toEqual([]); // old Related: P-001 dropped (body replaced)
+    expect(d1?.itemRefs).toEqual(['P-001']);
+  });
+
+  it('replaces the Related line when refs are supplied explicitly', () => {
+    const { newBody } = setDecisionBodyInBody(PLAN, 'D-001', 'Body with replacement refs.', '2026-06-19', ['P-002']);
+    const d1 = parsePlan(newBody).decisions.find((d) => d.id === 'D-001');
+    expect(d1?.itemRefs).toEqual(['P-002']);
+  });
+
+  it('clears the Related line when refs is explicitly empty', () => {
+    const { newBody } = setDecisionBodyInBody(PLAN, 'D-001', 'Body with no refs.', '2026-06-19', []);
+    const d1 = parsePlan(newBody).decisions.find((d) => d.id === 'D-001');
+    expect(d1?.itemRefs).toEqual([]);
   });
 
   it('omits the Date line when the decision had no date', () => {
