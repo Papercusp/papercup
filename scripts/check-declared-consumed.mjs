@@ -249,6 +249,14 @@ export const DECLARED_FIELDS = [
     why: 'P-021. Materiality SUPPRESSES change notifications, so an unconsumed declaration is the worst kind: the author believes noise is being filtered and the subscriber is told nothing was filtered. It fails silently and in the confident direction.',
   },
   {
+    id: 'CellSpec.doorProjections',
+    name: 'doorProjections',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration declaring `doorProjections: [{ tool, path }]`',
+    consumer: 'state-plane-stamp.ts projecting each alternate door into a re-read handle for the existing payload',
+    why: 'P-017. An alternate door is a delivery alias, not a second resolver: if its declaration is never consumed, callers reaching the same value through release:deploy or another existing payload lose the registry-derived re-read handle and may transcribe a stale snapshot. It fails silently in the confident direction.',
+  },
+  {
     id: 'CellSpec.headlineSource',
     name: 'headlineSource',
     declaredIn: 'packages/operator-core/lib/cell-registry.ts',
