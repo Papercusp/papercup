@@ -120,3 +120,60 @@ describe("P-005 prose referential integrity over the real templates (template-pr
     }
   });
 });
+
+/**
+ * Recurrence guard for EI-21110451200329856 (plan
+ * official-mobile-app-templates-2026-08-20, P-018).
+ *
+ * `templates:new-app` overlays ONLY a template's own root directory into the
+ * new app, so a shipped check that reaches a SIBLING template directory
+ * (a "../../papercusp-<id>" template.yaml path) resolves in this repo and
+ * ENOENTs in every materialized app. Both mobile app roots shipped exactly that,
+ * which made the union a greenfield builder is told to run red out of the box —
+ * inside the very check contract that is supposed to prove these templates make
+ * no private source-tree assumptions.
+ *
+ * The class is "a shipped check dereferences a sibling path unconditionally".
+ * The fix routes every such path through `checks/closure-manifests.ts`, whose
+ * tri-state resolver skips only when NO sibling resolves and still throws when
+ * some-but-not-all do. This guard therefore asserts the routing, not the fix's
+ * internals: a check that names a sibling template must import that resolver,
+ * and the resolver must ship in the same directory so it travels with the app.
+ */
+describe("shipped template checks make no private source-tree assumption (EI-21110451200329856)", () => {
+  const SIBLING_REF = /\.\.\/\.\.\/papercusp-[a-z0-9-]+/;
+  const RESOLVER = "closure-manifests";
+
+  it("every check naming a sibling template routes it through the tri-state resolver", () => {
+    const offenders: string[] = [];
+
+    for (const ref of REFERENCE_TEMPLATES) {
+      const checksDir = join(TEMPLATES_DIR, ref.id, "checks");
+      if (!existsSync(checksDir)) continue;
+
+      for (const rel of walkFiles(checksDir)) {
+        if (!rel.endsWith(".ts")) continue;
+        if (rel.startsWith(RESOLVER)) continue; // the resolver itself may not name one, but never assume
+
+        const source = readFileSync(join(checksDir, rel), "utf8");
+        if (!SIBLING_REF.test(source)) continue;
+
+        if (!source.includes(`./${RESOLVER}.js`)) {
+          offenders.push(
+            `templates/${ref.id}/checks/${rel}: reads a sibling template path ` +
+              `but does not import ./${RESOLVER}.js — it will ENOENT in every materialized app`,
+          );
+          continue;
+        }
+        if (!existsSync(join(checksDir, `${RESOLVER}.ts`))) {
+          offenders.push(
+            `templates/${ref.id}/checks/${rel}: imports ./${RESOLVER}.js but ` +
+              `checks/${RESOLVER}.ts is not shipped in the same directory`,
+          );
+        }
+      }
+    }
+
+    expect(offenders, `\n  ${offenders.join("\n  ")}`).toEqual([]);
+  });
+});
