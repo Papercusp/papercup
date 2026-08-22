@@ -78,7 +78,26 @@ describe('raw wait producer-health adapter', () => {
       routines: { gitSync: null, greenCheckpoint: null, releaseTrigger: null },
       activeRun: null,
       recent: [],
+    }).mockResolvedValueOnce({
+      slug: 'not-a-pipeline',
+      generatedAtMs: 9_000,
+      routines: { gitSync: null, greenCheckpoint: null, releaseTrigger: null },
+      activeRun: null,
+      recent: [],
     });
+
+    await expect(
+      resolveProducerHealthCertificate({
+        producerHealth: {
+          kind: 'green-checkpoint',
+          pipeline: 'green-checkpoint',
+          expected_cadence_sec: 120,
+        },
+        subscriberId: 'su-waiter',
+      }),
+    ).rejects.toThrow(
+      'unknown green-checkpoint pipeline: green-checkpoint. Use the sanitized integration-root basename from the event key (for example "papercusp" in release:green:papercusp), not the routine name "green-checkpoint"; no wait was registered.',
+    );
 
     await expect(
       resolveProducerHealthCertificate({

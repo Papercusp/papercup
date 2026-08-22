@@ -6,7 +6,13 @@ import type { ProducerHealthCertificate } from '../../events/await/verified-wait
 export const producerHealthInputSchema = z
   .object({
     kind: z.literal('green-checkpoint'),
-    pipeline: z.string().min(1).max(64),
+    pipeline: z
+      .string()
+      .min(1)
+      .max(64)
+      .describe(
+        'Sanitized basename of the integration root that emits the event (for example "papercusp" in release:green:papercusp), not the routine name "green-checkpoint".',
+      ),
     candidate_sha: z.string().min(1).max(128).optional(),
     run_id: z.string().min(1).max(200).optional(),
     expected_cadence_sec: z.number().int().positive().max(7 * 24 * 60 * 60),
@@ -31,7 +37,10 @@ export async function resolveProducerHealthCertificate(input: {
   const verificationDeadlineMs = issuedAtMs + (input.timeoutSec == null ? expectedCadenceMs : input.timeoutSec * 1_000);
   const snapshot = await gitPipelineSnapshot(producer.pipeline, { includeActiveRun: true });
   if (!snapshot.routines.greenCheckpoint && !snapshot.activeRun) {
-    throw new Error(`producer health — unknown green-checkpoint pipeline: ${producer.pipeline}`);
+    throw new Error(
+      `producer health — unknown green-checkpoint pipeline: ${producer.pipeline}. ` +
+        'Use the sanitized integration-root basename from the event key (for example "papercusp" in release:green:papercusp), not the routine name "green-checkpoint"; no wait was registered.',
+    );
   }
   return checkpointProducerCertificate({
     pipeline: producer.pipeline,
