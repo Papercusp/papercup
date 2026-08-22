@@ -363,7 +363,22 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
                   ? JSON.stringify(raw).slice(0, 300)
                   : 'unknown error';
           if (isSlugExists(detail)) throw slugExistsError(args.slug, detail);
-          throw new MaterializeTemplateError(`pot:create failed: ${detail}`, 422);
+          // EI-21107910194803524: pot:create can fail this way WITHOUT throwing —
+          // createPotHarness's own outer catch already ran its BEST-EFFORT internal
+          // `rollback()` (each undo step wrapped in try/catch, so a connection-level
+          // fault mid-provisioning can leave one silently unreverted) and returned
+          // { ok:false } as ordinary business data, not a thrown error. Reaching this
+          // branch used to throw a bare MaterializeTemplateError with NO compensation
+          // attempt at all — the asymmetry this item is about: the THROW path above
+          // rolled back, this data-return path did not, so only ONE of the two ways
+          // pot:create can fail was ever covered. Run the identical compensation here.
+          // pot:obliterate tolerates a slug that was never actually registered
+          // (hive_not_found), so this is safe even when nothing durable happened yet.
+          throw await compensateCreatedHarness(
+            new MaterializeTemplateError(`pot:create failed: ${detail}`, 422),
+            { slug: args.slug, path: '' },
+            rollbackHarness,
+          );
         }
         return { slug: r.slug, path: r.path };
       },
