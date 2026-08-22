@@ -141,11 +141,6 @@ export interface FanOutExemption {
  */
 export const FANOUT_EXEMPTIONS: readonly FanOutExemption[] = [
   {
-    where: 'advSessions.list',
-    reason:
-      'The leg body awaits nothing — getOmpSessionRowSummary is a synchronous in-memory lookup, so the map is a per-row reshape and its arity multiplies zero store reads.',
-  },
-  {
     where: 'learning-retain-read.ts#readInsightDocsPage',
     reason:
       'Bounded by its CALLER: index.ts wires it as deps.listRunbooksPage, which readRetainFeed invokes only inside withinBudget(legFns[k](), `${k} leg`) — so a hang in either fs fan-out rejects the whole runbook leg on the shared deadline and degrades it, exactly like a throw.',
