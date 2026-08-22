@@ -13,7 +13,14 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   },
 }));
 
-import { runGithubBridgeTick, BRIDGE_REMOTE_STAGING_REF, BRIDGE_CANONICAL_REF, type BridgeTickInput } from './github-bridge-tick';
+import {
+  runGithubBridgeTick,
+  BRIDGE_REMOTE_STAGING_REF,
+  BRIDGE_CANONICAL_REF,
+  GITHUB_CREDENTIAL_HELPER_KEY,
+  withGithubCredentialHelper,
+  type BridgeTickInput,
+} from './github-bridge-tick';
 import type { IngressResult } from './github-ingress';
 import type { AdmissionResult } from './github-ingress-admission';
 import type { EgressResult } from './github-egress';
@@ -82,6 +89,88 @@ function bridgeInput(over: Partial<BridgeTickInput> = {}, seams: Partial<NonNull
   };
   return { input, recorded, egressCalls };
 }
+
+describe('withGithubCredentialHelper', () => {
+  it('pins GitHub network commands to the checkout helper without changing bare-store plumbing', async () => {
+    const runGit = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const wrapped = withGithubCredentialHelper(runGit, '!/tmp/gh-credential-aviynw.sh');
+    const opts = { timeoutMs: 1234 };
+
+    await wrapped(['fetch', 'https://github.com/acme/shop.git', '+refs/heads/main:refs/ingress/main'], '/tmp/bare.git', opts);
+    await wrapped(['rev-parse', '--verify', 'refs/hive/staging'], '/tmp/bare.git', opts);
+
+    expect(runGit).toHaveBeenNthCalledWith(
+      1,
+      [
+        '-c',
+        `${GITHUB_CREDENTIAL_HELPER_KEY}=`,
+        '-c',
+        `${GITHUB_CREDENTIAL_HELPER_KEY}=!/tmp/gh-credential-aviynw.sh`,
+        'fetch',
+        'https://github.com/acme/shop.git',
+        '+refs/heads/main:refs/ingress/main',
+      ],
+      '/tmp/bare.git',
+      opts,
+    );
+    expect(runGit).toHaveBeenNthCalledWith(2, ['rev-parse', '--verify', 'refs/hive/staging'], '/tmp/bare.git', opts);
+  });
+
+  it('ignores blank or newline-bearing helper values', async () => {
+    const runGit = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    await withGithubCredentialHelper(runGit, '  \n  ')(['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
+    await withGithubCredentialHelper(runGit, '!bad\nhelper')(['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
+
+    expect(runGit).toHaveBeenNthCalledWith(1, ['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
+    expect(runGit).toHaveBeenNthCalledWith(2, ['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
+  });
+});
+
+it('threads the selected helper through ingress and egress while leaving canonical reads unmodified', async () => {
+  const helper = '!/tmp/gh-credential-aviynw.sh';
+  const calls: string[][] = [];
+  const { input } = bridgeInput(
+    { githubCredentialHelper: helper },
+    {
+      runGit: async (args) => {
+        calls.push(args);
+        if (args[0] === 'rev-parse') return { code: 0, stdout: `${CANONICAL}\n`, stderr: '' };
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      ingress: async ({ runGit, repoPath, remoteUrl }) => {
+        await runGit?.(['fetch', remoteUrl, '+refs/heads/main:refs/ingress/main'], repoPath);
+        return cleanIngress();
+      },
+      egress: async ({ runGit, repoPath, remoteUrl }) => {
+        await runGit?.(['ls-remote', remoteUrl, BRIDGE_REMOTE_STAGING_REF], repoPath);
+        return cleanEgress();
+      },
+    },
+  );
+
+  await runGithubBridgeTick(input);
+
+  expect(calls).toContainEqual([
+    '-c',
+    `${GITHUB_CREDENTIAL_HELPER_KEY}=`,
+    '-c',
+    `${GITHUB_CREDENTIAL_HELPER_KEY}=${helper}`,
+    'fetch',
+    input.githubRemote,
+    '+refs/heads/main:refs/ingress/main',
+  ]);
+  expect(calls).toContainEqual(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF]);
+  expect(calls).toContainEqual([
+    '-c',
+    `${GITHUB_CREDENTIAL_HELPER_KEY}=`,
+    '-c',
+    `${GITHUB_CREDENTIAL_HELPER_KEY}=${helper}`,
+    'ls-remote',
+    input.githubRemote,
+    BRIDGE_REMOTE_STAGING_REF,
+  ]);
+});
 
 describe('runGithubBridgeTick — an unreachable remote must not read green', () => {
   // The oddsmith regression (2026-07-19): the bare store resolved a different

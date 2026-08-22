@@ -52,8 +52,8 @@ vi.mock('./git-sync-events', async (importOriginal) => ({
   emitGitSyncEgressedEvent: emitGitSyncEgressedEventMock,
 }));
 
-import { runGithubBridgeLeg } from './git-sync-action';
-import { BRIDGE_CANONICAL_REF } from '../../sync/pot-git/github-bridge-tick';
+import { resolveGithubCredentialHelper, runGithubBridgeLeg } from './git-sync-action';
+import { BRIDGE_CANONICAL_REF, GITHUB_CREDENTIAL_HELPER_KEY } from '../../sync/pot-git/github-bridge-tick';
 
 const SLUG = 'shop-hive';
 const WS = 'ws-1';
@@ -242,6 +242,64 @@ describe('runGithubBridgeLeg — owner-actionable egress failures', () => {
     expect(metadata).not.toHaveProperty('local_sync_status');
     expect(metadata).not.toHaveProperty('local_sync_head_sha');
     expect(emitGitSyncEgressedEventMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GitHub credential-helper handoff', () => {
+  it('resolves the last non-empty checkout-local helper', async () => {
+    defaultRunGitMock.mockResolvedValue({
+      code: 0,
+      stdout: `\n!/tmp/old-helper.sh\n\n!/tmp/gh-credential-aviynw.sh\n`,
+      stderr: '',
+    });
+
+    await expect(resolveGithubCredentialHelper('/clones/oddsmith')).resolves.toBe('!/tmp/gh-credential-aviynw.sh');
+    expect(defaultRunGitMock).toHaveBeenCalledWith(
+      ['config', '--local', '--get-all', GITHUB_CREDENTIAL_HELPER_KEY],
+      '/clones/oddsmith',
+    );
+  });
+
+  it('passes the registered checkout helper into the bare-store bridge tick', async () => {
+    const helper = '!/tmp/gh-credential-aviynw.sh';
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [
+        {
+          slug: SLUG,
+          path: '/clones/oddsmith',
+          hive_slug: SLUG,
+          self_repo: true,
+          github_remote: 'https://github.com/aviynw/oddsmith.git',
+          fork_remote: 'https://github.com/aviynw/oddsmith.git',
+        },
+      ],
+    });
+    pathExistsMock.mockResolvedValue(false);
+    defaultRunGitMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'config'
+        ? { code: 0, stdout: `${helper}\n`, stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
+    );
+    runGithubBridgeTickMock.mockResolvedValue({
+      ran: true,
+      egressTarget: 'fork',
+      ingressed: { updated: 0, upToDate: 1, nonFF: 0, absent: 0 },
+      admissions: [],
+      lastAdmitted: null,
+      egress: { pushed: 0, upToDate: 1, rejectedNonFF: 0, blockedSecrets: 0 },
+      egressHead: null,
+      verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' },
+      errors: [],
+    });
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(runGithubBridgeTickMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        githubCredentialHelper: helper,
+        repoKey: 'gh-aviynw--oddsmith',
+      }),
+    );
   });
 });
 
