@@ -75,4 +75,18 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
     expect(baseline.files, 'baseline must have a files map').toBeTypeOf('object');
     expect(Object.keys(baseline.files).length).toBeGreaterThan(0);
   });
+
+  it('agent-mcp package declares the baseline-gated typecheck used by workspace promotion', () => {
+    const s = scripts('packages/agent-mcp/package.json');
+    expect(s.typecheck, 'packages/agent-mcp must expose a real typecheck script').toBeTruthy();
+    expect(s.typecheck).toMatch(/lint-tsc-agent-mcp\.mjs/);
+    expect(s.typecheck).not.toMatch(/^tsc\b/);
+  });
+
+  it('agent-mcp baseline exists and is ready for per-file diagnostics', () => {
+    const baseline = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/agent-mcp/.tsc-baseline.json'), 'utf-8'),
+    );
+    expect(baseline.files, 'agent-mcp baseline must have a files map').toBeTypeOf('object');
+  });
 });
