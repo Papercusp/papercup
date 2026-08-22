@@ -261,6 +261,12 @@ export class HiveDirectory {
    *  stacking, and `unregisterLocalHive` can cancel a burst for a hive that's
    *  gone. */
   private readonly burstTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
+  /** WI-40622: last emitted announce-frame census per hive_id, so the POSITIVE
+   *  build-site record below logs ON CHANGE rather than on every build. The
+   *  three failure warns in `buildAnnounceFor` are silent on success, which made
+   *  "did hive_pubkey/member_links ride the wire?" answerable only by inference
+   *  from silence — and `member_links` had no failure branch at all. */
+  private readonly lastFrameCensus = new Map<string, string>();
 
   constructor(private readonly deps: HiveDirectoryDeps) {}
 
@@ -559,14 +565,21 @@ export class HiveDirectory {
     // reads ok — with ZERO enricher log lines. All three outcomes below are silent
     // today, which is exactly why that state was unattributable.
     let desc = descIn;
+    // Persisted production descriptors are workspace-bound. Synthetic/unit descriptors omit
+    // workspaceId deliberately and do not own the production enrichment seam; emitting the
+    // production alarm for them makes every pure announce test fail before its assertions while
+    // adding no operational signal. Keep all three diagnostics fail-loud for real workspace rows.
+    const warnOnUnenriched = typeof descIn.workspaceId === 'string' && descIn.workspaceId.length > 0;
     if (!this.deps.enrichDescriptor) {
       // (1) seam absent — production always wires it, so this means a non-production
       // deps object reached a real announce.
-      console.warn(
-        `[hive-directory] announce for hive ${descIn.potId} built with NO enrichDescriptor seam ` +
-          `(workspace ${descIn.workspaceId ?? 'unknown'}) — no hivePubkey/memberRepos/memberLinks/` +
-          `homeRepoKey enrichment rides this frame.`,
-      );
+      if (warnOnUnenriched) {
+        console.warn(
+          `[hive-directory] announce for hive ${descIn.potId} built with NO enrichDescriptor seam ` +
+            `(workspace ${descIn.workspaceId}) — no hivePubkey/memberRepos/memberLinks/` +
+            `homeRepoKey enrichment rides this frame.`,
+        );
+      }
     } else {
       try {
         desc = await this.deps.enrichDescriptor(descIn);
@@ -574,20 +587,22 @@ export class HiveDirectory {
         // (2) the enricher (or its lazy import) REJECTED — it may never have entered,
         // which is why its own internal warnings can be absent.
         desc = descIn;
-        console.warn(
-          `[hive-directory] enrichDescriptor REJECTED for hive ${descIn.potId} ` +
-            `(workspace ${descIn.workspaceId ?? 'unknown'}): ` +
-            `${e instanceof Error ? (e.stack ?? e.message) : String(e)}. ` +
-            `Announcing the UNENRICHED descriptor — no hivePubkey, memberRepos, memberLinks or ` +
-            `homeRepoKey rides this frame. A lazy-import failure lands here having logged nothing.`,
-        );
+        if (warnOnUnenriched) {
+          console.warn(
+            `[hive-directory] enrichDescriptor REJECTED for hive ${descIn.potId} ` +
+              `(workspace ${descIn.workspaceId}): ` +
+              `${e instanceof Error ? (e.stack ?? e.message) : String(e)}. ` +
+              `Announcing the UNENRICHED descriptor — no hivePubkey, memberRepos, memberLinks or ` +
+              `homeRepoKey rides this frame. A lazy-import failure lands here having logged nothing.`,
+          );
+        }
       }
-      if (!desc.hivePubkey) {
+      if (!desc.hivePubkey && warnOnUnenriched) {
         // (3) enrichment RETURNED yet the frame still has no dial address. Distinguishes
         // "enricher never ran" from "enricher ran and still produced no key".
         console.warn(
           `[hive-directory] announce for hive ${descIn.potId} (workspace ` +
-            `${descIn.workspaceId ?? 'unknown'}) has NO hive_pubkey AFTER enrichment returned ` +
+            `${descIn.workspaceId}) has NO hive_pubkey AFTER enrichment returned ` +
             `(enrichedKeys=${Object.keys(desc).sort().join('|')}) — this frame carries no ` +
             `cross-Hive dial address, so peers can discover the hive but never dial it.`,
         );
@@ -614,6 +629,30 @@ export class HiveDirectory {
       // no beacon on the wire). Covered by the announce signature.
       ...(desc.beacon ? { beacon: desc.beacon } : {}),
     };
+    // WI-40622: POSITIVE build-site record of what actually rides the wire. The
+    // three warns above fire only on FAILURE, so a healthy announce emitted
+    // nothing and "did the frame carry hive_pubkey / member_links?" could only be
+    // inferred from silence — which cannot distinguish "enrichment succeeded"
+    // from "buildAnnounceFor never ran". Presence + cardinality ONLY, never a
+    // secret value. ON CHANGE, not per build: buildOwnedAnnounces runs on every
+    // peer pairing (directory-swarm.ts getHelloFrames) as well as the 5-min
+    // timer, so a per-build line would be noise; on-change gives one line per
+    // hive per boot when steady and makes a field DISAPPEARING immediately loud.
+    const census =
+      `visibility=${body.visibility} ` +
+      `hive_pubkey=${body.hive_pubkey ? 'present' : 'ABSENT'} ` +
+      `member_links=${body.member_links?.length ?? 'ABSENT'} ` +
+      `member_repos=${body.member_repos?.length ?? 'ABSENT'} ` +
+      `member_topics=${body.member_topics.length} ` +
+      `home_repo_key=${body.home_repo_key ? 'present' : 'ABSENT'} ` +
+      `beacon=${body.beacon ? 'present' : 'ABSENT'}`;
+    if (!process.env.VITEST && this.lastFrameCensus.get(body.hive_id) !== census) {
+      this.lastFrameCensus.set(body.hive_id, census);
+      console.warn(
+        `[hive-directory] announce frame for hive ${body.hive_id} ` +
+          `(workspace ${desc.workspaceId ?? 'unknown'}) ${census}`,
+      );
+    }
     return buildHiveAnnounce(body, this.deps.sign);
   }
 
