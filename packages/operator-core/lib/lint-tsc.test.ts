@@ -738,8 +738,15 @@ describe('nested worktree diagnostic paths (EI-21125819548056320)', () => {
 });
 
 describe('syntaxBrokenFiles', () => {
-  it('flags only files with TS1xxx hard-fail diagnostics', () => {
+  it('flags files with parser/scanner TS1xxx diagnostics', () => {
     expect(syntaxBrokenFiles(parseTscErrors(SAMPLE))).toEqual(['lib/broken.ts']);
+  });
+
+  it('does not classify TS1320 semantic await/type errors as syntax failures', () => {
+    const errors = parseTscErrors(
+      "lib/a.ts(597,60): error TS1320: Type of 'await' operand must either be a valid promise or must not contain a callable 'then' member.",
+    );
+    expect(syntaxBrokenFiles(errors)).toEqual([]);
   });
 
   it('does not confuse TS1xxx with longer codes (TS1xxxx)', () => {

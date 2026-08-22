@@ -110,6 +110,13 @@ describe('syntaxBrokenFiles', () => {
     expect(syntaxBrokenFiles(d)).toEqual(['a.ts']);
   });
 
+  it('does not classify TS1320 semantic await/type errors as syntax failures', () => {
+    const d = parseTscDiagnostics(
+      "a.ts(597,60): error TS1320: Type of 'await' operand must either be a valid promise or must not contain a callable 'then' member.",
+    );
+    expect(syntaxBrokenFiles(d)).toEqual([]);
+  });
+
   it('is empty when only semantic errors are present', () => {
     expect(syntaxBrokenFiles(parseTscDiagnostics(REAL_OUTPUT))).toEqual([]);
   });

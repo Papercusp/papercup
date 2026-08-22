@@ -171,15 +171,37 @@ export function errorsOnly(diagnostics: TscDiagnostic[]): TscDiagnostic[] {
 }
 
 /**
- * Files with a parse-level (TS1xxx) error. Such a file fails to compile at all,
- * so tsc UNDER-REPORTS everything downstream of it — the same hard-fail rule
- * `scripts/lib/tsc-baseline-gate.mjs` applies, surfaced here so an agent reading
- * a small error count knows whether to trust it.
+ * TypeScript parser/scanner diagnostic codes in the TS1xxx range.
+ *
+ * Do not classify the whole /^TS1\d{3}$/ range as syntax: TS1320 is a semantic
+ * await/type diagnostic even though it shares that numeric range. This set is
+ * derived from the parser and scanner's Diagnostics references in the
+ * TypeScript 6.0.3 bundled compiler.
+ */
+const SYNTAX_DIAGNOSTIC_CODES = new Set(
+  [
+    1002, 1003, 1005, 1007, 1010, 1011, 1012, 1034, 1068, 1069, 1109, 1110, 1121, 1124, 1125,
+    1126, 1127, 1128, 1129, 1130, 1131, 1132, 1134, 1135, 1136, 1137, 1138, 1139, 1140,
+    1142, 1144, 1145, 1146, 1160, 1161, 1177, 1178, 1179, 1180, 1181, 1198, 1199, 1209,
+    1223, 1228, 1260, 1351, 1352, 1353, 1357, 1359, 1369, 1381, 1382, 1385, 1386, 1387,
+    1388, 1389, 1390, 1433, 1434, 1435, 1436, 1437, 1438, 1439, 1440, 1441, 1442, 1443,
+    1472, 1477, 1478, 1487, 1488, 1489, 1490, 1499, 1500, 1501, 1502, 1503, 1504, 1505,
+    1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, 1515, 1516, 1517, 1518, 1519,
+    1520, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1528, 1529, 1530, 1531, 1532, 1533,
+    1534, 1535, 1536, 1537, 1538,
+  ].map((code) => `TS${code}`),
+);
+
+/**
+ * Files with a parser/scanner error. Such a file fails to compile at all, so
+ * tsc UNDER-REPORTS everything downstream of it — surfaced here so an agent
+ * reading a small error count knows whether to trust it. The baseline gate
+ * separately retains its broader TS1xxx hard-fail policy.
  */
 export function syntaxBrokenFiles(diagnostics: TscDiagnostic[]): string[] {
   const files = new Set<string>();
   for (const d of diagnostics) {
-    if (/^TS1\d{3}$/.test(d.code)) files.add(d.file ?? '(unattributed)');
+    if (SYNTAX_DIAGNOSTIC_CODES.has(d.code)) files.add(d.file ?? '(unattributed)');
   }
   return [...files].sort();
 }

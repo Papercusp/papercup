@@ -333,14 +333,58 @@ export function formatMidInstallWarning({ label, diagnostics, dependencies }) {
 }
 
 /**
- * Files carrying TS1xxx hard-fail diagnostics. Most TS1xxx diagnostics are parser errors, but
- * the range also contains semantic/type errors such as TS1320; keep the legacy helper name and
- * hard-fail policy while letting the compiler message explain the actual problem.
+ * TypeScript parser/scanner diagnostic codes in the TS1xxx range.
+ *
+ * Do not use the whole /^TS1\d{3}$/ range here: TS1320 is a semantic await/type
+ * diagnostic even though it shares that numeric range. This set is derived from
+ * the parser and scanner's Diagnostics references in the TypeScript 6.0.3
+ * bundled compiler. Keep the set explicit so a semantic diagnostic cannot be
+ * mislabeled as a syntax failure just because the compiler assigned it a 1xxx
+ * code.
+ *
+ * @type {Set<string>}
+ */
+const SYNTAX_DIAGNOSTIC_CODES = new Set(
+  [
+    1002, 1003, 1005, 1007, 1010, 1011, 1012, 1034, 1068, 1069, 1109, 1110, 1121, 1124, 1125,
+    1126, 1127, 1128, 1129, 1130, 1131, 1132, 1134, 1135, 1136, 1137, 1138, 1139, 1140,
+    1142, 1144, 1145, 1146, 1160, 1161, 1177, 1178, 1179, 1180, 1181, 1198, 1199, 1209,
+    1223, 1228, 1260, 1351, 1352, 1353, 1357, 1359, 1369, 1381, 1382, 1385, 1386, 1387,
+    1388, 1389, 1390, 1433, 1434, 1435, 1436, 1437, 1438, 1439, 1440, 1441, 1442, 1443,
+    1472, 1477, 1478, 1487, 1488, 1489, 1490, 1499, 1500, 1501, 1502, 1503, 1504, 1505,
+    1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, 1515, 1516, 1517, 1518, 1519,
+    1520, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1528, 1529, 1530, 1531, 1532, 1533,
+    1534, 1535, 1536, 1537, 1538,
+  ].map((code) => `TS${code}`),
+);
+
+/**
+ * Files carrying parser/scanner diagnostics. This is the syntax projection only;
+ * the gate's hard-fail policy intentionally remains broader (see hardFailFiles).
  *
  * @param {TscErrorEntry[]} errors
  * @returns {string[]}
  */
 export function syntaxBrokenFiles(errors) {
+  /** @type {Set<string>} */
+  const files = new Set();
+  for (const e of errors) {
+    if (SYNTAX_DIAGNOSTIC_CODES.has(e.code)) files.add(e.file ?? '(unattributed)');
+  }
+  return [...files].sort();
+}
+
+/**
+ * Files carrying the gate's historical TS1xxx hard-fail diagnostics.
+ *
+ * A TS1xxx diagnostic still fails the baseline gate regardless of the baseline,
+ * including semantic diagnostics such as TS1320. Keep this separate from
+ * syntaxBrokenFiles so the failure policy does not misclassify the diagnostic.
+ *
+ * @param {TscErrorEntry[]} errors
+ * @returns {string[]}
+ */
+function hardFailFiles(errors) {
   /** @type {Set<string>} */
   const files = new Set();
   for (const e of errors) {
@@ -2243,7 +2287,9 @@ export async function runTscBaselineGate({
     process.exit(1);
   }
 
-  const brokenFiles = syntaxBrokenFiles(errors);
+  // Keep the verdict's historical TS1xxx hard-fail policy separate from the
+  // syntax-only projection exposed by syntaxBrokenFiles (TS1320 is semantic).
+  const brokenFiles = hardFailFiles(errors);
   const currentByFile = countByFile(errors);
 
   let baseline;
