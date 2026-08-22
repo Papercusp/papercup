@@ -945,6 +945,28 @@ describe('the repository itself (real-tree assertion)', () => {
     expect(code, `check-lint-guard-reachability failed:\n${out}`).toBe(0);
   });
 
+  it('keeps the --json report complete and parseable through a downstream pipe', () => {
+    // A large stdout payload followed by process.exit() is truncated at the pipe's
+    // first flush (8,192 bytes here), so this exercises the actual consumer shape
+    // rather than only checking a TTY or file redirect (EI-19455452259628697).
+    const probe = spawnSync(
+      'bash',
+      [
+        '-o',
+        'pipefail',
+        '-c',
+        `node ${SCRIPT} --json | node -e 'let input=""; process.stdin.on("data", chunk => (input += chunk)); process.stdin.on("end", () => { try { const report = JSON.parse(input); console.log(JSON.stringify({ bytes: input.length, rows: report.rows.length })); } catch (error) { console.error(error.message); process.exitCode = 1; } });'`,
+      ],
+      { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 180_000, maxBuffer: 64 * 1024 * 1024 },
+    );
+    const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`;
+    expect(probe.status, output).toBe(0);
+
+    const result = JSON.parse(probe.stdout as string) as { bytes: number; rows: number };
+    expect(result.bytes).toBeGreaterThan(8192);
+    expect(result.rows).toBeGreaterThan(0);
+  });
+
   it('keeps the acknowledged set at or under its watermark', () => {
     // Shrink-only. Growing this set is how the rot would quietly return, so the
     // ceiling is asserted here as well as inside the script.
