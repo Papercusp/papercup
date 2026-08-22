@@ -50,6 +50,7 @@ import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
   fleetSlugFromName,
+  getFleetHeadcountTarget,
   getFleetScheme,
   releaseFleetLaunchSlot,
   setFleetLeader,
@@ -1226,6 +1227,15 @@ export default defineTool({
       .describe(
         "psu --context-size: initial-context size variant for EVERY member — 'full' (~180k, whole tool catalog loaded up-front, native soft-trim OFF) or 'trimmed' (~50k, core spine + the client's native soft-trim). Omit for each backend's native default (byte-identical to no flag).",
       ),
+    compactionLimit: z
+      .number()
+      .int()
+      .min(20_000)
+      .max(900_000)
+      .optional()
+      .describe(
+        'psu --compaction-limit for EVERY member. A persisted fleet headcount profile reuses this value for launch, respawn, and governor restoration instead of reconstructing it per wave.',
+      ),
     brain: z.boolean().optional().describe('psu --brain: launch each member in brain mode.'),
     addDir: z
       .array(z.string())
@@ -1292,6 +1302,38 @@ export default defineTool({
     // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
     // member; otherwise the launch session's workspace (never the '*' wildcard).
     const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
+    const fleetSlug = fleetSlugFromName(args.name);
+    // D-008 (WI-40321): the headcount target is also the fleet's durable,
+    // homogeneous launch profile. A later launch/top-up supplies only the fleet
+    // name and any deliberate overrides; omitted values come from this one row.
+    // Read it before resolving agent/model/plan so every downstream validation
+    // and command composer sees the same effective inputs as the governor.
+    let persistedHeadcountProfile: Awaited<ReturnType<typeof getFleetHeadcountTarget>> = null;
+    try {
+      persistedHeadcountProfile = await getFleetHeadcountTarget(workspaceId, fleetSlug);
+    } catch (e: any) {
+      return err(
+        `Could not read the persisted launch profile for fleet \`${fleetSlug}\`: ${e?.message ?? e}. ` +
+          'Refusing to reconstruct member settings ad hoc.',
+      );
+    }
+    if (persistedHeadcountProfile) {
+      const profile = persistedHeadcountProfile.config;
+      const profileModel = composeModelSpec(profile.model, profile.effort);
+      args.count ??= persistedHeadcountProfile.target;
+      args.plan ??= profile.plan;
+      args.harness ??= profile.harness;
+      args.agent ??= profile.agent;
+      args.model ??= profileModel;
+      args.account ??= profile.account;
+      args.headless ??= profile.headless ?? true;
+      args.carry ??= profile.carry;
+      args.role ??= profile.role;
+      args.launchContext ??= profile.brief ?? profile.launchContext;
+      args.contextSize ??= profile.contextSize;
+      args.compactionLimit ??= profile.compactionLimit;
+      args.extraArgs ??= profile.extraArgs;
+    }
     // DRAIN is a durable caller overlay, not a fleet argument. Read the mode row and
     // its owner-scoped instruction fact once, then thread the bounded result through
     // every member/leader composer below so no launch path silently drops the mode.
@@ -1496,7 +1538,6 @@ export default defineTool({
 
     // Ensure the fleet (idempotent) with the caller as owner + leader, then label the
     // caller's presence — same path as fleet:create.
-    const fleetSlug = fleetSlugFromName(args.name);
     let leaderRole = 'leader';
     let priorLaunchTransaction: FleetLaunchTransaction | null = null;
     // NOTE ON THE NAME `P-009` IN THIS FILE: the comments below about the compaction-cap
@@ -2704,6 +2745,7 @@ export default defineTool({
       feature: args.feature?.trim() || undefined,
       profile: args.profile?.trim() || undefined,
       contextSize: args.contextSize,
+      compactionLimit: args.compactionLimit,
       carry: args.carry,
       claimKinds: args.claimKinds,
       brain: args.brain || undefined,
@@ -3322,6 +3364,13 @@ export default defineTool({
         // consumers (hooks, scorers, the persona disclosure) can key on them.
         headless: !!args.headless,
         carry: carryMode,
+        headcountProfile: persistedHeadcountProfile
+          ? {
+              applied: true,
+              target: persistedHeadcountProfile.target,
+              config: persistedHeadcountProfile.config,
+            }
+          : null,
         // P-004: the resolved per-member config (model/account/carry/compactionLimit/claimKinds),
         // null for a homogeneous (no-`members`) launch. `carry` here is honored per member; the
         // fleet-wide `carry` field above is the default the unspecified members fell through to.
