@@ -4530,6 +4530,7 @@ impl App {
                 query,
                 requested_cursor,
                 append,
+                failed,
                 listings,
                 next_cursor,
                 total,
@@ -4542,7 +4543,17 @@ impl App {
                     kind == CUPBOARD_KINDS[self.cupboard_kind] && query == self.cupboard_query;
                 let active_cursor = !append || requested_cursor == self.cupboard_next_cursor;
                 if active_filter && active_cursor {
-                    if append {
+                    if failed {
+                        self.cupboard_loading = false;
+                        self.cupboard_loading_more = false;
+                        if !append {
+                            self.cupboard.clear();
+                            self.cupboard_next_cursor = None;
+                            self.cupboard_total = None;
+                            self.cupboard_kind_facets.clear();
+                            self.cupboard_sel = 0;
+                        }
+                    } else if append {
                         let before = self.cupboard.len();
                         let mut seen = self
                             .cupboard
@@ -4563,14 +4574,16 @@ impl App {
                         self.cupboard = listings;
                         self.cupboard_next_cursor = next_cursor;
                     }
-                    self.cupboard_total = total;
-                    self.cupboard_kind_facets = kind_facets;
-                    self.cupboard_loading = false;
-                    self.cupboard_loading_more = false;
-                    if self.cupboard_sel >= self.cupboard.len() {
-                        self.cupboard_sel = self.cupboard.len().saturating_sub(1);
+                    if !failed {
+                        self.cupboard_total = total;
+                        self.cupboard_kind_facets = kind_facets;
+                        self.cupboard_loading = false;
+                        self.cupboard_loading_more = false;
+                        if self.cupboard_sel >= self.cupboard.len() {
+                            self.cupboard_sel = self.cupboard.len().saturating_sub(1);
+                        }
+                        self.last_error = None;
                     }
-                    self.last_error = None;
                 }
                 Action::Render
             }
@@ -9635,6 +9648,7 @@ mod tests {
             query: String::new(),
             requested_cursor: None,
             append: false,
+            failed: false,
             listings: vec![listing],
             next_cursor: Some("v1:50:L1".into()),
             total: Some(101),
@@ -9657,11 +9671,33 @@ mod tests {
                 ..
             } if cursor == "v1:50:L1"
         ));
+        // A transport failure is not server exhaustion: keep the cursor and
+        // exact summary so `n` can retry, while clearing only the spinner.
         a.update(Event::CupboardListings {
             kind: "all".into(),
             query: String::new(),
             requested_cursor: Some("v1:50:L1".into()),
             append: true,
+            failed: true,
+            listings: vec![],
+            next_cursor: None,
+            total: None,
+            kind_facets: std::collections::BTreeMap::new(),
+        });
+        assert_eq!(a.cupboard.len(), 1);
+        assert_eq!(a.cupboard_next_cursor.as_deref(), Some("v1:50:L1"));
+        assert_eq!(a.cupboard_total, Some(101));
+        assert!(!a.cupboard_loading_more);
+        assert!(matches!(
+            a.update(key('n', KeyModifiers::NONE)),
+            Action::FetchCupboard { append: true, .. }
+        ));
+        a.update(Event::CupboardListings {
+            kind: "all".into(),
+            query: String::new(),
+            requested_cursor: Some("v1:50:L1".into()),
+            append: true,
+            failed: false,
             listings: vec![CupboardListing {
                 id: "L2".into(),
                 listing_kind: "plugin".into(),
@@ -9683,6 +9719,7 @@ mod tests {
             query: String::new(),
             requested_cursor: None,
             append: false,
+            failed: false,
             listings: vec![],
             next_cursor: None,
             total: Some(0),

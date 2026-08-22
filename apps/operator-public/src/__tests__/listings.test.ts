@@ -287,6 +287,7 @@ describe('Cupboard /listings — authoritative pagination summary', () => {
         id: 'deep-app',
         listing_kind: 'app',
         title: 'Deep Needle App',
+        project_ref: 'deep/project',
         last_activity_at: 1,
       }),
       makeListingRow({
@@ -337,6 +338,18 @@ describe('Cupboard /listings — authoritative pagination summary', () => {
     expect(searchBody.results.map((row) => row.id)).toEqual(['deep-app']);
     expect(searchBody.total).toBe(1);
     expect(searchBody.kind_facets.app).toBe(1);
+
+    const project = await api.request('/listings?project=deep%2Fproject&limit=100', {}, env);
+    const projectBody = await project.json() as typeof firstBody;
+    expect(projectBody.results.map((row) => row.id)).toEqual(['deep-app']);
+    expect(projectBody.total).toBe(1);
+    expect(projectBody.kind_facets.app).toBe(1);
+
+    const claimed = await api.request('/listings?claim=claimed&limit=100', {}, env);
+    const claimedBody = await claimed.json() as typeof firstBody;
+    expect(claimedBody.results).toEqual([]);
+    expect(claimedBody.total).toBe(0);
+    expect(Object.values(claimedBody.kind_facets).every((count) => count === 0)).toBe(true);
   });
 
   it('walks equal-timestamp rows exactly once with the composite cursor', async () => {

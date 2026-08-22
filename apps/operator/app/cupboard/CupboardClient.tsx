@@ -377,6 +377,7 @@ export default function CupboardClient() {
   const browseOthers = hiveFirstBrowse
     ? listings.filter((l) => listingKindOf(l) !== 'harness')
     : viewListings;
+  const loadedViewCount = hive ? hiveListings.length : viewListings.length;
   const activeViewLabel = toolsView && !hive
     ? 'Tool discovery'
     : hive
@@ -473,7 +474,7 @@ export default function CupboardClient() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(92px, 1fr))', gap: 10, minWidth: 300, flex: '0 1 360px' }}>
             <MetricTile
               label={toolsView && !hive ? 'Mode' : exactViewTotal == null ? 'Loaded' : 'Listings'}
-              value={toolsView && !hive ? 'Tools' : String(exactViewTotal ?? (hive ? hiveListings.length : listings.length))}
+              value={toolsView && !hive ? 'Tools' : String(exactViewTotal ?? loadedViewCount)}
             />
             <MetricTile
               label={exactFacetCount == null ? 'Loaded facets' : 'Facets'}
@@ -872,8 +873,8 @@ export default function CupboardClient() {
         >
           <span>
             {exactViewTotal == null
-              ? `${hive ? hiveListings.length : listings.length} loaded`
-              : `Showing ${hive ? hiveListings.length : listings.length} of ${exactViewTotal}`}
+              ? `${loadedViewCount} loaded`
+              : `Showing ${loadedViewCount} of ${exactViewTotal}`}
           </span>
           <button
             type="button"

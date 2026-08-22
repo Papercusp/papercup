@@ -11,8 +11,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-const { logs } = vi.hoisted(() => ({
+const { logs, filterState } = vi.hoisted(() => ({
   logs: { events: null as unknown[] | null, loading: false, error: null as string | null },
+  filterState: { options: null as Record<string, unknown> | null },
 }));
 
 vi.mock('./useHarnessData', () => ({
@@ -28,13 +29,16 @@ vi.mock('./useHarnessData', () => ({
 // (rows unchanged, no active chips) so this test owns only the panel routing.
 vi.mock('../../harness/filters', () => ({
   ColumnFilterBar: () => <div data-testid="filter-bar" />,
-  useColumnFilters: (_cols: unknown, rows: unknown[]) => ({
-    rows,
-    controller: {},
-    activeChips: [],
-    hasActive: false,
-    clearAll: vi.fn(),
-  }),
+  useColumnFilters: (_cols: unknown, rows: unknown[], options: Record<string, unknown>) => {
+    filterState.options = options;
+    return {
+      rows,
+      controller: {},
+      activeChips: [],
+      hasActive: false,
+      clearAll: vi.fn(),
+    };
+  },
 }));
 
 // RichGrid (grid-core) renders rows / its `empty` slot — stub to a marker that
@@ -63,6 +67,7 @@ beforeEach(() => {
   logs.events = null;
   logs.loading = false;
   logs.error = null;
+  filterState.options = null;
 });
 afterEach(() => cleanup());
 
@@ -121,6 +126,11 @@ describe('<AdvLogsPanel />', () => {
     logs.events = [ev({ msg: 'a' }), ev({ msg: 'b' })];
     render(<AdvLogsPanel {...mkProps({ harnessSlug: 'h' })} />);
     expect(screen.getByTestId('grid').textContent).toBe('2 rows');
+    expect(filterState.options?.countEvidence).toEqual({
+      kind: 'window',
+      count: 2,
+      window: 'latest 300 events',
+    });
   });
 
   it('renders the empty slot when there are no events', () => {

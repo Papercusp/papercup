@@ -185,6 +185,7 @@ pub enum Event {
         query: String,
         requested_cursor: Option<String>,
         append: bool,
+        failed: bool,
         listings: Vec<crate::models::CupboardListing>,
         next_cursor: Option<String>,
         total: Option<usize>,

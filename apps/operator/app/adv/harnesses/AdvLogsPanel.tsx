@@ -63,6 +63,8 @@ export function messageOf(e: HarnessLogEvent): string {
 
 type LogRow = { id: string; ev: HarnessLogEvent };
 
+export const RECENT_LOG_WINDOW_SIZE = 300;
+
 export default function AdvLogsPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const { events, loading, error, refresh } = useHarnessLogs(slug);
@@ -130,7 +132,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       : {
           kind: 'window',
           count: rows.length,
-          window: 'the latest up to 300 log events',
+          window: `latest ${RECENT_LOG_WINDOW_SIZE} events`,
         },
     [events, loading, rows.length],
   );

@@ -2485,9 +2485,8 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, k)| {
             let count = if *k == "all" {
-                (!app.cupboard_kind_facets.is_empty()).then(|| {
-                    app.cupboard_kind_facets.values().sum::<usize>()
-                })
+                (!app.cupboard_kind_facets.is_empty())
+                    .then(|| app.cupboard_kind_facets.values().sum::<usize>())
             } else {
                 app.cupboard_kind_facets.get(*k).copied()
             };
@@ -4421,10 +4420,8 @@ mod tests {
         }];
         app.cupboard_total = Some(137);
         app.cupboard_next_cursor = Some("v1:50:deep".into());
-        app.cupboard_kind_facets = std::collections::BTreeMap::from([
-            ("harness".into(), 100),
-            ("plugin".into(), 37),
-        ]);
+        app.cupboard_kind_facets =
+            std::collections::BTreeMap::from([("harness".into(), 100), ("plugin".into(), 37)]);
         let text = render(&app, 240, 18);
         assert!(text.contains("[all:137]")); // exact corpus count in the active filter
         assert!(text.contains("1/137"));

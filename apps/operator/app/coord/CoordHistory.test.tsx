@@ -49,7 +49,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-import CoordHistory from './CoordHistory';
+import CoordHistory, { coordHistoryWindowLabel } from './CoordHistory';
 
 function renderAt(searchParams = '') {
   return render(<CoordHistory />, { wrapper: withNuqsTestingAdapter({ searchParams }) });
@@ -76,7 +76,7 @@ describe('<CoordHistory />', () => {
     await waitFor(() => expect(screen.getByText('needs a human')).toBeTruthy());
     expect(screen.getByText('blocked')).toBeTruthy();
     expect(screen.getByText('fyi')).toBeTruthy();
-    expect(screen.getByText('2 events')).toBeTruthy();
+    expect(screen.getByText('2 latest matches · up to 200')).toBeTruthy();
   });
 
   it('surfaces the plan badge on events carrying a plan_slug', async () => {
@@ -84,6 +84,13 @@ describe('<CoordHistory />', () => {
     feed.total = 2;
     renderAt();
     await waitFor(() => expect(screen.getByText('plan: plan-x')).toBeTruthy());
+  });
+});
+
+describe('coordHistoryWindowLabel', () => {
+  it('changes the declared window instead of implying a corpus total', () => {
+    expect(coordHistoryWindowLabel(40, 50)).toBe('40 latest matches · up to 50');
+    expect(coordHistoryWindowLabel(40, 200)).toBe('40 latest matches · up to 200');
   });
 });
 

@@ -151,9 +151,18 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "cupboard",
     label: "Cupboard web and TUI",
     classification: "latent-defect",
-    evidence: "window",
+    evidence: "corpus",
     pageCap: 100,
-    sourcePaths: ["apps/operator/app/cupboard/CupboardClient.tsx"],
+    sourcePaths: [
+      "apps/operator-public/src/db.ts",
+      "packages/operator-core/lib/endpoint-route/routes/cupboard.ts",
+      "apps/operator/app/cupboard/CupboardClient.tsx",
+      "apps/tui/src/app.rs",
+    ],
+    behaviorGuard: {
+      planItem: "P-012",
+      testPath: "apps/operator-public/src/__tests__/listings.test.ts",
+    },
   },
   {
     id: "recent-logs",
@@ -164,13 +173,21 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     columnFilterCalls: {
       "apps/operator/app/adv/harnesses/AdvLogsPanel.tsx": 1,
     },
+    behaviorGuard: {
+      planItem: "P-013",
+      testPath: "apps/operator/app/adv/harnesses/AdvLogsPanel.test.tsx",
+    },
   },
   {
     id: "git-history",
     label: "Git history",
     classification: "window-disclosure",
     evidence: "window",
-    sourcePaths: ["apps/operator/app/adv/harnesses/AdvGitPanel.tsx"],
+    sourcePaths: ["apps/operator/app/adv/harnesses/AdvGitGraphPanel.tsx"],
+    behaviorGuard: {
+      planItem: "P-013",
+      testPath: "apps/operator/app/adv/harnesses/AdvGitGraphPanel.test.tsx",
+    },
   },
   {
     id: "coordination-history",
@@ -179,9 +196,14 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     evidence: "window",
     sourcePaths: [
       "apps/operator-vite/src/components/adv/AdvConversationsTab.tsx",
+      "apps/operator/app/coord/CoordHistory.tsx",
     ],
     columnFilterCalls: {
       "apps/operator-vite/src/components/adv/AdvConversationsTab.tsx": 1,
+    },
+    behaviorGuard: {
+      planItem: "P-013",
+      testPath: "apps/operator/app/coord/CoordHistory.test.tsx",
     },
   },
   {
@@ -242,7 +264,6 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
  */
 export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
   "agent-runs",
-  "cupboard",
   "learning-improve",
   "learning-retain",
 ] as const;

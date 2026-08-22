@@ -423,13 +423,17 @@ export async function getHarnessesByGithubRepoIds(
 
 export interface ListOpts {
   limit?: number;
-  cursor?: number | ListingCursor | null;
+  cursor?: number | null;          // legacy/internal timestamp pagination
   search?: string;
   claim_status?: 'unclaimed' | 'claimed';
   /** Filter to one storefront kind (migration 004). Omit for all kinds. */
   kind?: ListingKind;
   /** Filter to one project remote (D-008 project rollup). */
   project_ref?: string;
+}
+
+export interface PublicListOpts extends Omit<ListOpts, 'cursor'> {
+  cursor?: number | ListingCursor | null;
 }
 
 /**
@@ -488,7 +492,7 @@ interface ListPredicateOptions {
 
 /** Compile the one normalized public-list predicate used by rows + summary. */
 function compileHarnessListPredicate(
-  opts: ListOpts,
+  opts: PublicListOpts,
   config: ListPredicateOptions,
 ): { sql: string; binds: unknown[] } {
   const where: string[] = [
@@ -544,13 +548,30 @@ export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<Har
   // unlisted always — and non-approved always (knowledge-packs D-007: pending/
   // rejected policy-kind listings are invisible to public browse; the
   // publisher reads their own via GET /:id with auth, operators via /admin).
-  const predicate = compileHarnessListPredicate(opts, {
-    includeKind: true,
-    includeCursor: true,
-    excludeBanned: false,
-  });
-  const binds = [...predicate.binds];
-  const sql = `SELECT h.* FROM harnesses h WHERE ${predicate.sql} ORDER BY h.last_activity_at DESC NULLS LAST, h.id ASC LIMIT ?`;
+  const where: string[] = ['unlisted_at IS NULL', `review_status = 'approved'`];
+  const binds: unknown[] = [];
+  if (opts.kind) {
+    where.push('listing_kind = ?');
+    binds.push(opts.kind);
+  }
+  if (opts.project_ref) {
+    where.push('project_ref = ?');
+    binds.push(opts.project_ref);
+  }
+  if (opts.cursor != null) {
+    where.push('(last_activity_at IS NULL OR last_activity_at < ?)');
+    binds.push(opts.cursor);
+  }
+  if (opts.search) {
+    where.push('(title LIKE ? OR description LIKE ? OR github_owner LIKE ? OR github_name LIKE ?)');
+    const q = `%${opts.search}%`;
+    binds.push(q, q, q, q);
+  }
+  if (opts.claim_status) {
+    where.push('claim_status = ?');
+    binds.push(opts.claim_status);
+  }
+  const sql = `SELECT * FROM harnesses WHERE ${where.join(' AND ')} ORDER BY last_activity_at DESC NULLS LAST, id ASC LIMIT ?`;
   binds.push(limit);
   const stmt = db.prepare(sql);
   // .bind is variadic, spread the binds in one call
@@ -565,7 +586,7 @@ export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<Har
  */
 export async function listPublicHarnessesPage(
   db: D1Database,
-  opts: ListOpts,
+  opts: PublicListOpts,
 ): Promise<HarnessListPage> {
   const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
   const predicate = compileHarnessListPredicate(opts, {
@@ -597,7 +618,7 @@ export async function listPublicHarnessesPage(
  */
 export async function summarizePublicHarnesses(
   db: D1Database,
-  opts: ListOpts,
+  opts: PublicListOpts,
 ): Promise<HarnessListSummary> {
   const population = compileHarnessListPredicate(opts, {
     includeKind: false,

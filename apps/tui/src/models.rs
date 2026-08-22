@@ -3217,8 +3217,7 @@ mod tests {
         assert_eq!(page.total, Some(137));
         assert_eq!(page.kind_facets.get("plugin"), Some(&37));
 
-        let legacy: CupboardListingsResponse =
-            serde_json::from_str(r#"{"listings":[]}"#).unwrap();
+        let legacy: CupboardListingsResponse = serde_json::from_str(r#"{"listings":[]}"#).unwrap();
         assert!(legacy.next_cursor.is_none());
         assert!(legacy.total.is_none());
         assert!(legacy.kind_facets.is_empty());

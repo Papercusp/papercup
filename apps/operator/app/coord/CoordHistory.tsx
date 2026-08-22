@@ -53,6 +53,15 @@ const SOURCE_BADGE: Record<HistoryItem['source'], string> = {
   handoff: styles.sourceBadgeHandoff,
 };
 
+export const COORD_HISTORY_WINDOW_SIZE = 200;
+
+export function coordHistoryWindowLabel(
+  shown: number,
+  limit = COORD_HISTORY_WINDOW_SIZE,
+): string {
+  return `${shown.toLocaleString('en-US')} latest matches · up to ${limit.toLocaleString('en-US')}`;
+}
+
 function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
 }
@@ -72,7 +81,7 @@ export default function CoordHistory() {
       kinds: sources && sources.length < ALL_SOURCES.length ? sources : undefined,
       planSlug: planSlug || undefined,
       owner: owner || undefined,
-      limit: 200,
+      limit: COORD_HISTORY_WINDOW_SIZE,
     },
     staleTime: 30_000,
   });
@@ -139,7 +148,7 @@ export default function CoordHistory() {
         </label>
         {!historySync.loading && (
           <span className={styles.resultCount}>
-            {items.length} events
+            {coordHistoryWindowLabel(items.length)}
           </span>
         )}
       </div>

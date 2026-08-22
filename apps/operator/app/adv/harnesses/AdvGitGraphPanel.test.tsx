@@ -6,7 +6,7 @@
 // matchesCommit), which are extracted + exported and tested branch-by-branch.
 
 import { describe, expect, it, vi } from 'vitest';
-import { formatAge, refClass, refLabel, matchesCommit } from './AdvGitGraphPanel';
+import { formatAge, gitWindowLabel, refClass, refLabel, matchesCommit } from './AdvGitGraphPanel';
 import type { LaidOutCommit } from '@papercusp/git-graph';
 
 function commit(over: Partial<LaidOutCommit> = {}): LaidOutCommit {
@@ -80,5 +80,13 @@ describe('matchesCommit', () => {
   });
   it('returns false when the needle is nowhere in the haystack', () => {
     expect(matchesCommit(c, 'zzz-nope')).toBe(false);
+  });
+});
+
+describe('gitWindowLabel', () => {
+  it('changes the declared latest-commit window with the selected limit', () => {
+    expect(gitWindowLabel(100)).toBe('latest 100 commits');
+    expect(gitWindowLabel(300)).toBe('latest 300 commits');
+    expect(gitWindowLabel(1_000)).toBe('latest 1,000 commits');
   });
 });

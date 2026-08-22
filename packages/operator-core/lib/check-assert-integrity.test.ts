@@ -18,8 +18,8 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs lint script, no type declarations. Keep this import on ONE line: TypeScript reports TS7016 on the module-specifier line, so a multiline import moves the error beyond this directive.
 // prettier-ignore
+// @ts-ignore -- plain .mjs lint script, no type declarations. MUST immediately precede the import: TypeScript reports TS7016 on the module-specifier line.
 import { scan, scriptsInScope, ROOT, orphanedAsserts, discardedReadings } from '../../../scripts/check-assert-integrity.mjs';
 
 type Finding = { file: string; line: number; rule: string; msg: string };

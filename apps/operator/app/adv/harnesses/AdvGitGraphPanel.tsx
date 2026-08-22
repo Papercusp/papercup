@@ -101,6 +101,10 @@ export function matchesCommit(commit: LaidOutCommit, needle: string): boolean {
   return haystack.includes(needle);
 }
 
+export function gitWindowLabel(limit: number): string {
+  return `latest ${limit.toLocaleString('en-US')} commits`;
+}
+
 export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const scope = `harness:${slug}`;
@@ -359,10 +363,15 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
           triggerClassName="pc-adv-gitgrid__limit"
           value={String(limit)}
           onChange={(value) => setLimit(Number(value))}
-          ariaLabel="Commit limit"
-          options={LIMITS.map((n) => ({ value: String(n), label: String(n) }))}
+          ariaLabel="Git history window"
+          options={LIMITS.map((n) => ({ value: String(n), label: gitWindowLabel(n) }))}
         />
-        <span className="pc-adv-gitgrid__count">{visible.length}</span>
+        <span
+          className="pc-adv-gitgrid__count"
+          aria-label={`${visible.length} matches in ${gitWindowLabel(limit)}`}
+        >
+          {visible.length} · {gitWindowLabel(limit)}
+        </span>
         <button
           type="button"
           className="pc-adv-gitgrid__refresh"
