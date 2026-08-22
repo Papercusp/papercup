@@ -757,10 +757,33 @@ export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
 // server would have completed, which is the failure this constant exists to prevent.
 export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 900_000;
 
+// EI-21106949380687332: a FOREGROUND-capable tool (testing:run, build:typecheck,
+// capability:bash, capability:inspect, code:run) self-clamps its OWN command timeout to
+// FOREGROUND_TIMEOUT_CEILING_MS (50s — packages/operator-core/lib/agent-tools/capability/
+// foreground-transport-cap.ts) precisely so it can return an actionable "re-run detached"
+// hint (with the run's own id) BEFORE the MCP transport's ~55s hard cap (MCP_TRANSPORT_CAP_MS)
+// kills the call outright. That design was defeated here: a caller's `timeoutMs` ARGUMENT only
+// bounds the SERVER-side handler — it has no effect on THIS CLIENT's own request deadline,
+// which fell through to the flat PTOOL_CALL_TOOL_TIMEOUT_MS (30s) regardless of what was asked
+// for. So `testing:run { timeoutMs: 240000 }` on a genuinely slow file was abandoned by ptool at
+// 30s — before the tool's own 50s self-timeout, let alone the transport's 55s hard cap, could
+// ever return — surfacing as an opaque MCP -32001 with no runId delivered, even though the
+// handler was executing exactly as designed and its response already carries one. Give every
+// tool that applies this clamp (see foreground-transport-cap.test.ts's own enumeration) a client
+// deadline that outlives the transport's hard cap with margin, so ptool always sees whichever
+// server-side outcome fires first — the tool's actionable hint, or (rarer) the transport's own
+// cutoff — instead of pre-empting both.
+export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
+
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
+  ['testing:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
 ]);
 
 /**

@@ -10,6 +10,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { createMcpProxy } from './mcp-proxy/proxy';
 import {
+  MCP_TRANSPORT_CAP_MS,
+} from '@papercusp/operator-core/lib/agent-tools/capability/foreground-transport-cap';
+import {
   parseArgs,
   serviceOf,
   groupTools,
@@ -26,6 +29,8 @@ import {
   listAllTools,
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
+  PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  timeoutForTool,
   isLoopPressureShed,
   callToolWithPressureRetry,
   connectWithLocalRetry,
@@ -508,6 +513,52 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
 
     await expect(listAllTools(client, { timeoutMs: 0 })).resolves.toEqual([]);
     expect(client.listTools).toHaveBeenCalledWith({}, undefined);
+  });
+});
+
+// EI-21106949380687332 — a FOREGROUND-capable tool (testing:run, build:typecheck,
+// capability:bash, capability:inspect, code:run) self-clamps its own server-side command
+// timeout to FOREGROUND_TIMEOUT_CEILING_MS (50s, below the MCP transport's ~55s hard cap)
+// precisely so it can return an actionable "re-run detached" hint — with the run's own id —
+// instead of being killed by the transport outright. ptool's CLIENT-side request deadline
+// used to be the flat PTOOL_CALL_TOOL_TIMEOUT_MS (30s) for every tool regardless of that
+// design, so a caller-supplied `timeoutMs` argument (which only bounds the SERVER handler)
+// had no effect: ptool gave up and discarded the response before the handler could ever
+// return it. These pin the fix — the whole class of foreground-capable tools, not just
+// testing:run — and the CLASS INVARIANT that would have caught the original miss.
+describe('ptool timeoutForTool — foreground-capable tools outlive the MCP transport cap (EI-21106949380687332)', () => {
+  const FOREGROUND_CAPABLE_TOOLS = [
+    'testing:run',
+    'build:typecheck',
+    'capability:bash',
+    'capability:inspect',
+    'code:run',
+  ];
+
+  it.each(FOREGROUND_CAPABLE_TOOLS)('%s gets a client deadline beyond the transport cap, not the flat 30s default', (name) => {
+    const timeout = timeoutForTool(name, {});
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('honours the same override when reached via tools:invoke (the sanctioned deferred-tool fallback)', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'testing:run' })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+
+  it('a caller-supplied `timeoutMs` tool ARGUMENT does not, by itself, widen the client deadline', () => {
+    // The argument only ever bounded the SERVER handler; the whole point of this fix is that
+    // the CLIENT deadline must already be wide enough on its own, independent of what the
+    // caller asked the server to do.
+    expect(timeoutForTool('testing:run', { timeoutMs: 240_000 })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+
+  it('an ordinary tool not on the long-running list keeps the flat 30s ceiling', () => {
+    expect(timeoutForTool('work_items:list', {})).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('the override genuinely covers the transport cap with real margin (not a bare inequality)', () => {
+    expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS - MCP_TRANSPORT_CAP_MS).toBeGreaterThanOrEqual(3_000);
   });
 });
 
