@@ -727,6 +727,12 @@ describe('memberLaunchCommand', () => {
     expect(tool).toBeTruthy();
   });
 
+  it('registers outside the ambient workspace transaction for long-running launches', () => {
+    const metadata = tool as { requirePrincipal?: boolean; skipWorkspaceTx?: boolean };
+    expect(metadata.requirePrincipal).toBe(false);
+    expect(metadata.skipWorkspaceTx).toBe(true);
+  });
+
   describe('defaultMemberAccountRouting — omission is the system account everywhere', () => {
     it('defaults an un-pinned member to "default" on macOS', () => {
       expect(defaultMemberAccountRouting(undefined, 'darwin')).toBe('default');
