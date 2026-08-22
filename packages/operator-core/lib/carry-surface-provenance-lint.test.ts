@@ -417,6 +417,20 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(lintCarrySurfaceProvenance('Next: post evidence to WI-5672 and message the fleet leader').flagged).toBe(false);
   });
 
+  it('EI-21165322848724914: does NOT flag a conditional future plan that mentions a past-tense handoff', () => {
+    // Verbatim from the reported canonical next field. "handed off" is inside the
+    // future wake's "Verify whether ..." clause, so it is not a completed action claim.
+    const next =
+      'At the next hourly fire begin strictly after 2026-08-22T14:44:14.113Z. Re-orient; read goals:get, ' +
+      'RELEASE-READINESS, EI-21165017285995198 provisional/audit state, and trend exclusion. Verify whether ' +
+      'the subject re-armed its loop around the GOAL outcome, restored a launched-leader standing DRAIN fleet, ' +
+      'handed off its plan-fleet leadership, and woke/redirected WI-40537. Prove new subject/child execution ' +
+      'from sessions:list + tool_invocations; rerun the exact session_turn_parts native-edit classifier with repo ' +
+      'positive control, bounded Bash write legs, three-source owner-report union, launch/settings sequence, ' +
+      'activity reference control, modes/goal-stamped items, five fleets, federation verdict bank, and WI-40086/pipeline owner.';
+    expect(lintCarrySurfaceProvenance(next)).toEqual({ flagged: false, matches: [] });
+  });
+
   it('EI-18226077402946717: an action-claim is NOT laundered by a [self-imposed] directive tag on the same line', () => {
     // A source tag attributes the DIRECTIVE that ordered the action; it does not prove
     // the action happened — so the action-claim still flags (only a [turn:…] ref clears it).

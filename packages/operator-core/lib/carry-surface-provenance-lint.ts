@@ -296,6 +296,27 @@ const UNVERIFIED_ACTION_CLAIM_RE =
   /\b(?:posted|messaged|commented|notified|pinged|dispatched|replied|escalated|sent|handed(?:\s+it)?\s+off|reached\s+out|wrote\s+to)\b[^\n]{0,60}?(?:\b(?:WI|EI|F)-\d|\bsu-[0-9a-f]{4}|\bposts?\s*\d|\bfleet\s+leader\b|\bthe\s+leader\b|\bthe\s+queen\b|\bthe\s+fleet\b|\bpeer\b|\bmsg[\s-])/i;
 
 /**
+ * A future/conditional verification plan can mention a past-tense action without
+ * claiming that the writer performed it. For example, "Verify whether the subject
+ * handed off ... WI-40537" is a question for the next wake, not a completed handoff
+ * report. Keep this exemption tied to the same clause as `whether`/`if`; a direct
+ * "I handed off ..." claim must continue to trip the action lint.
+ */
+const CONDITIONAL_ACTION_CLAUSE_RE = /\b(?:whether|if)\b[^.!?;\n]{0,120}$/i;
+
+function isConditionalActionMention(line: string, match: RegExpExecArray): boolean {
+  if (match.index === undefined) return false;
+  const prefix = line.slice(0, match.index);
+  const lastClauseBoundary = Math.max(
+    prefix.lastIndexOf('.'),
+    prefix.lastIndexOf('!'),
+    prefix.lastIndexOf('?'),
+    prefix.lastIndexOf(';'),
+  );
+  return CONDITIONAL_ACTION_CLAUSE_RE.test(prefix.slice(lastClauseBoundary + 1));
+}
+
+/**
  * P-014 (fleet-lead-instrumentation-audit-2026-08-09) — the THIRD-PARTY actor test.
  *
  * {@link UNVERIFIED_ACTION_CLAIM_RE} matches a comm verb plus a coordination target and
@@ -404,7 +425,8 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     // source-tag chain below (a [self-imposed]/[peer:]/[inferred] tag attributes the
     // DIRECTIVE that ordered the action — it does not prove the action happened), so a
     // line can carry both a directive match and this one. Guarded against the cap.
-    if (UNVERIFIED_ACTION_CLAIM_RE.test(line)) {
+    const actionClaim = UNVERIFIED_ACTION_CLAIM_RE.exec(line);
+    if (actionClaim && !isConditionalActionMention(line, actionClaim)) {
       // P-014: same mention-vs-use split the owner-tag legs already make, applied to the
       // ACTOR. A peer's action recorded as a peer's action is attribution done right, so
       // it is DOWNGRADED rather than silenced — a reader still sees it is second-hand and
