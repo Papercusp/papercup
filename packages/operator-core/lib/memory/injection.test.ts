@@ -1680,6 +1680,7 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
       dropped: { 'no-term-overlap': 1, 'budget-exhausted': 1 },
     });
     expect(Object.keys(corpus!.dropped).sort()).toEqual([
+      'ambient-excluded',
       'budget-exhausted',
       'cap-exhausted',
       'duplicate-ref',

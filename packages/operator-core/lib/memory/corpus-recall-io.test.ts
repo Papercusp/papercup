@@ -198,6 +198,22 @@ describe('recallCorpusContext — output', () => {
     expect(res.dropped).toContainEqual({ ref: 'claude:sess-self', reason: 'self-session' });
   });
 
+  it('filters a strongly matching ambient holdout while retaining a strong non-holdout', async () => {
+    // The holdout is first and the cap is one, so a missing IO→selector fence
+    // would return WI-40293 and make this regression falsely look green only if
+    // the excluded row happened to rank weakly.
+    runHybridSearch.mockResolvedValue(
+      ok([hit({ source_id: 'WI-40293' }), hit({ source_id: 'WI-71001' })]),
+    );
+    const res = await recallCorpusContext({
+      ...base,
+      ambientExcludedRefs: new Set(['WI-40293']),
+      maxItems: 1,
+    });
+    expect(res.lines.map((l) => l.handle.ref)).toEqual(['WI-71001']);
+    expect(res.dropped).toContainEqual({ ref: 'WI-40293', reason: 'ambient-excluded' });
+  });
+
   it('drops EVERY session the owner lookup returns, and keeps the ones it does not', async () => {
     // The regression this guards is the one that shipped: the filter keyed on a
     // SINGLE session id while both injection ports pass an OWNER id, so it never

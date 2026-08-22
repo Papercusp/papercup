@@ -330,6 +330,21 @@ describe('selectCorpusLines', () => {
     expect(lines.map((l) => l.handle.ref)).toEqual(['claude:sess-peer']);
   });
 
+  it('drops a strongly matching ambient holdout before ranking/cap while retaining the control', () => {
+    // The holdout is first and otherwise identical to the control, so this fails
+    // if the fence is absent: the cap would admit WI-40293 and hide the control.
+    const holdout = wi({ sourceId: 'WI-40293' });
+    const control = wi({ sourceId: 'WI-71001' });
+    const { lines, dropped } = selectCorpusLines({
+      hits: [holdout, control],
+      queryText: QUERY,
+      ambientExcludedRefs: new Set(['WI-40293']),
+      maxItems: 1,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-71001']);
+    expect(dropped).toContainEqual({ ref: 'WI-40293', reason: 'ambient-excluded' });
+  });
+
   it('narrows WORK-ITEMS by harness but never narrows turns', () => {
     const { lines, dropped } = selectCorpusLines({
       hits: [wi({ sourceId: 'WI-999', scope: 'harness:other' }), turn()],
