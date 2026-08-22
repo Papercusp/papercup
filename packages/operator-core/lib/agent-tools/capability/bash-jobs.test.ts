@@ -107,6 +107,22 @@ describe('runForeground', () => {
     expect(r.output).toContain('papercusp-command-that-is-not-installed: command not found');
   });
 
+  it('does not mistake missing-command fixture output for a failure of the wrapper shell', async () => {
+    const r = await runForeground(
+      {
+        command:
+          `printf '%s\\n' 'environment: line 31: find_open_duplicate: command not found' ` +
+          `' /usr/bin/env: fakebun: No such file or directory'; exit 0`,
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      never,
+      10_000,
+    );
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+  });
+
   it('recognizes Bash and POSIX missing-command diagnostics without assuming a host path', () => {
     expect(detectMissingCommandDiagnostic('/bin/bash: line 1: rg: command not found\n')).toEqual({
       command: 'rg',
@@ -254,6 +270,38 @@ describe('background jobs', () => {
     expect(out).toContain('second');
     // Cursor advanced — a second read returns nothing new.
     expect(readJobOutput(final)).toBe('');
+  });
+
+  it('keeps a successful background job green when its child output contains missing-command fixtures', async () => {
+    const job = startBackground(
+      {
+        command: `printf '%s\\n' '/bin/sh: 1: fakeomp: not found'; exit 0`,
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      10_000,
+    );
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+    expect(final.status).toBe('completed');
+    expect(final.exitCode).toBe(0);
+    expect(readFileSync(final.logPath, 'utf8')).toContain('status=completed');
+  });
+
+  it('still fails a background job whose wrapper shell really loses a command inside a successful pipeline', async () => {
+    const job = startBackground(
+      {
+        command: `printf '%s\\n' "$(papercusp-background-command-that-is-not-installed)" | head -1`,
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      10_000,
+    );
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+    expect(final.status).toBe('failed');
+    expect(final.exitCode).toBe(127);
+    expect(readFileSync(final.logPath, 'utf8')).toContain('status=failed');
   });
 
   it('kills a running job', async () => {

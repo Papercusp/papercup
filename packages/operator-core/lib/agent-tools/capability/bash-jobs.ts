@@ -222,8 +222,15 @@ function spawnShell(
     argv: string[],
     env?: Readonly<Record<string, string | undefined>>,
   ) => { binary: string; argv: string[] },
+  /** Per-job nonce for an authenticated command-not-found marker. Generic
+   *  `command not found` text is ordinary child output (test fixtures emit it),
+   *  so it cannot safely determine this wrapper's exit status. */
+  missingCommandToken?: string,
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath();
+  const instrumentedCommand = missingCommandToken
+    ? instrumentMissingCommandFailures(command, missingCommandToken)
+    : command;
   // EI-1617: scrubExecEnv replaces the old stripHostX-only passthrough — an
   // ALLOWLIST (PATH/HOME/locale/toolchain vars + the couple of Papercusp
   // plumbing vars this path needs), not a denylist, so the operator's OWN
@@ -233,7 +240,7 @@ function spawnShell(
   // host-X isolation still holds.
   const inheritedEnv = normalizeInheritedOperatorUrl(scrubExecEnv(process.env));
   const decision = buildCapabilitySandboxCommand(
-    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', command], cwd },
+    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', instrumentedCommand], cwd },
     // EI-16635: `background` (true for startBackground's run_in_background jobs)
     // tells the sandbox builder to omit bwrap's `--die-with-parent` — that flag
     // is incompatible with a job contractually meant to outlive this spawn call.
@@ -551,6 +558,7 @@ export interface MissingCommandDiagnostic {
 }
 
 const MISSING_COMMAND_EXIT_CODE = 127;
+const MISSING_COMMAND_SENTINEL_PREFIX = '[capability:bash] COMMAND NOT FOUND';
 const MISSING_COMMAND_RE =
   /(?:^|\n)(?:[^:\r\n]+:\s+)*(?<command>[^\s:]+):\s+(?:command not found|not found)(?:\r?\n|$)/m;
 
@@ -561,12 +569,38 @@ export function detectMissingCommandDiagnostic(output: string): MissingCommandDi
   return { command, line: match[0].trim() };
 }
 
+function instrumentMissingCommandFailures(command: string, token: string): string {
+  // Bash invokes this function for a missing command, including one inside a
+  // command substitution whose consumer later exits 0. The per-job token makes
+  // the marker attributable to THIS wrapper rather than to arbitrary child
+  // output (for example a test asserting a missing-command diagnostic).
+  return (
+    `command_not_found_handle() { printf '\\n${MISSING_COMMAND_SENTINEL_PREFIX} token=%s command=%s: command not found\\n' ` +
+    `'${token}' "$1" >&2; return ${MISSING_COMMAND_EXIT_CODE}; };\n${command}`
+  );
+}
+
+function createMissingCommandMarkerDetector(token: string): { push: (chunk: string) => void; seen: () => boolean } {
+  const marker = `${MISSING_COMMAND_SENTINEL_PREFIX} token=${token} `;
+  let tail = '';
+  let matched = false;
+  return {
+    push(chunk: string): void {
+      if (matched || !chunk) return;
+      const candidate = tail + chunk;
+      matched = candidate.includes(marker);
+      tail = candidate.slice(-Math.max(0, marker.length - 1));
+    },
+    seen: () => matched,
+  };
+}
+
 function normalizeMissingCommandResult(
   status: BashStatus,
   exitCode: number | null,
-  output: string,
+  authenticatedMarkerSeen: boolean,
 ): { status: BashStatus; exitCode: number | null } {
-  if (status !== 'completed' || !detectMissingCommandDiagnostic(output)) return { status, exitCode };
+  if (status !== 'completed' || !authenticatedMarkerSeen) return { status, exitCode };
   return { status: 'failed', exitCode: MISSING_COMMAND_EXIT_CODE };
 }
 
@@ -658,7 +692,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
     const logStream = safeWriteStream(logPath);
     const startedAt = Date.now();
-    const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, false);
+    const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, false, undefined, id);
 
     let buffer = '';
     let totalBytes = 0;
@@ -666,10 +700,12 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     let timedOut = false;
     let aborted = false;
     const redactor = createStreamingSecretRedactor(opts.redactValues);
+    const missingCommandDetector = createMissingCommandMarkerDetector(id);
     let redactorFlushed = false;
 
     const appendSafeOutput = (s: string): void => {
       if (!s) return;
+      missingCommandDetector.push(s);
       totalBytes += Buffer.byteLength(s, 'utf8');
       if (buffer.length < MEM_BUFFER_CAP) buffer += s;
       try {
@@ -714,7 +750,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       flushRedactor();
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
-      const normalized = normalizeMissingCommandResult(status, exitCode, buffer);
+      const normalized = normalizeMissingCommandResult(status, exitCode, missingCommandDetector.seen());
       const truncated = buffer.length > INLINE_OUTPUT_CAP;
       const output = truncated ? headTail(buffer) : buffer;
       const result: ForegroundResult = {
@@ -814,7 +850,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
-  const child = spawnShell(opts.command, opts.cwd, childEnv, opts.sandboxEnabled, true, enrolment.wrap);
+  const child = spawnShell(opts.command, opts.cwd, childEnv, opts.sandboxEnabled, true, enrolment.wrap, id);
   // A service can finish before the job object and redactor are fully assembled.
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
   // tiny early prefix through the normal redaction/output path below.
@@ -846,13 +882,19 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   JOBS.set(id, job);
 
   const redactor = createStreamingSecretRedactor(opts.redactValues);
+  const missingCommandDetector = createMissingCommandMarkerDetector(id);
   let redactorFlushed = false;
-  const appendRawOutput = (chunk: string): void => appendOutput(job, redactor?.push(chunk) ?? chunk);
+  const appendSafeOutput = (chunk: string): void => {
+    if (!chunk) return;
+    missingCommandDetector.push(chunk);
+    appendOutput(job, chunk);
+  };
+  const appendRawOutput = (chunk: string): void => appendSafeOutput(redactor?.push(chunk) ?? chunk);
   const flushRedactor = (): void => {
     if (redactorFlushed) return;
     redactorFlushed = true;
     const tail = redactor?.flush() ?? '';
-    if (tail) appendOutput(job, tail);
+    appendSafeOutput(tail);
   };
 
   // Attach before recording/enrolling the job. A transient service can execute
@@ -956,7 +998,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.exitCode = code;
     job.endedAt = Date.now();
     clearTimeout(timer);
-    const normalized = normalizeMissingCommandResult(job.status, job.exitCode, job.buffer);
+    const normalized = normalizeMissingCommandResult(job.status, job.exitCode, missingCommandDetector.seen());
     job.status = normalized.status;
     job.exitCode = normalized.exitCode;
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
