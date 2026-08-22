@@ -30,13 +30,13 @@ const TEMPLATES = Object.keys(PACK_TEMPLATES) as [PackTemplate, ...PackTemplate[
 export default defineTool({
   name: 'code:pack',
   description:
-    'Package code as EVIDENCE for review with pinned Repomix 1.18.0/code2prompt 4.2.0 engines (never `npx latest`). op:"pack" selects files matching `include`; op:"diff" packs the git diff. `include` is REQUIRED and non-empty: an unscoped monorepo pack is huge and can look valid. Only pack secret-scans; diff is deny-set-only. Both are read-only and put the full body in a scratch file outside the tree, not your context.',
+    'Package code as review evidence with pinned Repomix 1.18.0/code2prompt 4.2.0 (never `npx latest`). `op:"pack"` selects a non-empty `include`; `op:"diff"` packs the git diff. Only pack secret-scans; diff uses the deny-set. Read-only; the full body goes to a scratch file, not context.',
   guidance: {
-    when: 'You need a whole subsystem in one document for a human reviewer or another model to reason over — a review request, an audit, a refactor brief. op:"diff" when only what CHANGED matters.',
+    when: 'Need a scoped subsystem document for review, audit, or refactor; use `diff` for changed code only.',
     notWhen:
-      `You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ${RIPGREP_SCOPE_GUIDANCE} first, and pack only once you know what a reader needs to see.`,
+      `Packing follows retrieval: use lsp:query, gitnexus.query, code:structural, or ${RIPGREP_SCOPE_GUIDANCE} first, then pack the measured radius.`,
     chaining:
-      'gitnexus.query for the impact radius → code:pack include:<that radius>, so the pack is scoped by a measured answer rather than a guess. Quote provenance.commit + dirty whenever you cite a pack as evidence.',
+      'gitnexus.query → code:pack include:<radius>; cite provenance.commit + dirty.',
     returns:
       '{ answer, artifact }. `artifact.path` is the scratch file holding the full pack; `artifact.preview` is a bounded head of it. `artifact.provenance` states what the pack actually IS: engine + engineVersion, commit, dirty (true = NOT reproducible from that commit, so do not cite it as "the code at <sha>"), baseRef/baseCommit, the include/ignore/denyGlobs actually applied, template, fileCount, bytes, chars, capturedAt, and securityScan ("secretlint+deny-set" for pack, "deny-set-only" for diff). fileCount is null — never 0 — when the selection could not be parsed out of the pack, because "I could not read it" and "it selected nothing" are different answers. `answer` is the normalized code-intelligence shape: sites[] is one entry per SELECTED FILE, truncation.truncated marks a pack cut at the byte ceiling, and a refusal (flag off, engine unprovisioned, pin drifted, empty include) arrives as answer.error with health "unknown" rather than as an empty pack.',
   },

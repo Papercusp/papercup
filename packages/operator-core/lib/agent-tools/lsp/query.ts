@@ -42,12 +42,12 @@ const OP_VALUES = [...LSP_FACADE_OPS] as [LspFacadeOp, ...LspFacadeOp[]];
 export default defineTool({
   name: 'lsp:query',
   description:
-    'Compiler-accurate READ-ONLY code intelligence from the pinned TypeScript/Rust server. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns { sites:[{path,line1,kind,detail}], truncation, freshness:{health}, latencyMs, error }; `line1` is one-indexed (the LSP converts from zero-indexed, so it matches grep). refactor_preview only reports rename sites. Empty `sites` proves absence only when error===null and freshness.health==="healthy"; disabled, loading, unhandled, or dead servers return empty sites with an error.',
+    'Compiler-accurate READ-ONLY TypeScript/Rust intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. `refactor_preview` reports rename sites only. Empty `sites` proves absence only when `error===null` and `freshness.health==="healthy"`; unavailable servers return an error.',
   guidance: {
-    when: 'You need the truth about TS/Rust code rather than a text match: where a symbol is really declared (across package boundaries and re-exports), every reference, implementations of an interface, a file\'s diagnostics, or the exact sites a rename would hit.',
-    notWhen: `Exhaustive text/regex search (${RIPGREP_SCOPE_GUIDANCE}) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.`,
+    when: 'You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.',
+    notWhen: `Use text/regex search (${RIPGREP_SCOPE_GUIDANCE}) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.`,
     chaining:
-      'op:"workspace_symbols" { name } to find a position → op:"symbol"/"references" { file, line1, character }. On a degraded answer, op:"health" reports each server + the taskId processes:kill takes.',
+      'op:"workspace_symbols" { name } → op:"symbol"/"references" { file, line1, character }. On degradation, op:"health" reports servers and the processes:kill taskId.',
   },
   capability: 'intel:read',
   requirePrincipal: false,

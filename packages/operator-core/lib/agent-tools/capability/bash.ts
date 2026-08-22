@@ -73,16 +73,15 @@ const integrationEnvSchema = z
 export default defineTool({
   name: 'capability:bash',
   description:
-    'Run shell commands (bash -c) in the project dir; stream output and spill large output to a log. Use run_in_background for long jobs and capability:bash_output to poll. Operator callers may bind encrypted integration credentials into named child-only environment variables; values are redacted.',
+    'Run `bash -c` in the project dir; stream output and spill large output to a log. Use `run_in_background` for long jobs, then `capability:bash_output`. Operator callers may bind redacted integration credentials.',
   guidance: {
     when:
-      'Run builds, tests, status checks, inspection, or scripts. For literal searches use fixed-string `rg -F` with a shell-safe single-quoted argument (unmatched backticks fail before `rg`). For repository text/regex searches, ' +
-      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root when generated output is not the target. ` +
-      'For jobs over 1–2 minutes, use run_in_background:true and read with capability:bash_output; deadlines are 4h default/12h max (raise `timeout` as needed).',
+      'Run builds, tests, checks, or scripts. Use `rg -F` for literals; for repository regex searches, ' +
+      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
     notWhen:
-      'For one-file reads/writes/edits use capability:read/write/edit (lock-aware). For read-only operator DB queries use dev:pg_query { sql | describe }, not psql (bash strips DB credentials). For git use capability:git.',
+      'Use capability:read/write/edit for one-file operations, dev:pg_query for read-only operator DB queries, and capability:git for git.',
     chaining:
-      'run_in_background:true → bash_id + durable task_id → read with capability:bash_output { task_id } (bash_id only in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused).',
+      'run_in_background:true returns bash_id + durable task_id; read with capability:bash_output { task_id }, stop with processes:kill { taskId }. Never push.',
     seeAlso: [
       "capability:bash_output (read a backgrounded run's output)",
       'capability:bash_kill (kill a backgrounded run)',
