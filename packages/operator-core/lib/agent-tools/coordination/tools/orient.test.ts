@@ -2719,6 +2719,114 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       warnSpy.mockRestore();
     });
   });
+
+  // EI-21127719036550806: coord:orient timed out ENTIRELY during host memory-pressure
+  // stalls (PSI mem full, all tasks stalled on reclaim/swap) — the claimable backlog,
+  // coord:inbox, coord:plan-events, and coord:declare-intent legs carried NO internal
+  // budget, so under real memory pressure any ONE of these sequential DB round-trips
+  // could hang past the caller's own deadline with the whole orient call reporting
+  // NOTHING back (an MCP request_timeout the caller was warned not to blindly retry),
+  // instead of the bounded degrade-to-fallback every other core leg already gets
+  // (WI-3818). These legs are now bounded the same way; these tests exercise the
+  // ACTUAL hang path (not just a thrown error, already covered above) with fake timers.
+  describe('EI-21127719036550806 bounded core legs — a hung call degrades instead of hanging orient', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('claimable degrades to the fallback list (never an empty backlog) when work_items:claimable never resolves', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'work_items:claimable': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({ harness: 'h' }, call, 'me');
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect((r.claimable as Array<{ id: string }>).map((x) => x.id)).toEqual(['WI-1', 'WI-2']);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('inbox degrades to an empty-shaped fold (not a hang) when coord:inbox never resolves', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'coord:inbox': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({}, call, 'me');
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.inbox).toEqual({ summary: undefined, recent: undefined, entries: undefined });
+      // the rest of orient still completes normally
+      expect(r.claimable).toHaveLength(2);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('planEvents degrades to null (not a hang, and never a false "zero events") when coord:plan-events never resolves', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'coord:plan-events': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({}, call, 'me');
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.planEvents).toBeNull();
+      expect(r.claimable).toHaveLength(2);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('declare-intent degrades to intentDeclared:false (not a hang) when coord:declare-intent never resolves', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'coord:declare-intent': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({ intent: 'x' }, call, 'me');
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.intentDeclared).toBe(false);
+      expect(r.claimable).toHaveLength(2);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('the whole call still resolves promptly even when EVERY newly-bounded core leg hangs at once (the reported memory-pressure shape)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'work_items:claimable': () => new Promise(() => {}),
+        'work_items:list': () => new Promise(() => {}),
+        'coord:inbox': () => new Promise(() => {}),
+        'coord:plan-events': () => new Promise(() => {}),
+        'coord:declare-intent': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({ harness: 'h', intent: 'x' }, call, 'me');
+      // Every leg is bounded to the same ORIENT_CORE_LEG_TIMEOUT_MS budget, but the
+      // legs run SEQUENTIALLY (composeOrient's own contract), so each hung leg's
+      // 8s deadline starts only once the PRIOR leg has settled — this is the exact
+      // aggregate-stall shape the bug reported. Advance generously past every
+      // sequential hop (claimable's Promise.all round, inbox, plan-events,
+      // declare-intent) plus the smaller announcements budget in between.
+      await vi.advanceTimersByTimeAsync(40_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.planEvents).toBeNull();
+      expect(r.intentDeclared).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
 });
 
 // ── P-016 (voice-public-release-readiness-2026-07-12): role-specific pane folds —

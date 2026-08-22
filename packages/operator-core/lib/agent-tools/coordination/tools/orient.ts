@@ -1666,35 +1666,44 @@ export async function composeOrient(
   // third leg). Already result-bounded server-side; we keep the newest few.
   // EI-8300: skipped entirely on a monitor tick.
   if (!monitor && args.includePlanEvents !== false) {
-    try {
-      const pe = (await boundedCore(
-        call('coord:plan-events', {
-          ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
-          ...(effectivePlanSlug ? { plan_slug: effectivePlanSlug } : {}),
-          limit: PLAN_EVENTS_FOLD,
-        }),
-        undefined,
-        'orient:coord:plan-events',
-      )) as { events?: unknown[]; total?: number } | undefined;
-      const events = Array.isArray(pe?.events) ? (pe!.events as unknown[]) : [];
-      const total = typeof pe?.total === 'number' ? pe.total : events.length;
-      const recent = events.slice(0, PLAN_EVENTS_FOLD);
-      // P-005: full-mode delta — the newest batch is ~96% byte-identical to what
-      // this caller already saw last orient (D-003 audit). FAIL-OPEN: any cursor
-      // error just skips the unchanged check and delivers in full, same as no
-      // cursor injected.
-      let unchanged = false;
-      if (planEventsCursor) {
-        try {
-          const ack = await planEventsCursor(fingerprintIdList(recent.map(rowKey)));
-          unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
-        } catch {
-          /* fail-open: full delivery */
-        }
-      }
-      result.planEvents = unchanged ? { total, recent: [], unchanged: true } : { total, recent };
-    } catch {
+    // EI-21127719036550806: bounded (withBoundedTimeout directly, not the
+    // boundedCore(fallback) helper) so a HANG is reported the same way a genuine
+    // rejection already is below (`result.planEvents = null`) — a fallback of
+    // `undefined` here would otherwise read downstream as "zero events happened",
+    // which is a false empty rather than the honest "this leg did not answer".
+    const peResult = await withBoundedTimeout(
+      call('coord:plan-events', {
+        ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
+        ...(effectivePlanSlug ? { plan_slug: effectivePlanSlug } : {}),
+        limit: PLAN_EVENTS_FOLD,
+      }) as Promise<{ events?: unknown[]; total?: number } | undefined>,
+      { fallback: undefined, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label: 'orient:coord:plan-events' },
+    );
+    if (peResult.degraded) {
       result.planEvents = null;
+    } else {
+      try {
+        const pe = peResult.value;
+        const events = Array.isArray(pe?.events) ? (pe!.events as unknown[]) : [];
+        const total = typeof pe?.total === 'number' ? pe.total : events.length;
+        const recent = events.slice(0, PLAN_EVENTS_FOLD);
+        // P-005: full-mode delta — the newest batch is ~96% byte-identical to what
+        // this caller already saw last orient (D-003 audit). FAIL-OPEN: any cursor
+        // error just skips the unchanged check and delivers in full, same as no
+        // cursor injected.
+        let unchanged = false;
+        if (planEventsCursor) {
+          try {
+            const ack = await planEventsCursor(fingerprintIdList(recent.map(rowKey)));
+            unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
+          } catch {
+            /* fail-open: full delivery */
+          }
+        }
+        result.planEvents = unchanged ? { total, recent: [], unchanged: true } : { total, recent };
+      } catch {
+        result.planEvents = null;
+      }
     }
   }
 
