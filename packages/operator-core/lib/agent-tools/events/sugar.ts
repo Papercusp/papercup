@@ -402,6 +402,14 @@ async function checkpointAlreadyJudgedProbe(
 ): Promise<{ judged: boolean; green: boolean | null; status: string | null; createdAtMs: number | null }> {
   const match = await findGreenCheckpointVerdictForCandidate(installSlug, candidateSha, { runId });
   if (!match) return { judged: false, green: null, status: null, createdAtMs: null };
+  // EI-21124809100423369: the early `decision-pending` row records the suite result
+  // before optional promotion work settles. It is not a terminal verdict: while the
+  // exact run is still active, treating its usually-false `detail.green` as a final red
+  // latches stale remediation advice and skips the await that should catch the terminal
+  // outcome. Leave the normal registration path armed for the eventual final row.
+  if (match.status === "decision-pending" || match.detail.promotionPending === true) {
+    return { judged: false, green: null, status: null, createdAtMs: null };
+  }
   const rawGreen = match.detail.green;
   return {
     judged: true,

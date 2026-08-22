@@ -599,6 +599,28 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     expect(registerAwait).not.toHaveBeenCalled();
   });
 
+  it("does not latch an interim decision-pending row as a final red verdict", async () => {
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
+      status: "decision-pending",
+      detail: {
+        candidate: "94c123456789",
+        green: false,
+        promotionPending: true,
+      },
+      createdAtMs: 1_700_000_000_000,
+    } as never);
+
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out.already_judged).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(3);
+    expect(out.events).toEqual([
+      "release:green:papercusp",
+      "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
+    ]);
+  });
+
   it("WI-5685 shape: an 'advanced-prefix' match (candidate stayed red; a DIFFERENT earlier prefix advanced) reports green:false, never misread as green from the status string alone", async () => {
     vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
       status: "advanced-prefix",
