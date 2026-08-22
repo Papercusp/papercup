@@ -138,14 +138,29 @@ export async function unresolvedRefsInBody(
         const found = await probe(id);
         // A CLEAN null is the only thing that earns a warning. A throw means the store
         // could not answer, which is emphatically not evidence the ref is phantom.
-        return found ? null : id;
+        return { id, judged: true, resolved: Boolean(found) };
       } catch {
-        return null;
+        return { id, judged: false, resolved: false };
       }
     }),
   );
 
-  const missing = verdicts.filter((v): v is string => typeof v === 'string');
+  const resolvedIds = verdicts
+    .filter((v) => v.judged && v.resolved)
+    .map((v) => v.id.toUpperCase());
+  const missing = verdicts
+    .filter((v) => v.judged && !v.resolved)
+    .map((v) => v.id)
+    // Agents often write a human-readable shorthand after the exact id returned by a
+    // create call. Suppress that shorthand only when exactly one longer, resolvable ref
+    // in this same body has the prefix; multiple candidates remain an honest warning.
+    .filter((id) => {
+      const upper = id.toUpperCase();
+      const longerMatches = resolvedIds.filter(
+        (resolvedId) => resolvedId.length > upper.length && resolvedId.startsWith(upper),
+      );
+      return longerMatches.length !== 1;
+    });
   return missing.length > 0 ? { missing } : undefined;
 }
 

@@ -60,6 +60,23 @@ describe('unresolvedRefsInBody', () => {
     expect(out?.missing).toEqual(['EI-1', 'EI-3']);
   });
 
+  it('suppresses a unique shorthand when the exact ref resolves in the same body', async () => {
+    const full = 'EI-21159658753576313';
+    const shorthand = 'EI-211596';
+    const probe = probeWith(full);
+    const out = await unresolvedRefsInBody(`exact ${full}, then shorthand ${shorthand}`, { probe });
+    expect(out).toBeUndefined();
+  });
+
+  it('keeps a shorthand warning when multiple resolved refs share its prefix', async () => {
+    const first = 'EI-21159658753576313';
+    const second = 'EI-21159658753576314';
+    const shorthand = 'EI-211596';
+    const probe = probeWith(first, second);
+    const out = await unresolvedRefsInBody(`${first}, ${second}, then ${shorthand}`, { probe });
+    expect(out?.missing).toEqual([shorthand]);
+  });
+
   // THE safety margin: a store that cannot answer is not evidence of a phantom.
   it('stays SILENT when the probe throws — never accuses on a store fault', async () => {
     const probe = vi.fn(async () => {
