@@ -37,7 +37,7 @@
 import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
 import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
-import { fetchContextPressure } from '../../agent-tools/coordination/context-pressure';
+import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { fetchFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
 import {
   detectFleetAdmissionTransitions,
@@ -171,7 +171,24 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   previousAdmissionObservations = new Map(
     admissionObservations.map((observation) => [observation.fleetSlug, observation.blockedCount]),
   );
-  for (const edge of edges) emitFleetTransitionEdge(edge, deps);
+  let emitDeps = deps;
+  const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
+  if (contextEdges.length > 0 && !deps.currentContextPressure && !deps.gather) {
+    // The production sweep gathers a cached observation first, then supplies a
+    // single shared current-state read to all detached edge emits. Keeping the
+    // read lazy makes the revalidation happen after the sweep has yielded, which
+    // is exactly the recovery-before-delivery race this guard closes.
+    const agentIds = [...new Set(contextEdges.map((edge) => edge.agentId))];
+    let currentPressure: Promise<Map<string, ContextPressureBucket>> | null = null;
+    emitDeps = {
+      ...deps,
+      currentContextPressure: async (agentId: string) => {
+        currentPressure ??= fetchContextPressure(agentIds);
+        return (await currentPressure).get(agentId) ?? null;
+      },
+    };
+  }
+  for (const edge of edges) emitFleetTransitionEdge(edge, emitDeps);
   for (const edge of admissionEdges) emitFleetAdmissionTransitionEdge(edge, deps);
   return edges.length + admissionEdges.length;
 }

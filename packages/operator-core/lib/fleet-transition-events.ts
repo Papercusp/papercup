@@ -64,6 +64,7 @@
  */
 
 import { emitAwaitedEvent } from './events/await/engine';
+import type { ContextPressureBucket } from './agent-tools/coordination/context-pressure';
 
 /** The transition families this module publishes, as they appear in the key. */
 export type FleetTransitionKind =
@@ -273,6 +274,14 @@ function failSoft(scope: string, e: unknown): void {
 /** Injectable seams for tests. */
 export interface FleetTransitionEventsDeps {
   emit?: typeof emitAwaitedEvent;
+  /**
+   * Re-read the current writer-backed context bucket immediately before a
+   * `context-critical` event is emitted. The sweep's observation can be stale
+   * by the time its detached emit runs; a non-critical current value suppresses
+   * that stale wake. Omitted for non-sweep callers, which retain the historical
+   * emit behavior.
+   */
+  currentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
   /** Resolve an agent's current fleet. Default = the canonical append-only
    *  membership fact; injected as a stub in tests. */
   fleetOfAgent?: (workspaceId: string, ownerId: string) => Promise<string | null>;
@@ -325,8 +334,25 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
         ? `fleet ${edge.fleetSlug}: member ${edge.agentId} context pressure is CRITICAL (${edge.from ?? 'unknown'} → ${edge.to})`
         : `fleet ${edge.fleetSlug}: member ${edge.agentId} claim is STALLED (${edge.from ?? 'unknown'} → ${edge.to})`;
   void Promise.resolve()
-    .then(() =>
-      emit({
+    .then(async () => {
+      // The sweep's bucket is a watchdog-cached observation. Revalidate only
+      // this derived edge, at the last responsible moment, so recovery between
+      // observation and delivery cannot wake a leader with an obsolete payload.
+      if (edge.kind === 'context-critical' && deps.currentContextPressure) {
+        let current: ContextPressureBucket | null;
+        try {
+          current = await deps.currentContextPressure(edge.agentId);
+        } catch (e: unknown) {
+          // A failed revalidation must not break the detached event path. The
+          // original sweep observation is still the best available signal when
+          // the current writer cannot be read; a successful non-critical read
+          // is what suppresses the stale wake.
+          failSoft(`context-critical revalidation for ${edge.fleetSlug}/${edge.agentId}`, e);
+          current = CRITICAL_CONTEXT_BUCKET;
+        }
+        if (current !== CRITICAL_CONTEXT_BUCKET) return;
+      }
+      await emit({
         key: fleetTransitionKey(edge.fleetSlug, edge.kind),
         summary,
         payload: {
@@ -337,8 +363,8 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           to: edge.to,
         },
         source: 'fleet',
-      }),
-    )
+      });
+    })
     .catch((e: unknown) => failSoft(`${edge.kind} for ${edge.fleetSlug}/${edge.agentId}`, e));
 }
 

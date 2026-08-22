@@ -145,6 +145,37 @@ describe('emitFleetTransitionEdge', () => {
     ).not.toThrow();
     await settle();
   });
+
+  it('suppresses a context-critical wake when the current writer has recovered before delivery', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    let current: 'ok' | 'critical' = 'critical';
+    const currentContextPressure = vi.fn(async () => current);
+
+    emitFleetTransitionEdge(
+      { kind: 'context-critical', fleetSlug: 'f', agentId: 'su-a', to: 'critical', from: 'high' },
+      { emit, currentContextPressure },
+    );
+    // The detached emitter must validate after this recovery, not trust the
+    // stale edge payload captured by the earlier sweep.
+    current = 'ok';
+    await settle();
+
+    expect(currentContextPressure).toHaveBeenCalledWith('su-a');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('still emits a context-critical wake while the current writer remains critical', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentContextPressure = vi.fn(async () => 'critical' as const);
+
+    emitFleetTransitionEdge(
+      { kind: 'context-critical', fleetSlug: 'f', agentId: 'su-a', to: 'critical', from: 'high' },
+      { emit, currentContextPressure },
+    );
+    await settle();
+
+    expect(emit).toHaveBeenCalledOnce();
+  });
 });
 
 describe('the work-item co-fires', () => {

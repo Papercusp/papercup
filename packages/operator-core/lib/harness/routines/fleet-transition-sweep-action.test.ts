@@ -85,6 +85,25 @@ describe('runFleetTransitionSweep', () => {
     expect(fired).toBe(2);
   });
 
+  it('revalidates a context-critical edge against the current writer before delivery', async () => {
+    await runFleetTransitionSweep({
+      gather: async () => [member({ contextPressure: 'high' })],
+      emit: vi.fn(),
+    });
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentContextPressure = vi.fn(async () => 'ok' as const);
+
+    await runFleetTransitionSweep({
+      gather: async () => [member({ contextPressure: 'critical' })],
+      emit,
+      currentContextPressure,
+    });
+    await settle();
+
+    expect(currentContextPressure).toHaveBeenCalledWith('su-a');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('keeps fleets independent — a crossing in one fleet is not attributed to another', async () => {
     const a = member({ agentId: 'su-a', fleetSlug: 'fleet-a' });
     const b = member({ agentId: 'su-b', fleetSlug: 'fleet-b' });
