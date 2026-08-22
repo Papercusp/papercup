@@ -21,18 +21,23 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 
 // ── @papercusp/sync mock ────────────────────────────────────────────────────
 
-type SyncState = { data: unknown; loading: boolean; error?: unknown };
+type SyncState = { data: unknown; loading: boolean; fetching?: boolean; error?: unknown };
 const syncState = new Map<string, SyncState>();
 const invalidates = new Map<string, ReturnType<typeof vi.fn>>();
+const seenQueryArgs = new Map<string, unknown>();
 
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+  useSyncQuery: ({ queryName, args }: { queryName: string; args?: unknown }) => {
+    seenQueryArgs.set(queryName, args);
+    return ({
     ...(syncState.get(queryName) ?? { data: undefined, loading: false }),
     error: syncState.get(queryName)?.error ?? null,
     invalidate: invalidates.get(queryName) ?? vi.fn(),
-  }),
+    });
+  },
 }));
+vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'workspace-test' }));
 
 import {
   parseWorkingUsers,
@@ -49,6 +54,7 @@ const mockFetch = vi.fn<typeof fetch>();
 beforeEach(() => {
   syncState.clear();
   invalidates.clear();
+  seenQueryArgs.clear();
   mockFetch.mockReset();
   mockFetch.mockRejectedValue(new Error('durable harness reads must not fetch REST'));
   vi.stubGlobal('fetch', mockFetch);
@@ -225,14 +231,21 @@ describe('useHarnessIssues', () => {
 // ── useHarnessAgents ────────────────────────────────────────────────────────
 
 describe('useHarnessAgents', () => {
-  it('refresh() invalidates the authoritative agent-run query', async () => {
-    const invalidate = vi.fn();
-    invalidates.set('agentRunsConsolidated.bySlug', invalidate);
+  it('refresh() invalidates the paired row and summary queries', async () => {
+    const invalidateRows = vi.fn();
+    const invalidateSummary = vi.fn();
+    invalidates.set('agentRunsConsolidated.bySlug', invalidateRows);
+    invalidates.set('agentRunsConsolidated.summary', invalidateSummary);
     syncState.set('agentRunsConsolidated.bySlug', { loading: false, data: [] });
+    syncState.set('agentRunsConsolidated.summary', {
+      loading: false,
+      data: [{ total: 0, matched: 0, facets: [] }],
+    });
     const { result } = renderHook(() => useHarnessAgents('sheets'));
     await waitFor(() => expect(result.current.agents).not.toBeNull());
     act(() => result.current.refresh());
-    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(invalidateRows).toHaveBeenCalledTimes(1);
+    expect(invalidateSummary).toHaveBeenCalledTimes(1);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -250,7 +263,24 @@ describe('useHarnessAgents', () => {
         },
       ],
     });
-    const { result } = renderHook(() => useHarnessAgents('sheets'));
+    syncState.set('agentRunsConsolidated.summary', {
+      loading: false,
+      data: [{
+        total: 2_051,
+        matched: 7,
+        facets: [{
+          key: 'state',
+          values: [{ value: 'running', count: 7 }],
+          hiddenValueCount: 0,
+          distinctCount: 2,
+        }],
+      }],
+    });
+    const { result } = renderHook(() => useHarnessAgents('sheets', {
+      runningOnly: true,
+      cursor: 'cursor-1',
+      limit: 25,
+    }));
     await waitFor(() => expect(result.current.agents).not.toBeNull());
     expect(result.current.agents![0]).toEqual({
       runId: 'r-z',
@@ -262,6 +292,39 @@ describe('useHarnessAgents', () => {
       costUsd: 0.5,
       featureId: undefined,
     });
+    expect(result.current).toMatchObject({ total: 2_051, matched: 7, running: 7 });
+    expect(seenQueryArgs.get('agentRunsConsolidated.bySlug')).toMatchObject({
+      harnessSlug: 'sheets',
+      workspaceId: 'workspace-test',
+      runningOnly: true,
+      cursor: 'cursor-1',
+      limit: 25,
+    });
+    expect(seenQueryArgs.get('agentRunsConsolidated.summary')).toEqual({
+      harnessSlug: 'sheets',
+      workspaceId: 'workspace-test',
+      runningOnly: true,
+    });
+  });
+
+  it('keeps an exact zero-running summary when the row page is empty', async () => {
+    syncState.set('agentRunsConsolidated.bySlug', { loading: false, data: [] });
+    syncState.set('agentRunsConsolidated.summary', {
+      loading: false,
+      data: [{
+        total: 2_051,
+        matched: 0,
+        facets: [{
+          key: 'state',
+          values: [{ value: 'running', count: 0 }],
+          hiddenValueCount: 0,
+          distinctCount: 1,
+        }],
+      }],
+    });
+    const { result } = renderHook(() => useHarnessAgents('sheets', { runningOnly: true }));
+    await waitFor(() => expect(result.current.agents).toEqual([]));
+    expect(result.current).toMatchObject({ total: 2_051, matched: 0, running: 0 });
   });
 });
 

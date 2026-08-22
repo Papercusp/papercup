@@ -39,6 +39,20 @@ describe('filterCountLabel evidence variants', () => {
     expect(label.evidence).toBe('window');
   });
 
+  it('renders bounded page evidence as explicit shown/total copy', () => {
+    expect(filterCountLabel({
+      kind: 'window',
+      count: 250,
+      window: 'loaded run history',
+      corpusTotal: 2_051,
+    }, 'run')).toEqual({
+      title: '250 of 2,051',
+      summary: 'Showing 250 of 2,051 runs',
+      ariaLabel: 'Showing 250 of 2,051 runs from loaded run history',
+      evidence: 'window',
+    });
+  });
+
   it('renders a floor as a lower bound rather than an exact number', () => {
     const label = filterCountLabel({ kind: 'floor', count: 500, population: 'events' }, 'event');
     expect(label.title).toBe('500+');
@@ -68,6 +82,7 @@ describe('filterCountLabel evidence variants', () => {
     expect(() => filterCountLabel({ kind: 'corpus', count: -1 })).toThrow(RangeError);
     expect(() => filterCountLabel({ kind: 'corpus', count: 11, total: 10 })).toThrow(RangeError);
     expect(() => filterCountLabel({ kind: 'window', count: 4, windowTotal: 3, window: 'page 1' })).toThrow(RangeError);
+    expect(() => filterCountLabel({ kind: 'window', count: 4, corpusTotal: 3, window: 'page 1' })).toThrow(RangeError);
   });
 
   it('describes facet scopes accessibly for every evidence class', () => {

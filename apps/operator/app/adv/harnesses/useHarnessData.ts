@@ -10,9 +10,11 @@
 // are authoritative here; mutations may patch local state optimistically, then
 // the pushed named-query result reconciles it.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
-import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { AGENT_RUNS_PAGE_LIMIT } from '@papercusp/operator-core/lib/sync-resolver/agent-runs-list-query';
+import type { CompanionListSummary } from '@papercusp/facets';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 
@@ -289,58 +291,101 @@ function toMs(v: number | string | null | undefined): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+export interface HarnessAgentsQueryOptions {
+  runningOnly?: boolean;
+  cursor?: string | null;
+  limit?: number;
+}
+
 /**
- * Recent agent runs for a harness. The shared sync query is authoritative,
- * including an empty result. `refresh()` invalidates that same cache entry.
+ * One authoritative keyset page of agent runs plus its exact companion
+ * summary. An empty row page stays authoritative because the summary is a
+ * separate one-row query; no page length is ever promoted to a corpus count.
  */
-export function useHarnessAgents(slug: string): {
+export function useHarnessAgents(
+  slug: string,
+  options: HarnessAgentsQueryOptions = {},
+): {
   agents: HarnessAgentRun[] | null;
-  /** True store total (row[0]._meta.total): the list read is capped (P-004), so the
-   *  loaded `agents.length` is a WINDOW, not the count — use this for count labels. */
-  total: number;
+  /** Exact complete harness corpus, or null until the companion settles. */
+  total: number | null;
+  /** Exact rows matching the current server predicate. */
+  matched: number | null;
+  /** Exact active-run count, independent of which mode is selected. */
+  running: number | null;
+  nextCursor: string | null;
+  fetching: boolean;
   loading: boolean;
   error: string | null;
   refresh: () => void;
 } {
-  const [agents, setAgents] = useState<HarnessAgentRun[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const workspaceId = useWorkspaceId();
+  const runningOnly = options.runningOnly === true;
+  const cursor = options.cursor ?? null;
+  const limit = options.limit ?? AGENT_RUNS_PAGE_LIMIT;
 
   const query = useSyncQuery<SyncAgentRow>({
     queryName: 'agentRunsConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
+    args: slug
+      ? {
+          harnessSlug: slug,
+          workspaceId,
+          runningOnly,
+          limit,
+          ...(cursor ? { cursor } : {}),
+        }
+      : undefined,
     enabled: !!slug,
   });
-  const { data: syncRows, loading, error: syncError, invalidate } = query;
-  const refresh = useCallback(() => invalidate(), [invalidate]);
-  useEffect(() => {
-    if (!slug) {
-      setAgents(null);
-      setError(null);
-      return;
-    }
-    if (loading || !Array.isArray(syncRows)) return;
-    setAgents(
-      syncRows.map(
-        (r): HarnessAgentRun => ({
-          runId: r.runId,
-          role: r.role,
-          ts: toMs(r.ts),
-          sizeBytes: Number(r.sizeBytes) || 0,
-          running: !!r.running,
-          lastEventTs: toMs(r.lastEventTs),
-          costUsd: r.costUsd != null ? Number(r.costUsd) : undefined,
-          featureId: r.featureId ?? undefined,
-        }),
-      ),
+  const summaryQuery = useSyncQuery<CompanionListSummary>({
+    queryName: 'agentRunsConsolidated.summary',
+    args: slug ? { harnessSlug: slug, workspaceId, runningOnly } : undefined,
+    enabled: !!slug,
+  });
+  const agents = useMemo(() => {
+    if (!slug || !Array.isArray(query.data)) return null;
+    return query.data.map(
+      (r): HarnessAgentRun => ({
+        runId: r.runId,
+        role: r.role,
+        ts: toMs(r.ts),
+        sizeBytes: Number(r.sizeBytes) || 0,
+        running: !!r.running,
+        lastEventTs: toMs(r.lastEventTs),
+        costUsd: r.costUsd != null ? Number(r.costUsd) : undefined,
+        featureId: r.featureId ?? undefined,
+      }),
     );
-  }, [slug, syncRows, loading]);
-  useEffect(() => {
-    setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
-  }, [syncError]);
-
-  // True store total rides row[0]._meta (P-004 cap); falls back to the loaded length.
-  const total = Array.isArray(syncRows) ? readListTotal(syncRows) : (agents?.length ?? 0);
-  return { agents, total, loading: agents === null && !error, error, refresh };
+  }, [slug, query.data]);
+  const summary = summaryQuery.data?.[0] ?? null;
+  const running = summary
+    ? (summary.facets.find((facet) => facet.key === 'state')
+        ?.values.find((value) => value.value === 'running')?.count ?? 0)
+    : null;
+  const nextCursor = Array.isArray(query.data)
+    && typeof readListMeta(query.data)?.nextCursor === 'string'
+    ? readListMeta(query.data)!.nextCursor as string
+    : null;
+  const errorValue = query.error ?? summaryQuery.error;
+  const error = errorValue
+    ? (errorValue instanceof Error ? errorValue.message : String(errorValue))
+    : null;
+  const fetching = Boolean(query.fetching || summaryQuery.fetching);
+  const refresh = useCallback(() => {
+    query.invalidate();
+    summaryQuery.invalidate();
+  }, [query, summaryQuery]);
+  return {
+    agents,
+    total: summary?.total ?? null,
+    matched: summary?.matched ?? null,
+    running,
+    nextCursor,
+    fetching,
+    loading: agents === null && !error,
+    error,
+    refresh,
+  };
 }
 
 // ───────── Logs (run.log.jsonl history) ─────────

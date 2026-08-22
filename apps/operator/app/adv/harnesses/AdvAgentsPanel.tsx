@@ -20,7 +20,7 @@
 // `?sel` row highlight). Role colours come from the canonical getRoleStyle()
 // in app/harness/theme.ts so a role renders the same hue on every surface.
 
-import { useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
@@ -32,7 +32,12 @@ import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill, AGENT_KIND_GLYPH } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
-import { useColumnFilters, ColumnFilterBar, type CountEvidence } from '../../harness/filters';
+import {
+  useColumnFilters,
+  ColumnFilterBar,
+  filterCountLabel,
+  type CountEvidence,
+} from '../../harness/filters';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
@@ -505,6 +510,18 @@ function WorkingView({
   );
 }
 
+/** Page one replaces a mutable feed; cursor pages append by run identity. */
+export function mergeAgentRunPage(
+  previous: readonly HarnessAgentRun[],
+  page: readonly HarnessAgentRun[],
+  cursor: string | null,
+): HarnessAgentRun[] {
+  if (!cursor) return [...page];
+  const byId = new Map(previous.map((row) => [row.runId, row] as const));
+  for (const row of page) byId.set(row.runId, row);
+  return [...byId.values()];
+}
+
 /** The original run-history grid — "what executed here" (kept per plan D-001). */
 function RunsView({
   slug,
@@ -516,26 +533,70 @@ function RunsView({
   viewTabs: ReactNode;
 }) {
   const t = useLexicon();
-  const { agents, total, loading, error, refresh } = useHarnessAgents(slug);
   // showAll persists in the URL (nuqs) so it survives reload + is agent-driveable.
   const [showAll, setShowAll] = useQueryState('agentsAll', parseAsBoolean.withDefault(false));
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [rows, setRows] = useState<HarnessAgentRun[]>([]);
+  const {
+    agents,
+    total,
+    running,
+    nextCursor,
+    fetching,
+    loading,
+    error,
+    refresh,
+  } = useHarnessAgents(slug, { runningOnly: !showAll, cursor });
   // Dragged widths survive panel remounts (localStorage — render-only pref).
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-runs');
   // Clicking a row with a feature jumps the Detail pane to that feature.
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
 
   useEffect(() => {
-    // `total` is the true store count (row[0]._meta) — the list read is capped at
-    // RUNS_LIST_CAP (P-004), so agents.length is a window, not the run count.
-    if (agents) api.setTitle(`Agents · ${slug} (${total} runs)`);
-  }, [agents, total, slug, api]);
+    setCursor(null);
+    setRows([]);
+  }, [slug, showAll]);
+  useEffect(() => {
+    // On a predicate/cursor transition React Query may retain the prior page
+    // while the new key fetches. Never append that stale page under the new key.
+    if (agents === null || fetching) return;
+    setRows((previous) => {
+      const next = mergeAgentRunPage(previous, agents, cursor);
+      return next.length === previous.length
+        && next.every((row, index) => row === previous[index])
+        ? previous
+        : next;
+    });
+  }, [agents, cursor, fetching]);
 
-  const visible = useMemo<HarnessAgentRun[]>(() => {
-    if (!agents) return [];
-    const xs = showAll ? agents : agents.filter((r) => r.running);
-    // Most recent first (running rows float up via lastEventTs/ts).
-    return [...xs].sort((a, b) => (b.lastEventTs ?? b.ts ?? 0) - (a.lastEventTs ?? a.ts ?? 0));
-  }, [agents, showAll]);
+  useEffect(() => {
+    if (fetching) api.setTitle(`Agents · ${slug} (updating)`);
+    else if (total != null && showAll) api.setTitle(`Agents · ${slug} (${total} runs)`);
+    else if (total != null && running != null) {
+      api.setTitle(`Agents · ${slug} (${running} running · ${total} total)`);
+    }
+    else if (error) api.setTitle(`Agents · ${slug} (count unavailable)`);
+  }, [fetching, total, running, showAll, error, slug, api]);
+
+  // Rows are already server-filtered and keyset-ordered newest-first. Re-sorting
+  // by mutable heartbeat/running state would invalidate the cursor contract.
+  const visible = rows;
+  const selectedTotal = showAll ? total : running;
+  const countEvidence = useMemo<CountEvidence>(() => {
+    if (error) return { kind: 'unknown', reason: 'failed' };
+    if (fetching) return { kind: 'unknown', reason: 'updating' };
+    if (selectedTotal == null) return { kind: 'unknown', reason: 'loading' };
+    return {
+      kind: 'window',
+      count: visible.length,
+      window: showAll ? 'loaded run history' : 'loaded running history',
+      corpusTotal: selectedTotal,
+    };
+  }, [error, fetching, selectedTotal, visible.length, showAll]);
+  const countLabel = useMemo(() => filterCountLabel(countEvidence, 'run'), [countEvidence]);
+  const loadMore = useCallback(() => {
+    if (nextCursor) setCursor(nextCursor);
+  }, [nextCursor]);
 
   const columns = useMemo<ColumnDef<HarnessAgentRun>[]>(
     () => [
@@ -612,8 +673,6 @@ function RunsView({
     [],
   );
 
-  const runningCount = agents?.filter((r) => r.running).length ?? 0;
-
   return (
     <>
       <div className="pc-advpanel__bar">
@@ -625,10 +684,17 @@ function RunsView({
           onClick={() => void setShowAll((v) => !v)}
         >
           {showAll ? 'All' : 'Running only'}{' '}
-          <span className="pc-adv-agents__count">{visible.length}</span>
+          <span
+            className="pc-adv-agents__count"
+            data-testid="agent-runs-count"
+            aria-live="polite"
+            aria-label={countLabel.ariaLabel}
+          >
+            {countLabel.summary}
+          </span>
         </button>
-        {!showAll && runningCount === 0 && agents && agents.length > 0 ? (
-          <span className="pc-adv-agents__hint">{total} total — none running</span>
+        {!showAll && !fetching && running === 0 && (total ?? 0) > 0 ? (
+          <span className="pc-adv-agents__hint">0 running · {total} total</span>
         ) : null}
         <Tooltip label="Refresh agent runs">
           <button
@@ -648,7 +714,7 @@ function RunsView({
         <div className="pc-adv-agents__list">
           <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>
         </div>
-      ) : loading ? (
+      ) : loading && rows.length === 0 ? (
         <div className="pc-adv-agents__list">
           <div className="pc-advpanel__empty">Loading {slug}…</div>
         </div>
@@ -667,6 +733,7 @@ function RunsView({
           getRowBg={(r) => (r.featureId && r.featureId === selectedId ? SELECTED_ROW_BG : undefined)}
           headerHeight={30}
           rowMinHeight={30}
+          onEndReached={nextCursor ? loadMore : undefined}
           empty={
             <div className="pc-advpanel__empty">
               {showAll ? 'No agent runs for this harness yet.' : 'No agents running.'}

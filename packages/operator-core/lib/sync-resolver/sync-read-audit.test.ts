@@ -101,7 +101,7 @@ describe('sync-read audit — budget evaluation', () => {
     // sets maxBytes alone, so each is still held to the DEFAULT latency ceiling —
     // pinned because silently widening it would hide the regressions the
     // ratchetRegressions bucket exists to surface.
-    const name = 'agentRunsConsolidated.bySlug';
+    const name = 'codeRecipes';
     expect(SYNC_READ_ALLOWLIST[name].maxMs).toBeUndefined();
     const r = evaluateBudget(name, 10, LATENCY_BUDGET_MS + 1);
     expect(r.msCeil).toBe(LATENCY_BUDGET_MS);
@@ -111,27 +111,27 @@ describe('sync-read audit — budget evaluation', () => {
 
   it('an allowlisted query is judged against its RAISED ceiling', () => {
     // Derived from the registry, NOT hard-coded: these budgets are deliberately
-    // RATCHETED DOWN as each query is slimmed (P-028 took this one 1.1MB → 600KB),
+    // RATCHETED DOWN as each query is slimmed,
     // and a literal here turns every ratchet into an unrelated red.
-    const ceiling = SYNC_READ_ALLOWLIST['agentRunsConsolidated.bySlug'].maxBytes!;
+    const ceiling = SYNC_READ_ALLOWLIST.codeRecipes.maxBytes!;
     expect(ceiling).toBeGreaterThan(PAYLOAD_BUDGET_BYTES); // it IS a raised ceiling
-    expect(evaluateBudget('agentRunsConsolidated.bySlug', ceiling - 1, 10).overBudget).toBe(false);
-    expect(evaluateBudget('agentRunsConsolidated.bySlug', ceiling + 1, 10).overBudget).toBe(true);
-    expect(evaluateBudget('agentRunsConsolidated.bySlug', ceiling - 1, 10).allowlisted).toBe(true);
+    expect(evaluateBudget('codeRecipes', ceiling - 1, 10).overBudget).toBe(false);
+    expect(evaluateBudget('codeRecipes', ceiling + 1, 10).overBudget).toBe(true);
+    expect(evaluateBudget('codeRecipes', ceiling - 1, 10).allowlisted).toBe(true);
   });
 });
 
 describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fake fetch)', () => {
   it('ranks by bytes desc, flags non-allowlisted violations, skips null fixtures', async () => {
     // Fake operator: featuresConsolidated.bySlug small (ok), a synthetic fat query
-    // over budget (violation), agentRunsConsolidated.bySlug fat-but-allowlisted.
+    // over budget (violation), codeRecipes fat-but-allowlisted.
     const bodies: Record<string, string> = {
       'featuresConsolidated.bySlug': JSON.stringify({ rows: [{ a: 1 }, { a: 2 }] }),
       // Fat enough to clear the DEFAULT budget but under this query's raised
       // ceiling — sized from the registry so a budget ratchet doesn't red this.
-      'agentRunsConsolidated.bySlug': JSON.stringify({
+      codeRecipes: JSON.stringify({
         rows: Array.from({ length: 10 }, () => ({
-          x: 'y'.repeat(Math.floor((PAYLOAD_BUDGET_BYTES + SYNC_READ_ALLOWLIST['agentRunsConsolidated.bySlug'].maxBytes!) / 2 / 10)),
+          x: 'y'.repeat(Math.floor((PAYLOAD_BUDGET_BYTES + SYNC_READ_ALLOWLIST.codeRecipes.maxBytes!) / 2 / 10)),
         })),
       }),
       'workItems.stats': 'X'.repeat(PAYLOAD_BUDGET_BYTES + 5000), // over budget, NOT allowlisted → violation
@@ -147,7 +147,7 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
       token: 't',
       fixtures: {
         'featuresConsolidated.bySlug': { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
-        'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
+        codeRecipes: {},
         'workItems.stats': { harnessSlug: 'papercusp' },
         'workItems.detail': null, // skipped, never fetched
       },
@@ -157,11 +157,11 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     // workItems.detail has a null fixture → skipped, never fetched.
     expect(report.skipped).toContain('workItems.detail');
     // sorted by bytes desc → the fat allowlisted run list first.
-    expect(report.measured[0].name).toBe('agentRunsConsolidated.bySlug');
+    expect(report.measured[0].name).toBe('codeRecipes');
     // the only non-allowlisted over-budget read is workItems.stats.
     expect(report.violations.map((v) => v.name)).toEqual(['workItems.stats']);
     // the allowlisted fat query is measured but NOT a violation.
-    const runs = report.measured.find((m) => m.name === 'agentRunsConsolidated.bySlug')!;
+    const runs = report.measured.find((m) => m.name === 'codeRecipes')!;
     expect(runs.allowlisted).toBe(true);
     expect(runs.overBudget).toBe(false);
     expect(runs.rows).toBe(10);
@@ -179,7 +179,7 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
    * 633,664 B against a ratcheted 500,000 and appeared nowhere.
    */
   it('an allowlisted read OVER ITS OWN ceiling is a ratchetRegression, not silence', async () => {
-    const name = 'agentRunsConsolidated.bySlug';
+    const name = 'codeRecipes';
     const ceiling = SYNC_READ_ALLOWLIST[name].maxBytes!;
     const fakeFetch = (async () => ({
       ok: true,
@@ -191,7 +191,7 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     const report = await measureSyncReadPayloadsViaRest({
       baseUrl: 'http://x',
       token: 't',
-      fixtures: { [name]: { harnessSlug: 'papercusp' } },
+      fixtures: { [name]: {} },
       fetchImpl: fakeFetch,
     });
 
@@ -209,11 +209,11 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     const fakeFetch = (async (url: string) => {
       const name = new URL(url).searchParams.get('name')!;
       // workItems.stats: unallowlisted + fat → violation.
-      // agentRunsConsolidated.bySlug: allowlisted, and fat ENOUGH to clear its own
+      // codeRecipes: allowlisted, and fat ENOUGH to clear its own
       // raised ceiling → ratchetRegression.
       const body = name === 'workItems.stats'
         ? fat
-        : 'X'.repeat(SYNC_READ_ALLOWLIST['agentRunsConsolidated.bySlug'].maxBytes! + 1);
+        : 'X'.repeat(SYNC_READ_ALLOWLIST.codeRecipes.maxBytes! + 1);
       return { ok: true, status: 200, text: async () => body } as Response;
     }) as unknown as typeof fetch;
 
@@ -222,7 +222,7 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
       token: 't',
       fixtures: {
         'workItems.stats': { harnessSlug: 'papercusp' },
-        'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
+        codeRecipes: {},
       },
       fetchImpl: fakeFetch,
     });

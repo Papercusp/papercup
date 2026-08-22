@@ -114,7 +114,11 @@ describe('queryNamesForTriggerEvent', () => {
       ]),
     );
     expect(queryNamesForTriggerEvent('harness_shared.agent_runs_consolidated.changed')).toEqual(
-      expect.arrayContaining(['agentRunsConsolidated.bySlug', 'agentRunsConsolidated.recent']),
+      expect.arrayContaining([
+        'agentRunsConsolidated.bySlug',
+        'agentRunsConsolidated.summary',
+        'agentRunsConsolidated.recent',
+      ]),
     );
   });
 });

@@ -81,6 +81,23 @@ export function filterCountLabel(
     }
     if (evidence.corpusTotal != null) assertCount(evidence.corpusTotal, 'corpusTotal');
     const count = formatCountNumber(evidence.count);
+    // An unfiltered bounded page with a known corpus total is the common
+    // paginated-list case. Say the relationship directly (P-008 Agent Runs)
+    // rather than making the reader infer it from two clauses.
+    if (evidence.windowTotal == null && evidence.corpusTotal != null) {
+      if (evidence.count > evidence.corpusTotal) {
+        throw new RangeError('window count cannot exceed corpusTotal');
+      }
+      const total = formatCountNumber(evidence.corpusTotal);
+      const title = `${count} of ${total}`;
+      const summary = `Showing ${title} ${pluralNoun(noun, evidence.corpusTotal)}`;
+      return {
+        title,
+        summary,
+        ariaLabel: `${summary} from ${evidence.window}`,
+        evidence: evidence.kind,
+      };
+    }
     const title = evidence.windowTotal == null
       ? `${count} · ${evidence.window}`
       : `${count} of ${formatCountNumber(evidence.windowTotal)} · ${evidence.window}`;

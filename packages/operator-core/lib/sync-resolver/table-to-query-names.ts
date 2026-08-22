@@ -569,6 +569,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   ],
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',
+    'agentRunsConsolidated.summary',
     'agentRunsConsolidated.recent',
     'featureTimeline.byFeature',
   ],
@@ -579,6 +580,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // workItems.byHarness joins the latest spawn per feature (spine position).
   'harness_shared.spawned_agents': [
     'agentRunsConsolidated.bySlug',
+    'agentRunsConsolidated.summary',
     'agentRunsConsolidated.recent',
     'workItems.byHarness',
     'workItems.summary',

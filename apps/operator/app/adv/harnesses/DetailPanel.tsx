@@ -149,12 +149,6 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // The Features/Issues panels subscribe to the same queries → Zero dedups.
   const { features, patchFeature } = useHarnessFeatures(slug);
   const { issues, patchIssue } = useHarnessIssues(slug);
-  const { data: runRows } = useSyncQuery<RunRow>({
-    queryName: 'agentRunsConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug } : undefined,
-    enabled: !!slug,
-  });
-
   // Select-from-Detail (related issue/feature cross-links) drives the global
   // ?sel so the swap panel follows, even when invoked from a pinned panel.
   const onSelect = useCallback(
@@ -199,6 +193,19 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // list key), so the Description prose shows the full summary. Enabled only while
   // a feature is actually selected. Mirrors the workItems.byHarness/.detail split.
   const featureDetailWorkspaceId = useWorkspaceId();
+  // P-008: the detail renders at most three runs for ONE selected feature. Push
+  // that predicate + limit into the existing agent-runs keyset query instead of
+  // subscribing this pane to the harness-wide history window.
+  const { data: runRows } = useSyncQuery<RunRow>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: {
+      harnessSlug: slug,
+      workspaceId: featureDetailWorkspaceId,
+      featureId: kind === 'feature' ? selectedId : '',
+      limit: 3,
+    },
+    enabled: Boolean(slug) && kind === 'feature' && Boolean(selectedId),
+  });
   // The id arg is kind-scoped (WI-39558): a non-feature selection must not
   // ripple its id into this then-disabled query's args — each ripple forks a
   // phantom react-query cache key and churns the observer for nothing. Same

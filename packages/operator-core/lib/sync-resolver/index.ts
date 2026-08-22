@@ -66,6 +66,15 @@ import {
   type WorkItemsListWireArgs,
 } from './work-items-list-query';
 import {
+  AGENT_RUNS_PAGE_LIMIT,
+  agentRunsSummarySelection,
+  buildAgentRunsPredicate,
+  normalizeAgentRunsListArgs,
+  readAgentRunsPageFromStore,
+  readAgentRunsSummaryFromStore,
+  type AgentRunsListWireArgs,
+} from './agent-runs-list-query';
+import {
   LEARNING_OBSERVATIONS_PAGE_LIMIT,
   buildLearningObservationsPredicate,
   isDefaultLearningObservationsPage,
@@ -153,6 +162,15 @@ const workItemsListArgsSchema = z.object({
   limit: clampedLimit(WORK_ITEMS_CURSOR_PAGE_LIMIT, WORK_ITEMS_CURSOR_PAGE_LIMIT),
   states: z.array(z.string().max(40)).max(20).optional(),
   perState: clampedLimitOpt(WORK_ITEMS_FAIR_STATE_LIMIT),
+});
+
+const agentRunsListArgsSchema = z.object({
+  harnessSlug: z.string().trim().min(1).max(200),
+  workspaceId: z.string().trim().min(1).max(200).optional(),
+  runningOnly: z.boolean().optional(),
+  featureId: z.string().trim().max(300).optional(),
+  cursor: z.string().max(2_000).nullable().optional(),
+  limit: clampedLimit(AGENT_RUNS_PAGE_LIMIT, AGENT_RUNS_PAGE_LIMIT),
 });
 
 const learningObservationsFiltersSchema = z.object({
@@ -341,12 +359,6 @@ export function toAgentMessageRow(
   };
 }
 
-// Default cap for the unbounded agentRunsConsolidated.bySlug list read (P-004,
-// whole-app-sync-payload-audit-2026-07-19). Matches the workItems.byHarness window —
-// the run-history grid ships recent activity, not unbounded history. The true total
-// still rides row[0]._meta so the count label is honest.
-const RUNS_LIST_CAP = 2000;
-
 // Coerce any top-level BigInt field on each row to a Number so the rows survive the
 // rest-query serializer (a plain JSON.stringify, which THROWS on a BigInt → a 500
 // whenever the resolver returns rows). A bigserial({ mode: 'bigint' }) PK (user_actions.id
@@ -423,180 +435,6 @@ export { NAME_NOT_FOUND, type NameNotFound } from '@papercusp/sync/server';
 // audited 2026-05-24. As each lands, the corresponding ZQL entry in
 // libs/zero-harness/src/queries.ts becomes dead code (to be deleted
 // at the P-022 cutover).
-
-/**
- * Shared resolve for the `agentRunsConsolidated.*` queries
- * (adv-harness-tab-migration P-023): the run feed is the FULL OUTER union of
- * the two run stores, in the consolidated row shape —
- *
- *   - `agent_runs_consolidated` — the LEGACY store (its writer, the
- *     orchestrator run-loop, was retired 2026-06-06; rows stop 2026-06-02).
- *     Carries cost/token telemetry the spawn engine doesn't.
- *   - `spawned_agents` — the LIVE spawn engine's records. Carries the
- *     OUTCOME (`spawnStatus` running|done|failed|cancelled|reaped,
- *     `exitCode`, `errorMessage`) and the native resume `sessionId`
- *     (migration 203).
- *
- * Without the union, every post-cutover run is invisible to the Harnesses
- * tab (Recent activity / Agents panel / HealthBadge all read these names).
- * Rows present in both stores merge: telemetry from the consolidated row,
- * outcome/liveness from the spawn (the live authority).
- *
- * A run_id can map to more than one spawned_agents row (observed live:
- * restarted spawns), so the spawn side picks the LATEST row per
- * (harness_slug, run_id) via DISTINCT ON ordered by started_at DESC.
- *
- * Raw `sql` projections are cast ::float8 — drizzle's bigint→number column
- * mapping doesn't apply to sql`` columns, and the driver would otherwise
- * return bigints as strings.
- */
-async function resolveRunsWithOutcome(harnessSlug: string, workspaceId?: string, limit?: number): Promise<unknown[]> {
-  const { getOrgPg, generated } = await import('@papercusp/db-org');
-  const { and, desc, eq, sql } = await import('drizzle-orm');
-  const t = generated.agentRunsConsolidatedInHarnessShared;
-  const s = generated.spawnedAgentsInHarnessShared;
-  const { db } = getOrgPg();
-  // EI-1763 (helper-form): harness_slug is per-workspace-unique and getOrgPg bypasses
-  // RLS, so a slug-only filter cross-leaks runs across workspaces sharing a slug. Both
-  // stores (agent_runs_consolidated, spawned_agents) carry workspace_id. The block-grained
-  // coverage guard CANNOT see this leak (the `eq(s.harnessSlug,…)` is on an alias in this
-  // shared helper, outside any resolver block), so it is fixed here by hand. `workspaceId`
-  // is OPTIONAL (threaded from the caller's argsSchema) → unset preserves today's behavior.
-  const spawn = db
-    .selectDistinctOn([s.harnessSlug, s.runId], {
-      harnessSlug: s.harnessSlug,
-      workspaceId: s.workspaceId,
-      runId: s.runId,
-      childRole: s.childRole,
-      featureId: s.featureId,
-      startedAt: s.startedAt,
-      heartbeatAt: s.heartbeatAt,
-      spawnStatus: s.status,
-      exitCode: s.exitCode,
-      errorMessage: s.errorMessage,
-      sessionId: s.sessionId,
-    })
-    .from(s)
-    .where(
-      workspaceId != null
-        ? and(eq(s.harnessSlug, harnessSlug), eq(s.workspaceId, workspaceId))
-        : eq(s.harnessSlug, harnessSlug),
-    )
-    .orderBy(s.harnessSlug, s.runId, desc(s.startedAt))
-    .as('spawn');
-
-  const startedMs = sql`(extract(epoch from ${spawn.startedAt}) * 1000)::bigint`;
-  const heartbeatMs = sql`(extract(epoch from ${spawn.heartbeatAt}) * 1000)::bigint`;
-  const tsExpr = sql<number>`(coalesce(${t.ts}, ${startedMs}))::float8`;
-
-  // Wire projection slimmed to the fields the two consumers actually render
-  // (precompute-sync-reads-phase2 P-007). The runs GRID (useHarnessRuns →
-  // HarnessAgentRun) renders runId/role/ts/sizeBytes/running/lastEventTs/costUsd/
-  // featureId; the Detail pane's per-feature run list additionally uses
-  // spawnStatus/exitCode/errorMessage/sessionId (run-outcome chip + resume
-  // button). NOTHING renders durationMs, the 5 token fields, backend, model,
-  // costIsEstimate, createdTs, or updatedTs — and those come from the LEGACY
-  // `t` store (agent_runs_consolidated, writer retired 2026-06-06, ~17 rows),
-  // so for the ~1968 spawn-only rows in the 2000-row window each shipped as
-  // literal `:null` padding. On papercusp that dropped the bySlug payload from
-  // ~1.44MB by removing ~10 fields × 2000 rows of mostly-null keys. errorMessage
-  // (the one genuinely heavy field, capped 1000 by P-004) is RENDERED for the
-  // selected feature's runs so it stays.
-  // The coalesced feature id — projected below AND used as the gate on the
-  // detail-only `errorMessage` (see its comment).
-  const featureIdExpr = sql<string | null>`coalesce(${t.featureId}, ${spawn.featureId})`;
-  const q = db
-    .select({
-      // NOTE: `harnessSlug` is deliberately NOT projected (P-028/D-022) — it is
-      // redundant with the query's own `harnessSlug` argument and is declared by
-      // NEITHER consumer type (useHarnessData's `SyncAgentRow`, DetailPanel's
-      // `RunRow`). ~52KB of the papercusp window at the 2000-row cap.
-      runId: sql<string>`coalesce(${t.runId}, ${spawn.runId})`.as('runId'),
-      role: sql<string>`coalesce(${t.role}, ${spawn.childRole})`.as('role'),
-      featureId: featureIdExpr.as('featureId'),
-      ts: tsExpr.as('ts'),
-      sizeBytes: sql<number>`(coalesce(${t.sizeBytes}, 0))::float8`.as('sizeBytes'),
-      costUsd: t.costUsd,
-      // Liveness: the spawn engine is the authority when a spawn row exists
-      // (a finished spawn beats a stale consolidated running=true).
-      running: sql<boolean>`case
-        when ${spawn.runId} is not null then ${spawn.spawnStatus} in ('running', 'restarting')
-        else coalesce(${t.running}, false)
-      end`.as('running'),
-      lastEventTs: sql<number | null>`(coalesce(${heartbeatMs}, ${t.lastEventTs}))::float8`.as('lastEventTs'),
-      spawnStatus: spawn.spawnStatus,
-      exitCode: spawn.exitCode,
-      // Tooltip-sufficient truncation (whole-app-sync-payload-audit-2026-07-19 P-004):
-      // errorMessage is rendered ONLY as the failed/cancelled/reaped outcome-chip
-      // tooltip (run-outcome.ts) — a tooltip never needs a full message. Cap at 1000
-      // chars: the max observed was 2431, so this clips only the long tail while the
-      // chip + exit code stay fully intact.
-      //
-      // P-028/D-022 — and that cap almost never bit: measured over the real 2000-row
-      // papercusp window, errorMessage was 530,216 B = 51% of the ~1041KB payload, on
-      // 776 rows with a p50 length of 991. The decisive fact is WHERE it can render:
-      // the ONLY render path is run-outcome's `detail` → DetailPanel's
-      // `title={outcome.detail}`, inside `featureRuns` =
-      // `runs.filter(r => r.featureId === feature.id).slice(0, 3)`. `feature.id` is
-      // always a non-null string, so a row with a NULL featureId can never match and
-      // its errorMessage is unreachable — 464,840 B of the 530,216 rode on exactly
-      // those 1,874 rows. Gate on featureId instead of truncating harder: rows that
-      // CAN render keep the full 1000 chars (no rendered byte is lost), and the ~94%
-      // that cannot send `null`. ~457KB, ~43% of the query.
-      errorMessage: sql<string | null>`case
-        when ${featureIdExpr} is null then null
-        else left(${spawn.errorMessage}, 1000)
-      end`.as('errorMessage'),
-      sessionId: spawn.sessionId,
-    })
-    .from(t)
-    .fullJoin(spawn, and(eq(spawn.harnessSlug, t.harnessSlug), eq(spawn.runId, t.runId)))
-    .where(
-      // Scope the FULL-OUTER union by workspace too (EI-1763). The spawn subquery is
-      // already workspace-filtered; the coalesce here additionally scopes the LEGACY
-      // (`t`-only) rows — coalescing the two stores' workspace_id mirrors the harness_slug
-      // coalesce above so a legacy-only or live-only row is judged by whichever side exists.
-      workspaceId != null
-        ? and(
-            sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`,
-            sql`coalesce(${t.workspaceId}, ${spawn.workspaceId}) = ${workspaceId}`,
-          )
-        : sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`,
-    )
-    .orderBy(desc(tsExpr));
-  // Bound the LIST read (whole-app-sync-payload-audit-2026-07-19 P-004). `.recent`
-  // already passes limit 50; `.bySlug` used to be UNBOUNDED — on papercusp that was
-  // 5.7k runs ≈ 4.35MB re-shipped into the webview on every work_items write (the
-  // invalidation bridge). Unlike the feature/work-item lists there is little per-row
-  // waste here (costs/tokens/status all render), so the lever is the row count: the
-  // run-history grid only needs recent activity. Cap at RUNS_LIST_CAP and carry the
-  // TRUE total on row[0]._meta so the grid's count label stays honest (readListTotal);
-  // the count query runs ONLY when the cap is actually hit.
-  const effectiveLimit = limit ?? RUNS_LIST_CAP;
-  const rows = (await q.limit(effectiveLimit)) as Record<string, unknown>[];
-  if (rows.length < effectiveLimit) return attachListMeta(rows, { total: rows.length });
-  const total = await countRunsForHarness(harnessSlug, workspaceId);
-  return attachListMeta(rows, { total });
-}
-
-/** True run count for a harness = distinct (harness, run) across BOTH stores (the
- *  full-outer union the list read draws from). Cheap: two indexed scans + a UNION,
- *  and only called when the list read hit its cap (P-004). */
-async function countRunsForHarness(harnessSlug: string, workspaceId?: string): Promise<number> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
-  const scope =
-    workspaceId != null
-      ? sql`harness_slug = ${harnessSlug} AND workspace_id = ${workspaceId}`
-      : sql`harness_slug = ${harnessSlug}`;
-  const rows = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM (
-      SELECT run_id FROM harness_shared.agent_runs_consolidated WHERE ${scope}
-      UNION
-      SELECT run_id FROM harness_shared.spawned_agents WHERE ${scope}
-    ) u`;
-  return rows[0]?.n ?? 0;
-}
 
 /** WI-7232 — the LIST half of the Design dashboard's feature queue.
  *
@@ -1034,6 +872,39 @@ const workItemsListQueryPair = createCompanionListQueryPair({
     return readWorkItemsSummaryFromStore(getOrgPg().sql, activeWorkspaceId(), predicate);
   },
   summarySelection: workItemsSummarySelection,
+});
+
+const agentRunsListQueryPair = createCompanionListQueryPair({
+  domain: 'agentRunsConsolidated',
+  rowsQueryName: 'agentRunsConsolidated.bySlug',
+  argsSchema: agentRunsListArgsSchema,
+  backingTables: [
+    'harness_shared.agent_runs_consolidated',
+    'harness_shared.spawned_agents',
+  ] as const,
+  normalizeArgs: (args: AgentRunsListWireArgs) => normalizeAgentRunsListArgs(args),
+  buildPredicate: buildAgentRunsPredicate,
+  readPage: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+    ]);
+    const args = predicate.args.workspaceId
+      ? predicate
+      : buildAgentRunsPredicate({ ...predicate.args, workspaceId: activeWorkspaceId() });
+    return readAgentRunsPageFromStore(getOrgPg().sql, args);
+  },
+  readSummaryAggregateRows: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+    ]);
+    const args = predicate.args.workspaceId
+      ? predicate
+      : buildAgentRunsPredicate({ ...predicate.args, workspaceId: activeWorkspaceId() });
+    return readAgentRunsSummaryFromStore(getOrgPg().sql, args);
+  },
+  summarySelection: agentRunsSummarySelection,
 });
 
 const learningObservationsQueryPair = createCompanionListQueryPair({
@@ -3296,30 +3167,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // agentRunsConsolidated.bySlug — agent runs for a harness, latest first.
-  //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc')
-  // Each row carries the run's OUTCOME + native resume session id joined from
-  // spawned_agents (adv-harness-tab-migration P-023): spawnStatus / exitCode /
-  // errorMessage / sessionId, null for pre-spawn-engine rows.
-  'agentRunsConsolidated.bySlug': {
-    // EI-1763: workspaceId is optional + threaded into the helper's per-workspace
-    // scoping (harness_slug is per-workspace-unique on the RLS-bypassing connection).
-    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
-    resolve: async (args) => {
-      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
-      return resolveRunsWithOutcome(harnessSlug, workspaceId);
-    },
-  },
+  // P-008: one normalized harness/running/feature predicate backs the bounded
+  // keyset page and exact companion aggregate. The row projection still carries
+  // the joined spawn outcome + native resume session id.
+  'agentRunsConsolidated.bySlug': agentRunsListQueryPair.rowsEntry as QueryEntry<unknown>,
+  'agentRunsConsolidated.summary': agentRunsListQueryPair.summaryEntry as QueryEntry<unknown>,
 
   // agentRunsConsolidated.recent — agent runs for a harness, latest 50.
   //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(50)
   // Same joined outcome projection as .bySlug (P-023).
   'agentRunsConsolidated.recent': {
-    // EI-1763: see .bySlug — workspaceId threaded into the helper's scoping.
     argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
       const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
-      return resolveRunsWithOutcome(harnessSlug, workspaceId, 50);
+      return agentRunsListQueryPair.rowsEntry.resolve({ harnessSlug, workspaceId, limit: 50 });
     },
   },
 

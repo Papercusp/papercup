@@ -215,7 +215,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'agentChats.detail',
   'agentConfig.modelTiersBaseline',
   'agentDetail.byOwner',
-  'agentRunsConsolidated.bySlug',
   'agentRunsConsolidated.recent',
   'auditLog.operatorDecisions',
   'automation.catalog',

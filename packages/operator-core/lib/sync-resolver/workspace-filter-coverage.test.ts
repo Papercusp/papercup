@@ -88,10 +88,9 @@ const INDEX = resolve(HERE, 'index.ts');
 //
 // KNOWN LIMITATION (block-grained): a slug-only read whose `eq(...harnessSlug...)` lives in
 // a SHARED HELPER called from the block (not inside the block body) is invisible to this
-// guard. The one such case — agentRunsConsolidated.* → resolveRunsWithOutcome (filters on
-// the `s`/`t` aliases in a top-level fn) — has been FIXED BY HAND (EI-1763): the helper now
-// threads an optional workspaceId into both the spawn subquery and the full-outer coalesce
-// join, and its two registry entries expose `workspaceId` in argsSchema. No known helper-form
+// guard. The one such case — agentRunsConsolidated.* → agent-runs-list-query.ts — is
+// FIXED BY HAND (EI-1763 / P-008): the helper scopes both stores and includes workspace_id
+// in the live/legacy full-outer join key; the registry schema exposes `workspaceId`. No known helper-form
 // leak remains; this note stands as the reason a future one could still slip past the guard
 // (the guard only inspects per-block bodies), so a slug-filtering helper must scope by hand.
 const OPEN_UNFILTERED: Record<string, string> = {

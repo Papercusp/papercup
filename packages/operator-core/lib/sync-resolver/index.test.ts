@@ -157,6 +157,7 @@ describe('sync-resolver v2 registry', () => {
         'featuresConsolidated.bySlug',
         'issuesConsolidated.bySlug',
         'agentRunsConsolidated.bySlug',
+        'agentRunsConsolidated.summary',
         'agentRunsConsolidated.recent',
         'snapshotsConsolidated.bySlug',
       ]) {

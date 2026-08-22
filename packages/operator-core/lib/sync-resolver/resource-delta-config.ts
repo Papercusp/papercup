@@ -66,10 +66,9 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // fair per-status slice). Each is its own viewKey (the route keys on `name:argsJson`), and
   // `id` is unique within any of them because a work-item holds exactly one state.
   'workItems.byHarness': { itemKeyField: 'id', schemaVersion: 'work-items-byharness-v1' },
-  // agentRunsConsolidated.bySlug — 2,000 rows / 554,871 B; `runId` distinct 2000/2000.
-  // (`sessionId` collides 123/2000 and `featureId` 87/2000 — neither is usable as the key.)
-  // Mostly-historical corpus: only genuinely running rows churn per tick, so the steady-state
-  // delta is small even though the view is the largest of the three.
+  // agentRunsConsolidated.bySlug — P-008 reduced each request to a 250-row keyset page;
+  // `runId` remains distinct within every workspace/harness page. (`sessionId` and
+  // `featureId` both collide, so neither is a valid delta key.)
   'agentRunsConsolidated.bySlug': { itemKeyField: 'runId', schemaVersion: 'agent-runs-consolidated-v1' },
   // featuresConsolidated.bySlug — 1,645 rows / 516,096 B; `featureId` distinct 1645/1645.
   // ⚠ This resource is EXPLICITLY BARRED from slimming/windowing (the resolver states the full

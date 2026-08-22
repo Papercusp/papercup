@@ -28,9 +28,10 @@ vi.mock('@papercusp/grid-core', () => ({
   // Both sub-views render via VirtualGrid (RichGrid + an owned virtualizer); the
   // mock renders `rows` (the empty `empty` slot when there are none) so the
   // assertions key off the same row buttons.
-  VirtualGrid: ({ rows, onRowClick, getRowId, empty }: {
+  VirtualGrid: ({ rows, onRowClick, getRowId, empty, onEndReached }: {
     rows?: unknown[];
     onRowClick?: (r: unknown) => void; getRowId?: (r: unknown) => string; empty?: ReactNode;
+    onEndReached?: () => void;
   }) => {
     const data = rows ?? [];
     if (data.length === 0 && empty) return <div data-testid="grid">{empty}</div>;
@@ -40,6 +41,7 @@ vi.mock('@papercusp/grid-core', () => ({
           const id = getRowId ? getRowId(r) : String(i);
           return <button key={id} data-testid={`row-${id}`} onClick={() => onRowClick?.(r)}>{id}</button>;
         })}
+        {onEndReached ? <button data-testid="grid-load-more" onClick={onEndReached}>more</button> : null}
       </div>
     );
   },
@@ -62,16 +64,46 @@ vi.mock('../../coord/presence-ui', () => ({ LivenessDot: () => <span data-testid
 vi.mock('../../harness/filters', () => ({
   useColumnFilters: (_c: unknown, rows: unknown[]) => ({ rows, controller: {}, activeChips: [], hasActive: false, clearAll: vi.fn() }),
   ColumnFilterBar: () => <div data-testid="filter-bar" />,
+  filterCountLabel: (evidence: { kind: string; count?: number; corpusTotal?: number }, noun = 'item') => {
+    if (evidence.kind === 'unknown') {
+      return { title: '—', summary: 'Count updating…', ariaLabel: 'Count updating…', evidence: 'unknown' };
+    }
+    const count = evidence.count ?? 0;
+    const total = evidence.corpusTotal ?? count;
+    const summary = `Showing ${count.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${noun}${total === 1 ? '' : 's'}`;
+    return { title: `${count} of ${total}`, summary, ariaLabel: summary, evidence: evidence.kind };
+  },
 }));
-let runsState: { agents: unknown[] | null; total: number; loading: boolean; error: string | null; refresh: () => void };
+let runsState: {
+  agents: Array<{ running?: boolean }> | null;
+  total: number | null;
+  matched: number | null;
+  running: number | null;
+  nextCursor: string | null;
+  fetching: boolean;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+};
 const refreshMock = vi.fn();
-vi.mock('./useHarnessData', () => ({ useHarnessAgents: () => runsState }));
+let seenRunsOptions: { runningOnly?: boolean; cursor?: string | null } | undefined;
+vi.mock('./useHarnessData', () => ({
+  useHarnessAgents: (_slug: string, options?: { runningOnly?: boolean; cursor?: string | null }) => {
+    seenRunsOptions = options;
+    return {
+      ...runsState,
+      agents: options?.runningOnly && runsState.agents
+        ? runsState.agents.filter((row) => row.running)
+        : runsState.agents,
+    };
+  },
+}));
 
 // Lexicon resolver echoes its key (t('brain') → 'brain') — isolates the routed
 // kind-legend copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import AdvAgentsPanel from './AdvAgentsPanel';
+import AdvAgentsPanel, { mergeAgentRunPage } from './AdvAgentsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
 
 function agent(over: Partial<WorkingAgent> & { agentId: string }): WorkingAgent {
@@ -104,8 +136,19 @@ beforeEach(() => {
   // total (5734) is deliberately > RUNS.length (the list read is capped at
   // RUNS_LIST_CAP, P-004) so the count-label assertion proves it reads the true
   // store total from _meta, not the loaded window length.
-  runsState = { agents: RUNS, total: 5734, loading: false, error: null, refresh: refreshMock };
+  runsState = {
+    agents: RUNS,
+    total: 5734,
+    matched: 1,
+    running: 1,
+    nextCursor: null,
+    fetching: false,
+    loading: false,
+    error: null,
+    refresh: refreshMock,
+  };
   setTitle.mockReset(); invalidateMock.mockReset(); refreshMock.mockReset();
+  seenRunsOptions = undefined;
 });
 afterEach(cleanup);
 
@@ -175,12 +218,12 @@ describe('AdvAgentsPanel · WorkingView', () => {
 
 describe('AdvAgentsPanel · RunsView', () => {
   it('shows the loading state', () => {
-    runsState = { agents: null, total: 0, loading: true, error: null, refresh: refreshMock };
+    runsState = { ...runsState, agents: null, total: null, matched: null, running: null, loading: true };
     renderPanel('alpha', '?agentsView=runs');
     expect(screen.getByText(/Loading alpha/i)).toBeTruthy();
   });
   it('shows the error state', () => {
-    runsState = { agents: null, total: 0, loading: false, error: 'nope', refresh: refreshMock };
+    runsState = { ...runsState, agents: null, total: null, matched: null, running: null, loading: false, error: 'nope' };
     renderPanel('alpha', '?agentsView=runs');
     expect(screen.getByText(/Failed: nope/i)).toBeTruthy();
   });
@@ -207,7 +250,49 @@ describe('AdvAgentsPanel · RunsView', () => {
   it('titles the runs view with the TRUE store total, not the capped window length', () => {
     // P-004: the list read is capped (RUNS_LIST_CAP), so only a window of rows loads
     // (RUNS has 2) but the label must report the true store total (5734 via _meta).
-    renderPanel('alpha', '?agentsView=runs');
+    renderPanel('alpha', '?agentsView=runs&agentsAll=true');
     expect(setTitle).toHaveBeenCalledWith('Agents · alpha (5734 runs)');
+  });
+
+  it('titles Running only with the exact active and corpus totals', () => {
+    renderPanel('alpha', '?agentsView=runs');
+    expect(setTitle).toHaveBeenCalledWith('Agents · alpha (1 running · 5734 total)');
+  });
+
+  it('renders explicit shown/total evidence for both server modes', () => {
+    renderPanel('alpha', '?agentsView=runs');
+    expect(seenRunsOptions?.runningOnly).toBe(true);
+    expect(screen.getByTestId('agent-runs-count').textContent).toBe('Showing 1 of 1 run');
+    fireEvent.click(screen.getByRole('button', { name: /Running only/i }));
+    expect(seenRunsOptions?.runningOnly).toBe(false);
+    expect(screen.getByTestId('agent-runs-count').textContent).toBe('Showing 2 of 5,734 runs');
+  });
+
+  it('passes the server cursor forward when the virtual grid reaches the end', async () => {
+    runsState = { ...runsState, nextCursor: 'cursor-2' };
+    renderPanel('alpha', '?agentsView=runs');
+    fireEvent.click(screen.getByTestId('grid-load-more'));
+    await waitFor(() => expect(seenRunsOptions?.cursor).toBe('cursor-2'));
+  });
+
+  it('renders the exact zero-running state without falling back to page length', () => {
+    runsState = { ...runsState, agents: [], matched: 0, running: 0 };
+    renderPanel('alpha', '?agentsView=runs');
+    expect(screen.getByText('0 running · 5734 total')).toBeTruthy();
+    expect(screen.getByTestId('agent-runs-count').textContent).toBe('Showing 0 of 0 runs');
+  });
+});
+
+describe('mergeAgentRunPage', () => {
+  it('replaces page one and appends cursor pages without duplicate run ids', () => {
+    const first = RUNS as never[];
+    expect(mergeAgentRunPage([], first, null)).toEqual(first);
+    const appended = mergeAgentRunPage(first, [
+      { ...RUNS[1], role: 'updated' },
+      { ...RUNS[0], runId: 'r3' },
+    ] as never[], 'cursor-1');
+    expect(appended.map((row) => row.runId)).toEqual(['r1', 'r2', 'r3']);
+    expect(appended.find((row) => row.runId === 'r2')?.role).toBe('updated');
+    expect(mergeAgentRunPage(appended, [RUNS[0]] as never[], null)).toEqual([RUNS[0]]);
   });
 });
