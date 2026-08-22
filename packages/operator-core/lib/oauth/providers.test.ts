@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CLAUDE_OAUTH_DEFAULTS,
+  GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
+  GOOGLE_CONTACTS_READONLY_SCOPE,
   GOOGLE_WORKSPACE_SCOPES,
   compareScopes,
   loadGoogleProviderFromDesktopClientFile,
@@ -80,8 +82,11 @@ describe('Google Workspace Desktop OAuth provider', () => {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.compose',
       'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/contacts.readonly',
+      GOOGLE_CONTACTS_READONLY_SCOPE,
     ]);
+    expect(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT).toBe(
+      'https://people.googleapis.com/v1/people/me/connections',
+    );
   });
 
   it('keeps the verifier server-side and sends only its S256 challenge', async () => {

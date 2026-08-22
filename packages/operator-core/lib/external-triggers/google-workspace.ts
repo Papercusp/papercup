@@ -5,7 +5,11 @@ import {
   upsertOwnedExternalTriggerSource,
 } from './source-store';
 import { ensureExternalTriggerBinding } from './admin';
-import { getProvider, loadAndRegisterProvidersFromDisk } from '../oauth/providers';
+import {
+  GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
+  getProvider,
+  loadAndRegisterProvidersFromDisk,
+} from '../oauth/providers';
 import { fsTokenStorage } from '../oauth/storage-fs';
 import { getOAuthToken } from '../oauth/token';
 
@@ -16,6 +20,33 @@ export const GOOGLE_CALENDAR_MEETING_PREP_PLAN = 'meeting-prep-brief-2026-08-22'
 export const GOOGLE_CALENDAR_MEETING_PREP_EVENT = 'ext:gcal:event-upcoming';
 const OAUTH_FIELD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface GoogleContactsProbeResult {
+  status: number;
+  endpoint: string;
+}
+
+/**
+ * Validate a Google token against the Contacts permission it actually needs.
+ * Do not replace this with GET `/v1/people/me`: that profile-only resource
+ * rejects a valid `contacts.readonly` token with 403.
+ */
+export async function probeGoogleContactsAccess(
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GoogleContactsProbeResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_contacts_access_token_required');
+
+  const url = new URL(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT);
+  url.searchParams.set('personFields', 'names,emailAddresses');
+  url.searchParams.set('pageSize', '1');
+  const response = await fetchImpl(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`google_contacts_${response.status}`);
+  return { status: response.status, endpoint: url.toString() };
+}
 
 export function googleWorkspaceOAuthField(credentialRef: string | null): string {
   const prefix = `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`;

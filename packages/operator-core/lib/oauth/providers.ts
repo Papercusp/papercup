@@ -160,11 +160,21 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
 
 /* ─── Google Workspace installed-app provider ─── */
 
+/** Scope required by the People API connections resource used for Contacts. */
+export const GOOGLE_CONTACTS_READONLY_SCOPE = 'https://www.googleapis.com/auth/contacts.readonly';
+
+/**
+ * Contacts validation must use `connections.list`. The superficially similar
+ * `/v1/people/me` profile resource requires the `profile` scope and therefore
+ * returns 403 for a token that correctly has only `contacts.readonly`.
+ */
+export const GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT = 'https://people.googleapis.com/v1/people/me/connections';
+
 export const GOOGLE_WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/contacts.readonly',
+  GOOGLE_CONTACTS_READONLY_SCOPE,
 ] as const;
 
 export const GOOGLE_OAUTH_CLIENT_PATH = join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');

@@ -1,5 +1,6 @@
 import type { Sql } from 'postgres';
 import { requireExternalTriggerSourceOwner } from '../external-triggers/source-store';
+import { GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT } from '../oauth/providers';
 import type { PersonalDocumentInput } from './types';
 import { setPersonalSyncState, upsertPersonalDocuments } from './store';
 
@@ -109,7 +110,7 @@ export async function syncGoogleContacts(
   let contacts = 0;
   let pages = 0;
   do {
-    const url = new URL('https://people.googleapis.com/v1/people/me/connections');
+    const url = new URL(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT);
     url.searchParams.set('personFields', 'names,emailAddresses,phoneNumbers,organizations');
     url.searchParams.set('pageSize', '1000');
     if (pageToken) url.searchParams.set('pageToken', pageToken);
