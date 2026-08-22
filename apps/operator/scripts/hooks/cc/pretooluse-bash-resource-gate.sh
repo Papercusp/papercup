@@ -5112,7 +5112,14 @@ if raw_resp is None:
     allow()
 
 result = _gate_result(raw_resp)
-if result is None and 'Unrecognized key' in (raw_resp or ''):
+_schema_skew = (
+    'Unrecognized key' in (raw_resp or '')
+    and (
+        result is None
+        or (isinstance(result, dict) and result.get('isError') is True)
+    )
+)
+if _schema_skew:
     print('[resource-gate] operator rejected an argument (schema skew — hook is ahead of '
           'the deployed tool; see WI-40602); retrying without `cwd`. Substitution matching '
           'is degraded until the green gate deploys; resource-gate intact.', file=sys.stderr)

@@ -5570,13 +5570,17 @@ describe('schema skew between the hook and the deployed tool (WI-40602)', () => 
              const a = JSON.parse(raw)?.params?.arguments ?? {};
              hasCwd = Object.prototype.hasOwnProperty.call(a, 'cwd');
            } catch {}
-           res.writeHead(200, { 'Content-Type': 'application/json' });
            if (hasCwd) {
-             // Byte-for-byte the deployed operator's refusal.
-             res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32602,
-               message: 'invalid_args: Unrecognized key: "cwd" — this tool accepts ONLY: command.' } }));
+             // Byte-for-byte the deployed operator's refusal: HTTP 200 with
+             // a truthy MCP result whose isError flag carries the rejection.
+             res.writeHead(200, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
+               content: [{ type: 'text', text:
+                 'invalid_input: invalid_args: Unrecognized key: "cwd" — this tool accepts ONLY: command.' }],
+               isError: true } }));
              return;
            }
+           res.writeHead(200, { 'Content-Type': 'application/json' });
            res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text',
              text: JSON.stringify({ ok: true, decision: 'block', matched: [{ resource: 'dev:restart' }] }) }] } }));
          });
