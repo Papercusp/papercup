@@ -179,6 +179,69 @@ describe('every audited pair carries a usable routing row', () => {
 });
 
 /**
+ * The routing cell must not recommend a WEAKER call than the pair's own evidence
+ * proved equivalent.
+ *
+ * `cover()` earns its `equivalent` verdict by translating each sampled command
+ * into a concrete call — arguments included. `routing.use` is prose, written by
+ * hand, and nothing tied the two together: a cell could name the right verb (the
+ * assertion directly above) while silently dropping an argument every sampled
+ * command carried. The verb is then right and the ANSWER is wrong, which is worse
+ * than a missing row — an agent follows the table, gets a well-formed result about
+ * the wrong subject, and has no reason to doubt it.
+ *
+ * Measured instance (EI-21154409410297616): every atom in `sql.gate-health`
+ * scopes by `install_slug='papercusp'`, and `gateHealthCallFromQuery` faithfully
+ * emits `installSlug`. The table cell said `routines:list { name:'green-checkpoint' }`.
+ * On this box that returns one row per INSTALL (21), the payload shaper truncates
+ * to 12, and row 1 is another pot's gate reading `consecutiveReds: 0` — healthy.
+ * An agent triaging a 35-red shared gate read row 1 and reported it green.
+ *
+ * UNANIMITY is the test, not mere presence: an argument only some atoms carry is a
+ * genuinely optional narrowing and belongs in `advisoryText`, not the 300-char
+ * cell. One that EVERY covered atom carries is part of what the sample proved, and
+ * omitting it makes the recommendation unfaithful to its own evidence.
+ */
+describe('a routing cell recommends no weaker a call than cover() verified', () => {
+  const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+
+  /** Argument keys in a rendered `verb { a: 1, b: 2 }` expression. */
+  const argKeysOf = (expression: string): string[] =>
+    [...(/\{([\s\S]*)\}/.exec(expression)?.[1] ?? '').matchAll(/(\w+)\s*:/g)].map((m) => m[1]!);
+
+  const withFixtures = ALL_PAIRS.filter((p) => existsSync(join(FIXTURES, `${p.id}.sample.json`)));
+
+  // A guard over an empty set silently passes; assert the population is real.
+  it('has pairs with fixtures to check', () => {
+    expect(withFixtures.length).toBeGreaterThan(3);
+  });
+
+  it.each(withFixtures.map((p) => [p.id, p] as const))('%s', (_id, p) => {
+    const fixture = JSON.parse(
+      readFileSync(join(FIXTURES, `${p.id}.sample.json`), 'utf8'),
+    ) as { sample: Array<{ atom: string }> };
+
+    const coveredKeys = fixture.sample
+      .map((s) => p.cover(s.atom))
+      .filter((r): r is { covered: true; expression: string } => r.covered && !!r.expression)
+      .map((r) => argKeysOf(r.expression));
+
+    // Nothing covered ⇒ this pair's faithfulness is another test's job.
+    if (coveredKeys.length === 0) return;
+
+    const unanimous = coveredKeys[0]!.filter((k) => coveredKeys.every((keys) => keys.includes(k)));
+
+    for (const key of unanimous) {
+      expect(
+        p.routing.use,
+        `${p.id}.routing.use omits \`${key}\`, which cover() emits for ALL ${coveredKeys.length} covered sample atom(s). ` +
+          `The cell would have an agent run a broader call than the one this pair proved equivalent.`,
+      ).toContain(key);
+    }
+  });
+});
+
+/**
  * D-006's "the two must never disagree about a relation's verb", as a guard.
  *
  * There are TWO surfaces telling an agent which verb answers a relation, and
