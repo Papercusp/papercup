@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { buildPersonalAmbientContextBlock, type PersonalAmbientDeps } from './ambient';
 import { authorizePersonalAccess } from './authorization';
 import {
   createPersonalGrant,
@@ -70,6 +71,40 @@ describe('Personal Vault core', () => {
     expect(granted).toMatchObject({ allowed: true, scopes: ['personal:gmail'] });
     const coding = await authorizePersonalAccess(org.adminSql, { workspaceId: WS, role: 'worker' }, WS, userId, ['gmail']);
     expect(coding).toMatchObject({ allowed: false, reason: 'coding_agent_denied' });
+  });
+
+  it('ambient recall is positive only for the granted context and byte-empty otherwise', async () => {
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [{
+      source: 'gmail', kind: 'message', externalId: 'ambient-mail-1',
+      participants: ['ada@example.com'], title: 'Acme renewal review',
+      text: 'Ada requested a renewal timeline review before Friday.', dedupeKey: 'ambient-mail-1',
+    }]);
+    await createPersonalGrant(org.adminSql, {
+      workspaceId: WS, userId, principalType: 'agent-role', principalId: 'meeting-prep',
+      scopes: ['gmail'], grantedBy: 'owner',
+    });
+    // Even an explicit grant must not bypass the absolute coding-role fence.
+    await createPersonalGrant(org.adminSql, {
+      workspaceId: WS, userId, principalType: 'agent-role', principalId: 'worker',
+      scopes: ['gmail'], grantedBy: 'owner',
+    });
+
+    const build = (role: string) => buildPersonalAmbientContextBlock(
+      { ownerId: `agent-${role}`, userId, workspaceId: WS, query: 'Acme renewal' },
+      {
+        sql: org.adminSql,
+        resolveContext: async () => ({ workspaceId: WS, role }),
+        authorize: authorizePersonalAccess,
+        embedQuery: async () => null,
+        search: searchPersonalDocuments,
+      } satisfies PersonalAmbientDeps,
+    );
+
+    const granted = await build('meeting-prep');
+    expect(granted).toContain('## Granted Personal Vault context');
+    expect(granted).toContain('Acme renewal review');
+    await expect(build('ungranted-assistant')).resolves.toBeNull();
+    await expect(build('worker')).resolves.toBeNull();
   });
 
   it('owner approval replaces a broader live grant instead of leaving stale access', async () => {

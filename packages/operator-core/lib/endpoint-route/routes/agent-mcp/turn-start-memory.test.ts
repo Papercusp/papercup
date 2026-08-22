@@ -25,12 +25,14 @@ const {
   detectHarnessSlugSyncMock,
   resolveAgentSignalsMock,
   recordInjectionCoverageMock,
+  buildPersonalAmbientContextBlockMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   consumePendingControlTransitionMock: vi.fn(),
   detectHarnessSlugSyncMock: vi.fn(),
   resolveAgentSignalsMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
+  buildPersonalAmbientContextBlockMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -52,6 +54,9 @@ vi.mock('../../../memory/agent-signals', () => ({
 }));
 vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
+}));
+vi.mock('../../../personal-vault/ambient', () => ({
+  buildPersonalAmbientContextBlock: buildPersonalAmbientContextBlockMock,
 }));
 
 import routes from './turn-start-memory';
@@ -76,6 +81,7 @@ beforeEach(() => {
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
+  buildPersonalAmbientContextBlockMock.mockReset().mockResolvedValue(null);
 });
 
 /**
@@ -240,6 +246,47 @@ describe('agent signals reach the query (context-injection-audit-2026-07-28 P-04
     expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({
       queryContext: { userText: 'why is session history slow' },
     });
+  });
+});
+
+describe('granted-only Personal Vault ambient leg', () => {
+  it('renders granted personal context as a separate block after general memory', async () => {
+    buildPersonalAmbientContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+
+    const out = await post({
+      owner: 'meeting-prep-run-1',
+      prompt: 'prepare me for the Acme review',
+      workspace: 'ws-test',
+    });
+
+    expect(out.text).toBe('MEM-BLOCK\n\nVAULT-BLOCK');
+    expect(buildPersonalAmbientContextBlockMock).toHaveBeenCalledWith({
+      ownerId: 'meeting-prep-run-1',
+      userId: 'u-1',
+      workspaceId: 'ws-test',
+      query: 'prepare me for the Acme review',
+    });
+  });
+
+  it('injects nothing when authorization refuses the caller', async () => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    buildPersonalAmbientContextBlockMock.mockResolvedValue(null);
+
+    const out = await post({ owner: 'coding-agent-1', prompt: 'search the owner vault' });
+
+    expect(out.text).toBe('');
+    expect(buildPersonalAmbientContextBlockMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not even invoke personal recall when turn-start memory is disabled', async () => {
+    const out = await post({
+      owner: 'meeting-prep-run-1',
+      prompt: 'prepare me for the Acme review',
+      memoryEnabled: false,
+    });
+
+    expect(out.text).toBe('');
+    expect(buildPersonalAmbientContextBlockMock).not.toHaveBeenCalled();
   });
 });
 

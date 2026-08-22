@@ -5,7 +5,7 @@
  *
  * The UserPromptSubmit hook (userpromptsubmit-memory.sh) fetches on every
  * submitted prompt in a psu session. It first consumes the compact pending
- * CTRL transition (P-014), then runs the ONE memory admission pipeline
+ * CTRL transition (P-014), then runs the general-memory admission pipeline
  * with queryContext = the user's message, under the warm-session epoch
  * dedup (P-002, port 'turn-start') and a SMALL budget — injected lines
  * compound in a warm session, so turn-start is high-precision/low-volume
@@ -175,6 +175,28 @@ const turnStartMemory = defineTool({
         }
       })();
 
+      /**
+       * Resolve the human principal and chrome-free query once for both recall
+       * legs. Personal Vault remains a separate authorization/search/output
+       * path; sharing these two server-owned inputs does not add it to general
+       * memory's scope fan-out.
+       */
+      const recallInputPromise = (async (): Promise<{
+        userId: string | null;
+        queryText: string;
+      } | null> => {
+        if (body.memoryEnabled === false) return null;
+        const [{ getSessionUserOrDefault }, { stripInjectedChrome }] = await Promise.all([
+          import('../../../auth'),
+          import('../../../turn-provenance/turn-provenance'),
+        ]);
+        const user = await getSessionUserOrDefault().catch(() => null);
+        return {
+          userId: user?.id ?? null,
+          queryText: stripInjectedChrome(prompt),
+        };
+      })();
+
       const memoryPromise = (async (): Promise<string> => {
         if (body.memoryEnabled === false) {
           // The port fired and the caller opted out — a real reading, and NOT
@@ -184,12 +206,11 @@ const turnStartMemory = defineTool({
           return '';
         }
         try {
-          const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { stripInjectedChrome }] =
-            await Promise.all([
-              import('../../../memory/injection'),
-              import('../../../auth'),
-              import('../../../turn-provenance/turn-provenance'),
-            ]);
+          const [{ buildMemoryContextBlock }, recallInput] = await Promise.all([
+            import('../../../memory/injection'),
+            recallInputPromise,
+          ]);
+          if (!recallInput) return '';
           // P-044 (F-L): resolve the agent's ACTION signals and route them to the
           // lexical leg. Started here so its two indexed lookups overlap the user
           // resolution below rather than adding to this path serially; it is
@@ -207,11 +228,10 @@ const turnStartMemory = defineTool({
               return undefined;
             }
           })();
-          const user = await getSessionUserOrDefault().catch(() => null);
           // Retrieve on what the turn is ABOUT, not on the scaffolding it
           // arrived in — see PROMPT_QUERY_CLAMP above and D-033. Never empty
           // for a non-empty prompt, so this cannot silently disable recall.
-          const queryText = stripInjectedChrome(prompt);
+          const { queryText } = recallInput;
           // ⚠ P-006 / D-046 (the human-turn tail) is DELIBERATELY NOT WIRED HERE.
           // `memory/human-turn-tail.ts` implements the owner's chosen shape and is
           // fully tested, but its LIVE-corpus acceptance measured a REGRESSION and
@@ -222,7 +242,7 @@ const turnStartMemory = defineTool({
           const agentSignals = await signalsPromise;
           const block =
             (await buildMemoryContextBlock({
-              userId: user?.id ?? null,
+              userId: recallInput.userId,
               workspaceId,
               harnessSlugs: harness ? [harness] : [],
               // P-044: the COSINE leg still gets the human's words alone — that
@@ -262,6 +282,34 @@ const turnStartMemory = defineTool({
         }
       })();
 
+      /**
+       * Personal Vault is an isolated fourth leg. The builder resolves the
+       * caller's role/plan/binding exclusively from server-owned state and
+       * performs default-deny grant authorization before either embedding or
+       * searching. A refusal or failure is silence — no empty heading and no
+       * indication that private data exists.
+       */
+      const personalPromise = (async (): Promise<string> => {
+        if (body.memoryEnabled === false) return '';
+        try {
+          const [{ buildPersonalAmbientContextBlock }, recallInput] = await Promise.all([
+            import('../../../personal-vault/ambient'),
+            recallInputPromise,
+          ]);
+          if (!recallInput?.userId) return '';
+          return (
+            (await buildPersonalAmbientContextBlock({
+              ownerId: owner,
+              userId: recallInput.userId,
+              workspaceId,
+              query: recallInput.queryText,
+            })) ?? ''
+          );
+        } catch {
+          return '';
+        }
+      })();
+
       // fleet-deltas-leader-primitives-2026-07-10 P-004 / D-004 ruling 3:
       // ORIENTATION THAT ARRIVES. `coord:orient` is mandated in three separate
       // places (the MCP initialize instructions, the su playbook, the
@@ -290,17 +338,19 @@ const turnStartMemory = defineTool({
         }
       })();
 
-      const [control, orientation, memory] = await Promise.all([
+      const [control, orientation, memory, personal] = await Promise.all([
         controlPromise,
         orientationPromise,
         memoryPromise,
+        personalPromise,
       ]);
       // ORDER IS DELIBERATE: control (a mode/route transition governs everything
       // after it) → orientation (what you hold and who is waiting on you) →
-      // memory (background recall). Most-binding first.
+      // memory (background recall) -> explicitly granted private context.
+      // Most-binding first; the private block is visibly separate and last.
       return Response.json({
         ok: true,
-        text: [control, orientation, memory].filter(Boolean).join('\n\n'),
+        text: [control, orientation, memory, personal].filter(Boolean).join('\n\n'),
       });
     } catch {
       return Response.json({ ok: true, text: '' });
