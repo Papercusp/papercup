@@ -757,6 +757,14 @@ export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
 // server would have completed, which is the failure this constant exists to prevent.
 export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 900_000;
 
+// `scorecards:emit` is also intentionally long-running. Its deterministic
+// criterion-check leg owns a 120s test budget inside a 180s tool timeout, then
+// still has to persist the card and serialize the response. The ordinary 30s
+// ptool deadline abandons that write mid-flight and returns no canonical card
+// reference (EI-21179169504957086). Keep the client outside the tool's own
+// deadline so the typed success/refusal is always the first outcome observed.
+export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 195_000;
+
 // EI-21106949380687332: a FOREGROUND-capable tool (testing:run, build:typecheck,
 // capability:bash, capability:inspect, code:run) self-clamps its OWN command timeout to
 // FOREGROUND_TIMEOUT_CEILING_MS (50s — packages/operator-core/lib/agent-tools/capability/
@@ -779,6 +787,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
+  ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
   ['testing:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],

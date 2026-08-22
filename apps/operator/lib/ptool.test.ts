@@ -30,6 +30,7 @@ import {
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   timeoutForTool,
   isLoopPressureShed,
   callToolWithPressureRetry,
@@ -559,6 +560,19 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
 
   it('the override genuinely covers the transport cap with real margin (not a bare inequality)', () => {
     expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS - MCP_TRANSPORT_CAP_MS).toBeGreaterThanOrEqual(3_000);
+  });
+});
+
+describe('ptool timeoutForTool — scorecards:emit outlives its 180s tool budget (EI-21179169504957086)', () => {
+  it('keeps the direct client request alive through criterion checks and ledger persistence', () => {
+    expect(timeoutForTool('scorecards:emit', {})).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(180_000);
+    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('honours the same override through the deferred tools:invoke transport', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'scorecards:emit' }))
+      .toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
   });
 });
 
