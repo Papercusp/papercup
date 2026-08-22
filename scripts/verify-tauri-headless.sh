@@ -1286,6 +1286,13 @@ SPA_ENV_LINE=""
 # away. Editing Rust and re-verifying works exactly as before: the next
 # invocation builds your change.
 #
+# EI-20210154033151684: this generated launcher is also the environment boundary
+# for Tauri's beforeDevCommand. A tracked agent shell can carry the live host's
+# PAPERCUSP_CLUSTER and an enabled spawner-sidecar socket into the fresh rig;
+# pinning only inside dev-operator-ifneeded.sh is too late for that inherited
+# launch environment. Keep the verifier single-process and sidecar-free, and
+# remove the ambient socket path so a stale host socket can never be adopted.
+#
 # `XDG_SESSION_TYPE=x11` (EI-19950536294124572): `-u WAYLAND_DISPLAY` already scrubs the
 # leaked host-desktop compositor var, but XDG_SESSION_TYPE — a login-session property, not
 # a "display env" var most launchers think to scrub — still leaks through from the host's
@@ -1316,9 +1323,12 @@ write_and_launch_tauri() {
   cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
-exec env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
+exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET \\
+  XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
+  PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\
+  PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0 \\
   PAPERCUSP_SID="$TAURI_OWNER_SID" PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" \\
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
   $SPA_ENV_LINE \\
