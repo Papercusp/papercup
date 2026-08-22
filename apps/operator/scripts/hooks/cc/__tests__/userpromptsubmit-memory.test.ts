@@ -89,7 +89,7 @@ describe('userpromptsubmit-memory.sh', () => {
 
   it('memory kill switch keeps the CTRL check enrolled', async () => {
     lastBody = null;
-    nextResponse = { body: { ok: true, text: '⟦CTRL:transition⟧ {"generation":2}' } };
+    nextResponse = { body: { ok: true, text: `⟦CTRL:transition⟧ {"generation":2,"targetOwnerId":"${SID}"}` } };
     const out = await runHook({ prompt: LONG_PROMPT }, { PAPERCUSP_TURN_START_MEMORY: 'off' });
     expect(out.status).toBe(0);
     expect(contextOf(out)).toContain('CTRL:transition');
@@ -98,7 +98,7 @@ describe('userpromptsubmit-memory.sh', () => {
 
   it('low-signal prompt still checks for a pending CTRL transition', async () => {
     lastBody = null;
-    nextResponse = { body: { ok: true, text: '⟦CTRL:full-resync⟧ {"generation":4}' } };
+    nextResponse = { body: { ok: true, text: `⟦CTRL:full-resync⟧ {"generation":4,"targetOwnerId":"${SID}"}` } };
     const out = await runHook({ prompt: 'continue' });
     expect(out.status).toBe(0);
     expect(contextOf(out)).toContain('CTRL:full-resync');
