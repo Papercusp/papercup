@@ -957,7 +957,7 @@ describe("LearningTab — Improvements view (default)", () => {
     fireEvent.click(
       within(screen.getByLabelText("Where these came from")).getByRole(
         "button",
-        { name: "system", exact: true },
+        { name: "system" },
       ),
     );
     expect(nuqsState.lsrc).toBe("system");
