@@ -6,7 +6,12 @@ import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
 import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
-import { useColumnFilters, ColumnFilterBar, filterCountLabel } from '../../harness/filters';
+import {
+  useColumnFilters,
+  ColumnFilterBar,
+  filterCountLabel,
+  type CountEvidence,
+} from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { buildWorkItemColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -175,7 +180,21 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // which is precisely the "callers must hold up their end" contract ColumnFilterBar's
   // memo() note spells out (P-BUG-WI-37386). The sibling DepGraphPanel shipped the same
   // class of instability into an effect dep and ran a real render loop for it (WI-39552).
-  const cf = useColumnFilters(columns, items ?? NO_ROWS, { ns: WORK_ITEM_FILTER_NS });
+  const filterCountEvidence = useMemo<CountEvidence>(
+    () => items == null
+      ? { kind: 'unknown', reason: 'loading' }
+      : {
+          kind: 'window',
+          count: items.length,
+          window: `latest ${items.length.toLocaleString('en-US')} loaded work items`,
+          corpusTotal: total,
+        },
+    [items, total],
+  );
+  const cf = useColumnFilters(columns, items ?? NO_ROWS, {
+    ns: WORK_ITEM_FILTER_NS,
+    countEvidence: filterCountEvidence,
+  });
 
   // Global quick-search (`wq`) is a separate affordance — apply it as a substring
   // match ON TOP of the column-filtered rows (id/title/state/assignee).
@@ -191,7 +210,21 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // narrowing the list shows how many rows matched out of the store total; when
   // unfiltered it's just the store total.
   const isFiltered = cf.hasActive || search.trim() !== '';
-  const counts = items ? filterCountLabel(filtered.length, total, isFiltered) : null;
+  const displayedCountEvidence = useMemo<CountEvidence>(
+    () => items == null
+      ? { kind: 'unknown', reason: 'loading' }
+      : isFiltered
+        ? {
+            kind: 'window',
+            count: filtered.length,
+            windowTotal: items.length,
+            window: `latest ${items.length.toLocaleString('en-US')} loaded work items`,
+            corpusTotal: total,
+          }
+        : { kind: 'corpus', count: total, population: 'the selected harness work-item corpus' },
+    [filtered.length, isFiltered, items, total],
+  );
+  const counts = items ? filterCountLabel(displayedCountEvidence) : null;
   const titleCount = counts?.title;
   useEffect(() => {
     if (titleCount != null) api.setTitle(`Work items · ${slug} (${titleCount})`);
@@ -228,6 +261,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
               className="pc-advpanel__count"
               data-testid="wi-count"
               aria-live="polite"
+              aria-label={counts.ariaLabel}
               style={{
                 marginLeft: 'auto',
                 fontSize: 11,

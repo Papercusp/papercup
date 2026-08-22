@@ -138,6 +138,7 @@ import {
   parseAsColumnFilters,
   ColumnFilterBar,
   filterCountLabel,
+  type CountEvidence,
 } from "@/app/harness/filters";
 import type { FilterableColumn } from "@papercusp/grid-core";
 import { statusToneColor } from "@/app/harness/theme";
@@ -1754,7 +1755,20 @@ function ImprovementsView({
   // Accessors read THROUGH the work-item half: an idea-only row answers "—" to
   // every work-item column, so it drops out of any such filter by itself, and
   // the lens column is the one facet an idea-only row can actually answer.
-  const cf = useColumnFilters(filterCols, rows, { ns: "imp" });
+  const improveCountEvidence = useMemo<CountEvidence>(
+    () => digest == null
+      ? { kind: "unknown", reason: "loading" }
+      : {
+          kind: "window",
+          count: rows.length,
+          window: "the current bounded Improve digest window after source and rail scope",
+        },
+    [digest, rows.length],
+  );
+  const cf = useColumnFilters(filterCols, rows, {
+    ns: "imp",
+    countEvidence: improveCountEvidence,
+  });
   const visibleRows = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;
@@ -6260,7 +6274,20 @@ function RetainedLedgerCard({
   );
   // SAME filtering machinery as the work queue: per-column filters in ONE nuqs
   // param (`rtf`), quick-search applied on top.
-  const cf = useColumnFilters(columns, gridRows, { ns: RETAIN_FILTER_NS });
+  const retainCountEvidence = useMemo<CountEvidence>(
+    () => loading && page === undefined
+      ? { kind: "unknown", reason: "loading" }
+      : {
+          kind: "window",
+          count: rows.length,
+          window: `the ${rows.length.toLocaleString("en-US")}-item loaded Retain cursor window`,
+        },
+    [loading, page, rows.length],
+  );
+  const cf = useColumnFilters(columns, gridRows, {
+    ns: RETAIN_FILTER_NS,
+    countEvidence: retainCountEvidence,
+  });
   const filtered = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;
@@ -6302,13 +6329,19 @@ function RetainedLedgerCard({
       : parts.reduce((a, n) => a + (n ?? 0), 0);
   }, [counts, rtab, rship]);
 
-  const countLabel =
-    corpusTotal != null
-      ? filterCountLabel(shownItems, corpusTotal, isFiltered, "retained item")
-          .summary
-      : isFiltered
-        ? `${shownItems} of ${rows.length} loaded`
-        : `${rows.length} loaded${nextCursor ? ", more on scroll" : ""}`;
+  const displayedRetainCountEvidence = useMemo<CountEvidence>(
+    () => !isFiltered && corpusTotal != null
+      ? { kind: "corpus", count: corpusTotal, population: "the selected Retain corpus" }
+      : {
+          kind: "window",
+          count: isFiltered ? shownItems : rows.length,
+          windowTotal: isFiltered ? rows.length : undefined,
+          window: `the ${rows.length.toLocaleString("en-US")}-item loaded Retain cursor window${nextCursor ? " with more available on scroll" : ""}`,
+          corpusTotal: corpusTotal ?? undefined,
+        },
+    [corpusTotal, isFiltered, nextCursor, rows.length, shownItems],
+  );
+  const countLabel = filterCountLabel(displayedRetainCountEvidence, "retained item");
 
   // Report the feed's state up to LearningsView (status dot, perf settle,
   // memories chip) — see RetainLedgerCardState.
@@ -6414,6 +6447,7 @@ function RetainedLedgerCard({
         <span
           className="pc-advpanel__count"
           aria-live="polite"
+          aria-label={countLabel.ariaLabel}
           style={{
             marginLeft: "auto",
             fontSize: 11,
@@ -6422,7 +6456,7 @@ function RetainedLedgerCard({
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          {countLabel}
+          {countLabel.summary}
         </span>
         <Tooltip label="Refresh the retained ledger">
           <button

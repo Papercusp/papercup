@@ -41,7 +41,12 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Bot, CheckCircle2, Inbox, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import { listCountLabel, readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
-import { useColumnFilters, ColumnFilterBar } from '@/app/harness/filters';
+import {
+  useColumnFilters,
+  ColumnFilterBar,
+  filterCountLabel,
+  type CountEvidence,
+} from '@/app/harness/filters';
 import { Modal } from '@/app/harness/Modal';
 import ChatPanel from '@/app/harness/ChatPanel';
 import { FEED_KIND_COLOR, FEED_KIND_FALLBACK } from '@/app/harness/theme';
@@ -306,7 +311,18 @@ function UnifiedInboxView() {
     ),
     [questions.data, deliberations.data, agentChats.data, agentMessages.data],
   );
-  const columnFilters = useColumnFilters(UNIFIED_FILTER_COLUMNS, rows, { ns: 'cv' });
+  const conversationCountEvidence = useMemo<CountEvidence>(
+    () => ({
+      kind: 'window',
+      count: rows.length,
+      window: `the latest bounded conversation window (up to ${COMMS_LIST_LIMIT.toLocaleString('en-US')} per source)`,
+    }),
+    [rows.length],
+  );
+  const columnFilters = useColumnFilters(UNIFIED_FILTER_COLUMNS, rows, {
+    ns: 'cv',
+    countEvidence: conversationCountEvidence,
+  });
   const filteredRows = useMemo(() => {
     const query = debouncedSearch.trim().toLocaleLowerCase();
     if (!query) return columnFilters.rows;
@@ -327,6 +343,19 @@ function UnifiedInboxView() {
   const loading = queries.some((query) => query.loading);
   const error = queries.find((query) => query.error)?.error ?? null;
   const invalidate = () => queries.forEach((query) => query.invalidate());
+  const conversationCountLabel = filterCountLabel(
+    loading && rows.length === 0
+      ? { kind: 'unknown', reason: 'loading' }
+      : filtersActive
+        ? {
+            kind: 'window',
+            count: filteredRows.length,
+            windowTotal: rows.length,
+            window: `the latest bounded conversation window (up to ${COMMS_LIST_LIMIT.toLocaleString('en-US')} per source)`,
+          }
+        : conversationCountEvidence,
+    'conversation',
+  );
   const [stalled, setStalled] = useState(false);
   useEffect(() => {
     if (!loading || rows.length > 0) {
@@ -399,7 +428,7 @@ function UnifiedInboxView() {
         <>
           <div className="pc-advconv__railhead pc-advconv__railhead--unified">
             <span style={sectionHeaderStyle}>Conversations</span>
-            <strong>{loading && rows.length === 0 ? '…' : filtersActive ? `${filteredRows.length} of ${rows.length}` : rows.length}</strong>
+            <strong aria-label={conversationCountLabel.ariaLabel}>{conversationCountLabel.title}</strong>
             <button
               type="button"
               className="pc-coord__chip pc-advconv__refresh"

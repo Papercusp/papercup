@@ -304,7 +304,7 @@ describe("<ObservationsPanel />", () => {
     expect(screen.getByTestId("observations-count").textContent).toBe("2,569");
     expect(
       screen.getByTestId("observations-count").getAttribute("aria-label"),
-    ).toBe("2,569 observations");
+    ).toBe("2,569 observations in the observation corpus");
   });
 
   it("reveals the full body and context only for the selected observation", () => {
@@ -387,14 +387,7 @@ describe("<ObservationsPanel />", () => {
     await waitFor(() => expect(sync.args).toEqual({ limit: 400 }));
   });
 
-  // The growing window is filterCountLabel's PRECONDITION, so the two are pinned
-  // together: a filtered count may only claim "of <store total>" on a pane whose
-  // scroll edge keeps enlarging the server window until it can reach that total.
-  // If a later change freezes the window at one page, this pane goes back to
-  // reporting a page-scoped numerator against a corpus denominator — the exact
-  // defect this work was filed for ("10 observations match, of 36,096 total"
-  // for a search whose real answer was 305).
-  it("reports the filtered count against the store total, not the loaded page", () => {
+  it("declares a filtered count as window-scoped until server filtering lands", () => {
     sync.data = [
       { ...mkRow({ id: "a", title: "alpha match" }), _meta: { total: 36096 } },
       mkRow({ id: "b", title: "beta" }),
@@ -402,11 +395,13 @@ describe("<ObservationsPanel />", () => {
     ];
     renderPanel("?obsq=alpha");
     expect(screen.getByTestId("observations-count").textContent).toBe(
-      "1 of 36,096",
+      "1 of 3 · latest 3 loaded observations",
     );
     expect(
       screen.getByTestId("observations-count").getAttribute("aria-label"),
-    ).toBe("1 of 36,096 match");
+    ).toBe(
+      "1 of 3 match in latest 3 loaded observations; 36,096 in the full corpus",
+    );
   });
 
   // D-004 (owner 2026-08-17, on the sibling Retain pane: "it just says 'loading

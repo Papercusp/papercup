@@ -32,6 +32,7 @@ import {
   useColumnFilters,
   ColumnFilterBar,
   filterCountLabel,
+  type CountEvidence,
 } from "@/app/harness/filters";
 import { CardStack } from "@papercusp/card-stack";
 import { useItemPlanFilter } from "./use-create-data";
@@ -219,7 +220,21 @@ export default function ObservationsPanel({
     ],
     [],
   );
-  const cf = useColumnFilters(filterColumns, scopedRows, { ns: "obs" });
+  const facetCountEvidence = useMemo<CountEvidence>(
+    () => query.data == null
+      ? { kind: "unknown", reason: query.error ? "failed" : "loading" }
+      : {
+          kind: "window",
+          count: scopedRows.length,
+          window: `latest ${allRows.length.toLocaleString("en-US")} loaded observations`,
+          corpusTotal: readListTotal(query.data),
+        },
+    [allRows.length, query.data, query.error, scopedRows.length],
+  );
+  const cf = useColumnFilters(filterColumns, scopedRows, {
+    ns: "obs",
+    countEvidence: facetCountEvidence,
+  });
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return cf.rows.filter((row) => {
@@ -243,7 +258,19 @@ export default function ObservationsPanel({
   // form reported how many rows happened to be in memory, which is an artifact
   // of scroll position, not an answer to any question a user has — and it read
   // as a shortfall ("200 / 36,096") on a pane that was working correctly.
-  const counts = filterCountLabel(rows.length, total, isFiltered, "observation");
+  const displayedCountEvidence = useMemo<CountEvidence>(
+    () => isFiltered
+      ? {
+          kind: "window",
+          count: rows.length,
+          windowTotal: allRows.length,
+          window: `latest ${allRows.length.toLocaleString("en-US")} loaded observations`,
+          corpusTotal: total,
+        }
+      : { kind: "corpus", count: total, population: "the observation corpus" },
+    [allRows.length, isFiltered, rows.length, total],
+  );
+  const counts = filterCountLabel(displayedCountEvidence, "observation");
 
   // Build signal counts from the real database counts, not loaded rows
   const signalCounts = useMemo(() => {
@@ -471,7 +498,7 @@ export default function ObservationsPanel({
         {total > 0 ? (
           <span
             data-testid="observations-count"
-            aria-label={counts.summary}
+            aria-label={counts.ariaLabel}
             title={
               isFiltered
                 ? "Observations matching the current filter / search, out of the total"

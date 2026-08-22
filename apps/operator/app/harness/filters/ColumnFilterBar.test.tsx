@@ -69,6 +69,7 @@ function mkController(cols: FilterableColumn<Row>[]) {
     setValue: () => {},
     remove: () => {},
     optionsFor: () => [],
+    countEvidence: { kind: 'window' as const, count: 3, window: 'latest 3 test rows' },
   };
 }
 
@@ -170,6 +171,7 @@ describe('<ColumnFilterBar /> — facets layout', () => {
       setValue: o.setValue ?? (() => {}),
       remove: () => {},
       optionsFor: (k: string) => o.optionsByKey?.[k] ?? [],
+      countEvidence: { kind: 'window' as const, count: 8, window: 'latest 8 test rows' },
     };
   }
   const opt = (value: string, count = 1): EnumOption => ({ value, count });
@@ -186,6 +188,8 @@ describe('<ColumnFilterBar /> — facets layout', () => {
     expect(screen.getByRole('button', { name: /Bug/ })).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy(); // live count
     expect(screen.getByText('5')).toBeTruthy();
+    expect(screen.getByText(/Filter option counts cover latest 8 test rows/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Kind Bug: 3 in latest 8 test rows' })).toBeTruthy();
     // No Add-filter combobox in facets layout.
     expect(screen.queryByTestId('add-filter-select')).toBeNull();
   });
@@ -272,6 +276,7 @@ describe('FilterEditor — enum checklist + search', () => {
       setValue: opts.setValue ?? (() => {}),
       remove: () => {},
       optionsFor: () => options,
+      countEvidence: { kind: 'corpus' as const, count: 12, population: 'the plan corpus' },
     };
   }
 
@@ -283,6 +288,7 @@ describe('FilterEditor — enum checklist + search', () => {
     expect(screen.getByText('alpha')).toBeTruthy();
     expect(screen.getByText('beta')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy(); // live count
+    expect(screen.getByLabelText('3 in the plan corpus')).toBeTruthy();
     expect(screen.getAllByRole('checkbox').length).toBe(2);
     // Short list → no search box.
     expect(screen.queryByLabelText(/search plan options/i)).toBeNull();

@@ -157,6 +157,19 @@ describe('ensureFleetLeaderControl', () => {
     expect(bounded.omitted).toEqual(candidates.slice(LEADER_PROFILE_AUTO_ARM_CAP));
   });
 
+  it('fails closed if an owner-attention surface is injected into the auto-arm resolver', () => {
+    expect(() => resolveFleetLeaderAutoArmTargets({
+      fleetSlug: 'alpha',
+      reader: vi.fn() as never,
+      rows: [{
+        context: 'fleet-leader',
+        watch: { kind: 'owner-attention', source: 'open-owner-questions' },
+        tier: 'auto-arm',
+        why: 'malformed control row proving interactive owner surfaces never become leader wakes',
+      }],
+    })).toThrow("cannot arm owner-attention source 'open-owner-questions'");
+  });
+
   it('preserves cold-auto (and any registry-derived autonomous posture) instead of switching to plain auto', async () => {
     getModes.mockResolvedValue([{ mode: 'cold-auto' }]);
 

@@ -26,7 +26,7 @@ import { groupByMember } from '@papercusp/operator-core/lib/fleet/member-groupin
 import type { Liveness } from '@papercusp/operator-core/lib/liveness';
 import type { FilterableColumn } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
+import { useColumnFilters, ColumnFilterBar, type CountEvidence } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
@@ -116,7 +116,20 @@ export default function MemberWorkPanel({ params, api }: PanelComponentProps) {
 
   // Generic column filters (nuqs-backed via the hook, ns 'mw'); apply to the flat
   // roster BEFORE groupByMember so empty members drop and the counts stay honest.
-  const cf = useColumnFilters(FILTER_COLUMNS, searchFiltered, { ns: 'mw' });
+  const countEvidence = useMemo<CountEvidence>(
+    () => agents == null
+      ? { kind: 'unknown', reason: 'loading' }
+      : {
+          kind: 'corpus',
+          count: searchFiltered.length,
+          population: search.trim() === '' ? 'the exhaustive live roster' : 'the exhaustive live roster after search',
+        },
+    [agents, search, searchFiltered.length],
+  );
+  const cf = useColumnFilters(FILTER_COLUMNS, searchFiltered, {
+    ns: 'mw',
+    countEvidence,
+  });
 
   const members = useMemo(() => groupByMember(cf.rows), [cf.rows]);
 

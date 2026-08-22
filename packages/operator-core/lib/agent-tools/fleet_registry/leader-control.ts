@@ -120,6 +120,16 @@ export function resolveFleetLeaderAutoArmTargets(input: {
       return resolveFleetLeaderEventTarget(row, input.fleetSlug);
     }
 
+    // owner-attention rows are interactive surface selections, never wake
+    // sources. The registry validator rejects auto-arm owner-attention rows,
+    // but keep this resolver exhaustively narrowed too: a malformed injected
+    // row must fail closed instead of being treated as a cell by fallthrough.
+    if (row.watch.kind !== 'cell') {
+      throw new Error(
+        `fleet-leader auto-arm cannot arm owner-attention source '${row.watch.source}'`,
+      );
+    }
+
     const spec = getCell(row.watch.cell, input.reader);
     if (!spec) {
       throw new Error(

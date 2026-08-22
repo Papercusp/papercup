@@ -156,8 +156,13 @@ describe('WorkItemsPanel', () => {
 
   it('reflects the filter in the title + badge (shown of store total)', () => {
     renderPanel('alpha', '?wq=login'); // matches WI-1 only → 1 of 2 loaded
-    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2)');
-    expect(screen.getByTestId('wi-count').textContent).toContain('1 of 2 match');
+    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2 · latest 2 loaded work items)');
+    expect(screen.getByTestId('wi-count').textContent).toContain(
+      '1 of 2 match in latest 2 loaded work items; 2 in the full corpus',
+    );
+    expect(screen.getByTestId('wi-count').getAttribute('aria-label')).toContain(
+      'latest 2 loaded work items',
+    );
   });
 
   it('applies the quick-search substring filter (wq)', () => {
@@ -187,25 +192,10 @@ describe('WorkItemsPanel', () => {
   });
 });
 
-describe('filterCountLabel (pure — always the DB store total, never "loaded")', () => {
-  it('unfiltered → just the store total (loaded length is irrelevant; infinite scroll loads the rest)', () => {
-    expect(filterCountLabel(12, 12, false)).toEqual({ title: '12', summary: '12 items' });
-    // Even when far fewer rows are loaded than exist, the badge shows the TRUE total.
-    expect(filterCountLabel(500, 1821, false)).toEqual({ title: '1,821', summary: '1,821 items' });
-  });
-  it('filtered → shown of total match', () => {
-    expect(filterCountLabel(42, 905, true)).toEqual({ title: '42 of 905', summary: '42 of 905 match' });
-    expect(filterCountLabel(42, 1674, true)).toEqual({ title: '42 of 1,674', summary: '42 of 1,674 match' });
-  });
-
-  // The locale is pinned inside the helper ('en-US'), not inherited from the
-  // host — so these grouped assertions cannot flake on a box/CI whose default
-  // locale groups differently (de-DE "1.674", fr-FR "1 674").
-  it('groups digits identically regardless of the host default locale', () => {
-    expect(filterCountLabel(0, 36096, false).summary).toBe('36,096 items');
-    expect(filterCountLabel(305, 36096, true).title).toBe('305 of 36,096');
-  });
-  it('singular item reads "1 item"', () => {
-    expect(filterCountLabel(1, 1, false).summary).toBe('1 item');
+describe('filterCountLabel integration', () => {
+  it('keeps the panel-facing corpus label grouped and scope-aware', () => {
+    const label = filterCountLabel({ kind: 'corpus', count: 36_096 });
+    expect(label.summary).toBe('36,096 items');
+    expect(label.ariaLabel).toBe('36,096 items in the full corpus');
   });
 });

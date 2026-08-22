@@ -810,7 +810,12 @@ describe('AdvConversationsTab — unified communication views', () => {
     // The rail header count reflects every merged row. (A facet chip's live
     // count may coincide with this number, so scope to the rail-head total.)
     const railHead = container.querySelector('.pc-advconv__railhead--unified');
-    expect(railHead?.querySelector('strong')?.textContent).toBe('102');
+    expect(railHead?.querySelector('strong')?.textContent).toBe(
+      '102 · the latest bounded conversation window (up to 100 per source)',
+    );
+    expect(railHead?.querySelector('strong')?.getAttribute('aria-label')).toBe(
+      '102 conversations in the latest bounded conversation window (up to 100 per source)',
+    );
   });
 
   it('Deliberations view lists threads and opens its posts', async () => {
@@ -1291,7 +1296,11 @@ describe('AdvConversationsTab — picker-kit adoption', () => {
     expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveProperty('value', 'watchdog');
     expect(screen.getByText('why does the watchdog recycle the host?')).toBeTruthy();
     expect(screen.queryByText('pick up the UI work')).toBeNull();
-    expect(screen.getByText('1 of 2')).toBeTruthy();
+    expect(
+      screen.getByText(
+        '1 of 2 · the latest bounded conversation window (up to 100 per source)',
+      ),
+    ).toBeTruthy();
     // The shared filter bar renders as always-visible facet chip-groups
     // (layout="facets"), not the collapsed "Add filter…" combobox.
     const facetBar = container.querySelector('.pc-advpanel__filterbar--facets');

@@ -32,7 +32,7 @@ import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill, AGENT_KIND_GLYPH } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
-import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
+import { useColumnFilters, ColumnFilterBar, type CountEvidence } from '../../harness/filters';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
@@ -378,7 +378,13 @@ function WorkingView({
   // Generic per-column filters (kind/agent/item/doing/load/live) → ONE nuqs param
   // `faf`. The bar self-gates on the flag; `cf.rows` is the input ref when nothing
   // is active (cheap fast-path).
-  const cf = useColumnFilters(columns, agents ?? [], { ns: 'fa' });
+  const countEvidence = useMemo<CountEvidence>(
+    () => agents == null
+      ? { kind: 'unknown', reason: 'loading' }
+      : { kind: 'corpus', count: agents.length, population: 'the exhaustive harness agent roster' },
+    [agents],
+  );
+  const cf = useColumnFilters(columns, agents ?? [], { ns: 'fa', countEvidence });
 
   // The legacy kind Select (`akind`) + quick-search (`aq`) apply ON TOP of the
   // column-filtered rows, then the same liveness-first sort as before.

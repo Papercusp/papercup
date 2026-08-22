@@ -110,9 +110,15 @@ function renderFilters(searchParams: string, rows: Row[] = ROWS) {
   const onUrlUpdate = (e: UrlUpdateEvent) => {
     lastSearch = e.searchParams;
   };
-  const view = renderHook(() => useColumnFilters(COLS, rows, { ns: 'wi' }), {
+  const view = renderHook(
+    () => useColumnFilters(COLS, rows, {
+      ns: 'wi',
+      countEvidence: { kind: 'corpus', count: rows.length, population: 'the test corpus' },
+    }),
+    {
     wrapper: withNuqsTestingAdapter({ searchParams, onUrlUpdate }),
-  });
+    },
+  );
   return { view, getLastSearch: () => lastSearch };
 }
 
@@ -129,6 +135,16 @@ describe('useColumnFilters (hook)', () => {
     const { view } = renderFilters('');
     const keys = view.result.current.controller.filterableColumns.map((c) => c.key);
     expect(keys).toEqual(['name', 'kind', 'prio', 'open']);
+  });
+
+  it('carries the declared population evidence into the controller', () => {
+    const { view } = renderFilters('');
+    expect(view.result.current.countEvidence).toEqual({
+      kind: 'corpus',
+      count: ROWS.length,
+      population: 'the test corpus',
+    });
+    expect(view.result.current.controller.countEvidence).toBe(view.result.current.countEvidence);
   });
 
   it('AND-filters rows from a seeded URL state (enum membership + number range)', () => {

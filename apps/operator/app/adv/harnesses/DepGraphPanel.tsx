@@ -48,7 +48,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Button } from '../../harness/Button';
-import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
+import { useColumnFilters, ColumnFilterBar, type CountEvidence } from '../../harness/filters';
 import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
 import { workItemFilterColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
 import {
@@ -410,7 +410,21 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     return extra.size === 0 ? items : [...items, ...extra.values()];
   }, [items, edgeRows, listIds]);
 
-  const cf = useColumnFilters(filterColumns, filterCorpus, { ns: WORK_ITEM_FILTER_NS });
+  const filterCountEvidence = useMemo<CountEvidence>(
+    () => items == null
+      ? { kind: 'unknown', reason: 'loading' }
+      : {
+          kind: 'window',
+          count: filterCorpus.length,
+          window: 'the loaded work-item list plus hydrated graph endpoints',
+          corpusTotal: readListMeta(items)?.total,
+        },
+    [filterCorpus.length, items],
+  );
+  const cf = useColumnFilters(filterColumns, filterCorpus, {
+    ns: WORK_ITEM_FILTER_NS,
+    countEvidence: filterCountEvidence,
+  });
 
   /**
    * Every id that survived the filter, across the WHOLE graph corpus — what the model

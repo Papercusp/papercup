@@ -32,6 +32,7 @@ import { Select } from '../Select';
 import { Popover } from '../Popover';
 import { Checkbox } from '../Checkbox';
 import type { ColumnFilterController } from './useColumnFilters';
+import { countEvidenceScopeText, formatCountNumber } from './count-evidence';
 
 const ADD_FILTER = '_add_filter_';
 
@@ -212,6 +213,7 @@ export function FilterEditor<TRow>({
       ? options.filter((o) => (o.label ?? o.value).toLowerCase().includes(q))
       : options;
     const colLabel = headerText(col as FilterableColumn<unknown>);
+    const countScope = countEvidenceScopeText(controller.countEvidence);
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -253,10 +255,15 @@ export function FilterEditor<TRow>({
                   <Checkbox
                     checked={on}
                     onChange={(c) => toggle(opt.value, c)}
-                    ariaLabel={opt.label ?? opt.value}
+                    ariaLabel={`${opt.label ?? opt.value}: ${formatCountNumber(opt.count)} in ${countScope}`}
                   />
                   <span>{opt.label ?? opt.value}</span>
-                  <span style={ENUM_COUNT_STYLE}>{opt.count}</span>
+                  <span
+                    style={ENUM_COUNT_STYLE}
+                    aria-label={`${formatCountNumber(opt.count)} in ${countScope}`}
+                  >
+                    {formatCountNumber(opt.count)}
+                  </span>
                 </label>
               );
             })
@@ -423,6 +430,7 @@ function ColumnFilterBarImpl<TRow>({
   const editingCol = controller.filterableColumns.find((c) => c.key === editingKey) ?? null;
   // Active-filter label per column (for the facets picker-chip summary).
   const chipLabelByKey = new Map(activeChips.map((c) => [c.colKey, c.label]));
+  const countScope = countEvidenceScopeText(controller.countEvidence);
 
   // Open an editor on a fresh MACROTASK, never synchronously inside the click
   // gesture that requested it — whether that's the Add-filter Select closing OR
@@ -485,7 +493,11 @@ function ColumnFilterBarImpl<TRow>({
 
   if (layout === 'facets') {
     return (
-      <div className="pc-advpanel__filterbar pc-advpanel__filterbar--facets">
+      <div
+        className="pc-advpanel__filterbar pc-advpanel__filterbar--facets"
+        data-count-evidence={controller.countEvidence.kind}
+      >
+        <span className="pc-sr-only">Filter option counts cover {countScope}.</span>
         {controller.filterableColumns.map((col) => {
           const spec = col.filter;
           const isEnum = spec?.type === 'enum';
@@ -506,10 +518,13 @@ function ColumnFilterBarImpl<TRow>({
                       type="button"
                       className="pc-advpanel__chip"
                       aria-pressed={on}
+                      aria-label={`${label} ${opt.label ?? opt.value}: ${formatCountNumber(opt.count)} in ${countScope}`}
                       onClick={() => toggleEnumValue(col.key, opt.value, !on, multi)}
                     >
                       <span>{opt.label ?? opt.value}</span>
-                      <span className="pc-advpanel__chipcount">{opt.count}</span>
+                      <span className="pc-advpanel__chipcount" aria-hidden>
+                        {formatCountNumber(opt.count)}
+                      </span>
                     </button>
                   );
                 })}
@@ -565,7 +580,8 @@ function ColumnFilterBarImpl<TRow>({
   ];
 
   return (
-    <div className="pc-advpanel__filterbar">
+    <div className="pc-advpanel__filterbar" data-count-evidence={controller.countEvidence.kind}>
+      <span className="pc-sr-only">Filter option counts cover {countScope}.</span>
       <ListFilter size={13} aria-hidden style={{ color: 'var(--fg-mute, #7f9bb4)', flexShrink: 0 }} />
 
       {/*

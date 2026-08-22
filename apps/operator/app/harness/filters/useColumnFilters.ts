@@ -31,6 +31,7 @@ import {
   type EnumOption,
   type FilterableColumn,
 } from '@papercusp/grid-core';
+import type { CountEvidence } from './count-evidence';
 
 /** A single removable active-filter chip for the bar. */
 export interface ActiveChip {
@@ -60,6 +61,8 @@ export interface ColumnFilterController<TRow> {
    * CURRENT rows via grid-core's `deriveEnumOptions`. Empty for non-enum columns.
    */
   optionsFor: (colKey: string) => EnumOption[];
+  /** Declared population measured by locally-derived option counts. */
+  countEvidence: CountEvidence;
 }
 
 export interface UseColumnFiltersResult<TRow> {
@@ -73,6 +76,8 @@ export interface UseColumnFiltersResult<TRow> {
   clearAll: () => void;
   /** Whether any filter is currently active. */
   hasActive: boolean;
+  /** Same explicit population evidence carried by the controller. */
+  countEvidence: CountEvidence;
 }
 
 export interface UseColumnFiltersOptions {
@@ -81,6 +86,11 @@ export interface UseColumnFiltersOptions {
    * that won't collide with the panel's other nuqs params (e.g. 'wi' → 'wif').
    */
   ns: string;
+  /**
+   * Population measured by counts derived from `rows`. Required so a bounded
+   * page can never silently present its option counts as corpus facets.
+   */
+  countEvidence: CountEvidence;
 }
 
 /**
@@ -102,7 +112,7 @@ export function useColumnFilters<TRow>(
   rows: readonly TRow[],
   opts: UseColumnFiltersOptions,
 ): UseColumnFiltersResult<TRow> {
-  const { ns } = opts;
+  const { ns, countEvidence } = opts;
 
   // The parser closes over `cols` (decode needs each key's spec type). cols is a
   // fresh array literal per render in most panels, but the decoded value only
@@ -164,8 +174,9 @@ export function useColumnFilters<TRow>(
       setValue,
       remove,
       optionsFor: (colKey) => optionsByKey.get(colKey) ?? [],
+      countEvidence,
     }),
-    [filterableColumns, state, setValue, remove, optionsByKey],
+    [filterableColumns, state, setValue, remove, optionsByKey, countEvidence],
   );
 
   const activeChips = useMemo<ActiveChip[]>(() => {
@@ -188,5 +199,6 @@ export function useColumnFilters<TRow>(
     activeChips,
     clearAll,
     hasActive: activeChips.length > 0,
+    countEvidence,
   };
 }

@@ -1,75 +1,109 @@
 /**
- * filterCountLabel — the ONE count label every filterable pane renders beside its
- * filter bar.
+ * One count-label formatter for filterable panes.
  *
- * Lifted verbatim (plus a `noun`) out of WorkItemsPanel, where it shipped as
- * `workItemCountLabel`, because the Learning tab was asked to "mimic how it works
- * in the work queue in the work tab" [owner 2026-08-17] and three of its panes had
- * each hand-rolled a DIFFERENT label. It lives beside `useColumnFilters` /
- * `ColumnFilterBar` because it is the third member of that contract: the hook owns
- * the filter state, the bar renders the controls, and this states the RESULT.
- *
- * The rule, unchanged from the Work Queue's original comment:
- *
- *   Users care about the STORE total, not how many rows happen to be in memory
- *   right now — infinite scroll loads the rest on demand — so the label always
- *   reports the true `total` (row[0]._meta.total, the DB count), never the
- *   downloaded length. There is no "loaded of total" / capped distinction:
- *   unfiltered shows "1821 items"; a filter/search shows "N of total match".
- *
- * ⚠ THE PRECONDITION, and why a caller may not adopt this label alone. "N of
- * total" is only true if the filter can actually REACH `total` — i.e. the pane
- * grows its fetch window (`onEndReached` → a larger `limit`, or the next cursor)
- * until the client holds the whole store. A pane that filters ONE fixed page and
- * prints this label reports a page-scoped numerator against a corpus denominator,
- * which is exactly the bug this helper was extracted to kill: Observations
- * rendered "10 observations match, of 36,096 total" for a search whose real answer
- * was 305, because it had searched 200 rows. So: adopt the growing window and this
- * label together, or neither.
- *
- * Digits are GROUPED ("36,096", not "36096"). The Learning corpora are the first
- * to make this matter — Observations is ~36k rows, and its hand-rolled label
- * grouped before adopting this one, so not grouping here would have shipped a
- * legibility regression on the very pane whose counts the owner called broken.
- * The locale is pinned to 'en-US' rather than the host default ON PURPOSE: the
- * host default makes the rendered string vary by environment, which turns every
- * pinned assertion below into a latent CI flake.
- *
- * Pure — no React, no I/O. Exported for tests.
+ * The input is deliberately a discriminated CountEvidence value rather than
+ * `(shown, total, filtered)`. That old signature allowed a loaded-page length
+ * to be paired with a corpus denominator and rendered as an exact match count.
+ * Every branch below states its population in both visual and accessible copy.
  */
 
-/** Grouped, environment-independent digits — see the header on the pinned locale. */
-function n(value: number): string {
-  return value.toLocaleString('en-US');
-}
+import {
+  assertCount,
+  countEvidenceScopeText,
+  formatCountNumber,
+  type CountEvidence,
+} from './count-evidence';
 
 export interface FilterCountLabel {
-  /** Compact form for a tab/panel title — "42 of 905" or "1821". */
+  /** Compact title/tab form. */
   title: string;
-  /** Prose form for the in-pane badge — "42 of 905 match" or "1821 items". */
+  /** Visible in-pane prose. */
   summary: string;
+  /** Complete accessible wording; never relies on a tooltip for scope. */
+  ariaLabel: string;
+  /** Machine-readable evidence variant for guards and diagnostics. */
+  evidence: CountEvidence['kind'];
 }
 
-/**
- * @param shown   rows surviving the column filters + quick-search
- * @param total   the TRUE store count (readListTotal(rows) — row[0]._meta.total)
- * @param filtered whether any filter/search is currently active
- * @param noun    singular noun for the unfiltered form ("item" → "1821 items")
- */
+function pluralNoun(noun: string, count: number): string {
+  return `${noun}${count === 1 ? '' : 's'}`;
+}
+
+function unknownCopy(reason: Extract<CountEvidence, { kind: 'unknown' }>['reason']): string {
+  if (reason === 'loading') return 'Count loading…';
+  if (reason === 'updating') return 'Count updating…';
+  return 'Count unavailable';
+}
+
 export function filterCountLabel(
-  shown: number,
-  total: number,
-  filtered: boolean,
+  evidence: CountEvidence,
   noun = 'item',
 ): FilterCountLabel {
-  if (filtered) {
+  if (evidence.kind === 'unknown') {
+    const copy = unknownCopy(evidence.reason);
+    return { title: '—', summary: copy, ariaLabel: copy, evidence: evidence.kind };
+  }
+
+  assertCount(evidence.count, 'count');
+
+  if (evidence.kind === 'corpus') {
+    const population = evidence.population ?? 'the full corpus';
+    if (evidence.total != null) {
+      assertCount(evidence.total, 'total');
+      if (evidence.count > evidence.total) {
+        throw new RangeError('corpus match count cannot exceed its total');
+      }
+      const title = `${formatCountNumber(evidence.count)} of ${formatCountNumber(evidence.total)}`;
+      const summary = `${title} match`;
+      return {
+        title,
+        summary,
+        ariaLabel: `${summary} in ${population}`,
+        evidence: evidence.kind,
+      };
+    }
+    const title = formatCountNumber(evidence.count);
+    const summary = `${title} ${pluralNoun(noun, evidence.count)}`;
     return {
-      title: `${n(shown)} of ${n(total)}`,
-      summary: `${n(shown)} of ${n(total)} match`,
+      title,
+      summary,
+      ariaLabel: `${summary} in ${population}`,
+      evidence: evidence.kind,
     };
   }
+
+  if (evidence.kind === 'window') {
+    if (evidence.windowTotal != null) {
+      assertCount(evidence.windowTotal, 'windowTotal');
+      if (evidence.count > evidence.windowTotal) {
+        throw new RangeError('window match count cannot exceed its windowTotal');
+      }
+    }
+    if (evidence.corpusTotal != null) assertCount(evidence.corpusTotal, 'corpusTotal');
+    const count = formatCountNumber(evidence.count);
+    const title = evidence.windowTotal == null
+      ? `${count} · ${evidence.window}`
+      : `${count} of ${formatCountNumber(evidence.windowTotal)} · ${evidence.window}`;
+    const summary = evidence.windowTotal == null
+      ? `${count} ${pluralNoun(noun, evidence.count)} in ${evidence.window}`
+      : `${count} of ${formatCountNumber(evidence.windowTotal)} match in ${evidence.window}`;
+    const corpus = evidence.corpusTotal == null
+      ? ''
+      : `; ${formatCountNumber(evidence.corpusTotal)} in the full corpus`;
+    return {
+      title,
+      summary: `${summary}${corpus}`,
+      ariaLabel: `${summary}${corpus}`,
+      evidence: evidence.kind,
+    };
+  }
+
+  const count = formatCountNumber(evidence.count);
+  const summary = `${count}+ ${pluralNoun(noun, evidence.count)}`;
   return {
-    title: n(total),
-    summary: `${n(total)} ${noun}${total === 1 ? '' : 's'}`,
+    title: `${count}+`,
+    summary,
+    ariaLabel: `${summary}; ${countEvidenceScopeText(evidence)}`,
+    evidence: evidence.kind,
   };
 }

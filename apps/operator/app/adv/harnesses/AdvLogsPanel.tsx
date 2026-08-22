@@ -21,7 +21,7 @@ import { RefreshCw } from 'lucide-react';
 import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Tooltip } from '../../harness/Tooltip';
-import { ColumnFilterBar, useColumnFilters } from '../../harness/filters';
+import { ColumnFilterBar, useColumnFilters, type CountEvidence } from '../../harness/filters';
 import { useHarnessLogs, type HarnessLogEvent } from './useHarnessData';
 
 // Per-level accent — token-first with hex fallbacks. Log levels are a
@@ -124,7 +124,17 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
     },
   ], []);
 
-  const cf = useColumnFilters(columns, rows, { ns: 'lg' });
+  const countEvidence = useMemo<CountEvidence>(
+    () => loading && !events
+      ? { kind: 'unknown', reason: 'loading' }
+      : {
+          kind: 'window',
+          count: rows.length,
+          window: 'the latest up to 300 log events',
+        },
+    [events, loading, rows.length],
+  );
+  const cf = useColumnFilters(columns, rows, { ns: 'lg', countEvidence });
 
   if (!slug) {
     return <div className="pc-advpanel__empty">No harness slug in params.</div>;

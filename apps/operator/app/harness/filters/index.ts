@@ -12,6 +12,12 @@ export type {
 
 export { ColumnFilterBar } from './ColumnFilterBar';
 
+export {
+  countEvidenceScopeText,
+  formatCountNumber,
+} from './count-evidence';
+export type { CountEvidence, UnknownCountReason } from './count-evidence';
+
 // The third member of the contract: the hook owns filter STATE, the bar renders
 // the CONTROLS, and this states the RESULT ("42 of 905 match" / "1821 items").
 // Shared so every filterable pane counts the same way — see its header for the
