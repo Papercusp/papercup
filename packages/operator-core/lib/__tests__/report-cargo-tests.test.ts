@@ -5,7 +5,15 @@
  * machine-readable result instead of collapsing both cases into "error".
  */
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -19,10 +27,12 @@ import {
   cargoDiskPolicyFromEnv,
   classifyCargoRun,
   detectCargoTermination,
+  DEFAULT_CARGO_RECLAIM_POLICY,
   ensureCargoCacheTag,
   formatCargoDiskRefusal,
   formatCargoResultLine,
   parseCargoTestResultLines,
+  reclaimInactiveCargoArtifacts,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
@@ -30,6 +40,8 @@ import {
 const GIB = 1024 ** 3;
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPORTER_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/report-cargo-tests.mjs'), 'utf8');
+const VERIFY_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../scripts/verify-tauri-headless.sh'), 'utf8');
+const RIG_SOURCE = readFileSync(resolve(TEST_DIR, '../../../../papercusp-desktop/bin/lib/deb-hetzner-rig.sh'), 'utf8');
 
 const SIGTERM_CARGO_OUTPUT = `
 error: could not compile \`papercusp-desktop\` (bin "papercusp-desktop" test)
@@ -225,5 +237,124 @@ describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
     expect(admissionAt).toBeGreaterThan(-1);
     expect(tagAt).toBeGreaterThan(admissionAt);
     expect(spawnAt).toBeGreaterThan(tagAt);
+  });
+});
+
+describe('bounded inactive artifact reclaim (EI-21150371868241728)', () => {
+  const stalePolicy = {
+    ...DEFAULT_CARGO_RECLAIM_POLICY,
+    ephemeralTtlMs: 1,
+    cargoTtlMs: 1,
+    minCargoArtifactBytes: 0,
+    maxBytes: 1024 * 1024,
+  };
+
+  function age(path: string) {
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(path, old, old);
+  }
+
+  it('reclaims stale verifier/rig dirs, but preserves live, kept, and provisioned rigs', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-reclaim-'));
+    const staleVerify = resolve(root, 'verify-tauri-headless.stale');
+    const staleRigWithoutLedger = resolve(root, 'deb-hzfed.no-ledger');
+    const staleRigWithLedger = resolve(root, 'deb-hzfed.provisioned');
+    const liveVerify = resolve(root, 'verify-tauri-headless.live');
+    const keptRig = resolve(root, 'deb-hzfed.keep');
+
+    try {
+      for (const path of [staleVerify, staleRigWithoutLedger, staleRigWithLedger, liveVerify, keptRig]) {
+        mkdirSync(path, { recursive: true });
+        writeFileSync(resolve(path, 'payload'), 'x');
+        age(path);
+      }
+      writeFileSync(resolve(staleRigWithLedger, 'servers'), '12345\n');
+      writeFileSync(resolve(keptRig, '.papercusp-keep'), 'operator requested retention\n');
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [],
+        now: Date.now(),
+        policy: stalePolicy,
+        pathIsLive: (path: string) => path === liveVerify,
+      });
+
+      expect(result.reclaimed).toBe(2);
+      expect(result.bytesReclaimed).toBeGreaterThan(0);
+      expect(() => readFileSync(resolve(staleVerify, 'payload'))).toThrow();
+      expect(() => readFileSync(resolve(staleRigWithoutLedger, 'payload'))).toThrow();
+      expect(readFileSync(resolve(staleRigWithLedger, 'servers'), 'utf8')).toBe('12345\n');
+      expect(readFileSync(resolve(liveVerify, 'payload'), 'utf8')).toBe('x');
+      expect(readFileSync(resolve(keptRig, 'payload'), 'utf8')).toBe('x');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the entry cap across ephemeral workdirs before scanning Cargo roots', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-reclaim-cap-'));
+    try {
+      for (let i = 0; i < 3; i++) {
+        const path = resolve(root, `verify-tauri-headless.${i}`);
+        mkdirSync(path);
+        writeFileSync(resolve(path, 'payload'), 'x');
+        age(path);
+      }
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [],
+        now: Date.now(),
+        policy: { ...stalePolicy, maxEntries: 2 },
+        pathIsLive: () => false,
+      });
+
+      expect(result.reclaimed).toBe(2);
+      expect(result.skipped.length).toBe(0);
+      expect(
+        [0, 1, 2].filter((i) => existsSync(resolve(root, `verify-tauri-headless.${i}`))),
+      ).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims an inactive private Cargo target, but respects a held slot and keep marker', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-target-reclaim-'));
+    const privateTarget = resolve(root, '.cargo-target-pid123');
+    const heldTarget = resolve(root, '.cargo-target-dev2');
+    const keptTarget = resolve(root, '.cargo-target-pid456');
+
+    try {
+      for (const path of [privateTarget, heldTarget, keptTarget]) {
+        mkdirSync(resolve(path, 'release', 'bundle'), { recursive: true });
+        writeFileSync(resolve(path, 'release', 'bundle', 'artifact'), 'x');
+        age(path);
+      }
+      writeFileSync(resolve(keptTarget, '.papercusp-keep'), 'keep\n');
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [privateTarget, heldTarget, keptTarget],
+        now: Date.now(),
+        policy: { ...stalePolicy, maxEntries: 4 },
+        pathIsLive: () => false,
+        slotLockIsHeld: (path: string) => path === heldTarget,
+      });
+
+      expect(result.reclaimed).toBe(1);
+      expect(() => readFileSync(resolve(privateTarget))).toThrow();
+      expect(readFileSync(resolve(heldTarget, 'release', 'bundle', 'artifact'), 'utf8')).toBe('x');
+      expect(readFileSync(resolve(keptTarget, 'release', 'bundle', 'artifact'), 'utf8')).toBe('x');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stamps producer ownership and keeps explicit rig retention visible to the reaper', () => {
+    expect(VERIFY_SOURCE).toContain('write_run_marker "$$"');
+    expect(VERIFY_SOURCE).toContain('write_run_marker "$PORT_LOCK_KEEPER_PID"');
+    expect(RIG_SOURCE).toContain('rig_write_run_marker "$$"');
+    expect(RIG_SOURCE).toContain('RIG_WORK/.papercusp-keep');
   });
 });
