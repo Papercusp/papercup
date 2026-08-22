@@ -170,6 +170,29 @@ export const CARRY_BRIEF_FOCUS_MAX = 600;
 const COLD_CHECKPOINT_CAP = 500;
 const COLD_FACT_BODY_CAP = 240;
 const COLD_TITLE_CAP = 120;
+
+/**
+ * A work-item checkpoint can contain a structured `## Checks` section whose
+ * rows are load-bearing state, not narrative padding. The cold carry excerpt
+ * is character-capped, so a checkpoint can show a plausible-looking prefix of
+ * that section while silently omitting the rest. Keep the existing character
+ * disclosure, but add the row-level count that a caller needs before using the
+ * excerpt as a `rowsMode:'replace'` source of truth.
+ *
+ * Count only canonical rows whose complete rendered line survived into the
+ * excerpt. A cap can cut through a row, and counting that partial line would
+ * overstate what the successor actually received.
+ */
+function renderCheckpointChecksDisclosure(
+  checkpoint: string,
+  excerpt: string,
+  id: string,
+): string {
+  const stored = splitCarryNoteChecks(checkpoint).checks;
+  if (stored.length === 0 || excerpt.trim() === checkpoint.trim()) return '';
+  const shown = stored.filter((check) => excerpt.includes(renderCheckLine(check))).length;
+  return `\n    checks: showing ${shown} of ${stored.length} stored rows in this excerpt — full set: work_items:get { id: '${id}' }`;
+}
 /** An INACTIVE loop's carry-note older than this renders as a labeled STALE
  *  pointer instead of verbatim — a dead lane's "Next action" is history, not the
  *  successor's agenda (2026-07-18: a 3-day-old drill note rode a carry doc as if
@@ -851,11 +874,13 @@ export function renderCarryBriefColdExtras(
     // resume state, rendered as prose with no sibling field to carry a structured
     // marker — so the withheld-chars notice goes inline, naming the call that
     // returns the rest. A bare `…` here reads as a complete checkpoint.
-    const excerptCheckpoint = (h: { id: string; checkpoint: string | null }): string =>
-      capPreservingOperative(h.checkpoint!, COLD_CHECKPOINT_CAP, {
+    const excerptCheckpoint = (h: { id: string; checkpoint: string | null }): string => {
+      const excerpt = capPreservingOperative(h.checkpoint!, COLD_CHECKPOINT_CAP, {
         inlineNotice: true,
         more: `work_items:get { id: '${h.id}' }`,
       });
+      return excerpt + renderCheckpointChecksDisclosure(h.checkpoint!, excerpt, h.id);
+    };
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';
       // EI-20467754551087390: checkpoint prose commonly names files relative to

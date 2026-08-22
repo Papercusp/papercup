@@ -564,6 +564,31 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
   });
 
+  it('discloses when a capped checkpoint shows only part of its structured Checks rows', () => {
+    const checks = Array.from(
+      { length: 23 },
+      (_, i) => `- ? [#check-${String(i + 1).padStart(2, '0')}] stored check ${i + 1} — re-check: echo check-${i + 1}`,
+    ).join('\n');
+    const checkpoint = `## Did\ncheckpoint narrative\n\n## Checks\n${checks}`;
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{ id: 'WI-3496', title: null, body: null, harness: 'h', checkpoint }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    const disclosure = /checks: showing (\d+) of 23 stored rows in this excerpt/.exec(out);
+    expect(disclosure).not.toBeNull();
+    expect(Number(disclosure?.[1])).toBeLessThan(23);
+    expect(out).toContain("full set: work_items:get { id: 'WI-3496' }");
+  });
+
   it('labels checkpoint paths with the held harness root after a cold resume', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
