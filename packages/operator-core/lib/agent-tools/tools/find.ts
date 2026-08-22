@@ -63,6 +63,7 @@ const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 type JsonSchemaNode = {
   type?: unknown;
   enum?: unknown;
+  pattern?: unknown;
   properties?: unknown;
   required?: unknown;
   items?: unknown;
@@ -150,6 +151,13 @@ function schemaBound(node: JsonSchemaNode): string {
         : '';
 }
 
+function schemaPattern(node: JsonSchemaNode): string {
+  const pattern = [node, ...schemaNodes(node)]
+    .map((candidate) => (typeof candidate.pattern === 'string' && candidate.pattern.length > 0 ? candidate.pattern : null))
+    .find((value): value is string => value != null);
+  return pattern ? `~/${pattern}/` : '';
+}
+
 function objectProperties(node: JsonSchemaNode): { properties: Record<string, unknown>; required: Set<string> } | null {
   const candidates = [node, ...schemaNodes(node)];
   for (const candidate of candidates) {
@@ -190,11 +198,16 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number): string {
 function schemaShape(node: JsonSchemaNode, depth: number): string {
   const type = schemaType(node);
   const bound = schemaBound(node);
+  // Keep regex constraints in the returned schema just as bounds and array
+  // item constraints are kept. Without this, tools:find's response path
+  // silently downgraded locks:release's published_sha to bare `string`, even
+  // though the searchable corpus already exposed the pattern.
+  const pattern = type.startsWith('enum(') ? '' : schemaPattern(node);
   const itemConstraint = [node, ...schemaNodes(node)]
     .map((candidate) => arrayItemConstraintText(candidate))
     .find((text): text is string => text.length > 0) ?? '';
   const nested = nestedFieldNames(node, depth + 1);
-  return `${type}${bound}${itemConstraint}${nested}`;
+  return `${type}${bound}${pattern}${itemConstraint}${nested}`;
 }
 
 /**

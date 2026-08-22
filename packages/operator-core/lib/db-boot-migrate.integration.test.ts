@@ -91,6 +91,26 @@ function makeSqlDir(files: Record<string, string>): string {
   return dir;
 }
 
+/** Reserve guarded throwaway migrations the same way db:next-migration does. */
+async function seedMigrationReservations(filenames: readonly string[]): Promise<void> {
+  const rows = filenames.flatMap((filename) => {
+    const match = /^(\d+)-/.exec(filename);
+    return match
+      ? [{
+          num: Number(match[1]),
+          filename,
+          reserved_by: 'db-boot-migrate.integration.test.ts',
+          intent: 'integration fixture reservation',
+        }]
+      : [];
+  });
+  if (rows.length === 0) return;
+  await rootSql`
+    INSERT INTO harness_shared.migration_reservations
+      ${rootSql(rows, 'num', 'filename', 'reserved_by', 'intent')}
+    ON CONFLICT (num) DO NOTHING`;
+}
+
 // EI-19403856469813053: applyPendingMigrationsNow() now reads/writes a small
 // cross-boot cooldown file, defaulting to a REAL path under the host's actual
 // ~/.papercusp (see resolveMigrationCooldownFilePath in db-boot-migrate.ts).
@@ -128,6 +148,18 @@ beforeAll(async () => {
 
   rootSql = postgres(dbUrl, { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
+  // The native boot guard checks reservation provenance for every migration
+  // at or above the enforced floor. Keep the throwaway database's schema
+  // faithful to the live baseline so unrelated fixture migrations reach their
+  // intended assertions instead of failing on a missing ledger table.
+  await rootSql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.migration_reservations (
+      num integer PRIMARY KEY,
+      filename text,
+      reserved_by text,
+      intent text,
+      reserved_at timestamptz NOT NULL DEFAULT now()
+    )`);
   bootClient = postgres(dbUrl, { max: 1, prepare: false, onnotice: () => {} });
 }, 90_000);
 
@@ -238,6 +270,7 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
       '951-bad.sql': 'CREATE TABLE no_such_schema_xyz.wired_bad (id int);',
       '952-good.sql': 'CREATE TABLE harness_shared.boot_wired_b (id int);',
     });
+    await seedMigrationReservations(['950-good.sql', '951-bad.sql', '952-good.sql']);
 
     // The helper intentionally console.error()s the failure (the loud, non-fatal
     // surface for a dark migration); suppress it so vitest-fail-on-console
@@ -311,6 +344,7 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     h.bootSqlDir = makeSqlDir({
       '960-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad (id int);',
     });
+    await seedMigrationReservations(['960-broken.sql']);
 
     const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
     expect(first).not.toBeNull();
@@ -331,6 +365,7 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     const dir = makeSqlDir({
       '961-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad2 (id int);',
     });
+    await seedMigrationReservations(['961-broken.sql', '962-good.sql']);
     h.bootSqlDir = dir;
     const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
     expect(first!.failed.map((f) => f.file)).toEqual(['961-broken.sql']);
@@ -354,6 +389,7 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     h.bootSqlDir = makeSqlDir({
       '963-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad3 (id int);',
     });
+    await seedMigrationReservations(['963-broken.sql']);
     const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
     expect(first!.failed[0].error).not.toMatch(/cooling down/i);
 
@@ -372,6 +408,7 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     const dir = makeSqlDir({
       '964-temp-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad4 (id int);',
     });
+    await seedMigrationReservations(['964-temp-broken.sql']);
     h.bootSqlDir = dir;
     const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
     expect(first!.failed.map((f) => f.file)).toEqual(['964-temp-broken.sql']);

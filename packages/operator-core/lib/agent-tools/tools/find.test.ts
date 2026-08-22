@@ -334,6 +334,17 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toBe('refs?:array<string~/^P-\\d{3,}$/>');
   });
 
+  it('renders a property pattern in the compact result', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        published_sha: { type: 'string', pattern: '^[0-9a-f]{40,64}$' },
+      },
+    });
+
+    expect(compact).toBe('published_sha?:string~/^[0-9a-f]{40,64}$/');
+  });
+
   it('returns valid bounded JSON and marks omitted hits', () => {
     const base = {
       query: 'a verbose discovery query',
