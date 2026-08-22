@@ -166,10 +166,7 @@ const learningObservationsArgsSchema = z.object({
   q: z.string().max(500).optional(),
   filters: learningObservationsFiltersSchema.optional(),
   cursor: z.string().max(2_000).nullable().optional(),
-  limit: clampedLimit(
-    LEARNING_OBSERVATIONS_PAGE_LIMIT,
-    LEARNING_OBSERVATIONS_PAGE_LIMIT,
-  ),
+  limit: clampedLimit(LEARNING_OBSERVATIONS_PAGE_LIMIT, LEARNING_OBSERVATIONS_PAGE_LIMIT),
 });
 
 /**
@@ -981,34 +978,22 @@ const workItemsListQueryPair = createCompanionListQueryPair({
   domain: 'workItems',
   rowsQueryName: 'workItems.byHarness',
   argsSchema: workItemsListArgsSchema,
-  backingTables: [
-    'harness_shared.work_items',
-    'harness_shared.spawned_agents',
-  ] as const,
-  normalizeArgs: (args: WorkItemsListWireArgs) =>
-    normalizeWorkItemsListArgs(args),
+  backingTables: ['harness_shared.work_items', 'harness_shared.spawned_agents'] as const,
+  normalizeArgs: (args: WorkItemsListWireArgs) => normalizeWorkItemsListArgs(args),
   buildPredicate: buildWorkItemsPredicate,
   readPage: async ({ predicate }) => {
     const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../workspace-registry'),
     ]);
-    return readWorkItemsPageFromStore(
-      getOrgPg().sql,
-      activeWorkspaceId(),
-      predicate,
-    );
+    return readWorkItemsPageFromStore(getOrgPg().sql, activeWorkspaceId(), predicate);
   },
   readSummaryAggregateRows: async ({ predicate }) => {
     const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../workspace-registry'),
     ]);
-    return readWorkItemsSummaryFromStore(
-      getOrgPg().sql,
-      activeWorkspaceId(),
-      predicate,
-    );
+    return readWorkItemsSummaryFromStore(getOrgPg().sql, activeWorkspaceId(), predicate);
   },
   summarySelection: workItemsSummarySelection,
 });
@@ -1018,25 +1003,20 @@ const learningObservationsQueryPair = createCompanionListQueryPair({
   rowsQueryName: 'learning.observations',
   argsSchema: learningObservationsArgsSchema,
   backingTables: ['harness_shared.work_items'] as const,
-  normalizeArgs: (args: LearningObservationsWireArgs) =>
-    normalizeLearningObservationsArgs(args),
+  normalizeArgs: (args: LearningObservationsWireArgs) => normalizeLearningObservationsArgs(args),
   buildPredicate: buildLearningObservationsPredicate,
   readPage: async ({ args, predicate }) => {
     if (isDefaultLearningObservationsPage(args)) {
       const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
       await import('../derived-reads/producers');
       const snapshot = await readDerivedSnapshotRows('learning.observations');
-      return pageLearningObservationsSnapshot(
-        snapshot as LearningObservationRow[],
-        predicate,
-      );
+      return pageLearningObservationsSnapshot(snapshot as LearningObservationRow[], predicate);
     }
-    const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] =
-      await Promise.all([
-        import('@papercusp/db-org'),
-        import('../workspace-registry'),
-        import('../issues-engineer'),
-      ]);
+    const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+      import('../issues-engineer'),
+    ]);
     return readLearningObservationsPageFromStore(
       getOrgPg().sql,
       resolveIssuesScopeWorkspace(activeWorkspaceId()),
@@ -1044,12 +1024,11 @@ const learningObservationsQueryPair = createCompanionListQueryPair({
     );
   },
   readSummaryAggregateRows: async ({ predicate }) => {
-    const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] =
-      await Promise.all([
-        import('@papercusp/db-org'),
-        import('../workspace-registry'),
-        import('../issues-engineer'),
-      ]);
+    const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+      import('../issues-engineer'),
+    ]);
     return readLearningObservationsSummaryFromStore(
       getOrgPg().sql,
       resolveIssuesScopeWorkspace(activeWorkspaceId()),
@@ -1364,12 +1343,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
     }),
     resolve: async (args) => [
-      await resolveGoalsList(args as {
-        workspaceId: string;
-        status?: string | null;
-        limit?: number;
-        harnessSlugs?: string[];
-      }),
+      await resolveGoalsList(
+        args as {
+          workspaceId: string;
+          status?: string | null;
+          limit?: number;
+          harnessSlugs?: string[];
+        },
+      ),
     ],
   },
   'goals.detail': {
@@ -1394,9 +1375,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       activityLimit: clampedLimit(200, 40),
     }),
     resolve: async (args) => [
-      await resolveGoalDetail(
-        args as { workspaceId: string; goalId: string; activityLimit?: number },
-      ),
+      await resolveGoalDetail(args as { workspaceId: string; goalId: string; activityLimit?: number }),
     ],
   },
 
@@ -1766,7 +1745,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       limit: clampedLimit(500, 200).optional(),
     }),
     resolve: async (args) => {
-      const { planSlug, workspaceId = null, limit = 200 } = args as {
+      const {
+        planSlug,
+        workspaceId = null,
+        limit = 200,
+      } = args as {
         planSlug: string;
         workspaceId?: string | null;
         limit?: number;
@@ -3654,11 +3637,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'plans.attentionCounts': {
     resolve: async () => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const {
-        ATTENTION_COUNTS_FALLBACK_MS,
-        attentionCountsRowFromOutcome,
-        withDeadlineFallback,
-      } = await import('./attention-counts');
+      const { ATTENTION_COUNTS_FALLBACK_MS, attentionCountsRowFromOutcome, withDeadlineFallback } =
+        await import('./attention-counts');
       // The underlying attention aggregation has a 45s cachedRead deadline, but
       // this sync resolver has a 10s outer deadline. Return the badge's graceful
       // empty value first so a slow cold build cannot surface as HTTP 500; the
@@ -3780,9 +3760,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('attention', {}, {
-        uiProjection: false,
-      })) as { groups?: unknown[] };
+      const r = (await callPlansRead(
+        'attention',
+        {},
+        {
+          uiProjection: false,
+        },
+      )) as { groups?: unknown[] };
       const groups = Array.isArray(r?.groups) ? r.groups : [];
       for (const group of groups) {
         const items = (group as { items?: unknown })?.items;
@@ -3797,9 +3781,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           // detail read skips the rest of the UI projection on purpose (it is
           // what re-supplies `actions` + the unclipped `body`), but it must
           // still honour that one contract or the declaration is false here.
-          const { omitNullsForAttentionDetail } = await import(
-            '../agent-tools/plans/ui-read-projection'
-          );
+          const { omitNullsForAttentionDetail } = await import('../agent-tools/plans/ui-read-projection');
           return [omitNullsForAttentionDetail(hit)];
         }
       }
@@ -3900,17 +3882,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ path: z.string().min(1) }),
     resolve: async (args) => {
       const { path } = args as { path: string };
-      const { ensureBootstrap, getTxPool, readQueue } = await import(
-        '../agent-tools/locks/su-lock-store'
-      );
+      const { ensureBootstrap, getTxPool, readQueue } = await import('../agent-tools/locks/su-lock-store');
       // WI-38252: the FILE-lock domain (the tree agents edit), never
       // `lockCoordinationDomain()` (the tree this process's code loaded from).
       // On `:3070` those differ, and reading the process domain answers an
       // authoritative-looking "no lock on this path" about a checkout nobody
       // edits.
-      const { fileLockCoordinationDomain } = await import(
-        '../agent-tools/locks/coordination-domain'
-      );
+      const { fileLockCoordinationDomain } = await import('../agent-tools/locks/coordination-domain');
       await ensureBootstrap();
       const result = await readQueue(getTxPool(), {
         coordinationDomain: fileLockCoordinationDomain(),
@@ -3993,8 +3971,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         state: z.enum(['open', 'resolved', 'closed']).optional(),
         limit: clampedLimitOpt(500),
         q: z.string().max(200).optional(),
-        kinds: z.array(z.enum(['bug', 'change', 'task'])).max(3).optional(),
-        severities: z.array(z.enum(['critical', 'major', 'minor', 'nit'])).max(4).optional(),
+        kinds: z
+          .array(z.enum(['bug', 'change', 'task']))
+          .max(3)
+          .optional(),
+        severities: z
+          .array(z.enum(['critical', 'major', 'minor', 'nit']))
+          .max(4)
+          .optional(),
         scopes: z.array(z.string().min(1).max(120)).max(50).optional(),
         // (per-hive-learning-loops P-040) the per-Hive lens: a Hive HOME slug
         // narrows the feed to that Hive's member-harness scopes (D-008). Omit ⇒
@@ -4079,9 +4063,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // Falling through to the live compute makes a miss exactly as correct as a
         // hit and merely slower (the 0.4-0.5s inline path), which is what the hive
         // branch already does.
-        const { payload, meta } = await readDerivedSnapshot<Array<Record<string, unknown>>>(
-          'learning.improvements',
-        );
+        const { payload, meta } = await readDerivedSnapshot<Array<Record<string, unknown>>>('learning.improvements');
         if (!meta.missing && Array.isArray(payload)) {
           rows = payload;
           // Preserve what readDerivedSnapshotRows stamped: the panel renders
@@ -4094,12 +4076,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             };
           }
         } else {
-          const { computeLearningImprovementsSnapshot } = await import(
-            '../harness/improvements/learning-digest-snapshot'
-          );
-          rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<
-            Record<string, unknown>
-          >;
+          const { computeLearningImprovementsSnapshot } =
+            await import('../harness/improvements/learning-digest-snapshot');
+          rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<Record<string, unknown>>;
         }
       } else if (isHiveLensVariant) {
         const { readDerivedSnapshot } = await import('../derived-reads/registry');
@@ -4124,15 +4103,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           // compute, so this path is never WORSE than the pre-WI-7432 behaviour.
           // readDerivedSnapshot has already kicked a background fill, so the pot
           // heals itself and every later mount is a plain SELECT.
-          const { computeLearningImprovementsSnapshot } = await import(
-            '../harness/improvements/learning-digest-snapshot'
-          );
+          const { computeLearningImprovementsSnapshot } =
+            await import('../harness/improvements/learning-digest-snapshot');
           rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<Record<string, unknown>>;
         }
       } else {
-        const { computeLearningImprovementsSnapshot } = await import(
-          '../harness/improvements/learning-digest-snapshot'
-        );
+        const { computeLearningImprovementsSnapshot } =
+          await import('../harness/improvements/learning-digest-snapshot');
         rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<Record<string, unknown>>;
       }
       // FB-15 (P-043): this resolver IS the owner's view of the queue, so a hit
@@ -4492,7 +4469,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'taskManager.inventory': {
     resolve: async (args: unknown) => {
       const a = (args ?? {}) as {
-        state?: string; cls?: string; includeEnded?: boolean; live?: boolean; countsOnly?: boolean;
+        state?: string;
+        cls?: string;
+        includeEnded?: boolean;
+        live?: boolean;
+        countsOnly?: boolean;
         includeSchedules?: boolean;
       };
       const [{ getTaskInventory, disabledInventory }, { isTaskManagerEnabled }] = await Promise.all([
@@ -4682,21 +4663,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // to the Hive's members; the rubric / runbook / recipe corpora are
       // lens-invariant. Degrades workspace-wide.
       const harnessScopes = await retainHiveScopes(a.hive, 'learning.retainFeed');
-      const page = await readRetainFeed(
-        sql,
-        ws,
-        await retainStoreDeps(sql, ws, a.hive),
-        {
-          tab: a.tab,
-          filter: a.filter,
-          cursor: a.cursor ?? null,
-          ...(a.limit != null ? { limit: a.limit } : {}),
-          ...(harnessScopes ? { harnessScopes } : {}),
-          ...(harnessScopes
-            ? { memberSlugs: harnessScopes.map((s) => (s.startsWith('harness:') ? s.slice('harness:'.length) : s)) }
-            : {}),
-        },
-      );
+      const page = await readRetainFeed(sql, ws, await retainStoreDeps(sql, ws, a.hive), {
+        tab: a.tab,
+        filter: a.filter,
+        cursor: a.cursor ?? null,
+        ...(a.limit != null ? { limit: a.limit } : {}),
+        ...(harnessScopes ? { harnessScopes } : {}),
+        ...(harnessScopes
+          ? { memberSlugs: harnessScopes.map((s) => (s.startsWith('harness:') ? s.slice('harness:'.length) : s)) }
+          : {}),
+      });
       return [page];
     },
   },
@@ -5724,9 +5700,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'learning.scout': {
-    argsSchema: z
-      .object({ cycleId: z.string().optional(), hive: z.string().max(120).optional() })
-      .optional(),
+    argsSchema: z.object({ cycleId: z.string().optional(), hive: z.string().max(120).optional() }).optional(),
     resolve: async (args) => {
       const { cycleId, hive } = (args ?? {}) as { cycleId?: string; hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
@@ -5837,9 +5811,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { readFrontierSnapshot } = await import('./learning-frontier-read');
       try {
         const ws = activeWorkspaceId();
-        return await routeWithWorkspace(async (tx) => [
-          await readFrontierSnapshot(tx, ws, { hive: hive ?? null }),
-        ]);
+        return await routeWithWorkspace(async (tx) => [await readFrontierSnapshot(tx, ws, { hive: hive ?? null })]);
       } catch (err) {
         console.warn('[learning.frontier] frontier read failed:', err instanceof Error ? err.message : err);
         return [degraded({ lanes: [], unmatchedGovernor: [], generatedAt: new Date().toISOString() }, err)];
@@ -5963,17 +5935,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const { activeWorkspaceId } = await import('../workspace-registry');
         const { readPotSoakReport } = await import('../pot/soak-report');
         const ws = activeWorkspaceId();
-        const homes = hive
-          ? [{ slug: hive }]
-          : await withinBudget(listPots(ws), 'soakReport listPots').catch(() => []);
+        const homes = hive ? [{ slug: hive }] : await withinBudget(listPots(ws), 'soakReport listPots').catch(() => []);
         const reports = (
           await Promise.all(
             homes.map(async (home) => {
               try {
-                return await withinBudget(
-                  readPotSoakReport(home.slug, { windowHours }),
-                  `soakReport ${home.slug}`,
-                );
+                return await withinBudget(readPotSoakReport(home.slug, { windowHours }), `soakReport ${home.slug}`);
               } catch {
                 return null;
               }
@@ -6033,9 +6000,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // All Pots rollup — leave `enabled` undefined there rather than assert a
         // single pot's answer over every pot's rows (WI-6384). Version
         // adoptability is pack-global and stays correct either way.
-        const disabled = hive
-          ? new Set(await disabledPacksFor(activeWorkspaceId(), hive))
-          : null;
+        const disabled = hive ? new Set(await disabledPacksFor(activeWorkspaceId(), hive)) : null;
         for (const p of snap.packs) {
           if (disabled) p.enabled = !disabled.has(p.packId);
           const avail = catalog.find((c) => c.id === p.packId);
@@ -6503,10 +6468,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // rather than a silent half-view.
       const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
       const [inboxAll, outboxAll] = await Promise.all([
-        withinBudget(
-          readInbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
-          'beeDossier inbox',
-        ),
+        withinBudget(readInbox(owner, {}, { enough: (entries) => entries.length >= TAIL }), 'beeDossier inbox'),
         // EI-19323045109346905: the same stopping rule on the outbox half. This
         // is a SMALLER win than the inbox one and the asymmetry is the point:
         // the outbox predicate (`from = owner`) is genuinely selective, where
@@ -6515,10 +6477,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // a sender's entire history to render tail(50) — not a whole-table scan.
         // It is also the LAST unbounded read of the pair, so leaving it would
         // keep this resolver's cost tied to how much the owner has ever sent.
-        withinBudget(
-          readOutbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
-          'beeDossier outbox',
-        ),
+        withinBudget(readOutbox(owner, {}, { enough: (entries) => entries.length >= TAIL }), 'beeDossier outbox'),
       ]);
       const tail = <T>(arr: T[]) => (arr.length > TAIL ? arr.slice(arr.length - TAIL) : arr);
       return [{ owner, inbox: tail(inboxAll), outbox: tail(outboxAll) }];
@@ -6728,14 +6687,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // neither is supplementary and a lapse propagates as a labelled failure.
       const withinBudget = createReadDeadline(RESOLVER_FANOUT_BUDGET_MS);
       const [prompt, prefs] = await Promise.all([
-        withinBudget(
-          readOperatorState<{ content?: string }>('operator_prompt_user'),
-          'operatorPrompt user',
-        ),
-        withinBudget(
-          readOperatorState<{ content?: string }>('operator_preferences'),
-          'operatorPrompt preferences',
-        ),
+        withinBudget(readOperatorState<{ content?: string }>('operator_prompt_user'), 'operatorPrompt user'),
+        withinBudget(readOperatorState<{ content?: string }>('operator_preferences'), 'operatorPrompt preferences'),
       ]);
       return [
         {
@@ -6879,9 +6832,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             FROM harness_shared.coord_threads t
            ORDER BY t.last_post_at DESC NULLS LAST, t.created_at DESC NULLS LAST
            LIMIT ${limit}`.then((r) => [...r]),
-        count: sql<
-          { n: number }[]
-        >`SELECT count(*)::int AS n FROM harness_shared.coord_threads`.then((r) => r[0]?.n ?? null),
+        count: sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`.then(
+          (r) => r[0]?.n ?? null,
+        ),
         label: 'conversations.deliberationList',
       });
     },
@@ -6959,9 +6912,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           SELECT count(*)::int AS n
             FROM harness_shared.agent_chats_consolidated
            WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
-             AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`.then(
-          (r) => r[0]?.n ?? null,
-        ),
+             AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`.then((r) => r[0]?.n ?? null),
         label: 'conversations.agentChatList',
       });
     },
@@ -7012,7 +6963,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { limit, harness, kinds, includeMachine } = args as {
-        limit: number; harness?: string; kinds?: string[]; includeMachine?: boolean;
+        limit: number;
+        harness?: string;
+        kinds?: string[];
+        includeMachine?: boolean;
       };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const kindFilter = kinds && kinds.length > 0 ? kinds : [...CURATED_COORD_ROOT_KINDS];
@@ -7102,7 +7056,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       );
       return [
         {
-          message: toAgentMessageRow({ ...root[0], reply_count: ordered.length, last_reply_ts: ordered.at(-1)?.ts ?? null }),
+          message: toAgentMessageRow({
+            ...root[0],
+            reply_count: ordered.length,
+            last_reply_ts: ordered.at(-1)?.ts ?? null,
+          }),
           replies: ordered.map((r) => {
             const body = (r.body ?? {}) as CoordEnvelopeBody;
             return {
@@ -7171,10 +7129,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const lastWakeAt = [realWake, hv.wake?.lastWakeAt ?? null].filter(Boolean).sort().at(-1) ?? null;
           return {
             slug: hv.slug,
-            started: await withinBudget(
-              getPotPlacementStarted(ws, hv.slug),
-              `controlState started ${hv.slug}`,
-            ).catch(() => false),
+            started: await withinBudget(getPotPlacementStarted(ws, hv.slug), `controlState started ${hv.slug}`).catch(
+              () => false,
+            ),
             nextFireAt: hv.wake?.nextFireAt ?? null,
             lastWakeAt,
             watchdogFires24h: await withinBudget(
@@ -7594,10 +7551,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'usage.spend': {
     resolve: async () => {
       const { summarizeUsage } = await import('../agent-usage-telemetry');
-      const [h1, h24] = await Promise.all([
-        summarizeUsage(60 * 60 * 1000),
-        summarizeUsage(24 * 60 * 60 * 1000),
-      ]);
+      const [h1, h24] = await Promise.all([summarizeUsage(60 * 60 * 1000), summarizeUsage(24 * 60 * 60 * 1000)]);
       return [
         {
           h1: { spendUsd: h1.spendUsd, calls: h1.calls },
@@ -7656,12 +7610,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { limit } = (args ?? {}) as { limit?: number };
       const lim = limit ?? 1000;
-      const [{ getOrgPg }, { listRecipes, countRecipes }, { projectCodeRecipeRows }] =
-        await Promise.all([
-          import('@papercusp/db-org'),
-          import('../code-recipes-store'),
-          import('./code-recipes-ui-projection'),
-        ]);
+      const [{ getOrgPg }, { listRecipes, countRecipes }, { projectCodeRecipeRows }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../code-recipes-store'),
+        import('./code-recipes-ui-projection'),
+      ]);
       const sql = getOrgPg().sql;
       // Recipes are GLOBAL (P-001): capped list + cheap COUNT (no workspace/hive
       // filter), so the dashboard can show "N of TOTAL" via attachListMeta.
@@ -7754,9 +7707,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string().trim().min(1) }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { buildPrReviewerSettingsResponse } = await import(
-        '../endpoint-route/routes/harness/pr-reviewer-settings'
-      );
+      const { buildPrReviewerSettingsResponse } = await import('../endpoint-route/routes/harness/pr-reviewer-settings');
       return [await buildPrReviewerSettingsResponse(harnessSlug)] as unknown[];
     },
   },
@@ -7779,8 +7730,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
  * a client gives up and reports HTTP 000, so a wedge fails clearly on the
  * SERVER side first.
  */
-const RESOLVER_TIMEOUT_MS =
-  Number(process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS) || 10_000;
+const RESOLVER_TIMEOUT_MS = Number(process.env.PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS) || 10_000;
 
 /**
  * Resolve a named query against the v2 registry. Returns flat rows on

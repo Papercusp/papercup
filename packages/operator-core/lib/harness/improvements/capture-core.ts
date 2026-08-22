@@ -423,9 +423,7 @@ export interface CaptureDeps {
   untagIssue?: (id: string, topic: string) => Promise<void>;
   /** P-004 append-only evidence seam. Optional so pure callers can inject a
    * recorder; the production default writes through issue-occurrence-ledger. */
-  recordIssueOccurrence?: (
-    input: RecordIssueOccurrenceInput,
-  ) => Promise<RecordedIssueOccurrence | null>;
+  recordIssueOccurrence?: (input: RecordIssueOccurrenceInput) => Promise<RecordedIssueOccurrence | null>;
   /** P-005 bounded pressure reader. Optional/injectable so pure tests never open PG. */
   readIssueAdmissionPressure?: (input: {
     canonicalId: string;
@@ -609,7 +607,8 @@ export async function validateScoutEvidenceCitations(
         continue;
       }
       result.resolvedIds.push(id);
-      const payload = cited.payload && typeof cited.payload === 'object' ? (cited.payload as Record<string, unknown>) : {};
+      const payload =
+        cited.payload && typeof cited.payload === 'object' ? (cited.payload as Record<string, unknown>) : {};
       if (payload.sourceRole === 'Scout') result.circularIds.push(id);
     } catch {
       // A resolver outage is recorded for observability but remains fail-open.
@@ -632,7 +631,9 @@ interface ToolFailureProbationPayload {
   [key: string]: unknown;
 }
 
-function toolFailureProbationOf(payload: Record<string, unknown> | null | undefined): ToolFailureProbationPayload | null {
+function toolFailureProbationOf(
+  payload: Record<string, unknown> | null | undefined,
+): ToolFailureProbationPayload | null {
   const candidate = payload?.toolFailureProbation;
   return candidate && typeof candidate === 'object' && !Array.isArray(candidate)
     ? (candidate as ToolFailureProbationPayload)
@@ -648,11 +649,15 @@ async function promoteToolFailureProbation(
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
-  const reporters = [...new Set([
-    ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
-    ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
-    ...(input.createdBy ? [input.createdBy] : []),
-  ].filter(Boolean))];
+  const reporters = [
+    ...new Set(
+      [
+        ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
+        ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+        ...(input.createdBy ? [input.createdBy] : []),
+      ].filter(Boolean),
+    ),
+  ];
   const kind = incomingProbation.intendedKind ?? storageKindOf(input.kind);
 
   // Change the visible content first while the row is still safely parked. The
@@ -748,18 +753,27 @@ async function coalesceWatchdogWinner(args: {
   alreadyDecided?: AlreadyDecidedRecall[];
   queueAdmission?: IssueAdmissionPressure;
 }): Promise<CaptureImprovementResult> {
-  const { prior, input, deps, identity, possibleDuplicates, dedupCoverage, topics, alreadyDecided, queueAdmission } = args;
+  const { prior, input, deps, identity, possibleDuplicates, dedupCoverage, topics, alreadyDecided, queueAdmission } =
+    args;
   const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload);
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
   const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
   const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
-  const reporters = [...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+  const reporters = [
+    ...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])]),
+  ];
   const independentReporter = reporters.some((reporter) => !priorReporters.includes(reporter));
 
   // Preserve the probation→promoted transition if two observation captures
   // raced before either could observe the other's newly-created row.
-  if (issueWatchdogLane(prior) === 'observation' && priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
+  if (
+    issueWatchdogLane(prior) === 'observation' &&
+    priorProbation?.state === 'probation' &&
+    incomingProbation &&
+    priorReporters.length > 0 &&
+    independentReporter
+  ) {
     const promoted = await promoteToolFailureProbation(prior, input, deps);
     if (promoted) {
       await appendCaptureOccurrence(
@@ -978,10 +992,7 @@ export async function captureImprovement(
     // its lane semantics — the pre-existing exact-key BLOCK still covers that case.
     const openKeyPrior = exactKeyIssues.find((i) => {
       const payload = (i.payload as Record<string, unknown> | null) ?? {};
-      return (
-        i.state === 'open' &&
-        payload.lane !== 'observation'
-      );
+      return i.state === 'open' && payload.lane !== 'observation';
     });
     if (openKeyPrior) {
       const priorPayload = (openKeyPrior.payload as Record<string, unknown> | null) ?? {};
@@ -1074,7 +1085,8 @@ export async function captureImprovement(
       if (sem) {
         semanticLeg = 'ok';
         for (const band of ['hard', 'soft'] as const) {
-          for (const c of sem[band]) if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
+          for (const c of sem[band])
+            if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
         }
         const known = new Set(candidates.map((i) => i.id));
         const fetchIssue = deps.getIssue ?? getIssue;
@@ -1131,7 +1143,10 @@ export async function captureImprovement(
     // An exact watchdogKey match survives regardless of how its TITLE scored — that is the
     // entire point of carrying a key — and sorts FIRST so the top-5 slice can never drop a
     // definitional duplicate in favour of five fuzzy ones.
-    .filter((d) => d.exactKey === true || d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined)
+    .filter(
+      (d) =>
+        d.exactKey === true || d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined,
+    )
     .sort((a, b) => Number(b.exactKey === true) - Number(a.exactKey === true) || b.similarity - a.similarity)
     .slice(0, 5);
 
@@ -1286,10 +1301,11 @@ export async function captureImprovement(
       })),
     );
     if (pressureCandidate) {
-      queueAdmission = (await (deps.readIssueAdmissionPressure ?? readIssueAdmissionPressure)({
-        canonicalId: pressureCandidate.id,
-        canonicalHarness: pressureCandidate.canonicalHarness,
-      }).catch(() => null)) ?? undefined;
+      queueAdmission =
+        (await (deps.readIssueAdmissionPressure ?? readIssueAdmissionPressure)({
+          canonicalId: pressureCandidate.id,
+          canonicalHarness: pressureCandidate.canonicalHarness,
+        }).catch(() => null)) ?? undefined;
       const decision = decideIssueAdmissionCircuit({
         identity,
         candidates: burstCandidates.map((candidate) => ({
@@ -1377,9 +1393,16 @@ export async function captureImprovement(
       const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
       const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
       const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
-      const reporters = [...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+      const reporters = [
+        ...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])]),
+      ];
       const independentReporter = reporters.some((r) => !priorReporters.includes(r));
-      if (priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
+      if (
+        priorProbation?.state === 'probation' &&
+        incomingProbation &&
+        priorReporters.length > 0 &&
+        independentReporter
+      ) {
         const promoted = await promoteToolFailureProbation(prior, input, deps);
         if (promoted) {
           await appendCaptureOccurrence(
@@ -1450,7 +1473,13 @@ export async function captureImprovement(
       // `.catch`), which is the case where the caller's prose was dropped while
       // the call still returned ok — the silent write-loss this item exists for.
       const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
-      const coalescedOnto: CoalesceEffect = buildCoalesceEffect({ finalIssue, prior, input, repeatCount, bodyPersisted });
+      const coalescedOnto: CoalesceEffect = buildCoalesceEffect({
+        finalIssue,
+        prior,
+        input,
+        repeatCount,
+        bodyPersisted,
+      });
       return {
         ok: true,
         created: false,
@@ -1590,11 +1619,13 @@ export async function captureImprovement(
   // the create; this is deliberately fail-open so a transient checkpoint-store failure
   // cannot turn a durable capture into a lost filing.
   if (input.assignee && !isObservation && deps.setCheckpoint) {
-    await deps.setCheckpoint(
-      issue.id,
-      'Created and claimed by improvements:capture; no implementation work has started. ' +
-        'Verify the title/body against current HEAD, then reproduce before editing.',
-    ).catch(() => {});
+    await deps
+      .setCheckpoint(
+        issue.id,
+        'Created and claimed by improvements:capture; no implementation work has started. ' +
+          'Verify the title/body against current HEAD, then reproduce before editing.',
+      )
+      .catch(() => {});
   }
   // Push the right Learning-tab feed (operator-learning-tab-2026-06-09 P-002 /
   // observations P-044). Fire-and-forget via a lazy import so the pure, PG-free
@@ -1641,9 +1672,7 @@ export async function captureImprovement(
           origin,
           // P-002 pot-scope: a 'harness:<slug>' scope names the owning-pot grain;
           // other scopes (operator/workspace-global) resolve via the env home pot.
-          harnessSlug: input.scope?.startsWith('harness:')
-            ? input.scope.slice('harness:'.length)
-            : null,
+          harnessSlug: input.scope?.startsWith('harness:') ? input.scope.slice('harness:'.length) : null,
         }),
       ),
     ).catch(() => {});

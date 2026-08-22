@@ -14,11 +14,8 @@ vi.mock('../harness/improvements/read-items', () => ({
   OBSERVATION_LANE: 'observation',
 }));
 
-import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
-import {
-  computeLearningObservations,
-  normalizeLearningObservationsArgs,
-} from './learning-observations-read';
+import { knownQueryNamesV2 } from './index';
+import { computeLearningObservations, normalizeLearningObservationsArgs } from './learning-observations-read';
 import { readListMeta, readListTotal } from './list-meta';
 import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 

@@ -57,10 +57,7 @@
 
 /** Build the scope (consumer-key) args for a per-row query from the event's
  *  row PK + workspace. Return `null` to fall back to a full-bust. */
-export type ScopeKeyBuilder = (
-  rowId: string,
-  workspaceId: string | undefined,
-) => Record<string, unknown> | null;
+export type ScopeKeyBuilder = (rowId: string, workspaceId: string | undefined) => Record<string, unknown> | null;
 
 /** A mapped target: a bare query name (full-bust) or a name + per-row scope. */
 export type QueryNameTarget = string | { name: string; scope: ScopeKeyBuilder };
@@ -78,7 +75,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // back-to-back registry changes (EI-206 — a create followed by a delete
   // inside the window left open harness lists stale).
   // network.board: a hive create/dissolve changes its tier 1–2 rows.
-  'harness_shared.harness_registry': ['harnessProjects.lite', 'harnessWorkspaces.byHarness', 'network.board', 'kpis.all'],
+  'harness_shared.harness_registry': [
+    'harnessProjects.lite',
+    'harnessWorkspaces.byHarness',
+    'network.board',
+    'kpis.all',
+  ],
   'harness_shared.contributors': ['contributors.byHarness'],
   // auto_review_audit also feeds the PR-reviewer settings modal's audit log
   // (WI-4138 / P-011) — a poll-daemon audit row live-refreshes it.
@@ -348,10 +350,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_feature_debug_notes': ['featureDebugNotes.byHarness', 'featureTimeline.byFeature'],
   'harness_shared.feature_audit_consolidated': ['featureAudit.byHarness'],
   // chunkPlans contributes 2 query names sharing 1 table; both fire.
-  'harness_shared.harness_chunk_plans': [
-    'chunkPlans.byHarness',
-    'chunkPlans.byFeature',
-  ],
+  'harness_shared.harness_chunk_plans': ['chunkPlans.byHarness', 'chunkPlans.byFeature'],
   'harness_shared.harness_proposals_shared': ['proposalsShared.byHarness'],
 
   // ── Per-workspace tables ──────────────────────────────────────────
@@ -367,10 +366,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // the resolver entry it mapped to (P-025 / D-016 — the query merged into
   // operatorTurns.page). Do NOT re-add it: mapping a name no resolver serves is dead
   // wiring, and table-to-query-names.test.ts now fails on it.
-  'harness_shared.operator_turns': [
-    'operatorTurns.page',
-    'operatorReports.latest',
-  ],
+  'harness_shared.operator_turns': ['operatorTurns.page', 'operatorReports.latest'],
   'harness_shared.operator_prompt_user': ['operatorConfig.byWorkspace'],
   'harness_shared.operator_preferences': ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
   'harness_shared.operator_standing_candidates': ['operatorStandingApprovals.byWorkspace'],
@@ -539,7 +535,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family compat view over work_items (post-374; the base
   // table is the real producer above).
-  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.summary', 'workItems.detail', 'workItems.stats', 'workItems.delta24h'],
+  'harness_shared.engineer_issues': [
+    'workItems.byHarness',
+    'workItems.summary',
+    'workItems.detail',
+    'workItems.stats',
+    'workItems.delta24h',
+  ],
   // coord_links = the rel='blocks' feature/work-item blocking edge table (EI-1/D-027,
   // the single source of truth for blocking) + the rel='implements' plan↔work-item
   // ledger edges. A blocks-edge add/remove is the single most important
@@ -667,12 +669,22 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
   // consent is keyed by the changed row's natural harness_slug so only that pot's
   // PotBeaconToggle refreshes after a federated write.
-  'harness_shared.pot_settings': [
-    'hive.steering',
-    { name: 'hive.beaconConsent', scope: potHomeSlugScope },
+  'harness_shared.pot_settings': ['hive.steering', { name: 'hive.beaconConsent', scope: potHomeSlugScope }],
+  'harness_shared.feature_claims': [
+    'fleetAssignments.byHarness',
+    'sidebar.fleetCups',
+    'network.board',
+    'hiveRoster.byHive',
+    'hiveRoster.byHarness',
+    'scheduler.running',
   ],
-  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
-  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
+  'harness_shared.claim_audit': [
+    'fleetAssignments.byHarness',
+    'sidebar.fleetCups',
+    'hiveRoster.byHive',
+    'hiveRoster.byHarness',
+    'scheduler.running',
+  ],
   // cup_claim_specs (né bee_claim_specs, cup-lexicon-full-rename-2026-07-09 P-009
   // Phase 2 / WI-3954) backs the per-run claim-spec specId@revision shown by the
   // live-execution view (scheduler.running) — a Queen set_claim_spec re-steer bumps the
@@ -723,9 +735,7 @@ export interface TriggerEventArgs {
 /** A bridged invalidation target: a bare name (full-bust) or name + scoped
  *  args. Mirrors `@papercusp/sync/server`'s `BridgeTarget` (kept local so this
  *  module stays import-light; the bus accepts `string | { name, args }`). */
-export type BridgedInvalidation =
-  | string
-  | { name: string; args: Record<string, unknown> };
+export type BridgedInvalidation = string | { name: string; args: Record<string, unknown> };
 
 /** Coerce the trigger payload's `id` to a non-empty string, else undefined.
  *  Postgres `to_jsonb(row)->'id'` yields a JSON null for id-less tables and a

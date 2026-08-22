@@ -37,10 +37,7 @@
  * clipping it is a correctness regression, not a UI tweak. The next breach is
  * WI-7304 (on-demand body + server-side search), NOT a ceiling raise.
  */
-import type {
-  CompanionSummaryAggregateRow,
-  FacetSelection,
-} from '@papercusp/facets';
+import type { CompanionSummaryAggregateRow, FacetSelection } from '@papercusp/facets';
 import type { OrgSql } from '../work-items';
 import type { BoundedListPage } from './bounded-list-read';
 import { attachListMeta, readListMeta } from './list-meta';
@@ -105,12 +102,9 @@ export interface LearningObservationsCompiledPredicate {
 const uniq = (values: readonly string[] | undefined): string[] =>
   [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort();
 
-const escapePgRegex = (value: string): string =>
-  value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+const escapePgRegex = (value: string): string => value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 
-export function decodeLearningObservationsCursor(
-  raw: string | null | undefined,
-): LearningObservationsCursor | null {
+export function decodeLearningObservationsCursor(raw: string | null | undefined): LearningObservationsCursor | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<LearningObservationsCursor>;
@@ -125,9 +119,8 @@ export function decodeLearningObservationsCursor(
   }
 }
 
-export const encodeLearningObservationsCursor = (
-  row: Pick<LearningObservationRow, 'createdAt' | 'id'>,
-): string => JSON.stringify({ createdAt: row.createdAt, id: row.id });
+export const encodeLearningObservationsCursor = (row: Pick<LearningObservationRow, 'createdAt' | 'id'>): string =>
+  JSON.stringify({ createdAt: row.createdAt, id: row.id });
 
 export function normalizeLearningObservationsArgs(
   args: LearningObservationsWireArgs,
@@ -149,9 +142,7 @@ export function normalizeLearningObservationsArgs(
       plans,
     },
     planExactRefs: [...new Set(plans.flatMap((slug) => [slug, `plan:${slug}`]))].sort(),
-    planRefPatterns: plans.map(
-      (slug) => `(^|[^a-z0-9_-])${escapePgRegex(slug)}($|[^a-z0-9_-])`,
-    ),
+    planRefPatterns: plans.map((slug) => `(^|[^a-z0-9_-])${escapePgRegex(slug)}($|[^a-z0-9_-])`),
     cursor: decodeLearningObservationsCursor(args.cursor),
     limit,
   };
@@ -163,9 +154,7 @@ export function buildLearningObservationsPredicate(
   return { args, fingerprint: JSON.stringify(args) };
 }
 
-export function learningObservationsSummarySelection(
-  args: NormalizedLearningObservationsArgs,
-): FacetSelection {
+export function learningObservationsSummarySelection(args: NormalizedLearningObservationsArgs): FacetSelection {
   const entries: Array<[string, ReadonlySet<string>]> = [];
   const add = (key: string, values: string[]) => {
     if (values.length > 0) entries.push([key, new Set(values)]);
@@ -178,14 +167,14 @@ export function learningObservationsSummarySelection(
 }
 
 /** True only for the historical derived-snapshot variant. */
-export function isDefaultLearningObservationsPage(
-  args: NormalizedLearningObservationsArgs,
-): boolean {
-  return args.state === null &&
+export function isDefaultLearningObservationsPage(args: NormalizedLearningObservationsArgs): boolean {
+  return (
+    args.state === null &&
     args.q === null &&
     args.cursor === null &&
     args.limit === LEARNING_OBSERVATIONS_PAGE_LIMIT &&
-    Object.values(args.filters).every((values) => values.length === 0);
+    Object.values(args.filters).every((values) => values.length === 0)
+  );
 }
 
 export interface LearningObservationsArgs {
@@ -240,14 +229,9 @@ interface LearningObservationAggregateDbRow {
   matched: number | null;
 }
 
-const likeContainsPattern = (query: string): string =>
-  `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+const likeContainsPattern = (query: string): string => `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
 
-function observationScopedCte(
-  sql: OrgSql,
-  workspaceId: string,
-  args: NormalizedLearningObservationsArgs,
-) {
+function observationScopedCte(sql: OrgSql, workspaceId: string, args: NormalizedLearningObservationsArgs) {
   return sql`
     scoped AS MATERIALIZED (
       SELECT issue_id AS id,
@@ -282,11 +266,7 @@ function observationScopedCte(
     )`;
 }
 
-function observationPredicateSql(
-  sql: OrgSql,
-  args: NormalizedLearningObservationsArgs,
-  omit?: ObservationFacetKey,
-) {
+function observationPredicateSql(sql: OrgSql, args: NormalizedLearningObservationsArgs, omit?: ObservationFacetKey) {
   const f = args.filters;
   const q = args.q ? likeContainsPattern(args.q) : null;
   return sql`
@@ -300,20 +280,12 @@ function observationPredicateSql(
           )`
         : sql`TRUE`
     }
+    AND ${omit !== 'scope' && f.scopes.length > 0 ? sql`s.observation_scope = ANY(${f.scopes}::text[])` : sql`TRUE`}
     AND ${
-      omit !== 'scope' && f.scopes.length > 0
-        ? sql`s.observation_scope = ANY(${f.scopes}::text[])`
-        : sql`TRUE`
+      omit !== 'sourceRole' && f.sourceRoles.length > 0 ? sql`s.source_role = ANY(${f.sourceRoles}::text[])` : sql`TRUE`
     }
     AND ${
-      omit !== 'sourceRole' && f.sourceRoles.length > 0
-        ? sql`s.source_role = ANY(${f.sourceRoles}::text[])`
-        : sql`TRUE`
-    }
-    AND ${
-      omit !== 'confidence' && f.confidences.length > 0
-        ? sql`s.confidence = ANY(${f.confidences}::text[])`
-        : sql`TRUE`
+      omit !== 'confidence' && f.confidences.length > 0 ? sql`s.confidence = ANY(${f.confidences}::text[])` : sql`TRUE`
     }
     AND ${
       omit !== 'kind' && f.kinds.length > 0
@@ -332,12 +304,8 @@ function observationPredicateSql(
     }`;
 }
 
-function mapLearningObservationDbRow(
-  row: LearningObservationDbRow,
-): LearningObservationRow {
-  const createdAt = row.createdAt instanceof Date
-    ? row.createdAt.toISOString()
-    : new Date(row.createdAt).toISOString();
+function mapLearningObservationDbRow(row: LearningObservationDbRow): LearningObservationRow {
+  const createdAt = row.createdAt instanceof Date ? row.createdAt.toISOString() : new Date(row.createdAt).toISOString();
   const out: LearningObservationRow = {
     id: row.id,
     title: row.title,
@@ -359,13 +327,10 @@ export function pageLearningObservationsSnapshot(
 ): BoundedListPage<LearningObservationRow> {
   const rows = snapshot.slice(0, predicate.args.limit);
   const total = readListMeta(snapshot)?.total;
-  const hasMore = total != null
-    ? total > rows.length
-    : rows.length === predicate.args.limit;
+  const hasMore = total != null ? total > rows.length : rows.length === predicate.args.limit;
   const tail = rows[rows.length - 1];
-  const nextCursor = hasMore && tail && Number.isFinite(Date.parse(tail.createdAt))
-    ? encodeLearningObservationsCursor(tail)
-    : null;
+  const nextCursor =
+    hasMore && tail && Number.isFinite(Date.parse(tail.createdAt)) ? encodeLearningObservationsCursor(tail) : null;
   return {
     rows,
     previousCursor: null,
@@ -468,16 +433,17 @@ export async function readLearningObservationsSummaryFromStore(
     UNION ALL SELECT 'facet', 'sourceRole', 'Role', value, n, NULL, NULL FROM source_role_facets
     UNION ALL SELECT 'facet', 'confidence', 'Confidence', value, n, NULL, NULL FROM confidence_facets`;
 
-  return rows.map((row): CompanionSummaryAggregateRow =>
-    row.kind === 'totals'
-      ? { kind: 'totals', total: row.total ?? 0, matched: row.matched ?? 0 }
-      : {
-          kind: 'facet',
-          facet: row.facet ?? '',
-          label: row.label ?? undefined,
-          value: row.value ?? '',
-          count: row.count ?? 0,
-        },
+  return rows.map(
+    (row): CompanionSummaryAggregateRow =>
+      row.kind === 'totals'
+        ? { kind: 'totals', total: row.total ?? 0, matched: row.matched ?? 0 }
+        : {
+            kind: 'facet',
+            facet: row.facet ?? '',
+            label: row.label ?? undefined,
+            value: row.value ?? '',
+            count: row.count ?? 0,
+          },
   );
 }
 
