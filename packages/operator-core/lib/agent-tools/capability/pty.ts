@@ -9,7 +9,7 @@
  */
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { AGENT_ROLES, defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { AGENT_ROLES, defineTool } from '@papercusp/agent-mcp';
 import {
   getPtyByTaskId,
   getScreenSerialization,
@@ -28,7 +28,7 @@ import {
 import { getTask } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { scrubExecEnv } from './exec-sandbox';
 
@@ -38,6 +38,13 @@ const MAX_STDIN_CHARS = 1_000_000;
 const PTY_TASK_ID_ENV = 'PAPERCUSP_PTY_TASK_ID';
 
 type TextContent = { type: 'text'; text: string };
+
+/**
+ * `defineTool`'s legacy compatibility overload can supply either context shape.
+ * Keep the PTY helpers structural: these are the only optional fields they read,
+ * and both the principal-gated and unified contexts satisfy this contract.
+ */
+type PtyToolContext = ResolveIdentityCtx & { projectDir?: string };
 
 type CallerScope = {
   ownerId: string;
@@ -59,7 +66,7 @@ function errorResult(reason: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function callerScope(ctx: UnifiedToolContext): CallerScope | null {
+function callerScope(ctx: PtyToolContext): CallerScope | null {
   const identity = resolveAgentIdentity(ctx);
   const workspaceId = identity.workspaceId?.trim();
   const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
@@ -97,7 +104,7 @@ function taskBelongsToCaller(task: TaskRow, taskId: string, caller: CallerScope)
   );
 }
 
-async function attachTask(taskId: string, ctx: UnifiedToolContext): Promise<
+async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
   | { ok: true; attachment: Attachment }
   | { ok: false; result: ReturnType<typeof errorResult> }
 > {
@@ -165,7 +172,7 @@ export const ptyOpenTool = defineTool({
     cols: z.number().int().min(2).max(400).optional().describe(`Initial terminal columns (default ${DEFAULT_COLS}).`),
     rows: z.number().int().min(1).max(200).optional().describe(`Initial terminal rows (default ${DEFAULT_ROWS}).`),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PtyToolContext) {
     const caller = callerScope(ctx);
     if (!caller) return errorResult('concrete_scope_required');
 
@@ -294,7 +301,7 @@ export const ptyWriteStdinTool = defineTool({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
     data: z.string().max(MAX_STDIN_CHARS).describe('UTF-8 data/keystrokes to write. Include `\n` to submit a line.'),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PtyToolContext) {
     const attached = await attachTask(args.task_id, ctx);
     if (!attached.ok) return attached.result;
     const { handle, caller } = attached.attachment;
@@ -330,7 +337,7 @@ export const ptyReadScreenTool = defineTool({
   args: z.object({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PtyToolContext) {
     const attached = await attachTask(args.task_id, ctx);
     if (!attached.ok) return attached.result;
     const { handle, caller } = attached.attachment;
@@ -370,7 +377,7 @@ export const ptyKillTool = defineTool({
   args: z.object({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PtyToolContext) {
     const attached = await attachTask(args.task_id, ctx);
     if (!attached.ok) return attached.result;
     const { handle, caller } = attached.attachment;
@@ -387,4 +394,3 @@ export const ptyKillTool = defineTool({
     };
   },
 });
-

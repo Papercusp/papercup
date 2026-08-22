@@ -10,9 +10,9 @@ const mocks = vi.hoisted(() => {
   const beginSyncEnrolment = vi.fn(() => ({
     taskId: 'mptysession001',
     confined: true,
-    unconfinedReason: null,
+    unconfinedReason: null as string | null,
     unitKind: 'scope',
-    scopeUnit: 'pc-mptysession001.scope',
+    scopeUnit: 'pc-mptysession001.scope' as string | null,
     enrolled: true,
     registrationReady: null as Promise<void> | null,
     wrap: vi.fn((binary: string, argv: string[]) => ({ binary: 'systemd-run', argv: ['--scope', binary, ...argv] })),
@@ -261,4 +261,3 @@ describe('interactive PTY capability family', () => {
     expect(mocks.spawnPty).not.toHaveBeenCalled();
   });
 });
-
