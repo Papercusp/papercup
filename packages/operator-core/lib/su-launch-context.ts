@@ -59,12 +59,24 @@ export function composeLaunchContext(input: LaunchContextInput): string {
     // (role-launch-spec) is per-call: `docs:*`/`features:*`/`issues:*`/`plans:*` answer
     // `harness_required` until a harness is named on the call. The old over-promise made
     // agents omit `harness` and eat a wasted round-trip. State the per-call model truthfully.
-    lines.push(
-      '<!-- papercusp-rule:harness-scope=explicit-per-call -->',
-      `- **Scope:** harness \`${harnessSlug}\`; pass \`harness: '${harnessSlug}'\` to ` +
-        '`docs:*`, `features:*`, `issues:*`, and `plans:*`.',
-      '- **Other harnesses:** read through `cross_harness:docs_*` / `cross_harness:plans_*`.',
-    );
+    lines.push('<!-- papercusp-rule:harness-scope=explicit-per-call -->');
+    if (harnessSlug === 'papercusp') {
+      // Papercusp's agent-insights/framework docs live on the engineering surface,
+      // not in the papercusp harness' project-docs tree. Keep the concrete harness
+      // scope for project plans/issues/features while naming the deliberate docs
+      // surface escape so a launch brief cannot send agents to an empty corpus.
+      lines.push(
+        `- **Scope:** harness \`${harnessSlug}\`; pass \`harness: '${harnessSlug}'\` to ` +
+          '`features:*`, `issues:*`, and `plans:*`.',
+        "- **Papercusp engineering docs:** for `docs:*` reads of `agent-insights/*` and framework docs, pass `harness: 'all'` in an unscoped operator session; workspace-scoped sessions use `harness: 'engineering'` instead.",
+      );
+    } else {
+      lines.push(
+        `- **Scope:** harness \`${harnessSlug}\`; pass \`harness: '${harnessSlug}'\` to ` +
+          '`docs:*`, `features:*`, `issues:*`, and `plans:*`.',
+      );
+    }
+    lines.push('- **Other harnesses:** read through `cross_harness:docs_*` / `cross_harness:plans_*`.');
   } else {
     lines.push(
       '<!-- papercusp-rule:harness-scope=explicit-per-call -->',

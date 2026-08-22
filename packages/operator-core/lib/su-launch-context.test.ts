@@ -24,6 +24,15 @@ describe('composeLaunchContext', () => {
     expect(out.endsWith('\n')).toBe(true);
   });
 
+  it('Papercusp harness scope routes engineering docs to the canonical surface', () => {
+    const out = composeLaunchContext({ harnessSlug: 'papercusp', planSlug: null });
+
+    expect(out).toContain("pass `harness: 'papercusp'` to `features:*`, `issues:*`, and `plans:*`");
+    expect(out).toContain("for `docs:*` reads of `agent-insights/*` and framework docs, pass `harness: 'all'`");
+    expect(out).toContain("workspace-scoped sessions use `harness: 'engineering'` instead");
+    expect(out).not.toContain("pass `harness: 'papercusp'` to `docs:*`");
+  });
+
   it('no harness but a plan → workspace-level block + plan block', () => {
     const out = composeLaunchContext({ harnessSlug: null, planSlug: 'my-plan' });
     expect(out).toContain('workspace level');
