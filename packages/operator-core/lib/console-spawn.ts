@@ -356,6 +356,13 @@ export function buildConsoleOneliner(
    * `undefined`/`null` (the default) is byte-identical to the pre-fix banner.
    */
   bootReceiptPath?: string | null,
+  /**
+   * No-window managed launches do not need a desktop liveness marker. Keeping
+   * this enabled for visible consoles lets the Tauri watcher restore
+   * `.mcp.json`; disabling it for headless sessions avoids writing per-process
+   * runtime files into the launch cwd (which is often the shared repository).
+   */
+  includeLivenessSentinel = true,
 ): string {
   const envExports: string[] = [];
   const pathExport = buildPathExport(env);
@@ -395,9 +402,10 @@ export function buildConsoleOneliner(
   // shows it), this just ALSO persists it to disk.
   return `${prelude} ; ${keepWindowOpenOnFailure(greeting, {
     receiptPath: bootReceiptPath,
-    interactivePrelude:
-      `touch .papercup-console-active.$$; ` +
-      `trap 'rm -f .papercup-console-active.$$' EXIT`,
+    interactivePrelude: includeLivenessSentinel
+      ? `touch .papercup-console-active.$$; ` +
+        `trap 'rm -f .papercup-console-active.$$' EXIT`
+      : null,
   })}`;
 }
 
@@ -2071,15 +2079,17 @@ export function buildConsoleScopedSpawnCommand(
 export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
   const label = opts.label ?? 'headless-member';
-  // Same one-liner spawnConsole builds — appearance prelude is harmless with no
-  // TTY (the OSC escapes just land in the log). 'console' mode keeps it identical.
+  // Same one-liner shape spawnConsole builds — appearance prelude is harmless
+  // with no TTY (the OSC escapes just land in the log). Headless sessions have
+  // no desktop window or native .mcp.json watcher, so omit the visible-console
+  // liveness marker and keep runtime state out of the launch cwd.
   const oneliner = wrapHeadlessSigtermDiagnostic(
     buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
       mode: 'console',
       planSlug: null,
       label,
       scheme: null,
-    }),
+    }, null, false),
   );
 
   let logDir = opts.logDir?.trim() || null;

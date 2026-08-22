@@ -432,6 +432,9 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(oneliner).toContain('exit 143');
     // still runs the real greeting after the trap is installed
     expect(oneliner).toContain('psu --headless');
+    // Headless members have no desktop window or native .mcp.json watcher;
+    // they must not leave a per-process marker in the launch cwd.
+    expect(oneliner).not.toContain('.papercup-console-active');
   }, 10_000);
 
   it('EI-9748 Route (A): when systemd-run is available on Linux, spawns via systemd-run --user --scope instead of plain bash — the cgroup escape', async () => {
@@ -825,6 +828,13 @@ describe('buildConsoleOneliner', () => {
     const script = interactiveRcScript(out);
     expect(script).toContain('touch .papercup-console-active.$$');
     expect(script).toContain("trap 'rm -f .papercup-console-active.$$' EXIT");
+  });
+
+  it('can omit the cwd sentinel for no-window managed launches', () => {
+    const out = buildConsoleOneliner('/repo', {}, 'true', APPEARANCE, null, false);
+    const script = interactiveRcScript(out);
+    expect(script).not.toContain('.papercup-console-active');
+    expect(script).toContain('exec "${SHELL:-/bin/bash}" -l');
   });
 
   it(
