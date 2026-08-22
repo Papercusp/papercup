@@ -211,6 +211,52 @@ TAURI_OWNER_SID="${PAPERCUSP_SID:-}"
 }
 TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID"
 
+# EI-21107555111779921: `npm run install:safe` rewrites the shared root
+# node_modules while holding this repo's fs mutex. Starting a verifier in that
+# window races the rewrite and turns a missing `tsx`/package link into a much
+# later, misleading boot failure. Reuse the install wrapper's canonical,
+# non-blocking peek so the verifier reports the real condition before resolving
+# its own dependency or allocating WORK/Xvfb resources. The peek is diagnostic
+# only: it never reclaims a stale lock and a failed diagnostic must not prevent a
+# verifier launch.
+install_in_flight_preflight() {
+  PAPERCUSP_PREFLIGHT_REPO_DIR="$REPO_DIR" node --input-type=module <<'NODE'
+import { pathToFileURL } from 'node:url';
+
+const repoRoot = process.env.PAPERCUSP_PREFLIGHT_REPO_DIR;
+try {
+  const mutex = await import(pathToFileURL(`${repoRoot}/scripts/lib/fs-mutex.mjs`).href);
+  const installSafe = await import(pathToFileURL(`${repoRoot}/scripts/npm-install-safe.mjs`).href);
+  const peek = mutex.peekFsMutexSync(installSafe.repoLockName(repoRoot));
+  if (!peek.held) process.exit(0);
+
+  const owner = peek.owner ?? {};
+  const details = [
+    owner.pid ? `pid ${owner.pid}${owner.host ? `@${owner.host}` : ''}` : '',
+    owner.startedAt ? `since ${owner.startedAt}` : '',
+  ].filter(Boolean).join(', ');
+  console.error(
+    'VERIFY_TAURI_INSTALL_IN_PROGRESS an npm install:safe is rewriting shared node_modules' +
+      (details ? ` (${details})` : '') +
+      ' — refusing verifier launch; retry after install:safe releases the repo mutex.',
+  );
+  process.exit(75);
+} catch {
+  // This is a best-effort diagnostic. If the helper cannot be loaded, preserve
+  // the verifier's existing dependency/resource path instead of masking it.
+  process.exit(0);
+}
+NODE
+  local status=$?
+  [ "$status" -eq 75 ] && return 75
+  if [ "$status" -ne 0 ]; then
+    echo "WARNING: install-safe mutex preflight was inconclusive; continuing verifier launch." >&2
+  fi
+  return 0
+}
+
+install_in_flight_preflight || exit $?
+
 # EI-20742798527438103 / EI-20961560846717550: the Codex launcher PATH carries
 # the Node runtime but not the managed npm bin directory. The verifier used to
 # spend minutes booting Xvfb + Tauri, then execute a bare `tauri-agent-tools` in
