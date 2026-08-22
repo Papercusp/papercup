@@ -63,6 +63,7 @@ import {
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
+import { clearGoalClaimedIfMatches } from './agent-state-stamp';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
@@ -2353,9 +2354,13 @@ export async function releaseIssue(
     UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR assignee IS NULL OR assignee = ${opts.expectedAssignee ?? null})
-    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
+  // Direct issue release callers (outside work_items:release) must retire the
+  // same cached goal as the unified release path. Compare before clearing so a
+  // delayed release cannot erase a newer goal claimed by this owner.
+  if (formerAssignee) clearGoalClaimedIfMatches(formerAssignee, id);
   // EI-6480: harness-agnostic (issue ids are globally unique), flag-gated, best-effort lease
   // cleanup so the released issue is IMMEDIATELY re-claimable, not lease-poisoned until TTL.
   // Covers every voluntary release path (work_items:release + the improvement resolve-core
@@ -2470,8 +2475,21 @@ export async function setIssueState(
   // refuses lifecycle transitions; keeping the gate above this direct base write
   // preserves both genuine completion evidence and trusted skipCompletionGate
   // system paths without adding a trigger bypass.
+  let priorAssignee: string | null = null;
+  let terminalWriteSucceeded = false;
   const rows = await boundedOrgTxn(async (tx) => {
     if (isTerminal) {
+      // Read the holder in the SAME transaction as the terminal UPDATE. The
+      // cached goal must be cleared for the holder that this write actually
+      // released, not for the completion actor (which may be a system path).
+      const prior = await tx<{ taken_by: string | null }[]>`
+        SELECT taken_by
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${ws} AND feature_id = ${id}
+           AND item_kind IN ('bug', 'change', 'task')
+           AND origin <> 'remote'
+         FOR UPDATE`;
+      priorAssignee = prior[0]?.taken_by ?? null;
       const updated = await tx<{ feature_id: string }[]>`
         UPDATE harness_shared.work_items
          SET status = ${state}, origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
@@ -2517,6 +2535,7 @@ export async function setIssueState(
            AND origin <> 'remote'
         RETURNING feature_id`;
       if (updated.length === 0) return [] as IssueRowDb[];
+      terminalWriteSucceeded = true;
       // Read through the view after the base write so the mapper receives the same
       // stable issue-family shape as every other issue read, without invoking its
       // lifecycle-rejecting INSTEAD OF UPDATE trigger.
@@ -2531,6 +2550,9 @@ export async function setIssueState(
        WHERE workspace_id = ${ws} AND issue_id = ${id}
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
   });
+  if (isTerminal && terminalWriteSucceeded && priorAssignee) {
+    clearGoalClaimedIfMatches(priorAssignee, id);
+  }
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   // work-item-status-full-unify: classify via the (transitionally-widened) terminal set so a
