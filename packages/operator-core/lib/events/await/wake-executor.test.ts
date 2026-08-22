@@ -523,6 +523,75 @@ describe('wakeTurnText', () => {
   });
 });
 
+describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)', () => {
+  const loopPayload = {
+    harness: 'papercusp',
+    wakeCount: 7,
+    routineId: 'rt_papercusp_loop_su_abc',
+  };
+
+  it('drops an ended loop delivery before any injection, plan resume, or process resume side effect', async () => {
+    const cases = [
+      work({ payload: loopPayload, wakeHandle: null }),
+      work({ payload: loopPayload, wakeHandle: { kind: 'plan-run', runId: 12 } }),
+      work({ payload: loopPayload, wakeHandle: advHandle() }),
+    ];
+
+    for (const delivery of cases) {
+      const d = deps({ getLoopStatusFn: vi.fn(async () => null) as never });
+      const out = await executeWake(delivery, d);
+      expect(out).toMatchObject({ kind: 'drop' });
+      expect((out as { reason: string }).reason).toContain('queued loop delivery');
+      expect((out as { reason: string }).reason).toContain('no current active row');
+      expect(d.findPsuHost).not.toHaveBeenCalled();
+      expect(d.injectPsuHost).not.toHaveBeenCalled();
+      expect(d.resumePlanRun).not.toHaveBeenCalled();
+      expect(d.getSession).not.toHaveBeenCalled();
+      expect(d.spawnDetached).not.toHaveBeenCalled();
+      expect(d.write).not.toHaveBeenCalled();
+    }
+  });
+
+  it('drops a delivery from the prior arm when the current loop was re-armed after it was queued', async () => {
+    const d = deps({
+      getLoopStatusFn: vi.fn(async () => ({
+        active: true,
+        armedAt: new Date(Date.now() - 5_000).toISOString(),
+      })) as never,
+      alive: vi.fn(() => false),
+    });
+    const out = await executeWake(
+      work({
+        payload: loopPayload,
+        wakeHandle: advHandle(),
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      d,
+    );
+
+    expect(out).toMatchObject({ kind: 'drop' });
+    expect((out as { reason: string }).reason).toContain('re-armed after this delivery was created');
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the lifecycle read errors, preserving a valid loop delivery', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-loop' }));
+    const write = vi.fn(() => true);
+    const getLoopStatusFn = vi.fn(async () => {
+      throw new Error('pg unavailable');
+    });
+    const out = await executeWake(
+      work({ payload: loopPayload, wakeHandle: advHandle() }),
+      deps({ findPty: findPty as never, write: write as never, getLoopStatusFn: getLoopStatusFn as never }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(getLoopStatusFn).toHaveBeenCalledWith('su-abc');
+    expect(write).toHaveBeenCalled();
+  });
+});
+
 describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', () => {
   const STALE_TEXT =
     'Loop fired.\n\n⛔ OPEN WALLS — owner-gated / pending decisions:\n  • LIVE entity re-link backfill — irreversible, awaiting go/no-go';

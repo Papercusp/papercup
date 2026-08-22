@@ -530,10 +530,50 @@ export function wakeTurnText(d: DeliveryWork): string {
  * deliver" moment for every channel (live psu-socket inject, plan-run resume,
  * adv-session inject), it is the natural single choke point to ALSO re-check
  * the loop's current `active`/`armedAt` state and, if superseded, append an
- * unmissable banner stripping the stale imperative framing — same
- * annotate-don't-drop posture as the walls/checks re-check (a wake is never
- * silently swallowed; the agent is told plainly not to trust it).
+ * unmissable banner stripping the stale imperative framing. `executeWake`
+ * applies the terminal delivery gate before entering any injection/resume
+ * branch; this helper keeps its direct-call behavior observable for callers
+ * that only assemble wake text.
  */
+
+type LoopStatusSnapshot = Awaited<ReturnType<typeof getLoopStatus>>;
+type LoopDeliverySupersession = { kind: 'ended' | 're-armed' };
+
+/**
+ * Classify a loop delivery against the loop lifecycle observed at delivery time.
+ * A missing/inactive row means `loop:end` won the race; an arm newer than the
+ * delivery means the queued fire belongs to the prior loop instance. Invalid
+ * timestamps are deliberately fail-open because they cannot prove supersession.
+ */
+function classifyLoopDeliverySupersession(
+  d: DeliveryWork,
+  status: LoopStatusSnapshot,
+): LoopDeliverySupersession | null {
+  if (!status || status.active === false) return { kind: 'ended' };
+
+  const armedAtMs = status.armedAt ? new Date(status.armedAt).getTime() : NaN;
+  const createdAtMs = new Date(d.createdAt).getTime();
+  if (Number.isFinite(armedAtMs) && Number.isFinite(createdAtMs) && armedAtMs > createdAtMs) {
+    return { kind: 're-armed' };
+  }
+  return null;
+}
+
+/** Read and classify a loop delivery's lifecycle without blocking normal wakes. */
+async function readLoopDeliverySupersession(
+  d: DeliveryWork,
+  getStatus: typeof getLoopStatus,
+): Promise<LoopDeliverySupersession | null> {
+  if (!readColdLoopMarker(d.payload)) return null;
+  try {
+    return classifyLoopDeliverySupersession(d, await getStatus(d.subscriberId));
+  } catch {
+    // Status lookup is a safety signal, not a new delivery dependency. If it is
+    // unavailable, preserve the existing wake rather than dropping on inference.
+    return null;
+  }
+}
+
 export async function rehydrateLoopWakeText(
   d: DeliveryWork,
   baseText: string,
@@ -597,18 +637,15 @@ export async function rehydrateLoopWakeText(
     try {
       const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
       const status = await getStatus(d.subscriberId);
-      if (!status || status.active === false) {
+      const supersession = classifyLoopDeliverySupersession(d, status);
+      if (supersession?.kind === 'ended') {
         supersededNote =
           `\n\n🛑 THIS LOOP WAS ENDED (loop:end) before this wake was actually delivered — it was queued while ` +
           `the loop was still active and only reached you afterward. The goal/checkpoint text above is FROZEN ` +
           `from before the end and is NOT authoritative: do not resume, re-open, or re-do work off it. Call ` +
           `loop:status to confirm before acting; if the loop's goal was already achieved, take no further ` +
           `action on it this turn.`;
-      } else if (
-        status.armedAt != null &&
-        typeof d.createdAt === 'string' &&
-        new Date(status.armedAt).getTime() > new Date(d.createdAt).getTime()
-      ) {
+      } else if (supersession?.kind === 're-armed') {
         supersededNote =
           `\n\n🛑 THIS LOOP WAS RE-ARMED (loop:arm) after this wake was queued but before it was delivered — the ` +
           `goal/checkpoint text above is from the PRIOR arm and may no longer reflect the current goal. Call ` +
@@ -1617,6 +1654,29 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         reason:
           `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
           `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
+      };
+    }
+
+    // EI-21157954408185498: a loop fire can already be queued when loop:end or
+    // a re-arm advances the loop lifecycle. The text rehydration below still
+    // annotates such a fire, but annotation is insufficient: every delivery
+    // channel would otherwise replay the old imperative and recreate awaits.
+    // Drop only on a confirmed ended/re-armed status; a status-read failure is
+    // fail-open so a transient PG issue cannot strand an otherwise valid wake.
+    const loopSupersession = await readLoopDeliverySupersession(
+      d,
+      deps.getLoopStatusFn ?? getLoopStatus,
+    );
+    if (loopSupersession) {
+      const lifecycleReason =
+        loopSupersession.kind === 'ended'
+          ? 'the loop is ended or has no current active row'
+          : 'the loop was re-armed after this delivery was created';
+      return {
+        kind: 'drop',
+        reason:
+          `queued loop delivery #${d.id} suppressed: ${lifecycleReason}; ` +
+          `no injection, resume, or plan continuation was performed`,
       };
     }
 
