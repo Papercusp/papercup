@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+import { composeCompanionSummary } from '@papercusp/facets';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -43,20 +44,50 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
-const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await import('./scorecards');
-const { createIssue, issueRef, linkIssue } = await import('./issues-engineer');
+const {
+  builtInCriterionKeysForRubric,
+  listScorecardPage,
+  listScorecards,
+  scorecardTotalCountsByRubric,
+  scorecardTrend,
+} = await import('./scorecards');
+const { createIssue, issueRef, issuesScopeWorkspace, linkIssue } = await import('./issues-engineer');
 const { proposeRubric, setRubricHistoryReset } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const {
+  buildScorecardHistoryPredicate,
+  normalizeScorecardHistoryArgs,
+  readScorecardHistoryPage,
+  readScorecardHistorySummary,
+} = await import('./sync-resolver/scorecard-history-list-query');
 
 const RUBRIC = 'test-coord-health';
 const CRITERIA = [
   // WI-4607: end-to-end-flow carries a trailing [instrumentKey:] token; watchdog is
   // explicitly `none`; ideation-quality carries no token (→ instrumentKey null).
-  { key: 'end-to-end-flow', title: 'End-to-end flow', model: 'work flows [instrumentKey: placement-count]', method: 'count placements', driftMarkers: 'stuck frontier' },
-  { key: 'ideation-quality', title: 'Ideation quality', model: 'good ideas', method: 'grade ideas', driftMarkers: 'stale ideas' },
-  { key: 'watchdog-determinism', title: 'Watchdog determinism', model: 'deterministic [instrumentKey: none]', method: 'replay', driftMarkers: 'flaky red-tests' },
+  {
+    key: 'end-to-end-flow',
+    title: 'End-to-end flow',
+    model: 'work flows [instrumentKey: placement-count]',
+    method: 'count placements',
+    driftMarkers: 'stuck frontier',
+  },
+  {
+    key: 'ideation-quality',
+    title: 'Ideation quality',
+    model: 'good ideas',
+    method: 'grade ideas',
+    driftMarkers: 'stale ideas',
+  },
+  {
+    key: 'watchdog-determinism',
+    title: 'Watchdog determinism',
+    model: 'deterministic [instrumentKey: none]',
+    method: 'replay',
+    driftMarkers: 'flaky red-tests',
+  },
 ];
 
 // P-010 supersession fixture — a SEPARATE rubric so the counts/series the tests
@@ -82,13 +113,22 @@ const reset: { oldSuperseded: string; oldReviser: string; current: string } = {
   current: '',
 };
 const supersede: { original: string; correction: string; independent: string } = {
-  original: '', correction: '', independent: '',
+  original: '',
+  correction: '',
+  independent: '',
 };
 
 /** File a scorecard via the real write path, then pin its created_at deterministically. */
 async function fileScorecard(
   db: OrgTestDb,
-  opts: { id: string; rubricRef?: string; sourceHive?: string; ratings: Record<string, { rating: string; evidence: string }>; createdAt: string; createdBy?: string },
+  opts: {
+    id: string;
+    rubricRef?: string;
+    sourceHive?: string;
+    ratings: Record<string, { rating: string; evidence: string }>;
+    createdAt: string;
+    createdBy?: string;
+  },
 ): Promise<string> {
   const issue = await createIssue({
     title: `scorecard ${opts.id}`,
@@ -128,7 +168,10 @@ describe('listScorecards (P-013) — real PG', () => {
     // one extra key. Direct createIssue intentionally bypasses the capture gate so
     // the read path proves old rows remain auditable without polluting trends.
     await fileScorecard(db, {
-      id: 'complete', rubricRef: RUBRIC, sourceHive: 'papercusp', createdAt: '2026-06-20T12:00:00.000Z',
+      id: 'complete',
+      rubricRef: RUBRIC,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-20T12:00:00.000Z',
       ratings: {
         'end-to-end-flow': { rating: 'broken', evidence: '88 unplaced' },
         'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas' },
@@ -138,22 +181,34 @@ describe('listScorecards (P-013) — real PG', () => {
     });
     // A PARTIAL papercusp scorecard (1 of 3) — the drift P-014 must catch.
     await fileScorecard(db, {
-      id: 'partial', rubricRef: RUBRIC, sourceHive: 'papercusp', createdAt: '2026-06-20T10:00:00.000Z',
+      id: 'partial',
+      rubricRef: RUBRIC,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-20T10:00:00.000Z',
       ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'slow' } },
     });
     // Same rubric, DIFFERENT source-hive (separate by sourceHive filter).
     await fileScorecard(db, {
-      id: 'generic', rubricRef: RUBRIC, sourceHive: 'generic-test', createdAt: '2026-06-20T11:00:00.000Z',
+      id: 'generic',
+      rubricRef: RUBRIC,
+      sourceHive: 'generic-test',
+      createdAt: '2026-06-20T11:00:00.000Z',
       ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'fine' } },
     });
     // A scorecard against an UNKNOWN rubric — rubricResolved must be false.
     await fileScorecard(db, {
-      id: 'unknown-rubric', rubricRef: 'no-such-rubric', sourceHive: 'papercusp', createdAt: '2026-06-20T09:00:00.000Z',
-      ratings: { 'whatever': { rating: 'healthy', evidence: 'x' } },
+      id: 'unknown-rubric',
+      rubricRef: 'no-such-rubric',
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-20T09:00:00.000Z',
+      ratings: { whatever: { rating: 'healthy', evidence: 'x' } },
     });
     // A FREE-TEXT observation (no rubricRef) — must NOT appear as a scorecard.
     await createIssue({
-      title: 'free-text obs', kind: 'change', topics: [OBSERVATION_TOPIC], createdBy: 'cup',
+      title: 'free-text obs',
+      kind: 'change',
+      topics: [OBSERVATION_TOPIC],
+      createdBy: 'cup',
       payload: { observation: { kind: 'friction', scope: 'papercusp', refs: [] } },
     });
 
@@ -165,20 +220,39 @@ describe('listScorecards (P-013) — real PG', () => {
       rubricId: RUBRIC_SUPERSEDE,
       characteristic: 'hive-coordination',
       title: 'Test supersession',
-      criteria: [{ key: SUPERSEDE_KEY, title: 'Grading honesty', model: 'grades reflect reality', method: 'compare to source', driftMarkers: 'uncorrected misreadings' }],
+      criteria: [
+        {
+          key: SUPERSEDE_KEY,
+          title: 'Grading honesty',
+          model: 'grades reflect reality',
+          method: 'compare to source',
+          driftMarkers: 'uncorrected misreadings',
+        },
+      ],
       status: 'active',
       by: 'su-test',
     });
     supersede.original = await fileScorecard(db, {
-      id: 'supersede-original', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T10:00:00.000Z',
+      id: 'supersede-original',
+      rubricRef: RUBRIC_SUPERSEDE,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-19T10:00:00.000Z',
       ratings: { [SUPERSEDE_KEY]: { rating: 'broken', evidence: 'ORIGINAL — the evidence was misread' } },
     });
     supersede.correction = await fileScorecard(db, {
-      id: 'supersede-correction', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T11:00:00.000Z',
-      ratings: { [SUPERSEDE_KEY]: { rating: 'healthy', evidence: 'CORRECTION — re-read the source; it was fine all along' } },
+      id: 'supersede-correction',
+      rubricRef: RUBRIC_SUPERSEDE,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-19T11:00:00.000Z',
+      ratings: {
+        [SUPERSEDE_KEY]: { rating: 'healthy', evidence: 'CORRECTION — re-read the source; it was fine all along' },
+      },
     });
     supersede.independent = await fileScorecard(db, {
-      id: 'supersede-independent', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T12:00:00.000Z',
+      id: 'supersede-independent',
+      rubricRef: RUBRIC_SUPERSEDE,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-19T12:00:00.000Z',
       ratings: { [SUPERSEDE_KEY]: { rating: 'healthy', evidence: 'a genuinely separate later observation' } },
     });
 
@@ -191,21 +265,42 @@ describe('listScorecards (P-013) — real PG', () => {
       rubricId: RUBRIC_RESET,
       characteristic: 'hive-coordination',
       title: 'Test contract reset',
-      criteria: [{ key: RESET_KEY, title: 'Contract honesty', model: 'grades measure the live contract', method: 'compare to contract', driftMarkers: 'gradings of a rewritten contract' }],
+      criteria: [
+        {
+          key: RESET_KEY,
+          title: 'Contract honesty',
+          model: 'grades measure the live contract',
+          method: 'compare to contract',
+          driftMarkers: 'gradings of a rewritten contract',
+        },
+      ],
       status: 'active',
       by: 'su-test',
     });
     reset.oldSuperseded = await fileScorecard(db, {
-      id: 'reset-old-superseded', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', createdAt: '2026-06-18T10:00:00.000Z',
-      ratings: { [RESET_KEY]: { rating: 'broken', evidence: 'PRE-REWRITE, and later corrected — excluded by BOTH paths' } },
+      id: 'reset-old-superseded',
+      rubricRef: RUBRIC_RESET,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-18T10:00:00.000Z',
+      ratings: {
+        [RESET_KEY]: { rating: 'broken', evidence: 'PRE-REWRITE, and later corrected — excluded by BOTH paths' },
+      },
     });
     reset.oldReviser = await fileScorecard(db, {
-      id: 'reset-old-reviser', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', createdAt: '2026-06-18T11:00:00.000Z',
+      id: 'reset-old-reviser',
+      rubricRef: RUBRIC_RESET,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-18T11:00:00.000Z',
       ratings: { [RESET_KEY]: { rating: 'healthy', evidence: 'PRE-REWRITE correction of the above' } },
     });
     reset.current = await fileScorecard(db, {
-      id: 'reset-current', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', createdAt: '2026-06-18T13:00:00.000Z',
-      ratings: { [RESET_KEY]: { rating: 'healthy', evidence: 'POST-REWRITE — the only sample that grades the live contract' } },
+      id: 'reset-current',
+      rubricRef: RUBRIC_RESET,
+      sourceHive: 'papercusp',
+      createdAt: '2026-06-18T13:00:00.000Z',
+      ratings: {
+        [RESET_KEY]: { rating: 'healthy', evidence: 'POST-REWRITE — the only sample that grades the live contract' },
+      },
     });
     await linkIssue(reset.oldReviser, issueRef(reset.oldSuperseded), 'revises', 'su-test');
   }, 120_000);
@@ -320,7 +415,11 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(trend.scorecardCount).toBe(2); // complete + partial (generic-test excluded by sourceHive)
     expect(trend.window).toEqual({ from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T12:00:00.000Z' });
     // criteria sorted ASC by key.
-    expect(trend.criteria.map((c) => c.criterion)).toEqual(['end-to-end-flow', 'ideation-quality', 'watchdog-determinism']);
+    expect(trend.criteria.map((c) => c.criterion)).toEqual([
+      'end-to-end-flow',
+      'ideation-quality',
+      'watchdog-determinism',
+    ]);
     expect(trend.criteria.some((c) => c.criterion === 'legacy-ad-hoc-check')).toBe(false);
 
     const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
@@ -409,8 +508,10 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(after.window).toEqual({ from: '2026-06-19T11:00:00.000Z', to: '2026-06-19T12:00:00.000Z' });
 
     // Only the REVISED one drops — a correction chain must not take its own corrections with it.
-    expect(after.criteria.find((c) => c.criterion === SUPERSEDE_KEY)!.latest)
-      .toEqual({ rating: 'healthy', at: '2026-06-19T12:00:00.000Z' });
+    expect(after.criteria.find((c) => c.criterion === SUPERSEDE_KEY)!.latest).toEqual({
+      rating: 'healthy',
+      at: '2026-06-19T12:00:00.000Z',
+    });
   });
 
   // ── D-015: gradings of a REWRITTEN contract must not blend into the live trend.
@@ -459,5 +560,160 @@ describe('listScorecards (P-013) — real PG', () => {
     // thinning legible.
     expect(afterReset.supersededExcluded).toBe(0);
     expect(afterReset.preContractResetExcluded + afterReset.supersededExcluded).toBe(3 - afterReset.scorecardCount);
+  });
+});
+
+describe('scorecard history P-009 — real PG large-corpus contract', () => {
+  const rubricRef = 'test-large-scorecard-history';
+  const criterion = 'bounded-history';
+  const seededRows = 843;
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+    await proposeRubric({
+      rubricId: rubricRef,
+      characteristic: 'hive-coordination',
+      title: 'Large scorecard history',
+      criteria: [
+        {
+          key: criterion,
+          title: 'Bounded history',
+          model: 'history reads stay bounded',
+          method: 'page the corpus',
+          driftMarkers: 'page length presented as a total',
+        },
+      ],
+      status: 'active',
+      by: 'su-test',
+    });
+
+    // Direct through the canonical issue-family compatibility view, in one
+    // statement. Paired timestamps force the cursor's issue-id tie-breaker to
+    // carry real correctness rather than merely decorate an all-unique fixture.
+    await db.adminSql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source,
+         state, payload, created_by, signal_origin, created_at, updated_at)
+      SELECT ${issuesScopeWorkspace()},
+             'EI-p009-' || lpad(g::text, 4, '0'),
+             'change',
+             'harness:papercusp',
+             'P-009 scorecard ' || g,
+             '',
+             'minor',
+             'test',
+             'done',
+             ${JSON.stringify({
+               observation: {
+                 rubricRef,
+                 ratings: {
+                   [criterion]: {
+                     rating: 'pass',
+                     evidence: 'seeded large-corpus scorecard',
+                   },
+                 },
+               },
+             })}::text::jsonb,
+             'su-test',
+             'organic',
+             timestamptz '2026-08-01T00:00:00Z'
+               + floor(g / 2.0) * interval '1 second',
+             timestamptz '2026-08-01T00:00:00Z'
+               + floor(g / 2.0) * interval '1 second'
+        FROM generate_series(1, ${seededRows}) AS g`;
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('keeps exact corpus truth independent from the 500-row trend sample and keyset-pages every row', async () => {
+    const firstPredicate = buildScorecardHistoryPredicate(normalizeScorecardHistoryArgs({ rubricRef, limit: 137 }));
+    const started = performance.now();
+    const [aggregateRows, trend] = await Promise.all([
+      readScorecardHistorySummary(firstPredicate, {
+        countByRubric: scorecardTotalCountsByRubric,
+      }),
+      scorecardTrend({ rubricRef }),
+    ]);
+    const summary = composeCompanionSummary(aggregateRows);
+    expect(summary).toMatchObject({ total: seededRows, matched: seededRows });
+    expect(trend.sample).toEqual({ limit: 500, inputCount: 500 });
+    expect(trend.scorecardCount).toBe(500);
+    expect(performance.now() - started).toBeLessThan(6_000);
+
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    let pageNo = 0;
+    let maxPageBytes = 0;
+    let maxPageMs = 0;
+    for (;;) {
+      const pageStarted = performance.now();
+      const page = await readScorecardHistoryPage(
+        buildScorecardHistoryPredicate(normalizeScorecardHistoryArgs({ rubricRef, limit: 137, cursor })),
+        { listPage: listScorecardPage },
+      );
+      maxPageMs = Math.max(maxPageMs, performance.now() - pageStarted);
+      maxPageBytes = Math.max(maxPageBytes, Buffer.byteLength(JSON.stringify(page.rows)));
+      ids.push(...page.rows.map((row) => row.issueId));
+      cursor = page.nextCursor;
+
+      if (pageNo === 0) {
+        // A new row above the cursor must not duplicate or skip the immutable
+        // snapshot prefix already traversed.
+        await db.adminSql`
+          INSERT INTO harness_shared.engineer_issues
+            (workspace_id, issue_id, kind, scope, title, body, severity, source,
+             state, payload, created_by, signal_origin, created_at, updated_at)
+          VALUES (
+            ${issuesScopeWorkspace()}, 'EI-p009-newer', 'change',
+            'harness:papercusp', 'newer after cursor', '', 'minor', 'test',
+            'done',
+            ${JSON.stringify({
+              observation: {
+                rubricRef,
+                ratings: {
+                  [criterion]: { rating: 'pass', evidence: 'newer insertion' },
+                },
+              },
+            })}::text::jsonb,
+            'su-test', 'organic',
+            timestamptz '2026-08-02T00:00:00Z',
+            timestamptz '2026-08-02T00:00:00Z'
+          )`;
+      }
+
+      pageNo += 1;
+      if (!cursor) break;
+      expect(pageNo).toBeLessThan(20);
+    }
+
+    expect(ids).toHaveLength(seededRows);
+    expect(new Set(ids).size).toBe(seededRows);
+    expect(ids).not.toContain('EI-p009-newer');
+    expect(maxPageBytes).toBeLessThan(250_000);
+    expect(maxPageMs).toBeLessThan(6_000);
+
+    const updatedAggregate = await readScorecardHistorySummary(firstPredicate, {
+      countByRubric: scorecardTotalCountsByRubric,
+    });
+    expect(composeCompanionSummary(updatedAggregate).matched).toBe(seededRows + 1);
+  }, 120_000);
+
+  it('preserves an exact zero when the history page is empty', async () => {
+    const predicate = buildScorecardHistoryPredicate(normalizeScorecardHistoryArgs({ rubricRef: 'missing-rubric' }));
+    const [page, aggregateRows] = await Promise.all([
+      readScorecardHistoryPage(predicate, { listPage: listScorecardPage }),
+      readScorecardHistorySummary(predicate, {
+        countByRubric: scorecardTotalCountsByRubric,
+      }),
+    ]);
+    expect(page).toMatchObject({ rows: [], nextCursor: null, hasMore: false });
+    expect(composeCompanionSummary(aggregateRows)).toMatchObject({
+      total: 0,
+      matched: 0,
+    });
   });
 });

@@ -97,9 +97,7 @@ export function scorecardEvidenceFingerprint(input: {
     instrumentSnapshots: input.instrumentSnapshots ?? {},
   };
   if (input.acceptance) material.acceptance = input.acceptance;
-  return createHash('sha256')
-    .update(canonicalJson(material))
-    .digest('hex');
+  return createHash('sha256').update(canonicalJson(material)).digest('hex');
 }
 
 export interface ScorecardInstrumentContractEvaluation {
@@ -390,9 +388,10 @@ export async function retractScorecard(
   const issue = await (deps.getIssue ?? getIssue)(issueId);
   if (!issue) return { ok: false, issueId, retracted: false, error: `scorecard '${issueId}' not found` };
 
-  const payload = issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
-    ? issue.payload as Record<string, unknown>
-    : {};
+  const payload =
+    issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+      ? (issue.payload as Record<string, unknown>)
+      : {};
   const rawObservation = payload.observation;
   if (!rawObservation || typeof rawObservation !== 'object' || Array.isArray(rawObservation)) {
     return { ok: false, issueId, retracted: false, error: `'${issueId}' is not a scorecard` };
@@ -436,9 +435,7 @@ export function ratingVerdict(rating: string): 'pass' | 'fail' | 'unknown' | nul
 /** P-013: an audit FAILS iff any rating maps to 'fail' (severe/broken/etc. included);
  *  unknown/custom ratings never fail an audit silently — they leave it passing only
  *  when nothing failed, which errs toward auditing again, never toward muting. */
-export function auditVerdictFromRatings(
-  ratings: Record<string, { rating: string }>,
-): 'passed' | 'failed' {
+export function auditVerdictFromRatings(ratings: Record<string, { rating: string }>): 'passed' | 'failed' {
   for (const entry of Object.values(ratings)) {
     if (expectedInstrumentVerdict(entry.rating) === 'fail') return 'failed';
   }
@@ -469,9 +466,10 @@ export async function recordGradingAudit(
 ): Promise<GradingAuditRecordResult> {
   const issue = await (deps.getIssue ?? getIssue)(issueId);
   if (!issue) return { ok: false, issueId, error: `scorecard '${issueId}' not found` };
-  const payload = issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
-    ? issue.payload as Record<string, unknown>
-    : {};
+  const payload =
+    issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+      ? (issue.payload as Record<string, unknown>)
+      : {};
   const rawObservation = payload.observation;
   const observation = asStructuredObservation(rawObservation);
   if (!observation?.rubricRef || !observation.ratings) {
@@ -548,10 +546,22 @@ export function parseGradedGeneration(raw: unknown): GradedGeneration | null {
  * A rubric wanting different weights passes `overrides` (per-rubric map).
  */
 export const DEFAULT_RATING_SCORE10: Record<string, number> = {
-  exemplary: 10, exceptional: 10,
-  pass: 10, healthy: 10, good: 10, yes: 10, green: 10,
-  partial: 5, degraded: 5, mixed: 5, warn: 5,
-  fail: 0, broken: 0, bad: 0, no: 0, red: 0,
+  exemplary: 10,
+  exceptional: 10,
+  pass: 10,
+  healthy: 10,
+  good: 10,
+  yes: 10,
+  green: 10,
+  partial: 5,
+  degraded: 5,
+  mixed: 5,
+  warn: 5,
+  fail: 0,
+  broken: 0,
+  bad: 0,
+  no: 0,
+  red: 0,
   severe: 0,
 };
 
@@ -622,17 +632,50 @@ export function scorecardScore10(
  * rubrics:trend's own per-rubric window) + this unbounded count for the true total —
  * so no rubric's count depends on how many OTHER rubrics were graded recently.
  */
-export async function scorecardTotalCountsByRubric(): Promise<Record<string, number>> {
+export interface ScorecardCountFilter {
+  /** Restrict the grouped aggregate to one rubric while preserving the map shape. */
+  rubricRef?: string;
+  /** Preserve the historic aggregate population by default. */
+  includeSuperseded?: boolean;
+  /** Preserve the historic aggregate population by default. */
+  includeRetracted?: boolean;
+}
+
+export async function scorecardTotalCountsByRubric(filter: ScorecardCountFilter = {}): Promise<Record<string, number>> {
   const { sql } = getOrgPg();
   const rows = await sql<{ rubric_ref: string; n: string }[]>`
-    SELECT payload -> 'observation' ->> 'rubricRef' AS rubric_ref, count(*) AS n
-      FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()}
-       AND COALESCE(signal_origin, 'organic') = 'organic'
-       AND payload -> 'observation' ->> 'rubricRef' IS NOT NULL
-       AND payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'
+    SELECT scorecard.payload -> 'observation' ->> 'rubricRef' AS rubric_ref,
+           count(*) AS n
+      FROM harness_shared.engineer_issues AS scorecard
+     WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
+       AND COALESCE(scorecard.signal_origin, 'organic') = 'organic'
+       AND scorecard.payload -> 'observation' ->> 'rubricRef' IS NOT NULL
+       AND scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'
+       AND ${
+         filter.rubricRef ? sql`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : sql`TRUE`
+       }
+       AND ${
+         filter.includeSuperseded === false
+           ? sql`NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.engineer_issues AS superseder
+          WHERE superseder.workspace_id = scorecard.workspace_id
+            AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
+            AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+            AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+       )`
+           : sql`TRUE`
+       }
+       AND ${
+         filter.includeRetracted === false ? sql`scorecard.payload -> 'observation' -> 'retracted' IS NULL` : sql`TRUE`
+       }
      GROUP BY 1`;
   return Object.fromEntries(rows.map((r) => [r.rubric_ref, Number(r.n)]));
+}
+
+export interface ScorecardListCursor {
+  createdAt: string;
+  issueId: string;
 }
 
 export interface ListScorecardsFilter {
@@ -649,6 +692,11 @@ export interface ListScorecardsFilter {
   subjectRef?: string;
   /** Only scorecards filed at/after this ISO timestamp (the time-window). */
   since?: string;
+  /**
+   * Stable newest-first keyset boundary. The row at this exact
+   * `(created_at, issue_id)` position is excluded from the next page.
+   */
+  before?: ScorecardListCursor;
   /** Max rows (newest-first). Default 100, max 500. */
   limit?: number;
   /**
@@ -725,9 +773,8 @@ const tsIso = pgTimestampToIso;
  * pollute the monitoring read (mirrors read-items.ts's organic provenance gate;
  * a NULL origin reads organic, the backfill default).
  */
-export async function listScorecards(filter: ListScorecardsFilter = {}): Promise<ScorecardRow[]> {
+async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number): Promise<ScorecardRow[]> {
   const { sql } = getOrgPg();
-  const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
 
   const rows = await sql<ScorecardRowDb[]>`
     SELECT scorecard.issue_id, scorecard.created_by, scorecard.created_at, scorecard.payload,
@@ -749,17 +796,26 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
        AND ${filter.sourceHive ? sql`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : sql`TRUE`}
        AND ${filter.subjectRef ? sql`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : sql`TRUE`}
        AND ${filter.since ? sql`scorecard.created_at >= ${filter.since}` : sql`TRUE`}
+       AND ${
+         filter.before
+           ? sql`(scorecard.created_at, scorecard.issue_id) < (${filter.before.createdAt}::timestamptz, ${filter.before.issueId}::text)`
+           : sql`TRUE`
+       }
        AND ${filter.includeSynthesized ? sql`TRUE` : sql`scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
-       AND ${filter.includeSuperseded ? sql`TRUE` : sql`NOT EXISTS (
+       AND ${
+         filter.includeSuperseded
+           ? sql`TRUE`
+           : sql`NOT EXISTS (
          SELECT 1
            FROM harness_shared.engineer_issues AS superseder
           WHERE superseder.workspace_id = scorecard.workspace_id
             AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
             AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
             AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
-       )`}
+       )`
+       }
        AND ${filter.includeRetracted ? sql`TRUE` : sql`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
-     ORDER BY scorecard.created_at DESC
+     ORDER BY scorecard.created_at DESC, scorecard.issue_id DESC
      LIMIT ${limit}`;
 
   // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics):
@@ -806,9 +862,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       rubricMeta.set(observation.rubricRef, {
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
-        ratingRubric: rubric
-          ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria }
-          : null,
+        ratingRubric: rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
       });
     }
     const meta = rubricMeta.get(observation.rubricRef)!;
@@ -875,6 +929,28 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
   return out;
 }
 
+/** Public array-shaped scorecard read. The historical 500-row cap stays intact. */
+export async function listScorecards(filter: ListScorecardsFilter = {}): Promise<ScorecardRow[]> {
+  const limit = Math.min(Math.max(Math.trunc(filter.limit ?? 100), 1), 500);
+  return listScorecardsAtLimit(filter, limit);
+}
+
+export interface ScorecardPage {
+  rows: ScorecardRow[];
+  hasMore: boolean;
+}
+
+/**
+ * One bounded scorecard-history page plus an authoritative exhaustion bit.
+ * The private read over-fetches exactly one row; callers still receive at most
+ * the public 500-row cap.
+ */
+export async function listScorecardPage(filter: ListScorecardsFilter = {}): Promise<ScorecardPage> {
+  const limit = Math.min(Math.max(Math.trunc(filter.limit ?? 100), 1), 500);
+  const rows = await listScorecardsAtLimit(filter, limit + 1);
+  return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Trend aggregation (P-010) — the qualitative health TREND over the scorecard
 // time-series. The "data already exists" quick-win: every-turn scorecards ARE a
@@ -900,9 +976,14 @@ export type TrendDirection = 'improving' | 'worsening' | 'stable' | 'unknown';
  *  are NOT ordered (returns null → excluded from the direction calc) — only the
  *  shared default vocabularies have a meaningful order. */
 const TREND_SEVERITY: Record<string, number> = {
-  exemplary: -1, exceptional: -1,
-  healthy: 0, degraded: 1, broken: 2,
-  pass: 0, partial: 1, fail: 2,
+  exemplary: -1,
+  exceptional: -1,
+  healthy: 0,
+  degraded: 1,
+  broken: 2,
+  pass: 0,
+  partial: 1,
+  fail: 2,
   severe: 3,
 };
 function trendSeverity(rating: string): number | null {
@@ -923,9 +1004,7 @@ function trendSeverity(rating: string): number | null {
  */
 export function isIdleUnknown(rating: string, evidence: string | undefined): boolean {
   if (rating.toLowerCase() !== 'unknown') return false;
-  return /^\s*(idle\s*:|not\s+(exercised|applicable|assessable|observed)\b|n\/a\b|not\s+apply)/i.test(
-    evidence ?? '',
-  );
+  return /^\s*(idle\s*:|not\s+(exercised|applicable|assessable|observed)\b|n\/a\b|not\s+apply)/i.test(evidence ?? '');
 }
 
 /**
@@ -1094,9 +1173,7 @@ export function computeRubricStaleness(
 ): RubricStaleness {
   const minSamples = opts.minSamples ?? STALENESS_DEFAULTS.minSamples;
   const staleFraction = opts.staleFraction ?? STALENESS_DEFAULTS.staleFraction;
-  const staleRatings = new Set(
-    (opts.staleRatings ?? STALENESS_DEFAULTS.staleRatings).map((r) => r.toLowerCase()),
-  );
+  const staleRatings = new Set((opts.staleRatings ?? STALENESS_DEFAULTS.staleRatings).map((r) => r.toLowerCase()));
 
   const staleCriteria: CriterionStaleness[] = [];
   let judgedCriteria = 0;
@@ -1160,6 +1237,11 @@ export interface RubricTrend {
   sourceHive?: string;
   /** # scorecards aggregated in the window. */
   scorecardCount: number;
+  /**
+   * Explicit bounded-input evidence. `inputCount` is the raw newest-first
+   * sample before trend-only exclusions; it is never a corpus total.
+   */
+  sample: { limit: number; inputCount: number };
   /** The observed time span (oldest..newest scorecard) + the requested `since`. */
   window: { since?: string; from?: string; to?: string };
   /** Per-criterion trends, criterion key ASC (stable output). */
@@ -1267,11 +1349,12 @@ export function parseCriterionInstrumentKey(
  * organic-only + rubric filtering, and stays correct as the storage evolves.
  */
 export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<RubricTrend> {
+  const sampleLimit = Math.min(Math.max(Math.trunc(filter.limit ?? 500), 1), 500);
   const rows = await listScorecards({
     rubricRef: filter.rubricRef,
     sourceHive: filter.sourceHive,
     since: filter.since,
-    limit: filter.limit ?? 500,
+    limit: sampleLimit,
     // WI-6124: no includeLinks — the trend is a pure roll-up of ratings + createdAt and
     // never reads `linkedItems`, so it takes the default and skips the join.
   });
@@ -1290,9 +1373,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // Absent a declared boundary this is a no-op — every rubric that never rewrote its
   // contract trends exactly as before.
   const resetAtMs = trendRubric?.historyResetAt ? Date.parse(trendRubric.historyResetAt) : NaN;
-  const inGeneration = Number.isFinite(resetAtMs)
-    ? rows.filter((r) => Date.parse(r.createdAt) >= resetAtMs)
-    : rows;
+  const inGeneration = Number.isFinite(resetAtMs) ? rows.filter((r) => Date.parse(r.createdAt) >= resetAtMs) : rows;
   const preContractResetExcluded = rows.length - inGeneration.length;
 
   // P-010: drop scorecards a later filing REVISED. A correction used to enter the
@@ -1305,9 +1386,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // exclusion figures sum past the number actually excluded — the same
   // invisible-arithmetic failure these counts exist to prevent.
   const supersededIds = await issuesSupersededByRevision(inGeneration.map((r) => r.issueId));
-  const live = supersededIds.size
-    ? inGeneration.filter((r) => !supersededIds.has(r.issueId))
-    : inGeneration;
+  const live = supersededIds.size ? inGeneration.filter((r) => !supersededIds.has(r.issueId)) : inGeneration;
   // P-008: drop PROVISIONAL cards — mid-run ratings of 'violatable' criteria are
   // working notes (D-004), not settled gradings; the terminal re-emit that supersedes
   // one is what enters the series. Applied after the superseded filter for the same
@@ -1324,9 +1403,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   const chrono = [...finalCards].reverse();
 
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
-  const declaredCriterionKeys = trendRubric
-    ? new Set(trendRubric.criteria.map((c) => c.key))
-    : null;
+  const declaredCriterionKeys = trendRubric ? new Set(trendRubric.criteria.map((c) => c.key)) : null;
 
   // WI-4607: parse each criterion's instrument binding once per key so the trend
   // view can show which instrument grades each criterion.
@@ -1356,9 +1433,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     .map(([criterion, series]) => {
       const distribution: Record<string, number> = {};
       for (const s of series) distribution[s.rating] = (distribution[s.rating] ?? 0) + 1;
-      const nums = series
-        .map((s) => ratingScore10(s.rating, scoreOverrides))
-        .filter((n): n is number => n !== null);
+      const nums = series.map((s) => ratingScore10(s.rating, scoreOverrides)).filter((n): n is number => n !== null);
       return {
         criterion,
         count: series.length,
@@ -1377,6 +1452,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
     scorecardCount: finalCards.length,
+    sample: { limit: sampleLimit, inputCount: rows.length },
     supersededExcluded: inGeneration.length - live.length,
     preContractResetExcluded,
     provisionalExcluded,

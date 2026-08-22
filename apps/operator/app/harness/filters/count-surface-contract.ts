@@ -97,9 +97,6 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     evidence: "window",
     pageCap: 100,
     sourcePaths: ["apps/operator-vite/src/components/adv/LearningTab.tsx"],
-    columnFilterCalls: {
-      "apps/operator-vite/src/components/adv/LearningTab.tsx": 1,
-    },
   },
   {
     id: "agent-runs",
@@ -113,9 +110,13 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "rubric-history",
     label: "Rubric detail and scorecard history",
     classification: "active-defect",
-    evidence: "window",
+    evidence: "corpus",
     pageCap: 500,
     sourcePaths: ["apps/operator/app/_components/RubricDetailPanel.tsx"],
+    behaviorGuard: {
+      planItem: "P-009",
+      testPath: "packages/operator-core/lib/scorecards.integration.test.ts",
+    },
   },
   {
     id: "sessions-history",
@@ -232,6 +233,5 @@ export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
   "design-feature-queue",
   "learning-improve",
   "learning-retain",
-  "rubric-history",
   "sessions-history",
 ] as const;

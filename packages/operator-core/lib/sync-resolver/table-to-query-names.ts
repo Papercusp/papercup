@@ -242,10 +242,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // notifySyncInvalidate in the 3 tools alone would miss.
     'plans.schedule',
     'plans.scheduledOccurrences',
-    // rubrics.list (rubrics-tab-scorecard-ui-2026-07-09 P-002): rubrics are
-    // plan-doc-backed (template = rubric, lib/rubrics.ts queryRubricPlans), so a
-    // rubric create/ratify/edit is a harness_plans write — refresh the Rubrics tab.
+    // Rubrics are plan-doc-backed (template = rubric, lib/rubrics.ts
+    // queryRubricPlans). A create/ratify/edit changes the overview, history-row
+    // completeness projection, and trend dimensions. P-009 keeps the paired
+    // history summary on the exact same invalidation set as its row page.
     'rubrics.list',
+    'scorecards.list',
+    'scorecards.summary',
+    'rubrics.trend',
     // goals.detail (P-019/D-010) — the goal popup's plans rail LEFT JOINs
     // harness_plans for each derived plan's title + status (goals.ts
     // resolveGoalDetail). The rail's ROW LIST is invalidated by work_items, but
@@ -501,6 +505,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // any work-item write busts them; rubric-graded reads are cheap + low-rate.
     'rubrics.list',
     'scorecards.list',
+    'scorecards.summary',
     'rubrics.trend',
   ],
 
@@ -564,6 +569,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // so an open Detail pane live-refreshes on the same writes (state, blockers,
     // spine, plan-link) that move the list row.
     'workItems.detail',
+    // Scorecard history rows surface outbound links and rubrics.trend excludes
+    // revises-linked samples. The paired summary shares their invalidation set
+    // so row/count evidence converges in the same cycle.
+    'scorecards.list',
+    'scorecards.summary',
+    'rubrics.trend',
     'conversations.questionsList',
     'conversations.questionDetail',
   ],

@@ -190,6 +190,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'network.hive.wakes': null, // a federation hive key
   'rubrics.trend': null, // a specific rubricRef
   'scorecards.list': null, // a specific rubricRef
+  'scorecards.summary': null, // paired exact total for that same rubricRef
   'sidebar.cupMail': null, // a specific owner id
   'userMemory.feedbackStats': null, // a specific userId
   'userMemory.list': null, // a specific userId
@@ -214,7 +215,7 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
   codeRecipes: {
     maxBytes: 450_000,
     reason:
-      "The /admin/recipes corpus (LIMIT 1000 of 8,923 recipes). WI-7085 found this was the FATTEST sync read in the tree at 2,936,018 B — ~11.7x budget, unallowlisted, and never measured by anything until the full 175-query audit ran. NOT the WI-7083 fabricated-row class (distinct id 1000/1000, ratio 1.0000): it was the unread-field class (D-023) in its purest form, with `script` — the recipe BODY — alone accounting for 2,309,736 B / 79.21% of the payload. No list caller had ever read it (recipes:list, the learning-retain read and this resolver each projected it straight back off), so listRecipes now returns CodeRecipeListRow and never SELECTs it — saving the Postgres->node leg too, not just the wire. A UI-read allow-list (code-recipes-ui-projection.ts) then dropped 7 more unread columns and, per D-025, the null-valued keys (promotedTool null on 1000/1000). Measured live 2,906,331 -> 393,406 B (-2,512,925 B, -86.46%) on a SIMULTANEOUS two-operator paired fetch: 0 rows lost, 0 rows added, 0 read-set value diffs, 0 residual nulls. Over the 250KB budget and honestly so: the residual is 382 B/row x 1000 rows of exclusively rendered fields (description 29%, title 17%, id 16%, lastRunAt 11%). The next real cut is windowing the list itself, not fewer bytes per row.",
+      'The /admin/recipes corpus (LIMIT 1000 of 8,923 recipes). WI-7085 found this was the FATTEST sync read in the tree at 2,936,018 B — ~11.7x budget, unallowlisted, and never measured by anything until the full 175-query audit ran. NOT the WI-7083 fabricated-row class (distinct id 1000/1000, ratio 1.0000): it was the unread-field class (D-023) in its purest form, with `script` — the recipe BODY — alone accounting for 2,309,736 B / 79.21% of the payload. No list caller had ever read it (recipes:list, the learning-retain read and this resolver each projected it straight back off), so listRecipes now returns CodeRecipeListRow and never SELECTs it — saving the Postgres->node leg too, not just the wire. A UI-read allow-list (code-recipes-ui-projection.ts) then dropped 7 more unread columns and, per D-025, the null-valued keys (promotedTool null on 1000/1000). Measured live 2,906,331 -> 393,406 B (-2,512,925 B, -86.46%) on a SIMULTANEOUS two-operator paired fetch: 0 rows lost, 0 rows added, 0 read-set value diffs, 0 residual nulls. Over the 250KB budget and honestly so: the residual is 382 B/row x 1000 rows of exclusively rendered fields (description 29%, title 17%, id 16%, lastRunAt 11%). The next real cut is windowing the list itself, not fewer bytes per row.',
     reviewBy: '2026-09-01',
   },
   'featuresConsolidated.bySlug': {
@@ -340,7 +341,9 @@ export interface SyncReadAuditReport {
 /** True when the query's argsSchema REQUIRES a non-empty args object (i.e. it
  *  cannot be resolved with `{}`). Pure schema validation — no I/O. `entry` is a
  *  registry entry ({ argsSchema?: { safeParse } }). No argsSchema ⇒ no args. */
-export function queryRequiresArgs(entry: { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined): boolean {
+export function queryRequiresArgs(
+  entry: { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined,
+): boolean {
   const schema = entry?.argsSchema;
   if (!schema || typeof schema.safeParse !== 'function') return false;
   return schema.safeParse({}).success === false;
@@ -413,7 +416,14 @@ export function evaluateBudget(
   name: string,
   bytes: number,
   ms: number,
-): { overBudget: boolean; allowlisted: boolean; byteCeil: number; msCeil: number; overBytes: boolean; overMs: boolean } {
+): {
+  overBudget: boolean;
+  allowlisted: boolean;
+  byteCeil: number;
+  msCeil: number;
+  overBytes: boolean;
+  overMs: boolean;
+} {
   const { byteCeil, msCeil } = budgetCeilings(name);
   const overBytes = bytes > byteCeil;
   const overMs = ms > msCeil;
@@ -628,10 +638,7 @@ export async function measureSyncReadPayloadsInProcess(opts: {
         continue;
       }
       const rowCount = Array.isArray(resolved) ? resolved.length : 1;
-      const body = await serializeJsonResponse(
-        { rows: resolved, version: String(Date.now()) },
-        rowCount,
-      );
+      const body = await serializeJsonResponse({ rows: resolved, version: String(Date.now()) }, rowCount);
       const bytes = body.length;
       measured.push({
         name,

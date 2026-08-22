@@ -4,83 +4,167 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import RubricDetailPanel from "./RubricDetailPanel";
+import RubricDetailPanel, {
+  mergeScorecardHistoryPage,
+} from "./RubricDetailPanel";
+
+const sync = vi.hoisted(() => {
+  const trendData = [
+    {
+      rubricRef: "rubric-quality",
+      scorecardCount: 497,
+      sample: { limit: 500, inputCount: 500 },
+      window: {},
+      criteria: [
+        {
+          criterion: "Stable evidence",
+          count: 3,
+          distribution: { pass: 3 },
+          idleCount: 0,
+          first: { rating: "pass", at: "2026-07-01" },
+          latest: { rating: "pass", at: "2026-07-03" },
+          direction: "stable",
+          mean10: 8,
+        },
+        {
+          criterion: "Improving clarity",
+          count: 3,
+          distribution: { pass: 2, partial: 1 },
+          idleCount: 0,
+          first: { rating: "partial", at: "2026-07-01" },
+          latest: { rating: "pass", at: "2026-07-03" },
+          direction: "improving",
+          mean10: 7,
+        },
+        {
+          criterion: "Regressing cost",
+          count: 3,
+          distribution: { fail: 2, partial: 1 },
+          idleCount: 0,
+          first: { rating: "pass", at: "2026-07-01" },
+          latest: { rating: "fail", at: "2026-07-03" },
+          direction: "regressing",
+          mean10: 3,
+          instrumentKey: "gate-red-count",
+        },
+      ],
+      status: "active",
+      proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
+      ratifiedBy: "su-eb9b7ae3-d528-4584-8379-e69f2b8fe7b9",
+    },
+  ];
+  const firstPage = [
+    {
+      issueId: "scorecard-3",
+      createdAt: "2026-07-03T00:00:00.000Z",
+      createdBy: "owner",
+      score10: 6,
+      nKeys: 3,
+      rubricResolved: true,
+      missingKeys: [],
+      _meta: { nextCursor: "cursor-2", hasMore: true },
+    },
+  ];
+  const secondPage = [
+    {
+      issueId: "scorecard-2",
+      createdAt: "2026-07-02T00:00:00.000Z",
+      createdBy: "owner",
+      score10: 5,
+      nKeys: 3,
+      rubricResolved: true,
+      missingKeys: [],
+      _meta: { nextCursor: null, hasMore: false },
+    },
+  ];
+  const summaryData = [{ total: 843, matched: 843, facets: [], selection: [] }];
+  return {
+    useSyncQuery: vi.fn(
+      ({
+        queryName,
+        args,
+      }: {
+        queryName: string;
+        args?: { cursor?: string };
+      }) => ({
+        data:
+          queryName === "rubrics.trend"
+            ? trendData
+            : queryName === "scorecards.summary"
+              ? summaryData
+              : args?.cursor
+                ? secondPage
+                : firstPage,
+        loading: false,
+        fetching: false,
+        error: null,
+      }),
+    ),
+  };
+});
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) =>
-    queryName === "rubrics.trend"
-      ? {
-          data: [
-            {
-              rubricRef: "rubric-quality",
-              scorecardCount: 3,
-              window: {},
-              criteria: [
-                {
-                  criterion: "Stable evidence",
-                  count: 3,
-                  distribution: { pass: 3 },
-                  idleCount: 0,
-                  first: { rating: "pass", at: "2026-07-01" },
-                  latest: { rating: "pass", at: "2026-07-03" },
-                  direction: "stable",
-                  mean10: 8,
-                },
-                {
-                  criterion: "Improving clarity",
-                  count: 3,
-                  distribution: { pass: 2, partial: 1 },
-                  idleCount: 0,
-                  first: { rating: "partial", at: "2026-07-01" },
-                  latest: { rating: "pass", at: "2026-07-03" },
-                  direction: "improving",
-                  mean10: 7,
-                },
-                {
-                  criterion: "Regressing cost",
-                  count: 3,
-                  distribution: { fail: 2, partial: 1 },
-                  idleCount: 0,
-                  first: { rating: "pass", at: "2026-07-01" },
-                  latest: { rating: "fail", at: "2026-07-03" },
-                  direction: "regressing",
-                  mean10: 3,
-                  // WI-4607: per-criterion instrument binding parsed from the model token.
-                  instrumentKey: "gate-red-count",
-                },
-              ],
-              // WI-4607 governance provenance: author ≠ ratifier ⇒ the split badge (D-012).
-              status: "active",
-              proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
-              ratifiedBy: "su-eb9b7ae3-d528-4584-8379-e69f2b8fe7b9",
-            },
-          ],
-          loading: false,
-          error: null,
-        }
-      : {
-          data: [
-            {
-              issueId: "scorecard-3",
-              createdAt: "2026-07-03T00:00:00.000Z",
-              createdBy: "owner",
-              score10: 6,
-              nKeys: 3,
-              rubricResolved: true,
-              missingKeys: [],
-            },
-          ],
-          loading: false,
-          error: null,
-        },
+  useSyncQuery: sync.useSyncQuery,
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  sync.useSyncQuery.mockClear();
+});
 
 describe("RubricDetailPanel focused evidence", () => {
+  it("keeps corpus, loaded-history, and bounded-trend populations explicit while paging", async () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+
+    expect(
+      screen.getByLabelText(
+        "843 scorecards in scorecards filed against rubric-quality",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByTestId("rubric-trend-sample-count").textContent).toBe(
+      "497 of 500 match in latest 500 scorecards (cap 500); 843 in the full corpus",
+    );
+    expect(screen.getByTestId("rubric-history-count").textContent).toBe(
+      "1 of 843",
+    );
+
+    expect(sync.useSyncQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryName: "scorecards.list",
+        args: { rubricRef: "rubric-quality", limit: 100 },
+      }),
+    );
+    expect(sync.useSyncQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryName: "scorecards.summary",
+        args: { rubricRef: "rubric-quality" },
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Grading history/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load older scorecards" }),
+    );
+    await waitFor(() => expect(screen.getByText("scorecard-2")).toBeTruthy());
+    expect(screen.getByTestId("rubric-history-count").textContent).toBe(
+      "2 of 843",
+    );
+    expect(sync.useSyncQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryName: "scorecards.list",
+        args: {
+          rubricRef: "rubric-quality",
+          limit: 100,
+          cursor: "cursor-2",
+        },
+      }),
+    );
+  });
+
   it("puts regressions before improvements and collapses stable criteria and history", () => {
     render(<RubricDetailPanel rubricId="rubric-quality" />);
     expect(screen.getByLabelText("Rubric summary")).toBeTruthy();
@@ -112,9 +196,9 @@ describe("RubricDetailPanel focused evidence", () => {
     const gov = document.querySelector(".pc-rubric-detail__gov");
     expect(gov).not.toBeNull();
     // status prominence
-    expect(gov?.querySelector(".pc-rubric-detail__gov-status")?.textContent).toBe(
-      "Active",
-    );
+    expect(
+      gov?.querySelector(".pc-rubric-detail__gov-status")?.textContent,
+    ).toBe("Active");
     // both identities in the chain, shortened
     expect(gov?.textContent).toContain("su-f69a7079");
     expect(gov?.textContent).toContain("su-eb9b7ae3");
@@ -145,5 +229,29 @@ describe("RubricDetailPanel focused evidence", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Stable criteria/ }));
     expect(screen.getByRole("img", { name: "stable" })).toBeTruthy();
+  });
+});
+
+describe("mergeScorecardHistoryPage", () => {
+  it("replaces page one and appends cursor pages without duplicate issue ids", () => {
+    const first = [
+      { issueId: "EI-3", createdAt: "2026-01-03" },
+      { issueId: "EI-2", createdAt: "2026-01-02" },
+    ] as never[];
+    expect(mergeScorecardHistoryPage([], first, null)).toEqual(first);
+    const appended = mergeScorecardHistoryPage(
+      first,
+      [
+        { issueId: "EI-2", createdAt: "2026-01-02", createdBy: "updated" },
+        { issueId: "EI-1", createdAt: "2026-01-01" },
+      ] as never[],
+      "cursor-1",
+    );
+    expect(appended.map((row) => row.issueId)).toEqual([
+      "EI-3",
+      "EI-2",
+      "EI-1",
+    ]);
+    expect(appended[1]?.createdBy).toBe("updated");
   });
 });

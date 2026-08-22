@@ -75,6 +75,15 @@ import {
   type AgentRunsListWireArgs,
 } from './agent-runs-list-query';
 import {
+  SCORECARD_HISTORY_DEFAULT_PAGE,
+  SCORECARD_HISTORY_PAGE_LIMIT,
+  buildScorecardHistoryPredicate,
+  normalizeScorecardHistoryArgs,
+  readScorecardHistoryPage,
+  readScorecardHistorySummary,
+  type ScorecardHistoryWireArgs,
+} from './scorecard-history-list-query';
+import {
   LEARNING_OBSERVATIONS_PAGE_LIMIT,
   buildLearningObservationsPredicate,
   isDefaultLearningObservationsPage,
@@ -171,6 +180,12 @@ const agentRunsListArgsSchema = z.object({
   featureId: z.string().trim().max(300).optional(),
   cursor: z.string().max(2_000).nullable().optional(),
   limit: clampedLimit(AGENT_RUNS_PAGE_LIMIT, AGENT_RUNS_PAGE_LIMIT),
+});
+
+const scorecardHistoryArgsSchema = z.object({
+  rubricRef: z.string().trim().min(1).max(300),
+  cursor: z.string().max(2_000).nullable().optional(),
+  limit: clampedLimit(SCORECARD_HISTORY_PAGE_LIMIT, SCORECARD_HISTORY_DEFAULT_PAGE),
 });
 
 const learningObservationsFiltersSchema = z.object({
@@ -878,10 +893,7 @@ const agentRunsListQueryPair = createCompanionListQueryPair({
   domain: 'agentRunsConsolidated',
   rowsQueryName: 'agentRunsConsolidated.bySlug',
   argsSchema: agentRunsListArgsSchema,
-  backingTables: [
-    'harness_shared.agent_runs_consolidated',
-    'harness_shared.spawned_agents',
-  ] as const,
+  backingTables: ['harness_shared.agent_runs_consolidated', 'harness_shared.spawned_agents'] as const,
   normalizeArgs: (args: AgentRunsListWireArgs) => normalizeAgentRunsListArgs(args),
   buildPredicate: buildAgentRunsPredicate,
   readPage: async ({ predicate }) => {
@@ -905,6 +917,25 @@ const agentRunsListQueryPair = createCompanionListQueryPair({
     return readAgentRunsSummaryFromStore(getOrgPg().sql, args);
   },
   summarySelection: agentRunsSummarySelection,
+});
+
+const scorecardHistoryQueryPair = createCompanionListQueryPair({
+  domain: 'scorecards',
+  rowsQueryName: 'scorecards.list',
+  argsSchema: scorecardHistoryArgsSchema,
+  backingTables: ['harness_shared.work_items', 'harness_shared.coord_links', 'harness_shared.harness_plans'] as const,
+  normalizeArgs: (args: ScorecardHistoryWireArgs) => normalizeScorecardHistoryArgs(args),
+  buildPredicate: buildScorecardHistoryPredicate,
+  readPage: async ({ predicate }) => {
+    const { listScorecardPage } = await import('../scorecards');
+    return readScorecardHistoryPage(predicate, { listPage: listScorecardPage });
+  },
+  readSummaryAggregateRows: async ({ predicate }) => {
+    const { scorecardTotalCountsByRubric } = await import('../scorecards');
+    return readScorecardHistorySummary(predicate, {
+      countByRubric: scorecardTotalCountsByRubric,
+    });
+  },
 });
 
 const learningObservationsQueryPair = createCompanionListQueryPair({
@@ -1139,21 +1170,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return readDerivedSnapshotRows('rubrics.list');
     },
   },
-  'scorecards.list': {
-    argsSchema: z.object({
-      rubricRef: z.string().min(1),
-      limit: clampedLimit(500, 100),
-    }),
-    resolve: async (args) => {
-      const { listScorecards } = await import('../scorecards');
-      const { rubricRef, limit } = args as { rubricRef: string; limit: number };
-      // WI-6124: links are opt-IN. This is the read behind the ScorecardDetail panel,
-      // which is the ONE place `linkedItems` is rendered — so this is a real opt-in, not
-      // a copied default. Dropping it silently empties that panel's "Linked items" list.
-      return (await listScorecards({ rubricRef, limit, includeLinks: true })) as unknown[];
-    },
-  },
+  'scorecards.list': scorecardHistoryQueryPair.rowsEntry as QueryEntry<unknown>,
+  'scorecards.summary': scorecardHistoryQueryPair.summaryEntry as QueryEntry<unknown>,
   'rubrics.trend': {
+    backingTables: ['harness_shared.work_items', 'harness_shared.coord_links', 'harness_shared.harness_plans'],
     argsSchema: z.object({ rubricRef: z.string().min(1) }),
     resolve: async (args) => {
       const { scorecardTrend } = await import('../scorecards');

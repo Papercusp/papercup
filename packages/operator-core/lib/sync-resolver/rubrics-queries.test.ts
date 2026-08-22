@@ -17,6 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
+import { readListMeta } from './list-meta';
 import { TABLE_TO_QUERY_NAMES } from './table-to-query-names';
 
 const { readDerivedSnapshotRowsMock, registerDerivedReadMock } = vi.hoisted(() => ({
@@ -56,10 +57,11 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     vi.resetModules();
   });
 
-  it('registers all three query names in the v2 registry', () => {
+  it('registers all four query names in the v2 registry', () => {
     const names = knownQueryNamesV2();
     expect(names).toContain('rubrics.list');
     expect(names).toContain('scorecards.list');
+    expect(names).toContain('scorecards.summary');
     expect(names).toContain('rubrics.trend');
   });
 
@@ -79,17 +81,43 @@ describe('rubrics.* / scorecards.* resolvers', () => {
   });
 
   it('scorecards.list threads rubricRef + a clamped limit to the store read', async () => {
-    const listScorecards = vi.fn(async () => [scorecard('r-1', '2026-07-09T00:00:00Z')]);
-    vi.doMock('../scorecards', () => ({ listScorecards }));
+    const listScorecardPage = vi.fn(async () => ({
+      rows: [scorecard('r-1', '2026-07-09T00:00:00Z')],
+      hasMore: false,
+    }));
+    vi.doMock('../scorecards', () => ({ listScorecardPage }));
     const { resolveNamedQueryV2: r } = await import('./index');
 
     const out = await r('scorecards.list', { rubricRef: 'r-1' });
     expect(out).toHaveLength(1);
+    expect(readListMeta(out as Array<Record<string, unknown>>)).toMatchObject({
+      nextCursor: null,
+      hasMore: false,
+    });
     // WI-6124/D-015: links are OPT-IN at the store, and this resolver feeds the UI
     // scorecard list, which renders them — so it MUST opt in. Asserting `includeLinks`
     // here (rather than loosening to objectContaining) makes this the regression guard
     // for a call site silently dropping the opt-in and re-introducing the empty-links UI.
-    expect(listScorecards).toHaveBeenCalledWith({ rubricRef: 'r-1', limit: 100, includeLinks: true });
+    expect(listScorecardPage).toHaveBeenCalledWith({
+      rubricRef: 'r-1',
+      limit: 100,
+      includeLinks: true,
+    });
+  });
+
+  it('scorecards.summary reuses the exact aggregate and preserves zero', async () => {
+    const scorecardTotalCountsByRubric = vi.fn(async () => ({ 'r-1': 0 }));
+    vi.doMock('../scorecards', () => ({ scorecardTotalCountsByRubric }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+
+    const out = await r('scorecards.summary', { rubricRef: 'r-1' });
+
+    expect(out).toEqual([expect.objectContaining({ total: 0, matched: 0 })]);
+    expect(scorecardTotalCountsByRubric).toHaveBeenCalledWith({
+      rubricRef: 'r-1',
+      includeSuperseded: false,
+      includeRetracted: false,
+    });
   });
 
   it('scorecards.list rejects a missing rubricRef (arg validation)', async () => {
@@ -118,7 +146,14 @@ describe('rubrics.* / scorecards.* resolvers', () => {
     // a rubric create/edit is a harness_plans write (rubrics are plan-doc-backed).
     expect(TABLE_TO_QUERY_NAMES['harness_shared.work_items']).toContain('rubrics.list');
     expect(TABLE_TO_QUERY_NAMES['harness_shared.work_items']).toContain('scorecards.list');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.work_items']).toContain('scorecards.summary');
     expect(TABLE_TO_QUERY_NAMES['harness_shared.work_items']).toContain('rubrics.trend');
     expect(TABLE_TO_QUERY_NAMES['harness_shared.harness_plans']).toContain('rubrics.list');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.harness_plans']).toContain('scorecards.list');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.harness_plans']).toContain('scorecards.summary');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.harness_plans']).toContain('rubrics.trend');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toContain('scorecards.list');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toContain('scorecards.summary');
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toContain('rubrics.trend');
   });
 });

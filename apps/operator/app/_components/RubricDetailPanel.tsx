@@ -8,11 +8,14 @@
  * opens the full ScorecardDetail (P-003) — no extra fetch, the list rows
  * already carry the complete ratings map.
  */
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
+import type { CompanionListSummary } from "@papercusp/facets";
+import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronDown, Minus, TrendingDown, TrendingUp, X } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
+import { filterCountLabel, type CountEvidence } from "../harness/filters";
 import ScorecardDetail, {
   RatingChip,
   type ScorecardRow,
@@ -35,6 +38,7 @@ interface CriterionTrend {
 interface RubricTrend {
   rubricRef: string;
   scorecardCount: number;
+  sample: { limit: number; inputCount: number };
   window: { since?: string; from?: string; to?: string };
   criteria: CriterionTrend[];
   // WI-4607 governance provenance (D-012): the same author≠ratifier story the
@@ -42,6 +46,20 @@ interface RubricTrend {
   status?: string;
   proposedBy?: string | null;
   ratifiedBy?: string | null;
+}
+
+const SCORECARD_HISTORY_PAGE = 100;
+
+/** Page one replaces; cursor pages append idempotently by scorecard identity. */
+export function mergeScorecardHistoryPage(
+  previous: readonly ScorecardRow[],
+  page: readonly ScorecardRow[],
+  cursor: string | null,
+): ScorecardRow[] {
+  if (!cursor) return [...page];
+  const byId = new Map(previous.map((row) => [row.issueId, row] as const));
+  for (const row of page) byId.set(row.issueId, row);
+  return [...byId.values()];
 }
 
 function isActive(status: string): boolean {
@@ -160,9 +178,29 @@ export default function RubricDetailPanel({
   const [selected, setSelected] = useState<ScorecardRow | null>(null);
   const [stableOpen, setStableOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyRows, setHistoryRows] = useState<ScorecardRow[]>([]);
+  const [nextHistoryCursor, setNextHistoryCursor] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setSelected(null);
+    setHistoryCursor(null);
+    setHistoryRows([]);
+    setNextHistoryCursor(null);
+  }, [rubricId]);
 
   const scorecards = useSyncQuery<ScorecardRow>({
     queryName: "scorecards.list",
+    args: {
+      rubricRef: rubricId,
+      limit: SCORECARD_HISTORY_PAGE,
+      ...(historyCursor ? { cursor: historyCursor } : {}),
+    },
+  });
+  const scorecardSummary = useSyncQuery<CompanionListSummary>({
+    queryName: "scorecards.summary",
     args: { rubricRef: rubricId },
   });
   const trend = useSyncQuery<RubricTrend>({
@@ -170,14 +208,90 @@ export default function RubricDetailPanel({
     args: { rubricRef: rubricId },
   });
 
+  useEffect(() => {
+    if (scorecards.loading || scorecards.fetching || !scorecards.data) return;
+    setHistoryRows((previous) =>
+      mergeScorecardHistoryPage(previous, scorecards.data!, historyCursor),
+    );
+    const meta = readListMeta(scorecards.data);
+    setNextHistoryCursor(
+      typeof meta?.nextCursor === "string" ? meta.nextCursor : null,
+    );
+  }, [scorecards.data, scorecards.loading, scorecards.fetching, historyCursor]);
+
+  const rows = historyRows.length > 0 ? historyRows : (scorecards.data ?? []);
+  const summary = scorecardSummary.data?.[0] ?? null;
+  const pairedFetching = Boolean(
+    scorecards.fetching ||
+    scorecards.loading ||
+    scorecardSummary.fetching ||
+    scorecardSummary.loading,
+  );
+  const trendRow = trend.data?.[0];
+  const corpusEvidence = useMemo<CountEvidence>(() => {
+    if (scorecardSummary.error) return { kind: "unknown", reason: "failed" };
+    if (pairedFetching) return { kind: "unknown", reason: "updating" };
+    if (!summary) return { kind: "unknown", reason: "loading" };
+    return {
+      kind: "corpus",
+      count: summary.matched,
+      population: `scorecards filed against ${rubricId}`,
+    };
+  }, [scorecardSummary.error, pairedFetching, summary, rubricId]);
+  const loadedHistoryEvidence = useMemo<CountEvidence>(() => {
+    if (pairedFetching) return { kind: "unknown", reason: "updating" };
+    if (scorecards.error) return { kind: "unknown", reason: "failed" };
+    return {
+      kind: "window",
+      count: rows.length,
+      window: "loaded history pages",
+      ...(summary ? { corpusTotal: summary.matched } : {}),
+    };
+  }, [pairedFetching, scorecards.error, rows.length, summary]);
+  const trendSampleEvidence = useMemo<CountEvidence>(() => {
+    if (trend.error) return { kind: "unknown", reason: "failed" };
+    if (trend.loading || trend.fetching) {
+      return { kind: "unknown", reason: "updating" };
+    }
+    if (!trendRow) return { kind: "unknown", reason: "unavailable" };
+    const inputCount = trendRow.sample.inputCount;
+    return {
+      kind: "window",
+      count: trendRow.scorecardCount,
+      window: `latest ${inputCount} scorecards (cap ${trendRow.sample.limit})`,
+      windowTotal: inputCount,
+      ...(!pairedFetching && summary ? { corpusTotal: summary.matched } : {}),
+    };
+  }, [
+    trend.error,
+    trend.loading,
+    trend.fetching,
+    trendRow,
+    pairedFetching,
+    summary,
+  ]);
+  const corpusCountLabel = useMemo(
+    () => filterCountLabel(corpusEvidence, "scorecard"),
+    [corpusEvidence],
+  );
+  const loadedHistoryLabel = useMemo(
+    () => filterCountLabel(loadedHistoryEvidence, "scorecard"),
+    [loadedHistoryEvidence],
+  );
+  const trendSampleLabel = useMemo(
+    () => filterCountLabel(trendSampleEvidence, "scorecard"),
+    [trendSampleEvidence],
+  );
+  const loadOlder = useCallback(() => {
+    if (nextHistoryCursor) setHistoryCursor(nextHistoryCursor);
+  }, [nextHistoryCursor]);
+
   if (selected) {
     return (
       <ScorecardDetail scorecard={selected} onBack={() => setSelected(null)} />
     );
   }
 
-  const rows = scorecards.data ?? [];
-  const trendRow = trend.data?.[0];
   const scoredCriteria =
     trendRow?.criteria.filter((criterion) => criterion.mean10 != null) ?? [];
   const mean =
@@ -322,7 +436,9 @@ export default function RubricDetailPanel({
             <span
               className="pc-rubric-detail__gov-chain"
               title={`proposed by ${trendRow.proposedBy ?? "unknown"}${
-                trendRow.ratifiedBy ? ` · ratified by ${trendRow.ratifiedBy}` : ""
+                trendRow.ratifiedBy
+                  ? ` · ratified by ${trendRow.ratifiedBy}`
+                  : ""
               }`}
             >
               <em>prop</em> {shortActor(trendRow.proposedBy ?? null)}
@@ -364,7 +480,12 @@ export default function RubricDetailPanel({
         </div>
         <div>
           <span>Scorecards</span>
-          <strong>{trendRow?.scorecardCount ?? rows.length}</strong>
+          <strong
+            data-evidence={corpusCountLabel.evidence}
+            aria-label={corpusCountLabel.ariaLabel}
+          >
+            {corpusCountLabel.title}
+          </strong>
         </div>
         <div className="is-good">
           <span>Improving</span>
@@ -377,6 +498,15 @@ export default function RubricDetailPanel({
       </div>
 
       <h3>Criterion trend</h3>
+      <p
+        className="pc-rubric-detail__scope"
+        data-testid="rubric-trend-sample-count"
+        data-evidence={trendSampleLabel.evidence}
+        aria-live="polite"
+        aria-label={trendSampleLabel.ariaLabel}
+      >
+        {trendSampleLabel.summary}
+      </p>
       {trend.loading ? (
         <div role="status">Loading trend…</div>
       ) : trend.error ? (
@@ -419,7 +549,7 @@ export default function RubricDetailPanel({
         </>
       )}
 
-      {scorecards.loading ? (
+      {scorecards.loading && rows.length === 0 ? (
         <div role="status">Loading scorecards…</div>
       ) : scorecards.error ? (
         <div role="status">
@@ -432,19 +562,38 @@ export default function RubricDetailPanel({
           <Collapsible.Trigger className="pc-rubric-detail__disclosure">
             <ChevronDown size={13} aria-hidden />
             Grading history
-            <strong>{rows.length}</strong>
+            <strong
+              data-testid="rubric-history-count"
+              data-evidence={loadedHistoryLabel.evidence}
+              aria-live="polite"
+              aria-label={loadedHistoryLabel.ariaLabel}
+            >
+              {loadedHistoryLabel.title}
+            </strong>
           </Collapsible.Trigger>
           <Collapsible.Content>
             <div style={{ overflowX: "auto" }}>
               <Table
                 className="pc-rubric-history"
-                caption={`${rows.length} scorecard${rows.length === 1 ? "" : "s"}, newest first — click a row for full ratings and evidence`}
+                caption={`${loadedHistoryLabel.summary}, newest first — click a row for full ratings and evidence`}
                 columns={historyColumns}
                 rows={rows}
                 getRowKey={(row) => row.issueId}
                 onRowClick={(row) => setSelected(row)}
               />
             </div>
+            {nextHistoryCursor ? (
+              <button
+                type="button"
+                className="pc-rubric-detail__load-more"
+                onClick={loadOlder}
+                disabled={Boolean(scorecards.fetching)}
+              >
+                {scorecards.fetching
+                  ? "Loading older scorecards…"
+                  : "Load older scorecards"}
+              </button>
+            ) : null}
           </Collapsible.Content>
         </Collapsible.Root>
       )}
@@ -477,10 +626,13 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__overview .is-good strong { color: #34d399; }
         .pc-rubric-detail__overview .is-bad strong { color: #fb7185; }
         .pc-rubric-detail > h3 { margin: 4px 0 -5px; color: var(--fg); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }
+        .pc-rubric-detail__scope { margin: 0; color: var(--fg-mute); font-size: 9.5px; line-height: 1.35; }
         .pc-rubric-detail__disclosure { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 31px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); color: var(--fg-mute); font: inherit; font-size: 10.5px; font-weight: 650; cursor: pointer; }
         .pc-rubric-detail__disclosure svg { transition: transform 140ms ease; }
         .pc-rubric-detail__disclosure[data-state="open"] svg { transform: rotate(180deg); }
         .pc-rubric-detail__disclosure strong { margin-left: auto; color: var(--fg); font-variant-numeric: tabular-nums; }
+        .pc-rubric-detail__load-more { display: block; margin: 7px auto 0; padding: 5px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-2); color: var(--fg-mute); font: inherit; font-size: 10px; cursor: pointer; }
+        .pc-rubric-detail__load-more:disabled { cursor: progress; opacity: 0.65; }
         .pc-rubric-distribution { display: grid; grid-template-columns: minmax(72px, 1fr) auto; align-items: center; gap: 7px; min-width: 112px; }
         .pc-rubric-distribution__track { display: flex; height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
         .pc-rubric-distribution__track i { display: block; min-width: 2px; height: 100%; background: var(--accent); }
