@@ -22,7 +22,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { gcOldCoordMessages } = await import('./message-log-gc');
+const { gcOldCoordMessages, gcOldPlanEvents, gcTerminalHandoffFamilies } = await import('./message-log-gc');
 
 /** Federated horizon far past every fixture age — isolates the operator branch. */
 const FED_NEVER = 10_000;
@@ -93,6 +93,28 @@ async function msg(opts: {
   await rootSql`
     INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, harness_slug, ts)
     VALUES (${opts.surface ?? 'messages'}, ${opts.msgId}, ${rootSql.json(body)}, ${opts.harness ?? null},
+            now() - make_interval(days => ${opts.ageDays}))`;
+}
+
+async function planEvent(opts: { msgId: string; ageDays: number }) {
+  await rootSql`
+    INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts)
+    VALUES ('plan-events', ${opts.msgId}, ${rootSql.json({ kind: 'plan_event', msg_id: opts.msgId })},
+            now() - make_interval(days => ${opts.ageDays}))`;
+}
+
+async function handoffEvent(opts: {
+  msgId: string;
+  ageDays: number;
+  kind: 'handoff' | 'handoff_accepted' | 'handoff_expired' | 'handoff_repinged';
+  relatedTo?: string;
+  harness?: string | null;
+}) {
+  const body: Record<string, string> = { kind: opts.kind, msg_id: opts.msgId };
+  if (opts.relatedTo) body.related_msg_id = opts.relatedTo;
+  await rootSql`
+    INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, harness_slug, ts)
+    VALUES ('handoffs', ${opts.msgId}, ${rootSql.json(body)}, ${opts.harness ?? null},
             now() - make_interval(days => ${opts.ageDays}))`;
 }
 
@@ -240,5 +262,96 @@ describe('gcOldCoordMessages (PG)', () => {
 
     expect(await gcOldCoordMessages(30, 7, 1)).toEqual({ operator: 0, federated: 1, total: 1 });
     expect(await remainingIds()).toEqual(['fed-age-10']);
+  });
+
+  it('sweeps old plan-events only, with a row limit so the backlog converges', async () => {
+    await planEvent({ msgId: 'plan-old-1', ageDays: 45 });
+    await planEvent({ msgId: 'plan-old-2', ageDays: 45 });
+    await planEvent({ msgId: 'plan-old-3', ageDays: 45 });
+    await planEvent({ msgId: 'plan-recent', ageDays: 2 });
+    await msg({ msgId: 'message-old', ageDays: 45 });
+
+    expect(await gcOldPlanEvents(30, 2)).toBe(2);
+    expect(await remainingIds()).toEqual(['message-old', 'plan-old-3', 'plan-recent']);
+
+    expect(await gcOldPlanEvents(30, 2)).toBe(1);
+    expect(await remainingIds()).toEqual(['message-old', 'plan-recent']);
+  });
+
+  it('deletes only fully-aged terminal operator-scope handoff families', async () => {
+    await handoffEvent({ msgId: 'handoff-accepted-old', ageDays: 45, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-accepted-old-status', ageDays: 44, kind: 'handoff_accepted',
+      relatedTo: 'handoff-accepted-old',
+    });
+
+    await handoffEvent({ msgId: 'handoff-expired-old', ageDays: 45, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-expired-old-status', ageDays: 44, kind: 'handoff_expired',
+      relatedTo: 'handoff-expired-old',
+    });
+    await handoffEvent({
+      msgId: 'handoff-expired-old-reping', ageDays: 43, kind: 'handoff_repinged',
+      relatedTo: 'handoff-expired-old',
+    });
+
+    await handoffEvent({ msgId: 'handoff-open-old', ageDays: 45, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-open-old-reping', ageDays: 44, kind: 'handoff_repinged',
+      relatedTo: 'handoff-open-old',
+    });
+
+    await handoffEvent({ msgId: 'handoff-recent', ageDays: 2, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-recent-status', ageDays: 1, kind: 'handoff_accepted',
+      relatedTo: 'handoff-recent',
+    });
+
+    await handoffEvent({ msgId: 'handoff-fed-old', ageDays: 45, kind: 'handoff', harness: 'peer-hive' });
+    await handoffEvent({
+      msgId: 'handoff-fed-old-status', ageDays: 44, kind: 'handoff_accepted',
+      relatedTo: 'handoff-fed-old', harness: 'peer-hive',
+    });
+
+    // A mixed-scope family is protected as a whole; deleting the local half
+    // would leave a federated sibling with no local family root.
+    await handoffEvent({ msgId: 'handoff-mixed-old', ageDays: 45, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-mixed-old-status', ageDays: 44, kind: 'handoff_accepted',
+      relatedTo: 'handoff-mixed-old', harness: 'peer-hive',
+    });
+
+    await msg({ msgId: 'other-old', ageDays: 45, surface: 'presence' });
+
+    expect(await gcTerminalHandoffFamilies(30)).toBe(5);
+    expect(await remainingIds()).toEqual([
+      'handoff-fed-old',
+      'handoff-fed-old-status',
+      'handoff-mixed-old',
+      'handoff-mixed-old-status',
+      'handoff-open-old',
+      'handoff-open-old-reping',
+      'handoff-recent',
+      'handoff-recent-status',
+      'other-old',
+    ]);
+  });
+
+  it('limits terminal handoff GC by family, not individual rows', async () => {
+    await handoffEvent({ msgId: 'handoff-cap-a', ageDays: 45, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-cap-a-status', ageDays: 44, kind: 'handoff_expired',
+      relatedTo: 'handoff-cap-a',
+    });
+    await handoffEvent({ msgId: 'handoff-cap-b', ageDays: 40, kind: 'handoff' });
+    await handoffEvent({
+      msgId: 'handoff-cap-b-status', ageDays: 39, kind: 'handoff_accepted',
+      relatedTo: 'handoff-cap-b',
+    });
+
+    expect(await gcTerminalHandoffFamilies(30, 1)).toBe(2);
+    expect(await remainingIds()).toEqual(['handoff-cap-b', 'handoff-cap-b-status']);
+    expect(await gcTerminalHandoffFamilies(30, 1)).toBe(2);
+    expect(await remainingIds()).toEqual([]);
   });
 });

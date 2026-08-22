@@ -11,11 +11,9 @@
  * This module owns the shared definitions + handlers so a fix to e.g.
  * the chat sort order lands in both servers automatically.
  */
+import { operatorApiBase } from './operator-api-base.mjs';
 
-const DEFAULT_BASE = process.env.AGENT_TOOLS_BASE
-  ?? process.env.DELEGATE_BASE
-  ?? process.env.ORACLE_BASE
-  ?? 'http://localhost:3055';
+const DEFAULT_BASE = operatorApiBase();
 
 export function text(t) { return { content: [{ type: 'text', text: t }] }; }
 export function errText(t) { return { content: [{ type: 'text', text: t }], isError: true }; }

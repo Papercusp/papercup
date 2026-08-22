@@ -24,7 +24,11 @@ import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
-import { gcOldCoordMessages } from '../agent-tools/coordination/message-log-gc';
+import {
+  gcOldCoordMessages,
+  gcOldPlanEvents,
+  gcTerminalHandoffFamilies,
+} from '../agent-tools/coordination/message-log-gc';
 import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escalation-log-gc';
 import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/escalations';
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
@@ -196,9 +200,12 @@ const coordNotifyGcWorkflow = idempotentRegisterWorkflow('coordNotifyGc', () =>
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
 
 // Daily 04:05 (after notify-gc, before escalation-gc): physical retention cap
-// for coord messages, BOTH scopes on their own horizons — operator-scope at 30d,
-// harness-scoped (FEDERATED) at 7d. Rooted message threads are deleted only when
-// the whole thread is fully aged and unreferenced by coord_thread_posts (WI-401).
+// for coord history. Messages use BOTH scopes on their own horizons —
+// operator-scope at 30d, harness-scoped (FEDERATED) at 7d. Rooted message
+// threads are deleted only when the whole thread is fully aged and unreferenced
+// by coord_thread_posts (WI-401). The same bounded tick also sweeps the
+// unthreaded plan-events tail at 30d and terminal operator-scope handoff
+// families at 30d; open or federated handoffs remain protected.
 //
 // The federated half is the D-010 mechanism (plan memory-corpus-hygiene-and-
 // release-distribution-2026-08-03, WI-8490): each DELETE of a local-origin
@@ -207,7 +214,11 @@ DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: 
 // That is what keeps coord HISTORY out of a release seed; live federation is
 // untouched.
 async function coordMessagesGcTick(): Promise<void> {
-  await DBOS.runStep(() => gcOldCoordMessages(), { name: 'coord-messages-gc' });
+  await DBOS.runStep(async () => {
+    await gcOldCoordMessages();
+    await gcOldPlanEvents();
+    await gcTerminalHandoffFamilies();
+  }, { name: 'coord-messages-gc' });
 }
 const coordMessagesGcWorkflow = idempotentRegisterWorkflow('coordMessagesGc', () =>
   DBOS.registerWorkflow(coordMessagesGcTick, {

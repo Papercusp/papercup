@@ -14,16 +14,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
-import type {
-  CompanionListSummary,
-  CompanionSummaryAggregateRow,
-  FacetSelection,
-} from '@papercusp/facets';
-import {
-  createCompanionListQueryPair,
-  LIST_READ_BUDGET_MS,
-  type BoundedListPage,
-} from './bounded-list-read';
+import type { CompanionListSummary, CompanionSummaryAggregateRow, FacetSelection } from '@papercusp/facets';
+import { createCompanionListQueryPair, LIST_READ_BUDGET_MS, type BoundedListPage } from './bounded-list-read';
 import { PAYLOAD_BUDGET_BYTES } from './sync-read-audit';
 import { readListHasMore, readListMeta } from './list-meta';
 
@@ -73,8 +65,7 @@ let sql: Sql;
 let summarySqlCalls = 0;
 let rowsSqlCalls = 0;
 
-const uniq = (values: readonly string[] | undefined): string[] =>
-  [...new Set(values ?? [])].filter(Boolean).sort();
+const uniq = (values: readonly string[] | undefined): string[] => [...new Set(values ?? [])].filter(Boolean).sort();
 
 function decodeCursor(raw: string | null | undefined): Cursor | null {
   if (!raw) return null;
@@ -111,9 +102,7 @@ function selectionOf(args: NormalizedArgs): FacetSelection {
   return new Map(entries);
 }
 
-async function readPage(
-  predicate: CompiledPredicate,
-): Promise<BoundedListPage<ItemRow>> {
+async function readPage(predicate: CompiledPredicate): Promise<BoundedListPage<ItemRow>> {
   rowsSqlCalls += 1;
   const a = predicate.args;
   const rows = await sql<ItemRow[]>`
@@ -156,9 +145,7 @@ interface AggregateDbRow {
   matched: number | null;
 }
 
-async function readSummaryRows(
-  predicate: CompiledPredicate,
-): Promise<readonly CompanionSummaryAggregateRow[]> {
+async function readSummaryRows(predicate: CompiledPredicate): Promise<readonly CompanionSummaryAggregateRow[]> {
   summarySqlCalls += 1;
   const a = predicate.args;
   // One statement, one driver call. Each facet CTE drops only its own
@@ -249,8 +236,7 @@ const pair = createCompanionListQueryPair({
 const summaryFor = async (args: WireArgs): Promise<CompanionListSummary> =>
   (await pair.summaryEntry.resolve(args))[0] as CompanionListSummary;
 
-const rowsFor = async (args: WireArgs): Promise<ItemRow[]> =>
-  (await pair.rowsEntry.resolve(args)) as ItemRow[];
+const rowsFor = async (args: WireArgs): Promise<ItemRow[]> => (await pair.rowsEntry.resolve(args)) as ItemRow[];
 
 beforeAll(async () => {
   const uri = await getTestPg();
@@ -325,9 +311,7 @@ describe('companion summary contract — real Postgres', () => {
        WHERE workspace = 'ws-1'
          AND kind = 'bug'
          AND attrs->>'role' = 'reviewer'`;
-    expect(stateFacet.values.reduce((sum, value) => sum + value.count, 0)).toBe(
-      allStatesForOtherFilters.n,
-    );
+    expect(stateFacet.values.reduce((sum, value) => sum + value.count, 0)).toBe(allStatesForOtherFilters.n);
 
     const kindFacet = summary.facets.find((facet) => facet.key === 'kind')!;
     const [allKindsForOtherFilters] = await sql<{ n: number }[]>`
@@ -335,9 +319,7 @@ describe('companion summary contract — real Postgres', () => {
        WHERE workspace = 'ws-1'
          AND state = ANY(${['open', 'blocked']}::text[])
          AND attrs->>'role' = 'reviewer'`;
-    expect(kindFacet.values.reduce((sum, value) => sum + value.count, 0)).toBe(
-      allKindsForOtherFilters.n,
-    );
+    expect(kindFacet.values.reduce((sum, value) => sum + value.count, 0)).toBe(allKindsForOtherFilters.n);
   });
 
   it('preserves zero-match truth and the reset path as one response row', async () => {
@@ -398,9 +380,7 @@ describe('companion summary contract — real Postgres', () => {
     for (const name of pair.invalidationQueryNames) {
       refreshed.set(
         name,
-        name === pair.rowsQueryName
-          ? await pair.rowsEntry.resolve(args)
-          : await pair.summaryEntry.resolve(args),
+        name === pair.rowsQueryName ? await pair.rowsEntry.resolve(args) : await pair.summaryEntry.resolve(args),
       );
     }
     const convergedRows = refreshed.get(pair.rowsQueryName) as ItemRow[];

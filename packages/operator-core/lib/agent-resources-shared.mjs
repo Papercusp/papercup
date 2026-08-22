@@ -12,11 +12,9 @@
  *   - papercusp://harness/{slug}/chats            (templated)
  *   - papercusp://workspace/agents                (concrete)
  */
+import { operatorApiBase } from './operator-api-base.mjs';
 
-const DEFAULT_BASE = process.env.AGENT_TOOLS_BASE
-  ?? process.env.DELEGATE_BASE
-  ?? process.env.ORACLE_BASE
-  ?? 'http://localhost:3055';
+const DEFAULT_BASE = operatorApiBase();
 
 const JSON_MIME = 'application/json';
 

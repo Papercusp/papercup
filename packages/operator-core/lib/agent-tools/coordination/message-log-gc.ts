@@ -188,3 +188,88 @@ export async function gcOldCoordMessages(
   const federated = rows[0]?.federated_n ?? 0;
   return { operator, federated, total: operator + federated };
 }
+
+/**
+ * Plan events are an append-only working-memory stream, not a threaded event
+ * family. Every reader asks for a bounded recent tail, so a plain age sweep is
+ * sufficient and avoids making the daily coord GC walk the whole history.
+ */
+export const PLAN_EVENTS_GC_RETENTION_DAYS = 30;
+export const PLAN_EVENTS_GC_ROW_LIMIT = 5000;
+
+export async function gcOldPlanEvents(
+  retentionDays = PLAN_EVENTS_GC_RETENTION_DAYS,
+  rowLimit = PLAN_EVENTS_GC_ROW_LIMIT,
+): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ n: number }>>`
+    WITH victims AS (
+      SELECT workspace_id, id
+        FROM harness_shared.coord_event_log
+       WHERE surface = 'plan-events'
+         AND ts < now() - make_interval(days => ${retentionDays})
+       ORDER BY ts ASC, id ASC
+       LIMIT ${rowLimit}
+    ),
+    d AS (
+      DELETE FROM harness_shared.coord_event_log e
+       USING victims v
+       WHERE e.workspace_id = v.workspace_id
+         AND e.id = v.id
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM d
+  `;
+  return rows[0]?.n ?? 0;
+}
+
+/**
+ * Handoffs are immutable families: an opening `handoff` row is paired with
+ * acceptance/expiry/re-ping siblings through related_msg_id. A terminal
+ * family can be removed only as a whole. Open families, federated families,
+ * and families whose newest sibling is still inside the horizon remain intact.
+ */
+export const HANDOFF_GC_RETENTION_DAYS = 30;
+export const HANDOFF_GC_FAMILY_LIMIT = 5000;
+
+export async function gcTerminalHandoffFamilies(
+  retentionDays = HANDOFF_GC_RETENTION_DAYS,
+  familyLimit = HANDOFF_GC_FAMILY_LIMIT,
+): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ n: number }>>`
+    WITH families AS (
+      SELECT workspace_id,
+             COALESCE(body->>'related_msg_id', msg_id) AS root_id,
+             bool_or(body->>'kind' = 'handoff') AS has_root,
+             bool_or(body->>'kind' IN ('handoff_accepted', 'handoff_expired')) AS terminal,
+             bool_and(harness_slug IS NULL) AS operator_scope_only,
+             max(ts) AS newest_ts
+        FROM harness_shared.coord_event_log
+       WHERE surface = 'handoffs'
+         AND body->>'kind' IN ('handoff', 'handoff_accepted', 'handoff_expired', 'handoff_repinged')
+       GROUP BY workspace_id, COALESCE(body->>'related_msg_id', msg_id)
+    ),
+    eligible AS (
+      SELECT workspace_id, root_id
+        FROM families
+       WHERE has_root
+         AND terminal
+         AND operator_scope_only
+         AND newest_ts < now() - make_interval(days => ${retentionDays})
+       ORDER BY newest_ts ASC, root_id ASC
+       LIMIT ${familyLimit}
+    ),
+    d AS (
+      DELETE FROM harness_shared.coord_event_log e
+       USING eligible f
+       WHERE e.workspace_id = f.workspace_id
+         AND e.surface = 'handoffs'
+         AND e.body->>'kind' IN ('handoff', 'handoff_accepted', 'handoff_expired', 'handoff_repinged')
+         AND COALESCE(e.body->>'related_msg_id', e.msg_id) = f.root_id
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM d
+  `;
+  return rows[0]?.n ?? 0;
+}

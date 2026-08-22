@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 288
-  corpus-blocks: 253
+  corpus-parts: 289
+  corpus-blocks: 254
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -1439,6 +1439,20 @@ recycled identifier (the unit name) reached for another recycled identifier (the
 this family survives being documented. When writing a note-to-self or a carried check, ask whether
 its identifier could be reused by something that is not your subject; if it can, the check is a trap
 for whoever reads it next, and that is usually you.
+
+## Gate failure triage — re-run named files individually
+
+`GATE_HELD_BY` / `AFFECTED_TESTS_FAILING_FILES` are a list of candidates, not proof that every
+named file is failing at the current HEAD. Re-verify each path in its own invocation (for
+example, `npm run test:file -- <one-path>`; with `testing:run`, submit one file per call).
+A multi-file Vitest invocation can abort during collection when one file's mock or module graph
+crashes, so its result must not be attributed to every requested path.
+
+If a batch emits `TEST_FILE_ROUTE_ERROR` or `matched=0`, treat the result as **undetermined**:
+zero files were measured. Re-run the paths individually and attribute red/green/fixed status
+only from those per-file results. Never use a batch `matched=0` as evidence that the named files
+are red, green, or fixed.
+
 
 ## Server-side edits and the two-port model — no hot-reload
 

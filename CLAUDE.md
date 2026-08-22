@@ -442,8 +442,6 @@ expensive mistake, and no amount of care in the steps below can recover from it.
 state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
 ```
 
-It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its provenance (`source.authoritative` — check this before acting)**, the containment falsifier `judgingContainsPath` (*is the gate judging MY change*) with its own prose attached, a `verdictUnknown` hoist naming anything it could NOT determine, and the `resolver` that produced them. The cells and the doors read the SAME resolver (`gitPipelinePosition()`), so this is a re-read of the authority, never a second source of truth. **Everything below — the marker SQL, the log greps, the ancestry and blob archaeology — is the FALLBACK**: reach for it when the cell answers `unknown`, when `source.authoritative` is false and the distinction matters, or when you need a field the cell does not carry (the refire budget, a run's failing-file set).
-
 🚨 **Never fire a manual `release:checkpoint-run` while a run is in its re-triage window.** That
 window is where a STALE red gets voided and the gate re-fires itself onto a newer tip;
 `green-checkpoint.ts:2566` states plainly that killing it "discards the rescue and costs a full
@@ -467,6 +465,7 @@ If a batch emits `TEST_FILE_ROUTE_ERROR` or `matched=0`, treat the result as **u
 zero files were measured. Re-run the paths individually and attribute red/green/fixed status
 only from those per-file results. Never use a batch `matched=0` as evidence that the named files
 are red, green, or fixed.
+
 
 ## Server-side edits and the two-port model — no hot-reload
 
@@ -963,7 +962,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **8 part(s) (4,581 chars) did not fit this client's
+> ⚠ **9 part(s) (5,432 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -978,6 +977,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 - `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
+- `commit-discipline-git-sync-o-it-returns-the-judg` — *Commit discipline: git-sync owns commit + push — you do neither* — It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its…
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns

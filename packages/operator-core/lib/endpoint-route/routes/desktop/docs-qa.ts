@@ -46,6 +46,7 @@ import { surfaceBackend, surfaceModel } from '../../../agent-config';
 import { claudeSignedIn, codexSignedIn, ompSignedIn } from '../../../agent-auth-detect';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { readSystemPrincipal } from '../../../system-principal';
+import { operatorApiBase } from '../../../operator-api-base';
 
 const NOT_FOUND = () => new Response(null, { status: 404 });
 
@@ -104,7 +105,7 @@ export async function buildDocsMcpConfig(opts: {
   const superuserToken = opts.readToken ? opts.readToken() : readDocsQaSuperuserToken();
   if (!superuserToken) return null;
 
-  const baseUrl = opts.baseUrl ?? process.env.ORACLE_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
+  const baseUrl = opts.baseUrl ?? operatorApiBase();
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const toolsParam = DOCS_QA_MCP_TOOLS.join(',');
   const clientParam = opts.uiClientId ? `&client=${encodeURIComponent(opts.uiClientId)}` : '';

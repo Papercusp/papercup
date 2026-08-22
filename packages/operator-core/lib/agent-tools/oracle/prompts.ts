@@ -24,6 +24,7 @@ import {
 import { listAgentsAcrossWorkspace } from '../../agents-list';
 import { buildMemoryContextBlock } from '../../memory/injection';
 import { loadHarnessRegistry } from '../../harness-registry';
+import { operatorApiBase } from '../../operator-api-base';
 
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
 const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
@@ -292,7 +293,7 @@ export async function buildOracleMcpConfig(opts: { uiClientId: string | null }):
   } catch { /* */ }
   if (!superuserToken) return null;
 
-  const oracleBase = process.env.ORACLE_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
+  const oracleBase = operatorApiBase();
   const clientParam = opts.uiClientId ? `&client=${encodeURIComponent(opts.uiClientId)}` : '';
   const workspaceParam = `&workspace=${encodeURIComponent(activeWorkspaceId())}`;
   return {
