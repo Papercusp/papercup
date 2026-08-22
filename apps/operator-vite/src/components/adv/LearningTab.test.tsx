@@ -744,6 +744,7 @@ beforeEach(() => {
   nuqsState.tab = null;
   nuqsState.grade = null;
   nuqsState.irail = null;
+  nuqsState.lsrc = null;
   nuqsState.impf = null;
   nuqsState.impq = "";
   nuqsState.rtf = null;
@@ -911,6 +912,85 @@ describe("LearningTab — Improvements view (default)", () => {
     ).toHaveLength(1);
     expect(screen.getByText("EI-75")).toBeTruthy();
     expect(screen.queryByText("Decide next")).toBeNull();
+  });
+
+  it("keeps Auto-fixable rows through provenance, then makes an unmatched rail explicitly empty", () => {
+    // A live auto-fixable row can have a source but no routed idea, so it has
+    // provenance for the scope bar without an idea rail. Keep both facts in
+    // the fixture: the lane must retain the row, while a rail filter must not
+    // invent a match for it.
+    improvementsResult = {
+      ...improvementsResult,
+      data: [
+        {
+          ...improvementsDigest,
+          autoEligible: [
+            { ...improvementsDigest.autoEligible[0], source: "system" },
+          ],
+        },
+      ],
+    };
+
+    const renderCurrent = () => {
+      cleanup();
+      render(<LearningTab />);
+    };
+    const autoTitle = "cup:spawn children are coordination-MUTE";
+    const humanTitle = "Peer restarts massacre in-flight spawns";
+
+    render(<LearningTab />);
+    fireEvent.click(screen.getByRole("tab", { name: "Auto-fixable" }));
+    expect(nuqsState.lane).toBe("auto");
+
+    // The lane selection is sent to the server and the returned auto row is
+    // projected into the merged grid; the human row and idea-only rows are not.
+    renderCurrent();
+    expect(seenArgs["learning.improvements"]).toEqual({
+      hive: "alpha-hive",
+      lanes: ["auto"],
+    });
+    expect(screen.getByText(autoTitle)).toBeTruthy();
+    expect(screen.queryByText(humanTitle)).toBeNull();
+
+    // Source/provenance is an independent predicate and must preserve the
+    // matching auto row rather than blanking the lane during projection.
+    fireEvent.click(
+      within(screen.getByLabelText("Where these came from")).getByRole(
+        "button",
+        { name: "system", exact: true },
+      ),
+    );
+    expect(nuqsState.lsrc).toBe("system");
+    renderCurrent();
+    expect(seenArgs["learning.improvements"]).toEqual({
+      hive: "alpha-hive",
+      lanes: ["auto"],
+      sources: ["system"],
+    });
+    expect(screen.getByText(autoTitle)).toBeTruthy();
+
+    // This auto row has no routed idea/rail. Selecting a real rail therefore
+    // yields an honest zero, not a disappearing lane that looks like a broken
+    // auto predicate; the request args and empty copy make that distinction
+    // observable.
+    const routing = screen.getByLabelText("Idea routing");
+    const planRail = within(routing).getByRole("button", {
+      name: /^plan draft/,
+    });
+    expect(planRail.textContent).toContain("0");
+    fireEvent.click(planRail);
+    expect(nuqsState.irail).toBe("plan");
+    renderCurrent();
+    expect(seenArgs["learning.improvements"]).toEqual({
+      hive: "alpha-hive",
+      lanes: ["auto"],
+      sources: ["system"],
+      rails: ["plan"],
+    });
+    expect(screen.queryByText(autoTitle)).toBeNull();
+    expect(
+      screen.getByText("Nothing matches the current filter / search"),
+    ).toBeTruthy();
   });
 
   it("filters the backlog through the quick-search box, Work-Queue style (owner ask 2026-07-19)", () => {
