@@ -40,6 +40,20 @@ describe('fleet:leader-brief — ambient workspace transaction safety (EI-201920
   });
 });
 
+describe('fleet:leader-brief — unowned critical age filter (EI-20228488170965112)', () => {
+  it('accepts zero as the immediate-triage age threshold', () => {
+    expect(
+      leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: 0 }).success,
+    ).toBe(true);
+  });
+
+  it('still rejects negative thresholds', () => {
+    expect(
+      leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: -1 }).success,
+    ).toBe(false);
+  });
+});
+
 describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)', () => {
   const expectedKeys = [
     'fleet:member-dead:alpha',

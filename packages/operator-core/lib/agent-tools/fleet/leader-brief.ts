@@ -1987,10 +1987,12 @@ export default defineTool({
       .describe('Also include members with no claims and a stale heartbeat (default false — dead/idle noise).'),
     unowned_critical_age_hours: z
       .number()
-      .positive()
+      .min(0)
       .max(168)
       .optional()
-      .describe('WI-5213: hours an unassigned critical must age before it surfaces here. Default 4.'),
+      .describe(
+        'WI-5213: hours an unassigned critical must age before it surfaces here (0 = immediate; max 168). Default 4.',
+      ),
     orphan_min_age_minutes: z
       .number()
       .min(0)
