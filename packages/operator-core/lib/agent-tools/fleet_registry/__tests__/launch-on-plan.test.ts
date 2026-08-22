@@ -2268,7 +2268,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [] });
   });
 
-  it('applies a kind-only claim spec when claimKinds is passed (EI-10409), BEFORE any member terminal opens', async () => {
+  it('EI-21148090110387275: COMPOSES claimKinds with the plan predicate (never replaces it) when a plan is given, BEFORE any member terminal opens', async () => {
     const callOrder: string[] = [];
     setClaimSpecMock.mockImplementation(async () => {
       callOrder.push('setClaimSpec');
@@ -2287,20 +2287,41 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as {
       cupId: string;
-      spec: { view: { filter: unknown } };
+      spec: { specId: string; view: { filter: unknown } };
     };
     expect(call.cupId).toBe('fleet:drain-fleet');
-    // EI-10409: claimKinds prefers a KIND-ONLY filter (buildFleetKindClaimSpec) over the old
-    // plan+kind `all` combo — ordinary backlog work-items don't carry `plan=` (only items
-    // PROMOTED from the plan do), so plan-ANDed-with-kind starved the exact backlog-drain
-    // flow claimKinds advertises. get_next's harness floor still scopes members to this pot.
-    expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
+    // EI-21148090110387275: a plan was ALSO supplied, so claimKinds must be ANDed onto the
+    // plan predicate (buildFleetPlanClaimSpec), never swap it out for a global,
+    // plan-blind kind-only filter (buildFleetKindClaimSpec) — that used to silently
+    // broaden every member past the owner-approved plan (specId flipping from
+    // `...-plan` to `...-kinds`). A caller who wants a harness-wide kind drain
+    // instead simply omits `plan` (P-003's pure claim-spec fleet).
+    expect(call.spec.specId).toBe('fleet-launch-drain-fleet-plan');
+    expect(call.spec.view.filter).toEqual({
+      all: [
+        { field: 'plan', op: '=', value: 'my-plan' },
+        { field: 'kind', op: 'in', value: ['bug', 'change'] },
+      ],
+    });
     // P-010: an issue-family drain auto-pins states:['open'] so it doesn't starve on ['todo'].
     expect((call.spec as { states?: string[] }).states).toEqual(['open']);
     // claimSpecApplied now also carries the pool-effect (matched of pool) on the claimKinds path.
     expect(payload.claimSpecApplied).toMatchObject({ ok: true, revision: 1, poolEffect: { matched: 5, pool: 10 } });
     // Order matters: the spec must land before members can race a get_next pull.
     expect(callOrder.indexOf('setClaimSpec')).toBeLessThan(callOrder.indexOf('spawnConsole'));
+  });
+
+  it('EI-21148090110387275: claimKinds alone (no plan) still gets the global kind-only filter — P-003 pure claim-spec fleet', async () => {
+    const res = await tool.handler(
+      { name: 'Pure Drain Fleet', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'] } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+    const call = setClaimSpecMock.mock.calls[0][0] as { spec: { specId: string; view: { filter: unknown } } };
+    expect(call.spec.specId).toBe('fleet-launch-pure-drain-fleet-kinds');
+    expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
   });
 
   it('#4: ALWAYS sets a PLAN-scoped claim spec even when claimKinds is omitted', async () => {
