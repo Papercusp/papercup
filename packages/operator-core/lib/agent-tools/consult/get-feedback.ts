@@ -26,6 +26,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { hardText, LIMITS } from '../limits';
+import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -192,6 +193,28 @@ export default defineTool({
       },
     );
 
-    return ok(result as unknown as Record<string, unknown>);
+    let interestWatch;
+    if (
+      'verdict' in result &&
+      result.verdict === 'routed' &&
+      result.latency_contract === 'hard-blocked' &&
+      result.park_key
+    ) {
+      try {
+        interestWatch = await reconcileInterestEventAwaits({
+          ownerId: identity.ownerId,
+          eventKeys: [result.park_key],
+          boundTo: { kind: 'consult-request', ref: result.conversation_id },
+          note: `hard-blocked consult requester auto-arm for ${result.conversation_id}`,
+        });
+      } catch {
+        /* consult routing remains authoritative; interest arming is fail-soft */
+      }
+    }
+
+    return ok({
+      ...(result as unknown as Record<string, unknown>),
+      ...(interestWatch ? { interest_watch: interestWatch } : {}),
+    });
   },
 });

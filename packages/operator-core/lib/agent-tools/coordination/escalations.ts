@@ -41,6 +41,47 @@ export type {
   EscalationResolvedEvent,
 };
 
+export async function armEscalationRequesterInterest(
+  ownerId: string,
+  msgId: string,
+): Promise<import('../../interest-auto-arm').InterestAutoArmHandle | undefined> {
+  try {
+    const { reconcileInterestEventAwaits } = await import('../../interest-auto-arm');
+    return await reconcileInterestEventAwaits({
+      ownerId,
+      eventKeys: [`escalation:resolved:${msgId}`],
+      boundTo: { kind: 'escalation-request', ref: msgId },
+      note: `escalation-requester auto-arm for ${msgId}`,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function settleEscalationRequesterInterest(
+  open: EscalationRecord,
+  input: { msg_id: string; choice: string; note?: string; resolver?: string },
+): Promise<void> {
+  try {
+    const { emitAwaitedEvent } = await import('../../events/await/engine');
+    await emitAwaitedEvent({
+      key: `escalation:resolved:${input.msg_id}`,
+      summary: `escalation resolved → ${input.choice}${input.note ? ` — ${input.note}` : ''}`,
+      payload: { msg_id: input.msg_id, choice: input.choice, resolver: input.resolver ?? open.from },
+      to: [open.from],
+      source: input.resolver ?? open.from,
+    });
+  } catch {
+    /* the append-only resolution is authoritative; wake delivery is fail-soft */
+  }
+  try {
+    const { retireInterestEventAwaits } = await import('../../interest-auto-arm');
+    await retireInterestEventAwaits({ kind: 'escalation-request', ref: input.msg_id });
+  } catch {
+    /* lifecycle cleanup is fail-soft */
+  }
+}
+
 const OPEN_ESCALATION_REPEAT_COUNT_KEY = 'repeatCount';
 const OPEN_ESCALATION_LAST_SEEN_KEY = 'lastSeenTs';
 const OPEN_ESCALATION_SUBJECT_SIGNATURE_KEY = 'subjectSignature';
@@ -879,7 +920,12 @@ export async function resolveEscalationsBatch(
   // steps, capping a drain tick at ~150 even with a 2500-item batch — the lane
   // never actually drained the ~11k operational backlog. One putEvents = one
   // round-trip + one DBOS step, so a tick drains its whole batch.
-  const toWrite: { msgId: string; record: EscalationResolvedEvent }[] = [];
+  const toWrite: {
+    msgId: string;
+    record: EscalationResolvedEvent;
+    open: EscalationRecord;
+    input: BatchResolveItem;
+  }[] = [];
 
   for (const input of inputs) {
     const open = openById.get(input.msg_id);
@@ -915,13 +961,19 @@ export async function resolveEscalationsBatch(
     };
     if (input.resolver !== undefined) ev.by = input.resolver;
     if (input.note !== undefined) ev.note = input.note;
-    toWrite.push({ msgId: ev.msg_id, record: ev });
+    toWrite.push({ msgId: ev.msg_id, record: ev, open, input });
     resolvedThisBatch.add(input.msg_id);
     result.resolved += 1;
   }
 
   // Single batched write for every resolve in this sweep (no-op on empty).
-  await coordLog.putEvents('escalations', toWrite);
+  await coordLog.putEvents(
+    'escalations',
+    toWrite.map(({ msgId, record }) => ({ msgId, record })),
+  );
+  await Promise.all(
+    toWrite.map(({ open, input }) => settleEscalationRequesterInterest(open, input)),
+  );
 
   return result;
 }
@@ -984,5 +1036,6 @@ export async function resolveEscalation(
   // it" TRUE — before this, all N workers got a record back and all N announced.
   const won = await coordLog.putEventIfAbsent('escalations', ev.msg_id, ev);
   if (!won) return 'already_resolved';
+  await settleEscalationRequesterInterest(open, input);
   return foldResolved(open, ev);
 }

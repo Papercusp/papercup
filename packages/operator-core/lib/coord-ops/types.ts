@@ -24,6 +24,7 @@ import type { ZodType } from 'zod';
 // (`@papercusp/step-program`) — imported for local use (CoordOpCaps.runProgram)
 // and re-exported so coord-op consumers keep one type.
 import type { ProgramOutcome } from '@papercusp/step-program';
+import type { InterestAutoArmHandle } from '../interest-auto-arm.js';
 export type { ProgramOutcome };
 
 /** A thread post as the collect/aggregate ops consume it (a slim ThreadPostRow). */
@@ -78,7 +79,7 @@ export interface CoordOpCaps {
     harness?: string;
     /** Replace an open owner ask instead of creating a second live gate. */
     supersedes_conversation_id?: string;
-  }): Promise<{ thread_id: string; conversation_id: string }>;
+  }): Promise<{ thread_id: string; conversation_id: string; interest_watch?: InterestAutoArmHandle }>;
 
   /** Post to a thread. Wraps `conversations.postReply` / `answerQuestion`. */
   postThread(input: {

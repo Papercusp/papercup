@@ -1627,6 +1627,16 @@ export async function composeOrient(
     }
   }
 
+  type SelfAgentRow = {
+    isSelf?: boolean;
+    declaredPlanSlug?: string | null;
+    // fleet:assignments collapses claims to a count outside the full payload tier.
+    claims?: number | Array<{ planSlug: string | null; id: string | null }>;
+  };
+  const meAgentsForPlan = (me as { agents?: SelfAgentRow[] } | undefined)?.agents ?? [];
+  const selfRow = meAgentsForPlan.find((a) => a.isSelf);
+  const effectivePlanSlug: string | null = args.planSlug ?? selfRow?.declaredPlanSlug ?? null;
+
   // ── coord:plan-events — the "what plans changed" delta (default on; the bootstrap's
   // third leg). Already result-bounded server-side; we keep the newest few.
   // EI-8300: skipped entirely on a monitor tick.
@@ -1634,6 +1644,7 @@ export async function composeOrient(
     try {
       const pe = (await call('coord:plan-events', {
         ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
+        ...(effectivePlanSlug ? { plan_slug: effectivePlanSlug } : {}),
         limit: PLAN_EVENTS_FOLD,
       })) as { events?: unknown[]; total?: number } | undefined;
       const events = Array.isArray(pe?.events) ? (pe!.events as unknown[]) : [];
@@ -1670,22 +1681,6 @@ export async function composeOrient(
   // monitor tick like the other plan/fleet legs. WI-3818: bounded like every
   // other fan-out leg — a slow plans:get must never block orient past budget.
   if (!monitor) {
-    type SelfAgentRow = {
-      isSelf?: boolean;
-      declaredPlanSlug?: string | null;
-      // EI-20108229813877389: NOT `Array<…>`. `me` comes from
-      // fleet:assignments, whose payload shaper COLLAPSES per-agent `claims[]`
-      // (16 fields/claim — "the fat") to `claims: <count>` at the trimmed AND
-      // standard tiers (assignments-shape.ts:51,101); only `full` keeps the
-      // rows. Declaring the array here was a TYPE LIE that made the compiler
-      // bless `.filter()` on a number — the runtime TypeError was then
-      // swallowed by this leg's fallback. Keep the union honest so the next
-      // consumer is forced to narrow.
-      claims?: number | Array<{ planSlug: string | null; id: string | null }>;
-    };
-    const meAgentsForPlan = (me as { agents?: SelfAgentRow[] } | undefined)?.agents ?? [];
-    const selfRow = meAgentsForPlan.find((a) => a.isSelf);
-    const effectivePlanSlug: string | null = args.planSlug ?? selfRow?.declaredPlanSlug ?? null;
     const planNowResult = await withBoundedTimeout(
       (async () => {
         if (!effectivePlanSlug) return null;

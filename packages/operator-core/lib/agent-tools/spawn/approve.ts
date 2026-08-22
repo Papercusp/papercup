@@ -14,7 +14,6 @@ import { z } from 'zod';
 import { defineTool, BRAIN_PRINCIPAL_ROLE } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveEscalation } from '../coordination/escalations';
-import { trackDetached } from '../../detached-imports';
 
 export default defineTool({
   name: 'new_subagent:approve',
@@ -62,17 +61,6 @@ export default defineTool({
         isError: true,
       };
     }
-    // Wake the sleeping requester (events:await on escalation:resolved:<id>).
-    void trackDetached(import('../../events/await/engine'))
-      .then(({ emitAwaitedEvent }) =>
-        emitAwaitedEvent({
-          key: `escalation:resolved:${args.request_id}`,
-          summary: `new_subagent ${args.decision} by the brain${args.note ? ` — ${args.note}` : ''}`,
-          payload: { msg_id: args.request_id, choice: args.decision, resolver: identity.ownerId },
-          source: identity.ownerId,
-        }),
-      )
-      .catch(() => {});
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, decision: args.decision, request_id: args.request_id }) }],
     };

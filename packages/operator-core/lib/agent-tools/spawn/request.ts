@@ -13,7 +13,7 @@
 import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { openEscalation } from '../coordination/escalations';
+import { armEscalationRequesterInterest, openEscalation } from '../coordination/escalations';
 
 export default defineTool({
   name: 'new_subagent:request',
@@ -114,6 +114,7 @@ export default defineTool({
       },
     });
     const awaitEvent = `escalation:resolved:${rec.msg_id}`;
+    const interestWatch = await armEscalationRequesterInterest(identity.ownerId, rec.msg_id);
     return {
       content: [
         {
@@ -122,6 +123,7 @@ export default defineTool({
             ok: true,
             request_id: rec.msg_id,
             await_event: awaitEvent,
+            interest_watch: interestWatch,
             headroom,
             next:
               `events:await { event: "${awaitEvent}" } then end your turn. On wake, if choice==="approve", ` +

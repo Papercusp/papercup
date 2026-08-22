@@ -185,6 +185,8 @@ export interface OpenConversationResult {
   unrouted: boolean;
   /** The named recipients actually subscribed (the asker is never one). */
   direct_to: string[];
+  /** Lifecycle-bound wake on this question's concrete answer edge. */
+  interestWatch?: import('../../interest-auto-arm').InterestAutoArmHandle;
 }
 
 /** Materialize the shared thread/tag/subscription/fan-out half of an open.

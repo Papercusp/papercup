@@ -60,6 +60,7 @@ import {
   schedulerMaintainedReadyEnabled,
   schedulerIssuesClaimableEnabled,
   claimNextIssueWorkItem,
+  armWorkItemHolderInterests,
   featureRowToWorkItem,
   familyOf,
   FEATURE_COLS,
@@ -2333,6 +2334,7 @@ export async function getNextWorkItem(
   }
 
   if (!claimed) return null;
+  claimed.interestWatch = await armWorkItemHolderInterests(claimed, bee.assignee);
   // Same claimed-event as the legacy claim path (best-effort fanout).
   void trackDetached(import('../work-items-events')).then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee)).catch(() => {});
   return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };

@@ -86,6 +86,7 @@ export default defineTool({
           asked: opened.direct_to,
           unrouted: opened.unrouted,
           notified_subscribers: opened.delivered,
+          interest_watch: opened.interestWatch,
           // `unrouted` is measured from ACTUAL delivery, not from what the
           // asker attempted. With `to` now mandatory it can only mean the named
           // recipient was undeliverable (dead/unknown ownerId) — the old "you

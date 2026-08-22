@@ -20,7 +20,6 @@ import { resolveEscalation } from '../escalations';
 import { unblockLinkedCard } from '../card-link';
 import { COORD_ROLES } from '../roles';
 import { runBulk, bulkContent } from '../../_bulk';
-import { trackDetached } from '../../../detached-imports';
 
 /**
  * EI-843: the Mug wake brief renders open escalations as AttentionItem-style
@@ -106,19 +105,6 @@ export default defineTool({
         // inbox resolution resumes the agent. No-op when unlinked (flag-off) or the
         // card already resolved; the escalation is resolved regardless.
         unblockLinkedCard(out, it.choice);
-        // await-event-primitive-2026-06-05 P-015: a SLEEPING escalator (no live
-        // askUser card) wakes on `escalation:resolved:<msg_id>` (events:await).
-        // The resolution event above already covers the inbox/notify half.
-        void trackDetached(import('../../../events/await/engine'))
-          .then(({ emitAwaitedEvent }) =>
-            emitAwaitedEvent({
-              key: `escalation:resolved:${it.msg_id}`,
-              summary: `escalation resolved → ${it.choice}${it.note ? ` — ${it.note}` : ''}`,
-              payload: { msg_id: it.msg_id, choice: it.choice, resolver: identity.ownerId },
-              source: identity.ownerId,
-            }),
-          )
-          .catch(() => {});
         return { ok: true as const, msg_id: it.msg_id, escalation: out };
       },
       { keyOf: (it) => ({ msg_id: it.msg_id }) },

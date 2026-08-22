@@ -100,7 +100,11 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
         if ('error' in r) {
           throw new Error(`coord-op openThread: cannot supersede ${input.supersedes_conversation_id} (${r.error})`);
         }
-        return { thread_id: r.replacement.thread_id, conversation_id: r.replacement.conversation.id };
+        return {
+          thread_id: r.replacement.thread_id,
+          conversation_id: r.replacement.conversation.id,
+          ...(r.replacement.interestWatch ? { interest_watch: r.replacement.interestWatch } : {}),
+        };
       }
       const r = await openConversation(identity, {
         kind: input.kind ?? 'discussion',
@@ -109,7 +113,11 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
         topics: input.topics,
         harness_slug: input.harness,
       });
-      return { thread_id: r.thread_id, conversation_id: r.conversation.id };
+      return {
+        thread_id: r.thread_id,
+        conversation_id: r.conversation.id,
+        ...(r.interestWatch ? { interest_watch: r.interestWatch } : {}),
+      };
     },
 
     async postThread(input) {

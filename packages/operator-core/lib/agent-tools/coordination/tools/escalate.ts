@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
-import { openEscalation } from '../escalations';
+import { armEscalationRequesterInterest, openEscalation } from '../escalations';
 import { EVIDENCE_BANDS } from '../relay-provenance';
 import { COORD_ROLES } from '../roles';
 import { softText, clampText, LIMITS } from '../../limits';
@@ -130,6 +130,7 @@ export default defineTool({
       ...(Object.keys(meta).length > 0 ? { meta } : {}),
       ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
     });
+    const interestWatch = await armEscalationRequesterInterest(identity.ownerId, rec.msg_id);
     const coalesced = rec.coalesced === true;
     return {
       content: [
@@ -147,6 +148,7 @@ export default defineTool({
             ok: true,
             msg_id: rec.msg_id,
             ts: rec.ts,
+            interest_watch: interestWatch,
           }),
         },
       ],

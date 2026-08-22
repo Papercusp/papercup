@@ -112,6 +112,15 @@ const askResult = z.object({
   answered: z.boolean(),
   answer: z.string().nullable(),
   conversation_id: z.string(),
+  interest_watch: z.object({
+    event_keys: z.array(z.string()),
+    await_ids: z.array(z.number().int()),
+    cancel: z.object({
+      tool: z.literal('events:cancel'),
+      args: z.object({ await_ids: z.array(z.number().int()) }),
+    }).nullable(),
+    handle_note: z.string(),
+  }).optional(),
 });
 
 const MAX_POLLS = 100_000;
@@ -164,7 +173,12 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
       await ctx.caps.sleep(a.poll_ms);
       ans = await ctx.caps.readAnswer({ conversationId: thread.conversation_id, askerId });
     }
-    return { answered: ans.answered, answer: ans.answer, conversation_id: thread.conversation_id };
+    return {
+      answered: ans.answered,
+      answer: ans.answer,
+      conversation_id: thread.conversation_id,
+      ...(thread.interest_watch ? { interest_watch: thread.interest_watch } : {}),
+    };
   },
 };
 registerCoordOp(askOp);

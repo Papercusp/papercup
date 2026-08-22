@@ -156,6 +156,11 @@ import type { AgentIdentity } from './identity';
 import type { ConversationRow, ListConversationsOpts } from './conversations-store';
 import type { DeliveryMode } from '@papercusp/coordination/capabilities';
 import { trackDetached } from '../../detached-imports';
+import {
+  reconcileInterestEventAwaits,
+  retireInterestEventAwaits,
+  type InterestAutoArmHandle,
+} from '../../interest-auto-arm';
 
 const storeOpts = {
   getSql: () => getOrgPg().sql,
@@ -219,10 +224,30 @@ export type {
   SupersedeConversationResult,
 } from './conversations-core';
 
-export function openConversation(identity: AgentIdentity, input: OpenConversationInput): Promise<OpenConversationResult> {
-  return withConversationsIdentityScope(identity, input.harness_slug, () =>
+async function armQuestionInterest(
+  ownerId: string,
+  conversationId: string,
+): Promise<InterestAutoArmHandle | undefined> {
+  try {
+    return await reconcileInterestEventAwaits({
+      ownerId,
+      eventKeys: [`conversation:answered:${conversationId}`],
+      boundTo: { kind: 'conversation-question', ref: conversationId },
+      note: `question-requester auto-arm for ${conversationId}`,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+export async function openConversation(identity: AgentIdentity, input: OpenConversationInput): Promise<OpenConversationResult> {
+  const opened = await withConversationsIdentityScope(identity, input.harness_slug, () =>
     openConversationCore(deps, identity, input),
   );
+  if (opened.conversation.kind === 'question') {
+    opened.interestWatch = await armQuestionInterest(identity.ownerId, opened.conversation.id);
+  }
+  return opened;
 }
 
 export function postReply(
@@ -314,17 +339,23 @@ export async function resolveConversation(
         })),
       );
     })().catch(() => {});
-    void trackDetached(import('../../events/await/engine'))
-      .then(({ emitAwaitedEvent }) =>
-        emitAwaitedEvent({
+    try {
+      const { emitAwaitedEvent } = await import('../../events/await/engine');
+      await emitAwaitedEvent({
           key: `conversation:answered:${conv.id}`,
           summary: `conversation ${conv.id} resolved: ${(conv.accepted_answer ?? '').slice(0, 200)}`,
           payload: { conversation_id: conv.id, resolver: identity.ownerId },
           to: conv.asker_id && conv.asker_id !== identity.ownerId ? [conv.asker_id] : [],
           source: identity.ownerId,
-        }),
-      )
-      .catch(() => {});
+      });
+    } catch {
+      /* answer persistence is authoritative; wake delivery remains fail-soft */
+    }
+    try {
+      await retireInterestEventAwaits({ kind: 'conversation-question', ref: conv.id });
+    } catch {
+      /* lifecycle cleanup is fail-soft */
+    }
   }
   return result;
 }
@@ -343,6 +374,17 @@ export async function supersedeConversation(
     supersedeConversationCore(deps, identity, input),
   );
   if (!('error' in result)) {
+    try {
+      await retireInterestEventAwaits({ kind: 'conversation-question', ref: result.conversation.id });
+    } catch {
+      /* lifecycle cleanup is fail-soft */
+    }
+    if (result.replacement.conversation.kind === 'question') {
+      result.replacement.interestWatch = await armQuestionInterest(
+        identity.ownerId,
+        result.replacement.conversation.id,
+      );
+    }
     // A coord:ask-owner has a Decision-tier escalation twin. Retiring the
     // conversation must retire that twin too, or a retracted question remains
     // a visible owner gate even though the replacement is the live question.
