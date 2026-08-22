@@ -60,6 +60,17 @@ p014_assert() {
   "$P014_TAURI_TOOL" check --pid "$P014_TAURI_PID" --strict --eval "$expression"
 }
 
+# Catalog buttons contain both their human label and their panel type (for
+# example "Run log" plus "adv:logs"), so matching the button's complete
+# textContent can never find an entry. Resolve the exact label node, click its
+# owning button, and require the click expression itself to return true.
+p014_open_catalog_panel() {
+  local label="$1"
+  local label_json
+  label_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$label")"
+  p014_assert "(() => { const label = [...document.querySelectorAll('.pc-add-panel__label')].find((node) => node.textContent?.trim() === ${label_json}); const button = label?.closest('button'); if (!(button instanceof HTMLButtonElement)) return false; button.click(); return true; })()"
+}
+
 p014_console_clean() {
   "$P014_TAURI_TOOL" check \
     --pid "$P014_TAURI_PID" \
@@ -94,12 +105,12 @@ p014_capture() {
 # exact values are captured and the visible label must be a lossless prefix of
 # the accessible population statement. A page-only "loaded" label is refused.
 p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/adv", search: { tab: "harnesses", slug: "papercusp", scope: "self", welcome: 0 } })'
-if ! "$P014_TAURI_POLL" --selector '[data-testid="wi-count"]'; then
+if ! "$P014_TAURI_POLL" --quiet --selector '[data-testid="wi-count"]'; then
   # A customized dock may not have the panel mounted. Use the real Add-panel
   # catalogue and click the exact existing Work items entry; no backend write.
   p014_navigate '(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent?.trim() === "Add panel"); if (!b) return false; b.click(); return true; })()'
   "$P014_TAURI_POLL" --selector '[role="dialog"][aria-label="Panel catalog"]'
-  p014_navigate '(() => { const x = [...document.querySelectorAll("button,[role=option],[role=menuitem]")].find((n) => n.textContent?.trim() === "Work items"); if (!x) return false; x.click(); return true; })()'
+  p014_open_catalog_panel 'Work items'
   "$P014_TAURI_POLL" --selector '[data-testid="wi-count"]'
 fi
 p014_assert '(() => { const e = document.querySelector("[data-testid=wi-count]"); if (!e) return false; const visible = (e.textContent || "").trim(); const aria = e.getAttribute("aria-label") || ""; if (!visible || !aria || /loaded/i.test(visible + " " + aria)) return false; if (visible === "—") return /^Count (?:loading…|updating…|unavailable)$/.test(aria); if (/^Count (?:loading…|updating…|unavailable)$/.test(visible)) return aria === visible; return aria.includes(visible) && /(?:full corpus|all work items|match|item)/i.test(aria); })()'
@@ -171,10 +182,10 @@ p014_capture git-history 'JSON.stringify({ route: location.pathname + location.s
 # the Run log panel, so mount the exact catalog entry and assert the filter
 # engine's screen-reader scope against the canonical latest-300 window.
 p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/adv", search: { tab: "harnesses", slug: "papercusp", scope: "self", welcome: 0 } })'
-if ! "$P014_TAURI_POLL" --selector '.pc-adv-logs .pc-advpanel__filterbar[data-count-evidence="window"]'; then
+if ! "$P014_TAURI_POLL" --quiet --selector '.pc-adv-logs .pc-advpanel__filterbar[data-count-evidence="window"]'; then
   p014_navigate '(() => { const b = [...document.querySelectorAll("button")].find((x) => x.textContent?.trim() === "Add panel"); if (!b) return false; b.click(); return true; })()'
   "$P014_TAURI_POLL" --selector '[role="dialog"][aria-label="Panel catalog"]'
-  p014_navigate '(() => { const x = [...document.querySelectorAll("button,[role=option],[role=menuitem]")].find((n) => n.textContent?.trim() === "Run log"); if (!x) return false; x.click(); return true; })()'
+  p014_open_catalog_panel 'Run log'
   "$P014_TAURI_POLL" --selector '.pc-adv-logs .pc-advpanel__filterbar[data-count-evidence="window"]'
 fi
 p014_assert '(() => { const bar = document.querySelector(".pc-adv-logs .pc-advpanel__filterbar[data-count-evidence=window]"); const scope = bar?.querySelector(".pc-sr-only")?.textContent?.trim(); return scope === "Filter option counts cover latest 300 events."; })()'

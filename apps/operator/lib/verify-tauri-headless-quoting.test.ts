@@ -112,6 +112,20 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     );
     expect(countSurfacesSrc).toContain('  impq');
     expect(countSurfacesSrc).toContain('  rq');
+    expect(countSurfacesSrc).toContain(
+      'if ! "$P014_TAURI_POLL" --quiet --selector \'[data-testid="wi-count"]\'; then',
+    );
+    expect(countSurfacesSrc).toContain(
+      'if ! "$P014_TAURI_POLL" --quiet --selector \'.pc-adv-logs .pc-advpanel__filterbar[data-count-evidence="window"]\'; then',
+    );
+    expect(countSurfacesSrc).toContain('p014_open_catalog_panel()');
+    expect(countSurfacesSrc).toContain("p014_open_catalog_panel 'Work items'");
+    expect(countSurfacesSrc).toContain("p014_open_catalog_panel 'Run log'");
+    expect(countSurfacesSrc).toContain("querySelectorAll('.pc-add-panel__label')");
+    expect(countSurfacesSrc).toContain("label?.closest('button')");
+    expect(countSurfacesSrc).not.toContain(
+      'querySelectorAll("button,[role=option],[role=menuitem]")',
+    );
     expect(countSurfacesSrc.match(/"\$P014_TAURI_POLL" \\\n  --eval/g)).toHaveLength(3);
     expect(
       countSurfacesSrc.match(

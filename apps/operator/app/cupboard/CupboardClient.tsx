@@ -863,7 +863,7 @@ export default function CupboardClient() {
         </>
       )}
       </div>
-      {!loading && !error && nextCursor && (
+      {!loading && !error && (nextCursor || exactViewTotal != null) && (
         <div
           data-testid="cupboard-pagination"
           style={{
@@ -876,16 +876,18 @@ export default function CupboardClient() {
               ? `${loadedViewCount} loaded`
               : `Showing ${loadedViewCount} of ${exactViewTotal}`}
           </span>
-          <button
-            type="button"
-            data-testid="cupboard-load-more"
-            onClick={() => void fetchListings(nextCursor, true)}
-            disabled={loadingMore}
-            style={ghostButtonStyle}
-          >
-            {loadingMore ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : null}
-            {loadingMore ? 'Loading…' : 'Load more'}
-          </button>
+          {nextCursor && (
+            <button
+              type="button"
+              data-testid="cupboard-load-more"
+              onClick={() => void fetchListings(nextCursor, true)}
+              disabled={loadingMore}
+              style={ghostButtonStyle}
+            >
+              {loadingMore ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : null}
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          )}
         </div>
       )}
         </>

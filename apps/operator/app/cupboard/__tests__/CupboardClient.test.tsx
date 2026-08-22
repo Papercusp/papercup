@@ -194,6 +194,22 @@ describe('CupboardClient — corpus pagination and authoritative kind facets', (
     expect(String(fetchMock.mock.calls[1][0])).toBe('/api/cupboard/listings?limit=100&kind=app');
   });
 
+  it('keeps the exact corpus total visible when the first page is already exhausted', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      listings: [deepApp],
+      next_cursor: null,
+      total: 1,
+      kind_facets: { app: 1 },
+    }), { status: 200 }));
+
+    withTooltips(<CupboardClient />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('cupboard-pagination').textContent).toContain('Showing 1 of 1');
+    });
+    expect(screen.queryByTestId('cupboard-load-more')).toBeNull();
+  });
+
   it('appends the next page and stops when the server reports exhaustion', async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
