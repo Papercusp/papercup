@@ -409,6 +409,38 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
+  it('EI-21096441920219468: a live-held dirty path defers the whole repo commit group and preserves holder intent', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['file.txt'],
+      liveLockHoldings: [{
+        path: 'file.txt',
+        owner: 'su-peer',
+        intent: 'editing the source half of an atomic change',
+      }],
+    });
+
+    expect(out.status).toBe('skipped-locked');
+    if (out.status === 'skipped-locked') {
+      expect(out.skippedPaths).toEqual([{
+        scope: 'superproject',
+        path: 'file.txt',
+        owner: 'su-peer',
+        intent: 'editing the source half of an atomic change',
+      }]);
+    }
+
+    // Atomic deferral: the unlocked sibling must not land by itself. Both edits remain
+    // available for the next sweep after the live holder releases its lock.
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/file\.txt/);
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/normal\.txt/);
+  });
+
   it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {
     const generator = join(repo, 'scripts', 'gen-tool-catalog.ts');
     const catalog = join(repo, '.papercusp', 'tool-catalog.json');

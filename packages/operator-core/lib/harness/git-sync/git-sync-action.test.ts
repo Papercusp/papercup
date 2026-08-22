@@ -1027,6 +1027,40 @@ describe('clean sync outcome', () => {
       expect.objectContaining({ kind: 'git_sync', status: 'nothing' }));
   });
 
+  it('EI-21096441920219468: records skipped-locked holder provenance in metadata and pipeline detail', async () => {
+    const skippedPaths = [{
+      scope: 'superproject',
+      path: 'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+      owner: 'su-peer',
+      intent: 'editing the source half of an atomic change',
+    }];
+    runGitSyncMock.mockResolvedValue({
+      status: 'skipped-locked',
+      skippedPaths,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
+
+    await action(ctx);
+
+    expect(routinePatches()).toContainEqual(expect.objectContaining({
+      last_status: 'skipped-locked',
+      local_sync_status: 'skipped-locked',
+      last_skip_reason: 'locked-path',
+      last_skipped_at: expect.any(Number),
+      last_skipped_paths: skippedPaths,
+      last_pushed: [],
+      last_merged: [],
+    }));
+    expect(appendPipelineEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'git_sync',
+      status: 'skipped-locked',
+      detail: expect.objectContaining({ skippedPaths }),
+    }));
+    expect(runDocSweepMock).not.toHaveBeenCalled();
+  });
+
   it('maps the routine trigger_config onto the pipeline config', async () => {
     runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
 
