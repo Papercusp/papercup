@@ -500,8 +500,22 @@ export default defineTool({
           timeoutMs: 1_000,
           label: 'events-await:announcedGateFireEvidence',
         });
-        // No catalog family AND no live fire history ⇒ genuinely no known emitter.
-        if (!evidence.value || evidence.value.fires === 0) {
+        // A previous declaration generation is direct evidence that this exact
+        // hand-minted gate has fired, even when the unconditional fire latch was
+        // introduced after that generation (or its best-effort write was lost).
+        // Without this history read, a new declaration after a fired generation
+        // was incorrectly described as a key that had "never fired on this host".
+        const declarationHistory = await withBoundedTimeout(
+          findAnnouncementsForKey(eventKey, { includeSuperseded: true }),
+          { fallback: null, timeoutMs: 1_000, label: 'events-await:announcementHistory' },
+        );
+        const priorGenerationFired = declarationHistory.value?.some(
+          (announcement) => announcement.firedAt && announcement.firedReason === 'event',
+        );
+        // No catalog family, no fire-latch evidence, and no fired declaration
+        // history ⇒ genuinely no known emitter. An unavailable history read is
+        // fail-soft: an unverifiable claim is safer than a contradictory warning.
+        if (evidence.value?.fires === 0 && declarationHistory.value && !priorGenerationFired) {
           noKnownEmitterForAnnouncedGate = { catalogNearMiss: findCatalogNearMiss(eventKey, probe.value) };
         }
       }

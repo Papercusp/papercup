@@ -1506,19 +1506,33 @@ export async function registerAnnouncement(input: {
   }) as Promise<AwaitRow>;
 }
 
-/** Announcements (any state except cancelled) for one exact key — the events:await
- *  registration-time LATCH read. fired_reason='event' = the gate genuinely fired;
- *  'expired' = the declaration lapsed unfired (NOT a latch). */
-export async function findAnnouncementsForKey(eventKey: string): Promise<AwaitRow[]> {
+/** Announcements for one exact key — the events:await registration-time LATCH read.
+ * The default returns only the current declaration generation. `includeSuperseded`
+ * is for history-aware advisories that must distinguish a pending generation from
+ * a key that has never fired at all; it includes prior non-cancelled generations.
+ * fired_reason='event' = the gate genuinely fired; 'expired' = the declaration
+ * lapsed unfired (NOT a latch). */
+export async function findAnnouncementsForKey(
+  eventKey: string,
+  opts?: { includeSuperseded?: boolean },
+): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = await sql`
-    SELECT * FROM harness_shared.event_awaits
-     WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
-       AND cancelled_at IS NULL AND superseded_at IS NULL
-     ORDER BY causal_generation DESC NULLS LAST, created_at DESC
-     LIMIT 1
-  `;
+  const rows = opts?.includeSuperseded
+    ? await sql`
+        SELECT * FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+           AND cancelled_at IS NULL
+         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+         LIMIT 50
+      `
+    : await sql`
+        SELECT * FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+           AND cancelled_at IS NULL AND superseded_at IS NULL
+         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+         LIMIT 1
+      `;
   return rows.map(mapAwait);
 }
 

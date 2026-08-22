@@ -640,6 +640,31 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
     expect(out.no_known_emitter).toBeUndefined();
   });
 
+  it('does NOT call a current declaration an unknown emitter when a superseded generation fired', async () => {
+    vi.mocked(findAnnouncementsForKey)
+      .mockResolvedValueOnce([declaredRow({ causalGeneration: 2 })] as never)
+      .mockResolvedValueOnce([
+        declaredRow({ causalGeneration: 2 }),
+        declaredRow({ causalGeneration: 1, firedAt: '2026-08-15T04:21:58.341Z', firedReason: 'event' }),
+      ] as never);
+    // Simulate the filed incident's missing/empty unconditional fire-latch evidence.
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+      prefix: 'green-gate-verdict',
+      exact: false,
+      distinctKeys: 0,
+      fires: 0,
+      lastFiredAt: null,
+    });
+
+    const out = await call({ event: 'green-gate-verdict' });
+
+    expect(out.announced_gate).toMatchObject({ generation: 2 });
+    expect(out.already_fired).toBeUndefined();
+    expect(out.no_known_emitter).toBeUndefined();
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+  });
+
   it('does NOT warn on an ALREADY-FIRED gate (that path returns already_fired and never reaches this check)', async () => {
     vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
       declaredRow({ firedAt: '2026-07-26T09:53:00Z', firedReason: 'event' }),
