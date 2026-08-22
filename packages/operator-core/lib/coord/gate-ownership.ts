@@ -27,24 +27,12 @@
  * main-behind cell are declared MUTUAL FALSIFIERS. Attaching the wrong key here
  * would quietly point the gate's ownership at the other cell's incident.
  */
-import {
-  findConditionObjects,
-  type ConditionClaimState,
-  type ConditionObject,
-} from './condition-object';
+import { findConditionObjects, type ConditionClaimState, type ConditionObject } from './condition-object';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { cellUnknown, type CellUnknown } from '../cell-contract';
-import {
-  noSubjectThread,
-  readCellThread,
-  unmeasuredThread,
-  type CellThread,
-} from './cell-thread';
+import { noSubjectThread, readCellThread, unmeasuredThread, type CellThread } from './cell-thread';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
-import {
-  needsLivenessConfirmation,
-  type SessionState,
-} from '../agent-tools/coordination/presence-wakeability';
+import { needsLivenessConfirmation, type SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 /**
  * The condition whose lifetime IS a green-checkpoint stall.
@@ -114,6 +102,13 @@ export function gateRedStreakConditionKey(harness: string): string {
  * deliberately independent apparatus rather than a refinement of this field.
  */
 export interface CellOwnership {
+  /**
+   * Decision-ready ownership conclusion, derived once from the claim + liveness
+   * truth table. `null` means the required claim-state measurement was
+   * unavailable; callers must not infer an owner state from the nullable raw
+   * fields in that case.
+   */
+  assessment: GateOwnershipAssessment | null;
   /** The condition key this cell's incident is keyed by. */
   eventKey: string;
   /** The singleton work-item owning it, or null when nothing owns it yet. */
@@ -178,6 +173,62 @@ export interface CellOwnership {
   thread: CellThread;
 }
 
+export type GateOwnershipAssessment =
+  | 'duplicate-owners'
+  | 'unowned'
+  | 'claimable'
+  | 'lease-expired'
+  | 'held-live'
+  | 'held-needs-confirmation'
+  | 'held-by-ended-session';
+
+/**
+ * PURE. The closed assessment table for `gate.greenCheckpoint.ownership`.
+ *
+ * Order is load-bearing: duplicates outrank whichever canonical row happened to
+ * be selected, and a held claim is not called live until the independent
+ * session oracle positively says so. A new claim or session state is therefore
+ * a compile-time exhaustiveness failure rather than a reassuring default.
+ */
+export function assessGateOwnership(input: {
+  claimState: ConditionClaimState | null;
+  holderSessionState: SessionState | null;
+  duplicates: readonly string[];
+}): GateOwnershipAssessment | null {
+  if (input.claimState === null) return null;
+  if (input.duplicates.length > 0) return 'duplicate-owners';
+
+  switch (input.claimState) {
+    case 'no-object':
+      return 'unowned';
+    case 'claimable':
+      return 'claimable';
+    case 'lease-expired':
+      return 'lease-expired';
+    case 'held':
+      switch (input.holderSessionState) {
+        case 'live':
+        case 'parked':
+        case 'recorded':
+          return 'held-live';
+        case 'draining':
+        case 'suspect':
+        case null:
+          return 'held-needs-confirmation';
+        case 'ended':
+          return 'held-by-ended-session';
+        default: {
+          const exhaustive: never = input.holderSessionState;
+          return exhaustive;
+        }
+      }
+    default: {
+      const exhaustive: never = input.claimState;
+      return exhaustive;
+    }
+  }
+}
+
 /** PURE. Project a resolved condition onto a cell's ownership block. */
 export function toCellOwnership(
   obj: ConditionObject,
@@ -185,6 +236,11 @@ export function toCellOwnership(
   thread: CellThread = noSubjectThread('thread not read on this projection'),
 ): CellOwnership {
   return {
+    assessment: assessGateOwnership({
+      claimState: obj.claimState,
+      holderSessionState,
+      duplicates: obj.duplicates,
+    }),
     eventKey: obj.conditionKey,
     workItem: obj.workItem,
     claimState: obj.claimState,
@@ -206,6 +262,7 @@ export function toCellOwnership(
  */
 export function unownedCell(eventKey: string): CellOwnership {
   return {
+    assessment: 'unowned',
     eventKey,
     workItem: null,
     claimState: 'no-object',
@@ -224,6 +281,7 @@ export function unownedCell(eventKey: string): CellOwnership {
 /** PURE. Ownership could NOT be read — never rendered as "nobody owns this". */
 export function unmeasuredCell(eventKey: string, detail: string): CellOwnership {
   return {
+    assessment: null,
     eventKey,
     workItem: null,
     claimState: null,
@@ -445,10 +503,9 @@ export async function readGateOwnership(
   if (obj.takenBy) {
     try {
       const resolve = opts.resolveSessionStates ?? resolveSessionStates;
-      const verdicts = await resolve(
-        [{ ownerId: obj.takenBy, claimsHeld: obj.claimState === 'held' }],
-        { hydratePerId: true },
-      );
+      const verdicts = await resolve([{ ownerId: obj.takenBy, claimsHeld: obj.claimState === 'held' }], {
+        hydratePerId: true,
+      });
       holderSessionState = verdicts.get(obj.takenBy)?.sessionState ?? null;
     } catch {
       holderSessionState = null;

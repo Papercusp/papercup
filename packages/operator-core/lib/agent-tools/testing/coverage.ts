@@ -224,6 +224,34 @@ export interface CoverageRawInput {
   now?: number;
 }
 
+export type TestingCensusPopulationAssessment = 'no-providers' | 'census-not-run' | 'empty-measured' | 'populated';
+
+export type TestingCoverageFloorAssessment = 'not-measured' | 'meets-floor' | 'below-floor' | 'measured-with-waivers';
+
+/** PURE. Numeric zero is interpreted only with its population provenance. */
+export function assessTestingCensusPopulation(input: {
+  surfaces: number;
+  providersRegistered: number;
+  lastCensusAt: string | null;
+}): TestingCensusPopulationAssessment {
+  if (input.surfaces > 0) return 'populated';
+  if (input.providersRegistered === 0) return 'no-providers';
+  return input.lastCensusAt === null ? 'census-not-run' : 'empty-measured';
+}
+
+/** PURE. The aggregate, never the limit-capped rows, decides the floor. */
+export function assessTestingCoverageFloor(input: {
+  verdict: 'measured' | 'not-measured';
+  surfaces: number;
+  below: number;
+  belowUnwaived: number;
+}): TestingCoverageFloorAssessment {
+  if (input.verdict === 'not-measured' || input.surfaces === 0) return 'not-measured';
+  if (input.belowUnwaived > 0) return 'below-floor';
+  if (input.below > 0) return 'measured-with-waivers';
+  return 'meets-floor';
+}
+
 /**
  * Turn raw query results into the response.
  *
@@ -287,19 +315,35 @@ export function assembleCoverage(input: CoverageRawInput) {
         'census-has-not-run: providers are registered but no census run has ever written a surface row for this scope',
       );
     } else {
-      censusUnknown.push(
-        'no-surfaces-match-filters: the census has rows, but none match this query',
-      );
+      censusUnknown.push('no-surfaces-match-filters: the census has rows, but none match this query');
     }
   }
 
   const lastCensusAt = totals?.last_census_at ? toIso(totals.last_census_at) : null;
+  const verdict = surfaces > 0 ? ('measured' as const) : ('not-measured' as const);
+  const meetsFloor = num(totals?.meets_floor);
+  const belowUnwaivedFloor = num(totals?.below_unwaived_floor);
+  const belowFloor = surfaces - meetsFloor;
 
   return {
     scope,
 
+    assessments: {
+      censusPopulation: assessTestingCensusPopulation({
+        surfaces,
+        providersRegistered,
+        lastCensusAt,
+      }),
+      coverageFloor: assessTestingCoverageFloor({
+        verdict,
+        surfaces,
+        below: belowFloor,
+        belowUnwaived: belowUnwaivedFloor,
+      }),
+    },
+
     /** Words, not just a null number — the two say the same thing on purpose. */
-    verdict: surfaces > 0 ? ('measured' as const) : ('not-measured' as const),
+    verdict,
     censusUnknown: censusUnknown.length > 0 ? censusUnknown : null,
 
     census: {
@@ -318,9 +362,9 @@ export function assembleCoverage(input: CoverageRawInput) {
       floorMeans: RUNGS[rung].label,
       ...aggregate({
         surfaces,
-        meets: num(totals?.meets_floor),
+        meets: meetsFloor,
         waived: num(totals?.waived),
-        belowUnwaived: num(totals?.below_unwaived_floor),
+        belowUnwaived: belowUnwaivedFloor,
         fidelityCounts,
       }),
       /** Every rung, so a caller sees the shape of the ladder without four calls.
@@ -332,9 +376,7 @@ export function assembleCoverage(input: CoverageRawInput) {
             surfaces,
             meets: num(totals?.[RUNGS[r].column as keyof NonNullable<CoverageRawInput['totals']>]),
             waived: num(totals?.waived),
-            belowUnwaived: num(
-              totals?.[`below_unwaived_${r}` as keyof NonNullable<CoverageRawInput['totals']>],
-            ),
+            belowUnwaived: num(totals?.[`below_unwaived_${r}` as keyof NonNullable<CoverageRawInput['totals']>]),
             fidelityCounts,
           }),
         ]),
@@ -385,39 +427,24 @@ export default defineTool({
     notWhen:
       'For "did this file pass / what failed at this sha" use testing:runs (the run ledger — a different question). To RUN tests use testing:run. This tool never says whether a suite is green; it says what the suite reached.',
     chaining:
-      'gapsOnly:true at your floor for the gap list → sourceFile to scope it to the files a plan touched → testing:runs on the surface\'s source_file for the run history behind its evidence.',
+      "gapsOnly:true at your floor for the gap list → sourceFile to scope it to the files a plan touched → testing:runs on the surface's source_file for the run history behind its evidence.",
     // Response docs live HERE, not in description/when — those are prompt-weight budgeted.
     returns: [
       'verdict "measured" | "not-measured". not-measured means the RATIO HAS NO DENOMINATOR (zero censused surfaces) — it is NOT a coverage of 0%, and censusUnknown carries the reason (no-providers-registered | census-has-not-run | no-surfaces-match-filters).',
       'Every aggregate (root `coverage`, each `byKind` entry, each `byRung` entry) carries `fidelity` { counts, weakest, declaredPct } and `basis` { countedOver, boundedByLimit:false, limitAppliesTo:"rows" }. fidelity.weakest is the ceiling on what the number means: 90% over a "file-only" census is not 90% over a "declared" one.',
       '`pct` is null whenever its denominator is 0, at every level including per-kind. A null pct is an honest unknown; treating it as 0 is the misread this tool exists to prevent.',
       'Aggregates are computed in SQL over the WHOLE matching set and do not move with `limit`; only `rows` is capped, and reports count/total/truncatedByLimit.',
-      'Rungs are judged by the view\'s meets_lN FLAG, never depth >= N — the rungs are not nested (an intent-tested surface the fuzzer never ran against is L3 with no L2), so `depth` is a human-facing summary only.',
+      "Rungs are judged by the view's meets_lN FLAG, never depth >= N — the rungs are not nested (an intent-tested surface the fuzzer never ran against is L3 with no L2), so `depth` is a human-facing summary only.",
       'census { surfaces, retired, lastCensusAt, ageMs, providersRegistered, providersEnabled } describes the POPULATION. providersRegistered:0 means the census loop has nothing to iterate and cannot ever write a row (WI-39809) — the state that reads as a healthy zero everywhere else.',
     ].join(' '),
-    seeAlso: [
-      'testing:runs (did this test file pass — the run ledger)',
-      'testing:run (actually run test files)',
-    ],
+    seeAlso: ['testing:runs (did this test file pass — the run ledger)', 'testing:run (actually run test files)'],
   },
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    harness: z
-      .string()
-      .max(120)
-      .optional()
-      .describe('Harness slug to read (default: the operator home harness).'),
-    workspace: z
-      .string()
-      .max(120)
-      .optional()
-      .describe('Workspace id (default: the active workspace).'),
-    kind: z
-      .string()
-      .max(80)
-      .optional()
-      .describe('Only this surface kind (http-route | mcp-tool | sync-query | …).'),
+    harness: z.string().max(120).optional().describe('Harness slug to read (default: the operator home harness).'),
+    workspace: z.string().max(120).optional().describe('Workspace id (default: the active workspace).'),
+    kind: z.string().max(80).optional().describe('Only this surface kind (http-route | mcp-tool | sync-query | …).'),
     sourceFile: z
       .string()
       .max(400)
@@ -428,17 +455,9 @@ export default defineTool({
     rung: z
       .enum(['l1', 'l2', 'l3', 'l4'])
       .optional()
-      .describe(
-        'The depth floor to judge against (default l1). Judged by the meets_lN flag, never depth >= N.',
-      ),
-    gapsOnly: z
-      .boolean()
-      .optional()
-      .describe('Return only surfaces BELOW the floor — the gap queue.'),
-    includeRetired: z
-      .boolean()
-      .optional()
-      .describe('Include surfaces the census no longer finds (default false).'),
+      .describe('The depth floor to judge against (default l1). Judged by the meets_lN flag, never depth >= N.'),
+    gapsOnly: z.boolean().optional().describe('Return only surfaces BELOW the floor — the gap queue.'),
+    includeRetired: z.boolean().optional().describe('Include surfaces the census no longer finds (default false).'),
     includeWaived: z
       .boolean()
       .optional()

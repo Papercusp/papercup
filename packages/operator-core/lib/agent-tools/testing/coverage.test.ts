@@ -16,6 +16,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   assembleCoverage,
+  assessTestingCensusPopulation,
+  assessTestingCoverageFloor,
   aggregate,
   emptyFidelityCounts,
   fidelityMarker,
@@ -79,6 +81,35 @@ function everyAggregate(result: ReturnType<typeof assembleCoverage>): Array<[str
   for (const k of result.byKind) out.push([`byKind.${k.kind}`, k]);
   return out;
 }
+
+describe('testing assessment truth tables', () => {
+  it.each([
+    [{ surfaces: 0, providersRegistered: 0, lastCensusAt: null }, 'no-providers'],
+    [{ surfaces: 0, providersRegistered: 1, lastCensusAt: null }, 'census-not-run'],
+    [{ surfaces: 0, providersRegistered: 1, lastCensusAt: '2026-08-18T00:00:00.000Z' }, 'empty-measured'],
+    [{ surfaces: 1, providersRegistered: 0, lastCensusAt: null }, 'populated'],
+  ] as const)('population %j → %s', (facts, expected) => {
+    expect(assessTestingCensusPopulation(facts)).toBe(expected);
+  });
+
+  it.each([
+    [{ verdict: 'not-measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'not-measured'],
+    [{ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'not-measured'],
+    [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }, 'below-floor'],
+    [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }, 'measured-with-waivers'],
+    [{ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0 }, 'meets-floor'],
+  ] as const)('coverage %j → %s', (facts, expected) => {
+    expect(assessTestingCoverageFloor(facts)).toBe(expected);
+  });
+
+  it('emits both codes from the same aggregate payload', () => {
+    const r = assembleCoverage(input());
+    expect(r.assessments).toEqual({
+      censusPopulation: 'no-providers',
+      coverageFloor: 'not-measured',
+    });
+  });
+});
 
 describe('the vacuous-ratio guard — an empty census is NOT-MEASURED, never 0% and never 100%', () => {
   it('reports verdict "not-measured" and a NULL pct when there are no surfaces', () => {
@@ -279,9 +310,7 @@ describe('the aggregates do not move with `limit` — behavioural, not by field 
     waived: false,
   });
 
-  const small = assembleCoverage(
-    input({ totals, fidelityRows, registrations, rows: [row('a')], rowTotal: 500 }),
-  );
+  const small = assembleCoverage(input({ totals, fidelityRows, registrations, rows: [row('a')], rowTotal: 500 }));
   const large = assembleCoverage(
     input({ totals, fidelityRows, registrations, rows: [row('a'), row('b'), row('c')], rowTotal: 500 }),
   );
@@ -307,15 +336,13 @@ describe('the aggregates do not move with `limit` — behavioural, not by field 
   });
 
   it('does not claim truncation when the page holds everything', () => {
-    const whole = assembleCoverage(
-      input({ totals, fidelityRows, registrations, rows: [row('a')], rowTotal: 1 }),
-    );
+    const whole = assembleCoverage(input({ totals, fidelityRows, registrations, rows: [row('a')], rowTotal: 1 }));
     expect(whole.truncatedByLimit).toBe(false);
   });
 });
 
 describe('rungs are judged by their FLAG, never by depth >= N', () => {
-  it('maps each rung to the view\'s own boolean column', () => {
+  it("maps each rung to the view's own boolean column", () => {
     // The view's comment is explicit that the rungs are not nested — an intent-tested
     // surface the fuzzer never ran against is L3 with no L2 — so `depth >= 2` would ask a
     // question the data cannot answer. This pins the mapping the SQL interpolates.

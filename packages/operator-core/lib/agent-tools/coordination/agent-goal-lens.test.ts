@@ -42,7 +42,12 @@ vi.mock('./log', () => ({
 // exercise the plan-item leg rather than the precedence rule above it.
 vi.mock('../../agent-facts/store', () => ({ foldFacts: async () => [] }));
 
-import { readGoalCandidates, resolveOwnerGoal } from './agent-goal-sources';
+import {
+  assessAgentGoal,
+  readGoalCandidates,
+  resolveOwnerGoal,
+  resolveOwnerGoalWithAssessment,
+} from './agent-goal-sources';
 
 const OWNER = 'su-lens-test';
 
@@ -212,10 +217,41 @@ describe('fail-soft is preserved', () => {
     const goal = await resolveOwnerGoal(OWNER, 'self');
     expect(goal?.ref).toBe('WI-37716');
     expect(goal?.leaseCold).toBe(false);
+
+    const resolved = await resolveOwnerGoalWithAssessment(OWNER, 'self');
+    expect(resolved.goal?.ref).toBe('WI-37716');
+    expect(resolved.assessment).toBeNull();
+    expect(resolved.diagnostics.map((d) => d.leg)).toContain('plan-items');
   });
 
   it('no PG fast path yields no goal rather than a throw', async () => {
     fastPathState.on = false;
     expect(await resolveOwnerGoal(OWNER, 'self')).toBeNull();
+    expect(await resolveOwnerGoalWithAssessment(OWNER, 'self')).toMatchObject({
+      goal: null,
+      assessment: null,
+      diagnostics: [{ leg: 'store', status: 'unavailable' }],
+    });
+  });
+});
+
+describe('agent.goal assessment truth table', () => {
+  const goal = (agreement: 'sole' | 'corroborated' | 'divergent', competing: string[] = []) => ({
+    ref: 'WI-1',
+    source: 'work-item' as const,
+    declaredAt: null,
+    corroboratedBy: agreement === 'corroborated' ? 'plan#P-001' : null,
+    competing,
+    agreement,
+    leaseCold: false,
+  });
+
+  it('covers every conclusion and withholds nothing-held when a contributing leg failed', () => {
+    expect(assessAgentGoal(null, [])).toBe('nothing-held');
+    expect(assessAgentGoal(goal('corroborated'), [])).toBe('corroborated');
+    expect(assessAgentGoal(goal('sole'), [])).toBe('sole');
+    expect(assessAgentGoal(goal('divergent'), [])).toBe('divergent');
+    expect(assessAgentGoal(goal('sole', ['WI-2']), [])).toBe('divergent');
+    expect(assessAgentGoal(null, [{ leg: 'work-items', status: 'unavailable', detail: 'pg down' }])).toBeNull();
   });
 });

@@ -1,10 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS } from './pipeline_position';
-import {
-  gitPipelinePosition,
-  type PipelinePosition,
-  type RuntimeOwnership,
-} from '../../git-pipeline-position';
+import { gitPipelinePosition, type PipelinePosition, type RuntimeOwnership } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
 /**
  * P-010: the handler reads the LIVE cell registry, which the tool barrel populates via
@@ -77,6 +73,14 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     targetSubject: 'subj',
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    assessments: {
+      pipelinePosition: 'live',
+      gateVerdict: 'passing-current',
+      gateCandidate: 'no-active-run',
+      gateOwnership: 'claimable',
+      deployedSha: 'executing',
+      mainBehindStaging: 'caught-up',
+    },
     deployedSha: 'sha0000001',
     verdictUnknown: [{ leg: 'gate.consecutiveReds', unknown: { code: 'resolver-failed', detail: 'fixture' } }],
     gate: {
@@ -96,17 +100,30 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
       deployOrigin: 'gate-green',
     },
     gitSyncLastStatus: 'synced',
-    runtimeGenerations: [{
-      unit: 'papercup-bg-host.service', label: 'bg-host', pid: 42,
-      startedAtMs: 1, codeAsOfMs: 1, codeAsOfSource: 'file-mtime',
-      runningYourCode: true, behindMin: null,
-      loadedIdentity: {
-        source: 'runtime-vintage', unit: 'bg-host', host: 'tower',
-        treeSha: 'abc123', bundleVersion: '0.0.15-alpha', buildTime: null,
-        reportedAt: '2026-08-13T10:00:01.000Z',
+    runtimeGenerations: [
+      {
+        unit: 'papercup-bg-host.service',
+        label: 'bg-host',
+        pid: 42,
+        startedAtMs: 1,
+        codeAsOfMs: 1,
+        codeAsOfSource: 'file-mtime',
+        runningYourCode: true,
+        behindMin: null,
+        loadedIdentity: {
+          source: 'runtime-vintage',
+          unit: 'bg-host',
+          host: 'tower',
+          treeSha: 'abc123',
+          bundleVersion: '0.0.15-alpha',
+          buildTime: null,
+          reportedAt: '2026-08-13T10:00:01.000Z',
+        },
+        loadedIdentityUnknown: null,
+        activationLever: 'restart',
+        unknownReason: null,
       },
-      loadedIdentityUnknown: null, activationLever: 'restart', unknownReason: null,
-    }],
+    ],
     gitSync: {
       status: 'skipped-locked',
       skippedPaths: [{ scope: 'superproject', path: PATH, owner: 'su-test', intent: 'editing the pipeline' }],
@@ -127,11 +144,15 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     expect(out.data.verdictUnknown).toEqual([
       { leg: 'gate.consecutiveReds', unknown: { code: 'resolver-failed', detail: 'fixture' } },
     ]);
-    expect(out.data.runtimeGenerations).toMatchObject([{
-      unit: 'papercup-bg-host.service',
-      loadedIdentity: { source: 'runtime-vintage', treeSha: 'abc123', host: 'tower' },
-      loadedIdentityUnknown: null,
-    }]);
+    expect(out.data.assessments).toEqual(oversized.assessments);
+    expect(projection.omittedFields).not.toContain('assessments');
+    expect(out.data.runtimeGenerations).toMatchObject([
+      {
+        unit: 'papercup-bg-host.service',
+        loadedIdentity: { source: 'runtime-vintage', treeSha: 'abc123', host: 'tower' },
+        loadedIdentityUnknown: null,
+      },
+    ]);
     expect(out.data.gitSync).toMatchObject({
       status: 'skipped-locked',
       skippedPaths: [{ scope: 'superproject', path: PATH, owner: 'su-test', intent: 'editing the pipeline' }],
@@ -213,10 +234,25 @@ describe('dev:pipeline_position multi-consumer paths (WI-5440)', () => {
         deployOrigin: 'gate-green',
       },
       gitSyncLastStatus: 'synced',
-      runtime: { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'bg-host activation text' },
+      runtime: {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation: 'bg-host activation text',
+      },
       runtimes: [
-        { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'bg-host activation text' },
-        { host: 'operator-release', releasePipelineApplies: true, restartTarget: 'staging', activation: 'release activation text' },
+        {
+          host: 'bg-host',
+          releasePipelineApplies: false,
+          restartTarget: 'bg-host',
+          activation: 'bg-host activation text',
+        },
+        {
+          host: 'operator-release',
+          releasePipelineApplies: true,
+          restartTarget: 'staging',
+          activation: 'release activation text',
+        },
       ],
       summary: 'stub summary',
       notes: [],
@@ -275,7 +311,12 @@ describe('dev:pipeline_position single runtime activation (EI-20242154394397741)
         deployOrigin: 'gate-green',
       },
       gitSyncLastStatus: 'synced',
-      runtime: { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'bg-host activation text' },
+      runtime: {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation: 'bg-host activation text',
+      },
       summary: 'stub summary',
       notes: [],
     } as unknown as PipelinePosition;
@@ -476,7 +517,15 @@ describe('dev:pipeline_position routes to the state plane (P-002)', () => {
  */
 describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
   type Out = { data: Record<string, unknown> };
-  type Plane = { note: string; cells: Array<{ path: string; cell: string; reread?: { args: { cell: string; as?: string } }; unreadable?: { needs: string } }> };
+  type Plane = {
+    note: string;
+    cells: Array<{
+      path: string;
+      cell: string;
+      reread?: { args: { cell: string; as?: string } };
+      unreadable?: { needs: string };
+    }>;
+  };
 
   const PATH = 'apps/operator/app/x.ts';
 
@@ -532,7 +581,12 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
   };
 
   const single = { host: 'operator-release', releasePipelineApplies: true, restartTarget: 'dev', activation: 'deploy' };
-  const bgHost = { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'restart bg-host' };
+  const bgHost = {
+    host: 'bg-host',
+    releasePipelineApplies: false,
+    restartTarget: 'bg-host',
+    activation: 'restart bg-host',
+  };
 
   const planeOf = (out: Out) => out.data.plane as Plane | undefined;
 
@@ -559,8 +613,12 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
     });
   }
 
-  it('names the cell for each volatile value, addressed to the CALLER\'S path', async () => {
-    vi.mocked(gitPipelinePosition).mockResolvedValue({ ...full, runtime: single, runtimes: [single] } as unknown as PipelinePosition);
+  it("names the cell for each volatile value, addressed to the CALLER'S path", async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...full,
+      runtime: single,
+      runtimes: [single],
+    } as unknown as PipelinePosition);
     const plane = planeOf((await tool.handler({ path: PATH } as never, CTX as never)) as Out)!;
     const byCell = new Map(plane.cells.map((c) => [c.cell, c]));
 

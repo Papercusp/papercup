@@ -12,16 +12,40 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getHostSnapshot, type HostSnapshot } from '../../host-snapshot';
-import {
-  evaluateMemoryPressure,
-  readLatestPerfSignals,
-  type PerfSignalsV1,
-} from '../../system-health/perf-budgets';
+import { evaluateMemoryPressure, readLatestPerfSignals, type PerfSignalsV1 } from '../../system-health/perf-budgets';
 
 export interface HostMemoryPressureDeps {
   nowMs?: number;
   readSignals?: () => Promise<PerfSignalsV1 | null>;
   readHost?: () => HostSnapshot;
+}
+
+export const HOST_MEMORY_FREE_CAPACITY_WARN_PCT = 10;
+
+export type HostMemoryPressureAssessment = 'critical' | 'warning' | 'stable-low-free' | 'stable';
+
+/** PURE. Keep PSI pressure and free-memory capacity as separate inputs. */
+export function assessHostMemoryPressure(input: {
+  pressure: 'ok' | 'warn' | 'crit' | null;
+  stale: boolean;
+  unknownCount: number;
+  memFreePct: number | null;
+}): HostMemoryPressureAssessment | null {
+  if (input.pressure === null || input.stale || input.unknownCount > 0) return null;
+  switch (input.pressure) {
+    case 'crit':
+      return 'critical';
+    case 'warn':
+      return 'warning';
+    case 'ok':
+      return input.memFreePct !== null && input.memFreePct < HOST_MEMORY_FREE_CAPACITY_WARN_PCT
+        ? 'stable-low-free'
+        : 'stable';
+    default: {
+      const exhaustive: never = input.pressure;
+      return exhaustive;
+    }
+  }
 }
 
 /** Build the exact plain payload projected by the tool and walked by `readCell`. */
@@ -31,16 +55,24 @@ export async function buildHostMemoryPressurePayload(deps: HostMemoryPressureDep
     (deps.readSignals ?? readLatestPerfSignals)(),
     Promise.resolve((deps.readHost ?? getHostSnapshot)()),
   ]);
+  const memory = evaluateMemoryPressure(signals, nowMs);
+  const memFreePct = host.memFreePct ?? null;
   return {
     ok: true,
-    memory: evaluateMemoryPressure(signals, nowMs),
+    assessment: assessHostMemoryPressure({
+      pressure: memory.pressure,
+      stale: memory.stale,
+      unknownCount: memory.unknown.length,
+      memFreePct,
+    }),
+    memory,
     /**
      * Independent falsifier: `freemem()/totalmem()` shares no input with the
      * periodic PSI capture. Keys are always present; null means unmeasured, never 0.
      */
     host: {
       measuredAt: host.now,
-      memFreePct: host.memFreePct ?? null,
+      memFreePct,
       memTotalGb: host.memTotalGb ?? null,
       psiMemSome60: host.psiMemSome60 ?? null,
     },

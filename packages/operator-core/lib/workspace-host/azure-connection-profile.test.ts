@@ -96,6 +96,7 @@ describe('Azure workspace-host connection-profile adapter', () => {
     );
     expect(master.args.at(-1)).toBe(profile.target);
     expect(master.args.join(' ')).not.toMatch(/StrictHostKeyChecking=no|UserKnownHostsFile=/);
+    if (!plan.providerTunnel) throw new Error('expected Azure provider tunnel command');
     expect(plan.providerTunnel.args).not.toContain('ssh');
   });
 

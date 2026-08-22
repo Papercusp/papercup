@@ -263,7 +263,7 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
   const portArgs = spec.port === undefined ? [] : ['-p', String(requirePort(spec.port, 'OpenSSH port'))];
   const hostKeyAlias =
     spec.hostKeyAlias === undefined ? undefined : requireArg(spec.hostKeyAlias, 'OpenSSH HostKeyAlias');
-  if (hostKeyAlias?.startsWith('-') || /\s/.test(hostKeyAlias)) {
+  if (hostKeyAlias !== undefined && (hostKeyAlias.startsWith('-') || /\s/.test(hostKeyAlias))) {
     throw new Error('OpenSSH HostKeyAlias must be one token and may not begin with a dash');
   }
   const identityFile =

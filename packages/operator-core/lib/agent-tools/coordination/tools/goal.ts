@@ -25,14 +25,14 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
-import { resolveOwnerGoal, type GoalLens } from '../agent-goal-sources';
+import { resolveOwnerGoalWithAssessment, type GoalLens } from '../agent-goal-sources';
 
 export default defineTool({
   name: 'coord:goal',
   description:
     "An agent's CURRENT goal as a resolvable ref (a work-item, a plan item, or a fleet mission) — auto-derived from what they hold, never prose they typed. Omit `ownerId` for your own. Returns { goal: null } when they hold nothing; `goal.agreement` says whether the underlying claims corroborate ('corroborated'), stand alone ('sole'), or disagree ('divergent'), and `goal.competing` lists every other ref they hold. Answers what they are doing NOW — for what a past tool call was made under, read the stamp via sessions:timeline.",
   guidance: {
-    when: "Before you wait on, interrupt, or duplicate a peer — read what they are actually working toward. Also when a claim, lock or release is blocked on someone: their goal ref tells you whether to wait or go elsewhere, and you can query the ref itself to see if it is still open.",
+    when: 'Before you wait on, interrupt, or duplicate a peer — read what they are actually working toward. Also when a claim, lock or release is blocked on someone: their goal ref tells you whether to wait or go elsewhere, and you can query the ref itself to see if it is still open.',
     notWhen:
       "The historical goal behind a past tool call — that is the P-009 stamp via sessions:timeline, not this. A holder's goal on a surface that already names them (a lock block, a claim refusal) — those already carry it. Prose about what someone is doing — this returns refs.",
     chaining:
@@ -43,11 +43,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    ownerId: z
-      .string()
-      .max(200)
-      .optional()
-      .describe('The agent to ask about. Omit for your own goal.'),
+    ownerId: z.string().max(200).optional().describe('The agent to ask about. Omit for your own goal.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -62,7 +58,8 @@ export default defineTool({
      * lapsed claim of theirs may genuinely be history.
      */
     const lens: GoalLens = ownerId === identity.ownerId ? 'self' : 'peer';
-    const goal = await resolveOwnerGoal(ownerId, lens);
+    const resolved = await resolveOwnerGoalWithAssessment(ownerId, lens);
+    const { goal, assessment, diagnostics } = resolved;
 
     return {
       content: [
@@ -71,6 +68,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             ownerId,
+            assessment,
             /**
              * ⚠ HOISTED TO THE TOP LEVEL DELIBERATELY — this is the cell's
              * declared `changeSignal.path`, and nesting it would break the read.
@@ -90,7 +88,7 @@ export default defineTool({
              * Named to match `ClaimHolder.goalUnknown`, which already draws this
              * distinction for the reader-independent projection.
              */
-            goalUnknown: goal ? null : 'nothing-held',
+            goalUnknown: goal || diagnostics.length > 0 ? null : 'nothing-held',
             /**
              * ⚠ HOISTED FOR THE SAME REASON `goalRef` IS, and it was missed the
              * first time (P-011, agent-state-plane-verification-2026-07-27). This
@@ -109,6 +107,8 @@ export default defineTool({
              * `summary` already point.
              */
             goalAgreement: goal?.agreement ?? null,
+            goalCompeting: goal?.competing ?? [],
+            goalResolverDiagnostics: diagnostics,
             /**
              * Hoisted for the same reason `goalRef` and `goalAgreement` are: it is
              * ACTIONABLE ("re-claim before you edit"), and a reader who branches on
@@ -124,13 +124,16 @@ export default defineTool({
             goal,
             // Prose for a human-facing surface. `goal`/`goalRef` stay branchable
             // because prose cannot be branched on.
-            summary: goal
-              ? `${ownerId} → ${goal.ref} (${goal.source}, ${goal.agreement})${
-                  goal.leaseCold
-                    ? ' — ⚠ lease COLD: the plan-item claim behind this goal has passed its TTL. The work is still yours (nobody else took the row), but the fence is gone — re-claim before editing.'
-                    : ''
-                }`
-              : `${ownerId} holds no work-item, plan-item claim or fleet mission, so there is no goal to report. That is an honest "nothing declared", not a failed read.`,
+            summary:
+              diagnostics.length > 0
+                ? `${ownerId}'s goal could not be fully verified: ${diagnostics.map((d) => `${d.leg}: ${d.detail}`).join('; ')}. Any partial raw goal remains visible, but its assessment is unavailable.`
+                : goal
+                  ? `${ownerId} → ${goal.ref} (${goal.source}, ${goal.agreement})${
+                      goal.leaseCold
+                        ? ' — ⚠ lease COLD: the plan-item claim behind this goal has passed its TTL. The work is still yours (nobody else took the row), but the fence is gone — re-claim before editing.'
+                        : ''
+                    }`
+                  : `${ownerId} holds no work-item, plan-item claim or fleet mission, so there is no goal to report. That is an honest "nothing declared", not a failed read.`,
           }),
         },
       ],

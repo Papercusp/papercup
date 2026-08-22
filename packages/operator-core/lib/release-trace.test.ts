@@ -31,6 +31,17 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     targetSubject: 'test',
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    // P-002 made the resolver-owned assessments REQUIRED. This lineage-only fixture
+    // does not probe a serving process or gate candidate, so those conclusions stay
+    // unavailable; the gate, deployed-sha, and main/staging readings are fully measured.
+    assessments: {
+      pipelinePosition: null,
+      gateVerdict: 'passing-current',
+      gateCandidate: null,
+      gateOwnership: null,
+      deployedSha: 'process-unverified',
+      mainBehindStaging: 'caught-up',
+    },
     positionsUnknown: [],
     // WI-6646 made these REQUIRED on PipelinePosition. Both values are semantically
     // correct here rather than compiler-silencers: this fixture names no `marker`, so

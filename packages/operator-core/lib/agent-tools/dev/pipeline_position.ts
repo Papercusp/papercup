@@ -48,15 +48,16 @@ function clipPipelineText(value: unknown, maxChars: number): unknown {
   return value.slice(0, Math.max(0, maxChars - suffix.length)) + suffix;
 }
 
-function compactPipelineValue(value: unknown, opts: { textChars: number; arrayLimit: number; depth?: number }): unknown {
+function compactPipelineValue(
+  value: unknown,
+  opts: { textChars: number; arrayLimit: number; depth?: number },
+): unknown {
   const depth = opts.depth ?? 0;
   if (typeof value === 'string') return clipPipelineText(value, opts.textChars);
   if (value === null || typeof value !== 'object') return value;
   if (depth >= 4) return '[nested detail omitted; use fullRead]';
   if (Array.isArray(value)) {
-    return value
-      .slice(0, opts.arrayLimit)
-      .map((entry) => compactPipelineValue(entry, { ...opts, depth: depth + 1 }));
+    return value.slice(0, opts.arrayLimit).map((entry) => compactPipelineValue(entry, { ...opts, depth: depth + 1 }));
   }
   const record = value as JsonRecord;
   const out: JsonRecord = {};
@@ -66,7 +67,11 @@ function compactPipelineValue(value: unknown, opts: { textChars: number; arrayLi
   return out;
 }
 
-function pickPipelineFields(value: unknown, fields: readonly string[], opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+function pickPipelineFields(
+  value: unknown,
+  fields: readonly string[],
+  opts: { textChars: number; arrayLimit: number },
+): JsonRecord | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const source = value as JsonRecord;
   const out: JsonRecord = {};
@@ -78,12 +83,25 @@ function pickPipelineFields(value: unknown, fields: readonly string[], opts: { t
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function compactPipelineOwnership(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+function compactPipelineOwnership(
+  value: unknown,
+  opts: { textChars: number; arrayLimit: number },
+): JsonRecord | undefined {
   // `thread` is intentionally excluded: it is the unbounded advisory payload that
   // caused this door to overflow. The claim/liveness fields are the actual verdict.
   return pickPipelineFields(
     value,
-    ['eventKey', 'workItem', 'claimState', 'unknown', 'takenBy', 'takenAt', 'expiresAt', 'holderSessionState', 'duplicates'],
+    [
+      'eventKey',
+      'workItem',
+      'claimState',
+      'unknown',
+      'takenBy',
+      'takenAt',
+      'expiresAt',
+      'holderSessionState',
+      'duplicates',
+    ],
     opts,
   );
 }
@@ -91,23 +109,45 @@ function compactPipelineOwnership(value: unknown, opts: { textChars: number; arr
 function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const source = value as JsonRecord;
-  const gate = pickPipelineFields(
-    source,
-    [
-      'stalled', 'consecutiveReds', 'lastGreenAtMs', 'fireStale', 'fireStaleReason',
-      'verdictStale', 'verdictStaleReason', 'verdictStaleReasonCode', 'candidateAgeMs',
-      'commitsBehindTip', 'observedCandidate', 'inconclusive',
-    ],
-    opts,
-  ) ?? {};
+  const gate =
+    pickPipelineFields(
+      source,
+      [
+        'stalled',
+        'consecutiveReds',
+        'lastGreenAtMs',
+        'fireStale',
+        'fireStaleReason',
+        'verdictStale',
+        'verdictStaleReason',
+        'verdictStaleReasonCode',
+        'candidateAgeMs',
+        'commitsBehindTip',
+        'observedCandidate',
+        'inconclusive',
+      ],
+      opts,
+    ) ?? {};
   const ownership = compactPipelineOwnership(source.ownership, opts);
   if (ownership) gate.ownership = ownership;
   const inFlight = pickPipelineFields(
     source.checkpointRunInFlight,
     [
-      'active', 'activeSource', 'candidate', 'candidateSource', 'initialCandidate',
-      'refireObserved', 'inRetriageWindow', 'fromCandidate', 'refireAttempt',
-      'maxRefires', 'totalRefires', 'absoluteCeiling', 'startedAtMs', 'elapsedSec', 'asOfAgeMs',
+      'active',
+      'activeSource',
+      'candidate',
+      'candidateSource',
+      'initialCandidate',
+      'refireObserved',
+      'inRetriageWindow',
+      'fromCandidate',
+      'refireAttempt',
+      'maxRefires',
+      'totalRefires',
+      'absoluteCeiling',
+      'startedAtMs',
+      'elapsedSec',
+      'asOfAgeMs',
     ],
     opts,
   );
@@ -115,7 +155,10 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
   return Object.keys(gate).length > 0 ? gate : undefined;
 }
 
-function compactPipelineRuntime(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+function compactPipelineRuntime(
+  value: unknown,
+  opts: { textChars: number; arrayLimit: number },
+): JsonRecord | undefined {
   return pickPipelineFields(value, ['host', 'releasePipelineApplies', 'restartTarget', 'activation'], opts);
 }
 
@@ -131,10 +174,7 @@ function compactPipelineRuntime(value: unknown, opts: { textChars: number; array
  * while wildcard/unknown callers still receive the subject without an invented
  * mismatch claim.
  */
-function pipelineSubjectStamp(
-  ctx: { harnessSlug?: string | null },
-  integrationRoot: string,
-) {
+function pipelineSubjectStamp(ctx: { harnessSlug?: string | null }, integrationRoot: string) {
   const home = canonicalHarnessSlug(operatorHomeHarnessSlug());
   const subject = {
     harness: home,
@@ -162,14 +202,31 @@ function pipelineSubjectStamp(
   };
 }
 
-function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opts: { textChars: number; arrayLimit: number }): JsonRecord {
+function compactPipelineResult(
+  result: PipelinePosition,
+  extras: JsonRecord,
+  opts: { textChars: number; arrayLimit: number },
+): JsonRecord {
   const out: JsonRecord = {};
   const source = result as unknown as JsonRecord;
 
   for (const field of [
-    'input', 'submodule', 'submodulePin', 'targetSha', 'targetShortSha', 'targetSubject',
-    'dirtyUncommitted', 'positions', 'positionsUnknown', 'positionsMarker', 'positionsNewerCommit',
-    'deployedSha', 'verdictUnknown', 'gitSyncLastStatus', 'blockedOn',
+    'input',
+    'submodule',
+    'submodulePin',
+    'targetSha',
+    'targetShortSha',
+    'targetSubject',
+    'dirtyUncommitted',
+    'positions',
+    'assessments',
+    'positionsUnknown',
+    'positionsMarker',
+    'positionsNewerCommit',
+    'deployedSha',
+    'verdictUnknown',
+    'gitSyncLastStatus',
+    'blockedOn',
   ]) {
     if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
   }
@@ -177,9 +234,49 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
   const gate = compactPipelineGate(source.gate, opts);
   if (gate) out.gate = gate;
   for (const [field, fields] of [
-    ['verdictProvenance', ['lastGreenSha', 'lastGreenShortSha', 'lastGreenAgeMs', 'mainFastForwarded', 'mainBehindStaging', 'stagingBufferAgeMs', 'deployedBehindGreenPin', 'deployOrigin']],
-    ['serving', ['host', 'unit', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'startedSinceCodeChange', 'behindMin', 'restartLever', 'restartSupersededBy', 'unknownReason']],
-    ['changeInCandidate', ['judgingSha', 'judgingShaSource', 'judgingContainsPath', 'nextCandidateSha', 'nextContainsPath', 'missingReason', 'markerJudging', 'markerNext', 'detail']],
+    [
+      'verdictProvenance',
+      [
+        'lastGreenSha',
+        'lastGreenShortSha',
+        'lastGreenAgeMs',
+        'mainFastForwarded',
+        'mainBehindStaging',
+        'stagingBufferAgeMs',
+        'deployedBehindGreenPin',
+        'deployOrigin',
+      ],
+    ],
+    [
+      'serving',
+      [
+        'host',
+        'unit',
+        'pid',
+        'startedAtMs',
+        'codeAsOfMs',
+        'codeAsOfSource',
+        'startedSinceCodeChange',
+        'behindMin',
+        'restartLever',
+        'restartSupersededBy',
+        'unknownReason',
+      ],
+    ],
+    [
+      'changeInCandidate',
+      [
+        'judgingSha',
+        'judgingShaSource',
+        'judgingContainsPath',
+        'nextCandidateSha',
+        'nextContainsPath',
+        'missingReason',
+        'markerJudging',
+        'markerNext',
+        'detail',
+      ],
+    ],
     ['sweepExposure', ['exposed', 'dirtyPathCount', 'dirtyPathSample', 'nextSweepInMs', 'detail']],
   ] as const) {
     const picked = pickPipelineFields(source[field], fields, opts);
@@ -188,7 +285,19 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
 
   const gitSync = pickPipelineFields(
     source.gitSync,
-    ['status', 'lastSyncedAtMs', 'syncAgeMs', 'consecutiveErrorTicks', 'skippedPaths', 'pushedRepos', 'mergedRepos', 'conflicts', 'errors', 'pushMode', 'ownHeadPublish'],
+    [
+      'status',
+      'lastSyncedAtMs',
+      'syncAgeMs',
+      'consecutiveErrorTicks',
+      'skippedPaths',
+      'pushedRepos',
+      'mergedRepos',
+      'conflicts',
+      'errors',
+      'pushMode',
+      'ownHeadPublish',
+    ],
     opts,
   );
   if (gitSync) out.gitSync = gitSync;
@@ -201,7 +310,27 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
   if (Array.isArray(source.runtimeGenerations)) {
     out.runtimeGenerations = source.runtimeGenerations
       .slice(0, opts.arrayLimit)
-      .map((entry) => pickPipelineFields(entry, ['unit', 'label', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'runningYourCode', 'behindMin', 'loadedIdentity', 'loadedIdentityUnknown', 'activationLever', 'unknownReason'], opts) ?? {});
+      .map(
+        (entry) =>
+          pickPipelineFields(
+            entry,
+            [
+              'unit',
+              'label',
+              'pid',
+              'startedAtMs',
+              'codeAsOfMs',
+              'codeAsOfSource',
+              'runningYourCode',
+              'behindMin',
+              'loadedIdentity',
+              'loadedIdentityUnknown',
+              'activationLever',
+              'unknownReason',
+            ],
+            opts,
+          ) ?? {},
+      );
   }
   if (Array.isArray(source.stages)) {
     out.stages = source.stages
@@ -218,18 +347,43 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
   return out;
 }
 
-function minimalPipelineResult(result: PipelinePosition, extras: JsonRecord, opts: { textChars: number; arrayLimit: number }): JsonRecord {
+function minimalPipelineResult(
+  result: PipelinePosition,
+  extras: JsonRecord,
+  opts: { textChars: number; arrayLimit: number },
+): JsonRecord {
   const source = result as unknown as JsonRecord;
   const out: JsonRecord = {};
-  for (const field of ['input', 'targetSha', 'targetShortSha', 'dirtyUncommitted', 'positions', 'deployedSha', 'verdictUnknown', 'blockedOn']) {
+  for (const field of [
+    'input',
+    'targetSha',
+    'targetShortSha',
+    'dirtyUncommitted',
+    'positions',
+    'assessments',
+    'deployedSha',
+    'verdictUnknown',
+    'blockedOn',
+  ]) {
     if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
   }
   const gate = compactPipelineGate(source.gate, opts);
   if (gate) out.gate = gate;
   for (const field of ['verdictProvenance', 'changeInCandidate']) {
-    const picked = pickPipelineFields(source[field], field === 'verdictProvenance'
-      ? ['lastGreenShortSha', 'mainFastForwarded', 'mainBehindStaging', 'deployedBehindGreenPin', 'deployOrigin']
-      : ['judgingSha', 'judgingShaSource', 'judgingContainsPath', 'nextCandidateSha', 'nextContainsPath', 'missingReason'], opts);
+    const picked = pickPipelineFields(
+      source[field],
+      field === 'verdictProvenance'
+        ? ['lastGreenShortSha', 'mainFastForwarded', 'mainBehindStaging', 'deployedBehindGreenPin', 'deployOrigin']
+        : [
+            'judgingSha',
+            'judgingShaSource',
+            'judgingContainsPath',
+            'nextCandidateSha',
+            'nextContainsPath',
+            'missingReason',
+          ],
+      opts,
+    );
     if (picked) out[field] = picked;
   }
   for (const field of ['nextAction', 'summary']) {
@@ -269,10 +423,16 @@ export function shapePipelinePosition(
   if (opts.unbounded) return original;
   if (originalChars <= PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) return original;
 
-  const omittedFields = Object.keys(result as unknown as JsonRecord).filter((field) => !(field in compactPipelineResult(result, extras, {
-    textChars: PIPELINE_POSITION_TEXT_CHARS,
-    arrayLimit: PIPELINE_POSITION_ARRAY_LIMIT,
-  })));
+  const omittedFields = Object.keys(result as unknown as JsonRecord).filter(
+    (field) =>
+      !(
+        field in
+        compactPipelineResult(result, extras, {
+          textChars: PIPELINE_POSITION_TEXT_CHARS,
+          arrayLimit: PIPELINE_POSITION_ARRAY_LIMIT,
+        })
+      ),
+  );
   if ('gate' in (result as unknown as JsonRecord) && !omittedFields.includes('gate.ownership.thread')) {
     omittedFields.push('gate.ownership.thread');
   }
@@ -300,21 +460,27 @@ export function shapePipelinePosition(
     return shaped;
   };
 
-  let shaped = withProjection(compactPipelineResult(result, extras, {
-    textChars: PIPELINE_POSITION_TEXT_CHARS,
-    arrayLimit: PIPELINE_POSITION_ARRAY_LIMIT,
-  }));
+  let shaped = withProjection(
+    compactPipelineResult(result, extras, {
+      textChars: PIPELINE_POSITION_TEXT_CHARS,
+      arrayLimit: PIPELINE_POSITION_ARRAY_LIMIT,
+    }),
+  );
   if (serializedChars(shaped) > PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) {
-    shaped = withProjection(compactPipelineResult(result, extras, {
-      textChars: PIPELINE_POSITION_TIGHT_TEXT_CHARS,
-      arrayLimit: PIPELINE_POSITION_TIGHT_ARRAY_LIMIT,
-    }));
+    shaped = withProjection(
+      compactPipelineResult(result, extras, {
+        textChars: PIPELINE_POSITION_TIGHT_TEXT_CHARS,
+        arrayLimit: PIPELINE_POSITION_TIGHT_ARRAY_LIMIT,
+      }),
+    );
   }
   if (serializedChars(shaped) > PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) {
-    shaped = withProjection(minimalPipelineResult(result, extras, {
-      textChars: PIPELINE_POSITION_TIGHT_TEXT_CHARS,
-      arrayLimit: PIPELINE_POSITION_TIGHT_ARRAY_LIMIT,
-    }));
+    shaped = withProjection(
+      minimalPipelineResult(result, extras, {
+        textChars: PIPELINE_POSITION_TIGHT_TEXT_CHARS,
+        arrayLimit: PIPELINE_POSITION_TIGHT_ARRAY_LIMIT,
+      }),
+    );
   }
   return shaped;
 }
@@ -495,10 +661,7 @@ export default defineTool({
      * not depend on a path.
      */
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker });
-    const subjectStamp = pipelineSubjectStamp(
-      ctx as { harnessSlug?: string | null },
-      result.repoRoot,
-    );
+    const subjectStamp = pipelineSubjectStamp(ctx as { harnessSlug?: string | null }, result.repoRoot);
 
     // P-010. Computed ONCE and spread into every return below — this handler has three
     // exits (multi-consumer, non-release runtime, default), and stamping only the default
@@ -533,28 +696,40 @@ export default defineTool({
     if (runtimes && runtimes.length > 1) {
       const anyReleaseCarried = runtimes.some((r) => r.releasePipelineApplies);
       return {
-        data: shapePipelinePosition(result, {
-          ...subjectStamp,
-          ...(plane ? { plane } : {}),
-          activations: runtimes.map((r) => ({
-            hint: r.activation,
-            host: r.host,
-            releasePipelineApplies: r.releasePipelineApplies,
-            ...(r.restartTarget
-              ? { tool: 'dev:restart', args: { target: r.restartTarget, confirm: true, authorize: true, reason: 'load the edit' } }
-              : {}),
-          })),
-          note: anyReleaseCarried
-            ? `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
-                .map((r) => r.host)
-                .join(' + ')}) — at least one of them (${runtimes
-                .filter((r) => r.releasePipelineApplies)
-                .map((r) => r.host)
-                .join(', ')}) genuinely needs the deploy pipeline, so do NOT blanket-skip deploy:await; check each entry in \`activations\` against which consumer you actually care about before picking a route.`
-            : `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
-                .map((r) => r.host)
-                .join(' + ')}), none carried by the release pipeline — do NOT deploy:await; pick the restart matching the consumer you care about from \`activations\`.`,
-        }, rereadArgs, shapeOpts),
+        data: shapePipelinePosition(
+          result,
+          {
+            ...subjectStamp,
+            ...(plane ? { plane } : {}),
+            activations: runtimes.map((r) => ({
+              hint: r.activation,
+              host: r.host,
+              releasePipelineApplies: r.releasePipelineApplies,
+              ...(r.restartTarget
+                ? {
+                    tool: 'dev:restart',
+                    args: { target: r.restartTarget, confirm: true, authorize: true, reason: 'load the edit' },
+                  }
+                : {}),
+            })),
+            note: anyReleaseCarried
+              ? `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
+                  .map((r) => r.host)
+                  .join(' + ')}) — at least one of them (${runtimes
+                  .filter((r) => r.releasePipelineApplies)
+                  .map((r) => r.host)
+                  .join(
+                    ', ',
+                  )}) genuinely needs the deploy pipeline, so do NOT blanket-skip deploy:await; check each entry in \`activations\` against which consumer you actually care about before picking a route.`
+              : `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
+                  .map((r) => r.host)
+                  .join(
+                    ' + ',
+                  )}), none carried by the release pipeline — do NOT deploy:await; pick the restart matching the consumer you care about from \`activations\`.`,
+          },
+          rereadArgs,
+          shapeOpts,
+        ),
       };
     }
 
@@ -566,22 +741,27 @@ export default defineTool({
     const runtime = result.runtime;
     if (runtime && !runtime.releasePipelineApplies) {
       return {
-        data: shapePipelinePosition(result, {
-          ...subjectStamp,
-          ...(plane ? { plane } : {}),
-          activation: {
-            hint: runtime.activation,
-            host: runtime.host,
-            releasePipelineApplies: false,
-            ...(runtime.restartTarget
-              ? {
-                  tool: 'dev:restart',
-                  args: { target: runtime.restartTarget, confirm: true, authorize: true, reason: 'load the edit' },
-                }
-              : {}),
-            note: 'Do NOT deploy:await this path — the process that runs it never reads the release checkout. The `positions.deployed` flag below is about the operator, not about this code being live.',
+        data: shapePipelinePosition(
+          result,
+          {
+            ...subjectStamp,
+            ...(plane ? { plane } : {}),
+            activation: {
+              hint: runtime.activation,
+              host: runtime.host,
+              releasePipelineApplies: false,
+              ...(runtime.restartTarget
+                ? {
+                    tool: 'dev:restart',
+                    args: { target: runtime.restartTarget, confirm: true, authorize: true, reason: 'load the edit' },
+                  }
+                : {}),
+              note: 'Do NOT deploy:await this path — the process that runs it never reads the release checkout. The `positions.deployed` flag below is about the operator, not about this code being live.',
+            },
           },
-        }, rereadArgs, shapeOpts),
+          rereadArgs,
+          shapeOpts,
+        ),
       };
     }
 
@@ -637,11 +817,16 @@ export default defineTool({
             sugarArgs: { timeout_sec: 600 },
           };
     return {
-      data: shapePipelinePosition(result, {
-        ...subjectStamp,
-        ...(plane ? { plane } : {}),
-        ...(awaitable ? { awaitable } : {}),
-      }, rereadArgs, shapeOpts),
+      data: shapePipelinePosition(
+        result,
+        {
+          ...subjectStamp,
+          ...(plane ? { plane } : {}),
+          ...(awaitable ? { awaitable } : {}),
+        },
+        rereadArgs,
+        shapeOpts,
+      ),
     };
   },
 });

@@ -95,6 +95,34 @@ export async function readGoalCandidates(ownerId: string, lens: GoalLens): Promi
   return (await readGoalLegs(ownerId, lens)).candidates;
 }
 
+export type AgentGoalAssessment = 'nothing-held' | 'corroborated' | 'sole' | 'divergent';
+export type GoalResolverLeg = 'store' | 'work-items' | 'plan-items' | 'fleet' | 'override' | 'links' | 'resolution';
+export interface GoalResolverDiagnostic {
+  leg: GoalResolverLeg;
+  status: 'unavailable';
+  detail: string;
+}
+
+/** PURE. A partial goal remains visible, but never earns a verified assessment. */
+export function assessAgentGoal(
+  goal: ResolvedGoal | null,
+  diagnostics: readonly GoalResolverDiagnostic[],
+): AgentGoalAssessment | null {
+  if (diagnostics.length > 0) return null;
+  if (!goal) return 'nothing-held';
+  if (goal.agreement === 'divergent' || goal.competing.length > 0) return 'divergent';
+  switch (goal.agreement) {
+    case 'corroborated':
+      return 'corroborated';
+    case 'sole':
+      return 'sole';
+    default: {
+      const exhaustive: never = goal.agreement;
+      return exhaustive;
+    }
+  }
+}
+
 /**
  * WHOSE GOAL IS BEING READ — and it is a REQUIRED argument on every seam below,
  * deliberately.
@@ -125,26 +153,58 @@ export type GoalLens = 'self' | 'peer';
 async function readGoalLegs(
   ownerId: string,
   lens: GoalLens,
-): Promise<{ candidates: GoalCandidates; planItems: readonly HeldPlanItemRow[] }> {
+): Promise<{
+  candidates: GoalCandidates;
+  planItems: readonly HeldPlanItemRow[];
+  diagnostics: GoalResolverDiagnostic[];
+}> {
   const owner = (ownerId ?? '').trim();
-  if (!owner || !coordHasPgFastPath()) return { candidates: {}, planItems: [] };
+  if (!owner || !coordHasPgFastPath()) {
+    return {
+      candidates: {},
+      planItems: [],
+      diagnostics: [
+        {
+          leg: 'store',
+          status: 'unavailable',
+          detail: owner ? 'coordination Postgres fast path is unavailable' : 'owner id is empty',
+        },
+      ],
+    };
+  }
   const sql = coordSql();
   const ws = coordWorkspaceId();
 
-  const settle = async <T>(f: () => Promise<T>, fallback: T): Promise<T> => {
+  const settle = async <T>(
+    leg: GoalResolverLeg,
+    f: () => Promise<T>,
+    fallback: T,
+  ): Promise<{ value: T; diagnostic: GoalResolverDiagnostic | null }> => {
     try {
-      return await f();
-    } catch {
-      return fallback;
+      return { value: await f(), diagnostic: null };
+    } catch (err) {
+      return {
+        value: fallback,
+        diagnostic: {
+          leg,
+          status: 'unavailable',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+      };
     }
   };
 
-  const [workItems, planItems, fleet, override] = await Promise.all([
-    settle(() => readHeldWorkItems(sql, ws, owner), [] as HeldWorkItem[]),
-    settle(() => readHeldPlanItems(sql, ws, owner, lens), [] as HeldPlanItemRow[]),
-    settle(() => readFleetMission(sql, ws, owner), null as HeldFleet | null),
-    settle(() => readGoalOverride(owner), null as GoalCandidates['override']),
+  const [workItemsRead, planItemsRead, fleetRead, overrideRead] = await Promise.all([
+    settle('work-items', () => readHeldWorkItems(sql, ws, owner), [] as HeldWorkItem[]),
+    settle('plan-items', () => readHeldPlanItems(sql, ws, owner, lens), [] as HeldPlanItemRow[]),
+    settle('fleet', () => readFleetMission(sql, ws, owner), null as HeldFleet | null),
+    settle('override', () => readGoalOverride(owner), null as GoalCandidates['override']),
   ]);
+  const workItems = workItemsRead.value;
+  const planItems = planItemsRead.value;
+  const fleet = fleetRead.value;
+  const override = overrideRead.value;
+  const linksRead = await settle('links', () => readImplementsLinks(sql, ws, workItems, planItems), [] as GoalLink[]);
 
   return {
     candidates: {
@@ -152,12 +212,16 @@ async function readGoalLegs(
       workItems,
       planItems,
       fleet,
-      links: await settle(
-        () => readImplementsLinks(sql, ws, workItems, planItems),
-        [] as GoalLink[],
-      ),
+      links: linksRead.value,
     },
     planItems,
+    diagnostics: [
+      workItemsRead.diagnostic,
+      planItemsRead.diagnostic,
+      fleetRead.diagnostic,
+      overrideRead.diagnostic,
+      linksRead.diagnostic,
+    ].filter((d): d is GoalResolverDiagnostic => d !== null),
   };
 }
 
@@ -195,12 +259,7 @@ async function readHeldWorkItems(sql: Sql, ws: string, owner: string): Promise<H
  * a fix for a vanishing goal into a new way to lose it. Valid leases sort first, so
  * the cap sheds cold rows before warm ones.
  */
-async function readHeldPlanItems(
-  sql: Sql,
-  ws: string,
-  owner: string,
-  lens: GoalLens,
-): Promise<HeldPlanItemRow[]> {
+async function readHeldPlanItems(sql: Sql, ws: string, owner: string, lens: GoalLens): Promise<HeldPlanItemRow[]> {
   const includeLapsed = lens === 'self';
   const rows = await sql<
     {
@@ -308,9 +367,7 @@ async function readImplementsLinks(
        AND dst_kind = 'plan_item'
        AND rel = 'implements'
        AND src_ref = ANY(${ids})`;
-  return rows
-    .filter((r) => r.src_ref && r.dst_ref)
-    .map((r) => ({ workItemId: r.src_ref, planItemRef: r.dst_ref }));
+  return rows.filter((r) => r.src_ref && r.dst_ref).map((r) => ({ workItemId: r.src_ref, planItemRef: r.dst_ref }));
 }
 
 /**
@@ -327,14 +384,32 @@ async function readImplementsLinks(
  * layer never sees. Baking in either policy would be wrong half the time; only the
  * call site knows whose goal it is asking for. See {@link GoalLens}.
  */
-export async function resolveOwnerGoal(
+export async function resolveOwnerGoal(ownerId: string, lens: GoalLens): Promise<ResolvedGoal | null> {
+  return (await resolveOwnerGoalWithAssessment(ownerId, lens)).goal;
+}
+
+/** One resolver pass, carrying both the raw goal and assessment integrity. */
+export async function resolveOwnerGoalWithAssessment(
   ownerId: string,
   lens: GoalLens,
-): Promise<ResolvedGoal | null> {
+): Promise<{
+  goal: ResolvedGoal | null;
+  assessment: AgentGoalAssessment | null;
+  diagnostics: GoalResolverDiagnostic[];
+}> {
   try {
-    return resolveAgentGoal((await readGoalLegs(ownerId, lens)).candidates);
-  } catch {
-    return null;
+    const read = await readGoalLegs(ownerId, lens);
+    const goal = resolveAgentGoal(read.candidates);
+    return { goal, assessment: assessAgentGoal(goal, read.diagnostics), diagnostics: read.diagnostics };
+  } catch (err) {
+    const diagnostics: GoalResolverDiagnostic[] = [
+      {
+        leg: 'resolution',
+        status: 'unavailable',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+    ];
+    return { goal: null, assessment: null, diagnostics };
   }
 }
 
@@ -370,9 +445,7 @@ export async function fetchHolderGoalRecord(ownerId: string): Promise<HolderGoal
     if (!goal) return null;
 
     const planRef = goal.source === 'plan-item' ? goal.ref : goal.corroboratedBy;
-    const claim = planRef
-      ? planItems.find((p) => `${p.planSlug}#${p.itemId}` === planRef)
-      : undefined;
+    const claim = planRef ? planItems.find((p) => `${p.planSlug}#${p.itemId}` === planRef) : undefined;
 
     return {
       itemId: goal.ref,

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { HostSnapshot } from '../../host-snapshot';
 import type { PerfSignalsV1 } from '../../system-health/perf-budgets';
-import { buildHostMemoryPressurePayload } from './host-memory';
+import {
+  HOST_MEMORY_FREE_CAPACITY_WARN_PCT,
+  assessHostMemoryPressure,
+  buildHostMemoryPressurePayload,
+} from './host-memory';
 
 const NOW = Date.parse('2026-08-14T18:00:00.000Z');
 
@@ -71,6 +75,7 @@ describe('host.memoryPressure resolver lens', () => {
       unknown: [],
     });
     expect(out.memory.reasons.join(' ')).toMatch(/all tasks stalled on memory/);
+    expect(out.assessment).toBe('critical');
     expect(out.host).toMatchObject({ memFreePct: 27, memTotalGb: 252 });
   });
 
@@ -119,6 +124,8 @@ describe('host.memoryPressure resolver lens', () => {
     expect(scarce.memory.pressure).toBe('ok');
     expect(abundant.host.memFreePct).toBe(72);
     expect(scarce.host.memFreePct).toBe(4);
+    expect(abundant.assessment).toBe('stable');
+    expect(scarce.assessment).toBe('stable-low-free');
   });
 
   it('reports missing PSI inputs in-band instead of manufacturing a healthy zero', async () => {
@@ -129,9 +136,28 @@ describe('host.memoryPressure resolver lens', () => {
     });
 
     expect(out.memory.pressure).toBeNull();
-    expect(out.memory.unknown.map((u) => u.code)).toEqual([
-      'psi-memory-some-unmeasured',
-      'psi-memory-full-unmeasured',
-    ]);
+    expect(out.memory.unknown.map((u) => u.code)).toEqual(['psi-memory-some-unmeasured', 'psi-memory-full-unmeasured']);
+    expect(out.assessment).toBeNull();
+  });
+});
+
+describe('host memory assessment truth table', () => {
+  const base = { stale: false, unknownCount: 0, memFreePct: 50 } as const;
+
+  it.each([
+    ['crit', { ...base, pressure: 'crit' as const }, 'critical'],
+    ['warn', { ...base, pressure: 'warn' as const }, 'warning'],
+    [
+      'ok + low capacity',
+      { ...base, pressure: 'ok' as const, memFreePct: HOST_MEMORY_FREE_CAPACITY_WARN_PCT - 1 },
+      'stable-low-free',
+    ],
+    ['ok at boundary', { ...base, pressure: 'ok' as const, memFreePct: HOST_MEMORY_FREE_CAPACITY_WARN_PCT }, 'stable'],
+    ['ok + unmeasured capacity', { ...base, pressure: 'ok' as const, memFreePct: null }, 'stable'],
+    ['missing PSI verdict', { ...base, pressure: null }, null],
+    ['stale capture', { ...base, pressure: 'ok' as const, stale: true }, null],
+    ['missing required PSI leg', { ...base, pressure: 'ok' as const, unknownCount: 1 }, null],
+  ])('%s', (_label, input, expected) => {
+    expect(assessHostMemoryPressure(input)).toBe(expected);
   });
 });

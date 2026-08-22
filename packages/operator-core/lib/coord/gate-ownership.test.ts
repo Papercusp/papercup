@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   gateStallConditionKey,
   gateRedStreakConditionKey,
+  assessGateOwnership,
   toCellOwnership,
   unownedCell,
   unmeasuredCell,
@@ -60,10 +61,9 @@ describe('gateStallConditionKey', () => {
 
 describe('toCellOwnership', () => {
   it('renames conditionKey to eventKey and carries the lease through', () => {
-    const own = toCellOwnership(
-      mkObj({ claimState: 'held', takenBy: 'su-abc', takenAt: 'T1', expiresAt: 'T2' }),
-    );
+    const own = toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-abc', takenAt: 'T1', expiresAt: 'T2' }));
     expect(own).toEqual({
+      assessment: 'held-needs-confirmation',
       eventKey: 'green-stall:papercusp',
       workItem: 'WI-1234',
       claimState: 'held',
@@ -96,9 +96,33 @@ describe('toCellOwnership', () => {
   });
 });
 
+describe('gate ownership assessment truth table', () => {
+  it.each<[string, Parameters<typeof assessGateOwnership>[0], ReturnType<typeof assessGateOwnership>]>([
+    ['unread claim', { claimState: null, holderSessionState: null, duplicates: [] }, null],
+    [
+      'duplicates outrank canonical row',
+      { claimState: 'held', holderSessionState: 'live', duplicates: ['WI-2'] },
+      'duplicate-owners',
+    ],
+    ['no object', { claimState: 'no-object', holderSessionState: null, duplicates: [] }, 'unowned'],
+    ['claimable', { claimState: 'claimable', holderSessionState: null, duplicates: [] }, 'claimable'],
+    ['expired', { claimState: 'lease-expired', holderSessionState: 'ended', duplicates: [] }, 'lease-expired'],
+    ['live', { claimState: 'held', holderSessionState: 'live', duplicates: [] }, 'held-live'],
+    ['parked', { claimState: 'held', holderSessionState: 'parked', duplicates: [] }, 'held-live'],
+    ['recorded', { claimState: 'held', holderSessionState: 'recorded', duplicates: [] }, 'held-live'],
+    ['draining', { claimState: 'held', holderSessionState: 'draining', duplicates: [] }, 'held-needs-confirmation'],
+    ['suspect', { claimState: 'held', holderSessionState: 'suspect', duplicates: [] }, 'held-needs-confirmation'],
+    ['oracle unread', { claimState: 'held', holderSessionState: null, duplicates: [] }, 'held-needs-confirmation'],
+    ['ended', { claimState: 'held', holderSessionState: 'ended', duplicates: [] }, 'held-by-ended-session'],
+  ])('%s → %s', (_label, input, expected) => {
+    expect(assessGateOwnership(input)).toBe(expected);
+  });
+});
+
 describe('unownedCell vs unmeasuredCell', () => {
   it('unowned is a MEASURED no-object with no unknown attached', () => {
     expect(unownedCell('green-stall:x')).toEqual({
+      assessment: 'unowned',
       eventKey: 'green-stall:x',
       workItem: null,
       claimState: 'no-object',
@@ -229,7 +253,9 @@ describe('ownershipHeldByLiveHolder (the P-007 coordination verdict)', () => {
   it('is false when nothing holds the condition, and for a merely-expired lease', () => {
     expect(ownershipHeldByLiveHolder(unownedCell('green-stall:papercusp'))).toBe(false);
     expect(
-      ownershipHeldByLiveHolder({ ...toCellOwnership(mkObj({ claimState: 'lease-expired', takenBy: 'su-x' }), 'live') }),
+      ownershipHeldByLiveHolder({
+        ...toCellOwnership(mkObj({ claimState: 'lease-expired', takenBy: 'su-x' }), 'live'),
+      }),
     ).toBe(false);
   });
 
@@ -362,10 +388,7 @@ describe('readGateOwnership', () => {
       findConditionObjects: (async () =>
         new Map([
           ['green-stall:papercusp', mkObj({ conditionKey: 'green-stall:papercusp', workItem: 'WI-1' })],
-          [
-            'gate-red-streak:papercusp',
-            mkObj({ conditionKey: 'gate-red-streak:papercusp', workItem: 'WI-2' }),
-          ],
+          ['gate-red-streak:papercusp', mkObj({ conditionKey: 'gate-red-streak:papercusp', workItem: 'WI-2' })],
         ])) as never,
     });
     expect(own.eventKey).toBe('gate-red-streak:papercusp');

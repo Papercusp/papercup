@@ -304,7 +304,7 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         releasePipelineApplies: false,
         restartTarget: 'bg-host',
         activation:
-          "Scout's ideation cycle reads this via the `scout` deterministic blueprint's `blender:cycle` step, dispatched by routinesTick — which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). For THAT consumer it loads on RESTART: dev:restart { target: \"bg-host\", confirm: true } — a deploy never carries it (EI-11120).",
+          'Scout\'s ideation cycle reads this via the `scout` deterministic blueprint\'s `blender:cycle` step, dispatched by routinesTick — which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). For THAT consumer it loads on RESTART: dev:restart { target: "bg-host", confirm: true } — a deploy never carries it (EI-11120).',
       },
       {
         host: 'operator-release',
@@ -442,7 +442,8 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   // classification exists to surface). Must be listed BEFORE the broad
   // `packages/operator-core/lib/` fallthrough below.
   {
-    match: /^packages\/operator-core\/lib\/harness\/routines\/(register-system-actions|system-actions|routine-host)\.ts$/,
+    match:
+      /^packages\/operator-core\/lib\/harness\/routines\/(register-system-actions|system-actions|routine-host)\.ts$/,
     own: {
       host: 'bg-host',
       releasePipelineApplies: false,
@@ -467,7 +468,8 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   {
     // Tier 1 — bg-host ONLY. Verified: no non-test importer outside the bg-host
     // sweep set itself, so a deploy can never be the activation path for any consumer.
-    match: /^packages\/operator-core\/lib\/(harness\/routines\/(reconcile-loop-routines|reconcile-plan-runs|autoloop-chronic-failure|claim|learning-loop-health-sweep|tsc-red-sweep)|rubric-staleness-watchdog|wall-lapse-watchdog|agent-state-divergence-sweep|agent-plane-measurement-sweep|release-deploy-staleness-watchdog|search\/session-ingest-lag-watchdog|sync\/hyperbee\/cold-join-(canary|executor))\.ts$/,
+    match:
+      /^packages\/operator-core\/lib\/(harness\/routines\/(reconcile-loop-routines|reconcile-plan-runs|autoloop-chronic-failure|claim|learning-loop-health-sweep|tsc-red-sweep)|rubric-staleness-watchdog|wall-lapse-watchdog|agent-state-divergence-sweep|agent-plane-measurement-sweep|release-deploy-staleness-watchdog|search\/session-ingest-lag-watchdog|sync\/hyperbee\/cold-join-(canary|executor))\.ts$/,
     own: {
       host: 'bg-host',
       releasePipelineApplies: false,
@@ -481,7 +483,8 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
     // by routinesTick in bg-host AND read by operator-served surfaces (agent-tools MCP
     // handlers, sync-resolver, endpoint-route). Reporting either route alone sends half
     // the callers to the wrong activation lever, so both are returned.
-    match: /^packages\/operator-core\/lib\/(pot\/(watchdog|placement-watchdog|started|throughput)|overwatch\/watchdog|harness\/routines\/loop-fire|autoloop)\.ts$/,
+    match:
+      /^packages\/operator-core\/lib\/(pot\/(watchdog|placement-watchdog|started|throughput)|overwatch\/watchdog|harness\/routines\/loop-fire|autoloop)\.ts$/,
     own: [
       {
         host: 'bg-host',
@@ -522,7 +525,8 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   // infer ownership for every static import, since shared helpers also have
   // operator-served consumers (WI-10671).
   {
-    match: /^packages\/operator-core\/lib\/harness\/routines\/(loop-unreachable|pty-host-wedge|stalled-loops)-guard\.ts$/,
+    match:
+      /^packages\/operator-core\/lib\/harness\/routines\/(loop-unreachable|pty-host-wedge|stalled-loops)-guard\.ts$/,
     own: {
       host: 'bg-host',
       releasePipelineApplies: false,
@@ -548,7 +552,7 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
       releasePipelineApplies: false,
       restartTarget: 'bg-host',
       activation:
-        "Scout's ideation cycle runs exclusively through the routine dispatch (the `scout` deterministic blueprint's `blender:cycle` step, fired via `system:blueprint-run`), which only executes when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host) — :3070/:3170 never run it. A deployed fix to this code is INERT until bg-host is restarted: dev:restart { target: \"bg-host\", confirm: true } (EI-11120 — this exact silent-inertness cost WI-4475 a wasted deploy-and-wait cycle).",
+        'Scout\'s ideation cycle runs exclusively through the routine dispatch (the `scout` deterministic blueprint\'s `blender:cycle` step, fired via `system:blueprint-run`), which only executes when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host) — :3070/:3170 never run it. A deployed fix to this code is INERT until bg-host is restarted: dev:restart { target: "bg-host", confirm: true } (EI-11120 — this exact silent-inertness cost WI-4475 a wasted deploy-and-wait cycle).',
     },
   },
   {
@@ -692,6 +696,124 @@ function sharedHostCaveat(relPath: string | null): string | null {
   return 'Shared code: this path is ALSO loaded by the staging-tree hosts (gateway :8788, bg-host routines, :3170) which run tsx from this tree — not from the release checkout. If the behavior you are testing runs in one of THOSE, a deploy will not change it; restart that host (dev:restart { target }).';
 }
 
+export type PipelinePositionAssessment =
+  | 'live'
+  | 'restart-required'
+  | 'uncommitted'
+  | 'awaiting-push'
+  | 'awaiting-gate'
+  | 'awaiting-deploy';
+export type GateVerdictAssessment =
+  | 'inconclusive'
+  | 'red-stale'
+  | 'red-current'
+  | 'not-firing'
+  | 'passing-buffered'
+  | 'passing-current';
+export type GateCandidateAssessment =
+  | 'no-active-run'
+  | 'judging-current-path'
+  | 'judging-without-current-path'
+  | 'inferred-candidate';
+export type DeployedShaAssessment = 'executing' | 'restart-required' | 'process-unverified';
+export type MainBehindStagingAssessment = 'caught-up' | 'normal-buffer' | 'gate-stalled';
+
+export interface PipelineAssessments {
+  pipelinePosition: PipelinePositionAssessment | null;
+  gateVerdict: GateVerdictAssessment | null;
+  gateCandidate: GateCandidateAssessment | null;
+  gateOwnership: CellOwnership['assessment'] | null;
+  deployedSha: DeployedShaAssessment | null;
+  mainBehindStaging: MainBehindStagingAssessment | null;
+}
+
+/** PURE. Adjacent stages must agree; a later true never excuses an earlier false. */
+export function assessPipelinePosition(input: {
+  targetSha: string | null;
+  dirtyUncommitted: boolean;
+  positions: PipelinePosition['positions'];
+  positionsUnknown: readonly string[];
+  positionsNewerCommit: readonly string[];
+  servingStartedSinceCodeChange: boolean | null;
+}): PipelinePositionAssessment | null {
+  if (
+    (!input.targetSha && !input.dirtyUncommitted) ||
+    input.positionsUnknown.length > 0 ||
+    input.positionsNewerCommit.length > 0
+  ) {
+    return null;
+  }
+  const { committedLocal, onStaging, inMain, deployed } = input.positions;
+  if ((onStaging && !committedLocal) || (inMain && !onStaging) || (deployed && !inMain)) return null;
+  if (input.dirtyUncommitted && !committedLocal) return 'uncommitted';
+  if (committedLocal && !onStaging) return 'awaiting-push';
+  if (onStaging && !inMain) return 'awaiting-gate';
+  if (inMain && !deployed) return 'awaiting-deploy';
+  if (!deployed) return null;
+  if (input.servingStartedSinceCodeChange === true) return 'live';
+  if (input.servingStartedSinceCodeChange === false) return 'restart-required';
+  return null;
+}
+
+export function assessGateVerdict(input: {
+  inconclusive: unknown | null;
+  consecutiveReds: number;
+  verdictStale: boolean;
+  fireStale: boolean;
+  mainBehindStaging: boolean | null;
+  verdictUnknownLegs: readonly string[];
+}): GateVerdictAssessment | null {
+  if (input.inconclusive !== null) return 'inconclusive';
+  if (input.verdictUnknownLegs.includes('gate.consecutiveReds')) return null;
+  if (input.consecutiveReds > 0) return input.verdictStale ? 'red-stale' : 'red-current';
+  if (input.fireStale) return 'not-firing';
+  if (input.mainBehindStaging === null || input.verdictUnknownLegs.includes('verdictProvenance.mainFastForwarded'))
+    return null;
+  return input.mainBehindStaging ? 'passing-buffered' : 'passing-current';
+}
+
+export function assessGateCandidate(input: {
+  judgingSha: string | null;
+  judgingShaSource?: ChangeInCandidate['judgingShaSource'];
+  judgingContainsPath?: boolean | null;
+  verdictUnknownLegs: readonly string[];
+}): GateCandidateAssessment | null {
+  if (input.judgingSha === null) {
+    return input.verdictUnknownLegs.includes('changeInCandidate.judgingSha') ? null : 'no-active-run';
+  }
+  if (input.judgingShaSource !== 'retriage-marker' && input.judgingShaSource !== 'in-flight-candidate')
+    return 'inferred-candidate';
+  if (
+    input.verdictUnknownLegs.includes('changeInCandidate.judgingContainsPath') ||
+    input.judgingContainsPath === null ||
+    input.judgingContainsPath === undefined
+  )
+    return null;
+  return input.judgingContainsPath ? 'judging-current-path' : 'judging-without-current-path';
+}
+
+export function assessDeployedSha(input: {
+  deployedSha: string | null;
+  servingStartedSinceCodeChange: boolean | null;
+  verdictUnknownLegs: readonly string[];
+}): DeployedShaAssessment | null {
+  if (input.deployedSha === null || input.verdictUnknownLegs.includes('deployedSha')) return null;
+  if (input.servingStartedSinceCodeChange === true) return 'executing';
+  if (input.servingStartedSinceCodeChange === false) return 'restart-required';
+  return 'process-unverified';
+}
+
+export function assessMainBehindStaging(input: {
+  mainBehindStaging: boolean | null;
+  fireStale: boolean;
+  verdictUnknownLegs: readonly string[];
+}): MainBehindStagingAssessment | null {
+  if (input.mainBehindStaging === null || input.verdictUnknownLegs.includes('verdictProvenance.mainFastForwarded'))
+    return null;
+  if (!input.mainBehindStaging) return 'caught-up';
+  return input.fireStale ? 'gate-stalled' : 'normal-buffer';
+}
+
 export interface PipelinePosition {
   input: { path: string | null; sha: string | null };
   repoRoot: string;
@@ -719,6 +841,8 @@ export interface PipelinePosition {
     inMain: boolean;
     deployed: boolean;
   };
+  /** Six decision-ready conclusions derived once from this resolver payload. */
+  assessments: PipelineAssessments;
   /**
    * D-038 axis 2 + D-039's HOIST: the `positions.*` legs whose git read FAILED, so
    * their boolean is `false` by DEGRADATION rather than by measurement. Empty means
@@ -996,7 +1120,12 @@ export interface PipelinePosition {
      * to fix" and chasing unrelated test files while one pending migration was the real blocker.
      * Null once any real verdict lands.
      */
-    inconclusive: { status: string; candidate: string | null; detail: string | null; observedAtMs: number | null } | null;
+    inconclusive: {
+      status: string;
+      candidate: string | null;
+      detail: string | null;
+      observedAtMs: number | null;
+    } | null;
   };
   /**
    * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the
@@ -1743,10 +1872,12 @@ export function attachRuntimeLoadedIdentities(
     }
     const row = rows.find((candidate) => {
       const reportedAtMs = Date.parse(candidate.reportedAt);
-      return candidate.host === localHost &&
+      return (
+        candidate.host === localHost &&
         candidate.pid === generation.pid &&
         Number.isFinite(reportedAtMs) &&
-        reportedAtMs >= generation.startedAtMs!;
+        reportedAtMs >= generation.startedAtMs!
+      );
     });
     if (!row) {
       return {
@@ -1816,7 +1947,10 @@ export function runtimeGenerationDivergenceNote(
     // LAG — a release checkout serving different content is out of date by content,
     // not by minutes, and "~nullm behind" is how that leaked into the prose.
     `${behind
-      .map((g) => `${g.unit} (${g.label}, ${g.behindMin === null ? 'serving DIFFERENT content' : `~${g.behindMin}m behind`})`)
+      .map(
+        (g) =>
+          `${g.unit} (${g.label}, ${g.behindMin === null ? 'serving DIFFERENT content' : `~${g.behindMin}m behind`})`,
+      )
       .join(' + ')} do NOT. ` +
     `If you only need to OBSERVE this code running — measure it, reproduce against it, confirm a routine's behaviour changed — it is ALREADY LIVE on the hosts listed first and you are NOT blocked on a deploy. ` +
     `A deploy is required only to activate it on the release checkout. ` +
@@ -2033,7 +2167,7 @@ function inferredJudgingContainmentRefusal(): RefusedAnswer {
     question: 'Does the in-flight run judge a candidate that contains your change?',
     because:
       "judgingShaSource='run-probe' is a checkout-head inference, not a candidate marker published by the run; " +
-      'it can change between reads and cannot establish what this run\'s verdict includes.',
+      "it can change between reads and cannot establish what this run's verdict includes.",
     insteadRead:
       "gate.checkpointRunInFlight.candidate when candidateSource is 'retriage-marker' or 'in-flight-candidate', " +
       "or checkpoint:await for the run's own published candidate",
@@ -2120,12 +2254,7 @@ export function evaluateChangeInCandidate(args: {
       // asserting: a null count must never render as "null×" or drive arithmetic.
       const judgedCount = m.count;
       const tipCount = markerNext?.count ?? null;
-      if (
-        which === 'judged' &&
-        markerPartialAgainst(m, markerNext) &&
-        judgedCount !== null &&
-        tipCount !== null
-      ) {
+      if (which === 'judged' && markerPartialAgainst(m, markerNext) && judgedCount !== null && tipCount !== null) {
         return (
           `The gate's judged candidate (${at}) carries the marker ${times}, but tip has it ` +
           `${tipCount}× — so the judged tree is MISSING ${tipCount - judgedCount} ` +
@@ -2349,7 +2478,9 @@ export function evaluateSweepExposure(args: {
     count === null
       ? 'the whole tree'
       : `all ${count} dirty path(s)` +
-        (sample.length ? ` (${sample.join(', ')}${count > sample.length ? `, +${count - sample.length} more` : ''})` : '');
+        (sample.length
+          ? ` (${sample.join(', ')}${count > sample.length ? `, +${count - sample.length} more` : ''})`
+          : '');
 
   return {
     exposed: true,
@@ -2666,12 +2797,12 @@ export function computeStages(
           ? 'inspect `metadata.own_head_publish` on the git-sync routine for the refusal code + the git-sync journal for the offending commit — NOT the green gate (publish admission is a content/security check, independent of it)'
           : 'inspect `metadata.own_head_publish` on the git-sync routine (`publishedSha` vs `sha`, `blockedAtCommit`/`oversizedCommit`) for what is throttling the slice — NOT the green gate'
         : pushedHealth === 'broken' || pushedHealth === 'stalled'
-        ? // A commit-only member still has a COMMIT leg that can stall, and git-sync:run
-          // does move that — but never describe it as fixing a push it will never do.
-          commitOnly
-          ? 'git-sync:run (the COMMIT leg is not advancing — this member never pushes; it will not put anything on origin)'
-          : 'git-sync:run (the push leg is not advancing on its own)'
-        : null
+          ? // A commit-only member still has a COMMIT leg that can stall, and git-sync:run
+            // does move that — but never describe it as fixing a push it will never do.
+            commitOnly
+            ? 'git-sync:run (the COMMIT leg is not advancing — this member never pushes; it will not put anything on origin)'
+            : 'git-sync:run (the push leg is not advancing on its own)'
+          : null
     : null;
   stages.push({
     name: 'pushed',
@@ -2710,14 +2841,12 @@ export function computeStages(
      * the place that actually drives behaviour — `judgedRunCoversChange` feeds the
      * "nothing to do, a verdict is coming" arm, which is what leaves main pinned.
      */
-    const judgedContainmentRefused =
-      cic.judgingShaSource === 'run-probe' && cic.judgingSha !== null;
+    const judgedContainmentRefused = cic.judgingShaSource === 'run-probe' && cic.judgingSha !== null;
     const markerSaysPresent =
       !judgedContainmentRefused &&
       !markerPartialAgainst(cic.markerJudging, cic.markerNext) &&
       (cic.markerJudging?.present === true || (!cic.judgingSha && cic.markerNext?.present === true));
-    const notInCandidate =
-      !markerSaysPresent && (cic.judgingContainsPath === false || cic.nextContainsPath === false);
+    const notInCandidate = !markerSaysPresent && (cic.judgingContainsPath === false || cic.nextContainsPath === false);
     /** The judged run demonstrably covers this change — by identity OR by marker. */
     const judgedRunCoversChange = !judgedContainmentRefused && (cic.judgingContainsPath === true || markerSaysPresent);
     /**
@@ -3017,8 +3146,7 @@ export function computeStages(
     // turns a null lever into `nextAction:null`, which renderBlocked already prints as
     // "WAITING AT SERVING (nothing to do — this leg is advancing on its own)" — the
     // literally correct advice here, since the running deploy performs the restart.
-    lever:
-      codeReachedHost && sv.startedSinceCodeChange === false && !sv.restartSupersededBy ? sv.restartLever : null,
+    lever: codeReachedHost && sv.startedSinceCodeChange === false && !sv.restartSupersededBy ? sv.restartLever : null,
   });
 
   return stages;
@@ -3200,8 +3328,7 @@ const realReadCheckpointRunLock = async (root: string): Promise<CheckpointRunLoc
       // The lock probe computes elapsedSec from owner.json's acquisition timestamp. Preserve
       // that same identity for the mapper instead of allowing a cached systemd run's start
       // timestamp to pair with this lock's elapsed reading.
-      startedAtMs:
-        reading.held && reading.elapsedSec != null ? Date.now() - reading.elapsedSec * 1000 : null,
+      startedAtMs: reading.held && reading.elapsedSec != null ? Date.now() - reading.elapsedSec * 1000 : null,
     };
   } catch {
     return null;
@@ -3293,11 +3420,9 @@ export function mapCheckpointRunInFlight(
   // flight" at all — even though the lock could have answered it for free.
   if (!cachedRun && !liveLock) return null;
 
-  const cacheAgeMs =
-    cached && cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null;
+  const cacheAgeMs = cached && cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null;
   const cachedActive = cachedRun?.active === true;
-  const cacheIsTrusted =
-    cacheAgeMs !== null && cacheAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
+  const cacheIsTrusted = cacheAgeMs !== null && cacheAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
   const cachedRunAgeMs = cachedActive
     ? cachedRun!.startedAtMs !== null
       ? Math.max(0, nowMs - cachedRun!.startedAtMs)
@@ -3305,10 +3430,7 @@ export function mapCheckpointRunInFlight(
         ? Math.max(0, cachedRun!.elapsedSec * 1000 + (cacheAgeMs ?? 0))
         : null
     : null;
-  const cacheCoversStartup =
-    cacheIsTrusted &&
-    cachedRunAgeMs !== null &&
-    cachedRunAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
+  const cacheCoversStartup = cacheIsTrusted && cachedRunAgeMs !== null && cachedRunAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
 
   // Liveness precedence. A held lock is positive, pid-verified evidence and always wins. A
   // NOT-held lock wins too, EXCEPT against a still-trusted cached `active` (the manual-run
@@ -3336,24 +3458,15 @@ export function mapCheckpointRunInFlight(
       cachedRun.startedAtMs !== null &&
       liveLockStartedAtMs !== null &&
       Math.abs(cachedRun.startedAtMs - liveLockStartedAtMs) <= CHECKPOINT_RUN_IDENTITY_TOLERANCE_MS);
-  const cachedDescribesNow =
-    cachedRun != null && cachedRun.active === active && cachedIdentityMatchesLiveLock;
+  const cachedDescribesNow = cachedRun != null && cachedRun.active === active && cachedIdentityMatchesLiveLock;
   const candidate = cachedDescribesNow ? cachedRun!.candidate : null;
   // When a live lock answers, derive BOTH timing fields from that same lock identity. The
   // cached elapsed is frozen at cache-compute time and the cached start may belong to another
   // active run; using either beside the live lock would recreate the mixed-run verdict.
   const startedAtMs =
-    liveLock?.held === true
-      ? liveLockStartedAtMs ?? null
-      : cachedDescribesNow
-        ? cachedRun!.startedAtMs
-        : null;
+    liveLock?.held === true ? (liveLockStartedAtMs ?? null) : cachedDescribesNow ? cachedRun!.startedAtMs : null;
   const elapsedSec =
-    liveLock?.held === true
-      ? liveLock.elapsedSec ?? null
-      : cachedDescribesNow
-        ? cachedRun!.elapsedSec
-        : null;
+    liveLock?.held === true ? (liveLock.elapsedSec ?? null) : cachedDescribesNow ? cachedRun!.elapsedSec : null;
   // EI-19327704778173646: carry the refire provenance through. This destructure is
   // exact-field, so a new leg is DROPPED unless it is threaded explicitly — which is why
   // the marker never reached a caller before. Emitted only on an actual refire, so the
@@ -3522,10 +3635,9 @@ const realReadFileBytes = async (absPath: string): Promise<Buffer | null> => {
  * holds for it. `differs: null` means one or both reads failed/were skipped — never
  * reported as a match, since an unreadable release copy is not evidence it is identical.
  */
-export function evaluateReleaseContentDrift(args: {
-  workingBytes: Buffer | null;
-  releaseBytes: Buffer | null;
-}): { differs: boolean | null } {
+export function evaluateReleaseContentDrift(args: { workingBytes: Buffer | null; releaseBytes: Buffer | null }): {
+  differs: boolean | null;
+} {
   const { workingBytes, releaseBytes } = args;
   if (workingBytes === null || releaseBytes === null) return { differs: null };
   return { differs: !workingBytes.equals(releaseBytes) };
@@ -3707,10 +3819,9 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
     // has restarted since this file changed — the git ticks cannot answer it, and
     // this is the exact shape of the bg-host-runs-stale-routine-code class.
     const sv = p.serving;
-    const live =
-      isFreshInvocationRuntime(p.runtime)
-        ? ' ✓ fresh-invocation route: the next run loads the current staging-tree source directly; no host restart is required.'
-        : sv.startedSinceCodeChange === false
+    const live = isFreshInvocationRuntime(p.runtime)
+      ? ' ✓ fresh-invocation route: the next run loads the current staging-tree source directly; no host restart is required.'
+      : sv.startedSinceCodeChange === false
         ? ` ⚠ RUNNING STALE: ${sv.unit} started ~${sv.behindMin}m before this file last changed on disk, so the host is still executing the OLD version — ${sv.restartLever}.`
         : sv.startedSinceCodeChange === true
           ? ` ✓ ${sv.unit} started after this file last changed, so the running host has loaded it.`
@@ -3722,9 +3833,10 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
     // uncommitted edit is invisible. One reassurance, two consumers, opposite answers:
     // qualify it rather than letting the true half cover the false one.
     const freshInvocation = isFreshInvocationRuntime(p.runtime);
-    const gateBlind = p.dirtyUncommitted && !freshInvocation
-      ? ' ⚠ but the GREEN GATE is a different consumer of this same file and judges a COMMITTED candidate — your uncommitted edit is INVISIBLE to it, so a gate run fired now tests the code WITHOUT it (commit first: git-sync:run).'
-      : '';
+    const gateBlind =
+      p.dirtyUncommitted && !freshInvocation
+        ? ' ⚠ but the GREEN GATE is a different consumer of this same file and judges a COMMITTED candidate — your uncommitted edit is INVISIBLE to it, so a gate run fired now tests the code WITHOUT it (commit first: git-sync:run).'
+        : '';
     const sourceRead = freshInvocation
       ? 'the next invocation reads THIS TREE directly, including an uncommitted edit.'
       : 'the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.';
@@ -3759,27 +3871,28 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   // invisible ~2h stall on 2026-07-26 (the incident this note is named for) —
   // nothing in the one-line summary told a reader "green" and "not advancing"
   // were BOTH true at once. Name the combination instead of staying silent on it.
-  const gateNote = !p.positions.inMain && p.gate.fireStale
-    ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
-    : !p.positions.inMain && p.gate.stalled
-      ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
-      : !p.positions.inMain && p.gate.consecutiveReds > 0
-        ? ` (gate red: ${p.gate.consecutiveReds})`
-        : // WI-6357 / EI-18790908999972569: gated on BUFFER AGE, not mere existence — a
-          // nonzero buffer is the fleet's normal steady state (see MAIN_BUFFER_STALL_MS),
-          // so the un-aged version of this check fired on virtually every healthy call
-          // and taught readers to scroll past the exact combination it exists to catch.
-          !p.positions.inMain &&
-            p.gate.consecutiveReds === 0 &&
-            mainBufferIsStale({
-              gate: p.gate,
-              mainFastForwarded: p.verdictProvenance.mainFastForwarded,
-              stagingBufferAgeMs: p.verdictProvenance.stagingBufferAgeMs,
-            })
-          ? ` (gate reports 0 reds, but main has NOT fast-forwarded to the last green pin ${
-              p.verdictProvenance.lastGreenShortSha ?? '?'
-            } for over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
-          : '';
+  const gateNote =
+    !p.positions.inMain && p.gate.fireStale
+      ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
+      : !p.positions.inMain && p.gate.stalled
+        ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
+        : !p.positions.inMain && p.gate.consecutiveReds > 0
+          ? ` (gate red: ${p.gate.consecutiveReds})`
+          : // WI-6357 / EI-18790908999972569: gated on BUFFER AGE, not mere existence — a
+            // nonzero buffer is the fleet's normal steady state (see MAIN_BUFFER_STALL_MS),
+            // so the un-aged version of this check fired on virtually every healthy call
+            // and taught readers to scroll past the exact combination it exists to catch.
+            !p.positions.inMain &&
+              p.gate.consecutiveReds === 0 &&
+              mainBufferIsStale({
+                gate: p.gate,
+                mainFastForwarded: p.verdictProvenance.mainFastForwarded,
+                stagingBufferAgeMs: p.verdictProvenance.stagingBufferAgeMs,
+              })
+            ? ` (gate reports 0 reds, but main has NOT fast-forwarded to the last green pin ${
+                p.verdictProvenance.lastGreenShortSha ?? '?'
+              } for over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
+            : '';
   // P-004: when the judged candidate provably lacks this file's content, that outranks
   // every tick above it — the ticks describe where the change IS, this describes whether
   // the verdict about to land is even about it. Appended last so it is the final thing
@@ -3794,20 +3907,20 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
    * lacked the fix read as an all-clear — the ✓ is the glyph a hurried caller stops at.
    */
   const markerPartial = markerPartialAgainst(cicSum.markerJudging, cicSum.markerNext);
-  const judgedContainmentRefused =
-    cicSum.judgingShaSource === 'run-probe' && cicSum.judgingSha !== null;
+  const judgedContainmentRefused = cicSum.judgingShaSource === 'run-probe' && cicSum.judgingSha !== null;
   const markerConfirmed =
     !judgedContainmentRefused &&
     !markerPartial &&
     (cicSum.markerJudging?.present === true || (!cicSum.judgingSha && cicSum.markerNext?.present === true));
-  const markerDenied = cicSum.markerJudging?.present === false || (!cicSum.judgingSha && cicSum.markerNext?.present === false);
+  const markerDenied =
+    cicSum.markerJudging?.present === false || (!cicSum.judgingSha && cicSum.markerNext?.present === false);
   const candidateNote = judgedContainmentRefused
     ? ` ⚠ ${cicSum.detail}`
     : markerConfirmed
       ? ` ✓ ${cicSum.detail}`
-    : markerPartial || markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
-      ? ` ⚠ ${cicSum.detail}`
-      : '';
+      : markerPartial || markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
+        ? ` ⚠ ${cicSum.detail}`
+        : '';
   return `${leadClause(p)}${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
   )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${servingNote(
@@ -3895,7 +4008,10 @@ export async function gitPipelinePosition(
     if (!targetSha) notes.push(`SHA '${inp.sha}' did not resolve in ${submodule ?? 'the superproject'}.`);
   } else if (relPath) {
     targetSha = await git(gitDir, ['log', '-1', '--pretty=%H', '--', relPath]);
-    if (!targetSha) notes.push(`No commit has touched '${relPath}' yet${dirtyUncommitted ? ' (it is newly created / uncommitted)' : ''}.`);
+    if (!targetSha)
+      notes.push(
+        `No commit has touched '${relPath}' yet${dirtyUncommitted ? ' (it is newly created / uncommitted)' : ''}.`,
+      );
   } else {
     notes.push('Provide a path or a sha.');
   }
@@ -4131,12 +4247,7 @@ export async function gitPipelinePosition(
               earlier.sha !== targetSha &&
               (targetMarkerBaselineCount === null || verdict.count === targetMarkerBaselineCount)
             ) {
-              const candidateBaseline = await markerAtCommit(
-                gitReadForMarker,
-                `${earlier.sha}~1`,
-                relPath,
-                marker,
-              );
+              const candidateBaseline = await markerAtCommit(gitReadForMarker, `${earlier.sha}~1`, relPath, marker);
               if (typeof candidateBaseline.count === 'number') {
                 markerBaseline = candidateBaseline;
                 markerBaselineSha = `${earlier.sha}~1`;
@@ -4188,7 +4299,7 @@ export async function gitPipelinePosition(
             } else if (verdict.present === false) {
               notes.push(
                 `${leg}: confirmed NOT present — ${ref}'s version of '${relPath}' does not contain your ` +
-                  `marker${verdict.pathPresent === false ? " (the path does not exist there at all)" : ''}. ` +
+                  `marker${verdict.pathPresent === false ? ' (the path does not exist there at all)' : ''}. ` +
                   `This is a genuine miss, not a newer-commit artifact.`,
               );
               continue;
@@ -4477,7 +4588,9 @@ export async function gitPipelinePosition(
     notes.push(
       `This path has ${runtimes.length} distinct consumers on DIFFERENT activation routes (${runtimes
         .map((r) => r.host)
-        .join(' + ')}) — see \`runtimes\` for each one's own host/activation; do not act on \`runtime\`/\`activation\` alone.`,
+        .join(
+          ' + ',
+        )}) — see \`runtimes\` for each one's own host/activation; do not act on \`runtime\`/\`activation\` alone.`,
     );
   }
   const caveat = runtime?.releasePipelineApplies ? sharedHostCaveat(inp.path ?? null) : null;
@@ -4659,7 +4772,7 @@ export async function gitPipelinePosition(
       ...NO_CHANGE_IN_CANDIDATE,
       detail:
         'Containment is not measured for a submodule path: the gate judges the SUPERPROJECT, which stores only a gitlink for this submodule. ' +
-      'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
+        'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
     };
   }
 
@@ -4717,28 +4830,6 @@ export async function gitPipelinePosition(
         `the gate judges the superproject, which stores only a gitlink for submodule '${submodule}', so candidate containment is not measurable for this path — check the committed gitlink pin instead`,
       ),
     });
-  } else if (!changeInCandidate.judgingSha) {
-    // WI-6485: the real path branch ran (relPath && !submodule) but no checkpoint
-    // run is currently in flight, so `judgingSha` is null for the SAME reason as
-    // the sha-only-probe and submodule legs above (nothing to compare against) —
-    // an ordinary, enumerable, `not-applicable` fact, not an absence of
-    // measurement. The prior code left this branch of the null unexplained: it
-    // hoists the sha-only-probe and submodule cases but silently dropped this
-    // one, so a caller reading just `judgingSha: null` + an empty hoist read it
-    // as "measured, nothing unknown" via the CellHoist contract — the exact same
-    // defect class as WI-6484's `positions.*` gap, one leg over. `detail` (when
-    // present) already carries the human-readable reason, e.g. "A checkpoint
-    // fired now would judge <sha>, which DOES carry this file's current
-    // content." — reused here as the branchable qualifier's own detail.
-    verdictUnknown.push({
-      leg: 'changeInCandidate.judgingSha',
-      unknown: cellUnknown(
-        'not-applicable',
-        changeInCandidate.detail
-          ? `no checkpoint run is in flight right now — nothing to compare against yet. ${changeInCandidate.detail}`
-          : 'no checkpoint run is in flight right now — nothing to compare against yet',
-      ),
-    });
   }
 
   if (verdictUnknown.length > 0) {
@@ -4760,6 +4851,43 @@ export async function gitPipelinePosition(
     notes.push(`SWEEP-EXPOSED: ${sweepExposure.detail}`);
   }
 
+  const verdictUnknownLegs = verdictUnknown.map((v) => v.leg);
+  const assessments: PipelineAssessments = {
+    pipelinePosition: assessPipelinePosition({
+      targetSha,
+      dirtyUncommitted,
+      positions,
+      positionsUnknown,
+      positionsNewerCommit,
+      servingStartedSinceCodeChange: serving.startedSinceCodeChange,
+    }),
+    gateVerdict: assessGateVerdict({
+      inconclusive: gate.inconclusive,
+      consecutiveReds: gate.consecutiveReds,
+      verdictStale: gate.verdictStale,
+      fireStale: gate.fireStale,
+      mainBehindStaging: verdictProvenance.mainBehindStaging ?? null,
+      verdictUnknownLegs,
+    }),
+    gateCandidate: assessGateCandidate({
+      judgingSha: changeInCandidate.judgingSha,
+      judgingShaSource: changeInCandidate.judgingShaSource,
+      judgingContainsPath: changeInCandidate.judgingContainsPath,
+      verdictUnknownLegs,
+    }),
+    gateOwnership: gate.ownership?.assessment ?? null,
+    deployedSha: assessDeployedSha({
+      deployedSha,
+      servingStartedSinceCodeChange: serving.startedSinceCodeChange,
+      verdictUnknownLegs,
+    }),
+    mainBehindStaging: assessMainBehindStaging({
+      mainBehindStaging: verdictProvenance.mainBehindStaging ?? null,
+      fireStale: gate.fireStale,
+      verdictUnknownLegs,
+    }),
+  };
+
   // Everything computeStages needs, before the stage table — and before deriveBlocker,
   // which reads that table to pick blockedOn/nextAction.
   const preStages: Omit<PipelinePosition, 'summary' | 'stages' | 'blockedOn' | 'nextAction'> = {
@@ -4772,6 +4900,7 @@ export async function gitPipelinePosition(
     targetSubject,
     dirtyUncommitted,
     positions,
+    assessments,
     positionsUnknown,
     positionsMarker: marker
       ? { marker, onStaging: markerLegs.onStaging, inMain: markerLegs.inMain, deployed: markerLegs.deployed }
