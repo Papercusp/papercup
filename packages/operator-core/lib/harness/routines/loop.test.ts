@@ -39,8 +39,14 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagSpy }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeSpy }));
 
+const { recordLoopTransitionSpy } = vi.hoisted(() => ({
+  recordLoopTransitionSpy: vi.fn(async (..._args: unknown[]) => undefined),
+}));
+vi.mock('./loop-transition-log', () => ({ recordLoopTransition: recordLoopTransitionSpy }));
+
 import {
   materializeLoop,
+  deactivateLoopForGoal,
   buildLoopWakePrompt,
   detectDrivenWorkItemId,
   loopRoutineName,
@@ -450,6 +456,7 @@ describe('computeLifecycleBackoff (EI-19325288514307343 — backed-off vs dead, 
 
 beforeEach(() => {
   upsertRoutineSpy.mockReset();
+  recordLoopTransitionSpy.mockReset();
   // Echo the input back as a plausible RoutineRow (materializeLoop reads .id/.name/.nextFireAt/.targetRole).
   upsertRoutineSpy.mockImplementation(async (_sql: unknown, input: any) => ({
     id: `rt_${input.installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase(),
@@ -468,6 +475,53 @@ beforeEach(() => {
     rescheduleIntervalSec: input.rescheduleIntervalSec ?? null,
     targetOwnerId: input.targetOwnerId ?? null,
   }));
+});
+
+describe('deactivateLoopForGoal (EI-21123319355080521)', () => {
+  it('deactivates an active loop whose structured goal references the surrendered authority', async () => {
+    const calls: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(' ? '), values });
+      return Promise.resolve([
+        {
+          id: 'rt_goal',
+          workspace_id: 'ws',
+          install_slug: 'papercusp',
+          name: 'loop-su-x',
+          target_role: LOOP_WAKE_ACTION,
+          target_owner_id: 'su-x',
+          reschedule_interval_sec: 60,
+        },
+      ]);
+    }) as any;
+
+    await expect(
+      deactivateLoopForGoal('su-x', 'goal-123', {
+        sql,
+        reason: "mode 'goal' cleared — authority 'goal-123' revoked",
+        actor: 'su-x',
+      }),
+    ).resolves.toBe(true);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain("payload_template->>'goal'");
+    expect(calls[0]!.values).toEqual(expect.arrayContaining(['su-x', 'goal-123']));
+    expect(recordLoopTransitionSpy).toHaveBeenCalledWith(
+      sql,
+      expect.objectContaining({
+        event: 'disarmed',
+        targetOwnerId: 'su-x',
+        actor: 'su-x',
+        detail: expect.objectContaining({ goalSubject: 'goal-123', authorityRevoked: true }),
+      }),
+    );
+  });
+
+  it('does not touch the database for an empty subject', async () => {
+    const sql = vi.fn();
+    await expect(deactivateLoopForGoal('su-x', '   ', { sql: sql as any })).resolves.toBe(false);
+    expect(sql).not.toHaveBeenCalled();
+  });
 });
 
 describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {

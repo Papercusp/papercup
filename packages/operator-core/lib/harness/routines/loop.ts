@@ -617,6 +617,78 @@ export async function deactivateLoop(
 }
 
 /**
+ * Deactivate the loop that is carrying a surrendered GOAL authority.
+ *
+ * A plain `deactivateLoop(ownerId)` is too broad for a mode clear: an owner can
+ * legitimately have an AUTO loop for a different mission, and clearing GOAL
+ * must not stop that unrelated work. The structured loop goal is the durable
+ * join between the mode's subject and the wake text, so only rows whose frozen
+ * goal mentions the surrendered subject are stopped.
+ *
+ * Inactive queued wakes are already superseded by the delivery choke point,
+ * which means this single active=false transition covers both future fires and
+ * wakes already queued when the authority was revoked.
+ */
+export async function deactivateLoopForGoal(
+  ownerId: string,
+  goalSubject: string,
+  opts: { sql?: Sql; reason?: string; actor?: string } = {},
+): Promise<boolean> {
+  const subject = goalSubject.trim();
+  if (!subject) return false;
+
+  const sql = opts.sql ?? getOrgPg().sql;
+  const reason = opts.reason?.trim() || `goal authority '${subject}' revoked`;
+  const actor = opts.actor?.trim() || 'goal-authority-revocation';
+  const ended = await sql<
+    Array<{
+      id: string;
+      workspace_id: string;
+      install_slug: string;
+      name: string | null;
+      target_role: string | null;
+      target_owner_id: string | null;
+      reschedule_interval_sec: number | null;
+    }>
+  >`
+    UPDATE harness_shared.routines
+       SET active = FALSE, updated_at = now(),
+           metadata = (COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source')
+                    || jsonb_build_object(
+                         'loop_paused_reason', ${reason}::text,
+                         'loop_paused_at', now()::text,
+                         'pause', jsonb_build_object(
+                           'reason', ${reason}::text,
+                           'pausedAtMs', (extract(epoch from now()) * 1000)::bigint
+                         )
+                       )
+     WHERE name = ${loopRoutineName(ownerId)}
+       AND target_owner_id = ${ownerId}
+       AND active = TRUE
+       AND position(lower(${subject}) in lower(COALESCE(payload_template->>'goal', ''))) > 0
+    RETURNING id, workspace_id, install_slug, name, target_role, target_owner_id,
+              reschedule_interval_sec
+  `;
+
+  for (const row of ended) {
+    void recordLoopTransition(sql, {
+      workspaceId: row.workspace_id,
+      installSlug: row.install_slug,
+      routineId: row.id,
+      routineName: row.name,
+      targetRole: row.target_role,
+      targetOwnerId: row.target_owner_id ?? ownerId,
+      event: 'disarmed',
+      actor,
+      newNextFireAt: null,
+      intervalSec: row.reschedule_interval_sec,
+      detail: { reason, goalSubject: subject, authorityRevoked: true },
+    });
+  }
+  return ended.length > 0;
+}
+
+/**
  * Intentionally hand an active engine loop to another session without ending and
  * recreating it. The single UPDATE is the ownership cutover: cadence, fire
  * history, parked state, limits, and carry policy stay on the same routine row.

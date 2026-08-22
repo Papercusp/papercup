@@ -50,6 +50,7 @@ const h = vi.hoisted(() => ({
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ msg_id: 'm-1' })),
   refreshControlAnchorAfterMutation: vi.fn(async (_opts: unknown) => ({ generation: 1 })),
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
+  deactivateLoopForGoal: vi.fn(async (..._args: unknown[]) => false),
   assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
   retractFact: vi.fn(async (_args: unknown) => true),
   // EI-20015592992797890: set.ts reads the INCUMBENT subject before refusing a
@@ -81,7 +82,10 @@ vi.mock('../../goal-launch-settings', async () => {
 });
 // Partial mock on purpose: set.ts uses only getLoopStatus from this module, and a real
 // import would drag the org-PG client into a unit test.
-vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: h.getLoopStatus }));
+vi.mock('../../harness/routines/loop', () => ({
+  getLoopStatus: h.getLoopStatus,
+  deactivateLoopForGoal: h.deactivateLoopForGoal,
+}));
 vi.mock('../coordination/messages', () => ({ sendMessage: h.sendMessage }));
 // Partial-shaped on purpose, like the loop mock above: set.ts uses exactly these
 // three bindings, and the real module opens a PG client at import.
@@ -140,6 +144,7 @@ beforeEach(() => {
   h.sendMessage.mockClear().mockResolvedValue({ msg_id: 'm-1' });
   h.refreshControlAnchorAfterMutation.mockClear().mockResolvedValue({ generation: 1 });
   h.getLoopStatus.mockClear().mockResolvedValue(null);
+  h.deactivateLoopForGoal.mockClear().mockResolvedValue(false);
   h.assertFact.mockClear().mockResolvedValue({ ok: true });
   h.retractFact.mockClear().mockResolvedValue(true);
   h.getModeSubject.mockClear().mockResolvedValue(null);
@@ -201,6 +206,33 @@ describe('mode:set — a subject-requiring mode must resolve a subject', () => {
     const res = parse(await run({ mode: 'goal', reason: 'done', enabled: false }));
     expect(res.ok).toBe(true);
     expect(h.setMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearing GOAL deactivates only the loop tied to the surrendered subject', async () => {
+    h.getModeSubject.mockResolvedValue('goal-123');
+    h.deactivateLoopForGoal.mockResolvedValue(true);
+
+    const res = parse(await run({ mode: 'goal', reason: 'authority transferred', enabled: false }));
+
+    expect(h.deactivateLoopForGoal).toHaveBeenCalledWith(
+      ME,
+      'goal-123',
+      expect.objectContaining({
+        actor: ME,
+        reason: expect.stringContaining("authority 'goal-123' revoked"),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, goalLoopDeactivated: true });
+  });
+
+  it('does not deactivate a loop when the GOAL clear is a store no-op', async () => {
+    h.getModeSubject.mockResolvedValue('goal-123');
+    h.setMode.mockResolvedValue({ ok: true, mode: { id: 'goal' }, noop: true });
+
+    const res = parse(await run({ mode: 'goal', reason: 'already cleared', enabled: false }));
+
+    expect(res).toMatchObject({ ok: true, noop: true });
+    expect(h.deactivateLoopForGoal).not.toHaveBeenCalled();
   });
 
   /* CONTROL. Without this, every assertion above would still pass if the guard

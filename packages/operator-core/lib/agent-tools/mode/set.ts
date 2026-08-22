@@ -29,7 +29,7 @@ import { setMode, getModeSubject } from '../../modes/store';
 import { goalHolderPolicyProblem, readGoalLaunchSettings } from '../../goal-launch-settings';
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
-import { getLoopStatus } from '../../harness/routines/loop';
+import { deactivateLoopForGoal, getLoopStatus } from '../../harness/routines/loop';
 
 const MODE_IDS = MODES.map((m) => m.id);
 
@@ -295,6 +295,18 @@ export default defineTool({
     const ownerAuthorized = isSelf || callerIsOwnerAuthority;
     const workspaceId = ident.workspaceId ?? 'default';
 
+    // Capture the incumbent GOAL subject before clearing it. The mode row is
+    // deleted by setMode, so this is the only point where the surrendered
+    // authority can still be joined to its armed loop.
+    let incumbentSubject: string | null = null;
+    if (modeRequiresSubject(def.id)) {
+      try {
+        incumbentSubject = await getModeSubject(workspaceId, target, def.id);
+      } catch {
+        incumbentSubject = null;
+      }
+    }
+
     /* EI-20015592992797890 — the door that could enter GOAL mode unattributed.
        `subject` is what every downstream consumer joins on (work_items.goal_id is
        stamped FROM it; the goal stop attributes sessions BY it), and it is
@@ -315,12 +327,6 @@ export default defineTool({
       // apart from a re-registration of a session that is already attached.
       // Fail CLOSED: a read error must not admit an unattributed entry, since
       // that is the exact silent state this guard exists to prevent.
-      let incumbentSubject: string | null = null;
-      try {
-        incumbentSubject = await getModeSubject(workspaceId, target, def.id);
-      } catch {
-        incumbentSubject = null;
-      }
       const effective = supplied ?? incumbentSubject;
       if (!effective) {
         return {
@@ -417,6 +423,26 @@ export default defineTool({
       // Tri-state: omitted ⇒ leave the incumbent's subject untouched.
       ...(supplied ? { subject: supplied } : {}),
     });
+
+    // EI-21123319355080521: clearing GOAL authority must also stop the matching
+    // armed loop. Do this only after the mode clear commits, and match on the
+    // structured loop goal so an unrelated AUTO loop for the same owner survives.
+    let goalLoopDeactivated: boolean | null = null;
+    if (res.ok && !res.noop && !enabled && def.id === 'goal' && incumbentSubject) {
+      try {
+        goalLoopDeactivated = await deactivateLoopForGoal(target, incumbentSubject, {
+          reason: `mode 'goal' cleared — authority '${incumbentSubject}' revoked`,
+          actor: ident.ownerId,
+        });
+      } catch (e) {
+        // The mode clear already landed; keep it successful while surfacing that
+        // the loop-side cleanup needs attention rather than hiding the failure.
+        console.warn(
+          `[mode:set] goal loop deactivation failed for owner=${target} subject=${incumbentSubject}: ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
     const control = res.ok && !res.noop
       ? await refreshControlAnchorAfterMutation({
           ownerId: target,
@@ -617,6 +643,7 @@ export default defineTool({
       target,
       enabled,
       noop: res.noop ?? false,
+      ...(goalLoopDeactivated !== null ? { goalLoopDeactivated } : {}),
       switchedFrom: res.switchedFrom ?? null,
       stickyConflict: res.stickyConflict ?? false,
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
