@@ -50,6 +50,100 @@ printf '%s\\n' "$@" > "$VERIFY_TAURI_POLL_CAPTURE"
   return { dir, evalCapture, pollCapture, fakePoll };
 }
 
+const P014_CAPTURE_NAMES = [
+  'work-items',
+  'learning-observations',
+  'learning-improve',
+  'learning-retain',
+  'git-history',
+  'logs',
+  'coordination-history',
+  'cupboard',
+] as const;
+
+function runFakeCountSurfacesAcceptance(
+  captureMode: 'duplicate' | 'failure' | 'success',
+) {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-count-surfaces-'));
+  const output = join(dir, 'output');
+  const fakeTool = join(dir, 'tauri-agent-tools');
+  const fakePoll = join(dir, 'poll-dom.sh');
+
+  writeFileSync(
+    fakeTool,
+    `#!/usr/bin/env bash
+set -euo pipefail
+command="$1"
+shift
+case "$command" in
+  page-state|process-tree|eval)
+    printf '{}\\n'
+    ;;
+  check)
+    ;;
+  list-windows)
+    [ "\${DISPLAY:-}" = :91 ] || exit 33
+    printf '%s\\n' '[{"windowId":"4242001","pid":4242,"name":"helper","width":10,"height":10},{"windowId":"4242002","pid":4242,"name":"Papercusp","width":1280,"height":800},{"windowId":"9999","pid":9999,"name":"Papercusp dev (npm run dev)","width":1600,"height":900}]'
+    ;;
+  capture)
+    [ "\${DISPLAY:-}" = :91 ] || exit 33
+    capture_output=''
+    window_id=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --output)
+          capture_output="$2"
+          shift 2
+          ;;
+        --window-id)
+          window_id="$2"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    [ -n "$capture_output" ] || exit 30
+    [ "$window_id" = 4242002 ] || exit 32
+    mkdir -p "$capture_output"
+    if [ "\${P014_FAKE_CAPTURE_MODE:-failure}" != failure ]; then
+      printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' | base64 -d > "$capture_output/screenshot.png"
+      if [ "\${P014_FAKE_CAPTURE_MODE}" = success ]; then
+        printf '%s' "$capture_output" >> "$capture_output/screenshot.png"
+      fi
+      printf '{"errorCount":0,"files":{"screenshot.png":"%s"}}\\n' "$capture_output/screenshot.png"
+    else
+      printf '{"errorCount":1,"files":{"screenshot.png":"error: xdotool failed"}}\\n'
+    fi
+    ;;
+  *)
+    exit 31
+    ;;
+esac
+`,
+  );
+  writeFileSync(fakePoll, '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(fakeTool, 0o755);
+  chmodSync(fakePoll, 0o755);
+
+  const result = spawnSync('bash', [COUNT_SURFACES_SCRIPT], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PAPERCUSP_SID: 'p014-regression',
+      P014_FAKE_CAPTURE_MODE: captureMode,
+      VERIFY_COUNT_SURFACES_OUTPUT: output,
+      VERIFY_TAURI_AGENT_TOOLS_BIN: fakeTool,
+      VERIFY_TAURI_DISPLAY: ':91',
+      VERIFY_TAURI_PID: '4242',
+      VERIFY_TAURI_POLL: fakePoll,
+    },
+  });
+
+  return { output, result };
+}
+
 describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
   it('documents the safe outer-double/single-JS-quote recipe', () => {
     expect(src).toContain(`'${EXPRESSION.replaceAll('"', '\\"')}'`);
@@ -150,23 +244,66 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
   it('makes population mismatches, console errors, and missing provenance fail closed', () => {
     expect(countSurfacesSrc).toContain('set -euo pipefail');
     expect(countSurfacesSrc).toContain('missing PAPERCUSP_SID provenance');
+    expect(countSurfacesSrc).toContain(
+      'missing provenance-checked VERIFY_TAURI_DISPLAY',
+    );
+    expect(countSurfacesSrc).toContain('list-windows --json');
+    expect(countSurfacesSrc).toContain('DISPLAY="$P014_TAURI_DISPLAY"');
+    expect(countSurfacesSrc).toContain('--window-id "$P014_TAURI_WINDOW_ID"');
+    expect(countSurfacesSrc).not.toContain('--title Papercusp');
     expect(countSurfacesSrc).toContain('--no-errors');
     expect(countSurfacesSrc).toContain('/loaded/i.test');
     expect(countSurfacesSrc).toContain('facets.reduce((a, b) => a + b, 0) === total');
   });
 
+  it('fails closed when capture reports screenshot errors despite exiting zero', () => {
+    const { result } = runFakeCountSurfacesAcceptance('failure');
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).not.toContain('P014_TAURI_ACCEPTANCE_OK');
+    expect(result.stderr).toContain(
+      'P014_TAURI_CAPTURE_INVALID name=work-items reason=errorCount=1',
+    );
+  });
+
+  it('fails closed when eight valid PNGs all depict the same wrong window', () => {
+    const { result } = runFakeCountSurfacesAcceptance('duplicate');
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).not.toContain('P014_TAURI_ACCEPTANCE_OK');
+    expect(result.stderr).toContain(
+      'P014_TAURI_SCREENSHOT_SET_INVALID reason=duplicate-hash=',
+    );
+  });
+
+  it('emits the terminal marker only after eight validated PNG captures', () => {
+    const { output, result } = runFakeCountSurfacesAcceptance('success');
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('P014_TAURI_SCREENSHOT_SET_OK unique=8');
+    expect(result.stdout.match(/P014_TAURI_ACCEPTANCE_OK/g)).toHaveLength(1);
+    const selected = JSON.parse(
+      readFileSync(join(output, 'window-selected.json'), 'utf8'),
+    ) as { targetPid: number; selected: { windowId: string; name: string } };
+    expect(selected).toMatchObject({
+      targetPid: 4242,
+      selected: { windowId: '4242002', name: 'Papercusp' },
+    });
+    for (const capture of P014_CAPTURE_NAMES) {
+      const record = JSON.parse(
+        readFileSync(join(output, `${capture}-result.json`), 'utf8'),
+      ) as { errorCount: number; files: Record<string, string> };
+      expect(record.errorCount).toBe(0);
+      expect(readFileSync(record.files['screenshot.png']).subarray(0, 8)).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      );
+    }
+  });
+
   it('writes route-specific captures and one unambiguous terminal marker', () => {
-    for (const capture of [
-      'p014_capture work-items',
-      'p014_capture learning-observations',
-      'p014_capture learning-improve',
-      'p014_capture learning-retain',
-      'p014_capture git-history',
-      'p014_capture logs',
-      'p014_capture coordination-history',
-      'p014_capture cupboard',
-    ]) {
-      expect(countSurfacesSrc).toContain(capture);
+    for (const capture of P014_CAPTURE_NAMES) {
+      expect(countSurfacesSrc).toContain(`p014_capture ${capture}`);
     }
     expect(countSurfacesSrc).toContain('P014_TAURI_ACCEPTANCE_OK');
   });

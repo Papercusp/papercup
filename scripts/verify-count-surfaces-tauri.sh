@@ -10,6 +10,7 @@ set -euo pipefail
 P014_TAURI_TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-}"
 P014_TAURI_PID="${VERIFY_TAURI_PID:-}"
 P014_TAURI_POLL="${VERIFY_TAURI_POLL:-}"
+P014_TAURI_DISPLAY="${VERIFY_TAURI_DISPLAY:-}"
 P014_ACCEPTANCE_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 P014_ACCEPTANCE_OUTPUT="${VERIFY_COUNT_SURFACES_OUTPUT:-/tmp/papercusp-p014-tauri-${P014_ACCEPTANCE_STAMP}}"
 
@@ -19,6 +20,10 @@ P014_ACCEPTANCE_OUTPUT="${VERIFY_COUNT_SURFACES_OUTPUT:-/tmp/papercusp-p014-taur
 }
 [ -n "$P014_TAURI_PID" ] || {
   echo "P014_TAURI_FAIL missing provenance-checked VERIFY_TAURI_PID" >&2
+  exit 64
+}
+[ -n "$P014_TAURI_DISPLAY" ] || {
+  echo "P014_TAURI_FAIL missing provenance-checked VERIFY_TAURI_DISPLAY" >&2
   exit 64
 }
 [ -n "$P014_TAURI_POLL" ] && [ -x "$P014_TAURI_POLL" ] || {
@@ -31,6 +36,65 @@ P014_ACCEPTANCE_OUTPUT="${VERIFY_COUNT_SURFACES_OUTPUT:-/tmp/papercusp-p014-taur
 }
 
 mkdir -p "$P014_ACCEPTANCE_OUTPUT"
+
+P014_WINDOW_INVENTORY="$P014_ACCEPTANCE_OUTPUT/windows.json"
+P014_SELECTED_WINDOW="$P014_ACCEPTANCE_OUTPUT/window-selected.json"
+DISPLAY="$P014_TAURI_DISPLAY" \
+  "$P014_TAURI_TOOL" list-windows --json >"$P014_WINDOW_INVENTORY"
+P014_TAURI_WINDOW_ID="$(
+  node - "$P014_WINDOW_INVENTORY" "$P014_TAURI_PID" "$P014_SELECTED_WINDOW" <<'NODE'
+const fs = require('node:fs');
+
+const [inventoryFile, pidText, selectedFile] = process.argv.slice(2);
+const targetPid = Number(pidText);
+
+function fail(reason) {
+  console.error(`P014_TAURI_WINDOW_INVALID pid=${pidText} reason=${reason}`);
+  process.exit(1);
+}
+
+let windows;
+try {
+  windows = JSON.parse(fs.readFileSync(inventoryFile, 'utf8'));
+} catch (error) {
+  fail(`inventory-json:${error instanceof Error ? error.message : String(error)}`);
+}
+if (!Array.isArray(windows) || !Number.isInteger(targetPid)) {
+  fail('inventory-shape');
+}
+
+const candidates = windows
+  .filter((window) => Number(window?.pid) === targetPid)
+  .filter((window) => Number.isFinite(window?.width) && Number.isFinite(window?.height))
+  .filter((window) => window.width > 0 && window.height > 0)
+  .sort((a, b) => (b.width * b.height) - (a.width * a.height));
+if (candidates.length === 0) {
+  fail('no-owned-window');
+}
+
+const selected = candidates[0];
+if (!/^\d+$/.test(String(selected.windowId))) {
+  fail(`window-id=${JSON.stringify(selected.windowId)}`);
+}
+
+fs.writeFileSync(
+  selectedFile,
+  JSON.stringify({ targetPid, selected, candidates }, null, 2),
+);
+process.stdout.write(String(selected.windowId));
+NODE
+)"
+
+P014_CAPTURE_NAMES=(
+  work-items
+  learning-observations
+  learning-improve
+  learning-retain
+  git-history
+  logs
+  coordination-history
+  cupboard
+)
 
 p014_navigate() {
   local expression="$1"
@@ -79,17 +143,129 @@ p014_console_clean() {
     --duration 2500
 }
 
+p014_validate_capture_result() {
+  local name="$1"
+  local result_file="$2"
+  local capture_dir="$3"
+
+  node - "$name" "$result_file" "$capture_dir" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [name, resultFile, captureDir] = process.argv.slice(2);
+
+function fail(reason) {
+  console.error(`P014_TAURI_CAPTURE_INVALID name=${name} reason=${reason}`);
+  process.exit(1);
+}
+
+let result;
+try {
+  result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+} catch (error) {
+  fail(`result-json:${error instanceof Error ? error.message : String(error)}`);
+}
+
+if (!Number.isInteger(result?.errorCount) || result.errorCount !== 0) {
+  fail(`errorCount=${String(result?.errorCount)}`);
+}
+
+const screenshot = result?.files?.['screenshot.png'] ?? result?.files?.screenshot;
+if (typeof screenshot !== 'string' || screenshot.length === 0 || screenshot.startsWith('error:')) {
+  fail(`screenshot=${JSON.stringify(screenshot)}`);
+}
+
+const expectedScreenshot = path.resolve(captureDir, 'screenshot.png');
+const reportedScreenshot = path.resolve(screenshot);
+if (reportedScreenshot !== expectedScreenshot) {
+  fail(`screenshot-path=${JSON.stringify(screenshot)}`);
+}
+
+let stat;
+try {
+  stat = fs.lstatSync(reportedScreenshot);
+} catch (error) {
+  fail(`screenshot-stat:${error instanceof Error ? error.message : String(error)}`);
+}
+if (!stat.isFile() || stat.size <= 8) {
+  fail(`screenshot-file type=${stat.isFile() ? 'file' : 'non-file'} size=${stat.size}`);
+}
+
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const actualSignature = Buffer.alloc(pngSignature.length);
+const fd = fs.openSync(reportedScreenshot, 'r');
+try {
+  fs.readSync(fd, actualSignature, 0, actualSignature.length, 0);
+} finally {
+  fs.closeSync(fd);
+}
+if (!actualSignature.equals(pngSignature)) {
+  fail('screenshot-not-png');
+}
+NODE
+}
+
+p014_validate_screenshot_set() {
+  node - "$P014_ACCEPTANCE_OUTPUT" "${P014_CAPTURE_NAMES[@]}" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [artifactDir, ...names] = process.argv.slice(2);
+
+function fail(reason) {
+  console.error(`P014_TAURI_SCREENSHOT_SET_INVALID reason=${reason}`);
+  process.exit(1);
+}
+
+if (names.length !== 8) {
+  fail(`capture-count=${names.length}`);
+}
+
+const byHash = new Map();
+for (const name of names) {
+  let result;
+  try {
+    result = JSON.parse(
+      fs.readFileSync(path.join(artifactDir, `${name}-result.json`), 'utf8'),
+    );
+  } catch (error) {
+    fail(`${name}:result-json:${error instanceof Error ? error.message : String(error)}`);
+  }
+  const screenshot = result?.files?.['screenshot.png'] ?? result?.files?.screenshot;
+  if (typeof screenshot !== 'string') {
+    fail(`${name}:missing-screenshot`);
+  }
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(screenshot)).digest('hex');
+  const duplicates = byHash.get(hash) ?? [];
+  duplicates.push(name);
+  byHash.set(hash, duplicates);
+}
+
+const duplicate = [...byHash.entries()].find(([, namesForHash]) => namesForHash.length > 1);
+if (duplicate) {
+  fail(`duplicate-hash=${duplicate[0]} routes=${duplicate[1].join(',')}`);
+}
+
+console.log(`P014_TAURI_SCREENSHOT_SET_OK unique=${byHash.size}`);
+NODE
+}
+
 p014_capture() {
   local name="$1"
   local expression="$2"
-  "$P014_TAURI_TOOL" capture \
+  local result_file="$P014_ACCEPTANCE_OUTPUT/$name-result.json"
+  local capture_dir="$P014_ACCEPTANCE_OUTPUT/$name"
+  DISPLAY="$P014_TAURI_DISPLAY" "$P014_TAURI_TOOL" capture \
     --pid "$P014_TAURI_PID" \
     --strict \
-    --output "$P014_ACCEPTANCE_OUTPUT/$name" \
+    --window-id "$P014_TAURI_WINDOW_ID" \
+    --output "$capture_dir" \
     --dom-depth 8 \
     --logs-duration 2500 \
     --eval "$expression" \
-    --json >"$P014_ACCEPTANCE_OUTPUT/$name-result.json"
+    --json >"$result_file"
+  p014_validate_capture_result "$name" "$result_file" "$capture_dir"
 }
 
 # Frozen-bundle/process identity. The outer verifier has already matched both
@@ -212,6 +388,8 @@ p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/cupboard", search: {} })'
 p014_assert '(() => { const pagination = document.querySelector("[data-testid=cupboard-pagination] span"); const all = document.querySelector("[data-testid=cupboard-kind-count-all]"); if (!pagination || !all) return false; const m = /^Showing (\d[\d,]*) of (\d[\d,]*)$/.exec((pagination.textContent || "").trim()); const total = Number((all.textContent || "").replaceAll(",", "")); if (!m || !Number.isFinite(total)) return false; const loaded = Number(m[1].replaceAll(",", "")); const exact = Number(m[2].replaceAll(",", "")); const facets = [...document.querySelectorAll("[data-testid^=cupboard-kind-count-]")].filter((e) => e.getAttribute("data-testid") !== "cupboard-kind-count-all").map((e) => Number((e.textContent || "").replaceAll(",", ""))).filter(Number.isFinite); return loaded >= 0 && loaded <= exact && exact === total && facets.reduce((a, b) => a + b, 0) === total; })()'
 p014_console_clean
 p014_capture cupboard 'JSON.stringify({ route: location.pathname + location.search, pagination: document.querySelector("[data-testid=cupboard-pagination] span")?.textContent?.trim(), all: document.querySelector("[data-testid=cupboard-kind-count-all]")?.textContent?.trim(), kindFacets: Object.fromEntries([...document.querySelectorAll("[data-testid^=cupboard-kind-count-]")].map((e) => [e.getAttribute("data-testid"), e.textContent?.trim()])), expected: "Showing loaded of exact total; All equals exact total and sum of visible server-authored kind facets" })'
+
+p014_validate_screenshot_set
 
 "$P014_TAURI_TOOL" page-state --pid "$P014_TAURI_PID" --strict --json \
   >"$P014_ACCEPTANCE_OUTPUT/page-state-final.json"
