@@ -7,6 +7,15 @@ import {
   MEASUREMENT_CONTEXT_WINDOW,
 } from './fact-measurement-detector';
 
+type AssertSchemaField = { description?: string };
+
+const assertSchemaField = (name: string): AssertSchemaField => {
+  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
+  const field = options.map((option) => option.shape[name]).find(Boolean);
+  if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
+  return field as AssertSchemaField;
+};
+
 describe('fact measurement detector — moving numbers get an advisory', () => {
   it('flags the incident shape: measured status counts that can change after the write', () => {
     const signals = detectFactMeasurements(
@@ -61,7 +70,7 @@ describe('fact measurement detector — moving numbers get an advisory', () => {
     expect(notWhen).toMatch(/invariant conclusion/i);
     expect(notWhen).toMatch(/remeasure/i);
     expect(notWhen).toMatch(/historical/i);
-    expect(assertTool.args.shape.subjectVolatile.description).toMatch(/SNAPSHOT|15 minutes/);
-    expect(assertTool.args.shape.measuredAt.description).toMatch(/ISO timestamp|subjectVolatile/);
+    expect(assertSchemaField('subjectVolatile').description).toMatch(/SNAPSHOT|15 minutes/);
+    expect(assertSchemaField('measuredAt').description).toMatch(/ISO timestamp|subjectVolatile/);
   });
 });
