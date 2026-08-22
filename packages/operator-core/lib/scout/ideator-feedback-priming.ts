@@ -88,6 +88,82 @@ export interface GraderFeedbackPriming {
   priming: string;
 }
 
+/** A recent Scout-origin filing shown back to the next ideation pass. */
+export interface RecentScoutFilingView {
+  lens: string;
+  ideaId?: string;
+  title?: string;
+  routedAt?: string;
+}
+
+/** Bounds for the recent-filing self-dedup priming block. */
+export interface RecentScoutFilingPrimingOptions {
+  maxEntries?: number;
+  maxBlockChars?: number;
+  maxEntryChars?: number;
+  /** Test/drill seam; production reads the Scout-origin routed-idea ledger. */
+  readRows?: () => Promise<RecentScoutFilingView[]>;
+  workspaceId?: string;
+  harnessSlug?: string;
+}
+
+export interface RecentScoutFilingPriming {
+  entries: string[];
+  priming: string;
+}
+
+/** The recent-filing block is deliberately separate from grader feedback. */
+export const RECENT_SCOUT_FILINGS_HEADING = '## Your recent Scout filings';
+export const MAX_RECENT_SCOUT_FILINGS = 10;
+export const MAX_RECENT_SCOUT_FILINGS_BLOCK_CHARS = 1500;
+export const MAX_RECENT_SCOUT_FILING_ENTRY_CHARS = 160;
+
+const RECENT_SCOUT_FILINGS_GUIDANCE =
+  'These are ideas you already routed recently. Do not re-file one as-is; extend it only with a concrete new mechanism or measurement, and state what is new.';
+
+function filingSortKey(row: RecentScoutFilingView): string {
+  return row.routedAt ?? '';
+}
+
+function shortFilingDate(value?: string): string | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : undefined;
+}
+
+/**
+ * Pure formatter for the recent Scout-filing self-dedup block. It is guidance,
+ * not a hard rejection: a later filing may be a useful amendment when it says
+ * what new evidence or mechanism it adds.
+ */
+export function formatRecentScoutFilingPriming(
+  rows: readonly RecentScoutFilingView[],
+  opts: Omit<RecentScoutFilingPrimingOptions, 'readRows' | 'workspaceId' | 'harnessSlug'> = {},
+): RecentScoutFilingPriming {
+  const maxEntries = Math.max(0, opts.maxEntries ?? MAX_RECENT_SCOUT_FILINGS);
+  const maxBlockChars = Math.max(0, opts.maxBlockChars ?? MAX_RECENT_SCOUT_FILINGS_BLOCK_CHARS);
+  const maxEntryChars = Math.max(1, opts.maxEntryChars ?? MAX_RECENT_SCOUT_FILING_ENTRY_CHARS);
+  const recent = [...rows]
+    .filter((row) => Boolean((row.title ?? '').trim() || row.ideaId))
+    .sort((a, b) => (filingSortKey(a) < filingSortKey(b) ? 1 : filingSortKey(a) > filingSortKey(b) ? -1 : 0))
+    .slice(0, maxEntries);
+  if (recent.length === 0) return { entries: [], priming: '' };
+
+  const entries = recent.map((row) => {
+    const title = oneLine(row.title ?? '') || row.ideaId || '(untitled idea)';
+    const lens = oneLine(row.lens) || 'unknown lens';
+    const date = shortFilingDate(row.routedAt);
+    const line = `- [${lens}${date ? ` · ${date}` : ''}] ${title}`;
+    return truncate(line, maxEntryChars);
+  });
+  const base = [RECENT_SCOUT_FILINGS_HEADING, RECENT_SCOUT_FILINGS_GUIDANCE];
+  while (entries.length > 0 && [...base, ...entries].join('\n').length > maxBlockChars) entries.pop();
+  if (entries.length === 0) {
+    return { entries: [], priming: maxBlockChars > 0 ? base.join('\n').slice(0, maxBlockChars) : '' };
+  }
+  return { entries, priming: [...base, ...entries].join('\n') };
+}
+
 /** One line, no internal newlines — entries are single ledger lines. */
 function oneLine(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
@@ -176,6 +252,33 @@ export async function gatherGraderFeedbackPriming(
      
     console.warn(
       '[scout/ideator-feedback-priming] graded-ledger read failed — no grader priming this cycle:',
+      err instanceof Error ? err.message : err,
+    );
+    return { entries: [], priming: '' };
+  }
+}
+
+/**
+ * Production recent-filing gatherer. Scout-origin rows are scoped to the
+ * current harness and bounded before the read; any ledger failure is fail-open
+ * so a stale/unavailable history can never stop ideation.
+ */
+export async function gatherRecentScoutFilingPriming(
+  opts: RecentScoutFilingPrimingOptions = {},
+): Promise<RecentScoutFilingPriming> {
+  try {
+    const rows = await (opts.readRows
+      ? opts.readRows()
+      : readRoutedIdeas({
+          workspaceId: opts.workspaceId,
+          harnessSlug: opts.harnessSlug,
+          origin: 'scout',
+          limit: opts.maxEntries ?? MAX_RECENT_SCOUT_FILINGS,
+        }));
+    return formatRecentScoutFilingPriming(rows, opts);
+  } catch (err) {
+    console.warn(
+      '[scout/ideator-feedback-priming] recent Scout-filing read failed — no self-dedup priming this cycle:',
       err instanceof Error ? err.message : err,
     );
     return { entries: [], priming: '' };
