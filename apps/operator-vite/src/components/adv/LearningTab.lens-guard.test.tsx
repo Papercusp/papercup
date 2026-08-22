@@ -59,11 +59,12 @@ import { cleanup, render } from "@testing-library/react";
 // ─── Minimal harness (mirrors LearningTab.test.tsx's pinned-sibling pattern) ────
 
 if (!("ResizeObserver" in globalThis)) {
-  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
 }
 
 const nuqsState: Record<string, unknown> = {
@@ -132,22 +133,24 @@ vi.mock("@/app/harness/filters", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/app/harness/filters")>();
   return {
     ...actual,
-  // LearningTab parses the shared URL-backed filter state before issuing its
-  // reads. This render probe owns the state bag directly, so only the parser's
-  // module shape is needed here.
-  parseAsColumnFilters: () => ({}),
-  useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
-    rows,
-    controller: null,
-    activeChips: [],
-    hasActive: false,
-    clearAll: () => {},
-  }),
-  ColumnFilterBar: () => null,
+    // LearningTab parses the shared URL-backed filter state before issuing its
+    // reads. This render probe owns the state bag directly, so only the parser's
+    // module shape is needed here.
+    parseAsColumnFilters: () => ({}),
+    useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
+      rows,
+      controller: null,
+      activeChips: [],
+      hasActive: false,
+      clearAll: () => {},
+    }),
+    ColumnFilterBar: () => null,
   };
 });
 vi.mock("@/app/harness/Select", () => ({
-  Select: ({ ariaLabel }: { ariaLabel?: string }) => <select aria-label={ariaLabel} />,
+  Select: ({ ariaLabel }: { ariaLabel?: string }) => (
+    <select aria-label={ariaLabel} />
+  ),
 }));
 vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (k: string) => k }));
 
@@ -265,7 +268,8 @@ const CONDITIONALLY_ENABLED_READS: Record<string, string> = {
  */
 const TAB_CHROME_READS: Record<string, string> = {
   "learning.health": "header infra-health chip — pipeline health, not per-pot",
-  "learning.releaseReadiness": "Verify-stage GO/NO-GO strip — workspace governance state",
+  "learning.releaseReadiness":
+    "Verify-stage GO/NO-GO strip — workspace governance state",
   "learning.loopControl":
     "header pause/resume chip + loop spend (WI-39501) — renders in the stage row " +
     "beside every view; the self-improvement routine GROUP and its spend rollup are " +
@@ -274,10 +278,20 @@ const TAB_CHROME_READS: Record<string, string> = {
 
 const scenarios = {
   /** Pot selected, scope resolved. Discriminates a missing pot ARG. */
-  POT_READY: { allMode: false, slug: "alpha-hive", hive: "alpha-hive", ready: true },
+  POT_READY: {
+    allMode: false,
+    slug: "alpha-hive",
+    hive: "alpha-hive",
+    ready: true,
+  },
   /** Pot selected, scope NOT resolved. Discriminates a missing readiness GATE:
    *  gated siblings go false, an ungated leg stays true. */
-  POT_PENDING: { allMode: false, slug: "alpha-hive", hive: "alpha-hive", ready: false },
+  POT_PENDING: {
+    allMode: false,
+    slug: "alpha-hive",
+    hive: "alpha-hive",
+    ready: false,
+  },
   /** "All Pots" — the broadest lens, represented as hive ''. Discriminates a leg
    *  gated on a NON-EMPTY hive while its siblings are not. */
   ALL_POTS: { allMode: true, slug: null, hive: "", ready: true },
@@ -294,12 +308,14 @@ function readsFor(view: string, scenario: keyof typeof scenarios): Read[] {
   // De-dupe by call site identity (queryName): React may render twice under
   // StrictMode-ish conditions, and a repeated identical read is not a finding.
   const byName = new Map<string, Read>();
-  for (const r of reads) if (!byName.has(r.queryName)) byName.set(r.queryName, r);
+  for (const r of reads)
+    if (!byName.has(r.queryName)) byName.set(r.queryName, r);
   return [...byName.values()].filter((r) => !(r.queryName in TAB_CHROME_READS));
 }
 
 /** A view's reads, minus the ones a human explicitly registered as workspace-wide. */
-const scoped = (rs: Read[]) => rs.filter((r) => !(r.queryName in WORKSPACE_GLOBAL_READS));
+const scoped = (rs: Read[]) =>
+  rs.filter((r) => !(r.queryName in WORKSPACE_GLOBAL_READS));
 
 beforeEach(() => {
   reads = [];
@@ -317,7 +333,9 @@ describe("Learning views agree with themselves about the pot lens", () => {
 
       const unscoped = rs.filter((r) => r.args?.hive !== "alpha-hive");
       expect(
-        unscoped.map((r) => `${r.queryName} args=${JSON.stringify(r.args ?? {})}`),
+        unscoped.map(
+          (r) => `${r.queryName} args=${JSON.stringify(r.args ?? {})}`,
+        ),
       ).toEqual([]);
     });
 

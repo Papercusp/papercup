@@ -3028,7 +3028,11 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     };
     expect(seenArgs["learning.retainFeed"]).toEqual(expected);
     expect(seenArgs["learning.retainFeed.summary"]).toEqual(expected);
-    expect(screen.getByLabelText(/1 of 10 match in the complete selected Retain corpus/i)).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        /1 of 10 match in the complete selected Retain corpus/i,
+      ),
+    ).toBeTruthy();
   });
 
   // WI-39535: the Memories tab is a first-class kind tab on the unified ledger
