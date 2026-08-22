@@ -150,6 +150,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     [filterBinding.state],
   );
   const filterFingerprint = JSON.stringify(serverFilters);
+  const serverPredicateActive = search.trim() !== '' || Object.keys(serverFilters).length > 0;
 
   // Bounded keyset pagination: every request stays at 500 rows. Cursor pages
   // append idempotently in the client; the server never re-fetches a growing
@@ -217,10 +218,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     return {
       kind: 'corpus',
       count: summary.matched,
-      total: summary.total,
+      ...(serverPredicateActive ? { total: summary.total } : {}),
       population: 'the selected harness work-item corpus',
     };
-  }, [summary, summaryQuery.error, pairedFetching]);
+  }, [summary, summaryQuery.error, pairedFetching, serverPredicateActive]);
   const facetOptions = useMemo(() => workItemFacetOptions(summary), [summary]);
   const cf = useColumnFiltersFromState(columns, items ?? NO_ROWS, {
     ns: WORK_ITEM_FILTER_NS,

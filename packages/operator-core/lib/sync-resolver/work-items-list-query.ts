@@ -278,7 +278,7 @@ function scopedCtes(
        ORDER BY sa.workspace_id, sa.harness_slug, sa.feature_id,
                 sa.started_at DESC NULLS LAST, sa.spawn_id DESC
     ),
-    scoped AS MATERIALIZED (
+    scoped AS (
       SELECT wi.feature_id AS id,
              wi.item_kind AS kind,
              CASE WHEN wi.item_kind = ANY(ARRAY['bug','change','task']::text[])

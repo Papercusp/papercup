@@ -35,6 +35,8 @@ export interface CompanionPredicateParityProbe<Row, Args> {
   beyondPageRowId: string;
   rowId: (row: Row) => string;
   predicate: (row: Row, args: Args) => boolean;
+  /** Non-facet filters that remain active in every drill-down facet pool. */
+  facetBasePredicate?: (row: Row, args: Args) => boolean;
   facetDefs: readonly FacetDef<Row>[];
   selection: (args: Args) => FacetSelection;
   readPage: (args: Args, cursor: string | null) => Promise<ContractPage<Row>>;
@@ -52,10 +54,14 @@ const sameSet = (left: readonly string[], right: readonly string[]): boolean => 
 };
 
 const facetShape = (summary: CompanionListSummary) =>
-  summary.facets.map((group) => ({
-    key: group.key,
-    values: group.values.map((value) => ({ value: value.value, count: value.count })),
-  }));
+  summary.facets
+    .map((group) => ({
+      key: group.key,
+      values: group.values
+        .map((value) => ({ value: value.value, count: value.count }))
+        .sort((a, b) => a.value.localeCompare(b.value)),
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
 
 /**
  * Reusable large-corpus assertion for each P-004..P-012 domain migration.
@@ -83,12 +89,13 @@ export async function assertCompanionPredicateParity<Row, Args>(
     loaded.push(...page.rows);
     if (!page.hasMore) break;
     if (page.rows.length === 0) fail('pagination claims more after a zero-growth page');
-    if (!page.nextCursor) fail('pagination claims more without a next cursor');
-    if (page.nextCursor === cursor || seenCursors.has(page.nextCursor)) {
+    const nextCursor = page.nextCursor;
+    if (!nextCursor) fail('pagination claims more without a next cursor');
+    if (nextCursor === cursor || seenCursors.has(nextCursor)) {
       fail('pagination repeats a cursor while claiming more');
     }
-    seenCursors.add(page.nextCursor);
-    cursor = page.nextCursor;
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
     if (pageNumber === probe.corpus.length + 1) fail('pagination never terminated');
   }
 
@@ -101,7 +108,10 @@ export async function assertCompanionPredicateParity<Row, Args>(
   if (summary.total !== probe.corpus.length) fail('summary total is not the declared corpus size');
   if (summary.matched !== expectedRows.length) fail('summary matched total and row predicate disagree');
 
-  const expectedFacets = computeFacets(probe.corpus, probe.facetDefs, {
+  const facetCorpus = probe.facetBasePredicate
+    ? probe.corpus.filter((row) => probe.facetBasePredicate!(row, probe.args))
+    : probe.corpus;
+  const expectedFacets = computeFacets(facetCorpus, probe.facetDefs, {
     minDistinctValues: 1,
     selection: probe.selection(probe.args),
   });

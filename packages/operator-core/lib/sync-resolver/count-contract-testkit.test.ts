@@ -45,20 +45,31 @@ const selection = (args: Args): FacetSelection =>
   ]);
 
 const predicate = (row: Row, args: Args): boolean =>
-  !args.impossible &&
-  (!args.targetOnly || row.target) &&
+  facetBasePredicate(row, args) &&
   (args.states.length === 0 || args.states.includes(row.state)) &&
   (args.kinds.length === 0 || args.kinds.includes(row.kind));
+
+const facetBasePredicate = (row: Row, args: Args): boolean =>
+  !args.impossible && (!args.targetOnly || row.target);
 
 function summaryFor(args: Args, corpus: readonly Row[] = seeded.rows): CompanionListSummary {
   return {
     total: corpus.length,
     matched: corpus.filter((row) => predicate(row, args)).length,
-    facets: computeFacets(corpus, defs, { minDistinctValues: 1, selection: selection(args) }),
+    facets: computeFacets(corpus.filter((row) => facetBasePredicate(row, args)), defs, {
+      minDistinctValues: 1,
+      selection: selection(args),
+    }),
   };
 }
 
-type BrokenMode = 'none' | 'filter-after-cap' | 'page-facets' | 'missing-zero' | 'repeated-cursor';
+type BrokenMode =
+  | 'none'
+  | 'filter-after-cap'
+  | 'facet-ignores-base'
+  | 'page-facets'
+  | 'missing-zero'
+  | 'repeated-cursor';
 
 function probe(mode: BrokenMode = 'none'): CompanionPredicateParityProbe<Row, Args> {
   const args: Args = { states: ['open'], kinds: ['bug'], targetOnly: true };
@@ -70,6 +81,7 @@ function probe(mode: BrokenMode = 'none'): CompanionPredicateParityProbe<Row, Ar
     beyondPageRowId: seeded.beyondPageRow.id,
     rowId: (row) => row.id,
     predicate,
+    facetBasePredicate,
     facetDefs: defs,
     selection,
     readPage: async (pageArgs, cursor) => {
@@ -94,6 +106,16 @@ function probe(mode: BrokenMode = 'none'): CompanionPredicateParityProbe<Row, Ar
         const full = summaryFor(summaryArgs);
         return { ...full, facets: summaryFor(summaryArgs, seeded.rows.slice(0, PAGE_CAP)).facets };
       }
+      if (mode === 'facet-ignores-base') {
+        const full = summaryFor(summaryArgs);
+        return {
+          ...full,
+          facets: computeFacets(seeded.rows, defs, {
+            minDistinctValues: 1,
+            selection: selection(summaryArgs),
+          }),
+        };
+      }
       return summaryFor(summaryArgs);
     },
   };
@@ -111,6 +133,7 @@ describe('count-contract testkit', () => {
 
   it.each([
     ['a match exists only beyond page one', 'filter-after-cap'],
+    ['facet counts omit a non-facet filter', 'facet-ignores-base'],
     ['facet counts describe only loaded rows', 'page-facets'],
     ['a zero-row result loses its summary/reset path', 'missing-zero'],
     ['pagination repeats a cursor while claiming more', 'repeated-cursor'],

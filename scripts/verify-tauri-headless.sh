@@ -102,6 +102,15 @@
 #     before tauri-agent-tools sees them, producing an invalid assertion.
 #     VERIFY_TAURI_POLL retries a data-dependent DOM assertion after navigation
 #     (bounded by VERIFY_TAURI_DOM_TIMEOUT) instead of racing it with a fixed sleep.
+#     `tauri-agent-tools eval` pretty-prints object results, even when the JS
+#     expression returns JSON.stringify(...). If a shell probe must inspect an
+#     eval result, allow the formatting whitespace:
+#       R="$(tauri-agent-tools eval --pid \"$VERIFY_TAURI_PID\" \
+#         'JSON.stringify({ok: !!document.querySelector(\"...\")})')"
+#       grep -qE '"ok"[[:space:]]*:[[:space:]]*true' <<<"$R"
+#     Prefer VERIFY_TAURI_POLL (or `tauri-agent-tools check --json`) for DOM
+#     assertions; a literal `grep '"ok":true'` never matches pretty-printed
+#     output because the property/value separator includes a space.
 #
 #   scripts/verify-tauri-headless.sh --boot-only
 #     Boots the instance, prints one source command for a private mode-600

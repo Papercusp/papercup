@@ -331,6 +331,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     () => workItemServerFilters(filterBinding.state),
     [filterBinding.state],
   );
+  const serverPredicateActive = Object.keys(serverFilters).length > 0;
   const sharedArgs = useMemo(
     () => ({ harnessSlug: slug, filters: serverFilters }),
     [slug, serverFilters],
@@ -437,10 +438,10 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     return {
       kind: 'corpus',
       count: summary.matched,
-      total: summary.total,
+      ...(serverPredicateActive ? { total: summary.total } : {}),
       population: 'the selected harness work-item corpus',
     };
-  }, [summary, summaryQuery.error, pairedFetching]);
+  }, [summary, summaryQuery.error, pairedFetching, serverPredicateActive]);
   const facetOptions = useMemo(() => workItemFacetOptions(summary), [summary]);
   const cf = useColumnFiltersFromState(filterColumns, filterCorpus, {
     ns: WORK_ITEM_FILTER_NS,
