@@ -1,6 +1,7 @@
 import AdmZip from 'adm-zip';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
 import { buildPersonalAmbientContextBlock, type PersonalAmbientDeps } from './ambient';
 import { parsePersonalArchive } from './archive-import';
@@ -29,6 +30,23 @@ beforeAll(async () => {
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'personal-test-' + Date.now()}, 'Personal Test') RETURNING id`;
   userId = user.id;
+  const emailType = await getDatatype(org.adminSql, 'papercusp-workspace', 'email-message');
+  if (!emailType) throw new Error('personal_vault_test_email_datatype_missing');
+  await upsertDatatype(org.adminSql, {
+    id: emailType.id,
+    workspaceId: WS,
+    potSlug: emailType.potSlug,
+    title: emailType.title,
+    description: emailType.description,
+    tier: emailType.tier,
+    workItemKind: emailType.workItemKind,
+    payloadSchema: emailType.payloadSchema,
+    authoritativeWriter: emailType.authoritativeWriter,
+    selfImprovement: emailType.selfImprovement,
+    published: emailType.published,
+    tags: emailType.tags,
+    createdBy: 'personal-vault-integration',
+  });
 });
 
 afterAll(async () => {
