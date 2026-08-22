@@ -66,6 +66,16 @@ const holder = (owner: string) => ({
 beforeEach(() => vi.clearAllMocks());
 
 describe('locks:list — host-global domain resolution (EI-18674647773291145)', () => {
+  it('makes the workspace-global scope and resource-only filter explicit', () => {
+    expect(tool.name).toBe('locks:list');
+    expect(tool.capability).toBe('locks:read');
+    expect(tool.description).toContain('workspace-global lock diagnostic: omit workspace/harness');
+    expect(tool.guidance?.chaining).toContain('omit workspace/harness');
+    expect(tool.args.safeParse({}).success).toBe(true);
+    expect(tool.args.safeParse({ resource: 'dev-server' }).success).toBe(true);
+    expect(tool.args.safeParse({ workspace: 'papercusp-workspace' }).success).toBe(false);
+  });
+
   it('scoped to a host-global resource: queries hostGlobalLockDomain, NOT the caller domain', async () => {
     getResourceM.mockResolvedValue({ resource: 'release-deploy', description: '', rule_text: '', enforcement: 'enforced' } as never);
     queueM.mockResolvedValue({ holders: [holder('release-deploy:123:uuid')], draining: false });

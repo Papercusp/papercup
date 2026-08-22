@@ -51,11 +51,11 @@ function registryJson(r: ResourceRegistryRow) {
 export default defineTool({
   name: 'locks:list',
   description:
-    'List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. The authoritative discovery surface for resource locks — only registered names are acquirable.',
+    'List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable.',
   guidance: {
-    when: 'Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining.',
+    when: 'Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource.',
     notWhen: 'File-lock contention — that is locks:queue.',
-    chaining: 'locks:list → locks:acquire_resource { resource, mode }.',
+    chaining: 'Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? } → locks:acquire_resource { resource, mode }.',
     seeAlso: [
       'locks:acquire_resource (acquire a resource you found)',
       'locks:queue (file-lock contention, not named resources)',
