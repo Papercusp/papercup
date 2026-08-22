@@ -164,6 +164,7 @@ export const GOOGLE_WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/contacts.readonly',
 ] as const;
 
 export const GOOGLE_OAUTH_CLIENT_PATH = join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');

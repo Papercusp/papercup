@@ -75,6 +75,15 @@ describe('Google Workspace Desktop OAuth provider', () => {
     redirectUri: 'http://127.0.0.1:3070/api/oauth/callback',
   };
 
+  it('requests the complete least-privilege scope set for Gmail, Calendar, and Personal Vault Contacts', () => {
+    expect(GOOGLE_WORKSPACE_SCOPES).toEqual([
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.compose',
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/contacts.readonly',
+    ]);
+  });
+
   it('keeps the verifier server-side and sends only its S256 challenge', async () => {
     const provider = makeGoogleProvider(config);
     const privateContext = await provider.createFlowContext!();
