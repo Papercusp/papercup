@@ -605,9 +605,16 @@ backup stack re-materializes on a fresh machine.
 `~/.config/kopia/`, but those paths are symlinks to the versioned files here. One versioned
 `kopia-backup-guard.sh` owns the global flock: hot scheduled work takes it non-blocking and
 defers when memory full PSI is at least 5 or I/O full PSI is at least 10; daily home/VM and
-protected/manual work wait for it. `kopia-protected-snapshot.sh SOURCE...` is the supported
-manual entrypoint. The remaining `db-backup.sh` and `backup-alert.sh` scripts are still managed
-under `~/.config/kopia/` and are outside this snapshot-serialization contract.
+protected/manual work wait for it. The default lock is the host-global
+`/run/lock/papercusp/kopia-global.lock`, intentionally outside `XDG_RUNTIME_DIR` so a
+root-launched maintenance task and the user-level systemd services cannot enter separate
+effective-UID namespaces. The dedicated non-sticky subdirectory avoids the host's
+`fs.protected_regular` denial when root opens a user-created file in sticky `/run/lock`; the guard
+creates the directory and lock with shared-write permissions for either identity.
+`KOPIA_BACKUP_LOCK_PATH` remains available for isolated tests or an explicitly managed deployment.
+`kopia-protected-snapshot.sh SOURCE...` is the supported manual entrypoint. The remaining
+`db-backup.sh` and `backup-alert.sh` scripts are still managed under `~/.config/kopia/` and are
+outside this snapshot-serialization contract.
 
 ## Install (one-time, on a fresh machine)
 

@@ -61,6 +61,15 @@ afterEach(() => {
 });
 
 describe('Kopia global backup guard', () => {
+  it('uses one host-global default lock namespace instead of an effective-UID runtime', () => {
+    const source = readFileSync(guard, 'utf8');
+
+    expect(source).toContain(
+      'lock_path="${KOPIA_BACKUP_LOCK_PATH:-/run/lock/papercusp/kopia-global.lock}"',
+    );
+    expect(source).not.toContain('runtime_dir=');
+  });
+
   it('is valid shell and executes scheduled work under safe pressure', () => {
     expect(spawnSync('bash', ['-n', guard]).status).toBe(0);
     const { dir, env } = fixture();
@@ -154,6 +163,88 @@ describe('Kopia global backup guard', () => {
     const next = run(['--mode', 'scheduled', '--', 'touch', marker], env);
     expect(next.status, next.stderr).toBe(0);
     expect(readFileSync(marker, 'utf8')).toBe('');
+  });
+
+  const canRunMixedUid =
+    typeof process.getuid === 'function' && process.getuid() !== 0
+      ? spawnSync('sudo', ['-n', '-u', 'root', 'true'], { stdio: 'ignore' }).status === 0
+      : false;
+
+  it.skipIf(!canRunMixedUid)('serializes user and root guards in both directions', () => {
+    const userHolder = fixture();
+    const userReady = join(userHolder.dir, 'user-ready');
+    const rootMarker = join(userHolder.dir, 'root-marker');
+    const userScenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode wait --label user-holder -- bash -c 'test "$(id -u)" -ne 0 && touch "$1"; sleep 0.35' _ "$USER_READY" >"$USER_READY.user.log" 2>&1 &
+        holder=$!
+        for _ in $(seq 1 100); do [ -e "$USER_READY" ] && break; sleep 0.01; done
+        [ -e "$USER_READY" ] || exit 91
+        started=$(date +%s%3N)
+        sudo -n -u root env -u XDG_RUNTIME_DIR KOPIA_BACKUP_LOCK_PATH="$LOCK_PATH" KOPIA_BACKUP_MEM_PSI_PATH="$MEMORY_PATH" KOPIA_BACKUP_IO_PSI_PATH="$IO_PATH" KOPIA_BACKUP_MEM_FULL_AVG10_MAX=5 KOPIA_BACKUP_IO_FULL_AVG10_MAX=10 bash "$GUARD" --mode wait --label root-waiter -- bash -c 'test "$(id -u)" -eq 0 && touch "$1"' _ "$ROOT_MARKER" >"$ROOT_MARKER.root.log" 2>&1
+        root_rc=$?
+        elapsed=$(( $(date +%s%3N) - started ))
+        wait "$holder"
+        [ "$root_rc" -eq 0 ] && [ -e "$ROOT_MARKER" ] && [ "$elapsed" -ge 250 ]
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...userHolder.env,
+          GUARD: guard,
+          LOCK_PATH: join(userHolder.dir, 'global.lock'),
+          MEMORY_PATH: join(userHolder.dir, 'memory.pressure'),
+          IO_PATH: join(userHolder.dir, 'io.pressure'),
+          USER_READY: userReady,
+          ROOT_MARKER: rootMarker,
+        },
+        timeout: 10_000,
+      },
+    );
+    expect(userScenario.status, `${userScenario.stdout}\n${userScenario.stderr}`).toBe(0);
+
+    const rootHolder = fixture();
+    const rootReady = join(rootHolder.dir, 'root-ready');
+    const userMarker = join(rootHolder.dir, 'user-marker');
+    const rootScenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        sudo -n -u root env -u XDG_RUNTIME_DIR KOPIA_BACKUP_LOCK_PATH="$LOCK_PATH" KOPIA_BACKUP_MEM_PSI_PATH="$MEMORY_PATH" KOPIA_BACKUP_IO_PSI_PATH="$IO_PATH" KOPIA_BACKUP_MEM_FULL_AVG10_MAX=5 KOPIA_BACKUP_IO_FULL_AVG10_MAX=10 bash "$GUARD" --mode wait --label root-holder -- bash -c 'test "$(id -u)" -eq 0 && touch "$1"; sleep 0.35' _ "$ROOT_READY" >"$ROOT_READY.root.log" 2>&1 &
+        holder=$!
+        for _ in $(seq 1 100); do [ -e "$ROOT_READY" ] && break; sleep 0.01; done
+        [ -e "$ROOT_READY" ] || exit 91
+        started=$(date +%s%3N)
+        env XDG_RUNTIME_DIR="$USER_RUNTIME" KOPIA_BACKUP_LOCK_PATH="$LOCK_PATH" KOPIA_BACKUP_MEM_PSI_PATH="$MEMORY_PATH" KOPIA_BACKUP_IO_PSI_PATH="$IO_PATH" KOPIA_BACKUP_MEM_FULL_AVG10_MAX=5 KOPIA_BACKUP_IO_FULL_AVG10_MAX=10 bash "$GUARD" --mode wait --label user-waiter -- bash -c 'test "$(id -u)" -ne 0 && touch "$1"' _ "$USER_MARKER" >"$USER_MARKER.user.log" 2>&1
+        user_rc=$?
+        elapsed=$(( $(date +%s%3N) - started ))
+        wait "$holder"
+        [ "$user_rc" -eq 0 ] && [ -e "$USER_MARKER" ] && [ "$elapsed" -ge 250 ]
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...rootHolder.env,
+          GUARD: guard,
+          LOCK_PATH: join(rootHolder.dir, 'global.lock'),
+          USER_RUNTIME: join(rootHolder.dir, 'user-runtime'),
+          MEMORY_PATH: join(rootHolder.dir, 'memory.pressure'),
+          IO_PATH: join(rootHolder.dir, 'io.pressure'),
+          ROOT_READY: rootReady,
+          USER_MARKER: userMarker,
+        },
+        timeout: 10_000,
+      },
+    );
+    expect(rootScenario.status, `${rootScenario.stdout}\n${rootScenario.stderr}`).toBe(0);
   });
 });
 

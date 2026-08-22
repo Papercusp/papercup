@@ -42,10 +42,21 @@ io_limit="${KOPIA_BACKUP_IO_FULL_AVG10_MAX:-10}"
 is_number "$memory_limit" || { echo "invalid KOPIA_BACKUP_MEM_FULL_AVG10_MAX=$memory_limit" >&2; exit 64; }
 is_number "$io_limit" || { echo "invalid KOPIA_BACKUP_IO_FULL_AVG10_MAX=$io_limit" >&2; exit 64; }
 
-runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-lock_path="${KOPIA_BACKUP_LOCK_PATH:-$runtime_dir/papercusp-kopia-global.lock}"
+# /run/lock is the host-global lock namespace shared by the user systemd units
+# and root-launched maintenance (for example, sudo systemd-run). Keep the lock
+# in a dedicated non-sticky subdirectory: fs.protected_regular rejects root
+# opening a user-owned file directly in sticky /run/lock. Do not derive the
+# default from XDG_RUNTIME_DIR: that silently creates one lock per effective UID
+# and lets privileged maintenance bypass the user-service guard.
+lock_path="${KOPIA_BACKUP_LOCK_PATH:-/run/lock/papercusp/kopia-global.lock}"
+# Both a user service and root maintenance may create the file first. Keep the
+# inode writable by either identity, and append-open so acquiring the flock does
+# not truncate any diagnostic bytes a deployment may leave in the file.
+lock_umask=$(umask)
+umask 000
 mkdir -p "$(dirname "$lock_path")" || exit 73
-exec 9>"$lock_path" || exit 73
+exec 9>>"$lock_path" || exit 73
+umask "$lock_umask"
 
 guard_log() {
   printf 'KOPIA_BACKUP_GUARD timestamp=%s label=%s %s\n' "$(date -Iseconds)" "$label" "$*"
@@ -111,4 +122,3 @@ guard_log "result=started mode=$mode"
 rc=$?
 guard_log "result=finished mode=$mode rc=$rc"
 exit "$rc"
-
