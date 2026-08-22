@@ -31,16 +31,18 @@ import {
   existsSync,
   symlinkSync,
   lstatSync,
+  statSync,
   readlinkSync,
   readdirSync,
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // apps/operator/lib/release → apps/operator/bin/release/setup-release-checkout.sh
 const SCRIPT_PATH = join(__dirname, '../../bin/release/setup-release-checkout.sh');
+const REPO_ROOT = resolve(__dirname, '../../../..');
 
 /**
  * Run the real `need_node_modules()` against the given trees. Returns true when the
@@ -167,6 +169,57 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
   });
 });
 
+describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross-device guard', () => {
+  function assertCompatible(releaseRoot: string, copyMode = 'hardlink'): { status: number | null; stdout: string; stderr: string } {
+    const wrapper = [
+      'set -uo pipefail',
+      'source <(sed -n "/^filesystem_device()/,/^}/p; /^assert_hardlink_compatible_roots()/,/^}/p" "$SETUP_SCRIPT")',
+      'assert_hardlink_compatible_roots',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: REPO_ROOT,
+        RELEASE_ROOT: releaseRoot,
+        NODE_MODULES_COPY_MODE: copyMode,
+      },
+      encoding: 'utf8',
+    });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+  }
+
+  it('passes when the release root is on the same filesystem', () => {
+    const releaseRoot = mkdtempSync(join(dirname(REPO_ROOT), 'release-root-same-device-'));
+    try {
+      expect(assertCompatible(releaseRoot).status).toBe(0);
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('fails once with an actionable message before cross-device hardlink copy', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'release-root-cross-device-'));
+    try {
+      const result = assertCompatible(releaseRoot);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('same filesystem');
+      expect(result.stderr).toContain('--node-modules-copy copy');
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('allows explicit copy mode across filesystems', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'release-root-copy-mode-'));
+    try {
+      expect(assertCompatible(releaseRoot, 'copy').status).toBe(0);
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * sync_one_node_modules() — the ATOMIC node_modules refresh (2026-06-25 all-pages
  * connection-refused outage). The old in-place `rm -rf "$dest"; cp -al` left the LIVE
@@ -179,7 +232,7 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
  * invariant), and temp cleanup.
  */
 describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modules swap', () => {
-  function syncOne(src: string, dest: string): number {
+  function syncOne(src: string, dest: string, copyMode = 'hardlink'): number {
     const wrapper = [
       'set -euo pipefail',
       'log() { :; }',
@@ -187,7 +240,13 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
-      env: { ...process.env, SETUP_SCRIPT: SCRIPT_PATH, SRC: src, DEST: dest },
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        SRC: src,
+        DEST: dest,
+        NODE_MODULES_COPY_MODE: copyMode,
+      },
       encoding: 'utf8',
     });
     if (r.status !== 0) throw new Error(`sync_one_node_modules failed (${r.status}): ${r.stderr || r.stdout}`);
@@ -209,6 +268,19 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     const dest = join(work, 'dest');
     syncOne(src, dest);
     expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('OK');
+  });
+
+  it('copy mode isolates checkpoint files from later integration-tree mutation', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'BEFORE-INSTALL');
+    const dest = join(work, 'dest');
+
+    syncOne(src, dest, 'copy');
+    writeFileSync(join(src, 'marker.txt'), 'AFTER-INSTALL');
+
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('BEFORE-INSTALL');
+    expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(statSync(join(src, 'marker.txt')).ino);
   });
 
   it('existing dest: swaps to the NEW content wholesale (stale entries gone, dest never absent)', () => {

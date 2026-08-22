@@ -30,12 +30,12 @@
 #      tracked-files guard IN THE GATE. With real repos: +1,055 files, 0
 #      uninitialized. `git archive` extraction is RETAINED as the fallback below.
 #      (All submodules are top-level here — no recursion needed.)
-#   3. node_modules HARDLINK-copied from the integration tree. We must COPY, not
-#      symlink: npm-workspace packages are relative symlinks (../../packages/X);
-#      a symlinked node_modules dir would resolve those back to the INTEGRATION
-#      tree and defeat the whole isolation. Hardlinks share data (near-zero disk)
-#      and are safe because node_modules is never hand-edited — unlike submodule
-#      SOURCE (heavily edited by the fleet), which is why (2) is a real copy.
+#   3. node_modules copied from the integration tree. We must COPY, not symlink:
+#      npm-workspace packages are relative symlinks (../../packages/X); a symlinked
+#      node_modules dir would resolve those back to the INTEGRATION tree and defeat
+#      the whole isolation. Hardlinks are the fast default for the live release
+#      tree; `--node-modules-copy copy` gives checkpoint trees independent regular
+#      files so a concurrent install cannot mutate the pinned test inputs.
 #
 # Why a worktree (not a clone) for the superproject: shares the object store, so
 # checking out the target commit is cheap and history isn't duplicated.
@@ -46,6 +46,7 @@
 #
 # Usage:
 #   setup-release-checkout.sh [--ref <commit-ish>] [--node-modules auto|force|skip]
+#                             [--node-modules-copy hardlink|copy]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #
@@ -66,6 +67,10 @@ INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
 RELEASE_ROOT="${PAPERCUSP_RELEASE_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-release}"
 REF="main"
 NODE_MODULES_MODE="auto"   # auto = copy when missing/lockfile-changed; force = always; skip = never
+# hardlink is the fast default for the live release tree. Checkpoint callers pass
+# copy because their source tree can be npm-installed concurrently; sharing inodes
+# would let that install mutate the supposedly pinned checkpoint tree.
+NODE_MODULES_COPY_MODE="${NODE_MODULES_COPY_MODE:-hardlink}"
 
 BUILD_SPA="0"
 PREPARE_EXISTING="0"
@@ -75,6 +80,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="$2"; REF_WAS_SET="1"; shift 2 ;;
     --node-modules) NODE_MODULES_MODE="$2"; shift 2 ;;
+    --node-modules-copy) NODE_MODULES_COPY_MODE="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
@@ -82,6 +88,11 @@ while [ $# -gt 0 ]; do
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+case "$NODE_MODULES_COPY_MODE" in
+  hardlink|copy) ;;
+  *) echo "[setup-release] bad --node-modules-copy mode: $NODE_MODULES_COPY_MODE" >&2; exit 2 ;;
+esac
 
 log() { echo "[setup-release] $*"; }
 
@@ -419,7 +430,8 @@ need_node_modules() {
       [ -d "$RELEASE_ROOT/node_modules" ] || return 0
       # EI-2118: force a re-copy when any release workspace symlink is missing or
       # DANGLES (exists by name but does not resolve) — the name-set diff below
-      # cannot see a broken-but-named symlink. Step 3's rm -rf + cp -al re-links it.
+      # cannot see a broken-but-named symlink. Step 3's rm -rf + selected copy mode
+      # refreshes it.
       [ -n "$(unresolved_workspace_pkgs)" ] && return 0
       # Check scoped packages (@papercusp, @papercup).
       for scope in @papercusp @papercup; do
@@ -438,7 +450,7 @@ need_node_modules() {
       # worktree's tracked package-lock.json as this stamp: copying staging's newer lock
       # over it dirties an exact-SHA release root and destroys provenance
       # (EI-21008606412183759). The dot-prefixed marker is gitignored with node_modules
-      # and records exactly which integration dependency state was hardlink-copied.
+      # and records exactly which integration dependency state was copied.
       copied_lock="$RELEASE_ROOT/node_modules/.papercusp-source-package-lock.json"
       if [ -f "$INTEGRATION_ROOT/package-lock.json" ] && [ -f "$copied_lock" ]; then
         ! cmp -s "$INTEGRATION_ROOT/package-lock.json" "$copied_lock"
@@ -453,11 +465,43 @@ need_node_modules() {
   esac
 }
 
+# Hardlinks require source and destination to share a filesystem. Resolve the
+# nearest existing destination ancestor because the release root may not exist
+# yet on a first setup. Explicit copy mode is portable across mount points and
+# deliberately bypasses this guard.
+filesystem_device() {
+  local path="$1" parent
+  while [ ! -e "$path" ]; do
+    parent="$(dirname "$path")"
+    [ "$parent" = "$path" ] && break
+    path="$parent"
+  done
+  stat -c '%d' "$path"
+}
+
+assert_hardlink_compatible_roots() {
+  [ "${NODE_MODULES_COPY_MODE:-hardlink}" = "hardlink" ] || return 0
+  local integration_device release_device
+  integration_device="$(filesystem_device "$INTEGRATION_ROOT")" || {
+    echo "[setup-release] FATAL: could not determine the integration root filesystem: $INTEGRATION_ROOT" >&2
+    return 1
+  }
+  release_device="$(filesystem_device "$RELEASE_ROOT")" || {
+    echo "[setup-release] FATAL: could not determine the release root filesystem: $RELEASE_ROOT" >&2
+    return 1
+  }
+  if [ "$integration_device" != "$release_device" ]; then
+    echo "[setup-release] FATAL: hardlink node_modules copy requires integration and release roots on the same filesystem (integration=$INTEGRATION_ROOT device=$integration_device; release=$RELEASE_ROOT device=$release_device). Re-run with --node-modules-copy copy or place both roots on one filesystem." >&2
+    return 1
+  fi
+}
+
 # ATOMIC refresh of ONE node_modules dir (infra-fail-fast — the 2026-06-25 all-pages
-# connection-refused outage). The integration source is hardlink-copied into a SIBLING
-# temp dir FIRST, then swapped into place with two fast renames — so the LIVE operator
-# always sees a COMPLETE node_modules and never the minute-long half-populated window an
-# in-place `rm -rf "$dest"; cp -al "$src" "$dest"` opens.
+# connection-refused outage). The integration source is copied (hardlinks by default,
+# independent files in `copy` mode) into a SIBLING temp dir FIRST, then swapped into
+# place with two fast renames — so the LIVE operator always sees a COMPLETE node_modules
+# and never the minute-long half-populated window an in-place `rm -rf "$dest"; cp -al
+# "$src" "$dest"` opens.
 #
 # The window WAS the outage: a deploy `rm -rf`'d the live root node_modules and slowly
 # re-`cp -al`'d it (~a minute, 100k+ files) while :3070 was still serving from it. The
@@ -469,9 +513,10 @@ need_node_modules() {
 #
 # Sibling temp ("$dest.deploy-tmp.$$") sits at the SAME depth as "$dest", so the workspace
 # packages' RELATIVE symlinks (../../packages/X) resolve to the RELEASE tree identically
-# in the temp and final locations (cp -al preserves symlinks; the isolation invariant in
-# the header note holds). `set -e` aborts on a failed cp BEFORE any swap, so a partial
-# copy can never replace the live tree (fail-safe — same abort semantics as before).
+# in the temp and final locations (both cp modes preserve symlinks; the isolation
+# invariant in the header note holds). `set -e` aborts on a failed cp BEFORE any swap,
+# so a partial copy can never replace the live tree (fail-safe — same abort semantics as
+# before).
 sync_one_node_modules() {
   local src="$1" dest="$2"
   local tmp="${dest}.deploy-tmp.$$" old="${dest}.deploy-old.$$"
@@ -488,7 +533,11 @@ sync_one_node_modules() {
   fi
   rm -rf "$tmp" "$old"                 # defensive: clear this run's leftovers (crash-safety)
   mkdir -p "$(dirname "$dest")"
-  cp -al "$src" "$tmp"                 # slow; "$dest" stays untouched + complete throughout
+  case "${NODE_MODULES_COPY_MODE:-hardlink}" in
+    hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
+    copy) cp -a "$src" "$tmp" ;;        # isolated; later source installs cannot mutate dest
+    *) echo "[setup-release] bad --node-modules-copy mode: ${NODE_MODULES_COPY_MODE}" >&2; return 2 ;;
+  esac
   if [ -e "$dest" ]; then
     mv "$dest" "$old"                  # instant rename
     mv "$tmp" "$dest"                  # instant rename — ONLY these two bracket the swap
@@ -499,10 +548,11 @@ sync_one_node_modules() {
 }
 
 if need_node_modules; then
-  log "hardlink-copying node_modules from integration tree (atomic swap; this can take a minute)"
+  assert_hardlink_compatible_roots
+  log "${NODE_MODULES_COPY_MODE}-copying node_modules from integration tree (atomic swap; this can take a minute)"
   # Enumerate every package-local node_modules in the integration tree (prune so
   # we get the dir itself, not the ones nested inside it — those ride along in the
-  # parent's cp -al). Each is refreshed via an atomic sibling-temp swap (above).
+  # parent's selected cp mode). Each is refreshed via an atomic sibling-temp swap (above).
   while IFS= read -r nm; do
     rel="${nm#"$INTEGRATION_ROOT"/}"
     sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
@@ -538,12 +588,13 @@ prune_stale_pnpm_store
 
 # 3b. Dependency patches (patch-package) -------------------------------------
 # patch-package patches apply at INSTALL time, but this tree never `npm install`s
-# — it hardlink-copies node_modules from the integration tree (step 3). That copy
+# — it copies node_modules from the integration tree (step 3). That copy
 # carries the integration tree's already-patched files WHEN it runs, but the
 # `auto` heuristic skips the copy on a patches-only change (a new patch alters no
-# lockfile / workspace-package set), and an integration file edited in place gets
-# a NEW inode the pre-existing hardlink never tracked — so this tree's node_modules
-# can be left UNPATCHED. Re-apply committed patches here (idempotent; the same
+# lockfile / workspace-package set), and in the live release's default hardlink mode
+# an integration file edited in place gets a NEW inode the pre-existing hardlink never
+# tracked — so that tree's node_modules can be left UNPATCHED. Re-apply committed patches
+# here (idempotent; the same
 # patch-package the repo's postinstall uses). Without it a committed dependency
 # patch (e.g. the EI-127 mcp-handler per-request-server leak fix) silently reaches
 # NEITHER the deployed operator NOR the green-checkpoint tree — which then reds on
@@ -681,7 +732,7 @@ build_pinned_workspace_runtime_outputs() {
     # build silently falls back to the root toolchain (TypeScript 6 instead of
     # @papercusp/sse's pinned 5.9 in the incident that earned this guard).
     # Restore the workspace-local dependency tree explicitly, using the same
-    # atomic hardlink copier as the root refresh. This remains source-consistent:
+    # atomic copier and selected mode as the root refresh. This remains source-consistent:
     # all release node_modules are sourced from the integration dependency
     # snapshot; only package SOURCE is pinned independently.
     integration_workspace_root="$(readlink -f "$INTEGRATION_ROOT/node_modules/$scope/$package" 2>/dev/null || true)"
@@ -712,7 +763,7 @@ build_pinned_workspace_runtime_outputs() {
 build_pinned_workspace_runtime_outputs
 
 # 3d. Native-addon ABI guard (infra-fail-fast-build-integrity-2026-06-19 P-003) -
-# The hardlink-copied node_modules (step 3) carry whatever Node ABI the
+# The copied node_modules (step 3) carry whatever Node ABI the
 # INTEGRATION tree was built under. If that differs from the RUNTIME Node, the
 # broken binary ships to green: the 2026-06-19 outage was better-sqlite3 built
 # for Node 22 (ABI 127) while the service runs Node 25 (ABI 141) → "Module did

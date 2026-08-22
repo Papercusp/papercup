@@ -47,6 +47,7 @@ import {
   classifyCargoRun,
   formatCargoDiskRefusal,
   formatCargoResultLine,
+  parseCargoTestResultLines,
 } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -186,18 +187,6 @@ function runCargoTest(manifestAbs, extraArgs) {
   });
 }
 
-/** Parse `test <name> ... ok|FAILED|ignored` result lines (there may be several
- *  such blocks — one per compiled test binary target — so accumulate across all). */
-function parseTestResultLines(output) {
-  const results = [];
-  const re = /^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$/gm;
-  let m;
-  while ((m = re.exec(output))) {
-    results.push({ name: m[1], outcome: m[2] });
-  }
-  return results;
-}
-
 /** Parse the `---- <name> stdout ----\n<body>` failure-detail blocks cargo prints
  *  under a trailing `failures:` section, keyed by test name, for output_tail. */
 function parseFailureDetails(output) {
@@ -259,7 +248,7 @@ async function main() {
   process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);
 
-  const results = parseTestResultLines(combined);
+  const results = parseCargoTestResultLines(combined);
   const failureDetails = parseFailureDetails(combined);
   const source = process.env.CI ? 'ci' : 'local';
   const cargoResult = diskAdmission?.status === 'blocked'
