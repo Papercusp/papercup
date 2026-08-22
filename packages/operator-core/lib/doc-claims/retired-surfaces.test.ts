@@ -16,6 +16,7 @@
  * a reconstruction — so it provably reproduces the defect that actually shipped.
  */
 import { describe, it, expect } from 'vitest';
+import { FLAG_DEFAULTS, FLAGS } from '@papercusp/flags';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -71,6 +72,7 @@ function buildResolver(): SurfaceResolver {
 }
 
 const resolver = buildResolver();
+const flagRegistry = { flags: FLAGS, defaults: FLAG_DEFAULTS };
 // The CORPUS, not CLAUDE.md. This guard locates its subject BY HEADING and the claims
 // beneath it are prose, so the client projection yields 0 judged claims (it still emits
 // the heading, because one invariant sits under it). See corpus-subject.ts.
@@ -192,6 +194,65 @@ describe('extractRetiredSurfaceClaims — fixture controls', () => {
     expect(verdict.violations[0].message).toMatch(/named as a LIVE counter-example/);
   });
 
+  it('POSITIVE CONTROL: fires when a GATED claim names an unregistered flag', () => {
+    const fixture =
+      heading +
+      'The `apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx` surface is GATED by `MISSING_FLAG`, default OFF.\n';
+    const got = extractRetiredSurfaceClaims(fixture, resolver);
+    const verdict = judgeRetiredSurfaceClaims(
+      got,
+      {
+        'apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx': {
+          kind: 'gated',
+          flagKey: 'MISSING_FLAG',
+          defaultValue: false,
+        },
+      },
+      flagRegistry,
+    );
+    expect(verdict.violations).toHaveLength(1);
+    expect(verdict.violations[0].message).toMatch(/absent from FLAGS/);
+  });
+
+  it('POSITIVE CONTROL: fires when a GATED claim states the wrong default', () => {
+    const fixture =
+      heading +
+      'The `apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx` surface is GATED by `CONVERSATIONS_RAIL_TAB`, default ON.\n';
+    const got = extractRetiredSurfaceClaims(fixture, resolver);
+    const verdict = judgeRetiredSurfaceClaims(
+      got,
+      {
+        'apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx': {
+          kind: 'gated',
+          flagKey: 'CONVERSATIONS_RAIL_TAB',
+          defaultValue: true,
+        },
+      },
+      flagRegistry,
+    );
+    expect(verdict.violations).toHaveLength(1);
+    expect(verdict.violations[0].message).toMatch(/FLAG_DEFAULTS resolves it to OFF/);
+  });
+
+  it('NEGATIVE CONTROL: accepts a GATED claim when the flag key and default agree', () => {
+    const fixture =
+      heading +
+      'The `apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx` surface is GATED by `CONVERSATIONS_RAIL_TAB`, default OFF.\n';
+    const got = extractRetiredSurfaceClaims(fixture, resolver);
+    const verdict = judgeRetiredSurfaceClaims(
+      got,
+      {
+        'apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx': {
+          kind: 'gated',
+          flagKey: 'CONVERSATIONS_RAIL_TAB',
+          defaultValue: false,
+        },
+      },
+      flagRegistry,
+    );
+    expect(verdict.violations).toEqual([]);
+  });
+
   it('NEGATIVE CONTROL: stays silent on the section\'s deliberate non-path spans', () => {
     // Every one of these is a real span from the live section that a
     // "judge every backticked thing" detector would have mis-classified.
@@ -257,12 +318,12 @@ describe('the doc corpus — retired-surface claims hold', () => {
   });
 
   it('every surface it lists as RETIRED is actually retired on disk', () => {
-    const verdict = judgeRetiredSurfaceClaims(extraction, CLASSIFICATION);
+    const verdict = judgeRetiredSurfaceClaims(extraction, CLASSIFICATION, flagRegistry);
     expect(verdict.violations.map((v) => `${SUBJECT_LABEL}:${v.line} — ${v.message}`)).toEqual([]);
   });
 
   it('CLOSURE: every judged span is classified, and every classification is still used', () => {
-    const verdict = judgeRetiredSurfaceClaims(extraction, CLASSIFICATION);
+    const verdict = judgeRetiredSurfaceClaims(extraction, CLASSIFICATION, flagRegistry);
     expect(
       verdict.unclassified.map(
         (s) =>

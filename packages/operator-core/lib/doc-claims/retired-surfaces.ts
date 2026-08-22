@@ -334,6 +334,8 @@ export type SurfaceClaim =
   | 'retired-in-place'
   /** the doc names this surface explicitly as still LIVE (a counter-example) */
   | 'live'
+  /** the doc names this surface as code-live but not mounted by default */
+  | GatedSurfaceClaim
   /**
    * The doc names this path precisely to say it is GONE — deleted, not preserved.
    * The assertion inverts: it must resolve to NOTHING. That keeps a tombstone
@@ -341,6 +343,22 @@ export type SurfaceClaim =
    * sentence reds instead of quietly becoming false.
    */
   | 'deleted';
+
+export interface GatedSurfaceClaim {
+  kind: 'gated';
+  /** The property name in `FLAGS`, not its wire value. */
+  flagKey: string;
+  /** The default the document claims for the named flag. */
+  defaultValue: boolean;
+}
+
+/** The live flag registry used to verify a GATED claim. */
+export interface FlagRegistry {
+  /** `FLAGS` from `libs/flags/src/types.ts` (property name → wire value). */
+  flags: Readonly<Record<string, string>>;
+  /** `FLAG_DEFAULTS` from `libs/flags/src/types.ts` (wire value → default). */
+  defaults: Readonly<Record<string, boolean>>;
+}
 
 export interface SurfaceViolation {
   line: number;
@@ -363,11 +381,13 @@ export interface SurfaceJudgement {
  * Every claim must RESOLVE — a doc pointing at a location that does not exist is a
  * defect whichever way it is classified. Beyond that: `retired` must sit entirely
  * under `_retired/`; `live` must resolve to at least one location that does not;
- * `retired-in-place` asserts existence only (see the type's HONEST BOUND).
+ * `retired-in-place` asserts existence only (see the type's HONEST BOUND); and
+ * `gated` must resolve to live code whose named flag exists with the stated default.
  */
 export function judgeRetiredSurfaceClaims(
   extraction: RetiredSurfaceExtraction,
   classification: Record<string, SurfaceClaim>,
+  flagRegistry?: FlagRegistry,
 ): SurfaceJudgement {
   const violations: SurfaceViolation[] = [];
   const unclassified: SurfaceSpan[] = [];
@@ -404,6 +424,60 @@ export function judgeRetiredSurfaceClaims(
           `\`${span.text}\` resolves to NOTHING in the repo — the doc points at a ` +
           `location that does not exist. Delete the entry, or fix the path.`,
       });
+      continue;
+    }
+
+    if (typeof claim === 'object' && claim.kind === 'gated') {
+      if (!flagRegistry) {
+        violations.push({
+          line: span.line,
+          text: span.text,
+          claim,
+          message:
+            `\`${span.text}\` is marked GATED by flag key \`${claim.flagKey}\`, but no ` +
+            `flag registry was supplied. Pass FLAGS + FLAG_DEFAULTS so the claim is checked.`,
+        });
+      } else {
+        const wireValue = flagRegistry.flags[claim.flagKey];
+        const hasDefault =
+          typeof wireValue === 'string' &&
+          Object.prototype.hasOwnProperty.call(flagRegistry.defaults, wireValue);
+        if (!hasDefault) {
+          violations.push({
+            line: span.line,
+            text: span.text,
+            claim,
+            message:
+              `\`${span.text}\` is marked GATED by flag key \`${claim.flagKey}\`, but ` +
+              `that key is absent from FLAGS or has no FLAG_DEFAULTS entry.`,
+          });
+        } else {
+          const actualDefault = flagRegistry.defaults[wireValue];
+          if (actualDefault !== claim.defaultValue) {
+            violations.push({
+              line: span.line,
+              text: span.text,
+              claim,
+              message:
+                `\`${span.text}\` says GATED flag \`${claim.flagKey}\` defaults ` +
+                `${claim.defaultValue ? 'ON' : 'OFF'}, but FLAG_DEFAULTS resolves it to ` +
+                `${actualDefault ? 'ON' : 'OFF'}.`,
+            });
+          }
+        }
+      }
+
+      if (span.retiredOnDisk) {
+        violations.push({
+          line: span.line,
+          text: span.text,
+          claim,
+          message:
+            `\`${span.text}\` is marked GATED but every resolution is under ` +
+            `\`_retired/\`: ${span.resolvesTo.join(', ')}. A gated claim must point ` +
+            `to code that remains live, even when its mount is disabled.`,
+        });
+      }
       continue;
     }
 
