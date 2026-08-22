@@ -228,12 +228,53 @@
 
 .operation { margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-deeper); }
 .operationHeader { color: var(--fg-dim); font-size: 11.5px; }
+.operationHeader code { color: var(--fg-mute); font-size: 10px; }
 .operation progress { width: 100%; height: 6px; margin: 9px 0; accent-color: var(--accent); }
+.operationPayloads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 2px 0 10px; }
+.operationPayloads div { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-1); }
+.operationPayloads strong { display: block; margin-bottom: 4px; color: var(--fg-mute); font-size: 9.5px; letter-spacing: 0; text-transform: uppercase; }
+.operationPayloads code { display: block; overflow: auto; color: var(--fg-dim); font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .eventStream { display: grid; gap: 5px; margin: 4px 0 0; padding: 0; list-style: none; }
 .eventStream li { display: grid; grid-template-columns: 8px 130px 90px 1fr; align-items: center; gap: 7px; color: var(--fg-mute); font-size: 10.5px; }
 .eventStream time { font-variant-numeric: tabular-nums; }
 .eventStream strong { color: var(--fg-dim); font-size: 10.5px; }
+.eventStream small { display: block; margin-top: 2px; color: var(--fg-mute); font-size: 9px; }
 .eventDot { width: 6px; height: 6px; border: 0; border-radius: 50%; padding: 0; }
+
+.telemetryDetails { margin-top: 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-1); }
+.telemetryDetails > summary { padding: 10px 12px; cursor: pointer; color: var(--fg-dim); font-size: 11.5px; font-weight: 700; }
+.telemetryDetails[open] > summary { border-bottom: 1px solid var(--border); }
+.telemetryGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--border); }
+.telemetryPanel { min-width: 0; padding: 12px; background: var(--bg-deeper); }
+.telemetryHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+.telemetryHeading h4 { margin: 0; color: var(--fg-dim); font-size: 11.5px; }
+.telemetryHeading > span:not(.badge) { color: var(--fg-mute); font-size: 10px; }
+.telemetryPanel h5 { margin: 10px 0 5px; color: var(--fg-mute); font-size: 9.5px; letter-spacing: 0; text-transform: uppercase; }
+.telemetryFacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0 0 8px; }
+.telemetryFacts div { min-width: 0; }
+.telemetryFacts dt { color: var(--fg-mute); font-size: 9px; text-transform: uppercase; }
+.telemetryFacts dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--fg-dim); font-size: 10.5px; }
+.telemetryEmpty { margin: 6px 0 0; color: var(--fg-mute); font-size: 10.5px; }
+.signalList,
+.resourceList,
+.logList { margin: 0; padding: 0; list-style: none; }
+.signalList { display: grid; gap: 4px; }
+.signalList li,
+.signalCode { display: block; padding: 6px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-1); color: var(--fg-dim); font: 10px/1.45 var(--font-mono, monospace); overflow-wrap: anywhere; }
+.resourceList { display: grid; gap: 7px; }
+.resourceList li { min-width: 0; padding: 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-1); }
+.resourceList li > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.resourceList strong { color: var(--fg-dim); font-size: 10.5px; }
+.resourceList code,
+.resourceList small,
+.resourceList em { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--fg-mute); font-size: 9.5px; font-style: normal; }
+.resourceList em { color: var(--bad); }
+.logPanel { grid-column: 1 / -1; }
+.logList { display: grid; gap: 5px; }
+.logList li { display: grid; grid-template-columns: 135px 54px 170px minmax(0, 1fr); align-items: start; gap: 7px; color: var(--fg-mute); font-size: 9.5px; }
+.logList time { font-variant-numeric: tabular-nums; }
+.logList strong { color: var(--fg-dim); font-size: 9.5px; }
+.logList code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspaceActions { justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
 
 .modal { width: min(560px, calc(100vw - 40px)); padding: 20px; }
@@ -264,6 +305,8 @@
   .provisionForm { grid-template-columns: 1fr; }
   .estimate { border-top: 1px solid var(--border); border-left: 0; }
   .workspaceMeta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .logList li { grid-template-columns: 110px 54px minmax(0, 1fr); }
+  .logList code { grid-column: 3; }
 }
 
 @media (max-width: 680px) {
@@ -273,12 +316,18 @@
   .workspaceHeader { align-items: flex-start; flex-direction: column; }
   .sectionHeading > p { text-align: left; }
   .formGrid,
-  .workspaceMeta { grid-template-columns: 1fr; }
+  .workspaceMeta,
+  .telemetryGrid,
+  .operationPayloads { grid-template-columns: 1fr; }
   .statePair { justify-content: flex-start; }
   .eventStream li { grid-template-columns: 8px 1fr; }
   .eventStream time { display: none; }
   .eventStream strong,
   .eventStream li > span:last-child { grid-column: 2; }
+  .logPanel { grid-column: auto; }
+  .logList li { grid-template-columns: 1fr auto; }
+  .logList strong,
+  .logList code { grid-column: 1 / -1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

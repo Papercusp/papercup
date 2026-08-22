@@ -1071,6 +1071,30 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  // workspaceHosts.control — the provider-neutral BYOC control plane. One flat
+  // projection carries connection catalogs plus each host's latest durable
+  // operation, resource identities, attestation/drift/tunnel/cost signals, and
+  // recent redacted diagnostics. The five low-volume tables are bridged from
+  // their PG triggers; workspace_host_logs is deliberately producer-pushed once
+  // per append batch (see the PUSH_EXEMPT rationale in the coverage guard).
+  'workspaceHosts.control': {
+    backingTables: [
+      'harness_shared.workspace_host_connections',
+      'harness_shared.workspace_hosts',
+      'harness_shared.workspace_host_operations',
+      'harness_shared.workspace_host_resources',
+      'harness_shared.workspace_host_events',
+      'harness_shared.workspace_host_logs',
+    ],
+    resolve: async () => {
+      const [{ activeWorkspaceId }, { readWorkspaceHostControl }] = await Promise.all([
+        import('../workspace-registry'),
+        import('../workspace-host/observability-store'),
+      ]);
+      return readWorkspaceHostControl(activeWorkspaceId());
+    },
+  },
+
   // storage.usage — live storage usage by category for Settings → Storage
   // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection
   // (pg table sizes + age distribution + on-disk du). No args.

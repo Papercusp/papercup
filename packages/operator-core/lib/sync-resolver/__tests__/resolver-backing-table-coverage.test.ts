@@ -148,6 +148,15 @@ const PUSH_EXEMPT: Record<string, string> = {
   'testing.coverage :: harness_shared.census_provider_registrations':
     'registration rows are seeded/paused by operators, never by a census run; the panel only reads them as the registered/enabled counts behind censusUnknown, which the same once-per-run census push already covers.',
 
+  // WI-40483 / P-023 — cloud-init/systemd logs arrive in batches and can be
+  // hundreds of rows. appendWorkspaceHostLogs persists the batch and then
+  // emits exactly one workspaceHosts.control invalidation; a row trigger would
+  // turn one ingestion into a notification storm.
+  // RE-ARM: remove this exemption and bridge the table normally if the store's
+  // producer-side push is removed or a writer bypasses appendWorkspaceHostLogs.
+  'workspaceHosts.control :: harness_shared.workspace_host_logs':
+    'append-heavy cloud-init/systemd diagnostics; appendWorkspaceHostLogs pushes workspaceHosts.control once after each committed batch instead of emitting one PG notification per row.',
+
   // WI-39501 — the Learnings tab's pause/resume-all control.
   //
   // RE-ARM: drop this entry and wire the table in table-to-query-names.ts if
