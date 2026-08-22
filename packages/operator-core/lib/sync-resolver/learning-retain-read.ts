@@ -226,6 +226,123 @@ export function retainMemoryTitle(text: string): string {
   return normalized.length > 200 ? `${normalized.slice(0, 199).trimEnd()}…` : normalized;
 }
 
+export type RetainFeedFacetKey = 'status' | 'lens';
+
+export interface NormalizedRetainFeedArgs {
+  tab: RetainFeedTab;
+  filter: RetainFeedFilter;
+  q: string | null;
+  filters: {
+    title: string | null;
+    statuses: string[];
+    lenses: string[];
+  };
+  cursor: RetainFeedCursor | null;
+  limit: number;
+}
+
+export interface RetainFeedCompiledPredicate {
+  args: NormalizedRetainFeedArgs;
+  fingerprint: string;
+}
+
+const uniqueStrings = (values: readonly string[] | undefined): string[] =>
+  [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort();
+
+/** Canonicalize the paired row/summary arguments once. The cursor is part of
+ * row paging but never affects the predicate itself or summary selection. */
+export function normalizeRetainFeedArgs(
+  args: RetainFeedQueryArgs | RetainFeedOpts = {},
+): NormalizedRetainFeedArgs {
+  const filters: RetainFeedColumnFilters = args.filters ?? {};
+  const rawLimit = typeof args.limit === 'number' && Number.isFinite(args.limit)
+    ? Math.floor(args.limit)
+    : RETAIN_FEED_PAGE_SIZE;
+  return {
+    tab: args.tab ?? 'all',
+    filter: args.filter ?? 'all',
+    q: args.q?.trim() || null,
+    filters: {
+      title: filters.title?.trim() || null,
+      statuses: uniqueStrings(filters.statuses),
+      lenses: uniqueStrings(filters.lenses),
+    },
+    cursor: typeof args.cursor === 'string'
+      ? decodeRetainCursor(args.cursor)
+      : (args.cursor ?? null),
+    limit: Math.max(1, Math.min(RETAIN_FEED_MAX_PAGE, rawLimit)),
+  };
+}
+
+export function buildRetainFeedPredicate(
+  args: NormalizedRetainFeedArgs,
+): RetainFeedCompiledPredicate {
+  return { args, fingerprint: JSON.stringify(args) };
+}
+
+export function retainFeedPredicateIsActive(
+  predicate: RetainFeedCompiledPredicate | NormalizedRetainFeedArgs,
+): boolean {
+  const args = 'args' in predicate ? predicate.args : predicate;
+  return Boolean(
+    args.q ||
+      args.filters.title ||
+      args.filters.statuses.length > 0 ||
+      args.filters.lenses.length > 0,
+  );
+}
+
+export function retainFeedSummarySelection(
+  args: NormalizedRetainFeedArgs,
+): FacetSelection {
+  const entries: Array<[string, ReadonlySet<string>]> = [];
+  if (args.filters.statuses.length > 0) {
+    entries.push(['status', new Set(args.filters.statuses)]);
+  }
+  if (args.filters.lenses.length > 0) {
+    entries.push(['lens', new Set(args.filters.lenses)]);
+  }
+  return new Map(entries);
+}
+
+const containsFolded = (value: string | null | undefined, query: string | null): boolean =>
+  !query || (value ?? '').toLocaleLowerCase('en-US').includes(query.toLocaleLowerCase('en-US'));
+
+/** Pure reference predicate for JS-backed legs and parity tests. SQL-backed
+ * legs compile the same fields through {@link retainFeedPredicateSql}. */
+export function matchesRetainFeedPredicate(
+  row: RetainFeedRow,
+  predicate: RetainFeedCompiledPredicate | NormalizedRetainFeedArgs,
+  omit?: RetainFeedFacetKey,
+): boolean {
+  const args = 'args' in predicate ? predicate.args : predicate;
+  const f = args.filters;
+  return (
+    containsFolded(`${row.id} ${row.title} ${row.status ?? ''}`, args.q) &&
+    containsFolded(row.title, f.title) &&
+    (omit === 'status' || f.statuses.length === 0 || (row.status != null && f.statuses.includes(row.status))) &&
+    (omit === 'lens' || f.lenses.length === 0 || (row.meta.lens != null && f.lenses.includes(row.meta.lens)))
+  );
+}
+
+/** The store kinds that form the selected tab/outcome population. Outcome is
+ * scope here (before q/rtf), so summary.total and the row query name the same
+ * reachable corpus. */
+export function retainFeedKindsForArgs(args: NormalizedRetainFeedArgs): RetainFeedKind[] {
+  const tabKinds: RetainFeedKind[] =
+    args.tab === 'all'
+      ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe']
+      : [RETAIN_KIND_FOR_TAB[args.tab]];
+  return args.filter === 'all'
+    ? tabKinds
+    : tabKinds.filter((kind) => kind === 'plan' || kind === 'wi');
+}
+
+export interface RetainScalarSummary {
+  total: number;
+  matched: number;
+}
+
 export interface RetainFeedDeps {
   /** The hive's shared-memory pool (WI-39535), already scope-resolved by the
    *  caller (`hive:<slug>` / every pot under the All-Pots lens). A throw
@@ -237,29 +354,35 @@ export interface RetainFeedDeps {
   listMemoriesPage?: (opts: {
     window: RetainLegWindow | null;
     limit: number;
+    predicate?: RetainFeedCompiledPredicate;
   }) => Promise<RetainMemorySource[]>;
   /** Optional exact corpus count over the SAME memory scopes. This is separate
    *  from the bounded page on purpose: a page length is never a badge total. */
   countMemories?: () => Promise<number>;
+  /** Exact selected-scope total + q/rtf matched count without materializing a
+   * canonical memory corpus. Legacy/pluggable stores fall back to listMemories. */
+  summarizeMemories?: (predicate: RetainFeedCompiledPredicate) => Promise<RetainScalarSummary>;
   listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
   /** One keyset page of recipes by recent activity (code-recipes-store
    *  listRecipesActivityPage). `ts` = GREATEST(last_run_at, updated_at, created_at). */
   listRecipesPage: (opts: {
     window: RetainLegWindow | null;
     limit: number;
+    predicate?: RetainFeedCompiledPredicate;
   }) => Promise<Array<{ id: string; title: string; runCount: number; ts: string }>>;
   countRecipes: () => Promise<number>;
+  summarizeRecipes: (predicate: RetainFeedCompiledPredicate) => Promise<RetainScalarSummary>;
   /** One keyset page of agent-insight runbooks by file mtime (readInsightDocsPage). */
   listRunbooksPage: (opts: {
     window: RetainLegWindow | null;
     limit: number;
+    predicate?: RetainFeedCompiledPredicate;
   }) => Promise<Array<{ slug: string; title: string; discovered: string | null; ts: string }>>;
   countRunbooks: () => Promise<number>;
+  summarizeRunbooks: (predicate: RetainFeedCompiledPredicate) => Promise<RetainScalarSummary>;
 }
 
-export interface RetainFeedOpts {
-  tab?: RetainFeedTab;
-  filter?: RetainFeedFilter;
+export interface RetainFeedOpts extends Omit<RetainFeedQueryArgs, 'hive'> {
   /** Opaque cursor from the previous page's `nextCursor`. */
   cursor?: string | null;
   limit?: number;
@@ -313,6 +436,60 @@ function legWindowSql(sql: Sql, w: RetainLegWindow | null) {
   return sql`x.ts < ${w.beforeTs}::timestamptz`;
 }
 
+const retainLikePattern = (query: string): string =>
+  `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+
+/** One predicate compiler for every SQL-backed Retain leg. Each scoped row is
+ * projected to `x.id/title/status/lens`; null status/lens therefore follows
+ * the same active-filter semantics as the pure predicate. */
+function retainFeedPredicateSql(
+  sql: Sql,
+  args: NormalizedRetainFeedArgs,
+  omit?: RetainFeedFacetKey,
+) {
+  const q = args.q ? retainLikePattern(args.q) : null;
+  const title = args.filters.title ? retainLikePattern(args.filters.title) : null;
+  return sql`
+    ${
+      q
+        ? sql`(
+            COALESCE(x.id, '') ILIKE ${q} ESCAPE '\\'
+            OR COALESCE(x.title, '') ILIKE ${q} ESCAPE '\\'
+            OR COALESCE(x.status, '') ILIKE ${q} ESCAPE '\\'
+          )`
+        : sql`TRUE`
+    }
+    AND ${title ? sql`COALESCE(x.title, '') ILIKE ${title} ESCAPE '\\'` : sql`TRUE`}
+    AND ${
+      omit !== 'status' && args.filters.statuses.length > 0
+        ? sql`x.status = ANY(${args.filters.statuses}::text[])`
+        : sql`TRUE`
+    }
+    AND ${
+      omit !== 'lens' && args.filters.lenses.length > 0
+        ? sql`x.lens = ANY(${args.filters.lenses}::text[])`
+        : sql`TRUE`
+    }`;
+}
+
+/** Outcome is part of the selected population, not a column facet. */
+function retainOutcomeSql(
+  sql: Sql,
+  args: NormalizedRetainFeedArgs,
+  kind: 'plan' | 'wi',
+) {
+  if (args.filter === 'all') return sql`TRUE`;
+  if (kind === 'plan') {
+    return args.filter === 'shipped'
+      ? sql`x.status = 'shipped'`
+      : sql`x.status <> ALL(${PLAN_INFLIGHT_EXCLUDED}::text[])`;
+  }
+  const abandoned = [...ISSUE_ABANDONED_STATUSES];
+  return args.filter === 'shipped'
+    ? sql`x.shipped`
+    : sql`NOT x.shipped AND x.status <> ALL(${abandoned}::text[])`;
+}
+
 /** The canonical-store population behind Mem0Backend.list() for a set of
  * resolved pools. Keep this ONE predicate shared by the bounded page and exact
  * count: `row_kind` excludes mem0's entity graph, `state` preserves the
@@ -336,7 +513,11 @@ function canonicalRetainMemoryCorpusSql(sql: Sql, scopes: readonly string[]) {
 export async function listCanonicalRetainMemoriesPage(
   sql: Sql,
   scopes: readonly string[],
-  opts: { window: RetainLegWindow | null; limit: number },
+  opts: {
+    window: RetainLegWindow | null;
+    limit: number;
+    predicate?: RetainFeedCompiledPredicate;
+  },
 ): Promise<RetainMemorySource[]> {
   if (scopes.length === 0) return [];
   const rows = (await sql`
@@ -344,12 +525,16 @@ export async function listCanonicalRetainMemoriesPage(
       FROM (
         SELECT m.id::text AS id,
                m.payload,
+               COALESCE(m.payload->>'data', '') AS title,
+               NULL::text AS status,
+               NULL::text AS lens,
                date_trunc('milliseconds',
                  COALESCE(m.updated_at, m.created_at, to_timestamp(0))) AS ts
           FROM harness_shared.memory_canonical m
          WHERE ${canonicalRetainMemoryCorpusSql(sql, scopes)}
       ) x
-     WHERE ${legWindowSql(sql, opts.window)}
+     WHERE ${opts.predicate ? retainFeedPredicateSql(sql, opts.predicate.args) : sql`TRUE`}
+       AND ${legWindowSql(sql, opts.window)}
      ORDER BY x.ts DESC, x.id COLLATE "C" ASC
      LIMIT ${opts.limit}
   `) as Array<{ id: string; payload: Record<string, unknown> | null; ts: Date | string | null }>;
@@ -388,6 +573,32 @@ export async function countCanonicalRetainMemories(sql: Sql, scopes: readonly st
   return Number(rows[0]?.n ?? 0);
 }
 
+/** Exact selected memory total + predicate match in one canonical-store read. */
+export async function summarizeCanonicalRetainMemories(
+  sql: Sql,
+  scopes: readonly string[],
+  predicate: RetainFeedCompiledPredicate,
+): Promise<RetainScalarSummary> {
+  if (scopes.length === 0) return { total: 0, matched: 0 };
+  const rows = (await sql`
+    WITH scoped AS MATERIALIZED (
+      SELECT m.id::text AS id,
+             COALESCE(m.payload->>'data', '') AS title,
+             NULL::text AS status,
+             NULL::text AS lens
+        FROM harness_shared.memory_canonical m
+       WHERE ${canonicalRetainMemoryCorpusSql(sql, scopes)}
+    )
+    SELECT count(*)::int AS total,
+           count(*) FILTER (WHERE ${retainFeedPredicateSql(sql, predicate.args)})::int AS matched
+      FROM scoped x
+  `) as Array<{ total: number | string; matched: number | string }>;
+  return {
+    total: Number(rows[0]?.total ?? 0),
+    matched: Number(rows[0]?.matched ?? 0),
+  };
+}
+
 /**
  * Whole-read budget for one Retained page, in ms — comfortably under the
  * ~10s RESOLVER_READ_TIMEOUT_MS this exists to stay beneath, and ~2.6x the
@@ -422,16 +633,11 @@ export async function readRetainFeed(
   opts: RetainFeedOpts = {},
 ): Promise<RetainFeedPage> {
   const generatedAt = new Date().toISOString();
-  const tab: RetainFeedTab = opts.tab ?? 'all';
-  const filter: RetainFeedFilter = opts.filter ?? 'all';
-  const limit = Math.max(1, Math.min(RETAIN_FEED_MAX_PAGE, Math.floor(opts.limit ?? RETAIN_FEED_PAGE_SIZE)));
-  const cursor = typeof opts.cursor === 'string' ? decodeRetainCursor(opts.cursor) : (opts.cursor ?? null);
-
-  const tabKinds: RetainFeedKind[] =
-    tab === 'all' ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe'] : [RETAIN_KIND_FOR_TAB[tab]];
-  // "Filters apply where a type has statuses": a non-all filter narrows the
-  // feed to the kinds that can be shipped/in flight at all.
-  const kinds = filter === 'all' ? tabKinds : tabKinds.filter((k) => k === 'plan' || k === 'wi');
+  const normalized = normalizeRetainFeedArgs(opts);
+  const predicate = buildRetainFeedPredicate(normalized);
+  const { filter, limit, cursor } = normalized;
+  const kinds = retainFeedKindsForArgs(normalized);
+  const predicateActive = retainFeedPredicateIsActive(predicate);
 
   const degraded: string[] = [];
   const shippedArr = [...ISSUE_SHIPPED_STATUSES];
@@ -466,7 +672,11 @@ export async function readRetainFeed(
   const legMemories = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('memory', cursor);
     const source = deps.listMemoriesPage
-      ? await deps.listMemoriesPage({ window: w, limit })
+      ? await deps.listMemoriesPage({
+          window: w,
+          limit,
+          ...(predicateActive ? { predicate } : {}),
+        })
       : listMemoriesOnce
         ? await listMemoriesOnce()
         : (() => {
@@ -494,6 +704,7 @@ export async function readRetainFeed(
           },
         ];
       })
+      .filter((row) => matchesRetainFeedPredicate(row, predicate))
       .filter((row) => inRetainLegWindow(row.ts, row.id, w))
       .sort(compareRetainRows)
       .slice(0, limit);
@@ -534,33 +745,37 @@ export async function readRetainFeed(
            AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
          ORDER BY hp.plan_slug, r.routed_at DESC
       ) x
-      WHERE ${filterPred} AND ${legWindowSql(sql, w)}
+      WHERE ${filterPred}
+        AND ${retainFeedPredicateSql(sql, normalized)}
+        AND ${legWindowSql(sql, w)}
       ORDER BY x.ts DESC, x.id COLLATE "C" ASC
       LIMIT ${limit}
     `) as Array<Record<string, unknown>>;
-    return rows.flatMap((r) => {
-      const ts = toIsoMs(r.ts);
-      const id = String(r.id ?? '');
-      if (!ts || !id) return [];
-      const status = String(r.status ?? '');
-      return [
-        {
-          kind: 'plan' as const,
-          id,
-          title: String(r.title ?? id),
-          ts,
-          status,
-          shipped: status === 'shipped',
-          meta: {
-            ideaId: String(r.idea_id ?? ''),
-            ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
-            lens: String(r.lens ?? ''),
-            childTotal: Number(r.child_total ?? 0),
-            childDone: Number(r.child_done ?? 0),
+    return rows
+      .flatMap((r) => {
+        const ts = toIsoMs(r.ts);
+        const id = String(r.id ?? '');
+        if (!ts || !id) return [];
+        const status = String(r.status ?? '');
+        return [
+          {
+            kind: 'plan' as const,
+            id,
+            title: String(r.title ?? id),
+            ts,
+            status,
+            shipped: status === 'shipped',
+            meta: {
+              ideaId: String(r.idea_id ?? ''),
+              ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
+              lens: String(r.lens ?? ''),
+              childTotal: Number(r.child_total ?? 0),
+              childDone: Number(r.child_done ?? 0),
+            },
           },
-        },
-      ];
-    });
+        ];
+      })
+      .filter((row) => matchesRetainFeedPredicate(row, predicate));
   };
 
   const legWi = async (): Promise<RetainFeedRow[]> => {
@@ -612,30 +827,34 @@ export async function readRetainFeed(
            AND r.routed_ref LIKE 'wi:%'
          ORDER BY ei.issue_id, r.routed_at DESC
       ) x
-      WHERE ${filterPred} AND ${legWindowSql(sql, w)}
+      WHERE ${filterPred}
+        AND ${retainFeedPredicateSql(sql, normalized)}
+        AND ${legWindowSql(sql, w)}
       ORDER BY x.ts DESC, x.id COLLATE "C" ASC
       LIMIT ${limit}
     `) as Array<Record<string, unknown>>;
-    return rows.flatMap((r) => {
-      const ts = toIsoMs(r.ts);
-      const id = String(r.id ?? '');
-      if (!ts || !id) return [];
-      return [
-        {
-          kind: 'wi' as const,
-          id,
-          title: String(r.title ?? id),
-          ts,
-          status: String(r.status ?? ''),
-          shipped: Boolean(r.shipped),
-          meta: {
-            ideaId: String(r.idea_id ?? ''),
-            ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
-            lens: String(r.lens ?? ''),
+    return rows
+      .flatMap((r) => {
+        const ts = toIsoMs(r.ts);
+        const id = String(r.id ?? '');
+        if (!ts || !id) return [];
+        return [
+          {
+            kind: 'wi' as const,
+            id,
+            title: String(r.title ?? id),
+            ts,
+            status: String(r.status ?? ''),
+            shipped: Boolean(r.shipped),
+            meta: {
+              ideaId: String(r.idea_id ?? ''),
+              ideaTitle: typeof r.idea_title === 'string' && r.idea_title ? r.idea_title : null,
+              lens: String(r.lens ?? ''),
+            },
           },
-        },
-      ];
-    });
+        ];
+      })
+      .filter((row) => matchesRetainFeedPredicate(row, predicate));
   };
 
   const legRubrics = async (): Promise<RetainFeedRow[]> => {
@@ -657,6 +876,7 @@ export async function readRetainFeed(
           },
         ];
       })
+      .filter((row) => matchesRetainFeedPredicate(row, predicate))
       .filter((row) => inRetainLegWindow(row.ts, row.id, w))
       .sort(compareRetainRows)
       .slice(0, limit);
@@ -664,42 +884,54 @@ export async function readRetainFeed(
 
   const legRunbooks = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('runbook', cursor);
-    const docs = await deps.listRunbooksPage({ window: w, limit });
-    return docs.flatMap((d) => {
-      const ts = toIsoMs(d.ts);
-      if (!ts || !d.slug) return [];
-      return [
-        {
-          kind: 'runbook' as const,
-          id: d.slug,
-          title: d.title || d.slug,
-          ts,
-          status: null,
-          shipped: false,
-          meta: { discovered: d.discovered },
-        },
-      ];
+    const docs = await deps.listRunbooksPage({
+      window: w,
+      limit,
+      ...(predicateActive ? { predicate } : {}),
     });
+    return docs
+      .flatMap((d) => {
+        const ts = toIsoMs(d.ts);
+        if (!ts || !d.slug) return [];
+        return [
+          {
+            kind: 'runbook' as const,
+            id: d.slug,
+            title: d.title || d.slug,
+            ts,
+            status: null,
+            shipped: false,
+            meta: { discovered: d.discovered },
+          },
+        ];
+      })
+      .filter((row) => matchesRetainFeedPredicate(row, predicate));
   };
 
   const legRecipes = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('recipe', cursor);
-    const page = await deps.listRecipesPage({ window: w, limit });
-    return page.flatMap((r) => {
-      const ts = toIsoMs(r.ts);
-      if (!ts || !r.id) return [];
-      return [
-        {
-          kind: 'recipe' as const,
-          id: r.id,
-          title: r.title || r.id,
-          ts,
-          status: null,
-          shipped: false,
-          meta: { runCount: r.runCount },
-        },
-      ];
+    const page = await deps.listRecipesPage({
+      window: w,
+      limit,
+      ...(predicateActive ? { predicate } : {}),
     });
+    return page
+      .flatMap((r) => {
+        const ts = toIsoMs(r.ts);
+        if (!ts || !r.id) return [];
+        return [
+          {
+            kind: 'recipe' as const,
+            id: r.id,
+            title: r.title || r.id,
+            ts,
+            status: null,
+            shipped: false,
+            meta: { runCount: r.runCount },
+          },
+        ];
+      })
+      .filter((row) => matchesRetainFeedPredicate(row, predicate));
   };
 
   const legFns: Record<RetainFeedKind, () => Promise<RetainFeedRow[]>> = {
@@ -749,6 +981,291 @@ export async function readRetainFeed(
       : null;
 
   return { rows, nextCursor, counts, degraded, generatedAt };
+}
+
+interface RetainAggregateDbRow {
+  kind: 'totals' | 'facet';
+  facet: string | null;
+  label: string | null;
+  value: string | null;
+  count: number | string | null;
+  total: number | string | null;
+  matched: number | string | null;
+}
+
+const mapRetainAggregateRows = (
+  rows: readonly RetainAggregateDbRow[],
+): CompanionSummaryAggregateRow[] =>
+  rows.map((row): CompanionSummaryAggregateRow =>
+    row.kind === 'totals'
+      ? {
+          kind: 'totals',
+          total: Number(row.total ?? 0),
+          matched: Number(row.matched ?? 0),
+        }
+      : {
+          kind: 'facet',
+          facet: row.facet ?? '',
+          label: row.label ?? undefined,
+          value: row.value ?? '',
+          count: Number(row.count ?? 0),
+        },
+  );
+
+/** Exact totals/facets over a complete JS-backed leg. The selected tab/outcome
+ * scope is decided before this helper; q/title always apply, while each facet
+ * deliberately omits its own dimension for drill-down counts. */
+export function summarizeRetainRows(
+  rows: readonly RetainFeedRow[],
+  predicate: RetainFeedCompiledPredicate,
+): CompanionSummaryAggregateRow[] {
+  const aggregate: CompanionSummaryAggregateRow[] = [
+    {
+      kind: 'totals',
+      total: rows.length,
+      matched: rows.filter((row) => matchesRetainFeedPredicate(row, predicate)).length,
+    },
+  ];
+  const facets: Array<{
+    key: RetainFeedFacetKey;
+    label: string;
+    value: (row: RetainFeedRow) => string | null | undefined;
+  }> = [
+    { key: 'status', label: 'Status', value: (row) => row.status },
+    { key: 'lens', label: 'Lens', value: (row) => row.meta.lens },
+  ];
+  for (const facet of facets) {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      if (!matchesRetainFeedPredicate(row, predicate, facet.key)) continue;
+      const value = facet.value(row);
+      if (!value) continue;
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+    for (const [value, count] of counts) {
+      aggregate.push({ kind: 'facet', facet: facet.key, label: facet.label, value, count });
+    }
+  }
+  return aggregate;
+}
+
+async function readRetainPlanSummary(
+  sql: Sql,
+  workspaceId: string,
+  predicate: RetainFeedCompiledPredicate,
+  memberSlugs: readonly string[] | undefined,
+): Promise<CompanionSummaryAggregateRow[]> {
+  const args = predicate.args;
+  const rows = (await sql`
+    WITH scoped AS MATERIALIZED (
+      SELECT DISTINCT ON (hp.plan_slug)
+             hp.plan_slug AS id,
+             COALESCE(NULLIF(hp.title, ''), hp.plan_slug) AS title,
+             COALESCE(hp.status, '') AS status,
+             (COALESCE(hp.status, '') = 'shipped') AS shipped,
+             NULLIF(r.lens, '') AS lens
+        FROM harness_shared.scout_routed_ideas r
+        JOIN harness_shared.harness_plans hp
+          ON hp.workspace_id = r.workspace_id
+         AND hp.plan_slug = substring(r.routed_ref from 6)
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.rail = 'plan'
+         AND r.routed_ref LIKE 'plan:%'
+         AND ${memberSlugs ? sql`hp.harness_slug = ANY(${memberSlugs as string[]}::text[])` : sql`TRUE`}
+       ORDER BY hp.plan_slug, r.routed_at DESC
+    ),
+    population AS MATERIALIZED (
+      SELECT * FROM scoped x WHERE ${retainOutcomeSql(sql, args, 'plan')}
+    ),
+    totals AS (SELECT count(*)::int AS n FROM population),
+    matched AS (
+      SELECT count(*)::int AS n FROM population x
+       WHERE ${retainFeedPredicateSql(sql, args)}
+    ),
+    status_facets AS (
+      SELECT x.status AS value, count(*)::int AS n
+        FROM population x
+       WHERE ${retainFeedPredicateSql(sql, args, 'status')}
+         AND x.status IS NOT NULL AND x.status <> ''
+       GROUP BY x.status
+    ),
+    lens_facets AS (
+      SELECT x.lens AS value, count(*)::int AS n
+        FROM population x
+       WHERE ${retainFeedPredicateSql(sql, args, 'lens')}
+         AND x.lens IS NOT NULL AND x.lens <> ''
+       GROUP BY x.lens
+    )
+    SELECT 'totals'::text AS kind, NULL::text AS facet, NULL::text AS label,
+           NULL::text AS value, NULL::int AS count, totals.n AS total,
+           matched.n AS matched
+      FROM totals CROSS JOIN matched
+    UNION ALL SELECT 'facet', 'status', 'Status', value, n, NULL, NULL FROM status_facets
+    UNION ALL SELECT 'facet', 'lens', 'Lens', value, n, NULL, NULL FROM lens_facets
+  `) as RetainAggregateDbRow[];
+  return mapRetainAggregateRows(rows);
+}
+
+async function readRetainWorkItemSummary(
+  sql: Sql,
+  workspaceId: string,
+  predicate: RetainFeedCompiledPredicate,
+  harnessScopes: readonly string[] | undefined,
+): Promise<CompanionSummaryAggregateRow[]> {
+  const args = predicate.args;
+  const shipped = [...ISSUE_SHIPPED_STATUSES];
+  const routedWiIds = sql`ARRAY(
+    SELECT DISTINCT substring(r2.routed_ref from 4)
+      FROM harness_shared.scout_routed_ideas r2
+     WHERE r2.workspace_id = ${workspaceId}
+       AND r2.routed_ref LIKE 'wi:%'
+  )`;
+  const rows = (await sql`
+    WITH routed_wi AS MATERIALIZED (
+      SELECT ei.issue_id, ei.title, ei.state
+        FROM harness_shared.engineer_issues ei
+       WHERE ei.workspace_id = ${workspaceId}
+         AND ei.source_plan_slug IS NULL
+         AND ${harnessScopes ? sql`ei.scope = ANY(${harnessScopes as string[]}::text[])` : sql`TRUE`}
+         AND ei.issue_id = ANY(${routedWiIds})
+    ),
+    scoped AS MATERIALIZED (
+      SELECT DISTINCT ON (ei.issue_id)
+             ei.issue_id AS id,
+             COALESCE(NULLIF(ei.title, ''), r.title, ei.issue_id) AS title,
+             COALESCE(ei.state, '') AS status,
+             (ei.state = ANY(${shipped}::text[])) AS shipped,
+             NULLIF(r.lens, '') AS lens
+        FROM harness_shared.scout_routed_ideas r
+        JOIN routed_wi ei ON ei.issue_id = substring(r.routed_ref from 4)
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.routed_ref LIKE 'wi:%'
+       ORDER BY ei.issue_id, r.routed_at DESC
+    ),
+    population AS MATERIALIZED (
+      SELECT * FROM scoped x WHERE ${retainOutcomeSql(sql, args, 'wi')}
+    ),
+    totals AS (SELECT count(*)::int AS n FROM population),
+    matched AS (
+      SELECT count(*)::int AS n FROM population x
+       WHERE ${retainFeedPredicateSql(sql, args)}
+    ),
+    status_facets AS (
+      SELECT x.status AS value, count(*)::int AS n
+        FROM population x
+       WHERE ${retainFeedPredicateSql(sql, args, 'status')}
+         AND x.status IS NOT NULL AND x.status <> ''
+       GROUP BY x.status
+    ),
+    lens_facets AS (
+      SELECT x.lens AS value, count(*)::int AS n
+        FROM population x
+       WHERE ${retainFeedPredicateSql(sql, args, 'lens')}
+         AND x.lens IS NOT NULL AND x.lens <> ''
+       GROUP BY x.lens
+    )
+    SELECT 'totals'::text AS kind, NULL::text AS facet, NULL::text AS label,
+           NULL::text AS value, NULL::int AS count, totals.n AS total,
+           matched.n AS matched
+      FROM totals CROSS JOIN matched
+    UNION ALL SELECT 'facet', 'status', 'Status', value, n, NULL, NULL FROM status_facets
+    UNION ALL SELECT 'facet', 'lens', 'Lens', value, n, NULL, NULL FROM lens_facets
+  `) as RetainAggregateDbRow[];
+  return mapRetainAggregateRows(rows);
+}
+
+function scalarSummaryRows(summary: RetainScalarSummary): CompanionSummaryAggregateRow[] {
+  return [{ kind: 'totals', total: summary.total, matched: summary.matched }];
+}
+
+function mergeRetainSummaryLegs(
+  legs: readonly (readonly CompanionSummaryAggregateRow[])[],
+): CompanionSummaryAggregateRow[] {
+  let total = 0;
+  let matched = 0;
+  const facets = new Map<string, { facet: string; label?: string; value: string; count: number }>();
+  for (const rows of legs) {
+    for (const row of rows) {
+      if (row.kind === 'totals') {
+        total += row.total;
+        matched += row.matched;
+        continue;
+      }
+      const key = `${row.facet}\u0000${row.value}`;
+      const current = facets.get(key);
+      facets.set(key, {
+        facet: row.facet,
+        label: row.label ?? current?.label,
+        value: row.value,
+        count: (current?.count ?? 0) + row.count,
+      });
+    }
+  }
+  return [
+    { kind: 'totals', total, matched },
+    ...[...facets.values()].map((row): CompanionSummaryAggregateRow => ({ kind: 'facet', ...row })),
+  ];
+}
+
+/** One companion-summary round trip over the same selected tab/outcome scope
+ * and q/rtf predicate as the row feed. A failed leg rejects the summary — the
+ * client renders unknown, never a confident partial total. */
+export async function readRetainSummaryAggregateRows(
+  sql: Sql,
+  workspaceId: string,
+  deps: RetainFeedDeps,
+  opts: RetainFeedOpts = {},
+): Promise<CompanionSummaryAggregateRow[]> {
+  const normalized = normalizeRetainFeedArgs({ ...opts, cursor: null });
+  const predicate = buildRetainFeedPredicate(normalized);
+  const kinds = retainFeedKindsForArgs(normalized);
+  const withinBudget = createReadDeadline(opts.budgetMs ?? RETAIN_READ_BUDGET_MS);
+
+  const memorySummary = async () => {
+    if (deps.summarizeMemories) return scalarSummaryRows(await deps.summarizeMemories(predicate));
+    const source = await deps.listMemories();
+    const rows = source.flatMap((entry): RetainFeedRow[] => {
+      if (!entry.id || !entry.text) return [];
+      return [{
+        kind: 'memory',
+        id: entry.id,
+        title: retainMemoryTitle(entry.text),
+        ts: retainMemoryTsOf(entry.metadata),
+        status: null,
+        shipped: false,
+        meta: {},
+      }];
+    });
+    return summarizeRetainRows(rows, predicate);
+  };
+  const rubricSummary = async () => {
+    const rows = (await deps.listRubrics()).flatMap((rubric): RetainFeedRow[] => {
+      const ts = toIsoMs(rubric.updatedAt);
+      if (!rubric.slug || !ts) return [];
+      return [{
+        kind: 'rubric',
+        id: rubric.slug,
+        title: rubric.title || rubric.slug,
+        ts,
+        status: rubric.status || null,
+        shipped: false,
+        meta: {},
+      }];
+    });
+    return summarizeRetainRows(rows, predicate);
+  };
+  const readers: Record<RetainFeedKind, () => Promise<CompanionSummaryAggregateRow[]>> = {
+    memory: memorySummary,
+    plan: () => readRetainPlanSummary(sql, workspaceId, predicate, opts.memberSlugs),
+    wi: () => readRetainWorkItemSummary(sql, workspaceId, predicate, opts.harnessScopes),
+    rubric: rubricSummary,
+    runbook: async () => scalarSummaryRows(await deps.summarizeRunbooks(predicate)),
+    recipe: async () => scalarSummaryRows(await deps.summarizeRecipes(predicate)),
+  };
+  const legs = await Promise.all(
+    kinds.map((kind) => withinBudget(readers[kind](), `${kind} summary`)),
+  );
+  return mergeRetainSummaryLegs(legs);
 }
 
 /**
@@ -1132,8 +1649,33 @@ export async function readRetainDetail(
  */
 export async function readInsightDocsPage(
   contentDir: string,
-  opts: { window: RetainLegWindow | null; limit: number },
+  opts: {
+    window: RetainLegWindow | null;
+    limit: number;
+    predicate?: RetainFeedCompiledPredicate;
+  },
 ): Promise<Array<{ slug: string; title: string; discovered: string | null; ts: string }>> {
+  if (opts.predicate) {
+    const indexed = await readInsightDocsIndex(contentDir);
+    return indexed
+      .filter((doc) =>
+        matchesRetainFeedPredicate(
+          {
+            kind: 'runbook',
+            id: doc.slug,
+            title: doc.title,
+            ts: doc.ts,
+            status: null,
+            shipped: false,
+            meta: { discovered: doc.discovered },
+          },
+          opts.predicate!,
+        ),
+      )
+      .filter((doc) => inRetainLegWindow(doc.ts, doc.slug, opts.window))
+      .sort((a, b) => (a.ts !== b.ts ? (a.ts < b.ts ? 1 : -1) : a.slug < b.slug ? -1 : 1))
+      .slice(0, Math.max(1, opts.limit));
+  }
   const names = (await fs.readdir(contentDir)).filter((n) => /\.(md|mdx)$/.test(n));
   const stats = await Promise.all(
     names.map(async (n) => {
@@ -1161,6 +1703,48 @@ export async function readInsightDocsPage(
     }),
   );
   return docs.filter((d): d is { slug: string; title: string; discovered: string | null; ts: string } => d !== null);
+}
+
+async function readInsightDocsIndex(
+  contentDir: string,
+): Promise<Array<{ slug: string; title: string; discovered: string | null; ts: string }>> {
+  const names = (await fs.readdir(contentDir)).filter((name) => /\.(md|mdx)$/.test(name));
+  return Promise.all(
+    names.map(async (name) => {
+      const [stat, text] = await Promise.all([
+        fs.stat(path.join(contentDir, name)),
+        fs.readFile(path.join(contentDir, name), 'utf8'),
+      ]);
+      const slug = name.replace(/\.(md|mdx)$/, '');
+      return {
+        ...parseInsightFrontmatter(slug, text),
+        ts: new Date(Math.floor(stat.mtimeMs)).toISOString(),
+      };
+    }),
+  );
+}
+
+/** Exact selected runbook total + predicate match. The full index is read only
+ * by the companion summary or an active server predicate; unfiltered paging
+ * keeps the existing stat-first/page-header fast path above. */
+export async function summarizeInsightDocs(
+  contentDir: string,
+  predicate: RetainFeedCompiledPredicate,
+): Promise<RetainScalarSummary> {
+  const docs = await readInsightDocsIndex(contentDir);
+  const rows: RetainFeedRow[] = docs.map((doc) => ({
+    kind: 'runbook',
+    id: doc.slug,
+    title: doc.title,
+    ts: doc.ts,
+    status: null,
+    shipped: false,
+    meta: { discovered: doc.discovered },
+  }));
+  return {
+    total: rows.length,
+    matched: rows.filter((row) => matchesRetainFeedPredicate(row, predicate)).length,
+  };
 }
 
 /** Corpus size of the insight-doc tree (the Runbooks tab badge). */

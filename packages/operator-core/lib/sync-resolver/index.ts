@@ -54,7 +54,7 @@ import { attachListMeta } from './list-meta';
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
 import { createReadDeadline } from './read-deadline';
-import { createCompanionListQueryPair } from './bounded-list-read';
+import { createCompanionListQueryPair, readCompanionSummary } from './bounded-list-read';
 import {
   WORK_ITEMS_CURSOR_PAGE_LIMIT,
   WORK_ITEMS_FAIR_STATE_LIMIT,
@@ -78,6 +78,7 @@ import {
   type LearningObservationsWireArgs,
 } from './learning-observations-read';
 import type { LearningImprovementsArgs } from '../harness/improvements/learning-digest-snapshot';
+import type { RetainFeedQueryArgs } from './learning-retain-types';
 
 /**
  * Shared deadline for the fan-outs bounded IN PLACE (WI-39825). 6s — the budget
@@ -929,6 +930,10 @@ async function retainStoreDeps(
             const { countCanonicalRetainMemories } = await import('./learning-retain-read');
             return countCanonicalRetainMemories(sql, await resolveMemoryScopes());
           },
+          summarizeMemories: async (predicate) => {
+            const { summarizeCanonicalRetainMemories } = await import('./learning-retain-read');
+            return summarizeCanonicalRetainMemories(sql, await resolveMemoryScopes(), predicate);
+          },
         }
       : {}),
     listRubrics: async () => {
@@ -940,26 +945,69 @@ async function retainStoreDeps(
         updatedAt: r.updatedAt,
       }));
     },
-    listRecipesPage: async ({ window, limit }) => {
+    listRecipesPage: async ({ window, limit, predicate }) => {
       const { listRecipesActivityPage } = await import('../code-recipes-store');
+      if (
+        predicate &&
+        (predicate.args.filters.statuses.length > 0 || predicate.args.filters.lenses.length > 0)
+      ) {
+        return [];
+      }
       return listRecipesActivityPage(sql, {
         limit,
         before: window ? { ts: window.beforeTs, includeTies: window.includeTies, idAfter: window.tieIdAfter } : null,
+        ...(predicate?.args.q ? { q: predicate.args.q } : {}),
+        ...(predicate?.args.filters.title ? { title: predicate.args.filters.title } : {}),
       });
     },
     countRecipes: async () => {
       const { countRecipes } = await import('../code-recipes-store');
       return countRecipes(sql, { includeTrivial: false });
     },
-    listRunbooksPage: async ({ window, limit }) => {
+    summarizeRecipes: async (predicate) => {
+      const { summarizeRecipesActivity } = await import('../code-recipes-store');
+      return summarizeRecipesActivity(sql, {
+        includeTrivial: false,
+        q: predicate.args.q,
+        title: predicate.args.filters.title,
+        matchImpossible:
+          predicate.args.filters.statuses.length > 0 ||
+          predicate.args.filters.lenses.length > 0,
+      });
+    },
+    listRunbooksPage: async ({ window, limit, predicate }) => {
       const { readInsightDocsPage } = await import('./learning-retain-read');
       const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
-      return readInsightDocsPage(`${DOCS_CONTENT_ROOT}/agent-insights`, { window, limit });
+      if (
+        predicate &&
+        (predicate.args.filters.statuses.length > 0 || predicate.args.filters.lenses.length > 0)
+      ) {
+        return [];
+      }
+      return readInsightDocsPage(`${DOCS_CONTENT_ROOT}/agent-insights`, {
+        window,
+        limit,
+        ...(predicate ? { predicate } : {}),
+      });
     },
     countRunbooks: async () => {
       const { countInsightDocs } = await import('./learning-retain-read');
       const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
       return countInsightDocs(`${DOCS_CONTENT_ROOT}/agent-insights`);
+    },
+    summarizeRunbooks: async (predicate) => {
+      const { countInsightDocs, summarizeInsightDocs } = await import('./learning-retain-read');
+      const { DOCS_CONTENT_ROOT } = await import('../agent-tools/docs/_repo-paths');
+      if (
+        predicate.args.filters.statuses.length > 0 ||
+        predicate.args.filters.lenses.length > 0
+      ) {
+        return {
+          total: await countInsightDocs(`${DOCS_CONTENT_ROOT}/agent-insights`),
+          matched: 0,
+        };
+      }
+      return summarizeInsightDocs(`${DOCS_CONTENT_ROOT}/agent-insights`, predicate);
     },
   };
 }
@@ -1059,6 +1107,24 @@ const learningObservationsQueryPair = createCompanionListQueryPair({
   },
   summarySelection: learningObservationsSummarySelection,
 });
+
+const retainFeedArgsSchema = z
+  .object({
+    tab: z.enum(['all', 'memories', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes']).optional(),
+    filter: z.enum(['all', 'shipped', 'inflight']).optional(),
+    cursor: z.string().max(600).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    hive: z.string().max(120).optional(),
+    q: z.string().max(500).optional(),
+    filters: z
+      .object({
+        title: z.string().max(500).optional(),
+        statuses: z.array(z.string().min(1).max(120)).max(100).optional(),
+        lenses: z.array(z.string().min(1).max(160)).max(100).optional(),
+      })
+      .optional(),
+  })
+  .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // storage.usage — live storage usage by category for Settings → Storage

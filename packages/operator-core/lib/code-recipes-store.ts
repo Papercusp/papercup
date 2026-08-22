@@ -484,6 +484,10 @@ export async function listRecipesActivityPage(
     limit: number;
     before?: { ts: string; includeTies?: boolean; idAfter?: string | null } | null;
     includeTrivial?: boolean;
+    /** Retain-ledger quick search over the row's id + title. */
+    q?: string | null;
+    /** Retain-ledger Title column substring filter. */
+    title?: string | null;
   },
 ): Promise<Array<{ id: string; title: string; runCount: number; ts: string }>> {
   const lim = clampLimit(opts.limit);
@@ -498,6 +502,10 @@ export async function listRecipesActivityPage(
       : b.idAfter != null
         ? sql`(x.ts < ${b.ts}::timestamptz OR (x.ts = ${b.ts}::timestamptz AND x.id COLLATE "C" > ${b.idAfter}))`
         : sql`x.ts < ${b.ts}::timestamptz`;
+  const likePattern = (value: string): string =>
+    `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+  const q = opts.q?.trim() ? likePattern(opts.q.trim()) : null;
+  const title = opts.title?.trim() ? likePattern(opts.title.trim()) : null;
   const rows = await sql<Array<{ id: string; title: string; run_count: number | string; ts: Date | string }>>`
     SELECT * FROM (
       SELECT id, title, run_count,
@@ -507,6 +515,12 @@ export async function listRecipesActivityPage(
        WHERE ${whereTrivial}
     ) x
     WHERE ${windowPred}
+      AND ${
+        q
+          ? sql`(COALESCE(x.id, '') ILIKE ${q} ESCAPE '\\' OR COALESCE(x.title, '') ILIKE ${q} ESCAPE '\\')`
+          : sql`TRUE`
+      }
+      AND ${title ? sql`COALESCE(x.title, '') ILIKE ${title} ESCAPE '\\'` : sql`TRUE`}
     ORDER BY x.ts DESC, x.id COLLATE "C" ASC
     LIMIT ${lim}`;
   return rows.map((r) => ({
@@ -515,4 +529,47 @@ export async function listRecipesActivityPage(
     runCount: asInt(r.run_count),
     ts: asIso(r.ts),
   }));
+}
+
+/** Exact Retain-ledger recipe total + q/title matched count in one aggregate.
+ * Recipe rows expose neither status nor lens; an active filter on either axis
+ * is represented by `matchImpossible` and therefore matches zero without a
+ * row scan while preserving the selected recipe corpus total. */
+export async function summarizeRecipesActivity(
+  sql: postgres.Sql,
+  opts: {
+    includeTrivial?: boolean;
+    q?: string | null;
+    title?: string | null;
+    matchImpossible?: boolean;
+  } = {},
+): Promise<{ total: number; matched: number }> {
+  const whereTrivial = opts.includeTrivial
+    ? sql`TRUE`
+    : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
+  const likePattern = (value: string): string =>
+    `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+  const q = opts.q?.trim() ? likePattern(opts.q.trim()) : null;
+  const title = opts.title?.trim() ? likePattern(opts.title.trim()) : null;
+  const rows = await sql<Array<{ total: number | string; matched: number | string }>>`
+    WITH scoped AS MATERIALIZED (
+      SELECT id, title
+        FROM harness_shared.code_recipes
+       WHERE ${whereTrivial}
+    )
+    SELECT count(*)::int AS total,
+           count(*) FILTER (
+             WHERE ${opts.matchImpossible ? sql`FALSE` : sql`TRUE`}
+               AND ${
+                 q
+                   ? sql`(COALESCE(id, '') ILIKE ${q} ESCAPE '\\' OR COALESCE(title, '') ILIKE ${q} ESCAPE '\\')`
+                   : sql`TRUE`
+               }
+               AND ${title ? sql`COALESCE(title, '') ILIKE ${title} ESCAPE '\\'` : sql`TRUE`}
+           )::int AS matched
+      FROM scoped`;
+  return {
+    total: asInt(rows[0]?.total ?? 0),
+    matched: asInt(rows[0]?.matched ?? 0),
+  };
 }
