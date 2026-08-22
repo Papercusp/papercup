@@ -193,6 +193,9 @@ export interface LeaderBriefMember {
    *  making tool calls at the same time. Only `'ended'`/`'suspect'`/`'draining'`
    *  are genuine not-live-or-going-away verdicts. */
   sessionState: SessionState | null;
+  /** EI-21125380796386851: whether a directed wake can still reach this row.
+   *  `suspect` + true is recoverable; null means the oracle did not resolve. */
+  wakeable: boolean | null;
   verdict: MemberVerdict | null;
   wakeMode: WakeMode | null;
   /** Healthy engine-loop lifecycle; null when this is ordinary work. */
@@ -1599,6 +1602,7 @@ export function topExcludedFloors(
 
 export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
+  wakeable?: boolean | null;
   confirmLiveness?: boolean | null;
   verdict?: MemberVerdict;
   wakeMode?: WakeMode;
@@ -1857,6 +1861,7 @@ export function projectMember(
     label: a.label,
     fleetRole: a.fleetRole ?? null,
     sessionState: a.sessionState ?? null,
+    wakeable: a.wakeable ?? null,
     verdict: a.verdict ?? null,
     wakeMode: a.wakeMode === 'auto' || a.wakeMode === 'manual' ? a.wakeMode : null,
     monitorState: a.monitorState ?? null,
@@ -1912,7 +1917,7 @@ export default defineTool({
   profile: 'engineer',
   description:
     "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
-    'sessionState, `verdict`, wakeMode, ' +
+    'sessionState, `wakeable`, `verdict`, wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved, benchSuggestion, ' +
     '`dormant`, `spinning`, `throttled` (backed off from a provider wall — nextFireAt is ' +
@@ -1926,7 +1931,7 @@ export default defineTool({
       "monitor. Folded into coord:orient { mode:'monitor' }. " +
       'Spec: agent-insights/leading-a-fleet-without-polling.',
     notWhen:
-      'The Mug/placement read over the WHOLE roster (fleet:assignments), ' +
+      'Mug/placement read over the WHOLE roster (fleet:assignments), ' +
       "or a member's message history (coord:inbox { agent }).",
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
