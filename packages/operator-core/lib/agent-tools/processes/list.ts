@@ -90,7 +90,7 @@ export default defineTool({
     chaining:
       'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `live.verifierGroups` keeps verifier-owned systemd scopes visible without treating them as unaccounted bypasses. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
@@ -140,36 +140,56 @@ export default defineTool({
       };
     }
 
+    const hasTaskSelector =
+      args.state !== undefined ||
+      (args.states?.length ?? 0) > 0 ||
+      (args.classes?.length ?? 0) > 0 ||
+      args.launchedBy !== undefined ||
+      args.workItemId !== undefined ||
+      args.rootTaskId !== undefined;
+
     let live: unknown;
     if (args.live) {
       const tick = await reconcileTick({
         dryRun: true,
         scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
       });
-      live = {
+      const liveSummary = {
         ...tick.summary,
         degraded: tick.degraded,
         degradedReason: tick.degradedReason,
-        scannedProcesses: tick.scan.processes,
-        foreignTruncated: tick.scan.foreignTruncated,
-        unaccountedGroups: tick.result.unaccounted.map((g) => ({
-          cgroupPath: g.cgroupPath,
-          scopeUnit: g.scopeUnit,
-          pids: g.pids,
-          sample: g.sampleCmdline.slice(0, 160),
-        })),
-        foreignGroups: tick.result.foreign.map((g) => ({
-          cgroupPath: g.cgroupPath,
-          pids: g.pids,
-          sample: g.sampleCmdline.slice(0, 160),
-        })),
-        verifierGroups: tick.result.verifierScope.map((g) => ({
-          cgroupPath: g.cgroupPath,
-          scopeUnit: g.scopeUnit,
-          pids: g.pids,
-          sample: g.sampleCmdline.slice(0, 160),
-        })),
       };
+      // EI-20974969153018746: a task selector answers a narrow ledger question.
+      // Keep reconciliation health visible, but do not spend the result budget on
+      // unrelated host-wide process samples. Call without a selector to request
+      // the full live group inventory used by the kill/chaining workflow.
+      live = hasTaskSelector
+        ? {
+            ...liveSummary,
+            diagnosticsOmitted: 'global process groups omitted because a task selector is active',
+          }
+        : {
+            ...liveSummary,
+            scannedProcesses: tick.scan.processes,
+            foreignTruncated: tick.scan.foreignTruncated,
+            unaccountedGroups: tick.result.unaccounted.map((g) => ({
+              cgroupPath: g.cgroupPath,
+              scopeUnit: g.scopeUnit,
+              pids: g.pids,
+              sample: g.sampleCmdline.slice(0, 160),
+            })),
+            foreignGroups: tick.result.foreign.map((g) => ({
+              cgroupPath: g.cgroupPath,
+              pids: g.pids,
+              sample: g.sampleCmdline.slice(0, 160),
+            })),
+            verifierGroups: tick.result.verifierScope.map((g) => ({
+              cgroupPath: g.cgroupPath,
+              scopeUnit: g.scopeUnit,
+              pids: g.pids,
+              sample: g.sampleCmdline.slice(0, 160),
+            })),
+          };
     }
 
     const rows = await listTasks({

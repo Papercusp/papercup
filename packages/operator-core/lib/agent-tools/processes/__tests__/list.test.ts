@@ -206,4 +206,81 @@ describe('processes:list structured output', () => {
       }),
     ]);
   });
+
+  it('omits unrelated global groups from a filtered live task read', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    vi.mocked(listTasks).mockResolvedValueOnce([]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { unaccounted: 38, foreign: 38, verifier: 1 },
+      result: {
+        unaccounted: [
+          {
+            cgroupPath: '/user.slice/papercusp.slice/pc-orphan123.scope',
+            scopeUnit: 'pc-orphan123.scope',
+            pids: [11, 12],
+            sampleCmdline: 'node unrelated orphan process',
+          },
+        ],
+        verifierScope: [
+          {
+            cgroupPath: '/user.slice/papercusp.slice/papercup-tauri-verify.scope',
+            scopeUnit: 'papercup-tauri-verify.scope',
+            pids: [21],
+            sampleCmdline: 'npm run tauri dev',
+          },
+        ],
+        foreign: [
+          {
+            cgroupPath: '/user.slice/foreign.slice/foreign.scope',
+            pids: [31],
+            sampleCmdline: 'node unrelated foreign process',
+          },
+        ],
+      },
+      scan: { processes: 3, foreignTruncated: false },
+      degraded: false,
+      touched: 0,
+      strandedCount: 0,
+      endedUnobservedCount: 0,
+      unaccountedPersisted: 1,
+      residueCleared: 0,
+    } as never);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { live: true, launchedBy: 'su-self', limit: 2000 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-filtered-live-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(
+      expect.objectContaining({ launchedBy: 'su-self' }),
+    );
+    const structured = dispatched.result?.structuredContent as {
+      live: Record<string, unknown>;
+    };
+    expect(structured.live).toMatchObject({
+      unaccounted: 38,
+      diagnosticsOmitted: 'global process groups omitted because a task selector is active',
+    });
+    expect(structured.live).not.toHaveProperty('unaccountedGroups');
+    expect(structured.live).not.toHaveProperty('foreignGroups');
+    expect(structured.live).not.toHaveProperty('verifierGroups');
+  });
 });
