@@ -306,6 +306,9 @@ CC_GUARD_OPERATOR_DESKTOP_HOOK="${CC_HOOK_DEST_DIR}/guard-operator-desktop.mjs"
 # tsc/esbuild parse failure at EDIT time instead of ~10-50min later post-commit via the
 # git-sync content-guard. Fail-open, never blocks.
 CC_CONTENT_LINT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-content-lint.mjs"
+# PostToolUse MDX compiler nudge (EI-19450114644493388): reads the complete
+# resulting .mdx file and reports a real compiler error before git-sync quarantine.
+CC_MDX_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-mdx-nudge.mjs"
 # PreToolUse hard-DENY hook (su-papercusp-way-gate-2026-07-06 P-006, wired WI-5542):
 # blocks a key-shaped secret (sk-/ghp_/AKIA…/PEM block) from ever reaching a
 # shared git-sync tree file. Was orphaned at repo-root scripts/cc-hooks/ and never
@@ -1023,6 +1026,41 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# merge_mdx_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+# (EI-19450114644493388). Advisory only; the hook reads the complete resulting
+# file and invokes the same MDX compiler stack as the commit-path detector.
+merge_mdx_nudge_hook() {
+  python3 - "$1" "$CC_MDX_NUDGE_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
+arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # merge_secrets_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit' (su-papercusp-way-gate
 # P-006, wired WI-5542): hard DENY backstop against a key-shaped secret reaching a shared
 # git-sync tree file.
@@ -1654,6 +1692,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_ASK_GATE_HOOK" ] && merge_ask_gate_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_CONTENT_LINT_HOOK" ] && merge_content_lint_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_MDX_NUDGE_HOOK" ] && merge_mdx_nudge_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SECRETS_GUARD_HOOK" ] && merge_secrets_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK" ] && merge_schedule_wakeup_provenance_hook "$CLAUDE_SETTINGS"

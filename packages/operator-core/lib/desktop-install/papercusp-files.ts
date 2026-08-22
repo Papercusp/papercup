@@ -934,6 +934,11 @@ export const CC_HOOK_FILES = [
   // cover it either: PreToolUse sees `new_string`, a FRAGMENT, and a fragment does not
   // parse standalone. PostToolUse reads the actual resulting file from disk.
   'posttooluse-ts-parse-nudge.mjs',
+  // EI-19450114644493388: the MDX sibling. The real MDX detector already protects
+  // git-sync, but only after the author's turn; this reports the resulting full-file
+  // compile error immediately after an .mdx edit. PreToolUse sees only fragments and
+  // cannot compile them meaningfully.
+  'posttooluse-mdx-nudge.mjs',
   'posttooluse-no-proc-path-fixture-nudge.mjs',
   // EI-19359711978838614: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when a new/edited migration (libs/papercusp/libs/db/sql/*.sql) introduces a column
@@ -2404,6 +2409,15 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-ts-parse-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-ts-parse-nudge.mjs'),
+    });
+  // merge_mdx_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19450114644493388). Advisory only: the author may be between atomic edits,
+  // but the complete resulting file is now available and can be checked by the real
+  // MDX compiler before git-sync quarantines it.
+  if (has('posttooluse-mdx-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-mdx-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-mdx-nudge.mjs'),
     });
   // merge_no_proc_path_fixture_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19968483416347685). Advisory only, like its siblings. Closes the last gap in the
