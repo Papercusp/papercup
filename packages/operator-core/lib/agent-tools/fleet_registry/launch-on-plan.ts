@@ -1590,6 +1590,11 @@ export default defineTool({
     // Set when 'spawn' was asked for but the fleet ALREADY existed: it has a leader
     // already, and installing a second one is not a top-up, it is a coup. Reported.
     let leaderSpawnSkipped: string | null = null;
+    // A request-timeout/retry of the same spawned-leader launch races with the first call:
+    // the fleet row already exists, but the caller still owns the row and the spawned leader
+    // is already recorded. That retry must remain a delegator, not join the fleet as a member.
+    // An unrelated pre-existing fleet keeps the historical ignored-spawn/top-up behavior.
+    let delegatedSpawnRetry = false;
     try {
       const { record, created } = await createFleetIfAbsent({
         workspaceId,
@@ -1604,20 +1609,26 @@ export default defineTool({
       if (wantsSpawnedLeader && !created) {
         // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
         // mint a rival leader. Fall back to the ordinary join path for this call.
-        leaderSpawnSkipped =
-          `\`leader:'spawn'\` was IGNORED: fleet \`${fleetSlug}\` already exists and is led by ` +
-          `\`${record.leaderOwnerId ?? 'nobody'}\`, so no second leader was spawned — this call ` +
-          `only tops up members. To replace the leader, use fleet:take-leadership (or let the ` +
-          `existing one keep leading); to get a spawned leader, launch under a NEW fleet name.`;
+        delegatedSpawnRetry =
+          record.owner === ownerId &&
+          record.leaderOwnerId != null &&
+          record.leaderOwnerId !== ownerId;
+        leaderSpawnSkipped = delegatedSpawnRetry
+          ? `\`leader:'spawn'\` retry recognized: fleet \`${fleetSlug}\` was already handed to spawned leader ` +
+            `\`${record.leaderOwnerId}\`; no second leader was spawned and the caller remains outside the fleet.`
+          : `\`leader:'spawn'\` was IGNORED: fleet \`${fleetSlug}\` already exists and is led by ` +
+            `\`${record.leaderOwnerId ?? 'nobody'}\`, so no second leader was spawned — this call ` +
+            `only tops up members. To replace the leader, use fleet:take-leadership (or let the ` +
+            `existing one keep leading); to get a spawned leader, launch under a NEW fleet name.`;
       }
-      leaderRole = fleetRoleFor(record.leaderOwnerId, ownerId);
+      leaderRole = delegatedSpawnRetry ? 'delegator' : fleetRoleFor(record.leaderOwnerId, ownerId);
       await heartbeatPresence(identity);
       // A spawned-leader launch deliberately leaves the CALLER out of the fleet: no presence
       // label, no leader compaction re-seed, no window recolor. The caller is the delegator,
       // not a participant — labelling it here is exactly the "you are leading a fleet you
       // asked not to lead" state this mode exists to prevent. Skipped only when a leader was
       // actually spawned; the ignored case above falls through to the normal join.
-      if (wantsSpawnedLeader && created) {
+      if ((wantsSpawnedLeader && created) || delegatedSpawnRetry) {
         leaderRole = 'delegator';
       } else {
         await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
@@ -1649,6 +1660,12 @@ export default defineTool({
     // True only when this call must actually open a leader terminal (asked for, and the
     // fleet was newly created rather than joined).
     const spawningLeader = wantsSpawnedLeader && leaderSpawnSkipped === null;
+    const callerExcludedFromFleet = spawningLeader || delegatedSpawnRetry;
+    const callerMembership = {
+      enrolled: !callerExcludedFromFleet,
+      role: callerExcludedFromFleet ? 'delegator' : leaderRole,
+      reason: callerExcludedFromFleet ? 'leader-spawn-caller-excluded' : null,
+    } as const;
 
     // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
     // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
@@ -1746,6 +1763,16 @@ export default defineTool({
     // P-010: when the claimKinds pool-collapse guard refuses, abort the launch BEFORE any
     // terminal opens (the whole point — a starving spec must never open members onto nothing).
     let claimCollapseRefusal: { errors: string[]; poolEffect: SpecPoolEffect | null } | null = null;
+    // A same-owner spawned-leader retry already installed the fleet lane on its first call.
+    // Preserve that spec byte-for-byte; this retry is only allowed to finish a member wave.
+    if (delegatedSpawnRetry) {
+      claimSpecApplied = {
+        ok: true,
+        warning:
+          `leader:'spawn' retry preserved the existing claim spec for fleet \`${fleetSlug}\`; ` +
+          'the caller remains outside the fleet',
+      };
+    } else {
     try {
       const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
       const cupId = fleetSpecBeeKey(fleetSlug);
@@ -1916,6 +1943,7 @@ export default defineTool({
       }
     } catch (e: any) {
       claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
+    }
     }
 
     // P-010: a refused claim-lane guard aborts the launch cleanly — the launch slot is claimed
