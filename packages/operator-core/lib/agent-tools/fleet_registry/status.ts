@@ -298,8 +298,13 @@ export default defineTool({
     // wave died). non-runnable `sessionState` values are the authoritative dead signal (a stale-but-
     // still-heartbeating row can otherwise mask a dead session — see EI-5858) — filter
     // those out before counting, but keep them in the full `members[]` list below (still
-    // wants full visibility, including who died, for the leader/owner reading this).
-    const liveRoster = roster.filter((m) => !['ended', 'suspect', 'draining'].includes(m.sessionState ?? ''));
+    // wants full visibility, including who died or is still bootstrapping, for the
+    // leader/owner reading this). `recorded` is also non-live: it is a launch-window
+    // session state with no live presence, and the leader vacancy calculation below
+    // already treats it as vacant.
+    const liveRoster = roster.filter(
+      (m) => !['ended', 'suspect', 'draining', 'recorded'].includes(m.sessionState ?? ''),
+    );
     const { members: memberCount } = splitFleetRosterCounts(liveRoster);
 
     // The registry's leader is durable, while its liveness belongs to the roster.

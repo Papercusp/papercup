@@ -231,6 +231,26 @@ describe('fleet:status', () => {
     );
   });
 
+  it('excludes sessionState:"recorded" entries from memberCount but keeps them in members[]', async () => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        { agentId: 'su-live', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'live' },
+        // A recorded session has no live presence, but its stale row can remain in the roster.
+        { agentId: 'su-recorded', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'recorded' },
+        { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true, sessionState: 'live' },
+      ],
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.memberCount).toBe(1);
+    expect(out.members).toHaveLength(3);
+    expect(out.members.map((m: { agentId: string }) => m.agentId).sort()).toEqual(
+      ['s-bee1', 'su-live', 'su-recorded'].sort(),
+    );
+  });
+
   it('ends hostless visible rows while preserving headless su members and nursery cups', () => {
     const roster = [
       {
