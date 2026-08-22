@@ -79,6 +79,28 @@ describe('stampStatePlane — which cells are stamped', () => {
     expect(out?.cells.map((c) => c.cell)).toEqual(['mine']);
   });
 
+  it('stamps a registry-declared alternate door while keeping state:read on the canonical cell resolver', () => {
+    const cells = [
+      cell({
+        cell: 'deploy.3070.sha',
+        changeSignal: { kind: 'poll', tool: DOOR, path: 'deployedSha' },
+        doorProjections: [{ tool: 'release:deploy', path: 'deploy.deployedSha' }],
+      }),
+    ];
+    const out = stampStatePlane({
+      payload: { deploy: { deployedSha: 'abc123' } },
+      tool: 'release:deploy',
+      cells,
+    });
+    expect(out?.cells).toEqual([
+      expect.objectContaining({
+        path: 'deploy.deployedSha',
+        cell: 'deploy.3070.sha',
+        reread: { tool: 'state:read', args: { cell: 'deploy.3070.sha' } },
+      }),
+    ]);
+  });
+
   it('skips event-signalled cells — they have no poll path into this payload', () => {
     const cells = [cell({ changeSignal: { kind: 'event', key: 'coord:presence-changed' } as never })];
     expect(stampStatePlane({ payload: { a: { b: 1 } }, tool: DOOR, cells })).toBeNull();

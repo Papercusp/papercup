@@ -7,6 +7,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeployStatus } from '../../release-deploy-launch';
+// The live tool barrel installs the built-in cells before any door is dispatched.
+// This file imports the door directly, so reproduce that bootstrap explicitly.
+import '../cell-registrations-wiring';
 
 const auditUnsafeM = vi.hoisted(() => vi.fn());
 
@@ -160,6 +163,35 @@ describe('release:deploy — status', () => {
     });
     expect(b.diagnosticVintage.warning).toContain('Verify any nextVerb');
     expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('emits registry-derived re-read handles for the gate verdict and deployed SHA', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({
+        gate: { ...mkStatus().gate, consecutiveReds: 2 },
+        deploy: { ...mkStatus().deploy, deployedSha: 'deployed-plane-sha' },
+      }),
+    );
+    const b = body(
+      await tool.handler(
+        { op: 'status' } as never,
+        { role: 'su', harnessSlug: 'papercusp' } as never,
+      ),
+    );
+    expect(b.plane?.cells).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'gate.consecutiveReds',
+          cell: 'gate.greenCheckpoint.verdict',
+          reread: { tool: 'state:read', args: { cell: 'gate.greenCheckpoint.verdict' } },
+        }),
+        expect.objectContaining({
+          path: 'deploy.deployedSha',
+          cell: 'deploy.3070.sha',
+          reread: { tool: 'state:read', args: { cell: 'deploy.3070.sha' } },
+        }),
+      ]),
+    );
   });
 
   it('returns a structured retryable error when the status read rejects', async () => {

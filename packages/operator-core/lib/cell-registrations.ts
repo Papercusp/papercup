@@ -237,6 +237,10 @@ export const GATE_VERDICT_CELL: CellSpec = {
   visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.consecutiveReds' },
+  doorProjections: [
+    { tool: 'release:deploy', path: 'gate.consecutiveReds' },
+    { tool: 'routines:list', path: 'health.gate_health.consecutiveReds' },
+  ],
 
   /**
    * P-006 — THE DISCOVERY LEG, and this cell is the primary reason the field exists.
@@ -514,6 +518,7 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
   visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'deployedSha' },
+  doorProjections: [{ tool: 'release:deploy', path: 'deploy.deployedSha' }],
   shape: '{ deployedSha, serving: { startedSinceCodeChange, unknownReason, pid, codeAsOfSource }, verdictUnknown[] }',
 };
 

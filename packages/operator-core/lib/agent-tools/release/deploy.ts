@@ -41,6 +41,7 @@ import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 import { operatorHomeHarnessSlug, canonicalHarnessSlug } from '../../harness/operator-home-harness';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
+import { statePlaneForDoor } from '../state-plane-door';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 
@@ -315,7 +316,7 @@ export default defineTool({
     }
     let status = statusRead.value;
     if (args.op === 'status') {
-      return json({
+      const payload = {
         ok: true,
         op: 'status',
         ...stamp,
@@ -324,7 +325,9 @@ export default defineTool({
           stagingHeadSha: status.deploy.stagingHeadSha,
           greenPinSha: status.deploy.greenPinSha,
         }),
-      });
+      };
+      const plane = statePlaneForDoor(payload, 'release:deploy', args, ctx);
+      return json({ ...payload, ...(plane ? { plane } : {}) });
     }
 
     const { ownerLabel } = readIdentity(ctx);

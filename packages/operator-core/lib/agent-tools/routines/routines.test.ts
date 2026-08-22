@@ -9,6 +9,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/routines/routines.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// The live tool barrel installs the built-in cells before any door is dispatched.
+// This file imports the door directly, so reproduce that bootstrap explicitly.
+import '../cell-registrations-wiring';
 
 // Declare the mock's PARAMETERS, not just its return: `vi.fn(async () => …)` is a
 // zero-arg signature, so `sqlMock.mock.calls` types as `[][]` and `.flat()` collapses
@@ -159,6 +162,37 @@ describe('routines:list', () => {
       consecutive_error_ticks: 2,
       fire_count: 411,
     });
+  });
+
+  it('stamps only the operator-home gate-health row with its registry-derived re-read handle', async () => {
+    const row = (install_slug: string, consecutiveReds: number) => ({
+      install_slug,
+      name: 'green-checkpoint',
+      trigger_kind: 'cron',
+      trigger_config: { cron: '0 0 * * * *' },
+      target_role: 'system:green-checkpoint',
+      active: true,
+      next_fire_at: new Date('2026-08-12T17:00:00Z'),
+      last_fired_at: new Date('2026-08-12T16:00:00Z'),
+      group_slug: null,
+      metadata: { gate_health: { consecutiveReds } },
+    });
+    sqlMock.mockResolvedValue([row('home-harness', 2), row('sidestage', 7)]);
+
+    const b = body(
+      await listTool.handler(
+        {} as never,
+        { role: 'su', harnessSlug: 'papercusp' } as never,
+      ),
+    );
+    expect(b.routines[0].plane?.cells).toEqual([
+      expect.objectContaining({
+        path: 'health.gate_health.consecutiveReds',
+        cell: 'gate.greenCheckpoint.verdict',
+        reread: { tool: 'state:read', args: { cell: 'gate.greenCheckpoint.verdict' } },
+      }),
+    ]);
+    expect(b.routines[1]).not.toHaveProperty('plane');
   });
 
   /**

@@ -12,11 +12,9 @@ import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
 import { buildKey } from '../../events/await/catalog';
-import { listCells } from '../../cell-registry';
 import { CELL_READ_SPAWN_ID } from '../../cell-read';
-import { stampStatePlane, type StatePlaneBlock } from '../../state-plane-stamp';
-import { resolveAgentIdentity } from '../coordination/identity';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { statePlaneForDoor } from '../state-plane-door';
 
 const TOOL_NAME = 'dev:pipeline_position';
 
@@ -339,45 +337,6 @@ export function shapePipelinePosition(
  * documents. A reader we could not resolve keeps its roles empty, which under `canReadCell`
  * admits workspace-visible cells only — under-advertising, never over-advertising.
  */
-function planeFor(payload: unknown, args: { path?: string; sha?: string }, ctx: unknown): StatePlaneBlock | null {
-  try {
-    // `role` and `harnessSlug` are read straight off ctx and do NOT depend on principal
-    // resolution, so they are established OUTSIDE the try. Rebuilding the whole reader inside
-    // it — the previous shape — threw them away whenever resolveAgentIdentity failed, which
-    // this tool reaches by design (`requirePrincipal: false`).
-    //
-    // That was harmless only while every cell was workspace-visible. EI-20709429494940822
-    // narrowed all six operator-pipeline cells to `{ kind: 'harness', ref: 'papercusp' }`, and
-    // `canReadCell`'s harness arm is a plain `reader.harnessSlug === ref`. So dropping the slug
-    // stopped being "under-advertising" and started removing the ENTIRE plane — the door kept
-    // returning the volatile values while silently withholding the handles that re-read them,
-    // which is precisely the transcribe-a-stale-number failure the plane exists to prevent.
-    const c = (ctx ?? {}) as { role?: string; harnessSlug?: string | null };
-    let reader = {
-      ownerId: '',
-      roles: c.role ? [c.role] : [],
-      harnessSlug: c.harnessSlug ?? undefined,
-    };
-    try {
-      reader = { ...reader, ownerId: resolveAgentIdentity(c as never).ownerId };
-    } catch {
-      // Unresolvable principal — keep the ctx-derived audience, with an empty owner. An
-      // `owner`-scoped cell still fails closed against `ownerId: ''`.
-    }
-    return stampStatePlane({
-      payload,
-      tool: TOOL_NAME,
-      // The subject for a caller-relative cell. Keyed by the PARAM NAME the spec declares,
-      // never positionally — `path` here, `ownerId` for coord:goal's cell.
-      args: { path: args.path, sha: args.sha },
-      cells: listCells(reader),
-      reader,
-    });
-  } catch {
-    return null;
-  }
-}
-
 export default defineTool({
   name: 'dev:pipeline_position',
   profile: 'engineer',
@@ -545,7 +504,14 @@ export default defineTool({
     // exits (multi-consumer, non-release runtime, default), and stamping only the default
     // would drop the plane for exactly the paths with unusual activation routes, which are
     // the ones whose readers are most likely to be reasoning about staleness.
-    const plane = planeFor(result, args, ctx);
+    const plane = statePlaneForDoor(
+      result,
+      TOOL_NAME,
+      // The subject for a caller-relative cell. Keyed by the PARAM NAME the spec
+      // declares, never positionally — `path` here, `ownerId` for coord:goal.
+      { path: args.path, sha: args.sha },
+      ctx,
+    );
     const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker };
 
     /**

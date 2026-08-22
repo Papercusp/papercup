@@ -21,10 +21,13 @@
  *
  * The item's text assumed this module would have to name the door's volatile values.
  * It does not, and must not. Every cell already declares
- * `changeSignal: { kind:'poll', tool:'<the door>', path:'<a path in that door's payload>' }`
- * — that IS the door→cell map, written by the cell's own author and already validated at
- * registration. So the stamp is DERIVED: filter the registry by `changeSignal.tool`, then
- * probe each declared path against the payload in hand.
+ * `changeSignal: { kind:'poll', tool:'<the canonical door>', path:'<a path>' }` plus any
+ * `doorProjections: [{ tool, path }]` — together those declarations ARE the door→cell
+ * map, written by the cell's own author and already validated at registration. The
+ * canonical changeSignal remains the one resolver state:read/state:subscribe dispatch;
+ * doorProjections only let other existing payloads carry the same re-read handle. So the
+ * stamp is DERIVED: filter those registry declarations by tool, then probe each path
+ * against the payload in hand.
  *
  * A hand-written table here would be a SECOND derivation of a fact the registry already
  * owns (D-038 axis 5: one derivation, many lenses) and would drift the first time a cell
@@ -191,27 +194,30 @@ function collect(input: StatePlaneStampInput): PlaneStamp[] {
 
   for (const spec of cells ?? []) {
     if (!spec) continue;
-    // Only cells this door actually resolves. An `event`-signalled cell has no poll path
-    // into this payload at all.
+    // Only poll-backed cells can emit state:read handles. An event-signalled cell has no
+    // resolver to re-read, even if a similarly named field happens to be present here.
     if (spec.changeSignal?.kind !== 'poll') continue;
-    if (spec.changeSignal.tool !== tool) continue;
 
     // P-019: never advertise a cell the reader may not read. `canReadCell` fails closed.
     if (reader && !canReadCell(spec, reader)) continue;
 
-    const path = spec.changeSignal.path;
-    if (typeof path !== 'string' || path.length === 0) continue;
+    const projections = [spec.changeSignal, ...(spec.doorProjections ?? [])];
+    for (const projection of projections) {
+      if (projection.tool !== tool) continue;
+      const path = projection.path;
+      if (typeof path !== 'string' || path.length === 0) continue;
 
-    // OWN-KEY existence — a present-and-null value still stamps. See the header.
-    if (!pathExists(payload, path).exists) continue;
+      // OWN-KEY existence — a present-and-null value still stamps. See the header.
+      if (!pathExists(payload, path).exists) continue;
 
-    // Two cells declaring the same path would emit two competing handles for one value.
-    // Keep the first (registration order) and skip the rest — deterministic, and a
-    // duplicate is a registry defect to fix there, not something to render twice.
-    if (seen.has(path)) continue;
-    seen.add(path);
+      // Two cells declaring the same path would emit two competing handles for one value.
+      // Keep the first (registration order) and skip the rest — deterministic, and a
+      // duplicate is a registry defect to fix there, not something to render twice.
+      if (seen.has(path)) continue;
+      seen.add(path);
 
-    out.push(stampFor(spec, path, args));
+      out.push(stampFor(spec, path, args));
+    }
   }
 
   // Deterministic output: registration order is an implementation detail of the registry,

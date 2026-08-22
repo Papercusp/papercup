@@ -266,6 +266,20 @@ export interface CellPointer {
   answers: string;
 }
 
+/**
+ * An additional agent-facing door that projects this cell's volatile value.
+ *
+ * `changeSignal` remains the ONE canonical resolver used by state:read and
+ * state:subscribe. A door projection is delivery metadata only: it lets
+ * `stampStatePlane` discover the same value when another existing tool already
+ * carries it, without minting an alias cell or maintaining a hand-written map in
+ * that tool.
+ */
+export interface CellDoorProjection {
+  tool: string;
+  path: string;
+}
+
 /** A caller, for the audience check. Deliberately small: everything here is
  *  already known at dispatch, so the check costs no lookup. */
 export interface CellReader {
@@ -332,6 +346,12 @@ export interface CellSpec {
   /** How a subscriber learns it changed. `poll` rides predicate_watches (P-004 is
    *  wiring, not a build); do NOT add a second subscription mechanism. */
   changeSignal: { kind: 'poll'; tool: string; path: string } | { kind: 'event'; key: string };
+  /**
+   * Additional doors whose payloads project this same cell-backed value. These
+   * never participate in reads or subscriptions; they exist only so the door can
+   * emit a registry-derived re-read handle beside the value it already returns.
+   */
+  doorProjections?: readonly CellDoorProjection[];
   /** P-021 — OPTIONAL. Omitted ⇒ every change is material (today's behaviour). */
   materiality?: CellMateriality;
   /**
@@ -394,7 +414,18 @@ export interface CellRejection {
   /** A D-038 axis number, or a P-019 dimension. The two are labelled differently on
    *  purpose: `visibility`/`federation` are NOT contract axes, they are the access
    *  model P-019 added, and blurring them would misrepresent D-038 as having eight. */
-  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation' | 'materiality' | 'headlineSource' | 'pointers';
+  axis:
+    | 1
+    | 2
+    | 3
+    | 4
+    | 5
+    | 'visibility'
+    | 'federation'
+    | 'doorProjections'
+    | 'materiality'
+    | 'headlineSource'
+    | 'pointers';
   rule: string;
   detail: string;
 }
@@ -485,6 +516,48 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
   // should be told both, not made to fix them one run at a time.
   if (fed?.kind === 'shareable' && !CELL_FEDERATION_TRANSPORT_AVAILABLE) {
     reject('federation', 'shareable-no-transport', `\`shareable\` is declarable but NOTHING TRANSPORTS IT. Measured 2026-08-21: \`CellSpec.federation\` is read in exactly two non-test places — its type declaration and this validator — so a shareable cell would federate to nobody, silently and with no error. That is worse than an unsupported feature because it reads as a working one. Declare \`{ kind: 'local' }\`; if you genuinely need cross-hive cells, wire a transport that CONSUMES spec.federation and flip CELL_FEDERATION_TRANSPORT_AVAILABLE in cell-registry.ts (see plan state-plane-interest-and-hardening-2026-08-21 D-013). Note a cell is not a row: the fed_ts/LWW transport federates ROWS, and a cell is a resolver-computed host-local reading.`);
+  }
+
+  // ── P-017 — ADDITIONAL DOOR PROJECTIONS. Delivery aliases, never resolvers.
+  const doorProjections = spec.doorProjections;
+  if (doorProjections !== undefined) {
+    if (!Array.isArray(doorProjections)) {
+      reject(
+        'doorProjections',
+        'door-projections-not-a-list',
+        '`doorProjections` must be a list. Omit it when no additional door carries this value.',
+      );
+    } else if (spec.changeSignal?.kind !== 'poll') {
+      reject(
+        'doorProjections',
+        'door-projections-on-event-cell',
+        'an event-signalled cell has no poll resolver for state:read, so an alternate door cannot honestly emit a re-read handle for it.',
+      );
+    } else {
+      const seen = new Set([`${spec.changeSignal.tool}\u0000${spec.changeSignal.path}`]);
+      for (const projection of doorProjections) {
+        const tool = projection?.tool?.trim();
+        const path = projection?.path?.trim();
+        if (!tool || !path) {
+          reject(
+            'doorProjections',
+            'door-projection-incomplete',
+            'every door projection must name a non-empty `tool` and `path`.',
+          );
+          continue;
+        }
+        const key = `${tool}\u0000${path}`;
+        if (seen.has(key)) {
+          reject(
+            'doorProjections',
+            'door-projection-duplicate',
+            `door projection "${tool}" → "${path}" duplicates the canonical changeSignal or another projection.`,
+          );
+          continue;
+        }
+        seen.add(key);
+      }
+    }
   }
 
   // ── P-021 — MATERIALITY. Optional, but a declared one must be able to do work.

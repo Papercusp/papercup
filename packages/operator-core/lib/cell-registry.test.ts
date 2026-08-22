@@ -387,6 +387,48 @@ describe('registration refuses rather than admits-and-flags', () => {
   });
 });
 
+describe('P-017 — alternate door projections are delivery metadata, not resolvers', () => {
+  const rules = (spec: CellSpec) =>
+    validateCellSpec(spec)
+      .filter((r) => r.axis === 'doorProjections')
+      .map((r) => r.rule);
+
+  it('accepts another door/path while preserving the canonical poll resolver', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      doorProjections: [{ tool: 'release:deploy', path: 'deploy.deployedSha' }],
+    };
+    expect(rules(spec)).toEqual([]);
+    expect(spec.changeSignal).toEqual({
+      kind: 'poll',
+      tool: 'dev:pipeline_position',
+      path: 'positions.deployed',
+    });
+  });
+
+  it('refuses a duplicate of the canonical signal or another projection', () => {
+    const canonical = pipelineCell().changeSignal as { kind: 'poll'; tool: string; path: string };
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      doorProjections: [
+        { tool: canonical.tool, path: canonical.path },
+        { tool: 'release:deploy', path: 'deploy.deployedSha' },
+        { tool: 'release:deploy', path: 'deploy.deployedSha' },
+      ],
+    };
+    expect(rules(spec).filter((r) => r === 'door-projection-duplicate')).toHaveLength(2);
+  });
+
+  it('refuses projections on an event cell because state:read has no resolver', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      changeSignal: { kind: 'event', key: 'release:deployed' },
+      doorProjections: [{ tool: 'release:status', path: 'deployedSha' }],
+    };
+    expect(rules(spec)).toContain('door-projections-on-event-cell');
+  });
+});
+
 describe('WI-36259 — headlineSource is optional, but a declared one must be able to do work', () => {
   const ruleOf = (spec: CellSpec) =>
     validateCellSpec(spec).filter((r) => r.axis === 'headlineSource').map((r) => r.rule);
