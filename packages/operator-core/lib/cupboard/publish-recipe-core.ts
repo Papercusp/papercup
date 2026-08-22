@@ -80,7 +80,7 @@ async function defaultRecipeReader(
   const [{ getRecipe }, { deriveRecipeAuthority }, { getOrgPg }] = await Promise.all([
     import('../code-recipes-store'),
     import('../recipe-authority'),
-    import('../org-pg'),
+    import('@papercusp/db-org'),
   ]);
   const row = await getRecipe(getOrgPg().sql, id);
   if (!row) return null;
