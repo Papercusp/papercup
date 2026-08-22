@@ -454,6 +454,13 @@ describe('buildReleaseTrace', () => {
       active: true,
       candidate: sha,
       activeSource: 'run-lock' as const,
+      systemd: {
+        scope: 'user' as const,
+        argv: ['--user', 'show', 'unit.service', '--property=LoadState'],
+        loadState: 'loaded',
+        known: true,
+        invocationId: 'invocation-123',
+      },
       startedAtMs: 123,
       elapsedSec: 42,
       asOfAgeMs: 0,
@@ -476,6 +483,7 @@ describe('buildReleaseTrace', () => {
     );
     expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
     expect(out.nextVerb?.reason).toContain(sha);
+    expect(out.gate.checkpointRunInFlight?.systemd).toEqual(checkpointRun.systemd);
   });
 
   it('keeps an unrelated active verifier from masking the exact origin-egress wait', () => {

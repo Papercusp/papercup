@@ -194,10 +194,25 @@ export interface LaunchCheckpointResult {
   };
 }
 
+/** The exact user-manager query that produced an ActiveCheckpointCheck reading. */
+export interface CheckpointSystemdProbe {
+  scope: 'user';
+  /** Arguments passed to `systemctl`; the command name itself is recorded by the type. */
+  argv: string[];
+  /** Raw systemd LoadState, or null when the probe did not return it. */
+  load_state: string | null;
+  /** `true` only for LoadState=loaded; null means LoadState was unavailable. */
+  known: boolean | null;
+  /** Raw InvocationID, or null when systemd returned an empty/missing value. */
+  invocation_id: string | null;
+}
+
 /** Detail of a live (already-active) manual checkpoint run for THIS root, or its absence. */
 export interface ActiveCheckpointCheck {
   active: boolean;
   unit: string;
+  /** Provenance for the systemd user-manager read used to establish this result. */
+  systemd: CheckpointSystemdProbe;
   /** EI-20349211793685690: whether the stable unit log was readable and contained the
    *  CLI's exact machine-readable terminal result line. Absent means the log could not be
    *  read; `false` is therefore a measured no-verdict condition, not an unreadable-log guess.
@@ -1038,15 +1053,26 @@ export function checkActiveCheckpointRun(
   readLogMtime: (logPath: string) => number | null = defaultReadLogMtime,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
-  const r = execFn('systemctl', [
+  const systemctlArgv = [
     '--user',
     'show',
     `${unit}.service`,
     '--property=ActiveState',
     '--property=ExecMainStartTimestamp',
     '--property=MainPID',
-  ]);
+    '--property=LoadState',
+    '--property=InvocationID',
+  ];
+  const r = execFn('systemctl', systemctlArgv);
   const props = parseSystemctlShow(r.stdout);
+  const loadState = props.LoadState ?? null;
+  const systemd: CheckpointSystemdProbe = {
+    scope: 'user',
+    argv: [...systemctlArgv],
+    load_state: loadState,
+    known: loadState === null ? null : loadState === 'loaded',
+    invocation_id: props.InvocationID || null,
+  };
   const activeState = props.ActiveState ?? '';
   // WI-6962: a negative is only believable when the probe itself succeeded. `systemctl --user
   // show` exits 0 and emits `ActiveState=inactive` even for a unit it has never heard of
@@ -1072,6 +1098,7 @@ export function checkActiveCheckpointRun(
     return {
       active: true,
       unit,
+      systemd,
       probe_failed: true,
       probe_detail: detail,
       ...(lockHeld.held
@@ -1113,6 +1140,7 @@ export function checkActiveCheckpointRun(
       return {
         active: true,
         unit: `${unit} (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)`,
+        systemd,
         candidate: externalCandidate,
         ...current,
         // Deliberately NOT derived from externalCandidate vs current_candidate — see the
@@ -1132,6 +1160,7 @@ export function checkActiveCheckpointRun(
     return {
       active: false,
       unit,
+      systemd,
       ...(terminal.terminalMarker === undefined ? {} : { terminal_marker: terminal.terminalMarker }),
       ...(terminal.terminalEvidence ? { terminal_evidence: terminal.terminalEvidence } : {}),
     };
@@ -1145,6 +1174,7 @@ export function checkActiveCheckpointRun(
     return {
       active: false,
       unit,
+      systemd,
       ...(terminal.terminalMarker === undefined ? {} : { terminal_marker: terminal.terminalMarker }),
       ...(terminal.terminalEvidence ? { terminal_evidence: terminal.terminalEvidence } : {}),
     };
@@ -1184,6 +1214,7 @@ export function checkActiveCheckpointRun(
   return {
     active: true,
     unit,
+    systemd,
     log_path: logPath,
     candidate,
     // EI-19327704778173646: provenance only when the run actually re-candidated, so the

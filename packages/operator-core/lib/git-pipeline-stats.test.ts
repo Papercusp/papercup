@@ -227,6 +227,29 @@ describe('pinProvenGateCorrection (EI-13714)', () => {
 });
 
 describe('mapActiveRun (overview-tab-expansion P-001)', () => {
+  it('projects user-manager provenance from the checkpoint probe into camelCase snapshot fields', () => {
+    expect(
+      mapActiveRun({
+        active: true,
+        systemd: {
+          scope: 'user',
+          argv: ['--user', 'show', 'unit.service', '--property=LoadState'],
+          load_state: 'loaded',
+          known: true,
+          invocation_id: 'invocation-123',
+        },
+      }),
+    ).toMatchObject({
+      systemd: {
+        scope: 'user',
+        argv: ['--user', 'show', 'unit.service', '--property=LoadState'],
+        loadState: 'loaded',
+        known: true,
+        invocationId: 'invocation-123',
+      },
+    });
+  });
+
   it('maps a live judging run: systemd timestamp → epoch ms, candidate + elapsed through', () => {
     const m = mapActiveRun({
       active: true,

@@ -40,6 +40,7 @@ import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { pipelineName } from './release/pipeline-name';
+import type { CheckpointSystemdProbe } from './release-checkpoint-launch';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -336,6 +337,14 @@ export interface GitPipelineSnapshot {
    *  every other snapshot read. */
   activeRun: {
     active: boolean;
+    /** Provenance of the systemd user-manager query behind this observation. */
+    systemd?: {
+      scope: CheckpointSystemdProbe['scope'];
+      argv: string[];
+      loadState: string | null;
+      known: boolean | null;
+      invocationId: string | null;
+    };
     /** Whether the checkpoint CLI emitted its own valid terminal result line. */
     terminalMarker?: boolean;
     /** EI-210996: systemd-owned terminal tuple, available even after SIGKILL/OOM. */
@@ -658,6 +667,7 @@ export interface GitPipelineSnapshotOpts {
    *  checkActiveCheckpointRun, dynamic-imported only when opted in). */
   probeActiveRun?: (root: string) => {
     active: boolean;
+    systemd?: CheckpointSystemdProbe;
     terminal_marker?: boolean;
     terminal_evidence?: {
       source: 'systemd-exec-stop-post';
@@ -680,6 +690,7 @@ export interface GitPipelineSnapshotOpts {
  *  `activeRun` shape (systemd timestamp → epoch ms; absent fields → null). */
 export function mapActiveRun(r: {
   active: boolean;
+  systemd?: CheckpointSystemdProbe;
   terminal_marker?: boolean;
   terminal_evidence?: {
     source: 'systemd-exec-stop-post';
@@ -704,6 +715,17 @@ export function mapActiveRun(r: {
   const progressAtMs = r.progress_at ? Date.parse(r.progress_at) : NaN;
   return {
     active: r.active,
+    ...(r.systemd
+      ? {
+          systemd: {
+            scope: r.systemd.scope,
+            argv: [...r.systemd.argv],
+            loadState: r.systemd.load_state,
+            known: r.systemd.known,
+            invocationId: r.systemd.invocation_id,
+          },
+        }
+      : {}),
     ...(r.terminal_marker === undefined ? {} : { terminalMarker: r.terminal_marker }),
     ...(r.terminal_evidence
       ? {

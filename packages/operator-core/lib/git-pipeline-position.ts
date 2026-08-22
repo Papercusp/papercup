@@ -836,6 +836,8 @@ export interface PipelinePosition {
      */
     checkpointRunInFlight?: {
       active: boolean;
+      /** Provenance of the systemd user-manager query behind this cached run reading. */
+      systemd?: NonNullable<GitPipelineSnapshot['activeRun']>['systemd'];
       /** Checkpoint CLI result-marker presence from the most recent finished manual run. */
       terminalMarker?: boolean;
       /** EI-210996: systemd-owned abnormal-terminal evidence for that finished run. */
@@ -3342,6 +3344,7 @@ export function mapCheckpointRunInFlight(
   // cache can make an old run look like the live run's heartbeat/phase.
   const progressAtMs = active && cachedDescribesNow ? cachedRun!.progressAtMs : undefined;
   const currentPhase = active && cachedDescribesNow ? cachedRun!.currentPhase : undefined;
+  const systemd = cachedDescribesNow ? cachedRun!.systemd : undefined;
   // The marker only describes a LIVE run; attaching it to an idle probe would assert a refire
   // is in flight for a run that has already finished.
   const marker = active && retriage ? retriage : null;
@@ -3352,6 +3355,7 @@ export function mapCheckpointRunInFlight(
   const candMarker = active && !marker && candidateMarker ? candidateMarker : null;
   return {
     active,
+    ...(systemd !== undefined ? { systemd } : {}),
     ...(!active && cachedDescribesNow && cachedRun!.terminalMarker !== undefined
       ? { terminalMarker: cachedRun!.terminalMarker }
       : {}),

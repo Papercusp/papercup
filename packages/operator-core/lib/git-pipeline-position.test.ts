@@ -4547,6 +4547,30 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     });
   });
 
+  it('carries typed user-manager provenance through to the tool-facing shape', () => {
+    const systemd = {
+      scope: 'user' as const,
+      argv: ['--user', 'show', 'unit.service', '--property=LoadState'],
+      loadState: 'loaded',
+      known: true,
+      invocationId: 'invocation-123',
+    };
+    const out = mapCheckpointRunInFlight(
+      {
+        activeRun: {
+          active: true,
+          candidate: '4961cfb8',
+          startedAtMs: NOW - 45 * 60_000,
+          elapsedSec: 2700,
+          systemd,
+        },
+        computedAtMs: NOW - 1_000,
+      },
+      NOW,
+    );
+    expect(out?.systemd).toEqual(systemd);
+  });
+
   /**
    * WI-7035 — THE RECURRENCE GUARD. The log-derived provenance above only exists for a
    * MANUALLY-fired run: `checkActiveCheckpointRun` parses `/tmp/<unit>.log`, and a CRON-fired
@@ -4932,7 +4956,19 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
         loadDeploy: async () => deploy(),
         loadSnapshot: async () => snap(),
         readCheckpointRunSnapshot: async () => ({
-          activeRun: { active: true, candidate: 'deadbeef1234', startedAtMs: Date.now() - 3 * 60_000, elapsedSec: 180 },
+          activeRun: {
+            active: true,
+            candidate: 'deadbeef1234',
+            startedAtMs: Date.now() - 3 * 60_000,
+            elapsedSec: 180,
+            systemd: {
+              scope: 'user',
+              argv: ['--user', 'show', 'unit.service', '--property=LoadState'],
+              loadState: 'loaded',
+              known: true,
+              invocationId: 'invocation-123',
+            },
+          },
           computedAtMs: Date.now(),
         }),
         readCheckpointRunLock: async () => ({ held: true, elapsedSec: 180 }),
@@ -4940,6 +4976,13 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
     );
     expect(res.gate.checkpointRunInFlight?.active).toBe(true);
     expect(res.gate.checkpointRunInFlight?.candidate).toBe('deadbeef1234');
+    expect(res.gate.checkpointRunInFlight?.systemd).toEqual({
+      scope: 'user',
+      argv: ['--user', 'show', 'unit.service', '--property=LoadState'],
+      loadState: 'loaded',
+      known: true,
+      invocationId: 'invocation-123',
+    });
     expect(res.notes.join(' ')).toMatch(/GATE RUN IN FLIGHT/);
     expect(res.notes.join(' ')).toMatch(/EI-18793581783459047/);
   });

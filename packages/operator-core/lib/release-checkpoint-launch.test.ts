@@ -365,6 +365,47 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
 
+  it('records the exact user-manager query and typed LoadState/InvocationID provenance', () => {
+    const unit = checkpointUnitForRoot('/tree');
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({
+        ActiveState: 'active',
+        LoadState: 'loaded',
+        InvocationID: 'invocation-123',
+        ExecMainStartTimestamp: '',
+        MainPID: '0',
+      }),
+      () => null,
+    );
+
+    expect(r.systemd).toEqual({
+      scope: 'user',
+      argv: [
+        '--user',
+        'show',
+        `${unit}.service`,
+        '--property=ActiveState',
+        '--property=ExecMainStartTimestamp',
+        '--property=MainPID',
+        '--property=LoadState',
+        '--property=InvocationID',
+      ],
+      load_state: 'loaded',
+      known: true,
+      invocation_id: 'invocation-123',
+    });
+  });
+
+  it('keeps a not-found unit distinct from an unavailable LoadState', () => {
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({ ActiveState: 'inactive', LoadState: 'not-found', InvocationID: '' }),
+      () => null,
+    );
+    expect(r.systemd).toMatchObject({ load_state: 'not-found', known: false, invocation_id: null });
+  });
+
   it('keeps a trusted inactive unit inactive when its stable log has an exact valid result marker', () => {
     const unit = checkpointUnitForRoot('/tree');
     const readLogTail = vi.fn(() =>
@@ -727,6 +768,9 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
         () => null,
         () => true, // pidAlive
         () => ({ pid: 4242, startedAt }),
+        undefined,
+        undefined,
+        () => null, // readProcessStartMs: synthetic PID has no procfs identity
       );
       expect(r).toMatchObject({ active: true, probe_failed: true, held_externally: true, started_at: startedAt });
       expect(r.elapsed_sec).toBeGreaterThanOrEqual(9 * 60 - 5);
@@ -784,7 +828,16 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     const pidAlive = vi.fn(() => true);
     const readLockOwner = vi.fn(() => ({ pid: 4242, startedAt }));
 
-    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      execFn,
+      () => null,
+      pidAlive,
+      readLockOwner,
+      undefined,
+      undefined,
+      () => null, // readProcessStartMs: synthetic PID has no procfs identity
+    );
 
     expect(r.active).toBe(true);
     expect(r.held_externally).toBe(true);
@@ -810,7 +863,16 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     const pidAlive = vi.fn(() => true);
     const readLockOwner = vi.fn(() => ({ pid: 4242, startedAt }));
 
-    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      execFn,
+      () => null,
+      pidAlive,
+      readLockOwner,
+      undefined,
+      undefined,
+      () => null, // readProcessStartMs: synthetic PID has no procfs identity
+    );
 
     expect(r.held_externally).toBe(true);
     expect(r.candidate).toBeNull();
@@ -834,6 +896,8 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       () => true,
       () => ({ pid: 4242, startedAt }),
       () => ({ phase: 'delivering', at: new Date().toISOString() }),
+      undefined,
+      () => null, // readProcessStartMs: synthetic PID has no procfs identity
     );
 
     expect(r).toMatchObject({
@@ -849,7 +913,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     const execFn = inactiveUnit;
     const readLockOwner = vi.fn(() => null);
     const r = checkActiveCheckpointRun('/tree', execFn, () => null, undefined, readLockOwner);
-    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+    expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
 
   it('reports active:false when the lock owner pid is dead (crashed holder, unreclaimed file)', () => {
@@ -857,7 +921,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     const pidAlive = vi.fn(() => false);
     const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date().toISOString() }));
     const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
-    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+    expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
 
   describe('isCheckpointRunLockHeldCheap (WI-4310: the no-subprocess sibling for hot health-panel reads)', () => {
@@ -1029,7 +1093,7 @@ describe('checkActiveCheckpointRun MainPID liveness cross-check (EI-9180 self-he
     const pidAlive = vi.fn(() => false); // the PID systemd names no longer exists
     const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
     expect(pidAlive).toHaveBeenCalledWith(99999);
-    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+    expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
 
   it('checks the stable result marker on a dead MainPID and still reports active:false for a finished run', () => {
@@ -1099,7 +1163,7 @@ describe('checkActiveCheckpointRun MainPID liveness cross-check (EI-9180 self-he
       MainPID: '4194304',
     });
     const r = checkActiveCheckpointRun('/tree', execFn, () => null);
-    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+    expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
 });
 
