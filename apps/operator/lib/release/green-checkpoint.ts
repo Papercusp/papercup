@@ -3961,6 +3961,11 @@ export interface IsolationResult {
    *  load-attribution wording below, never manufacture an absorption, so a false `false`
    *  here is fail-safe. */
   hasAssertionSignature?: boolean;
+  /** WI-21151344261099829: true when THIS attempt carries a deterministic, non-timeout
+   *  failure marker outside the narrow Vitest AssertionError vocabulary — for example a
+   *  shell selftest's terminal `FAIL —`/`FAIL (`/`✗` marker or code-intel's `bench probe
+   *  drift:` diagnostic. Optional for compatibility with existing injected fixtures. */
+  hasDeterministicFailureSignature?: boolean;
 }
 
 /** WI-6969: timing-sensitive vocabulary that, if present in an isolation attempt's own
@@ -4000,6 +4005,28 @@ const ASSERTION_SIGNATURE_RE = /\bAssertionError\b|\bexpected\b.*\bto\b/i;
  *  {@link outputHasTimingSignature}). */
 export function outputHasAssertionSignature(out: string): boolean {
   return ASSERTION_SIGNATURE_RE.test(out);
+}
+
+/** WI-21151344261099829: stable failure evidence emitted by non-Vitest test runners.
+ *
+ * Shell selftests report a terminal failure as `FAIL —`, `FAIL:`, `FAIL (` or `✗`; the
+ * ordinary Vitest ` FAIL  file > case` row is deliberately not matched because it is not
+ * by itself evidence about the failure's shape. The code-intel bench throws `bench probe
+ * drift:` when its source cursor is stale. A timeout-shaped output wins over these generic
+ * markers: a load-sensitive timeout may also include a runner-level FAIL line, so it must
+ * remain eligible for the existing load attribution and retry path.
+ *
+ * This helper only controls diagnostic wording. It never changes the fail-safe absorption
+ * verdict, which still requires a clean isolated run plus the confirming co-execution pass. */
+const DETERMINISTIC_FAILURE_SIGNATURE_RE =
+  /(?:^|\n)\s*(?:FAIL\s*(?:[—–-]|:|\()|✗\s+)|\bFAIL\s*(?:[—–-]|:|\()|\bbench probe drift\s*:/im;
+
+export function outputHasDeterministicFailureSignature(out: string): boolean {
+  if (outputHasTimingSignature(out)) return false;
+  return (
+    outputHasAssertionSignature(out) ||
+    DETERMINISTIC_FAILURE_SIGNATURE_RE.test(stripAnsi(out))
+  );
 }
 
 /**
@@ -4574,8 +4601,13 @@ export async function attemptFlakeAbsorption(
         // wrong. Without this, a deterministic assertion failing WHILE the box genuinely is
         // saturated (>= 1.0 loadavg/core) would still read "consistent with ambient host
         // load" — technically true about the box, false about the CAUSE of THIS failure.
-        const attribution = result.hasAssertionSignature
-          ? `(took ${result.durationMs ?? "?"}ms at ${loadNote} — this attempt's own output shows a deterministic AssertionError, not a timeout; NOT load-shaped however busy the host is)`
+        const hasDeterministicFailureEvidence =
+          result.hasAssertionSignature || result.hasDeterministicFailureSignature;
+        const deterministicEvidence = result.hasAssertionSignature
+          ? "a deterministic AssertionError"
+          : "deterministic failure evidence";
+        const attribution = hasDeterministicFailureEvidence
+          ? `(took ${result.durationMs ?? "?"}ms at ${loadNote} — this attempt's own output shows ${deterministicEvidence}, not a timeout; NOT load-shaped however busy the host is)`
           : result.durationMs === undefined
             ? "(ambient host load, not just the checkpoint's own concurrency, can starve even an isolated re-run — duration not measured)"
             : result.durationMs < ISOLATION_LOAD_STARVATION_MIN_MS
@@ -10547,6 +10579,8 @@ export function realCheckpointDeps(
         failingCases: extractFailingTestNames(out),
         hasTimingSignature: outputHasTimingSignature(out),
         hasAssertionSignature: outputHasAssertionSignature(out),
+        hasDeterministicFailureSignature:
+          outputHasDeterministicFailureSignature(out),
       };
     } catch (e) {
       log(

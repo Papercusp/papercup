@@ -75,6 +75,7 @@ import {
   isDeterministicFailureShape,
   outputHasTimingSignature,
   outputHasAssertionSignature,
+  outputHasDeterministicFailureSignature,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
   createTerminationSignalHandler,
@@ -7794,6 +7795,42 @@ describe("attemptFlakeAbsorption (orchestration — injected isolation runner)",
       }
     });
 
+    it("a SLOW non-Vitest deterministic failure marker is NOT blamed on ambient load", async () => {
+      const logs: string[] = [];
+      const slowMs = ISOLATION_LOAD_STARVATION_MIN_MS + 5_000;
+      const isolationRun = async ({
+        workspace,
+        file,
+      }: {
+        workspace: string;
+        file: string;
+      }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: slowMs,
+        hasDeterministicFailureSignature: true,
+      });
+      await attemptFlakeAbsorption(
+        INCIDENT_OUTPUT,
+        isolationRun,
+        (s) => logs.push(s),
+        {
+          sleep: async () => {},
+          loadPerCore: () => ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE + 0.5,
+        },
+      );
+      const attributionLines = logs.filter((l) =>
+        l.includes("still failing after attempt"),
+      );
+      expect(attributionLines.length).toBeGreaterThan(0);
+      for (const line of attributionLines) {
+        expect(line).toContain("deterministic failure evidence, not a timeout");
+        expect(line).toContain("NOT load-shaped however busy the host is");
+        expect(line).not.toContain("consistent with ambient host load");
+      }
+    });
+
     it("a failing attempt with NO measured duration falls back to the unattributed wording", async () => {
       const logs: string[] = [];
       const isolationRun = async ({
@@ -8075,6 +8112,37 @@ describe("attemptFlakeAbsorption (orchestration — injected isolation runner)",
       expect(outputHasAssertionSignature("expected 3 to equal 4")).toBe(true);
       expect(
         outputHasAssertionSignature("every registry entry is in the baseline"),
+      ).toBe(false);
+    });
+
+    it("outputHasDeterministicFailureSignature recognizes shell selftest and probe-drift failures, but not timeouts", () => {
+      expect(
+        outputHasDeterministicFailureSignature(
+          "FAIL — b9-attestation-precondition selftest: 2 check(s) failed",
+        ),
+      ).toBe(true);
+      expect(
+        outputHasDeterministicFailureSignature(
+          "b3-revocation-kcut.selftest: FAIL (1)",
+        ),
+      ).toBe(true);
+      expect(
+        outputHasDeterministicFailureSignature("✗ static probe is missing"),
+      ).toBe(true);
+      expect(
+        outputHasDeterministicFailureSignature(
+          "Error: bench probe drift: packages/operator-core/lib/pty-bridge.ts:166 no longer contains 'managedSetInterval'",
+        ),
+      ).toBe(true);
+      expect(
+        outputHasDeterministicFailureSignature(
+          "FAIL — suite failed\nTest timed out in 5000ms",
+        ),
+      ).toBe(false);
+      expect(
+        outputHasDeterministicFailureSignature(
+          " FAIL  lib/example.test.ts > waits for the service",
+        ),
       ).toBe(false);
     });
   });
