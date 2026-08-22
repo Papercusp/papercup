@@ -21,6 +21,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -50,7 +51,9 @@ import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../relea
 import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import {
+  FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   parseFrozenCandidateRepairQueue,
+  markFrozenRepairFixerDispatched,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
 import {
@@ -2545,6 +2548,134 @@ export async function writeFrozenCandidateRepairQueue(
       [target.workspaceId, target.installSlug],
     );
   }
+}
+
+export interface FrozenRepairFixerDispatchResult {
+  spawnId: string | null;
+  runId: string | null;
+}
+
+export interface FrozenRepairDispatchReservationOptions {
+  /** A first red may create the queue and reserve it in one CAS write. */
+  allowCreateIfAbsent?: boolean;
+  nowMs?: number;
+}
+
+function queueWithoutDispatchReservation(
+  queue: FrozenCandidateRepairQueue,
+): FrozenCandidateRepairQueue {
+  const { dispatchReservation: _dispatchReservation, ...withoutReservation } = queue;
+  return withoutReservation;
+}
+
+/**
+ * Atomically reserve the existing queue row for the external fixer launch.
+ *
+ * The old queue path did `read -> launch -> write`, which let two checkpoint processes both
+ * observe `fixerSpawnId=null` and launch before either write became visible.  This is a
+ * compare-and-swap on the existing routine metadata row: only one caller can install the
+ * reservation token for the exact queue state it read.  `allowCreateIfAbsent` is used only by
+ * the first-red path, so a stale reader cannot recreate a queue another process already cleared.
+ */
+export async function reserveFrozenCandidateRepairFixer(
+  target: GateVerdictTarget,
+  queue: FrozenCandidateRepairQueue,
+  options: FrozenRepairDispatchReservationOptions = {},
+): Promise<FrozenCandidateRepairQueue | null> {
+  if (queue.phase !== 'awaiting-fixer') return null;
+  const nowMs = options.nowMs ?? Date.now();
+  if (queue.dispatchReservation && queue.dispatchReservation.expiresAtMs > nowMs) return null;
+
+  const expectedQueue = queueWithoutDispatchReservation(queue);
+  const reservation = {
+    token: randomUUID(),
+    claimedAtMs: nowMs,
+    expiresAtMs: nowMs + FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
+  };
+  const reservedQueue: FrozenCandidateRepairQueue = {
+    ...expectedQueue,
+    dispatchReservation: reservation,
+  };
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const allowCreate = options.allowCreateIfAbsent === true;
+  const rows = (await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{repair_queue}', $3::jsonb, true),
+            updated_at = now()
+      WHERE workspace_id = $1
+        AND install_slug = $2
+        AND target_role = 'system:green-checkpoint'
+        AND (
+          ${allowCreate ? "metadata->'repair_queue' IS NULL OR metadata->'repair_queue' = 'null'::jsonb OR" : ''}
+          (
+            metadata->'repair_queue' - 'dispatchReservation' = $4::jsonb
+            AND (
+              metadata->'repair_queue'->'dispatchReservation' IS NULL
+              OR COALESCE(
+                CASE
+                  WHEN metadata->'repair_queue'->'dispatchReservation'->>'expiresAtMs' ~ '^[0-9]+$'
+                    THEN (metadata->'repair_queue'->'dispatchReservation'->>'expiresAtMs')::bigint
+                  ELSE 0
+                END,
+                0
+              ) <= $5::bigint
+            )
+          )
+        )
+      RETURNING metadata->'repair_queue' AS repair_queue`,
+    [
+      target.workspaceId,
+      target.installSlug,
+      JSON.stringify(reservedQueue),
+      JSON.stringify(expectedQueue),
+      nowMs,
+    ],
+  )) as Array<{ repair_queue: unknown }>;
+  return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
+}
+
+/**
+ * Finalize (or release) a dispatch reservation with a conditional write.  The reservation is
+ * removed only when the exact token-bearing queue is still present, so a stale launcher cannot
+ * overwrite a replacement attempt that recovered after the lease expired.
+ */
+export async function finalizeFrozenCandidateRepairFixer(
+  target: GateVerdictTarget,
+  queue: FrozenCandidateRepairQueue,
+  fired: FrozenRepairFixerDispatchResult | null | undefined,
+  nowMs = Date.now(),
+): Promise<FrozenCandidateRepairQueue | null> {
+  if (!queue.dispatchReservation || queue.phase !== 'awaiting-fixer') return null;
+  const expectedQueue = queue;
+  let finalizedQueue: FrozenCandidateRepairQueue;
+  if (fired?.spawnId) {
+    const withoutReservation = queueWithoutDispatchReservation(queue);
+    finalizedQueue = queueWithoutDispatchReservation(
+      markFrozenRepairFixerDispatched(withoutReservation, { spawnId: fired.spawnId, nowMs }),
+    );
+  } else {
+    finalizedQueue = { ...queueWithoutDispatchReservation(queue), updatedAtMs: nowMs };
+  }
+
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
+      WHERE workspace_id = $1
+        AND install_slug = $2
+        AND target_role = 'system:green-checkpoint'
+        AND metadata->'repair_queue' = $4::jsonb
+      RETURNING metadata->'repair_queue' AS repair_queue`,
+    [
+      target.workspaceId,
+      target.installSlug,
+      JSON.stringify({ repair_queue: finalizedQueue }),
+      JSON.stringify(expectedQueue),
+    ],
+  )) as Array<{ repair_queue: unknown }>;
+  return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
 }
 
 /** EI-19329732364513693: how OLD is the candidate a verdict judged, and how far behind tip?

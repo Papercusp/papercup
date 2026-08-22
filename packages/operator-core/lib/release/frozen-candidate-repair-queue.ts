@@ -21,10 +21,24 @@ export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAgeMs: 4 * 60 * 60 * 1_000,
 });
 
+/**
+ * A queue dispatch is an external side effect, so the metadata row needs a short-lived
+ * ownership lease around the read -> launch -> finalize window.  The lease is deliberately
+ * much shorter than the four-hour repair budget: a crashed launcher can be recovered on the
+ * next checkpoint tick without permanently wedging the frozen queue.
+ */
+export const FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS = 5 * 60 * 1_000;
+
 const MAX_PERSISTED_FAILURES = 50;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
 export type FrozenCandidateRepairPhase = 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
+
+export interface FrozenRepairDispatchReservation {
+  token: string;
+  claimedAtMs: number;
+  expiresAtMs: number;
+}
 
 export interface FrozenCandidateRepairQueue {
   schemaVersion: 1 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
@@ -46,6 +60,8 @@ export interface FrozenCandidateRepairQueue {
   updatedAtMs: number;
   /** Current/last spawn. A completion from any other spawn is stale and rejected. */
   fixerSpawnId: string | null;
+  /** Short-lived CAS lease held only while one process launches this queue's fixer. */
+  dispatchReservation?: FrozenRepairDispatchReservation;
   failingTests: string[];
 }
 
@@ -73,6 +89,14 @@ export type FrozenRepairQueueDecision =
       kind: 'wait-for-fixer';
       fixerSpawnId: string;
       liveness: 'live' | 'unknown';
+      gateDisposition: 'inconclusive';
+      runSuite: false;
+      recordVerdict: false;
+    }
+  | {
+      kind: 'wait-for-dispatch-reservation';
+      reservationToken: string;
+      reservationExpiresAtMs: number;
       gateDisposition: 'inconclusive';
       runSuite: false;
       recordVerdict: false;
@@ -131,6 +155,19 @@ function nonBlank(value: unknown): value is string {
 
 function validTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function parseDispatchReservation(value: unknown): FrozenRepairDispatchReservation | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (!nonBlank(row.token) || !validTimestamp(row.claimedAtMs) || !validTimestamp(row.expiresAtMs)) return null;
+  if ((row.expiresAtMs as number) < (row.claimedAtMs as number)) return null;
+  return {
+    token: row.token,
+    claimedAtMs: row.claimedAtMs as number,
+    expiresAtMs: row.expiresAtMs as number,
+  };
 }
 
 function assertTimestamp(value: number, label: string): void {
@@ -212,6 +249,8 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (!validTimestamp(row.openedAtMs) || !validTimestamp(row.updatedAtMs)) return null;
   if ((row.updatedAtMs as number) < (row.openedAtMs as number)) return null;
   if (row.fixerSpawnId !== null && !nonBlank(row.fixerSpawnId)) return null;
+  const dispatchReservation = parseDispatchReservation(row.dispatchReservation);
+  if (dispatchReservation === null) return null;
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
   }
@@ -232,6 +271,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     openedAtMs: row.openedAtMs,
     updatedAtMs: row.updatedAtMs,
     fixerSpawnId: row.fixerSpawnId as string | null,
+    ...(dispatchReservation ? { dispatchReservation } : {}),
     failingTests: boundedFailures(row.failingTests as string[]),
   };
 }
@@ -262,6 +302,19 @@ export function decideFrozenCandidateRepairQueue(
   }
 
   if (queue.phase === 'awaiting-fixer') {
+    if (
+      queue.dispatchReservation &&
+      queue.dispatchReservation.expiresAtMs > observation.nowMs
+    ) {
+      return {
+        kind: 'wait-for-dispatch-reservation',
+        reservationToken: queue.dispatchReservation.token,
+        reservationExpiresAtMs: queue.dispatchReservation.expiresAtMs,
+        gateDisposition: 'inconclusive',
+        runSuite: false,
+        recordVerdict: false,
+      };
+    }
     if (!queue.fixerSpawnId || observation.fixerAlive === false) {
       if (queue.attempts >= limits.maxAttempts) {
         return {
