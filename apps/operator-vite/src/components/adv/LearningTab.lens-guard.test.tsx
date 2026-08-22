@@ -127,7 +127,10 @@ vi.mock("@/app/_components/RubricDetailPanel", () => ({
 vi.mock("@/app/adv/create/ObservationsPanel", () => ({
   default: () => <div data-testid="observations-panel" />,
 }));
-vi.mock("@/app/harness/filters", () => ({
+vi.mock("@/app/harness/filters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/app/harness/filters")>();
+  return {
+    ...actual,
   // LearningTab parses the shared URL-backed filter state before issuing its
   // reads. This render probe owns the state bag directly, so only the parser's
   // module shape is needed here.
@@ -140,7 +143,8 @@ vi.mock("@/app/harness/filters", () => ({
     clearAll: () => {},
   }),
   ColumnFilterBar: () => null,
-}));
+  };
+});
 vi.mock("@/app/harness/Select", () => ({
   Select: ({ ariaLabel }: { ariaLabel?: string }) => <select aria-label={ariaLabel} />,
 }));
