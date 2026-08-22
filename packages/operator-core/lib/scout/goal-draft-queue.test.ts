@@ -71,8 +71,9 @@ describe('selectGoalDrafts (pure)', () => {
   it('ignores proposals that never asked for the rail', () => {
     expect(selectGoalDrafts([row([proposal()])])).toEqual([]);
     expect(selectGoalDrafts([row([proposal({ droppedRouteHint: 'instance' })])])).toEqual([]);
-    // An ACCEPTED hint routed normally and is not a draft.
+    // ACCEPTED hints route normally and are not drafts.
     expect(selectGoalDrafts([row([proposal({ routeHint: 'plan' })])])).toEqual([]);
+    expect(selectGoalDrafts([row([proposal({ routeHint: 'goal' })])])).toEqual([]);
     expect(
       selectGoalDrafts([
         row([proposal({ routeHint: 'goal', targetGoalId: 'goal-existing' })]),
@@ -240,8 +241,8 @@ describe('the zero-write property (this is the acceptance criterion)', () => {
   });
 });
 
-describe('draft queue preserves the creation/amendment intake split', () => {
-  it('a goal-scale ask still takes the default rail — the hint is evidence, not routing', () => {
+describe('draft queue preserves historical pre-D-016 evidence without changing routing', () => {
+  it('a historical dropped goal ask still reflects the default rail it actually took', () => {
     const asked = proposal({ droppedRouteHint: 'goal' });
     // routeHint is undefined: parseProposal coerced it. classifyProposal reads
     // routeHint alone, so carrying the ask cannot change where this lands.
@@ -251,11 +252,10 @@ describe('draft queue preserves the creation/amendment intake split', () => {
     expect(decision.followedHint).toBe(false);
   });
 
-  it('accepts goal as a name but holds it unless targetGoalId identifies an amendment', () => {
+  it('accepts goal for both creation and amendment while leaving historical drafts readable', () => {
     expect(DEFAULT_DRAFT_RAIL).toBe('goal');
     expect(ACCEPTED_ROUTE_HINTS).toContain('goal');
-    const hold = DELIBERATELY_UNACCEPTED_ROUTE_HINTS.goal;
-    expect(hold).toMatchObject({ exceptWhen: 'targetGoalId' });
-    expect(typeof hold === 'object' ? hold.reason : '').toMatch(/D-006/);
+    expect(DELIBERATELY_UNACCEPTED_ROUTE_HINTS.goal).toBeUndefined();
+    expect(selectGoalDrafts([row([proposal({ droppedRouteHint: 'goal' })])])).toHaveLength(1);
   });
 });

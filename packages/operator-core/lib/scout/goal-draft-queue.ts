@@ -1,11 +1,12 @@
 /**
  * goal-draft-queue.ts — WI-39879 (plan blender-goal-amendment-rail-2026-08-19 P-001).
  *
- * THE QUESTION THIS ANSWERS: "what would the Blender propose if it were allowed to
- * create a goal?" Until now that was unanswerable. `scout_routed_ideas` carries 1,682
+ * THE QUESTION THIS ANSWERS: "what did the Blender propose before direct goal
+ * creation was admitted, and what plan-hinted work would the live override call
+ * goal-scale?" That was once unanswerable. `scout_routed_ideas` carried 1,682
  * rows and ZERO at `rail='goal'` (measured 2026-08-19, Jun 11 → Aug 18), because
- * intake never accepts the hint — so every argument about whether the Blender should
- * be allowed near goals was being made with no evidence at all.
+ * the pre-D-016 intake never accepted the hint — so every argument about whether the
+ * Blender should be allowed near goals was being made with no evidence at all.
  *
  * THE MECHANISM, and why it is this small: the evidence was almost already there.
  * `scout_cycle_stage_artifacts.proposals` has persisted full proposal content all
@@ -21,11 +22,12 @@
  *   • it issues exactly one SELECT and holds no write port;
  *   • it never imports a goals writer, so it CANNOT reach `goals:create`/`goals:update`;
  *   • the drafted rails come from {@link draftGoalRails}, a PURE function;
- *   • routing is untouched — a drafted proposal still took DEFAULT_ROUTING_RAIL when
- *     its cycle ran, and nothing here re-routes it.
+ *   • routing is untouched — a historically rejected proposal still took
+ *     DEFAULT_ROUTING_RAIL when its cycle ran, and nothing here re-routes it.
  * `goal-draft-queue.test.ts` asserts each of those, including a fake-pg statement
- * recorder that fails on any non-SELECT. Admitting 'goal' at intake remains the
- * owner-reserved decision (D-006) and is NOT what this module does.
+ * recorder that fails on any non-SELECT. D-016 later admitted both direct goal
+ * creation and amendments; this module remains a read-only historical/projection
+ * surface and is NOT part of the write path.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -46,10 +48,12 @@ export const DEFAULT_DRAFT_RAIL = 'goal';
  * HOW a proposal came to be goal-scale. Both are recorded, because they answer
  * different questions and only one of them is currently live.
  *
- * • 'asked'    — the MODEL explicitly asked for the goal rail and intake coerced the
- *                hint away (`droppedRouteHint`). Measured 2026-08-19: this has NEVER
- *                happened in the 30 retained cycles — every proposal carried an
- *                accepted hint — so a queue keyed on this alone reads empty forever.
+ * • 'asked'    — the MODEL explicitly asked for the goal rail and the pre-D-016
+ *                intake coerced the hint away (`droppedRouteHint`). Measured
+ *                2026-08-19: this had NEVER happened in the 30 retained cycles —
+ *                every proposal carried an accepted hint — so a queue keyed on this
+ *                alone read empty. New direct goal hints are accepted and routed,
+ *                not represented as drafts.
  * • 'override' — the proposal was 'plan'-hinted AND matched the goal-scale vocabulary,
  *                so {@link makeGoalScaleOverride} WOULD bump it to the goal rail. This
  *                is the path that is actually live in production (cycle-deps.ts wires
@@ -58,7 +62,8 @@ export const DEFAULT_DRAFT_RAIL = 'goal';
 export type GoalDraftPath = 'asked' | 'override';
 
 /**
- * One thing the Blender WOULD have proposed, had the rail been open to it.
+ * One historical or override-projected goal draft. Direct post-D-016 goal hints are
+ * routed live and therefore do not appear here as drafts.
  *
  * `killCriterion` and `budgetCents` are DRAFTED here at read time by the same pure
  * function the live goal rail would have used — they were never stored, because the

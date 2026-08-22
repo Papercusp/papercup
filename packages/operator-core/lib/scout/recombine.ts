@@ -160,9 +160,9 @@ export function buildRecombinePrompt(
       : 'Sharpen this single idea into a concrete proposal.',
     'Every proposal MUST name a CHEAP, FALSIFIABLE first experiment (the anti-bullshit gate): a hypothesis, the cheap method to test it, and the observable signal that would prove it WRONG.',
     'Reason briefly, then output ONLY this JSON (no prose, no fences):',
-    '{"framing": "...the problem this addresses...", "mechanism": "...the novel mechanism, how it works...", "whyNew": "...why this is new vs what already exists...", "bet": "...the upside if it works...", "experiment": {"hypothesis": "...", "method": "...the cheap first test...", "falsifiableSignal": "...the observable that would prove it WRONG..."}, "route": "plan|gym|improvement|goal", "targetGoalId": "...required only for goal amendments..."}',
+    '{"framing": "...the problem this addresses...", "mechanism": "...the novel mechanism, how it works...", "whyNew": "...why this is new vs what already exists...", "bet": "...the upside if it works...", "experiment": {"hypothesis": "...", "method": "...the cheap first test...", "falsifiableSignal": "...the observable that would prove it WRONG..."}, "route": "plan|gym|improvement|goal", "targetGoalId": "...existing goal id for an amendment; omit for creation..."}',
     'route: "plan" for broad/architectural scope, "gym" for a small testable optimization, "improvement" for a concrete fix.',
-    'Use route: "goal" ONLY to amend a KNOWN existing goal, and include its non-empty targetGoalId. Never invent a targetGoalId. A goal route without a target would create a new autonomous goal and is deliberately held at intake.',
+    'Use route: "goal" for goal-scale work with a measurable end-state. Include a non-empty targetGoalId to amend a KNOWN existing goal; omit targetGoalId to create a new goal. Never invent a targetGoalId. Creation keeps the goal rail\'s kill criterion, spend ceiling, feature-flag kill switch, and per-cycle cap.',
   ].join('\n');
 
   const ideaBlock = group.members
@@ -188,12 +188,11 @@ export function buildRecombinePrompt(
 }
 
 /**
- * Route-hint names this parser can accept from the model. `goal` is conditional:
- * it is admitted only with a non-empty targetGoalId (an amendment). Without a
- * target it is autonomous goal creation and remains held below.
+ * Route-hint names this parser can accept from the model. `goal` admits both shapes:
+ * a non-empty targetGoalId means amendment; no target means autonomous creation.
  *
- * `instance` remains outside this list. Adding another name, or making goal
- * creation unconditional, is still an owner-reserved intake decision (D-006).
+ * `instance` remains outside this list. Adding another name is still an explicit
+ * intake decision guarded below (WI-39724).
  */
 export const ACCEPTED_ROUTE_HINTS = ['plan', 'gym', 'improvement', 'goal'] as const;
 
@@ -235,8 +234,8 @@ export type RouteHintsAreExhaustive = AssertNever<
  *
  * A string holds the whole hint. A structured entry is a conditional hold: the
  * hint must also appear in ACCEPTED_ROUTE_HINTS, but remains held unless its
- * named exception is satisfied. That is how `goal` can admit zero-spend
- * amendments while continuing to refuse autonomous goal creation.
+ * named exception is satisfied. No production hint currently uses the conditional
+ * shape; it remains part of the drift guard so a future split cannot be half-wired.
  *
  * ⚠ Removing or loosening an entry here is an intake decision. The guard in
  * recombine.test.ts requires a conditional hint to be named in
@@ -253,11 +252,6 @@ export type RouteHintHold =
 export const DELIBERATELY_UNACCEPTED_ROUTE_HINTS: Partial<
   Record<NonNullable<Proposal['routeHint']>, RouteHintHold>
 > = {
-  goal: {
-    exceptWhen: 'targetGoalId',
-    reason:
-      'D-006/P-007 — goal WITHOUT targetGoalId is creation: it spends DEFAULT_GOAL_BUDGET_CENTS and launches an autonomous agent, so it remains held. Goal WITH targetGoalId is an amendment and is admitted.',
-  },
   instance:
     'awaiting owner intake decision, D-006 — same ruling as goal; the instance rail is an eval-battery InstanceSubject and has never been reachable via a direct model hint.',
 };
@@ -441,9 +435,8 @@ export async function recombineProposals(
   }
 
   // WI-39721: make rejected hints LOUD. Every hint below already became
-  // `undefined` in parseProposal and will take DEFAULT_ROUTING_RAIL. In
-  // particular, goal WITHOUT targetGoalId is creation and remains held; goal
-  // WITH targetGoalId is an accepted amendment and never enters this tally.
+  // `undefined` in parseProposal and will take DEFAULT_ROUTING_RAIL. Goal is
+  // accepted for both creation and amendment, so it never enters this tally.
   // Emitted per batch rather than per group so a starved rail reads as a rate.
   const droppedRouteHints = [...hintTally.entries()]
     .map(([value, count]) => ({ value, count }))
@@ -453,8 +446,8 @@ export async function recombineProposals(
     console.warn(
       `[scout/recombine] routeHint DROPPED in ${total}/${results.length} group(s): ` +
         `${droppedRouteHints.map((d) => `${d.value}×${d.count}`).join(', ')} — ` +
-        `the target-aware admission policy rejected each (goal requires a non-empty ` +
-        `targetGoalId; accepted names: ${ACCEPTED_ROUTE_HINTS.join('|')}), so each ` +
+        `the admission policy rejected each (accepted names: ` +
+        `${ACCEPTED_ROUTE_HINTS.join('|')}), so each ` +
         `coerces to undefined and takes DEFAULT_ROUTING_RAIL instead (WI-39721).`,
     );
   }
