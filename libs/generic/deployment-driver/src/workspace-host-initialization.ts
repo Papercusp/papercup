@@ -204,7 +204,7 @@ function requireRepositoryUrl(value: string): void {
     "source.repositoryUrl must use HTTPS or SSH",
   );
   requireCondition(
-    !parsed.password && !parsed.search && !parsed.hash,
+    !parsed.username && !parsed.password && !parsed.search && !parsed.hash,
     "source.repositoryUrl must not contain credentials, query parameters, or fragments",
   );
 }
@@ -436,6 +436,30 @@ export function planWorkspaceHostInitialization(
       hostId: request.hostId,
     }),
   ];
+  const bindingStepIds = credentialBindings.map(
+    (binding) => `bind-${binding.channel}`,
+  );
+  const addBindingStep = (
+    binding: CredentialBinding,
+    dependsOn: readonly string[],
+  ): void => {
+    const id = `bind-${binding.channel}`;
+    steps.push(
+      initStep(request, id, "bind-credential", dependsOn, {
+        channel: binding.channel,
+        credentialRef: binding.credentialRef,
+        delivery: binding.delivery,
+      }),
+    );
+  };
+  const privateGitBinding =
+    request.source.kind === "git" && request.source.visibility === "private"
+      ? credentialBindings.find((binding) => binding.channel === "git")
+      : undefined;
+  if (privateGitBinding) {
+    addBindingStep(privateGitBinding, ["workspace"]);
+  }
+
   let sourceStepId = "workspace";
   if (request.source.kind !== "empty") {
     const kind =
@@ -446,23 +470,21 @@ export function planWorkspaceHostInitialization(
           : "import-workspace";
     sourceStepId = "source";
     steps.push(
-      initStep(request, sourceStepId, kind, ["workspace"], {
-        ...request.source,
-      }),
+      initStep(
+        request,
+        sourceStepId,
+        kind,
+        privateGitBinding ? ["bind-git"] : ["workspace"],
+        request.source.kind === "git" && request.source.visibility === "private"
+          ? { ...request.source, credentialChannel: "git" }
+          : { ...request.source },
+      ),
     );
   }
 
-  const bindingStepIds: string[] = [];
   for (const binding of credentialBindings) {
-    const id = `bind-${binding.channel}`;
-    bindingStepIds.push(id);
-    steps.push(
-      initStep(request, id, "bind-credential", [sourceStepId], {
-        channel: binding.channel,
-        credentialRef: binding.credentialRef,
-        delivery: binding.delivery,
-      }),
-    );
+    if (binding === privateGitBinding) continue;
+    addBindingStep(binding, [sourceStepId]);
   }
   steps.push(
     initStep(request, "verify", "verify-initialization", bindingStepIds, {
@@ -597,7 +619,8 @@ export interface WorkspaceHostCredentialLifecycleStep {
   dependsOn: readonly string[];
   idempotencyKey: string;
   credentialRef: AnyCredentialRef;
-  delivery?: WorkspaceHostCredentialDelivery;
+  /** Public resolver metadata required for binding and revocation. */
+  delivery: WorkspaceHostCredentialDelivery;
 }
 
 export interface WorkspaceHostCredentialLifecyclePlan {
@@ -624,9 +647,7 @@ function lifecycleStep(
     dependsOn,
     idempotencyKey: `workspace-credential:${request.operationId}:${id}`,
     credentialRef: binding.credentialRef,
-    ...(kind === "bind" || kind === "verify-bound"
-      ? { delivery: binding.delivery }
-      : {}),
+    delivery: binding.delivery,
   };
 }
 

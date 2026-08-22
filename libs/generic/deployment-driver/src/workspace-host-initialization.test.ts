@@ -98,9 +98,15 @@ describe("planWorkspaceHostInitialization", () => {
       }),
     );
     expect(plan.steps[1]).toMatchObject({
+      id: "bind-git",
+      kind: "bind-credential",
+      dependsOn: ["workspace"],
+    });
+    expect(plan.steps[2]).toMatchObject({
       id: "source",
       kind: "clone-repository",
-      dependsOn: ["workspace"],
+      dependsOn: ["bind-git"],
+      input: { credentialChannel: "git" },
     });
     expect(() =>
       planWorkspaceHostInitialization(
@@ -109,6 +115,18 @@ describe("planWorkspaceHostInitialization", () => {
             kind: "git",
             repositoryUrl:
               "https://name:authorization@github.com/acme/repo.git",
+            visibility: "private",
+            destination: "repositories/repo",
+          },
+        }),
+      ),
+    ).toThrow(/must not contain credentials/);
+    expect(() =>
+      planWorkspaceHostInitialization(
+        request({
+          source: {
+            kind: "git",
+            repositoryUrl: "https://authorization@github.com/acme/repo.git",
             visibility: "private",
             destination: "repositories/repo",
           },
@@ -253,6 +271,7 @@ describe("workspace-host credential lifecycle", () => {
       "verify-revoked-cloud",
     ]);
     expect(plan.steps[2].dependsOn).toEqual(["verify-next-cloud"]);
+    expect(plan.steps[2].delivery.revocationRef).toBe("revoke-cloud-1");
     expect(plan.steps).toHaveLength(12);
   });
 
@@ -277,6 +296,10 @@ describe("workspace-host credential lifecycle", () => {
       "revoke-agent",
       "verify-revoked-agent",
     ]);
+    expect(revoke.steps[0]).toMatchObject({
+      credentialRef: refs().gitCredentialRef,
+      delivery: { revocationRef: "revoke-git-1" },
+    });
     const reconnect = planWorkspaceHostCredentialLifecycle({
       ...common,
       operationId: "reconnect-1",
