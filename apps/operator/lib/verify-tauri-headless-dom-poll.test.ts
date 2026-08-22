@@ -78,4 +78,33 @@ describe('EI-10822 — verify-tauri-headless DOM polling', () => {
     expect(result.stderr).toContain('DOM assertion did not pass within 0s');
     expect(result.stderr).toContain('still loading');
   });
+
+  it('supports quiet expected-miss probes without hiding a nonzero result', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-poll-quiet-'));
+    const helperPath = join(dir, 'poll-dom.sh');
+    const fakeTool = join(dir, 'tauri-agent-tools');
+    writeFileSync(helperPath, helper!);
+    chmodSync(helperPath, 0o755);
+    writeFileSync(fakeTool, '#!/usr/bin/env bash\necho "[FAIL] optional panel absent" >&2\nexit 1\n');
+    chmodSync(fakeTool, 0o755);
+
+    const result = spawnSync(
+      helperPath,
+      ['--quiet', '--selector', 'body', '--text', 'optional panel'],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${dir}${delimiter}${process.env.PATH ?? ''}`,
+          VERIFY_TAURI_PID: '4242',
+          VERIFY_TAURI_DOM_TIMEOUT: '0',
+        },
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).not.toContain('DOM assertion did not pass within 0s');
+    expect(result.stderr).not.toContain('[FAIL] optional panel absent');
+  });
 });
