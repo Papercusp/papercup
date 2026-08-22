@@ -1028,7 +1028,7 @@ const FACADE_HELP_NAMESPACE_SUGGESTIONS = 3;
  * `FACADE_HELP_NAMESPACE_SUGGESTIONS` — with an explicit pointer to `code:tools {}` for the rare
  * case the agent genuinely needs to browse the full catalog.
  */
-function buildFacadeHelp(
+export function buildFacadeHelp(
   unknownRefs: readonly string[],
   all: ReturnType<typeof listAllProjectedTools>,
   allowed: ReadonlySet<string>,
@@ -1037,12 +1037,33 @@ function buildFacadeHelp(
   const known = new Set(index.map((e) => e.ns));
   const byNs = new Map(index.map((e) => [e.ns, e]));
 
+  // `buildToolFacade` exposes the canonical camel namespace plus raw and snake aliases.
+  // Parse-check reports the spelling the script used, so `tools.work_items.missing()` used
+  // to look like an unknown namespace here even though it correctly resolved to the existing
+  // `workItems` bucket at runtime. Build the same alias map from the namespace index so every
+  // facade spelling receives the typed signatures for its real namespace.
+  const namespaceAliases = new Map<string, string>();
+  for (const entry of index) {
+    namespaceAliases.set(entry.ns, entry.ns);
+    for (const toolName of entry.toolNames) {
+      const ci = toolName.indexOf(':');
+      const di = toolName.indexOf('.');
+      const sep = ci > 0 ? ci : di;
+      if (sep <= 0) continue;
+      const rawNs = toolName.slice(0, sep);
+      namespaceAliases.set(rawNs, entry.ns);
+      namespaceAliases.set(rawNs.replace(/-/g, '_'), entry.ns);
+      namespaceAliases.set(rawNs.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase()), entry.ns);
+    }
+  }
+
   const referencedNs = new Set<string>();
   for (const ref of unknownRefs) {
     const ci = ref.indexOf(':');
     const di = ref.indexOf('.');
     const sep = ci >= 0 ? ci : di; // tools.call('ns:verb') → colon; tools.ns.verb → dot
-    referencedNs.add(sep > 0 ? ref.slice(0, sep) : ref);
+    const rawNs = sep > 0 ? ref.slice(0, sep) : ref;
+    referencedNs.add(namespaceAliases.get(rawNs) ?? rawNs);
   }
 
   const present = [...referencedNs].filter((ns) => known.has(ns));

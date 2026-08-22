@@ -56,6 +56,7 @@ import {
   shapeMutationEcho,
   annotateChildFailureWarning,
   bindInnerDispatch,
+  buildFacadeHelp,
   shapeCodeRunSimilarRecipes,
   isRecipeCaptureEligible,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
@@ -373,6 +374,25 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     expect(allNamespaceCount).toBeGreaterThan(payload.facadeHelp.namespaces.length);
     // nothing captured on a failed run
     expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'workItems.notARealMethod',
+    'work_items.notARealMethod',
+    'work_items:notARealMethod',
+  ])('returns typed signatures for an unknown member under the %s namespace spelling', (unknownRef) => {
+    const tools = [
+      {
+        expose: { mcp: { name: 'work_items:list' } },
+        description: 'List work items',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    ] as never;
+    const help = buildFacadeHelp([unknownRef], tools, new Set(['work_items:list']));
+
+    expect(help.note).toContain('Typed signatures for the namespaces you referenced');
+    expect(help.signatures).toContain('workItems: {');
+    expect(help.namespaces).toBeUndefined();
   });
 });
 
