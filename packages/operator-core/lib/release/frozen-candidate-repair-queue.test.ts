@@ -113,6 +113,31 @@ describe('frozen-candidate repair queue', () => {
     },
   );
 
+  it('waits for an active dispatch reservation and retries after its lease expires', () => {
+    const reserved: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      dispatchReservation: {
+        token: 'reservation-1',
+        claimedAtMs: T0 + 1,
+        expiresAtMs: T0 + 100,
+      },
+    };
+
+    expect(decideFrozenCandidateRepairQueue(reserved, { nowMs: T0 + 2 })).toEqual({
+      kind: 'wait-for-dispatch-reservation',
+      reservationToken: 'reservation-1',
+      reservationExpiresAtMs: T0 + 100,
+      gateDisposition: 'inconclusive',
+      runSuite: false,
+      recordVerdict: false,
+    });
+    expect(decideFrozenCandidateRepairQueue(reserved, { nowMs: T0 + 100 })).toMatchObject({
+      kind: 'dispatch-fixer',
+      reason: 'unassigned',
+      nextAttempt: 1,
+    });
+  });
+
   it('verifies exactly the forward head reported by the current fixer', () => {
     const dispatched = markFrozenRepairFixerDispatched(fresh(), {
       spawnId: 'spawn-1',

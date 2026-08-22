@@ -331,6 +331,173 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
   });
 
+  it("holds an active dispatch reservation without spending another suite or launching a fixer", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 2,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      dispatchReservation: {
+        token: "checkpoint-a",
+        claimedAtMs: now - 100,
+        expiresAtMs: now + 60_000,
+      },
+      failingTests: ["lib/broken.test.ts"],
+    };
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    let dispatchCount = 0;
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.frozenRepairFixerAlive = async () => {
+      throw new Error("liveness must not be queried for an active dispatch reservation");
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error("worktree must not be prepared while another checkpoint owns dispatch");
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      dispatchCount += 1;
+      return { spawnId: "unexpected", runId: null };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+      candidate: frozen,
+      repairQueue: {
+        dispatchReservation: {
+          token: "checkpoint-a",
+          expiresAtMs: now + 60_000,
+        },
+      },
+    });
+    expect(dispatchCount).toBe(0);
+    expect(calls).not.toContain("runGreen");
+  });
+
+  it("CAS-reserves the first-red queue so concurrent checkpoints launch exactly one fixer", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const movingTip = await commit("c", "3", "moving staging tip");
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    let queue: FrozenCandidateRepairQueue | null = null;
+    let reads = 0;
+    let releaseInitialReads!: () => void;
+    const initialReads = new Promise<void>((resolve) => {
+      releaseInitialReads = resolve;
+    });
+    let reservationCalls = 0;
+    let reservationHeld = false;
+    let releaseFirstReservation!: () => void;
+    const firstReservation = new Promise<void>((resolve) => {
+      releaseFirstReservation = resolve;
+    });
+    let dispatchCount = 0;
+    const reservationOptions: Array<{ allowCreateIfAbsent?: boolean }> = [];
+
+    deps.runGreen = async () => {
+      calls.push("runGreen");
+      return {
+        green: false,
+        summary: "1 failed",
+        failingTests: ["@papercusp/web"],
+        failingFiles: [
+          { file: "lib/broken.test.ts", workspace: "@papercusp/web" },
+        ],
+        isolationNote:
+          "isolation: 1 file STILL FAILED at the candidate — real break, gate stays red",
+      };
+    };
+    deps.resolveTip = async () => movingTip;
+    deps.runTestsAtRef = async () => ({ pass: true, summary: "pass at tip" });
+    deps.readFrozenRepairQueue = async () => {
+      reads += 1;
+      if (reads <= 2) {
+        if (reads === 2) releaseInitialReads();
+        await initialReads;
+        return null;
+      }
+      return queue;
+    };
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.reserveFrozenRepairFixer = async (next, options) => {
+      reservationCalls += 1;
+      reservationOptions.push(options ?? {});
+      if (reservationHeld) {
+        if (reservationCalls === 2) releaseFirstReservation();
+        return null;
+      }
+      reservationHeld = true;
+      const reserved: FrozenCandidateRepairQueue = {
+        ...next,
+        dispatchReservation: {
+          token: "winner-token",
+          claimedAtMs: Date.now(),
+          expiresAtMs: Date.now() + 60_000,
+        },
+      };
+      queue = reserved;
+      await firstReservation;
+      return reserved;
+    };
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async () => {
+      dispatchCount += 1;
+      return { spawnId: "fixer-1", runId: "run-1" };
+    };
+    deps.finalizeFrozenRepairFixer = async (reserved, fired) => {
+      const { dispatchReservation: _reservation, ...withoutReservation } = reserved;
+      const finalized: FrozenCandidateRepairQueue = fired?.spawnId
+        ? {
+            ...withoutReservation,
+            attempts: reserved.attempts + 1,
+            updatedAtMs: Date.now(),
+            fixerSpawnId: fired.spawnId,
+          }
+        : { ...withoutReservation, updatedAtMs: Date.now() };
+      queue = finalized;
+      reservationHeld = false;
+      return finalized;
+    };
+
+    const [first, second] = await Promise.all([
+      runGreenCheckpoint(cfg(), deps, { candidate: frozen, noPush: true }),
+      runGreenCheckpoint(cfg(), deps, { candidate: frozen, noPush: true }),
+    ]);
+
+    expect(first).toMatchObject({ green: false, reason: "not-green" });
+    expect(second).toMatchObject({ green: false, reason: "not-green" });
+    expect(reservationCalls).toBe(2);
+    expect(reservationOptions).toEqual([
+      { allowCreateIfAbsent: true },
+      { allowCreateIfAbsent: true },
+    ]);
+    expect(dispatchCount).toBe(1);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(2);
+    expect(queue).toMatchObject({
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      repairHead: frozen,
+      attempts: 1,
+      fixerSpawnId: "fixer-1",
+    });
+    expect(queue?.dispatchReservation).toBeUndefined();
+  });
+
   it("requeues a queue-authorized fixer when the frozen patch mismatches staging, then promotes only the aligned head", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);

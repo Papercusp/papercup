@@ -611,6 +611,19 @@ export interface CheckpointDeps {
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
+  /**
+   * Atomically reserve a frozen-repair queue before preparing its worktree or launching the
+   * external fixer. A null result means another checkpoint owns the dispatch window.
+   */
+  reserveFrozenRepairFixer?(
+    queue: FrozenCandidateRepairQueue,
+    options?: { allowCreateIfAbsent?: boolean },
+  ): Promise<FrozenCandidateRepairQueue | null>;
+  /** Release/finalize the reservation only if the same reservation token is still current. */
+  finalizeFrozenRepairFixer?(
+    queue: FrozenCandidateRepairQueue,
+    fired: { spawnId: string | null; runId: string | null } | null | undefined,
+  ): Promise<FrozenCandidateRepairQueue | null>;
   stagingContainsFrozenRepair?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<boolean | null>;
@@ -6355,6 +6368,96 @@ export async function runGreenCheckpoint(
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
   let repairOutcomeReconciled = false;
+  const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
+  const finalizeFrozenRepairFixer = deps.finalizeFrozenRepairFixer;
+  const hasFrozenRepairDispatchReservation =
+    Boolean(reserveFrozenRepairFixer && finalizeFrozenRepairFixer);
+
+  type FrozenRepairDispatchResult = {
+    spawnId: string | null;
+    runId: string | null;
+  };
+
+  /**
+   * Keep the external side effect inside the reservation window. The legacy path remains
+   * available for old/direct callers whose dependency seam predates the CAS hooks; the real
+   * checkpoint wiring supplies both hooks and therefore fails closed when reservation is lost.
+   */
+  const dispatchFrozenRepair = async (
+    queue: FrozenCandidateRepairQueue,
+    allowCreateIfAbsent: boolean,
+  ): Promise<{
+    queue: FrozenCandidateRepairQueue | null;
+    fired: FrozenRepairDispatchResult | null;
+    reservationBlocked: boolean;
+  }> => {
+    let dispatchQueue = queue;
+    if (hasFrozenRepairDispatchReservation) {
+      let reserved: FrozenCandidateRepairQueue | null = null;
+      try {
+        reserved = await reserveFrozenRepairFixer!(queue, { allowCreateIfAbsent });
+      } catch (error) {
+        deps.log(
+          `frozen repair dispatch reservation failed — holding without launch: ${
+            error instanceof Error ? error.message : error
+          }`,
+        );
+      }
+      if (!reserved) {
+        return { queue: null, fired: null, reservationBlocked: true };
+      }
+      dispatchQueue = reserved;
+    }
+
+    let fired: FrozenRepairDispatchResult | null = null;
+    let dispatchError: unknown = null;
+    try {
+      await deps.prepareFrozenRepairWorktree?.(dispatchQueue);
+      fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue)) ?? null;
+    } catch (error) {
+      dispatchError = error;
+    }
+
+    if (hasFrozenRepairDispatchReservation) {
+      try {
+        const finalized = await finalizeFrozenRepairFixer!(dispatchQueue, fired);
+        if (finalized) dispatchQueue = finalized;
+      } catch (error) {
+        // Keep the reservation in the returned queue and fail closed. The next tick will
+        // observe the lease instead of launching a second fixer while this result is uncertain.
+        deps.log(
+          `frozen repair dispatch finalization failed — retaining the reservation: ${
+            error instanceof Error ? error.message : error
+          }`,
+        );
+      }
+    } else if (fired?.spawnId) {
+      dispatchQueue = markFrozenRepairFixerDispatched(dispatchQueue, {
+        spawnId: fired.spawnId,
+        nowMs: Date.now(),
+      });
+      await deps.writeFrozenRepairQueue?.(dispatchQueue);
+    }
+
+    if (dispatchError) throw dispatchError;
+    return { queue: dispatchQueue, fired, reservationBlocked: false };
+  };
+
+  const repairReservationHold = async (
+    localQueue: FrozenCandidateRepairQueue,
+    context: string,
+  ): Promise<FrozenCandidateRepairQueue | null> => {
+    try {
+      return (await deps.readFrozenRepairQueue?.()) ?? null;
+    } catch (error) {
+      deps.log(
+        `frozen repair queue re-read after ${context} reservation loss failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      );
+      return localQueue;
+    }
+  };
   if (deps.readFrozenRepairQueue) {
     try {
       repairQueue = await deps.readFrozenRepairQueue();
@@ -6474,18 +6577,47 @@ export async function runGreenCheckpoint(
       await deps.cleanupFrozenRepairWorktree?.(repairQueue).catch(() => {});
       repairQueue = null;
     } else if (decision.kind === "dispatch-fixer") {
-      await deps.prepareFrozenRepairWorktree?.(repairQueue);
-      const fired = await deps.dispatchFrozenRepairFixer?.(repairQueue);
-      if (fired?.spawnId) {
-        repairQueue = markFrozenRepairFixerDispatched(repairQueue, {
-          spawnId: fired.spawnId,
-          nowMs: Date.now(),
-        });
-        await deps.writeFrozenRepairQueue?.(repairQueue);
+      const dispatch = await dispatchFrozenRepair(repairQueue, false);
+      if (dispatch.reservationBlocked) {
+        // A competing checkpoint owns the launch window. Re-read the durable row so this
+        // process returns the live reservation (rather than a stale unassigned snapshot),
+        // and never runs a second fixer or suite while the winner is preparing it.
+        repairQueue =
+          (await repairReservationHold(repairQueue, "existing queue")) ?? repairQueue;
+        const reservation = repairQueue.dispatchReservation;
+        const summary = reservation
+          ? `frozen repair fixer dispatch is reserved by another checkpoint until ${reservation.expiresAtMs}; candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`
+          : `frozen repair fixer dispatch reservation was unavailable for ${repairQueue.repairHead.slice(0, 8)}; holding without a second launch`;
+        deps.log(summary);
+        return {
+          advanced: false,
+          candidate: repairQueue.repairHead,
+          from: lastReady,
+          green: null,
+          reason: "repair-in-progress",
+          summary,
+          repairQueue,
+        };
       }
+      repairQueue = dispatch.queue ?? repairQueue;
+      const fired = dispatch.fired;
       const summary = fired?.spawnId
         ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
         : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
+      deps.log(summary);
+      return {
+        advanced: false,
+        candidate: repairQueue.repairHead,
+        from: lastReady,
+        green: null,
+        reason: "repair-in-progress",
+        summary,
+        repairQueue,
+      };
+    } else if (decision.kind === "wait-for-dispatch-reservation") {
+      const summary =
+        `frozen repair fixer dispatch reservation ${decision.reservationToken} is active until ${decision.reservationExpiresAtMs}; ` +
+        `candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`;
       deps.log(summary);
       return {
         advanced: false,
@@ -7171,15 +7303,47 @@ export async function runGreenCheckpoint(
           nowMs: Date.now(),
         });
       }
-      await deps.writeFrozenRepairQueue(repairQueue);
-      await deps.prepareFrozenRepairWorktree(repairQueue);
-      const fired = await deps.dispatchFrozenRepairFixer(repairQueue);
-      if (fired?.spawnId) {
-        repairQueue = markFrozenRepairFixerDispatched(repairQueue, {
-          spawnId: fired.spawnId,
-          nowMs: Date.now(),
-        });
+      let fired: FrozenRepairDispatchResult | null = null;
+      if (hasFrozenRepairDispatchReservation) {
+        // The first-red path must let the CAS create-and-reserve the absent queue in one
+        // database write. Persisting first would let a stale concurrent reader recreate a
+        // queue after another process had already cleared it.
+        const dispatch = await dispatchFrozenRepair(repairQueue, true);
+        if (dispatch.reservationBlocked) {
+          repairQueue =
+            (await repairReservationHold(repairQueue, "new queue")) ?? repairQueue;
+          const reservation = repairQueue.dispatchReservation;
+          const reservationSummary = reservation
+            ? `frozen repair queue ${repairQueue.candidate.slice(0, 8)} is reserved by another checkpoint until ${reservation.expiresAtMs}; no second fixer launch was attempted`
+            : `frozen repair queue ${repairQueue.candidate.slice(0, 8)} could not reserve its dispatch window; no fixer launch was attempted`;
+          const redSummary = `${summary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
+          stampPromotion(false, "not-green");
+          return {
+            advanced: false,
+            candidate,
+            from: lastReady,
+            green: false,
+            reason: "not-green",
+            summary: redSummary,
+            failingTests,
+            failingTestNames: extractFailingTestNames(summary),
+            repairQueue,
+            ...(deps.runId ? { runId: deps.runId } : {}),
+            ...(logPath ? { logPath } : {}),
+            ...(isolationNote ? { isolationNote } : {}),
+            ...(retriedTests ? { retriedTests } : {}),
+            ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
+            ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+          };
+        }
+        repairQueue = dispatch.queue ?? repairQueue;
+        fired = dispatch.fired;
+      } else {
+        // Compatibility path for direct/older callers that do not expose the CAS hooks.
         await deps.writeFrozenRepairQueue(repairQueue);
+        const dispatch = await dispatchFrozenRepair(repairQueue, false);
+        repairQueue = dispatch.queue ?? repairQueue;
+        fired = dispatch.fired;
       }
       const repairSummary =
         `${summary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
@@ -10561,6 +10725,22 @@ export function realCheckpointDeps(
             const { writeFrozenCandidateRepairQueue } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             await writeFrozenCandidateRepairQueue(repairTarget, queue);
+          },
+          async reserveFrozenRepairFixer(
+            queue: FrozenCandidateRepairQueue,
+            options?: { allowCreateIfAbsent?: boolean },
+          ) {
+            const { reserveFrozenCandidateRepairFixer } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return reserveFrozenCandidateRepairFixer(repairTarget, queue, options);
+          },
+          async finalizeFrozenRepairFixer(
+            queue: FrozenCandidateRepairQueue,
+            fired: { spawnId: string | null; runId: string | null } | null | undefined,
+          ) {
+            const { finalizeFrozenCandidateRepairFixer } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return finalizeFrozenCandidateRepairFixer(repairTarget, queue, fired);
           },
           async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
             if (existsSync(path.join(queue.worktreePath, ".git"))) return;
