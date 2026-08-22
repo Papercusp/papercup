@@ -103,6 +103,7 @@ const spawnHeadlessMock = vi.fn(
     desktopEnvResolvedVia: null,
   }),
 );
+const getFleetHeadcountTargetMock = vi.hoisted(() => vi.fn());
 vi.mock('../../console-spawn', () => ({
   spawnConsole: (o: unknown) => spawnConsoleMock(o),
   spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
@@ -110,6 +111,7 @@ vi.mock('../../console-spawn', () => ({
 
 vi.mock('../../agent-fleets-store', () => ({
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
+  getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
   getFleetScheme: async (_ws: string, slug: string) =>
     slug === 'alpha-fleet' ? { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' } : null,
 }));
@@ -225,6 +227,7 @@ beforeEach(() => {
   waitForPtyHostGoneMock.mockResolvedValue(true);
   getModesMock.mockResolvedValue([]);
   listFactsMock.mockResolvedValue([]);
+  getFleetHeadcountTargetMock.mockResolvedValue(null);
 });
 
 describe('launch-tool routing guidance', () => {
@@ -352,6 +355,47 @@ describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () =
   it('launches unfleeted when the caller has no fleet (a non-leader can still launch)', async () => {
     await launchAgent.handler({ brief: 'solo task' }, ctx);
     expect(spawnedCommand()).not.toContain('--fleet=');
+  });
+
+  it('respawns with the fleet headcount profile instead of reconstructing launch knobs (D-008)', async () => {
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-test',
+      fleetSlug: 'alpha-fleet',
+      target: 30,
+      config: {
+        plan: 'drain',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'max',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        contextSize: 'trimmed',
+        compactionLimit: 825_000,
+        role: 'su',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await launchAgent.handler({ brief: 'replace the dead lane', fleet: 'alpha fleet' }, ctx);
+
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--fleet=alpha-fleet');
+    expect(command).toContain('--agent=codex');
+    expect(command).toContain('--model=gpt-5.6-luna');
+    expect(command).toContain('--effort=max');
+    expect(command).toContain('--account=default');
+    expect(command).toContain('--context-size=trimmed');
+    expect(command).toContain('--compaction-limit=825000');
+    expect(command).toContain('--headless');
+    expect(dataOf(res)?.launch).toMatchObject({
+      fleet: 'alpha-fleet',
+      headcountProfile: { applied: true, target: 30 },
+    });
   });
 });
 

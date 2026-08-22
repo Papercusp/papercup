@@ -39,7 +39,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
-import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
+import { fleetSlugFromName, getFleetHeadcountTarget, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { fetchContextPressure } from '../coordination/context-pressure';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -51,6 +51,7 @@ import { modeInstructionsFactKey } from '../mode/set';
 import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  composeModelSpec,
   foldMemberSpec,
   injectFleetArg,
   injectLaunchedByArg,
@@ -439,6 +440,34 @@ export default defineTool({
       }
     }
 
+    // D-008 (WI-40321): a fleet respawn must consume the same durable launch
+    // profile as fleet:launch-on-plan and the headcount governor. Resume keeps
+    // its transcript/backend identity, but omitted placement/routing flags still
+    // come from the fleet profile so a dead visible member returns headlessly
+    // when that is the fleet's recorded shape.
+    let persistedHeadcountProfile: Awaited<ReturnType<typeof getFleetHeadcountTarget>> = null;
+    if (fleetSlug) {
+      try {
+        persistedHeadcountProfile = await getFleetHeadcountTarget(workspaceId, fleetSlug);
+      } catch (e) {
+        return err(
+          `Could not read the persisted launch profile for fleet \`${fleetSlug}\`: ${(e as Error)?.message ?? e}. ` +
+            'Refusing to reconstruct member settings ad hoc.',
+        );
+      }
+      if (persistedHeadcountProfile) {
+        const profile = persistedHeadcountProfile.config;
+        args.headless ??= profile.headless ?? true;
+        args.account ??= profile.account;
+        args.model ??= composeModelSpec(profile.model, profile.effort);
+        args.extraArgs ??= profile.extraArgs;
+        notes.push(
+          `✓ Applied persisted fleet launch profile from fleet:headcount-target ` +
+            `(target ${persistedHeadcountProfile.target}, ${args.headless ? 'headless' : 'visible'}).`,
+        );
+      }
+    }
+
     let base;
     try {
       base = await buildConsoleEnvelope({
@@ -497,8 +526,11 @@ export default defineTool({
       account: goalLaunch.effective.account ?? args.account ?? undefined,
       model: goalLaunch.effective.model ?? args.model ?? undefined,
       effort: goalLaunch.effective.effort ?? undefined,
-      contextSize: goalLaunch.effective.contextSize ?? undefined,
+      contextSize: goalLaunch.effective.contextSize ?? persistedHeadcountProfile?.config.contextSize ?? undefined,
+      compactionLimit: persistedHeadcountProfile?.config.compactionLimit,
       headless: args.headless || undefined,
+      role: persistedHeadcountProfile?.config.role,
+      launchContext: persistedHeadcountProfile?.config.launchContext,
       extraArgs: args.extraArgs ?? undefined,
     };
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
@@ -861,6 +893,9 @@ export default defineTool({
       failed: failed.length,
       command,
       fleet: fleetSlug,
+      headcountProfile: persistedHeadcountProfile
+        ? { applied: true, target: persistedHeadcountProfile.target, config: persistedHeadcountProfile.config }
+        : null,
       mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
       resumedOwnerId: resumeOwnerId,
       tasks: results.flatMap((result, i) =>
