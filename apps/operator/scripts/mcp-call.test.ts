@@ -4,6 +4,8 @@ import {
   buildMcpSessionQuery,
   isInvokedDirectly,
   parseArgs,
+  jsonSourceKind,
+  readJsonArgs,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -101,5 +103,43 @@ describe('mcp-call result-format contract', () => {
         (path: string) => path,
       ),
     ).toBe(false);
+  });
+});
+
+describe('mcp-call shell-safe JSON input', () => {
+  it('keeps the legacy positional JSON source', () => {
+    expect(jsonSourceKind({ jsonArgs: '{}', flags: {} })).toBe('inline');
+    expect(readJsonArgs({ jsonArgs: '{"message":"it\'s safe"}', flags: {} })).toEqual({
+      message: "it's safe",
+    });
+  });
+
+  it('reads JSON from stdin when --json - is used', () => {
+    expect(jsonSourceKind({ jsonArgs: undefined, flags: { json: '-' } })).toBe('stdin');
+    const readFile = (path: number | string) => {
+      expect(path).toBe(0);
+      return '{"message":"it\'s safe"}';
+    };
+    expect(readJsonArgs({ jsonArgs: undefined, flags: { json: '-' } }, { readFile })).toEqual({
+      message: "it's safe",
+    });
+  });
+
+  it('reads JSON from a file and gives the file source precedence', () => {
+    expect(jsonSourceKind({ jsonArgs: '{}', flags: { jsonFile: 'payload.json', json: '{}' } })).toBe('file');
+    const readFile = (path: number | string) => {
+      expect(path).toBe('payload.json');
+      return '{"message":"it\'s safe"}';
+    };
+    expect(readJsonArgs({ jsonArgs: '{}', flags: { jsonFile: 'payload.json', json: '{}' } }, { readFile })).toEqual({
+      message: "it's safe",
+    });
+  });
+
+  it('reports malformed safe-source JSON instead of dispatching it', () => {
+    expect(() => readJsonArgs(
+      { jsonArgs: undefined, flags: { json: '-' } },
+      { readFile: () => '{not-json' },
+    )).toThrow('stdin is not valid JSON');
   });
 });
