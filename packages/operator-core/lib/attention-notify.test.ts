@@ -7,27 +7,45 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // notifyWorkspace's REAL return type is PushSendResult[] (empty when no device is paired) —
 // WI-36644's outcome derivation reads that array, so the mock must return one too, not
 // `undefined`, or it would exercise a shape the real implementation never produces.
-const { notifyWorkspace, notifySyncInvalidate, recordAttentionNotifyIntent, recordAttentionNotifyOutcome } =
+const {
+  notifyWorkspace,
+  notifySyncInvalidate,
+  ensureAttentionNotifyIntent,
+  claimAttentionNotifyChannel,
+  recordAttentionNotifyIntent,
+  recordAttentionNotifyOutcome,
+} =
   vi.hoisted(() => ({
     notifyWorkspace: vi.fn(async (..._a: unknown[]): Promise<Array<{ platform: string; ok: boolean; status: unknown; detail?: string }>> => []),
     notifySyncInvalidate: vi.fn(async (..._a: unknown[]) => {}),
+    ensureAttentionNotifyIntent: vi.fn(async (..._a: unknown[]) => ({ id: 1, created: true })),
+    claimAttentionNotifyChannel: vi.fn(async (..._a: unknown[]) => true),
     recordAttentionNotifyIntent: vi.fn(async (..._a: unknown[]): Promise<number | null> => 1),
     recordAttentionNotifyOutcome: vi.fn(async (..._a: unknown[]) => {}),
   }));
 vi.mock('./device-push-dispatcher', () => ({ notifyWorkspace }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('./attention-notify-store', () => ({ recordAttentionNotifyIntent, recordAttentionNotifyOutcome }));
+vi.mock('./attention-notify-store', () => ({
+  ensureAttentionNotifyIntent,
+  claimAttentionNotifyChannel,
+  recordAttentionNotifyIntent,
+  recordAttentionNotifyOutcome,
+}));
 
-import { notifyAttention, ATTENTION_NOTIFY_EVENT } from './attention-notify';
+import { notifyAttention, notifyAttentionOnce, ATTENTION_NOTIFY_EVENT } from './attention-notify';
 
 afterEach(() => {
   notifyWorkspace.mockClear();
   notifySyncInvalidate.mockClear();
+  ensureAttentionNotifyIntent.mockClear();
+  claimAttentionNotifyChannel.mockClear();
   recordAttentionNotifyIntent.mockClear();
   recordAttentionNotifyOutcome.mockClear();
   notifyWorkspace.mockImplementation(async () => []);
   notifySyncInvalidate.mockImplementation(async () => {});
+  ensureAttentionNotifyIntent.mockImplementation(async () => ({ id: 1, created: true }));
+  claimAttentionNotifyChannel.mockImplementation(async () => true);
   recordAttentionNotifyIntent.mockImplementation(async () => 1);
   recordAttentionNotifyOutcome.mockImplementation(async () => {});
 });
@@ -75,6 +93,36 @@ describe('notifyAttention', () => {
     await notifyAttention({ kind: 'intervention', title: 'T', body: 'B' });
     const payload = notifyWorkspace.mock.calls[0][1] as { data: Record<string, string> };
     expect(payload.data).toEqual({ kind: 'intervention' });
+  });
+
+  it('dedupes a replay before either external channel fires', async () => {
+    ensureAttentionNotifyIntent.mockResolvedValueOnce({ id: 9, created: false });
+    claimAttentionNotifyChannel.mockResolvedValue(false);
+    await expect(notifyAttentionOnce({
+      kind: 'intervention',
+      title: 'Brief ready',
+      body: 'Open it',
+      dedupeKey: 'meeting:run-42',
+    })).resolves.toMatchObject({ recordId: 9, deduped: true });
+    expect(recordAttentionNotifyIntent).not.toHaveBeenCalled();
+    expect(notifyWorkspace).not.toHaveBeenCalled();
+    expect(notifySyncInvalidate).not.toHaveBeenCalled();
+  });
+
+  it('resumes only the unclaimed channel of a partially delivered intent', async () => {
+    ensureAttentionNotifyIntent.mockResolvedValueOnce({ id: 9, created: false });
+    claimAttentionNotifyChannel
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const result = await notifyAttentionOnce({
+      kind: 'intervention',
+      title: 'Brief ready',
+      body: 'Open it',
+      dedupeKey: 'meeting:run-42',
+    });
+    expect(result).toMatchObject({ deduped: false, mobileDelivered: false, desktopDelivered: true });
+    expect(notifyWorkspace).not.toHaveBeenCalled();
+    expect(notifySyncInvalidate).toHaveBeenCalledTimes(1);
   });
 
   it('still fires the desktop channel when the mobile push throws (fail-safe, independent)', async () => {

@@ -4,9 +4,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // module actually issues (an INSERT ... RETURNING id, and two UPDATE forms) — enough to assert
 // against without a real PG connection.
 const calls: Array<{ sql: string; values: unknown[] }> = [];
+let existingIntentId: number | null = null;
+let claimGranted = true;
 function fakeTx(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown> {
   const sql = strings.join('?');
   calls.push({ sql, values });
+  if (/SELECT id[\s\S]*data ->> 'dedupeKey'/i.test(sql)) {
+    return Promise.resolve(existingIntentId == null ? [] : [{ id: existingIntentId }]);
+  }
+  if (/UPDATE harness_shared\.attention_notifications/i.test(sql) && /RETURNING id/i.test(sql)) {
+    return Promise.resolve(claimGranted ? [{ id: 42 }] : []);
+  }
   if (/INSERT INTO/i.test(sql)) return Promise.resolve([{ id: 42 }]);
   return Promise.resolve([]);
 }
@@ -20,14 +28,57 @@ const { withWorkspace } = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), withWorkspace }));
 
 import {
+  claimAttentionNotifyChannel,
+  ensureAttentionNotifyIntent,
   recordAttentionNotifyIntent,
   recordAttentionNotifyOutcome,
 } from './attention-notify-store';
 
 afterEach(() => {
   calls.length = 0;
+  existingIntentId = null;
+  claimGranted = true;
   withWorkspace.mockClear();
   withWorkspace.mockImplementation(async (_ws: string, fn: (tx: unknown) => unknown) => fn(fakeTx));
+});
+
+describe('replay-safe attention intent', () => {
+  const input = {
+    workspaceId: 'ws-1',
+    harnessSlug: 'papercusp',
+    kind: 'intervention',
+    title: 'Meeting brief ready',
+    body: 'Open the brief',
+    data: { planRunRef: '42' },
+  };
+
+  it('advisory-locks and inserts one dedupe-keyed intent', async () => {
+    await expect(ensureAttentionNotifyIntent(input, 'meeting:42')).resolves.toEqual({
+      id: 42,
+      created: true,
+    });
+    expect(calls[0].sql).toMatch(/pg_advisory_xact_lock/);
+    expect(calls[1].sql).toMatch(/data ->> 'dedupeKey'/);
+    expect(calls[2].sql).toMatch(/INSERT INTO harness_shared\.attention_notifications/);
+    expect(calls[2].values.at(-1)).toBe(JSON.stringify({ planRunRef: '42', dedupeKey: 'meeting:42' }));
+  });
+
+  it('reuses the existing intent without inserting a second row', async () => {
+    existingIntentId = 77;
+    await expect(ensureAttentionNotifyIntent(input, 'meeting:42')).resolves.toEqual({
+      id: 77,
+      created: false,
+    });
+    expect(calls.some((call) => /INSERT INTO/i.test(call.sql))).toBe(false);
+  });
+
+  it('grants each channel claim once and reports a replay as already claimed', async () => {
+    await expect(claimAttentionNotifyChannel(42, 'ws-1', 'desktop')).resolves.toBe(true);
+    expect(calls[0].sql).toMatch(/desktop_attempted = TRUE/);
+    claimGranted = false;
+    await expect(claimAttentionNotifyChannel(42, 'ws-1', 'mobile')).resolves.toBe(false);
+    expect(calls[1].sql).toMatch(/mobile_attempted = TRUE/);
+  });
 });
 
 describe('recordAttentionNotifyIntent (WI-36644)', () => {

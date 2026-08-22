@@ -68,19 +68,25 @@ beforeEach(async () => {
   deliveryId = deliveries[0].id;
 });
 
-async function seedTriggerRun(over: { status?: string; attempts?: number; startedAt?: string } = {}): Promise<string> {
+async function seedTriggerRun(over: {
+  status?: string;
+  attempts?: number;
+  startedAt?: string;
+  args?: Record<string, unknown>;
+} = {}): Promise<string> {
+  const args = over.args ?? {
+    trigger: {
+      key: 'ext:gmail:message.received', source: 'gmail', event: 'message.received',
+      sourceId: 'source-fixture', externalId: 'dispatch-1', occurredAt: null,
+      datatypeId: 'email-message', dedupeKey: 'gmail:dispatch-1',
+      payload: { id: 'dispatch-1', subject: 'Triage this' },
+    },
+  };
   const rows = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_runs
       (workspace_id, binding_id, delivery_id, dedupe_key, status, args, attempts, started_at)
-    VALUES (${WS}, ${bindingId}, ${deliveryId}, 'gmail:dispatch-1', ${over.status ?? 'pending'},
-            ${JSON.stringify({
-              trigger: {
-                key: 'ext:gmail:message.received', source: 'gmail', event: 'message.received',
-                sourceId: 'source-fixture', externalId: 'dispatch-1', occurredAt: null,
-                datatypeId: 'email-message', dedupeKey: 'gmail:dispatch-1',
-                payload: { id: 'dispatch-1', subject: 'Triage this' },
-              },
-            })}::text::jsonb,
+    VALUES (${WS}, ${bindingId}, ${deliveryId}, ${(args.trigger as { dedupeKey?: string })?.dedupeKey ?? 'gmail:dispatch-1'}, ${over.status ?? 'pending'},
+            ${JSON.stringify(args)}::text::jsonb,
             ${over.attempts ?? 0}, ${over.startedAt ?? null}::timestamptz)
     RETURNING id`;
   return rows[0].id;
@@ -164,5 +170,48 @@ describe('external trigger durable dispatch', () => {
       SELECT status, attempts FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
     expect(recovered[0]).toEqual({ status: 'succeeded', attempts: 3 });
+  });
+
+  it('passes the complete Calendar-upcoming trigger input into the meeting-prep plan run', async () => {
+    const args = {
+      trigger: {
+        key: 'ext:gcal:event-upcoming',
+        source: 'gcal',
+        event: 'event-upcoming',
+        sourceId: 'calendar-source-1',
+        externalId: 'calendar-event-7',
+        occurredAt: '2026-08-22T13:45:00.000Z',
+        datatypeId: 'calendar-event',
+        dedupeKey: 'gcal:calendar-event-7:event-upcoming:2026-08-22T14:00:00.000Z',
+        payload: {
+          id: 'calendar-event-7',
+          summary: 'Roadmap review',
+          start: '2026-08-22T14:00:00.000Z',
+          end: '2026-08-22T14:30:00.000Z',
+          attendees: [
+            { email: 'alice@example.com', displayName: 'Alice', responseStatus: 'accepted' },
+            { email: 'bob@example.com', displayName: 'Bob', responseStatus: 'tentative' },
+          ],
+          organizer: { email: 'owner@example.com', self: true },
+          htmlLink: 'https://calendar.google.com/event?eid=fixture',
+        },
+      },
+    };
+    const triggerRunId = await seedTriggerRun({ args });
+    const runPlan = vi.fn(async () => ({
+      instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+      runId: 4243,
+      runSeq: 0,
+      minted: 1,
+      replayed: false,
+    }));
+    const announceRunWork = vi.fn(async () => undefined);
+
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(runPlan).toHaveBeenCalledWith(sql, expect.objectContaining({
+      trigger: 'event',
+      inputs: args,
+    }));
   });
 });

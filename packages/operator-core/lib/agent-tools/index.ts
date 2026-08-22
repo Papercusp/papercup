@@ -385,6 +385,7 @@ import './cross_harness/plans_get';
 import './cross_harness/plans_search';
 import './operator/actions_recent';
 import './operator/notifications_recent';
+import './operator/notify_owner';
 import './instance/capture';
 import './instance/boot';
 import './instance/clone';

@@ -61,6 +61,13 @@ export function getUnresolvedAudienceSelectors(env: CoordEnvelope): readonly str
 export interface SendOptions {
   /** Recipient ownerIds. Use ['*'] for broadcast, ['human'] for the human inbox. */
   to: string[];
+  /**
+   * Internal stable id for a producer with its own replay key. Ordinary callers
+   * omit this and receive a freshly generated id. A harness-scoped stable id is
+   * protected by coord_event_log_fed_uq, so a retry can treat 23505 as already
+   * delivered instead of appending a duplicate owner message.
+   */
+  msgId?: string;
   summary?: string;
   body?: string;
   /**
@@ -240,7 +247,7 @@ export async function sendMessage(
   }
   const env: CoordEnvelope = {
     ts: new Date().toISOString(),
-    msg_id: newMsgId(),
+    msg_id: opts.msgId ?? newMsgId(),
     from: identity.ownerId,
     to,
     kind: opts.kind ?? 'message',

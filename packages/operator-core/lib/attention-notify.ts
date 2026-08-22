@@ -29,7 +29,12 @@
 import { notifyWorkspace, type PushKind } from './device-push-dispatcher';
 import { notifySyncInvalidate } from './sync-sse';
 import { activeWorkspaceId } from './workspace-registry';
-import { recordAttentionNotifyIntent, recordAttentionNotifyOutcome } from './attention-notify-store';
+import {
+  claimAttentionNotifyChannel,
+  ensureAttentionNotifyIntent,
+  recordAttentionNotifyIntent,
+  recordAttentionNotifyOutcome,
+} from './attention-notify-store';
 
 export type AttentionNotifyKind = 'needs-human' | 'intervention' | 'smoke-fail';
 
@@ -57,68 +62,119 @@ export interface AttentionNotifyInput {
   workspaceId?: string;
 }
 
-export async function notifyAttention(input: AttentionNotifyInput): Promise<void> {
+export interface ReplaySafeAttentionNotifyInput extends AttentionNotifyInput {
+  /** Stable producer key (for example, plan-run + delivery) used across retries. */
+  dedupeKey: string;
+}
+
+export interface AttentionNotifyResult {
+  recordId: number | null;
+  deduped: boolean;
+  mobileDelivered: boolean;
+  desktopDelivered: boolean;
+}
+
+async function deliverAttention(
+  input: AttentionNotifyInput & { dedupeKey?: string },
+): Promise<AttentionNotifyResult> {
   const ws = input.workspaceId ?? activeWorkspaceId();
+  const channelData = input.dedupeKey
+    ? { ...(input.data ?? {}), dedupeKey: input.dedupeKey }
+    : input.data;
 
   // WI-36644: record intent BEFORE attempting either channel — this row is the only surviving
   // evidence if the process dies mid-delivery, and it exists regardless of what happens below.
-  const recordId = await recordAttentionNotifyIntent({
+  const recordInput = {
     workspaceId: ws,
     harnessSlug: input.harnessSlug,
     kind: input.kind,
     title: input.title,
     body: input.body,
     importance: input.importance,
-    data: input.data,
-  });
+    data: channelData,
+  };
+  const reservation = input.dedupeKey
+    ? await ensureAttentionNotifyIntent(recordInput, input.dedupeKey)
+    : null;
+  const recordId = input.dedupeKey
+    ? reservation?.id ?? null
+    : await recordAttentionNotifyIntent(recordInput);
+  const mobileClaimed = recordId == null
+    ? true
+    : await claimAttentionNotifyChannel(recordId, ws, 'mobile');
 
   // 1. Mobile (APNs/FCM) — no-op when no device is paired. `data` must be
   // string-valued (APNs/FCM constraint); coerce extras and drop nullish.
   const mobileData: Record<string, string> & { kind?: PushKind } = { kind: MOBILE_KIND[input.kind] };
   if (input.harnessSlug) mobileData.harness = input.harnessSlug;
   if (input.importance) mobileData.importance = input.importance;
-  for (const [k, val] of Object.entries(input.data ?? {})) {
+  for (const [k, val] of Object.entries(channelData ?? {})) {
     if (val != null) mobileData[k] = String(val);
   }
-  try {
-    const results = await notifyWorkspace(ws, {
-      title: input.title,
-      body: input.body,
-      data: mobileData,
-      category: MOBILE_KIND[input.kind],
-    });
-    // A resolved call is NOT itself evidence of delivery: notifyWorkspace resolves to `[]`
-    // when no device is paired (the documented no-op case), and dispatchPush never throws
-    // per-target — it settles each send into a PushSendResult, ok:false included. Derive the
-    // outcome from those results, not from "didn't throw", or this audit trail would just
-    // relocate the original "reads as covered" bug one file down.
-    const succeeded = results.some((r) => r.ok);
-    const error = succeeded
-      ? undefined
-      : results.length === 0
-        ? 'no push targets registered for this workspace'
-        : results.map((r) => `${r.platform}:${r.status}${r.detail ? ` (${r.detail})` : ''}`).join('; ');
-    await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded, error });
-  } catch (e) {
-    const message = (e as Error)?.message ?? String(e);
-    console.warn('[attention-notify] mobile push failed:', message);
-    await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded: false, error: message });
+  if (mobileClaimed) {
+    try {
+      const results = await notifyWorkspace(ws, {
+        title: input.title,
+        body: input.body,
+        data: mobileData,
+        category: MOBILE_KIND[input.kind],
+      });
+      // A resolved call is NOT itself evidence of delivery: notifyWorkspace resolves to `[]`
+      // when no device is paired (the documented no-op case), and dispatchPush never throws
+      // per-target — it settles each send into a PushSendResult, ok:false included. Derive the
+      // outcome from those results, not from "didn't throw", or this audit trail would just
+      // relocate the original "reads as covered" bug one file down.
+      const succeeded = results.some((r) => r.ok);
+      const error = succeeded
+        ? undefined
+        : results.length === 0
+          ? 'no push targets registered for this workspace'
+          : results.map((r) => `${r.platform}:${r.status}${r.detail ? ` (${r.detail})` : ''}`).join('; ');
+      await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded, error });
+    } catch (e) {
+      const message = (e as Error)?.message ?? String(e);
+      console.warn('[attention-notify] mobile push failed:', message);
+      await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded: false, error: message });
+    }
   }
 
   // 2. Desktop-native (D-007) — SSE event the webview renders via Tauri.
-  try {
-    await notifySyncInvalidate(ATTENTION_NOTIFY_EVENT, {
-      kind: input.kind,
-      title: input.title,
-      body: input.body,
-      harnessSlug: input.harnessSlug ?? null,
-      importance: input.importance ?? null,
-      ...input.data,
-    });
-    await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: true });
-  } catch (e) {
-    const message = (e as Error)?.message ?? String(e);
-    console.warn('[attention-notify] desktop notify failed:', message);
-    await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: false, error: message });
+  const desktopClaimed = recordId == null
+    ? true
+    : await claimAttentionNotifyChannel(recordId, ws, 'desktop');
+  if (desktopClaimed) {
+    try {
+      await notifySyncInvalidate(ATTENTION_NOTIFY_EVENT, {
+        kind: input.kind,
+        title: input.title,
+        body: input.body,
+        harnessSlug: input.harnessSlug ?? null,
+        importance: input.importance ?? null,
+        ...channelData,
+      });
+      await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: true });
+    } catch (e) {
+      const message = (e as Error)?.message ?? String(e);
+      console.warn('[attention-notify] desktop notify failed:', message);
+      await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: false, error: message });
+    }
   }
+
+  return {
+    recordId,
+    deduped: Boolean(input.dedupeKey && !reservation?.created && !mobileClaimed && !desktopClaimed),
+    mobileDelivered: mobileClaimed,
+    desktopDelivered: desktopClaimed,
+  };
+}
+
+export async function notifyAttention(input: AttentionNotifyInput): Promise<void> {
+  await deliverAttention(input);
+}
+
+/** Replay-safe variant for plan/event consumers with a stable delivery key. */
+export async function notifyAttentionOnce(
+  input: ReplaySafeAttentionNotifyInput,
+): Promise<AttentionNotifyResult> {
+  return deliverAttention(input);
 }

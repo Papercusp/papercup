@@ -4,9 +4,13 @@ import {
   type ExternalTriggerSourceRow,
   upsertOwnedExternalTriggerSource,
 } from './source-store';
+import { ensureExternalTriggerBinding } from './admin';
 
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
 export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal'] as const;
+export const GOOGLE_CALENDAR_MEETING_PREP_HARNESS = 'papercusp';
+export const GOOGLE_CALENDAR_MEETING_PREP_PLAN = 'meeting-prep-brief-2026-08-22';
+export const GOOGLE_CALENDAR_MEETING_PREP_EVENT = 'ext:gcal:event-upcoming';
 const OAUTH_FIELD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -58,5 +62,15 @@ export async function provisionOwnedGoogleWorkspaceSources(
       createdBy: input.createdBy ?? `owner:${ownerUserId}`,
     }));
   }
+  const calendar = rows.find((row) => row.kind === 'gcal');
+  if (!calendar) throw new Error('google_workspace_calendar_source_missing');
+  await ensureExternalTriggerBinding(sql, input.workspaceId, {
+    sourceId: calendar.id,
+    planHarnessSlug: GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
+    planSlug: GOOGLE_CALENDAR_MEETING_PREP_PLAN,
+    eventPattern: GOOGLE_CALENDAR_MEETING_PREP_EVENT,
+    eventFilter: { 'attendees.0': { exists: true } },
+    createdBy: input.createdBy ?? `owner:${ownerUserId}`,
+  });
   return rows;
 }

@@ -1,7 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { provisionOwnedGoogleWorkspaceSources } from './google-workspace';
+import {
+  GOOGLE_CALENDAR_MEETING_PREP_EVENT,
+  GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
+  GOOGLE_CALENDAR_MEETING_PREP_PLAN,
+  provisionOwnedGoogleWorkspaceSources,
+} from './google-workspace';
 
 const WS = 'google-workspace-source-test';
 let org: OrgTestDb;
@@ -20,6 +25,23 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await org?.cleanup();
+});
+
+beforeEach(async () => {
+  await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`
+    DELETE FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS}
+       AND harness_slug = ${GOOGLE_CALENDAR_MEETING_PREP_HARNESS}
+       AND plan_slug = ${GOOGLE_CALENDAR_MEETING_PREP_PLAN}`;
+  await sql`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
+    VALUES (
+      ${WS}, ${GOOGLE_CALENDAR_MEETING_PREP_HARNESS}, ${GOOGLE_CALENDAR_MEETING_PREP_PLAN},
+      'Meeting prep', 'ready', '# Meeting prep', 'meeting-prep-v1', '[]'::jsonb
+    )`;
 });
 
 describe('Google Workspace owned trigger-source provisioning', () => {
@@ -60,5 +82,60 @@ describe('Google Workspace owned trigger-source provisioning', () => {
       { kind: 'gcal', count: 1 },
       { kind: 'gmail', count: 1 },
     ]);
+
+    const bindings = await sql<Array<{
+      sourceKind: string;
+      eventPattern: string;
+      eventFilter: Record<string, unknown>;
+      planHarnessSlug: string;
+      planSlug: string;
+      action: Record<string, unknown>;
+      armed: boolean;
+      count: number;
+    }>>`
+      SELECT s.kind AS "sourceKind",
+             b.event_pattern AS "eventPattern",
+             b.event_filter AS "eventFilter",
+             b.plan_harness_slug AS "planHarnessSlug",
+             b.plan_slug AS "planSlug",
+             b.action,
+             b.armed,
+             count(*)::int AS count
+        FROM harness_shared.trigger_bindings b
+        JOIN harness_shared.trigger_sources s
+          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+       WHERE b.workspace_id = ${WS}
+       GROUP BY s.kind, b.event_pattern, b.event_filter, b.plan_harness_slug,
+                b.plan_slug, b.action, b.armed`;
+    expect(bindings).toEqual([{
+      sourceKind: 'gcal',
+      eventPattern: GOOGLE_CALENDAR_MEETING_PREP_EVENT,
+      eventFilter: { 'attendees.0': { exists: true } },
+      planHarnessSlug: GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
+      planSlug: GOOGLE_CALENDAR_MEETING_PREP_PLAN,
+      action: { type: 'launch-plan' },
+      armed: false,
+      count: 1,
+    }]);
+  });
+
+  it('serializes concurrent reconnects onto the same disarmed Calendar binding', async () => {
+    await Promise.all([
+      provisionOwnedGoogleWorkspaceSources(sql, {
+        workspaceId: WS,
+        ownerUserId: userId,
+        field: 'owner-a',
+      }),
+      provisionOwnedGoogleWorkspaceSources(sql, {
+        workspaceId: WS,
+        ownerUserId: userId,
+        field: 'owner-b',
+      }),
+    ]);
+    const rows = await sql<Array<{ count: number; armed: boolean }>>`
+      SELECT count(*)::int AS count, bool_or(armed) AS armed
+        FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${WS}`;
+    expect(rows).toEqual([{ count: 1, armed: false }]);
   });
 });

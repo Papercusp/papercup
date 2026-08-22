@@ -9,6 +9,8 @@
 import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
 
+type Db = postgres.Sql | postgres.TransactionSql;
+
 const SOURCE_KIND_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SOURCE_STATUSES = new Set(['unconfigured', 'ready', 'connecting', 'connected', 'degraded', 'error', 'disabled']);
 
@@ -236,7 +238,7 @@ export async function createExternalTriggerSource(
 
 /** Install an external-event binding. Installed bindings always begin disarmed. */
 export async function createExternalTriggerBinding(
-  sql: postgres.Sql,
+  sql: Db,
   workspaceId: string,
   input: CreateExternalTriggerBindingInput,
 ): Promise<CreatedExternalTriggerBinding> {
@@ -302,6 +304,84 @@ export async function createExternalTriggerBinding(
     createdAt: iso(rows[0].createdAt) as string,
     updatedAt: iso(rows[0].updatedAt) as string,
   };
+}
+
+/**
+ * Idempotently install one semantic source→plan binding.
+ *
+ * `trigger_bindings` intentionally permits multiple bindings between the same
+ * source and plan because users may author distinct filters. Connection-time
+ * provisioning needs a narrower guarantee: reconnecting (or two concurrent
+ * OAuth callbacks) must not multiply the one built-in Calendar binding. A
+ * transaction-scoped advisory lock serializes that exact semantic key, then an
+ * equality read reuses the installed row. The binding remains disarmed; arming
+ * is still an explicit, separately-governed operation.
+ */
+export async function ensureExternalTriggerBinding(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: CreateExternalTriggerBindingInput,
+): Promise<CreatedExternalTriggerBinding> {
+  const ws = required(workspaceId, 'workspace_id');
+  const sourceId = required(input.sourceId, 'source_id');
+  const planHarnessSlug = required(input.planHarnessSlug, 'plan_harness_slug');
+  const planSlug = required(input.planSlug, 'plan_slug');
+  const eventPattern = required(input.eventPattern, 'event_pattern');
+  const eventFilter = JSON.stringify(input.eventFilter ?? {});
+  const action = JSON.stringify({ type: 'launch-plan' });
+  const lockKey = [
+    'external-trigger-binding',
+    ws,
+    sourceId,
+    planHarnessSlug,
+    planSlug,
+    eventPattern,
+  ].join(':');
+
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+    const rows = await tx<
+      Array<
+        Omit<CreatedExternalTriggerBinding, 'createdAt' | 'updatedAt'> & {
+          createdAt: Date | string;
+          updatedAt: Date | string;
+        }
+      >
+    >`
+      SELECT b.id::text,
+             b.source_id::text AS "sourceId",
+             s.kind AS "sourceKind",
+             b.plan_harness_slug AS "planHarnessSlug",
+             b.plan_slug AS "planSlug",
+             b.event_pattern AS "eventPattern",
+             b.event_filter AS "eventFilter",
+             b.action,
+             b.armed,
+             b.storm_policy AS "stormPolicy",
+             b.created_by AS "createdBy",
+             b.created_at AS "createdAt",
+             b.updated_at AS "updatedAt"
+        FROM harness_shared.trigger_bindings b
+        JOIN harness_shared.trigger_sources s
+          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+       WHERE b.workspace_id = ${ws}
+         AND b.source_id = ${sourceId}::uuid
+         AND b.plan_harness_slug = ${planHarnessSlug}
+         AND b.plan_slug = ${planSlug}
+         AND b.event_pattern = ${eventPattern}
+         AND b.event_filter = ${eventFilter}::text::jsonb
+         AND b.action = ${action}::text::jsonb
+       ORDER BY b.created_at, b.id
+       LIMIT 1`;
+    if (rows[0]) {
+      return {
+        ...rows[0],
+        createdAt: iso(rows[0].createdAt) as string,
+        updatedAt: iso(rows[0].updatedAt) as string,
+      };
+    }
+    return createExternalTriggerBinding(tx, ws, input);
+  });
 }
 
 export function disabledExternalTriggerAdminSnapshot(): ExternalTriggerAdminSnapshot {
