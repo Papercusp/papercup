@@ -30,7 +30,7 @@ const TEMPLATES = Object.keys(PACK_TEMPLATES) as [PackTemplate, ...PackTemplate[
 export default defineTool({
   name: 'code:pack',
   description:
-    'Package code as EVIDENCE for a reviewer or another model, using pinned engines (Repomix 1.18.0 / code2prompt 4.2.0 — never `npx latest`, so every pack names the exact engine that produced it). op:"pack" packs the files matching `include`; op:"diff" packs the git diff instead. `include` is REQUIRED and non-empty: an unscoped pack of this monorepo is gigabytes, and it reads exactly like a correctly-scoped one until someone opens it. Only op:"pack" is secret-scanned — code2prompt ships no scanner at all — so the two are NOT interchangeable on a tree that may hold credentials. Never writes to the workspace, cannot disable secret scanning, and puts the pack body in a scratch file outside the tree rather than into your context.',
+    'Package code as EVIDENCE for review with pinned Repomix 1.18.0/code2prompt 4.2.0 engines (never `npx latest`). op:"pack" selects files matching `include`; op:"diff" packs the git diff. `include` is REQUIRED and non-empty: an unscoped monorepo pack is huge and can look valid. Only pack secret-scans; diff is deny-set-only. Both are read-only and put the full body in a scratch file outside the tree, not your context.',
   guidance: {
     when: 'You need a whole subsystem in one document for a human reviewer or another model to reason over — a review request, an audit, a refactor brief. op:"diff" when only what CHANGED matters.',
     notWhen:

@@ -73,16 +73,16 @@ const integrationEnvSchema = z
 export default defineTool({
   name: 'capability:bash',
   description:
-    'Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output. Operator-authority callers may bind encrypted integration credentials into named child-only environment variables by reference; exact values are redacted from all returned/streamed/spilled output.',
+    'Run shell commands (bash -c) in the project dir; stream output and spill large output to a log. Use run_in_background for long jobs and capability:bash_output to poll. Operator callers may bind encrypted integration credentials into named child-only environment variables; values are redacted.',
   guidance: {
     when:
-      'Run shell commands for builds, tests, status checks, file inspection, or scripts. For literal searches, use fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick fails before `rg` runs. For repository text/regex searches, ' +
+      'Run builds, tests, status checks, inspection, or scripts. For literal searches use fixed-string `rg -F` with a shell-safe single-quoted argument (unmatched backticks fail before `rg`). For repository text/regex searches, ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root when generated output is not the target. ` +
-      'For jobs over 1–2 minutes, set run_in_background:true and read with capability:bash_output. Background jobs have deadlines (4h default, 12h max); raise `timeout` when needed.',
+      'For jobs over 1–2 minutes, use run_in_background:true and read with capability:bash_output; deadlines are 4h default/12h max (raise `timeout` as needed).',
     notWhen:
-      'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.',
+      'For one-file reads/writes/edits use capability:read/write/edit (lock-aware). For read-only operator DB queries use dev:pg_query { sql | describe }, not psql (bash strips DB credentials). For git use capability:git.',
     chaining:
-      'run_in_background:true → returns a bash_id plus durable task_id → preserve task_id across carry and read with capability:bash_output { task_id } (bash_id also works in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused).',
+      'run_in_background:true → bash_id + durable task_id → read with capability:bash_output { task_id } (bash_id only in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused).',
     seeAlso: [
       "capability:bash_output (read a backgrounded run's output)",
       'capability:bash_kill (kill a backgrounded run)',
