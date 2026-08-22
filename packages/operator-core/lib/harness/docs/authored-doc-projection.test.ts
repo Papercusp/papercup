@@ -18,6 +18,7 @@ import {
   listCorpusDocs,
   listSectionDocs,
   parseExactDocSelection,
+  readAuthoredRows,
   retireOrphansRefusal,
   writeContent,
 } from '../../../../../scripts/project-authored-docs';
@@ -226,6 +227,30 @@ describe('authored-doc projection (P-008)', () => {
   });
 
   describe('reconcile writes — optimistic concurrency', () => {
+    it('reads updated_at as exact text so microseconds survive the CAS round trip', async () => {
+      let statement = '';
+      const client = {
+        query: async (sql: string) => {
+          statement = sql;
+          return {
+            rows: [{
+              doc_id: 'testing/agent-e2e.mdx',
+              content: SAMPLE,
+              content_hash: sha256(SAMPLE),
+              updated_at: '2026-08-22 03:41:17.089338+00',
+              content_mode: 'authored',
+              retired_at: null,
+            }],
+          };
+        },
+      };
+
+      const rows = await readAuthoredRows(client, null);
+
+      expect(statement).toContain('updated_at::text AS updated_at');
+      expect(rows.get('testing/agent-e2e.mdx')?.updated_at).toBe('2026-08-22 03:41:17.089338+00');
+    });
+
     it('refuses a stale file when PG changed after the read snapshot', async () => {
       const canonical = SAMPLE;
       const newer = SAMPLE.replace('Some prose.', 'A newer canonical edit.');

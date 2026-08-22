@@ -204,7 +204,10 @@ interface DocRow {
   doc_id: string;
   content: string;
   content_hash: string;
-  updated_at: Date | string;
+  /** Exact PG timestamptz text. Never read this as a JS Date: Date truncates
+   * microseconds and makes the optimistic-concurrency equality predicate miss
+   * an unchanged row. */
+  updated_at: string;
   content_mode: string;
   /**
    * Lifecycle marker (migration 814). NULL = live; non-NULL = deliberately removed.
@@ -243,7 +246,7 @@ export async function readAuthoredRows(
 ): Promise<Map<string, DocRow>> {
   const scoped = section !== null;
   const { rows } = await client.query(
-    `SELECT doc_id, content, content_hash, updated_at, content_mode, retired_at
+    `SELECT doc_id, content, content_hash, updated_at::text AS updated_at, content_mode, retired_at
        FROM harness_shared.harness_docs
       WHERE workspace_id = $1 AND harness_slug = $2
         AND content_mode = 'authored'${scoped ? ' AND doc_id LIKE $3' : ''}
@@ -257,7 +260,7 @@ export interface ExpectedDocVersion {
   /** The content_hash observed in the same snapshot as the file read. */
   contentHash: string;
   /** The updated_at observed in the same snapshot as the file read. */
-  updatedAt: Date | string;
+  updatedAt: string;
 }
 
 /**

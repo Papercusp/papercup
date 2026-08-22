@@ -104,6 +104,15 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe("Include items from plans under archive/. Default false."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(500)
+    .optional()
+    .describe(
+      "Max items returned after importance ordering. Set this to keep a cross-plan read bounded; truncated:true reports when more matched.",
+    ),
   harness: harnessArg,
 });
 
@@ -198,6 +207,7 @@ export default defineTool({
           actionable: args.actionable === true,
           needsHuman: args.needsHuman === true,
           includeArchived,
+          limit: args.limit ?? null,
           harness: opts.harnessSlug,
           specTriad: specTriadFlag,
         },
@@ -343,15 +353,25 @@ export default defineTool({
       }];
     });
 
+    const truncated = args.limit !== undefined && rows.length > args.limit;
+    const limitedRows = truncated ? rows.slice(0, args.limit) : rows;
+
     ctxAny.metadata?.({
-      count: rows.length,
+      count: limitedRows.length,
+      totalCount: rows.length,
       actionable: !!args.actionable,
       needsHuman: !!args.needsHuman,
       scope: args.slug ?? "all",
+      ...(truncated ? { truncated: true } : {}),
     });
 
     // {data} envelope so the payload-tier shapers apply; HTTP/sync consumers
     // still read identical `{"items":[...]}` JSON text.
-    return { data: { items: rows } };
+    return {
+      data: {
+        items: limitedRows,
+        ...(truncated ? { truncated: true } : {}),
+      },
+    };
   },
 });
