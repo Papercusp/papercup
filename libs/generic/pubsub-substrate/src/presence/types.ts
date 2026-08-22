@@ -32,6 +32,8 @@ export interface PresenceInput {
   intent?: string;
   currentPlanSlug?: string | null;
   currentFiles?: string[];
+  /** Omit to preserve the durable ambient-retrieval fence; [] clears it. */
+  ambientExcludedRefs?: string[];
   host?: string;
   pid?: number | null;
   /** The terminal device path this session's launcher OWNS (e.g. `/dev/pts/21`),

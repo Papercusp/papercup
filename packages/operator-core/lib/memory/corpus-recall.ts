@@ -109,6 +109,7 @@ export interface CorpusLine {
 }
 
 export type CorpusDropReason =
+  | 'ambient-excluded'
   | 'self-session'
   | 'out-of-scope'
   | 'no-term-overlap'
@@ -173,6 +174,8 @@ export interface SelectCorpusInput {
   knownRefs?: ReadonlySet<string>;
   /** The work-item the caller has declared as its current scope, when known. */
   declaredWorkItemId?: string | null;
+  /** Explicit per-session refs that ambient retrieval must never inject. */
+  ambientExcludedRefs?: ReadonlySet<string>;
   /** Render clock, injected for deterministic tests and paired stage labels. */
   now?: number | Date;
   /** Max lines admitted. */
@@ -696,6 +699,10 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
   input.hits.forEach((hit, rank) => {
     const ref = handleRefOfHit(hit);
     if (!ref) return;
+    if (input.ambientExcludedRefs?.has(ref)) {
+      dropped.push({ ref, reason: 'ambient-excluded' });
+      return;
+    }
     const sid = sessionIdOfHit(hit);
     if (sid && input.excludeSessionIds?.has(sid)) {
       dropped.push({ ref, reason: 'self-session' });

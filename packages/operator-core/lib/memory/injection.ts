@@ -26,6 +26,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { getSessionBriefAmbientExcludedRefs } from '../session-brief';
 import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backend';
 // Type-only: erased at build, so `recall-stats` stays a dynamic import on the
 // telemetry path (see the writer below) rather than being pulled in eagerly.
@@ -567,6 +568,7 @@ interface CorpusLegResult {
 }
 
 const emptyCorpusDrops = (): Record<CorpusAdmissionDropReason, number> => ({
+  'ambient-excluded': 0,
   'self-session': 0,
   'out-of-scope': 0,
   'no-term-overlap': 0,
@@ -764,7 +766,32 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // the same pointer every turn. The compaction `epoch` is resolved here
       // and shared with the mem0 ledger's meaning, so one epoch bump re-primes
       // memories AND pointers together.
-      const sessionId = input.session?.sessionId ?? null;
+      const sessionId = input.session?.sessionId?.trim() || null;
+      let ambientExcludedRefs: ReadonlySet<string> | undefined;
+      if (sessionId) {
+        const fence = await getSessionBriefAmbientExcludedRefs(sessionId);
+        // A missing/legacy row is an available empty fence. A read or parse
+        // failure is different: fail closed so a blind session never receives
+        // an unreviewed corpus pointer while its exclusion policy is unknown.
+        if (!fence.available) {
+          return emptyCorpusLeg(
+            CORPUS_BLOCK_HEADING,
+            false,
+            0,
+            null,
+            {
+              outcome: 'failed',
+              selected: 0,
+              dropped: emptyCorpusDrops(),
+              sessionDedup: 0,
+              legs: null,
+              retrievalDepth: 0,
+              rerank: 'nothing-to-reorder',
+            },
+          );
+        }
+        ambientExcludedRefs = fence.refs;
+      }
       let epoch = 0;
       if (sessionId) {
         try {
@@ -780,6 +807,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
         declaredWorkItemId,
+        ambientExcludedRefs,
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native
         // transcript session id — `session.sessionId` is the per-agent epoch-dedup
         // identity, as claim-port.ts spells out. It used to be passed as

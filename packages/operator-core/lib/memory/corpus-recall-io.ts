@@ -186,6 +186,8 @@ export interface CorpusRecallInput {
   excludeOwnerId?: string | null;
   /** The caller's active work-item, used to disambiguate related pointers. */
   declaredWorkItemId?: string | null;
+  /** Explicit per-session refs that ambient retrieval must never inject. */
+  ambientExcludedRefs?: ReadonlySet<string>;
   /** Handle refs already delivered to this agent. */
   knownRefs?: ReadonlySet<string>;
   maxItems?: number;
@@ -760,6 +762,7 @@ export async function recallCorpusContext(
           excludeSessionIds: await ownSessionIdsAmong(hits),
           harnessSlugs: input.harnessSlugs ?? [],
           declaredWorkItemId: input.declaredWorkItemId,
+          ambientExcludedRefs: input.ambientExcludedRefs,
           knownRefs: opts.knownRefs,
           maxItems: opts.maxItems,
           budgetChars: opts.budgetChars,

@@ -32,6 +32,8 @@ export interface SessionBriefInput {
   intent?: string;
   currentPlanSlug?: string | null;
   currentFiles?: string[];
+  /** Omit to preserve; pass [] to clear the durable ambient-retrieval fence. */
+  ambientExcludedRefs?: string[];
   /** Harness the work is in (the agent's home harness). */
   harnessSlug?: string | null;
   /** Resolved home hive, if any. */
@@ -77,6 +79,7 @@ export interface SessionBriefRecord {
   intent: string;
   currentPlanSlug: string | null;
   currentFiles: string[];
+  ambientExcludedRefs: string[] | null;
   harnessSlug: string | null;
   potSlug: string | null;
   goalId: string | null;
@@ -104,10 +107,12 @@ export async function writeSessionBrief(
     // dies, so a wipe here loses the declared lane at exactly the moment it matters
     // most. Explicit [] still clears; NULL is the untouched sentinel (NOT NULL column).
     const filesJson = input.currentFiles === undefined ? null : JSON.stringify(input.currentFiles);
+    const ambientExcludedRefsJson =
+      input.ambientExcludedRefs === undefined ? null : JSON.stringify(input.ambientExcludedRefs);
     await sql`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, owner_label, source, intent,
-         current_plan_slug, current_files, harness_slug, pot_slug, goal_id,
+         current_plan_slug, current_files, ambient_excluded_refs, harness_slug, pot_slug, goal_id,
          native_session_id, first_seen_at, updated_at)
       VALUES (
         ${identity.ownerId},
@@ -117,6 +122,7 @@ export async function writeSessionBrief(
         ${input.intent ?? ''},
         ${input.currentPlanSlug ?? null},
         COALESCE(${filesJson}::text::jsonb, '[]'::jsonb),
+        ${ambientExcludedRefsJson}::text::jsonb,
         ${input.harnessSlug ?? null},
         ${input.potSlug ?? null},
         ${input.goalId ?? null},
@@ -132,6 +138,11 @@ export async function writeSessionBrief(
         -- omitted ⇒ untouched, explicit [] ⇒ clear (EI-18776963284535761); reads the
         -- parameter directly, not EXCLUDED (the VALUES row COALESCEd it to '[]').
         current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.session_briefs.current_files),
+        -- omitted ⇒ untouched; explicit [] ⇒ clear (EI-21096338043071922).
+        ambient_excluded_refs = COALESCE(
+          ${ambientExcludedRefsJson}::text::jsonb,
+          harness_shared.session_briefs.ambient_excluded_refs
+        ),
         -- populate-once-then-keep: a write that omits harness/hive/session never WIPES
         -- a previously-resolved value (mirrors coord_presence D-004).
         harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.session_briefs.harness_slug),
@@ -151,6 +162,7 @@ export async function writeSessionBrief(
 
 function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
   const lifecycle = parseSessionBriefLifecycle(r.control_state);
+  const ambientExcludedRefs = parseAmbientExcludedRefs(r.ambient_excluded_refs);
   return {
     ownerId: String(r.owner_id),
     workspaceId: String(r.workspace_id),
@@ -159,6 +171,11 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     intent: String(r.intent ?? ''),
     currentPlanSlug: (r.current_plan_slug as string | null) ?? null,
     currentFiles: Array.isArray(r.current_files) ? (r.current_files as string[]) : [],
+    ambientExcludedRefs: ambientExcludedRefs.valid
+      ? ambientExcludedRefs.present
+        ? ambientExcludedRefs.refs
+        : null
+      : null,
     harnessSlug: (r.harness_slug as string | null) ?? null,
     potSlug: (r.pot_slug as string | null) ?? null,
     goalId: (r.goal_id as string | null) ?? null,
@@ -167,6 +184,59 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     firstSeenAt: String(r.first_seen_at ?? ''),
     updatedAt: String(r.updated_at ?? ''),
   };
+}
+
+type AmbientExcludedRefsParse = { present: boolean; valid: boolean; refs: string[] };
+
+function parseAmbientExcludedRefs(value: unknown): AmbientExcludedRefsParse {
+  if (value === null || value === undefined) return { present: false, valid: true, refs: [] };
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return { present: true, valid: false, refs: [] };
+    }
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some((ref) => typeof ref !== 'string' || ref.trim().length === 0)
+  ) {
+    return { present: true, valid: false, refs: [] };
+  }
+  return {
+    present: true,
+    valid: true,
+    refs: Array.from(new Set(parsed.map((ref) => ref.trim()))),
+  };
+}
+
+export interface AmbientExcludedRefsFence {
+  /** False means the durable fence could not be read; callers must fail closed. */
+  available: boolean;
+  refs: ReadonlySet<string>;
+}
+
+/** Resolve the caller's fence; missing/legacy rows are valid empty fences. */
+export async function getSessionBriefAmbientExcludedRefs(
+  ownerId: string,
+): Promise<AmbientExcludedRefsFence> {
+  try {
+    if (!ownerId) return { available: false, refs: new Set<string>() };
+    const rows = await getOrgPg().sql`
+      SELECT ambient_excluded_refs
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId}
+       LIMIT 1
+    `;
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (!row) return { available: true, refs: new Set<string>() };
+    const parsed = parseAmbientExcludedRefs(row.ambient_excluded_refs);
+    if (!parsed.valid) return { available: false, refs: new Set<string>() };
+    return { available: true, refs: new Set(parsed.refs) };
+  } catch {
+    return { available: false, refs: new Set<string>() };
+  }
 }
 
 function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | null {

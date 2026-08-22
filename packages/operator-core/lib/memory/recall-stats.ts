@@ -343,6 +343,7 @@ export interface RecallAdmissionStats {
 }
 
 export type CorpusAdmissionDropReason =
+  | 'ambient-excluded'
   | 'self-session'
   | 'out-of-scope'
   | 'no-term-overlap'

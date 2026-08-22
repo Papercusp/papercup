@@ -112,7 +112,7 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
 export default defineTool({
   name: 'coord:declare-intent',
   description:
-    'Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), and files. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items` and `current_files` (omission preserves; [] clears). A broad "all remaining items" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).',
+    'Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), files, and optional ambient-retrieval exclusions. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items`, `current_files`, and `ambient_excluded_refs` (omission preserves; [] clears). A broad "all remaining items" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).',
   guidance: {
     when: 'Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad "take everything remaining" work, enumerate items to expose overlap (EI-5873).',
     notWhen: 'Every turn — the OMP hook heartbeats automatically; call this when your intent changes.',
@@ -152,6 +152,12 @@ export default defineTool({
       .optional()
       .describe(
         'Repo-relative files currently in scope — read by lock-contention enrichment (is the holder still focused on this path?) and by fleet placement. Omit to leave your declared file set untouched; pass [] to clear it. Same omission semantics as `items`.',
+      ),
+    ambient_excluded_refs: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Work-item/session refs that ambient corpus retrieval must never inject into this session. Omit to preserve the durable fence; pass [] to clear it. A read failure fails closed for corpus retrieval.',
       ),
   }),
   async handler(args, ctx) {
@@ -193,6 +199,8 @@ export default defineTool({
         // coord:orient re-declares intent WITHOUT this arg on every wake — so the
         // column was empty for 113/113 live agents.
         currentFiles: args.current_files,
+        // Omit to preserve the durable session fence; [] is an explicit clear.
+        ambientExcludedRefs: args.ambient_excluded_refs,
       },
       // harness the work is in → resolves the agent's home hive_slug (D-004).
       args.harness ?? null,

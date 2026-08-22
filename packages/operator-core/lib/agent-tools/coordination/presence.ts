@@ -167,6 +167,7 @@ export async function writePresence(
     intent: input.intent,
     currentPlanSlug: input.currentPlanSlug,
     currentFiles: input.currentFiles,
+    ambientExcludedRefs: input.ambientExcludedRefs,
     harnessSlug: harnessSlug ?? null,
     potSlug,
   });
