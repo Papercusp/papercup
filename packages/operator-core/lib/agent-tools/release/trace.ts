@@ -177,6 +177,11 @@ export default defineTool({
     // the gate non-authoritative and suppress its test names only for the exact candidate.
     const inconclusiveCandidate = snapshot.gate.inconclusive?.candidate;
     const candidateInconclusive = sameSha(position.targetSha, inconclusiveCandidate);
+    const repairQueueInconclusive =
+      candidateInconclusive &&
+      (snapshot.gate.inconclusive?.status === 'repair-in-progress' ||
+        snapshot.gate.inconclusive?.status === 'repair-staging-mismatch');
+    const inheritedRepairQueueFailingTests = repairQueueInconclusive ? snapshot.gate.failingTests : [];
     const deploy = computeDeployStatus(snapshot);
     const pipeline = pipelineName(snapshot.deploy.integrationRoot);
     const keys = [
@@ -258,6 +263,9 @@ export default defineTool({
           authoritative: !snapshot.gate.verdictStale && !candidateInconclusive,
           consecutiveReds: snapshot.gate.consecutiveReds,
           failingTests: snapshot.gate.verdictStale || candidateInconclusive ? [] : snapshot.gate.failingTests,
+          recordedVerdict: snapshot.gate.recordedVerdict,
+          inheritedRepairQueueFailingTests,
+          inheritedRepairQueueFailingTestsSource: repairQueueInconclusive ? 'prior-gate-verdict' : null,
           fireStale: snapshot.gate.fireStale,
           fireStaleReason: snapshot.gate.fireStaleReason,
           verdictStale: snapshot.gate.verdictStale,

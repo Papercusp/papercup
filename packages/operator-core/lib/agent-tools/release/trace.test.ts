@@ -212,6 +212,49 @@ describe('release:trace tool contract', () => {
     );
   });
 
+  it('labels prior failing tests as inherited repair-queue context for an exact repair hold', async () => {
+    const targetSha = 'b'.repeat(40);
+    const inconclusive = {
+      status: 'repair-in-progress',
+      candidate: targetSha.slice(0, 8),
+      detail: 'frozen repair fixer dispatched; no suite run',
+      observedAtMs: 123,
+    };
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: {
+        verdictStale: false,
+        consecutiveReds: 5,
+        failingTests: ['historical-red.test.ts'],
+        fireStale: false,
+        observedCandidate: 'older-candidate',
+        recordedVerdict: 'not-green',
+        inconclusive,
+      },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'gate-red' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: false });
+
+    await tool.handler({ sha: targetSha } as never, {} as never);
+
+    expect(mocks.buildReleaseTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: expect.objectContaining({
+          failingTests: [],
+          inheritedRepairQueueFailingTests: ['historical-red.test.ts'],
+          inheritedRepairQueueFailingTestsSource: 'prior-gate-verdict',
+          recordedVerdict: 'not-green',
+          inconclusive,
+        }),
+      }),
+    );
+  });
+
   it('returns an unknown, retryable result when the pipeline snapshot exceeds its budget', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
