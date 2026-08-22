@@ -95,44 +95,26 @@
     {
       "file": "vditor/dist/js/highlight.js/third-languages.js",
       "url": "https://cdn.jsdelivr.net/npm/highlightjs-sap-abap@0.2.0/dist/abap.min.js",
-      "status": "unresolved",
-      "reason": "vditor's third-languages registry maps extra highlight.js grammars to jsdelivr URLs and script-injects one on demand. Fires only when a fenced code block declares that language (abap). Low likelihood, real mechanism. Tracked: WI-7118."
+      "status": "inert",
+      "reason": "The jsDelivr URL is provenance in a comment only. The vendored file registers the ABAP grammar inline with the already-local highlight.js runtime; it has no fetch/XHR or script-element loader. Verified by WI-7118 recurrence test."
     },
     {
       "file": "vditor/dist/js/highlight.js/third-languages.js",
       "url": "https://cdn.jsdelivr.net/npm/highlightjs-solidity@2.0.5/dist/solidity.min.js",
-      "status": "unresolved",
-      "reason": "Same vditor third-language grammar loader, for solidity code blocks. Tracked: WI-7118."
+      "status": "inert",
+      "reason": "The jsDelivr URL is provenance in a comment only. The vendored file registers the Solidity grammar inline with the already-local highlight.js runtime; it has no fetch/XHR or script-element loader. Verified by WI-7118 recurrence test."
     },
     {
       "file": "vditor/dist/js/highlight.js/third-languages.js",
       "url": "https://cdn.jsdelivr.net/npm/highlightjs-solidity@2.0.5/dist/yul.min.js",
-      "status": "unresolved",
-      "reason": "Same vditor third-language grammar loader, for yul code blocks. Tracked: WI-7118."
+      "status": "inert",
+      "reason": "The jsDelivr URL is provenance in a comment only. The vendored file registers the Yul grammar inline with the already-local highlight.js runtime; it has no fetch/XHR or script-element loader. Verified by WI-7118 recurrence test."
     },
     {
       "file": "vditor/dist/js/highlight.js/third-languages.js",
       "url": "https://github.com/highlightjs/highlightjs-hlsl/blob/master/dist/hlsl.min.js",
       "status": "inert",
       "reason": "A /blob/ HTML page URL in the same registry file — a source reference rather than the CDN asset URL its siblings use. Fetching it would return HTML, so it is not a working loader entry."
-    },
-    {
-      "file": "vditor/dist/js/markmap/markmap.min.js",
-      "url": "https://cdn.jsdelivr.net/npm/d3@6.7.0",
-      "status": "unresolved",
-      "reason": "markmap loads d3 from jsdelivr at render time. Fires only when a markmap block is rendered. Tracked: WI-7118."
-    },
-    {
-      "file": "vditor/dist/js/markmap/markmap.min.js",
-      "url": "https://cdn.jsdelivr.net/npm/markmap-view@0.14.3",
-      "status": "unresolved",
-      "reason": "markmap loads its own view runtime from jsdelivr at render time. Tracked: WI-7118."
-    },
-    {
-      "file": "vditor/dist/js/markmap/markmap.min.js",
-      "url": "https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js",
-      "status": "unresolved",
-      "reason": "markmap loads webfontloader from jsdelivr at render time. Tracked: WI-7118."
     },
     {
       "file": "vditor/dist/js/mathjax/sre/sre_browser.js",
