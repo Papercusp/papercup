@@ -7,6 +7,8 @@ import {
   scaleHive,
   computeFramesToReap,
   reapHiveFrames,
+  queenHomeFrameForPlacement,
+  frameDevicePubkey,
   type HiveDeploySpec,
   type HiveDeployDeps,
 } from './hive-deploy';
@@ -17,9 +19,15 @@ const frame = (slug: string): Frame => ({ id: `f-${slug}`, target: 'latitude', p
 function memDeps(over: Partial<HiveDeployDeps> = {}) {
   const calls: string[] = [];
   const deployments = new Map<string, DeploymentConfig>();
-  const deps: HiveDeployDeps & { calls: string[]; deployments: Map<string, DeploymentConfig> } = {
+  const queenHomes: Array<{ potId: string; workspaceId: string; devicePubkey: string }> = [];
+  const deps: HiveDeployDeps & {
+    calls: string[];
+    deployments: Map<string, DeploymentConfig>;
+    queenHomes: Array<{ potId: string; workspaceId: string; devicePubkey: string }>;
+  } = {
     calls,
     deployments,
+    queenHomes,
     async setMemberDeployment(slug, _ws, d) {
       deployments.set(slug, d);
     },
@@ -38,6 +46,9 @@ function memDeps(over: Partial<HiveDeployDeps> = {}) {
     async teardownControlFrame(potId) {
       calls.push(`teardown-control:${potId}`);
       return { destroyed: true };
+    },
+    async recordQueenHome(potId, workspaceId, devicePubkey) {
+      queenHomes.push({ potId, workspaceId, devicePubkey });
     },
     ...over,
   };
@@ -64,10 +75,29 @@ describe('deployHive', () => {
   });
 
   it('dedicated Queen: provisions a control frame first', async () => {
-    const deps = memDeps();
+    const deps = memDeps({
+      async deployControlFrame(potId) {
+        deps.calls.push(`control:${potId}`);
+        return { ...frame(`queen-${potId}`), meta: { devicePubkey: 'pk-dedicated' } };
+      },
+    });
     const r = await deployHive(spec({ queen: { placement: 'dedicated' } }), 'ws', deps);
     expect(r.controlFrame?.id).toBe('f-queen-h1');
     expect(deps.calls[0]).toBe('control:h1');
+    expect(deps.queenHomes).toEqual([{ potId: 'h1', workspaceId: 'ws', devicePubkey: 'pk-dedicated' }]);
+  });
+
+  it('colocated Queen: first successful execution frame owns the Queen', async () => {
+    const deps = memDeps({
+      async deployHarness(slug) {
+        deps.calls.push(`deploy:${slug}`);
+        if (slug === 'a') throw new Error('first frame unavailable');
+        return { frame: { ...frame(slug), meta: { devicePubkey: `pk-${slug}` } } };
+      },
+    });
+    const r = await deployHive(spec({ queen: { placement: 'colocated' } }), 'ws', deps);
+    expect(r.members.find((member) => member.slug === 'a')?.error).toMatch(/first frame unavailable/);
+    expect(deps.queenHomes).toEqual([{ potId: 'h1', workspaceId: 'ws', devicePubkey: 'pk-b' }]);
   });
 
   it('dedicated without deployControlFrame throws', async () => {
@@ -85,6 +115,21 @@ describe('deployHive', () => {
     const r = await deployHive(spec(), 'ws', deps);
     expect(r.members.find((m) => m.slug === 'a')?.error).toMatch(/provision failed/);
     expect(r.members.find((m) => m.slug === 'b')?.frame).toBeDefined();
+  });
+});
+
+describe('Queen home selection', () => {
+  it('uses the dedicated control frame and never a member frame', () => {
+    const control = frame('control');
+    expect(queenHomeFrameForPlacement('dedicated', control, [{ slug: 'a', frame: frame('a') }])).toBe(control);
+    expect(queenHomeFrameForPlacement('local', control, [{ slug: 'a', frame: frame('a') }])).toBeUndefined();
+  });
+
+  it('selects the first successful colocated member and reads only meta.devicePubkey', () => {
+    const selected = frame('b');
+    expect(queenHomeFrameForPlacement('colocated', undefined, [{ slug: 'a', error: 'failed' }, { slug: 'b', frame: selected }])).toBe(selected);
+    expect(frameDevicePubkey({ ...selected, meta: { devicePubkey: 'pk-b' } })).toBe('pk-b');
+    expect(frameDevicePubkey({ ...selected, meta: { devicePubkey: 42 } })).toBeUndefined();
   });
 });
 

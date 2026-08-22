@@ -54,11 +54,11 @@ function memDeps(config: DeploymentConfig | undefined, calls: string[], driverOv
 const cloud: DeploymentConfig = { target: 'latitude', region: 'NYC', size: 'c2-small-x86', provider: { project: 'p' } };
 
 describe('deployHarness', () => {
-  it('runs provision → persist → install → join in order and persists the frame', async () => {
+  it('runs provision → persist → install → join → persist in order and refreshes the frame', async () => {
     const calls: string[] = [];
     const deps = memDeps(cloud, calls);
     const { frame } = await deployHarness('papercup', 'ws', deps);
-    expect(calls).toEqual(['provision', 'persist', 'install', 'join']);
+    expect(calls).toEqual(['provision', 'persist', 'install', 'join', 'persist']);
     expect(frame.id).toBe('sv_1');
     expect(deps.frames.get('ws:papercup')).toBeDefined();
   });
@@ -79,7 +79,20 @@ describe('deployHarness', () => {
     await teardownHarness('papercup', 'ws', deps);
     calls.length = 0;
     await deployHarness('papercup', 'ws', deps);
-    expect(calls).toEqual(['provision', 'persist', 'install', 'join']);
+    expect(calls).toEqual(['provision', 'persist', 'install', 'join', 'persist']);
+  });
+
+  it('persists a device identity added by the headless join hook', async () => {
+    const calls: string[] = [];
+    const driver = fakeDriver(calls);
+    driver.join = async (frame) => {
+      calls.push('join');
+      frame.meta = { ...(frame.meta ?? {}), devicePubkey: 'pk-joined' };
+    };
+    const deps = memDeps(cloud, calls, driver);
+    await deployHarness('papercup', 'ws', deps);
+    expect(deps.frames.get('ws:papercup')?.meta?.devicePubkey).toBe('pk-joined');
+    expect(calls).toEqual(['provision', 'persist', 'install', 'join', 'persist']);
   });
 
   // DEP-4 (P-020): when selectAccount returns an account-augmented config, the

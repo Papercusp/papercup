@@ -52,6 +52,8 @@ export interface HiveDeployDeps {
   /** Deploy/teardown the dedicated Queen control frame (only used for `dedicated`). */
   deployControlFrame?: (potId: string, workspaceId: string, deployment: DeploymentConfig) => Promise<Frame>;
   teardownControlFrame?: (potId: string, workspaceId: string) => Promise<{ destroyed: boolean }>;
+  /** Persist the actual joined frame identity as the Hive's Queen home. */
+  recordQueenHome?: (potId: string, workspaceId: string, devicePubkey: string) => Promise<void>;
   log?: (level: LogLevel, msg: string) => void;
 }
 
@@ -68,6 +70,27 @@ export interface HiveDeployResult {
 }
 
 const placementOf = (spec: HiveDeploySpec): QueenPlacement => spec.queen?.placement ?? 'local';
+
+/**
+ * Pick the frame that owns the Queen for a completed deployment. Colocated has
+ * no separate control frame, so the first successfully deployed member in the
+ * caller's deterministic order owns the Queen.
+ */
+export function queenHomeFrameForPlacement(
+  placement: QueenPlacement,
+  controlFrame: Frame | undefined,
+  members: readonly HiveMemberResult[],
+): Frame | undefined {
+  if (placement === 'dedicated') return controlFrame;
+  if (placement === 'colocated') return members.find((member) => member.frame)?.frame;
+  return undefined;
+}
+
+/** The headless join hook stores the runtime identity in Frame.meta. */
+export function frameDevicePubkey(frame: Frame | undefined): string | undefined {
+  const value = frame?.meta?.devicePubkey;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
 
 /**
  * Deploy a Hive to a Swarm: place the Queen, then deploy each member's execution.
@@ -102,6 +125,14 @@ export async function deployHive(
       members.push({ slug, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) });
       deps.log?.('error', `[hive] ${spec.potId} member ${slug} failed: ${members[members.length - 1].error}`);
     }
+  }
+
+  const queenFrame = queenHomeFrameForPlacement(placement, controlFrame, members);
+  const queenHomePubkey = frameDevicePubkey(queenFrame);
+  if (queenFrame && !queenHomePubkey) {
+    deps.log?.('warn', `[hive] ${spec.potId} ${placement} Queen frame ${queenFrame.id} joined without a device pubkey; home not recorded`);
+  } else if (queenHomePubkey) {
+    await deps.recordQueenHome?.(spec.potId, workspaceId, queenHomePubkey);
   }
   return { potId: spec.potId, members, controlFrame, queenPlacement: placement };
 }
@@ -285,6 +316,9 @@ export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => vo
       await persistControlFrame(potId, workspaceId, frame);
       await driver.install(frame, deployment, ctx);
       await driver.join(frame, deployment, ctx);
+      // join hooks mint the frame's runtime device identity in Frame.meta. Refresh
+      // the durable handle after join so teardown/restart retains that identity.
+      await persistControlFrame(potId, workspaceId, frame);
       return frame;
     },
     async teardownControlFrame(potId, workspaceId) {
@@ -295,6 +329,11 @@ export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => vo
       await driver.teardown(frame, config, ctxFor(potId, workspaceId));
       await clearControlFrame(potId, workspaceId);
       return { destroyed: true };
+    },
+    async recordQueenHome(potId, workspaceId, devicePubkey) {
+      const { setQueenHomePubkey } = await import('../hive-settings-store');
+      await setQueenHomePubkey(workspaceId, potId, devicePubkey);
+      log?.('info', `[hive] ${potId} Queen home recorded (${devicePubkey.slice(0, 12)}…)`);
     },
   };
 }

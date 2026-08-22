@@ -104,6 +104,10 @@ export async function deployHarness(
   try {
     await driver.install(frame, config, ctx);
     await driver.join(frame, config, ctx);
+    // The headless join hook records the runtime device identity in Frame.meta.
+    // Refresh the durable handle after join while retaining the pre-install
+    // snapshot above as the billing-leak safety net.
+    await deps.persistFrame(slug, workspaceId, frame);
   } catch (err) {
     deps.log?.('error', `[deploy] ${slug} install/join failed — frame ${frame.id} left provisioned for retry/teardown: ${(err as Error).message}`);
     throw err;
