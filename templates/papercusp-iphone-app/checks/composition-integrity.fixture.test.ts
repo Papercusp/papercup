@@ -58,6 +58,32 @@ describe.skipIf(closure.kind === "materialized")(
       ]);
     });
 
+    it("rejects a placeholder answer that decides nothing", () => {
+      // EI-21113490718061966: a non-empty-string rule accepted "unknown" for
+      // every decision point, so the answer record read GREEN while nothing
+      // was decided. Each of these must be REJECTED.
+      for (const placeholder of ["unknown", "TBD", "n/a", "todo", "-", "???"]) {
+        const answers: Record<string, string> = {
+          ...reference.composition.decisionPointAnswers,
+          "papercusp-iphone-shell:iphone-release": placeholder,
+        };
+        expect(validateDecisionPointAnswers(manifests, answers)).toEqual([
+          `composition.decisionPointAnswers.papercusp-iphone-shell:iphone-release: placeholder answer "${placeholder}" does not decide this point`,
+        ]);
+      }
+    });
+
+    it("accepts a short but real answer", () => {
+      // Calibration: the placeholder rule must not reject a genuine terse
+      // answer, or the case above would pass with a rule that rejects
+      // everything.
+      const answers: Record<string, string> = {
+        ...reference.composition.decisionPointAnswers,
+        "papercusp-iphone-shell:iphone-release": "Rust 1.88; no TestFlight.",
+      };
+      expect(validateDecisionPointAnswers(manifests, answers)).toEqual([]);
+    });
+
     it("rejects a substituted or incomplete dependency closure", () => {
       expect(validateIphoneAppComposition(manifests.slice(0, 2))).toContain(
         "composition.templateYamls: must resolve exactly papercusp-iphone-app, papercusp-mobile-base, papercusp-iphone-shell",
