@@ -44,16 +44,19 @@ function tmpDir(prefix: string): string {
 }
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair. */
-async function validAnnounce(logCoreKey: string): Promise<SignedAnnounce> {
+async function validAnnounce(
+  logCoreKey: string,
+  options: { login?: string; userId?: number; gistId?: string } = {},
+): Promise<SignedAnnounce> {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
     .subarray(-32)
     .toString('base64');
   const body = {
     device_pubkey: rawPub,
-    github_user_id: 4242,
-    github_login: 'alice',
-    attestation_gist_id: 'gist-test',
+    github_user_id: options.userId ?? 4242,
+    github_login: options.login ?? 'alice',
+    attestation_gist_id: options.gistId ?? 'gist-test',
     log_core_key: logCoreKey,
   };
   return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
@@ -153,6 +156,109 @@ describe('boot pending-retry loop (D-006)', () => {
     },
     5000,
   );
+
+  it('bounds each pending-retry pass and round-robins across pending peers', async () => {
+    const retryTimer = capturePendingRetryTimer();
+    const calls: string[] = [];
+    const verifyBindingOverride = async (
+      _devicePubkey: string,
+      _githubLogin: string,
+      _githubUserId: number,
+      attestationGistId: string,
+    ): Promise<'verified' | 'pending' | 'fail'> => {
+      calls.push(attestationGistId);
+      return 'pending';
+    };
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-pend-batch-'),
+      workspaceId: 'ws-pend-batch',
+      harnessSlug: 'pend-batch',
+      mergePollMs: 0,
+      pendingRetryMs: 50,
+      pendingRetryBatchSize: 2,
+      pendingRetrySetTimeout: retryTimer.setTimeout,
+      pendingRetryClearTimeout: retryTimer.clearTimeout,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride,
+    });
+    cleanups.push(() => handle.close());
+
+    for (let i = 1; i <= 5; i++) {
+      const frame = await validAnnounce(String(i).repeat(64), {
+        login: `p${i}`,
+        gistId: `gist-${i}`,
+      });
+      const decision = await handle.onAnnounce(frame);
+      expect(decision).toEqual({ admit: false, reason: 'pending' });
+    }
+    calls.length = 0; // discard the initial announce checks
+
+    await retryTimer.run();
+    expect(calls).toEqual(['gist-1', 'gist-2']);
+
+    calls.length = 0;
+    await retryTimer.run();
+    expect(calls).toEqual(['gist-3', 'gist-4']);
+
+    calls.length = 0;
+    await retryTimer.run();
+    expect(calls).toEqual(['gist-5', 'gist-1']);
+  });
+
+  it('advances the pending-retry cursor when a peer check throws', async () => {
+    const retryTimer = capturePendingRetryTimer();
+    const calls: string[] = [];
+    let phase: 'admit' | 'retry' = 'admit';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const verifyBindingOverride = async (
+        _devicePubkey: string,
+        _githubLogin: string,
+        _githubUserId: number,
+        attestationGistId: string,
+      ): Promise<'verified' | 'pending' | 'fail'> => {
+        calls.push(attestationGistId);
+        if (phase === 'retry' && attestationGistId === 'gist-1') {
+          throw new Error('GitHub API timeout');
+        }
+        return 'pending';
+      };
+
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpDir('mb-pend-batch-throw-'),
+        workspaceId: 'ws-pend-batch-throw',
+        harnessSlug: 'pend-batch-throw',
+        mergePollMs: 0,
+        pendingRetryMs: 50,
+        pendingRetryBatchSize: 1,
+        pendingRetrySetTimeout: retryTimer.setTimeout,
+        pendingRetryClearTimeout: retryTimer.clearTimeout,
+        loadRevokedOverride: async () => new Set(),
+        verifyBindingOverride,
+      });
+      cleanups.push(() => handle.close());
+
+      for (let i = 1; i <= 3; i++) {
+        const frame = await validAnnounce(String(i).repeat(64), {
+          login: `p${i}`,
+          gistId: `gist-${i}`,
+        });
+        await handle.onAnnounce(frame);
+      }
+      calls.length = 0;
+      phase = 'retry';
+
+      await retryTimer.run();
+      expect(calls).toEqual(['gist-1']);
+
+      calls.length = 0;
+      await retryTimer.run();
+      expect(calls).toEqual(['gist-2']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 
   it(
     "a 'fail' peer (after initial 'pending') is never admitted",

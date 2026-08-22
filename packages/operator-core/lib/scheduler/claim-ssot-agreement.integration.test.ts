@@ -58,6 +58,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
+import { DEFAULT_CLAIM_SPEC } from './claim-spec';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
@@ -263,6 +264,42 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.plan_items, harness_shared.plan_decisions,
                        harness_shared.harness_plans, harness_shared.plan_item_claims`;
+});
+
+describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () => {
+  it('permits exactly one concurrent winner across bounded feature and issue claim transactions', async () => {
+    const gn = await import('./get-next');
+    const payload = { plan_item: { plan_slug: 'cross-family-race', item_id: 'P-RACE', harness_slug: H } };
+    await seed('F-CROSS-FAMILY', { kind: 'feature', payload });
+    await seed('EI-CROSS-FAMILY', { kind: 'bug', payload });
+
+    for (let round = 0; round < 20; round += 1) {
+      await db.sql`
+        UPDATE harness_shared.work_items
+           SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL
+         WHERE feature_id IN ('F-CROSS-FAMILY', 'EI-CROSS-FAMILY')`;
+
+      const [feature, issue] = await Promise.all([
+        gn.getNextWorkItem(
+          DEFAULT_CLAIM_SPEC,
+          { assignee: `feature-racer-${round}` },
+          { harness: H, workspaceId: WS, states: ['open'] },
+        ),
+        wi.claimNextIssueWorkItem({ harness: H, assignee: `issue-racer-${round}` }, WS),
+      ]);
+
+      const claimedIds = [feature?.workItem.id, issue?.id].filter((id): id is string => Boolean(id));
+      expect(claimedIds).toHaveLength(1);
+
+      const rows = await db.sql<{ feature_id: string; taken_by: string | null }[]>`
+        SELECT feature_id, taken_by
+          FROM harness_shared.work_items
+         WHERE feature_id IN ('F-CROSS-FAMILY', 'EI-CROSS-FAMILY')
+         ORDER BY feature_id`;
+      expect(rows.filter((row) => row.taken_by)).toHaveLength(1);
+      expect(rows.find((row) => row.taken_by)?.feature_id).toBe(claimedIds[0]);
+    }
+  }, 120_000);
 });
 
 // @covers INV-06

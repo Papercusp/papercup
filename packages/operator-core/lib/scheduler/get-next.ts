@@ -60,6 +60,7 @@ import {
   schedulerMaintainedReadyEnabled,
   schedulerIssuesClaimableEnabled,
   claimNextIssueWorkItem,
+  guardPlanItemSiblingClaim,
   armWorkItemHolderInterests,
   featureRowToWorkItem,
   familyOf,
@@ -2196,7 +2197,7 @@ export async function getNextWorkItem(
         const floors = claimFloorsWhereSql(tx, floorOpts);
         const order = compileRank(tx, spec, bee);
         const filter = compileFilter(tx, filterNode);
-        return tx<FeatureRowDb[]>`
+        const rows = await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET taken_by = ${bee.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
        WHERE (harness_slug, feature_id) = (
@@ -2209,6 +2210,14 @@ export async function getNextWorkItem(
           FOR UPDATE SKIP LOCKED
        )
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
+        if (!rows[0]) return rows;
+        return (await guardPlanItemSiblingClaim(tx, rows[0], {
+          workspaceId: ws,
+          assignee: bee.assignee,
+          family: 'feature',
+        }))
+          ? rows
+          : [];
       },
       { client: sql, statementTimeoutMs: Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS) },
     );

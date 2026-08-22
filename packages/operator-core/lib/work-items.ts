@@ -701,6 +701,152 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
   authority, closed_ts, goal_id,
   tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents`;
 
+interface PlanItemClaimIdentity {
+  planSlug: string;
+  itemId: string;
+  lockKey: string;
+}
+
+type PlanItemClaimRow = Pick<
+  FeatureRowDb,
+  'feature_id' | 'harness_slug' | 'payload' | 'source_plan_slug' | 'source_plan_item_ids'
+>;
+
+/**
+ * Resolve the canonical plan-item identities carried by a claimed row. The indexed
+ * source columns are authoritative when the pair is complete; older issue rows and
+ * hand-authored fixtures can carry only the payload back-pointer, which remains the
+ * compatibility fallback. Keep this pure and row-local so the claim transaction does
+ * not perform a second lookup on a different connection.
+ */
+function planItemClaimIdentities(row: PlanItemClaimRow, workspaceId: string): PlanItemClaimIdentity[] {
+  const sourcePlanSlug = typeof row.source_plan_slug === 'string' ? row.source_plan_slug.trim() : '';
+  const sourceItemIds = Array.isArray(row.source_plan_item_ids)
+    ? row.source_plan_item_ids
+        .filter((itemId): itemId is string => typeof itemId === 'string')
+        .map((itemId) => itemId.trim())
+        .filter(Boolean)
+    : [];
+
+  let planSlug = sourcePlanSlug;
+  let itemIds = sourceItemIds;
+  if (!planSlug || itemIds.length === 0) {
+    let payload = row.payload;
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload) as unknown;
+      } catch {
+        payload = null;
+      }
+    }
+    const raw =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).plan_item
+        : null;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const plan = (raw as Record<string, unknown>).plan_slug;
+      const item = (raw as Record<string, unknown>).item_id;
+      planSlug = typeof plan === 'string' ? plan.trim() : '';
+      itemIds = typeof item === 'string' && item.trim() ? [item.trim()] : [];
+    } else {
+      planSlug = '';
+      itemIds = [];
+    }
+  }
+
+  if (!planSlug || itemIds.length === 0) return [];
+  return [...new Set(itemIds)].map((itemId) => ({
+    planSlug,
+    itemId,
+    lockKey: `scheduler:plan-item-sibling:${workspaceId}:${planSlug}:${itemId}`,
+  }));
+}
+
+/**
+ * Serialize and validate a provisional self-select claim against all sibling rows
+ * implementing the same canonical plan-item. Both feature and issue claim doors call
+ * this from their bounded transaction, after their row-level SKIP LOCKED UPDATE.
+ *
+ * The advisory locks are deliberately acquired in sorted order. A row can implement
+ * multiple plan-items, and a deterministic order prevents two multi-item claims from
+ * deadlocking each other. The sibling SELECT is a separate READ COMMITTED statement
+ * after the lock acquisition: a concurrent claimant that committed first is therefore
+ * visible to the second claimant, which clears its provisional claim before commit.
+ */
+export async function guardPlanItemSiblingClaim(
+  tx: OrgSql,
+  row: PlanItemClaimRow,
+  opts: { workspaceId: string; assignee: string; family: 'feature' | 'issue' },
+): Promise<boolean> {
+  const identities = planItemClaimIdentities(row, opts.workspaceId).sort((a, b) => a.lockKey.localeCompare(b.lockKey));
+  if (identities.length === 0) return true;
+
+  for (const identity of identities) {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${identity.lockKey}, 0))`;
+  }
+
+  const matches = identities.map(({ planSlug, itemId }) => {
+    const sourceLinkComplete = tx`(
+      NULLIF(btrim(wi.source_plan_slug), '') IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+          FROM unnest(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])) AS source_item(item_id)
+         WHERE btrim(source_item.item_id) <> ''
+      )
+    )`;
+    return tx`(
+      (
+        ${sourceLinkComplete}
+        AND btrim(wi.source_plan_slug) = ${planSlug}
+        AND EXISTS (
+          SELECT 1
+            FROM unnest(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])) AS source_item(item_id)
+           WHERE btrim(source_item.item_id) = ${itemId}
+        )
+      )
+      OR (
+        NOT ${sourceLinkComplete}
+        AND COALESCE(wi.payload, '{}'::jsonb) -> 'plan_item' ->> 'plan_slug' = ${planSlug}
+        AND COALESCE(wi.payload, '{}'::jsonb) -> 'plan_item' ->> 'item_id' = ${itemId}
+      )
+    )`;
+  });
+
+  const sibling = await tx<{ feature_id: string }[]>`
+    SELECT wi.feature_id
+      FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ${opts.workspaceId}
+       AND wi.feature_id <> ${row.feature_id}
+       AND wi.taken_by IS NOT NULL
+       AND btrim(wi.taken_by) <> ''
+       AND lower(btrim(wi.taken_by)) <> 'unassigned'
+       AND wi.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
+       AND (${matches.reduce((acc, match, index) => (index === 0 ? match : tx`${acc} OR ${match}`))})
+     LIMIT 1`;
+  if (sibling.length === 0) return true;
+
+  // The provisional UPDATE and this cleanup share the same transaction. Use the
+  // original relation for feature rows so the hfc DML triggers remain in the path;
+  // issue rows are owned directly by the unified work_items base table.
+  if (opts.family === 'feature') {
+    await tx`
+      UPDATE harness_shared.harness_features_consolidated
+         SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
+       WHERE workspace_id = ${opts.workspaceId}
+         AND harness_slug = ${row.harness_slug}
+         AND feature_id = ${row.feature_id}
+         AND taken_by = ${opts.assignee}`;
+  } else {
+    await tx`
+      UPDATE harness_shared.work_items
+         SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
+       WHERE workspace_id = ${opts.workspaceId}
+         AND feature_id = ${row.feature_id}
+         AND taken_by = ${opts.assignee}`;
+  }
+  return false;
+}
+
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
   harness?: string;
@@ -6329,7 +6475,8 @@ export async function claimNextIssueWorkItem(
   // fragment below is compiled against the TRANSACTION client `tx` — not the outer
   // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
   const rows = await boundedOrgTxn(
-    (tx) => tx<FeatureRowDb[]>`
+    async (tx) => {
+      const rows = await tx<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
        SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
      WHERE (workspace_id, harness_slug, feature_id) = (
@@ -6440,7 +6587,16 @@ export async function claimNextIssueWorkItem(
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )
-    RETURNING ${tx.unsafe(FEATURE_COLS)}`,
+    RETURNING ${tx.unsafe(FEATURE_COLS)}`;
+      if (!rows[0]) return rows;
+      return (await guardPlanItemSiblingClaim(tx, rows[0], {
+        workspaceId: issueWs,
+        assignee: filter.assignee,
+        family: 'issue',
+      }))
+        ? rows
+        : [];
+    },
     { client: sql },
   );
   // RETURNING the base row uses the feature column shape; the row IS an issue-family row, so

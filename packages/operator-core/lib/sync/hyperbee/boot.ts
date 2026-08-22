@@ -427,6 +427,14 @@ export interface BootHarnessOpts {
    */
   pendingRetryMs?: number;
   /**
+   * Max pending peers whose channel-2 binding is retried in ONE
+   * `retryPendingOnce()` pass. Peers are swept ROUND-ROBIN across passes from
+   * a persistent log-key cursor, so the GitHub API call rate is bounded
+   * independently of the pending-peer count. Non-finite / non-positive values
+   * fall back to the default; there is deliberately no unbounded setting.
+   */
+  pendingRetryBatchSize?: number;
+  /**
    * Test seam for the pending-retry timer. Production uses global setTimeout /
    * clearTimeout. Tests can capture the callback and invoke one retry tick
    * directly, avoiding wall-clock sleeps around real corestore I/O.
@@ -4288,8 +4296,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // peer the decider is re-run with a fresh sig check; on 'verified' the peer
   // is admitted normally; on conclusive failure (binding_invalid/bad_sig/revoked)
   // or once the boot-scoped grace window has passed, the peer is removed
-  // (announce_rejected). `.unref()`'d so the timer never keeps the process alive
-  // and cleared in `close()` alongside the merge timer.
+  // (announce_rejected). Each pass handles at most `pendingRetryBatchSize`
+  // peers, round-robin by log key, so a large pending set cannot turn the 5s
+  // cadence into an unbounded GitHub API sweep. `.unref()`'d so the timer never
+  // keeps the process alive and cleared in `close()` alongside the merge timer.
   //
   // RE-ENTRANCY (audit P-022): sequential rescheduling, NOT a bare
   // setInterval(async …) — the old interval could fire a second tick while the
@@ -4298,6 +4308,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const pendingRetryMs = Number.isFinite(opts.pendingRetryMs as number)
     ? (opts.pendingRetryMs as number)
     : DEFAULT_PENDING_RETRY_MS;
+  // Keep the 5s retry cadence useful for small pending sets while bounding the
+  // API rate for large sets. A non-finite / non-positive value is NOT
+  // "unbounded" — it falls back to the fixed default, because unbounded is
+  // precisely the defect this guard prevents.
+  const DEFAULT_PENDING_RETRY_BATCH_SIZE = 4;
+  const pendingRetryBatchSize =
+    Number.isFinite(opts.pendingRetryBatchSize as number) && (opts.pendingRetryBatchSize as number) > 0
+      ? Math.max(1, Math.floor(opts.pendingRetryBatchSize as number))
+      : DEFAULT_PENDING_RETRY_BATCH_SIZE;
+  /**
+   * Round-robin cursor for pending retries. The next pass starts at the
+   * smallest pending log key STRICTLY GREATER than this key, wrapping to the
+   * smallest key when the tail is exhausted. A key (rather than an index)
+   * keeps the walk stable when peers are admitted or removed between passes.
+   */
+  let pendingRetryCursor: string | null = null;
   const pendingRetrySetTimeout = opts.pendingRetrySetTimeout ?? setTimeout;
   const pendingRetryClearTimeout = opts.pendingRetryClearTimeout ?? clearTimeout;
   let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4317,9 +4343,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function retryPendingOnce(): Promise<void> {
     if (stopped || pendingPeers.size === 0) return;
     const nowMs = Date.now();
-    // Snapshot keys to iterate safely while the map mutates.
-    const keys = [...pendingPeers.keys()];
-    for (const logCoreKey of keys) {
+    // Snapshot + sort keys to iterate safely while the map mutates and to make
+    // the persistent cursor deterministic across peers joining/leaving.
+    const keys = [...pendingPeers.keys()].sort();
+    if (keys.length === 0) return;
+    let startIdx = 0;
+    if (pendingRetryCursor !== null) {
+      const found = keys.findIndex((logCoreKey) => logCoreKey > pendingRetryCursor!);
+      startIdx = found === -1 ? 0 : found;
+    }
+    const take = Math.min(pendingRetryBatchSize, keys.length);
+    for (let i = 0; i < take; i++) {
+      const logCoreKey = keys[(startIdx + i) % keys.length]!;
+      // Advance on selection, not on success, so a thrown/transient verify
+      // still makes forward progress instead of pinning the sweep forever.
+      pendingRetryCursor = logCoreKey;
       const entry = pendingPeers.get(logCoreKey);
       if (!entry) continue; // removed between snapshot + loop body
       // Grace-window expiry: remove + reject, don't retry forever.
