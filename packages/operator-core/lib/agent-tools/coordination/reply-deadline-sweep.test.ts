@@ -76,6 +76,7 @@ function row(
     msg_id: string;
     from_id: string;
     to_ids: unknown;
+    audience: unknown;
     summary: string | null;
     body: string | null;
     plan_slug: string | null;
@@ -89,6 +90,7 @@ function row(
     msg_id: 'm1',
     from_id: 'su-sender',
     to_ids: ['su-recipient'],
+    audience: [],
     summary: 'original summary',
     body: null,
     plan_slug: null,
@@ -467,6 +469,27 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.threadRows = [threadRow()];
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
       expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+    });
+
+    it('auto-resolves quietly when an audience selector reached zero live recipients', async () => {
+      h.rows = [
+        row({
+          msg_id: 'zero-audience',
+          to_ids: [],
+          audience: ['@file:packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts'],
+        }),
+      ];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 1, superseded: 0, truncated: false });
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const [, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(opts.to).toEqual(['su-sender']);
+      expect(opts.related_msg_id).toBe('zero-audience');
+      expect(opts.summary).toContain('zero live recipients');
+      expect(opts.body).toContain('@file:packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts');
+      expect(wakeRecipients).not.toHaveBeenCalled();
     });
   });
 

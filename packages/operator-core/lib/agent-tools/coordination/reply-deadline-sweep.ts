@@ -92,6 +92,10 @@ export interface DueReplyDeadline {
   msgId: string;
   from: string;
   to: string[];
+  /** Original audience selector provenance. An empty expanded `to` plus a
+   *  non-empty audience means the message reached no live recipient, so no
+   *  reply could ever arrive. */
+  audience: string[];
   summary?: string;
   planSlug?: string;
   /** How overdue the deadline is, for the nudge prose. */
@@ -111,6 +115,7 @@ interface DueReplyDeadlineRow {
   msg_id: string;
   from_id: string;
   to_ids: unknown;
+  audience: unknown;
   summary: string | null;
   body: string | null;
   plan_slug: string | null;
@@ -133,6 +138,7 @@ async function findDueReplyDeadlines(nowMs: number, limit: number): Promise<DueR
            e1.msg_id,
            e1.body->>'from' AS from_id,
            e1.body->'to' AS to_ids,
+           e1.body->'audience' AS audience,
            e1.body->>'summary' AS summary,
            e1.body->>'body' AS body,
            e1.body->>'plan_slug' AS plan_slug,
@@ -168,12 +174,16 @@ async function findDueReplyDeadlines(nowMs: number, limit: number): Promise<DueR
       const to = Array.isArray(r.to_ids)
         ? (r.to_ids as unknown[]).filter((t): t is string => typeof t === 'string')
         : [];
+      const audience = Array.isArray(r.audience)
+        ? (r.audience as unknown[]).filter((t): t is string => typeof t === 'string')
+        : [];
       const sentAtMs = Number(r.sent_at_ms);
       return {
         workspaceId: r.workspace_id,
         msgId: r.msg_id,
         from: r.from_id,
         to,
+        audience,
         summary: r.summary ?? undefined,
         body: r.body ?? undefined,
         expectEffect: parseEffectStamp(r.expect_effect) ?? undefined,
@@ -425,6 +435,28 @@ export async function runReplyDeadlineSweepOnce(
   let superseded = 0;
   for (const d of batch) {
     try {
+      // EI-21159174538438156: audience selectors are persisted on the envelope
+      // before expansion discards them. If the expanded `to` list is empty but
+      // audience provenance is present, the send reached nobody live, so there
+      // is no recipient who could answer. Retire the deadline with a quiet
+      // related-message marker; otherwise this row would alarm on every sweep.
+      if (d.to.length === 0 && d.audience.length > 0) {
+        await sendMessage(RECONCILE_IDENTITY, {
+          to: [d.from],
+          summary:
+            `✅ reply deadline auto-resolved: audience ${d.audience.join(', ')} resolved to zero live recipients ` +
+            `— no reply was possible (${d.summary ?? d.msgId})`,
+          body:
+            `Your message ${d.msgId} had a reply deadline, but its audience ` +
+            `${d.audience.join(', ')} resolved to zero live recipients. The message reached nobody live, ` +
+            'so no recipient could answer and no follow-up alarm is needed.',
+          plan_slug: d.planSlug,
+          related_msg_id: d.msgId,
+        });
+        autoResolved += 1;
+        continue;
+      }
+
       // EI-18689956983040659: check FIRST whether the sender superseded their
       // own ask — cheapest check (no auto-ref detection needed) and the most
       // direct signal, since it doesn't depend on the recipient doing

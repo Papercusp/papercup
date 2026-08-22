@@ -132,7 +132,9 @@ beforeAll(async () => {
   // cross-family view; this fixture only needs feature_id/status to exist.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.work_items (
-      workspace_id text NOT NULL DEFAULT 'default', feature_id text NOT NULL, status text
+      workspace_id text NOT NULL DEFAULT 'default', feature_id text NOT NULL, status text,
+      harness_slug text NOT NULL DEFAULT 'papercusp', condition_key text,
+      taken_by text, last_progress_at timestamptz
     )`);
   hb.sql = rootSql;
 }, 90_000);
@@ -619,6 +621,59 @@ describe('await-event store (PG)', () => {
     expect(await listVerifiedWaitTakeoversForSubscribers(['sub-a'])).toHaveLength(1);
     await rootSql`DELETE FROM harness_shared.work_items WHERE feature_id = 'WI-39333'`;
     expect(await listVerifiedWaitTakeoversForSubscribers(['sub-a'])).toHaveLength(1);
+  });
+
+  // EI-21158111951285029: timeout_verification stores producer/owner lineage at
+  // fire time. A later condition-singleton owner makes an old ownerless verdict
+  // historical even when the producer probe has not emitted a newer marker.
+  it('suppresses a stale ownerless verdict after the live gate singleton moves owners', async () => {
+    const stalled = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:papercusp' });
+    const result = {
+      classification: 'absent',
+      nextAction: 'wake-owner-or-takeover',
+      producer: { kind: 'green-checkpoint', id: '4bd9c405' },
+      owner: { ownerId: 'su-old', workItemId: null },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+    };
+    const certificate = {
+      version: 1,
+      producer: result.producer,
+      owner: result.owner,
+      issuedAtMs: 1,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+      expectedCadenceMs: 500,
+      verificationDeadlineMs: 40,
+      details: { pipeline: 'papercusp', runId: '4bd9c405' },
+    };
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'verified-timeout',
+             producer_health = ${JSON.stringify(certificate)}::jsonb,
+             timeout_verification = ${JSON.stringify(result)}::jsonb
+       WHERE id = ${stalled.id}
+    `;
+    await rootSql`
+      INSERT INTO harness_shared.work_items
+        (feature_id, status, harness_slug, condition_key, taken_by, last_progress_at)
+      VALUES ('WI-40086', 'open', 'papercusp', 'gate-red-streak:papercusp', 'su-current', to_timestamp(0.001))
+    `;
+
+    const unchangedProducer = async (cert: ProducerHealthCertificate) => ({
+      checkedAtMs: cert.verificationDeadlineMs,
+      producerPresent: true,
+      lastProgressAtMs: cert.lastProgressAtMs,
+      lastFireAtMs: cert.lastFireAtMs,
+      completedAtMs: null,
+    });
+    expect(
+      await listVerifiedWaitTakeoversForSubscribers(['sub-a'], 24, {
+        observeProducer: unchangedProducer,
+      }),
+    ).toEqual([]);
   });
 
   // ── EI-9000 (fleet-reliability-verification-2026-07-10 P-005): live-awaiter counts ──

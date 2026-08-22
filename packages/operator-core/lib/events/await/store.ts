@@ -598,6 +598,82 @@ export interface VerifiedWaitTakeoverAlert {
 export interface VerifiedWaitTakeoverReadDeps {
   /** Test seam; production uses the checkpoint adapter's live producer probe. */
   observeProducer?: (certificate: ProducerHealthCertificate) => Promise<ProducerHealthObservation>;
+  /** Test seam for the condition singleton read used to reject stale lineage. */
+  readCurrentConditionOwners?: (
+    certificate: ProducerHealthCertificate,
+  ) => Promise<CurrentConditionOwner[] | null>;
+}
+
+interface CurrentConditionOwner {
+  workItemId: string;
+  ownerId: string | null;
+  lastProgressAtMs: number | null;
+}
+
+function conditionKeyForCertificate(certificate: ProducerHealthCertificate): {
+  harnessSlug: string;
+  conditionKey: string;
+} | null {
+  if (certificate.producer.kind !== 'green-checkpoint') return null;
+  const details = certificate.details;
+  const pipeline = details && typeof details.pipeline === 'string' ? details.pipeline.trim() : '';
+  if (!pipeline) return null;
+  return { harnessSlug: pipeline, conditionKey: `gate-red-streak:${pipeline}` };
+}
+
+function timestampMs(value: unknown): number | null {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const ms = new Date(String(value)).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Read the current condition singleton behind a green-checkpoint producer.
+ *
+ * `timeout_verification` is immutable history, while the condition singleton is
+ * the live owner of the failure. A different live owner makes an older
+ * wake-owner-or-takeover verdict historical even when the producer probe itself
+ * has not emitted a newer progress marker. Fail open when this auxiliary read is
+ * unavailable; the producer freshness probe remains the authoritative fallback.
+ */
+async function readCurrentConditionOwners(
+  certificate: ProducerHealthCertificate,
+): Promise<CurrentConditionOwner[] | null> {
+  const key = conditionKeyForCertificate(certificate);
+  if (!key) return [];
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql`
+      SELECT feature_id, taken_by, last_progress_at
+        FROM harness_shared.work_items
+       WHERE harness_slug = ${key.harnessSlug}
+         AND condition_key = ${key.conditionKey}
+         AND status <> ALL(${ANY_FAMILY_TERMINAL_STATES}::text[])
+    `;
+    return (rows as any[]).map((row) => ({
+      workItemId: String(row.feature_id),
+      ownerId: row.taken_by == null ? null : String(row.taken_by),
+      lastProgressAtMs: timestampMs(row.last_progress_at),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function conditionOwnerSupersedesAlert(
+  alert: Pick<VerifiedWaitTakeoverAlert, 'checkedAtMs' | 'owner'>,
+  current: CurrentConditionOwner,
+): boolean {
+  return (
+    current.workItemId !== (alert.owner.workItemId ?? '') ||
+    current.ownerId !== alert.owner.ownerId ||
+    (current.lastProgressAtMs != null && current.lastProgressAtMs > alert.checkedAtMs)
+  );
 }
 
 function laterThan(current: number | null, previous: number | null): boolean {
@@ -704,6 +780,37 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   );
   if (actionable.length === 0) return [];
 
+  const readConditionOwners = deps.readCurrentConditionOwners ?? readCurrentConditionOwners;
+  const conditionOwnerReads = new Map<string, Promise<CurrentConditionOwner[] | null>>();
+  const currentConditionOwners = (certificate: ProducerHealthCertificate) => {
+    const key = JSON.stringify(conditionKeyForCertificate(certificate));
+    const existing = conditionOwnerReads.get(key);
+    if (existing) return existing;
+    const pending = readConditionOwners(certificate).catch(() => null);
+    conditionOwnerReads.set(key, pending);
+    return pending;
+  };
+
+  // EI-21158111951285029: the producer id/owner embedded in a timeout verdict is
+  // historical. Reconcile it with the live condition singleton before surfacing a
+  // takeover remedy, otherwise a monitor can seize an old ownerless run while the
+  // current gate-red-streak item is already owned and progressing elsewhere.
+  const lineageChecked = await Promise.all(
+    actionable.map(async ({ alert, certificate }) => {
+      if (!certificate) return { alert, certificate };
+      const owners = await currentConditionOwners(certificate);
+      if (!owners || !owners.some((current) => conditionOwnerSupersedesAlert(alert, current))) {
+        return { alert, certificate };
+      }
+      return null;
+    }),
+  );
+  const lineageActionable = lineageChecked.filter(
+    (entry): entry is { alert: VerifiedWaitTakeoverAlert; certificate: ProducerHealthCertificate | null } =>
+      entry !== null,
+  );
+  if (lineageActionable.length === 0) return [];
+
   const observeProducer = deps.observeProducer ?? observeCheckpointProducer;
   const observations = new Map<string, Promise<ProducerHealthObservation | null>>();
   const currentObservation = (certificate: ProducerHealthCertificate) => {
@@ -716,7 +823,7 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   };
 
   const fresh = await Promise.all(
-    actionable.map(async ({ alert, certificate }) => {
+    lineageActionable.map(async ({ alert, certificate }) => {
       // Certificates were added after the original timeout projection. Keep
       // legacy rows visible because there is no authoritative producer to probe.
       if (!certificate) return alert;
