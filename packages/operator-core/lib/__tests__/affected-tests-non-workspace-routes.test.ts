@@ -190,3 +190,129 @@ describe('affected-tests: the templates/ route (WI-37840)', () => {
     }
   });
 });
+
+/**
+ * EI-21112293570332409 — the templates/ route must reach EVERY workspace that tests
+ * templates/, not just the first one anybody happened to route.
+ *
+ * The WI-37840 block above routes templates/ to operator-core because three guards live
+ * there, and ratchets on that hand-written list. `libs/generic/template-kit` later grew
+ * `templates-dir.test.ts`, which scans `templates/*​/checks/*` to enforce that a check
+ * naming a sibling template routes the path through the tri-state resolver
+ * `checks/closure-manifests.ts` — the recurrence guard for EI-21110451200329856, where
+ * BOTH official mobile app roots shipped checks dereferencing `../../papercusp-<id>`
+ * paths that exist only in this repo and so were RED in every materialized app.
+ *
+ * Nothing forced a route for that new workspace, so it had none. MEASURED 2026-08-22:
+ *
+ *   --changed-paths libs/generic/template-kit/src/templates-dir.test.ts
+ *       -> AFFECTED_WS @papercusp/template-kit + 5 fallback   (control: selection works)
+ *   --changed-paths templates/papercusp-android-app/checks/composition-integrity.test.ts
+ *       -> 5 fallback workspaces, template-kit ABSENT         (the guard did NOT run)
+ *
+ * i.e. reintroducing the exact defect the guard exists to catch left scoped
+ * `test:affected` green; it would have surfaced only at the green-checkpoint hours later.
+ *
+ * The first three cases pin that specific route. The fourth is the one that matters for
+ * the CLASS: it DERIVES the set of workspaces that own a templates/-scanning test and
+ * asserts each is reachable, so the next such test added in an unrouted workspace fails
+ * here instead of silently not running. A hand-maintained list is what missed this.
+ */
+describe('affected-tests: templates/ reaches every workspace that tests it (EI-21112293570332409)', () => {
+  const TEMPLATE_KIT = '@papercusp/template-kit';
+  const KIT_GUARD = 'libs/generic/template-kit/src/templates-dir.test.ts';
+  /** A templates/ path used as the probe subject; any path under templates/ routes alike. */
+  const TEMPLATES_PROBE = 'templates/papercusp-ui/template.yaml';
+
+  it('routes a templates/ check change to the workspace holding the sibling-path guard', () => {
+    expect(
+      affectedFor(['templates/papercusp-android-app/checks/composition-integrity.test.ts']),
+      'A templates/** change no longer selects @papercusp/template-kit, so re-introducing ' +
+        'an unresolved `../../papercusp-<id>` sibling path in a shipped check would pass ' +
+        'scoped test:affected green. Check NON_WORKSPACE_PATH_ROUTES in ' +
+        'scripts/affected-tests.mjs.',
+    ).toContain(TEMPLATE_KIT);
+  });
+
+  it('CONTROL: the route is not a catch-all — an unrelated path does not select it', () => {
+    // Without this, the case above would pass just as happily if the route had become a
+    // catch-all selecting every workspace for every path.
+    expect(affectedFor(['apps/operator/lib/release/deploy-cli.ts'])).not.toContain(TEMPLATE_KIT);
+  });
+
+  it('THE RATCHET: the sibling-path recurrence guard still lives in the routed workspace', () => {
+    expect(
+      existsSync(resolve(REPO_ROOT, KIT_GUARD)),
+      `${KIT_GUARD} is gone or moved. The templates/ -> ${TEMPLATE_KIT} route exists ` +
+        'precisely because that guard lives there — move the route with it, or the route ' +
+        'silently stops protecting anything.',
+    ).toBe(true);
+  });
+
+  it('THE DERIVED RATCHET: every workspace owning a templates/-scanning test is selected', () => {
+    const ls = spawnSync('git', ['ls-files', '*.test.ts'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    expect(ls.status, `git ls-files failed:\n${ls.stderr}`).toBe(0);
+
+    const candidates = (ls.stdout ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      // Tests INSIDE templates/ are shipped content run in the materialized app, not here.
+      .filter((l) => l.endsWith('.test.ts') && !l.startsWith('templates/'));
+
+    // Two-part signature: names the templates dir as a path segment AND reads the
+    // filesystem. Both idioms in the tree are covered — a relative climb
+    // (`../../../../templates`) and a join off a repo root (`join(ROOT, 'templates')`).
+    const NAMES_TEMPLATES_DIR = /['"]templates['"]|(?:\.\.\/)+templates|\/templates['"]/;
+    const READS_FS = /readdirSync|existsSync|readFileSync/;
+
+    const owners = new Set<string>();
+    for (const rel of candidates) {
+      const abs = resolve(REPO_ROOT, rel);
+      if (!existsSync(abs)) continue;
+      const src = readFileSync(abs, 'utf8');
+      if (!NAMES_TEMPLATES_DIR.test(src) || !READS_FS.test(src)) continue;
+
+      // Owning workspace = nearest package.json at or above the file.
+      let dir = dirname(abs);
+      let owner: string | null = null;
+      while (dir.startsWith(REPO_ROOT) && dir.length >= REPO_ROOT.length) {
+        const pkg = resolve(dir, 'package.json');
+        if (existsSync(pkg)) {
+          const name = JSON.parse(readFileSync(pkg, 'utf8')).name;
+          // The repo root package is not a workspace; keep climbing past nothing above it.
+          if (typeof name === 'string' && dir !== REPO_ROOT) owner = name;
+          break;
+        }
+        const up = dirname(dir);
+        if (up === dir) break;
+        dir = up;
+      }
+      if (owner) owners.add(owner);
+    }
+
+    // CALIBRATION: if the scan silently stops matching, every assertion below passes
+    // vacuously. Both known owners must be found, or the detector — not the routes — broke.
+    expect(
+      [...owners].sort(),
+      'The templates/-scanning-test scan found neither known owner, so it is no longer ' +
+        'detecting anything and the assertion below would pass vacuously. Fix the ' +
+        'signature (NAMES_TEMPLATES_DIR / READS_FS), do not delete this case.',
+    ).toEqual(expect.arrayContaining([ROUTE_TARGET, TEMPLATE_KIT]));
+
+    const selected = affectedFor([TEMPLATES_PROBE]);
+    for (const owner of [...owners].sort()) {
+      expect(
+        selected,
+        `${owner} owns a test that scans templates/, but a templates/ change does not ` +
+          `select it — that test cannot catch a defect introduced by a templates-only ` +
+          `edit. Add { prefix: "templates/", workspace: "${owner}" } to ` +
+          'NON_WORKSPACE_PATH_ROUTES in scripts/affected-tests.mjs (the loop applies every ' +
+          'matching route, so routes for one prefix compose).',
+      ).toContain(owner);
+    }
+  });
+});
