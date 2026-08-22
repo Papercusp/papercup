@@ -97,11 +97,23 @@ describe('turn-start-orientation — when it speaks', () => {
 
   it('held-item ORDER does not count as a change (the fingerprint sorts)', () => {
     const a = fingerprintOrientation(
-      { ...base, held: [{ id: 'WI-1', status: 'wip' }, { id: 'WI-2', status: 'wip' }] },
+      {
+        ...base,
+        held: [
+          { id: 'WI-1', status: 'wip' },
+          { id: 'WI-2', status: 'wip' },
+        ],
+      },
       EPOCH,
     );
     const b = fingerprintOrientation(
-      { ...base, held: [{ id: 'WI-2', status: 'wip' }, { id: 'WI-1', status: 'wip' }] },
+      {
+        ...base,
+        held: [
+          { id: 'WI-2', status: 'wip' },
+          { id: 'WI-1', status: 'wip' },
+        ],
+      },
       EPOCH,
     );
     expect(orientationUnchanged(a, b)).toBe(true);
@@ -111,9 +123,7 @@ describe('turn-start-orientation — when it speaks', () => {
     // A delta must never make orientation worse than no delta — same posture as
     // idListUnchanged. Anything unparseable ⇒ deliver in full.
     for (const junk of [null, undefined, 'nope', 42, {}] as unknown[]) {
-      expect(orientationUnchanged(junk as never, fingerprintOrientation(withWork, EPOCH))).toBe(
-        false,
-      );
+      expect(orientationUnchanged(junk as never, fingerprintOrientation(withWork, EPOCH))).toBe(false);
     }
   });
 });
@@ -163,9 +173,7 @@ describe('turn-start-orientation — the context boundary (P-023 / D-008)', () =
 
   it('carries the epoch on the fingerprint so a stage() cannot commit a silent one', () => {
     expect(fingerprintOrientation(withWork, 8).epoch).toBe(8);
-    expect(orientationUnchanged(fingerprintOrientation(withWork, 7), fingerprintOrientation(withWork, 8))).toBe(
-      false,
-    );
+    expect(orientationUnchanged(fingerprintOrientation(withWork, 7), fingerprintOrientation(withWork, 8))).toBe(false);
   });
 
   it('CONTROL: the pre-P-023 comparator cannot tell a boundary crossing apart', () => {
@@ -234,7 +242,7 @@ describe('turn-start-orientation — what it says', () => {
       held: [{ ...withWork.held[0]!, checkpointStale: true }],
     });
     const directed = lines.findIndex((line) => line.includes('awaiting YOUR reply'));
-    const noWake = lines.findIndex((line) => line.includes('no wake source'));
+    const noWake = lines.findIndex((line) => line.includes('engine loop: not armed'));
     const stale = lines.findIndex((line) => line.includes('stale checkpoint'));
     const gates = lines.findIndex((line) => line.includes('announced gates'));
     expect(directed).toBeLessThan(noWake);
@@ -244,9 +252,7 @@ describe('turn-start-orientation — what it says', () => {
 
   it('resolves every new fold leg through injectable shared-reader seams', async () => {
     const state = await resolveOrientationState('su-1', 'ws-1', {
-      held: async () => [
-        { id: 'WI-9', checkpoint: 'continue here', checkpointStale: true },
-      ],
+      held: async () => [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
       inbox: async () => ({
         count: 1,
         newest: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],

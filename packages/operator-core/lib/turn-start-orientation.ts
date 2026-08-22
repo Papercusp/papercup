@@ -183,9 +183,7 @@ export function fingerprintOrientation(state: OrientationState, epoch: number): 
       .sort()
       .join(','),
     unanswered: state.unansweredDirected,
-    inbox: state.inboxRecent
-      .map((entry) => `${entry.msgId}:${entry.from}:${entry.summary ?? ''}`)
-      .join('|'),
+    inbox: state.inboxRecent.map((entry) => `${entry.msgId}:${entry.from}:${entry.summary ?? ''}`).join('|'),
     gates: state.announcedGates
       .map((gate) => `${gate.event}:${gate.note ?? ''}`)
       .sort()
@@ -196,10 +194,7 @@ export function fingerprintOrientation(state: OrientationState, epoch: number): 
 }
 
 /** PURE: is `committed` the same orientation this fingerprint describes? */
-export function orientationUnchanged(
-  committed: CursorState | null,
-  next: CursorState,
-): boolean {
+export function orientationUnchanged(committed: CursorState | null, next: CursorState): boolean {
   if (!committed || typeof committed !== 'object') return false;
   const a = committed as Record<string, unknown>;
   const b = next as Record<string, unknown>;
@@ -252,39 +247,27 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
 export function renderOrientationLines(state: OrientationState): string[] {
   const lines: string[] = [];
   if (state.unansweredDirected > 0) {
-    lines.push(
-      `- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`,
-    );
+    lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
   }
   // A missing wake source can strand every line below it, so the WARNING is
   // high-priority. The reassuring ARMED line is cheap context and goes last.
   if (!state.loopArmed) {
-    lines.push(
-      '- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.',
-    );
+    lines.push('- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.');
   }
-  const stale = state.held
-    .filter((h) => Boolean(h.checkpoint?.trim()) && h.checkpointStale)
-    .map((h) => h.id);
+  const stale = state.held.filter((h) => Boolean(h.checkpoint?.trim()) && h.checkpointStale).map((h) => h.id);
   if (stale.length > 0) {
     lines.push(
       `- ⚠ stale checkpoint: ${compactIds(stale, HELD_DISPLAY_CAP)} — verify current files/state before trusting it.`,
     );
   }
-  const missing = state.held
-    .filter((h) => !h.checkpoint?.trim())
-    .map((h) => h.id);
+  const missing = state.held.filter((h) => !h.checkpoint?.trim()).map((h) => h.id);
   if (missing.length > 0) {
-    lines.push(
-      `- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`,
-    );
+    lines.push(`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`);
   }
   if (state.held.length > 0) {
     const shown = state.held.slice(0, HELD_DISPLAY_CAP);
     const rest = state.held.length - shown.length;
-    const held = shown
-      .map((h) => (h.status ? `${h.id} (${h.status})` : h.id))
-      .join(', ');
+    const held = shown.map((h) => (h.status ? `${h.id} (${h.status})` : h.id)).join(', ');
     lines.push(`- holding: ${held}${rest > 0 ? ` +${rest} more` : ''}`);
   } else {
     lines.push('- holding: nothing — claim before your first edit.');
@@ -425,17 +408,14 @@ export function defaultOrientationDeps(): OrientationDeps {
           id: r.id,
           checkpoint: r.checkpoint,
           checkpointUpdatedAtMs: r.checkpointUpdatedAtMs,
-          checkpointStale:
-            Boolean(r.checkpoint?.trim()) && isStaleHeldCheckpoint(r, nowMs),
+          checkpointStale: Boolean(r.checkpoint?.trim()) && isStaleHeldCheckpoint(r, nowMs),
         }))
         .filter((r) => Boolean(r.id));
     },
     // The SAME primitive fleet:assignments / leader-brief count with, so this
     // number can never disagree with the one a leader sees.
     inbox: async (ownerId) => {
-      const { fetchUnansweredDirected } = await import(
-        './agent-tools/coordination/unanswered-directed'
-      );
+      const { fetchUnansweredDirected } = await import('./agent-tools/coordination/unanswered-directed');
       const map = await fetchUnansweredDirected([ownerId]);
       const summary = map.get(ownerId);
       return summary
@@ -454,17 +434,13 @@ export function defaultOrientationDeps(): OrientationDeps {
     // caller scope from its durable brief and live fleet label. Never copy gate
     // keys into a hand-maintained table.
     announcedGates: async (ownerId) => {
-      const [
-        { listActiveAnnouncements },
-        { announcementVisibleTo },
-        { getSessionBrief },
-        { fetchPresenceFleet },
-      ] = await Promise.all([
-        import('./events/await/store'),
-        import('./events/await/announce-key'),
-        import('./session-brief'),
-        import('./agent-tools/coordination/presence-fleet'),
-      ]);
+      const [{ listActiveAnnouncements }, { announcementVisibleTo }, { getSessionBrief }, { fetchPresenceFleet }] =
+        await Promise.all([
+          import('./events/await/store'),
+          import('./events/await/announce-key'),
+          import('./session-brief'),
+          import('./agent-tools/coordination/presence-fleet'),
+        ]);
       const [announcements, brief, memberships] = await Promise.all([
         listActiveAnnouncements({ unfiredOnly: true, limit: 50 }),
         getSessionBrief({ ownerId }),
@@ -556,9 +532,7 @@ export async function buildTurnStartOrientationBlock(input: {
       // re-read. A second read here could land after a boundary and commit a
       // generation the agent was never actually told about, which would
       // reproduce the exact stale suppression this change removes.
-      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state, epoch)).catch(
-        () => {},
-      );
+      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state, epoch)).catch(() => {});
     }
     return block;
   } catch {
