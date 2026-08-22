@@ -1601,7 +1601,13 @@ export async function captureImprovement(
   // capture core (+ its unit tests) never statically depend on the SSE layer.
   void trackDetached(
     import('../../sync-sse').then((m) =>
-      m.notifySyncInvalidate(isObservation ? 'learning.observations' : 'learning.improvements'),
+      isObservation
+        ? Promise.all([
+            m.notifySyncInvalidate('learning.observations'),
+            m.notifySyncInvalidate('learning.observations.summary'),
+            m.notifySyncInvalidate('learning.observations.counts'),
+          ])
+        : m.notifySyncInvalidate('learning.improvements'),
     ),
   ).catch(() => {});
   // Push-on-write for the Health tab's observations/improvements panels
