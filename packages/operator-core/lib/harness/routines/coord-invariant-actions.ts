@@ -87,6 +87,12 @@ import { getBootedHarness } from '../../sync/hyperbee/boot-all';
 import { captureImprovement } from '../improvements/capture-core';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
 import { isWorkspaceGlobalLabel } from '../../pot-membership';
+// EI-21100148946854844: a work-item id can never be a genuine harness_slug — see
+// `looksLikeWorkItemId`'s doc comment below for why this must be excluded from
+// scope discovery the same way `isWorkspaceGlobalLabel` already is. Reusing the
+// canonical id-shape constant (rather than re-deriving a `WI|EI|F` regex here)
+// keeps this exclusion in agreement with every other id-shape check in the repo.
+import { WORK_ITEM_ID_PATTERN } from '../../work-items';
 import {
   runSharedHiveMonitorPass,
   type LeaseHolderRow,
@@ -1180,11 +1186,40 @@ export interface RawSharedHiveScope {
 // `operator:` prefix exclusion (or the call to it below) fails
 // `filterSharedHiveScopes`'s suite in coord-invariant-actions.test.ts without
 // needing a full PG-backed `runSharedHiveLeg` fixture.
+
+/**
+ * EI-21100148946854844 — a WORK-ITEM ID is not a harness/Pot scope either, and
+ * for the identical reason `isWorkspaceGlobalLabel` above exists: a bogus
+ * `harness_slug` value that reached one of the three scope-discovery sources
+ * (`work_item_claims`/`plan_item_claims`/`substrate_outbox`) — e.g. a caller
+ * that passed a work-item id where a harness slug was expected — produces a
+ * "shared-hive invariant: … breach in WI-40022" alarm that nobody can ever act
+ * on: `WI-40022` is not a registered harness, so there is no drain loop to fix
+ * and no owner who could green it. Every real harness slug this repo mints is
+ * lowercase kebab-case (`harness:create`'s own `^[a-z0-9][a-z0-9-]*$`), which a
+ * `(WI|F|EI)-<digits>` id can never match (the family prefix is upper-case),
+ * so this exclusion can never falsely drop a genuine harness/Pot scope.
+ *
+ * Reuses the canonical `WORK_ITEM_ID_PATTERN` (work-items.ts) rather than
+ * re-deriving the family-prefix regex here, so this check tracks that pattern
+ * if it is ever extended with a new family prefix.
+ */
+const WORK_ITEM_ID_RE = new RegExp(WORK_ITEM_ID_PATTERN);
+
+/** Is `slug` shaped like a work-item id (`WI-123`, `EI-456`, `F-789`) rather
+ *  than a harness/Pot slug? Exported for the regression test (mirrors
+ *  `isWorkspaceGlobalLabel`'s own exported-for-testing shape). */
+export function looksLikeWorkItemId(slug: string): boolean {
+  return WORK_ITEM_ID_RE.test(slug.trim());
+}
+
 export function filterSharedHiveScopes(
   rawScopes: readonly RawSharedHiveScope[],
   workspaceId: string,
 ): RawSharedHiveScope[] {
-  return rawScopes.filter((s) => !isWorkspaceGlobalLabel(s.harness_slug, workspaceId));
+  return rawScopes.filter(
+    (s) => !isWorkspaceGlobalLabel(s.harness_slug, workspaceId) && !looksLikeWorkItemId(s.harness_slug),
+  );
 }
 
 async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {

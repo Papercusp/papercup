@@ -18,6 +18,7 @@ import {
   planStaleHandoffAccepts,
   planSharedHiveCapture,
   filterSharedHiveScopes,
+  looksLikeWorkItemId,
   type RawSharedHiveScope,
   planClaimIntegrityAlarms,
   planOrphanSweepNotices,
@@ -35,6 +36,7 @@ import {
 import { OPERATIONAL_ESCALATION_TTL_MS } from '../../attention/reconcile-escalations';
 import { getSystemAction } from './system-actions';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { isWorkspaceGlobalLabel } from '../../pot-membership';
 
 const idA = { ownerId: PROBE_A, ownerLabel: PROBE_A, source: 'omp-hook-session', workspaceId: 'ws', userId: null } as AgentIdentity;
 const idB = { ownerId: PROBE_B, ownerLabel: PROBE_B, source: 'omp-hook-session', workspaceId: 'ws', userId: null } as AgentIdentity;
@@ -987,6 +989,47 @@ describe('filterSharedHiveScopes (EI-21051034011804969 regression guard)', () =>
     expect(legacyUnfiltered(raw, 'default').some((s) => s.harness_slug === 'operator:default')).toBe(true);
     // The real function excludes it (calibration: the property is not vacuous).
     expect(filterSharedHiveScopes(raw, 'default').some((s) => s.harness_slug === 'operator:default')).toBe(false);
+  });
+});
+
+// EI-21100148946854844: the live incident this regression guards was filed as
+// "shared-hive invariant: substrate outbox depth/age breach in WI-40022" — a
+// bogus `harness_slug = 'WI-40022'` (a work-item id, not a harness) reached one
+// of the three scope-discovery sources and was scanned as if it were a real
+// Pot/harness, producing an unfixable alarm (there is no such harness to green).
+describe('filterSharedHiveScopes / looksLikeWorkItemId (EI-21100148946854844 regression guard)', () => {
+  const scope = (harness_slug: string, pot_slug: string | null = null): RawSharedHiveScope => ({ harness_slug, pot_slug });
+
+  it('recognizes every work-item family prefix as an id, not a harness slug', () => {
+    expect(looksLikeWorkItemId('WI-40022')).toBe(true);
+    expect(looksLikeWorkItemId('EI-21100148946854844')).toBe(true);
+    expect(looksLikeWorkItemId('F-1234')).toBe(true);
+  });
+
+  it('never flags a real (lowercase kebab-case) harness/Pot slug', () => {
+    expect(looksLikeWorkItemId('papercusp')).toBe(false);
+    expect(looksLikeWorkItemId('hotel-reservations')).toBe(false);
+    expect(looksLikeWorkItemId('larkfield-android-20260821')).toBe(false);
+    expect(looksLikeWorkItemId('p021-release-proof-android-e5e2cf1')).toBe(false);
+  });
+
+  it('excludes a work-item-id scope from the shared-hive monitor, alongside real scopes', () => {
+    const raw = [scope('WI-40022'), scope('papercusp'), scope('EI-9', 'EI-9')];
+    const filtered = filterSharedHiveScopes(raw, 'default');
+    expect(filtered.map((s) => s.harness_slug)).toEqual(['papercusp']);
+  });
+
+  // FALSIFIABILITY CONTROL (tier 1 — see the identical control above; the same
+  // mutation-probe discipline applies): the pre-fix shape kept ONLY the
+  // workspace-global-label filter, which does not reject a work-item id at all.
+  it('the exclusion property actually rejects the pre-fix (workspace-label-only) implementation', () => {
+    const raw = [scope('WI-40022'), scope('papercusp')];
+    const legacyWorkspaceLabelOnly = (rawScopes: RawSharedHiveScope[], workspaceId: string): RawSharedHiveScope[] =>
+      rawScopes.filter((s) => !isWorkspaceGlobalLabel(s.harness_slug, workspaceId));
+    // The pre-fix control keeps the phantom work-item-id scope — reproducing the live false positive.
+    expect(legacyWorkspaceLabelOnly(raw, 'default').some((s) => s.harness_slug === 'WI-40022')).toBe(true);
+    // The real function excludes it (calibration: the property is not vacuous).
+    expect(filterSharedHiveScopes(raw, 'default').some((s) => s.harness_slug === 'WI-40022')).toBe(false);
   });
 });
 
