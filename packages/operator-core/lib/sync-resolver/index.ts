@@ -223,7 +223,10 @@ const designFeaturesListArgsSchema = z.object({
   q: z.string().max(500).optional(),
   statuses: z.array(z.enum(DESIGN_FEATURE_STATUSES)).max(3).optional(),
   cursor: z.string().max(2_000).nullable().optional(),
-  limit: clampedLimit(DESIGN_FEATURES_PAGE_LIMIT, DESIGN_FEATURES_DEFAULT_PAGE),
+  limit: clampedLimit(
+    DESIGN_FEATURES_PAGE_LIMIT,
+    DESIGN_FEATURES_DEFAULT_PAGE,
+  ),
 });
 
 const learningObservationsFiltersSchema = z.object({
@@ -941,15 +944,20 @@ const advSessionsListQueryPair = createCompanionListQueryPair({
   domain: 'advSessions',
   rowsQueryName: 'advSessions.list',
   argsSchema: advSessionsListArgsSchema,
-  backingTables: ['harness_shared.adv_sessions', 'harness_shared.harness_plans'] as const,
-  normalizeArgs: (args: AdvSessionsListWireArgs) => normalizeAdvSessionsListArgs(args),
+  backingTables: [
+    'harness_shared.adv_sessions',
+    'harness_shared.harness_plans',
+  ] as const,
+  normalizeArgs: (args: AdvSessionsListWireArgs) =>
+    normalizeAdvSessionsListArgs(args),
   buildPredicate: buildAdvSessionsPredicate,
   readPage: async ({ predicate }) => {
-    const [{ getOrgPg }, { activeWorkspaceId }, { getOmpSessionRowSummary }] = await Promise.all([
-      import('@papercusp/db-org'),
-      import('../workspace-registry'),
-      import('../omp-sessions'),
-    ]);
+    const [{ getOrgPg }, { activeWorkspaceId }, { getOmpSessionRowSummary }] =
+      await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../omp-sessions'),
+      ]);
     const scoped = predicate.args.workspaceId
       ? predicate
       : buildAdvSessionsPredicate({
@@ -957,10 +965,15 @@ const advSessionsListQueryPair = createCompanionListQueryPair({
           workspaceId: activeWorkspaceId(),
         });
     const page = await readAdvSessionsPageFromStore(getOrgPg().sql, scoped);
-    const rows = page.rows.map((row) => ({
-      ...row,
-      summary: row.mode === 'omp' && row.ompThreadId ? getOmpSessionRowSummary({ id: row.ompThreadId }) : null,
-    }));
+    const rows = await Promise.all(
+      page.rows.map(async (row) => ({
+        ...row,
+        summary:
+          row.mode === 'omp' && row.ompThreadId
+            ? getOmpSessionRowSummary({ id: row.ompThreadId })
+            : null,
+      })),
+    );
     return { ...page, rows };
   },
   readSummaryAggregateRows: async ({ predicate }) => {
@@ -983,8 +996,12 @@ const designFeaturesListQueryPair = createCompanionListQueryPair({
   domain: 'designFeatures',
   rowsQueryName: 'designFeatures.byHarness',
   argsSchema: designFeaturesListArgsSchema,
-  backingTables: ['harness_shared.work_items', 'harness_shared.harness_features_consolidated'] as const,
-  normalizeArgs: (args: DesignFeaturesListWireArgs) => normalizeDesignFeaturesListArgs(args),
+  backingTables: [
+    'harness_shared.work_items',
+    'harness_shared.harness_features_consolidated',
+  ] as const,
+  normalizeArgs: (args: DesignFeaturesListWireArgs) =>
+    normalizeDesignFeaturesListArgs(args),
   buildPredicate: buildDesignFeaturesPredicate,
   readPage: async ({ predicate }) => {
     const { getOrgPg } = await import('@papercusp/db-org');
