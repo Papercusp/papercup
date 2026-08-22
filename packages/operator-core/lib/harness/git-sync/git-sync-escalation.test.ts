@@ -97,6 +97,13 @@ describe('decideGitSyncEscalation (EI-18)', () => {
     expect(d.clear).toBe(false);
   });
 
+  it('a skipped-locked tick neither escalates nor clears a prior error', () => {
+    const d = decideGitSyncEscalation({ ...base, status: 'skipped-locked' });
+    expect(d.escalate).toBe(false);
+    expect(d.clear).toBe(false);
+    expect(d.broadcast).toBeNull();
+  });
+
   it('oversizedKey is scope-qualified (same path in two repos = two keys)', () => {
     expect(oversizedKey(big)).toBe('superproject:apps/tui/target/huge.rlib');
     expect(oversizedKey({ ...big, scope: 'libs/sub' })).not.toBe(oversizedKey(big));

@@ -55,9 +55,11 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
   tryReleaseResource: (...a: unknown[]) => tryReleaseResourceMock(a[0], a[1] as Record<string, unknown>),
 }));
 
-const liveLockedPathsMock = vi.fn(async (): Promise<string[]> => []);
+const liveLockHoldingsMock = vi.fn(
+  async (): Promise<Array<{ path: string; owner: string; intent: string }>> => [],
+);
 vi.mock('../../agent-tools/locks/live-lock-paths', () => ({
-  liveLockedPaths: () => liveLockedPathsMock(),
+  liveLockHoldings: () => liveLockHoldingsMock(),
 }));
 
 // inWorkspaceTxn hands the callback a CALLABLE tagged-template fake tx — the lock
@@ -385,8 +387,8 @@ const action = getSystemAction('git-sync')!;
 beforeEach(() => {
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
-  liveLockedPathsMock.mockReset();
-  liveLockedPathsMock.mockResolvedValue([]);
+  liveLockHoldingsMock.mockReset();
+  liveLockHoldingsMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
@@ -688,13 +690,21 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
   it('EI-20744916065879285: passes live file-lock paths to the pure pipeline as protected exclusions', async () => {
     const protectedPaths = ['packages/operator-core/lib/harness/git-sync/run-git-sync.ts', 'libs/subA/subA.txt'];
-    liveLockedPathsMock.mockResolvedValue(protectedPaths);
+    const protectedHoldings = protectedPaths.map((path, index) => ({
+      path,
+      owner: `su-lock-holder-${index}`,
+      intent: `editing ${path}`,
+    }));
+    liveLockHoldingsMock.mockResolvedValue(protectedHoldings);
     runGitSyncMock.mockResolvedValue(syncedOutcome);
 
     await action(ctx);
 
-    expect(liveLockedPathsMock).toHaveBeenCalledOnce();
-    expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({ excludePaths: protectedPaths });
+    expect(liveLockHoldingsMock).toHaveBeenCalledOnce();
+    expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({
+      excludePaths: protectedPaths,
+      liveLockHoldings: protectedHoldings,
+    });
   });
 
   it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {

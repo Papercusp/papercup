@@ -72,7 +72,10 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
 }
 
 export interface EscalationInput {
-  status: 'nothing' | 'synced' | 'conflict' | 'error';
+  /** `skipped-locked` is intentionally neither a failure escalation nor a clean
+   * pass: a live peer lock deferred work, so preserve any existing escalation
+   * until a later measured sync/nothing outcome can clear it. */
+  status: 'nothing' | 'synced' | 'conflict' | 'error' | 'skipped-locked';
   /** This tick's consecutive-error count (already bumped/reset for this tick). */
   consecutiveErrorTicks: number;
   errors: RepoError[];

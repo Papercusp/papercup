@@ -817,6 +817,7 @@ export type GitSyncOutcome = {
   | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
   | { status: 'conflict'; conflicts: RepoConflict[]; errors: RepoError[]; pushed: string[]; merged: string[] }
   | { status: 'error'; errors: RepoError[]; pushed: string[]; merged: string[] }
+  | { status: 'skipped-locked' }
 );
 
 /**
@@ -2186,6 +2187,15 @@ interface CommitRepoOpts {
   diffSubjects?: boolean;
 }
 
+/** The network half intentionally needs fewer knobs than the commit half.
+ * Keeping this contract narrow prevents a caller that already completed
+ * `commitOneRepo` from fabricating commit-only scope/lock fields merely to fetch,
+ * reconcile, and push. */
+type ReconcileRepoOpts = Pick<
+  CommitRepoOpts,
+  'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen'
+> & { doPush: boolean };
+
 /** JSON-serializable — checkpointed as the superproject `git-sync:pointer-bump` step output. */
 interface CommitRepoResult {
   committedLocal: boolean;
@@ -2669,7 +2679,7 @@ export async function bridgeContainedReleaseMain(
 async function reconcileAndPushOneRepo(
   runGit: RunGit,
   repoPath: string,
-  o: CommitRepoOpts & { remote: string; defaultBranch: string; doPush: boolean },
+  o: ReconcileRepoOpts,
   /** whether the commit half made a local commit this pass (drives the fetch-failure
    *  classification + the final nothing/synced verdict). */
   committedLocal: boolean,
