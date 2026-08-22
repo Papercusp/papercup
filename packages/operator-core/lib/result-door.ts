@@ -423,10 +423,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // door's fail-soft contract: a missing index is an annoyance, a failed WRITE
     // loses the payload.
     const spillIndex = buildSpillIndex(fullText);
+    const spillPrefix = header + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
         mkdirSync(dirname(fsPath), { recursive: true });
-        writeFileSync(fsPath, header + (spillIndex ? `${spillIndex}\n` : '') + fullText, {
+        writeFileSync(fsPath, spillPrefix + fullText, {
           mode: 0o600,
         });
       } catch (err) {
@@ -482,6 +483,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // cursor and no client ever has to parse a chopped prefix plus a prose footer.
     const bodyShape = classifyProjectionBody(textItems);
     const parsedJsonBody = bodyShape.json != null;
+    const spillBodyByteOffset = Buffer.byteLength(spillPrefix, 'utf8');
     const recovery = fsPath != null && uri != null
       ? {
           cursor: {
@@ -500,6 +502,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             // `result-door-encoding-contract.test.ts` then follows this cursor
             // end-to-end so the declaration and the bytes cannot drift apart.
             dataEncoding: 'base64',
+            // The spill is plaintext with a Markdown header (and, for
+            // list-shaped results, an index) before the body. JSON callers
+            // need the exact byte boundary instead of guessing where jq can
+            // start parsing.
+            ...(parsedJsonBody ? { bodyByteOffset: spillBodyByteOffset } : {}),
           },
           next:
             // `response.data` rather than a bare `data`: naming the field's OWNER
@@ -509,8 +516,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             // — this pointer is NET SHORTER than the ambiguous version it
             // replaced, which is the only reason it clears WI-5656 below.
             `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
-            `next_cursor until eof to recover the exact spill bytes. The spill file is plaintext and ` +
-            `opens with a text header.` +
+            `next_cursor until eof to recover the exact spill bytes. File is plaintext; ` +
+            (parsedJsonBody
+              ? `skip cursor.bodyByteOffset bytes for JSON.`
+              : `it opens with a text header.`) +
             // Keep the established JSON recovery pointer deliberately terse. The
             // payload projector budgets the pointer together with the retained
             // JSON preview; expanding it here can evict coord:orient's recovery
