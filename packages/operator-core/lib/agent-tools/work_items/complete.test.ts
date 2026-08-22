@@ -2952,6 +2952,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
       expect(text).toContain('completion.verification');
       expect(text).toContain('Top-level evidence');
+      expect(text).toContain('verification.tests');
+      expect(text).toContain('verification.typecheck');
+      expect(text).toContain('verification.diff');
       expect(text).toContain('deferred');
       expect(text).toContain('coordNotes');
       expect(text).toContain('not inside');
