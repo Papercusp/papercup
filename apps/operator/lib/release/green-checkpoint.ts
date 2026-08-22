@@ -5380,6 +5380,10 @@ export function buildGreenCheckpointEnv(
   // (8 × 128 GiB → no GC → ENOMEM under fleet load). Pin a sane per-fork heap.
   env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS);
   env.GREEN_CHECKPOINT = "1";
+  // Python-backed gate tests import scripts directly from the checkpoint tree. Without this
+  // gate-owned setting, those imports rewrite tracked __pycache__ files and make the isolated
+  // worktree look dirty even though the tested source is unchanged.
+  env.PYTHONDONTWRITEBYTECODE = "1";
   // WI-6140: the release gate's exemption from the pc-heavy admission semaphore.
   // DELIBERATELY NOT keyed off GREEN_CHECKPOINT — that marker is DOUBLE-DUTY (it also
   // makes load-/network-sensitive tests self-exclude via describe.skipIf, see above),

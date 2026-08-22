@@ -5994,6 +5994,14 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     expect(env.PAPERCUSP_TEST_RUN_SOURCE).toBe("ci");
   });
 
+  it("disables Python bytecode writes in gate children, overriding any host value", () => {
+    const env = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({ PYTHONDONTWRITEBYTECODE: "0" }),
+    );
+    expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
+  });
+
   it("groups the run with PAPERCUSP_TEST_RUN_GROUP only when a runId is given", () => {
     const withId = buildGreenCheckpointEnv("b", partialEnv({}), "run-abc");
     expect(withId.PAPERCUSP_TEST_RUN_GROUP).toBe("run-abc");
