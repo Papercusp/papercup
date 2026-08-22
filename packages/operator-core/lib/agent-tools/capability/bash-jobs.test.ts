@@ -18,8 +18,11 @@ import {
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
+  STREAM_LINE_OUTPUT_CAP,
+  STREAM_LINE_TRUNCATION_MARKER,
   __resetBashJobs,
   createStreamingSecretRedactor,
+  createStreamingLineCap,
   detectBufferingLastStage,
   detectMissingCommandDiagnostic,
   formatBufferingPipelineAdvice,
@@ -152,6 +155,39 @@ describe('runForeground', () => {
     const full = readFileSync(r.logPath, 'utf8');
     expect(full.length).toBeGreaterThan(INLINE_OUTPUT_CAP);
     expect(full).toContain('line-4000');
+  });
+
+  it('caps one overlong streamed line across chunks with a marker', () => {
+    const cap = createStreamingLineCap();
+    const first = cap.push(`prefix-${'x'.repeat(STREAM_LINE_OUTPUT_CAP)}`);
+    const second = cap.push('suffix\n');
+    const streamed = first + second + cap.flush();
+
+    expect(streamed).toContain(STREAM_LINE_TRUNCATION_MARKER);
+    expect(streamed.split('\n')[0]).toHaveLength(STREAM_LINE_OUTPUT_CAP);
+    expect(streamed.endsWith('\n')).toBe(true);
+  });
+
+  it('bounds a minified single-line stream while preserving the complete spill log', async () => {
+    const line = `prefix-${'x'.repeat(STREAM_LINE_OUTPUT_CAP + 100)}-suffix`;
+    const streamed: string[] = [];
+    const r = await runForeground(
+      {
+        command: `printf '%s\\n' ${JSON.stringify(line)}`,
+        cwd: STATE,
+        stateDir: STATE,
+        onChunk: (chunk) => streamed.push(chunk),
+      },
+      never,
+      10_000,
+    );
+    const spill = readFileSync(r.logPath, 'utf8');
+    const streamedOutput = streamed.join('');
+
+    expect(streamedOutput).toContain(STREAM_LINE_TRUNCATION_MARKER);
+    expect(streamedOutput.split('\n')[0]).toHaveLength(STREAM_LINE_OUTPUT_CAP);
+    expect(spill).toContain(`${line}\n`);
+    expect(spill).not.toContain(STREAM_LINE_TRUNCATION_MARKER);
   });
 
   it('enforces the wall-clock timeout', async () => {

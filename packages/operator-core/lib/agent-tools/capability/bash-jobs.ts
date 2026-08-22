@@ -45,6 +45,10 @@ warmScopeProbe();
  *  the inline result carries head+tail + the log path. Mirrors the native
  *  tool's overflow-to-file behavior. */
 export const INLINE_OUTPUT_CAP = 30_000;
+/** Maximum size of one line delivered through the foreground output stream. */
+export const STREAM_LINE_OUTPUT_CAP = INLINE_OUTPUT_CAP;
+/** Marker emitted in the stream when one output line exceeds the line cap. */
+export const STREAM_LINE_TRUNCATION_MARKER = `[capability:bash] line truncated after ${STREAM_LINE_OUTPUT_CAP} characters`;
 /** Hard ceiling on retained in-memory output per job (bytes). Beyond this the
  *  in-memory tail is trimmed (the full stream is still on disk). 5 MB. */
 const MEM_BUFFER_CAP = 5 * 1024 * 1024;
@@ -680,6 +684,102 @@ export function createStreamingSecretRedactor(values: readonly string[] | undefi
   };
 }
 
+export interface StreamingLineCap {
+  /** Consume a safe output chunk and return only the bounded stream portion. */
+  push(chunk: string): string;
+  /** Flush a final unterminated line once the child reaches a terminal state. */
+  flush(): string;
+}
+
+/**
+ * Bound foreground output events by logical line while leaving the spill log,
+ * inline accumulation, and byte totals unchanged. Child-process chunks do not
+ * align with lines, so this keeps a small suffix pending until it can tell
+ * whether the line ends or continues past the cap.
+ */
+export function createStreamingLineCap(): StreamingLineCap {
+  const marker = STREAM_LINE_TRUNCATION_MARKER;
+  // Reserve room for the marker so the emitted line stays within the same cap
+  // even when the marker is needed.
+  const normalContentCap = STREAM_LINE_OUTPUT_CAP - marker.length;
+  let lineLength = 0;
+  let pending = '';
+  let truncated = false;
+
+  const resetLine = (): void => {
+    lineLength = 0;
+    pending = '';
+    truncated = false;
+  };
+
+  return {
+    push(chunk: string): string {
+      if (!chunk) return '';
+
+      let output = '';
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newline = chunk.indexOf('\n', offset);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.slice(offset, end);
+
+        if (truncated) {
+          // The marker has already been emitted; discard the rest of this
+          // overlong line but preserve its line terminator for framing.
+          if (newline === -1) break;
+          output += '\n';
+          resetLine();
+          offset = newline + 1;
+          continue;
+        }
+
+        pending += segment;
+        if (lineLength + pending.length > STREAM_LINE_OUTPUT_CAP) {
+          const remaining = Math.max(0, normalContentCap - lineLength);
+          output += pending.slice(0, remaining) + marker;
+          lineLength = STREAM_LINE_OUTPUT_CAP;
+          pending = '';
+          truncated = true;
+          if (newline === -1) break;
+          output += '\n';
+          resetLine();
+          offset = newline + 1;
+          continue;
+        }
+
+        // Keep only enough suffix to decide whether a marker is needed. This
+        // makes a line split across arbitrary child chunks behave like one
+        // continuous line rather than resetting the cap on every event.
+        const emitLength = Math.max(0, pending.length - marker.length);
+        if (emitLength > 0) {
+          output += pending.slice(0, emitLength);
+          pending = pending.slice(emitLength);
+          lineLength += emitLength;
+        }
+
+        if (newline !== -1) {
+          output += pending + '\n';
+          resetLine();
+          offset = newline + 1;
+        } else {
+          break;
+        }
+      }
+      return output;
+    },
+
+    flush(): string {
+      if (truncated) {
+        pending = '';
+        return '';
+      }
+      const output = pending;
+      pending = '';
+      return output;
+    },
+  };
+}
+
 /**
  * Run a command to completion in the foreground. Streams chunks via `onChunk`,
  * spills the full combined output to a scratch log, enforces a wall-clock
@@ -700,6 +800,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     let timedOut = false;
     let aborted = false;
     const redactor = createStreamingSecretRedactor(opts.redactValues);
+    const streamLineCap = createStreamingLineCap();
     const missingCommandDetector = createMissingCommandMarkerDetector(id);
     let redactorFlushed = false;
 
@@ -713,7 +814,8 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       } catch {
         /* ignore spill fault */
       }
-      opts.onChunk?.(s);
+      const streamed = streamLineCap.push(s);
+      if (streamed) opts.onChunk?.(streamed);
     };
     const appendRawOutput = (s: string): void => {
       appendSafeOutput(redactor?.push(s) ?? s);
@@ -748,6 +850,8 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       // The suffix held for chunk-boundary matching must reach every safe sink
       // before output/truncation metadata is finalized.
       flushRedactor();
+      const streamedTail = streamLineCap.flush();
+      if (streamedTail) opts.onChunk?.(streamedTail);
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
       const normalized = normalizeMissingCommandResult(status, exitCode, missingCommandDetector.seen());
