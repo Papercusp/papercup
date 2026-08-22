@@ -69,7 +69,8 @@ export type InterestContext =
   | 'item-holder'
   | 'blocked-item-holder'
   | 'claim-holder'
-  | 'answer-requester';
+  | 'answer-requester'
+  | 'owner-present';
 
 /**
  * How strongly the system should act on the interest.
@@ -83,15 +84,39 @@ export type InterestContext =
 export type InterestTier = 'fold' | 'suggest' | 'auto-arm';
 
 /**
+ * Existing legs of the owner's canonical plans:attention surface that are owned
+ * by the owner-present interest context (P-025 / D-019). This is a closed list on
+ * purpose: a profile typo must fail validation instead of silently selecting no
+ * source, and attention.ts must opt a new leg in here before it can claim registry
+ * ownership.
+ */
+export const OWNER_ATTENTION_SOURCES = [
+  'needs-human-work-items',
+  'owner-walls',
+  'open-owner-questions',
+  'open-owner-escalations',
+  'pending-owner-gates',
+] as const;
+
+export type OwnerAttentionSource = (typeof OWNER_ATTENTION_SOURCES)[number];
+
+/**
  * What is being watched. A discriminated union rather than the bare
- * `cell id | event key` string the plan item described, because the two validate
- * against DIFFERENT registries: given only `"release.gate"` a checker cannot tell
- * whether an unknown name is a misspelled cell or a misspelled event family, and
- * would have to guess — which is how a typo passes as "probably the other kind".
+ * `cell id | event key` string the plan item described, because each variant
+ * validates against a different registry and must fail closed on a typo.
  */
 export type InterestWatch =
   | { readonly kind: 'cell'; readonly cell: string }
-  | { readonly kind: 'event'; readonly family: string };
+  | { readonly kind: 'event'; readonly family: string }
+  | {
+      /**
+       * A source leg rendered by the owner's existing interactive attention
+       * surface. The plans:attention invocation itself is the owner-presence
+       * signal; this variant never creates a watch, wake, poll, or copied queue.
+       */
+      readonly kind: 'owner-attention';
+      readonly source: OwnerAttentionSource;
+    };
 
 /** A predicate, reusing the state:subscribe / events:watch comparator vocabulary. */
 export interface InterestCondition {
@@ -199,6 +224,7 @@ export function suggestedWatchesForContext(input: {
       continue;
     }
 
+    if (row.watch.kind !== 'event') continue;
     const entry = catalogEntry(row.watch.family);
     if (!entry) continue; // validateInterestProfiles catches registry drift; never emit a dead call here.
     const params: Record<string, string | undefined> = {};
@@ -221,11 +247,7 @@ export function suggestedWatchesForContext(input: {
 }
 
 function isConcreteCatalogEvent(key: string): boolean {
-  return (
-    keyMatchesCatalog(key) &&
-    !findRequiredParamPrefixMatch(key) &&
-    !findZeroParamSuffixMismatch(key)
-  );
+  return keyMatchesCatalog(key) && !findRequiredParamPrefixMatch(key) && !findZeroParamSuffixMismatch(key);
 }
 
 /**
@@ -364,7 +386,7 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
     context: 'plan-holder',
     watch: { kind: 'cell', cell: GATE_VERDICT_CELL.cell },
     tier: 'fold',
-    why: 'A red gate blocks promotion for every item in the plan at once, so it is the plan holder\'s problem before it is any single item\'s. Folded rather than armed because the holder should learn it on the next read, not be woken per flip.',
+    why: "A red gate blocks promotion for every item in the plan at once, so it is the plan holder's problem before it is any single item's. Folded rather than armed because the holder should learn it on the next read, not be woken per flip.",
   },
   {
     context: 'plan-holder',
@@ -430,7 +452,7 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
     watch: { kind: 'event', family: 'conversation-answered' },
     tier: 'auto-arm',
     of: ['conversation.id'],
-    why: 'A concrete answer resolves the requester\'s decision edge. Auto-arming that one request avoids hidden polling without subscribing the requester to unrelated conversations.',
+    why: "A concrete answer resolves the requester's decision edge. Auto-arming that one request avoids hidden polling without subscribing the requester to unrelated conversations.",
   },
   {
     context: 'answer-requester',
@@ -439,6 +461,42 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
     of: ['escalation.id'],
     why: 'An escalation resolution is the exact edge the requester needs to resume; binding one await to that escalation keeps the wake attributable and lifecycle-scoped.',
   },
+
+  // ── owner-present (P-025 / D-019) ─────────────────────────────────────────
+  // plans:attention is already the canonical owner Inbox and selected-session
+  // pending-question substrate. These rows select its existing source legs; they
+  // do not create another delivery system. Fold = ambient queue/wall content in
+  // that surface. Suggest = an explicit pending ask/escalation worth foregrounding.
+  {
+    context: 'owner-present',
+    watch: { kind: 'owner-attention', source: 'needs-human-work-items' },
+    tier: 'fold',
+    why: 'Needs-human work-items are already the typed owner-gated queue. Folding that existing source into the owner surface makes the queue visible without an agent re-broadcasting it.',
+  },
+  {
+    context: 'owner-present',
+    watch: { kind: 'owner-attention', source: 'owner-walls' },
+    tier: 'fold',
+    why: 'Registered carry-note walls are the durable record of work waiting on the owner. Folding the existing source prevents those walls from depending on an agent status report being seen.',
+  },
+  {
+    context: 'owner-present',
+    watch: { kind: 'owner-attention', source: 'open-owner-questions' },
+    tier: 'suggest',
+    why: 'An open owner question has an explicit answer disposition. Suggesting the existing conversation source foregrounds that pending ask without manufacturing a wake.',
+  },
+  {
+    context: 'owner-present',
+    watch: { kind: 'owner-attention', source: 'open-owner-escalations' },
+    tier: 'suggest',
+    why: 'An unresolved owner escalation is a directed request for intervention. Suggesting the existing escalation source keeps it actionable in the owner surface without another transport.',
+  },
+  {
+    context: 'owner-present',
+    watch: { kind: 'owner-attention', source: 'pending-owner-gates' },
+    tier: 'suggest',
+    why: 'A pending session gate is the client-agnostic backstop for an owner ask. Suggesting the existing gate source keeps blocked sessions visible without polling or waking the owner.',
+  },
 ];
 
 /** Rows that apply to a given context. */
@@ -446,12 +504,33 @@ export function interestProfilesFor(context: InterestContext): InterestProfileRo
   return INTEREST_PROFILES.filter((row) => row.context === context);
 }
 
+/**
+ * The plans:attention source legs selected by a live context. Dedupe preserves
+ * registry order so a repeated row cannot cause a source to execute twice.
+ */
+export function ownerAttentionSourcesFor(
+  context: InterestContext,
+  rows: readonly InterestProfileRow[] = INTEREST_PROFILES,
+): OwnerAttentionSource[] {
+  return [
+    ...new Set(
+      rows.flatMap((row) =>
+        row.context === context && row.watch.kind === 'owner-attention' ? [row.watch.source] : [],
+      ),
+    ),
+  ];
+}
+
 export type InterestProfileRule =
   | 'unregistered-cell'
   | 'unknown-event-family'
   | 'auto-arm-cell-without-predicate'
   | 'fold-with-predicate'
-  | 'unresolved-required-params';
+  | 'unresolved-required-params'
+  | 'unknown-owner-attention-source'
+  | 'owner-attention-auto-arm'
+  | 'owner-attention-with-condition'
+  | 'owner-attention-with-subject';
 
 export interface InterestProfileViolation {
   readonly rule: InterestProfileRule;
@@ -473,9 +552,7 @@ export interface InterestProfileViolation {
  * violate several at once and a caller is entitled to see all of them, exactly as
  * validateCellSpec reports its full rejection set.
  */
-export function validateInterestProfiles(
-  rows: readonly InterestProfileRow[],
-): InterestProfileViolation[] {
+export function validateInterestProfiles(rows: readonly InterestProfileRow[]): InterestProfileViolation[] {
   const violations: InterestProfileViolation[] = [];
   const registered = new Set(BUILTIN_CELLS.map((spec) => spec.cell));
 
@@ -496,7 +573,7 @@ export function validateInterestProfiles(
           detail: `cell '${cell}' is auto-arm but declares no 'on'. state:subscribe cannot arm without a predicate, so this row would silently never fire.`,
         });
       }
-    } else {
+    } else if (row.watch.kind === 'event') {
       const { family } = row.watch;
       const entry = catalogEntry(family);
       if (!entry) {
@@ -514,9 +591,41 @@ export function validateInterestProfiles(
             row,
             detail: `event family '${family}' requires ${required.length} key param(s) (${required
               .map((p) => p.name)
-              .join(', ')}) but 'of' names ${supplied} context field(s). An unresolved key param produces a key nothing emits — a silent forever-wait.`,
+              .join(
+                ', ',
+              )}) but 'of' names ${supplied} context field(s). An unresolved key param produces a key nothing emits — a silent forever-wait.`,
           });
         }
+      }
+    } else {
+      const { source } = row.watch;
+      if (!(OWNER_ATTENTION_SOURCES as readonly string[]).includes(source)) {
+        violations.push({
+          rule: 'unknown-owner-attention-source',
+          row,
+          detail: `owner-attention source '${source}' is not in OWNER_ATTENTION_SOURCES. Add the source to the typed registry and wire its plans:attention leg, or correct the profile typo.`,
+        });
+      }
+      if (row.tier === 'auto-arm') {
+        violations.push({
+          rule: 'owner-attention-auto-arm',
+          row,
+          detail: `owner-attention source '${source}' cannot auto-arm. Opening or using the owner surface is the presence signal; machinery never wakes the owner. Use fold or suggest.`,
+        });
+      }
+      if (row.on) {
+        violations.push({
+          rule: 'owner-attention-with-condition',
+          row,
+          detail: `owner-attention source '${source}' declares 'on', but the existing interactive surface has no watch predicate. Drop the condition; source selection is presence-driven.`,
+        });
+      }
+      if (row.of?.length) {
+        violations.push({
+          rule: 'owner-attention-with-subject',
+          row,
+          detail: `owner-attention source '${source}' declares 'of', but the canonical owner feed resolves its own workspace/harness scope. Drop the caller-relative subject.`,
+        });
       }
     }
 

@@ -4,9 +4,11 @@ import { BUILTIN_CELLS } from './cell-registrations';
 import { catalogEntry } from './events/await/catalog';
 import {
   INTEREST_PROFILES,
+  OWNER_ATTENTION_SOURCES,
   type InterestContext,
   type InterestProfileRow,
   interestProfilesFor,
+  ownerAttentionSourcesFor,
   referencedCellIds,
   referencedEventFamilies,
   suggestedWatchesForContext,
@@ -34,6 +36,7 @@ const ALL_CONTEXTS: InterestContext[] = [
   'blocked-item-holder',
   'claim-holder',
   'answer-requester',
+  'owner-present',
 ];
 
 describe('interest profiles — calibration (guards against a vacuous pass)', () => {
@@ -51,6 +54,14 @@ describe('interest profiles — calibration (guards against a vacuous pass)', ()
       expect(interestProfilesFor(context).length, `no rows declared for ${context}`).toBeGreaterThan(0);
     }
   });
+
+  it('owner-present declares every typed owner-attention source exactly once', () => {
+    const declared = interestProfilesFor('owner-present').flatMap((row) =>
+      row.watch.kind === 'owner-attention' ? [row.watch.source] : [],
+    );
+    expect(declared).toEqual(OWNER_ATTENTION_SOURCES);
+    expect(new Set(declared).size).toBe(declared.length);
+  });
 });
 
 describe('interest profiles — referential integrity (the drift guard)', () => {
@@ -61,16 +72,16 @@ describe('interest profiles — referential integrity (the drift guard)', () => 
   it('every referenced cell is REGISTERED, not merely defined', () => {
     const registered = new Set(BUILTIN_CELLS.map((spec) => spec.cell));
     for (const cell of referencedCellIds()) {
-      expect(registered.has(cell), `cell '${cell}' is referenced by a profile but is not in BUILTIN_CELLS`).toBe(
-        true,
-      );
+      expect(registered.has(cell), `cell '${cell}' is referenced by a profile but is not in BUILTIN_CELLS`).toBe(true);
     }
   });
 
   it('every referenced event family resolves in EVENT_CATALOG', () => {
     for (const family of referencedEventFamilies()) {
-      expect(catalogEntry(family), `event family '${family}' is referenced by a profile but is not in EVENT_CATALOG`)
-        .toBeDefined();
+      expect(
+        catalogEntry(family),
+        `event family '${family}' is referenced by a profile but is not in EVENT_CATALOG`,
+      ).toBeDefined();
     }
   });
 
@@ -90,6 +101,15 @@ describe('interest profiles — referential integrity (the drift guard)', () => 
     for (const row of INTEREST_PROFILES) {
       if (row.tier === 'auto-arm' && row.watch.kind === 'cell') expect(row.on).toBeDefined();
       if (row.tier === 'fold') expect(row.on).toBeUndefined();
+    }
+  });
+
+  it('owner-attention rows never auto-arm or carry watch-only fields', () => {
+    for (const row of interestProfilesFor('owner-present')) {
+      expect(row.watch.kind).toBe('owner-attention');
+      expect(row.tier).not.toBe('auto-arm');
+      expect(row.on).toBeUndefined();
+      expect(row.of).toBeUndefined();
     }
   });
 
@@ -127,7 +147,12 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
 
   it('catches an event family that is not in the catalog', () => {
     const violations = validateInterestProfiles([
-      { context: 'fleet-leader', watch: { kind: 'event', family: 'fleet-no-such-familyZZQQ' }, tier: 'fold', why: 'control' },
+      {
+        context: 'fleet-leader',
+        watch: { kind: 'event', family: 'fleet-no-such-familyZZQQ' },
+        tier: 'fold',
+        why: 'control',
+      },
     ]);
     expect(violations.map((v) => v.rule)).toEqual(['unknown-event-family']);
   });
@@ -135,7 +160,12 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
   it('catches an event row that leaves a REQUIRED key param unresolved', () => {
     // fleet-member-dead requires <slug>. Omitting `of` is the silent-forever-wait shape.
     const violations = validateInterestProfiles([
-      { context: 'fleet-leader', watch: { kind: 'event', family: 'fleet-member-dead' }, tier: 'auto-arm', why: 'control' },
+      {
+        context: 'fleet-leader',
+        watch: { kind: 'event', family: 'fleet-member-dead' },
+        tier: 'auto-arm',
+        why: 'control',
+      },
     ]);
     expect(violations.map((v) => v.rule)).toEqual(['unresolved-required-params']);
   });
@@ -160,16 +190,59 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
     );
   });
 
+  it('catches an owner-attention source that drifts from the typed source registry', () => {
+    const row = {
+      context: 'owner-present',
+      watch: { kind: 'owner-attention', source: 'no-such-owner-sourceZZQQ' },
+      tier: 'suggest',
+      why: 'control row proving owner-attention source drift fails closed',
+    } as unknown as InterestProfileRow;
+    expect(validateInterestProfiles([row]).map((v) => v.rule)).toEqual(['unknown-owner-attention-source']);
+  });
+
+  it('catches every forbidden owner-attention wake/subject field together', () => {
+    const row: InterestProfileRow = {
+      context: 'owner-present',
+      watch: { kind: 'owner-attention', source: 'open-owner-questions' },
+      tier: 'auto-arm',
+      on: { op: 'changed' },
+      of: ['owner.id'],
+      why: 'control row proving the owner surface can never become a machine wake',
+    };
+    expect(
+      validateInterestProfiles([row])
+        .map((v) => v.rule)
+        .sort(),
+    ).toEqual(['owner-attention-auto-arm', 'owner-attention-with-condition', 'owner-attention-with-subject'].sort());
+  });
+
   it('each violation names its own remedy, so a reader need not consult this test', () => {
-    const violations = validateInterestProfiles([
-      { ...CELL_ROW, watch: { kind: 'cell', cell: 'no.such.cellZZQQ' } },
-    ]);
+    const violations = validateInterestProfiles([{ ...CELL_ROW, watch: { kind: 'cell', cell: 'no.such.cellZZQQ' } }]);
     expect(violations).toHaveLength(1);
     expect(violations[0].detail.length).toBeGreaterThan(40);
   });
 });
 
 describe('P-016 suggest tier', () => {
+  it('owner-attention suggestions select the existing surface and never emit a tool call', () => {
+    const rows: InterestProfileRow[] = [
+      {
+        context: 'owner-present',
+        watch: { kind: 'owner-attention', source: 'open-owner-questions' },
+        tier: 'suggest',
+        why: 'An open owner question belongs in the existing owner attention surface.',
+      },
+    ];
+    expect(ownerAttentionSourcesFor('owner-present', rows)).toEqual(['open-owner-questions']);
+    expect(
+      suggestedWatchesForContext({
+        context: 'owner-present',
+        reason: 'owner opened the attention surface',
+        rows,
+      }),
+    ).toEqual([]);
+  });
+
   it('resolves a profile event into a one-call events:await with the profile why', () => {
     const row: InterestProfileRow = {
       context: 'fleet-leader',

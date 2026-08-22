@@ -16,10 +16,20 @@ const M = vi.hoisted(() => ({
   readAllPlans: vi.fn(async () => [] as unknown[]),
   ctxToPlanSourceOpts: vi.fn(async () => ({})),
   planItemsToAttention: vi.fn(() => [] as unknown[]),
+  ownerAttentionSourcesFor: vi.fn(() => [
+    'needs-human-work-items',
+    'owner-walls',
+    'open-owner-questions',
+    'open-owner-escalations',
+    'pending-owner-gates',
+  ]),
   listEscalations: vi.fn(async () => [] as unknown[]),
   listConversations: vi.fn(async () => [] as unknown[]),
   readInbox: vi.fn(async () => [] as unknown[]),
   readAckedMsgIds: vi.fn(async () => new Set<string>()),
+  readNeedsHumanWorkItems: vi.fn(async () => [] as unknown[]),
+  listOwnerWalls: vi.fn(async () => ({ walls: [] as unknown[] })),
+  listPendingGates: vi.fn(async () => [] as unknown[]),
 }));
 
 // NOTE: vi.mock paths resolve relative to THIS test file (one level deeper, in
@@ -34,6 +44,10 @@ vi.mock('../../../attention/sources', async (orig) => {
   const actual = await orig<typeof import('../../../attention/sources')>();
   return { ...actual, planItemsToAttention: M.planItemsToAttention };
 });
+vi.mock('../../../interest-profiles', async (orig) => {
+  const actual = await orig<typeof import('../../../interest-profiles')>();
+  return { ...actual, ownerAttentionSourcesFor: M.ownerAttentionSourcesFor };
+});
 vi.mock('../../coordination/escalations', () => ({ listEscalations: M.listEscalations }));
 vi.mock('../../coordination/conversations', () => ({ listConversationsWithTopics: M.listConversations }));
 // Remaining sources → empty (no PG in the unit env).
@@ -47,11 +61,14 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, getOrgPg: () => ({ sql: async () => [] }) };
 });
 vi.mock('../../../attention/operator-report-source', () => ({ readRecentOperatorReports: vi.fn(async () => []) }));
-vi.mock('../../../attention/needs-human-work-items-source', () => ({ readNeedsHumanWorkItems: vi.fn(async () => []) }));
+vi.mock('../../../attention/needs-human-work-items-source', () => ({
+  readNeedsHumanWorkItems: M.readNeedsHumanWorkItems,
+}));
 // P-005b's owner-walls source reads live session briefs via coord — empty it out
 // like every other not-under-test source (it would leak whatever walls agents
 // happen to hold when the suite runs).
-vi.mock('../../coordination/tools/walls', () => ({ listOwnerWalls: vi.fn(async () => ({ walls: [] })) }));
+vi.mock('../../coordination/tools/walls', () => ({ listOwnerWalls: M.listOwnerWalls }));
+vi.mock('../../../attention/gate-store', () => ({ listPendingGates: M.listPendingGates }));
 vi.mock('../../../harness/improvements/read-items', () => ({ readImprovementItems: vi.fn(async () => []) }));
 vi.mock('../../../operator-standing-candidates', () => ({ readCandidates: vi.fn(async () => []) }));
 vi.mock('../../../scout/routed-ledger', () => ({ readRoutedIdeas: vi.fn(async () => []) }));
@@ -100,10 +117,20 @@ beforeEach(async () => {
   M.readAllPlans.mockResolvedValue([]);
   M.ctxToPlanSourceOpts.mockResolvedValue({});
   M.planItemsToAttention.mockReturnValue([]);
+  M.ownerAttentionSourcesFor.mockReturnValue([
+    'needs-human-work-items',
+    'owner-walls',
+    'open-owner-questions',
+    'open-owner-escalations',
+    'pending-owner-gates',
+  ]);
   M.listEscalations.mockResolvedValue([]);
   M.listConversations.mockResolvedValue([]);
   M.readInbox.mockResolvedValue([]);
   M.readAckedMsgIds.mockResolvedValue(new Set());
+  M.readNeedsHumanWorkItems.mockResolvedValue([]);
+  M.listOwnerWalls.mockResolvedValue({ walls: [] });
+  M.listPendingGates.mockResolvedValue([]);
   // plans:attention now caches its aggregation (cache-expensive-tool-reads P-003);
   // this test characterizes the RAW source aggregation, so disable the cache (bypass)
   // + reset the singleton so each case re-runs every source with its freshly-set mocks.
@@ -133,12 +160,39 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     expect(allItems(p)).toHaveLength(0);
   });
 
+  it('consumes every canonical owner-present source row', async () => {
+    await run();
+    expect(M.ownerAttentionSourcesFor).toHaveBeenCalledWith('owner-present');
+    expect(M.listEscalations).toHaveBeenCalledTimes(1);
+    expect(M.listConversations).toHaveBeenCalledTimes(1);
+    expect(M.readNeedsHumanWorkItems).toHaveBeenCalledTimes(1);
+    expect(M.listOwnerWalls).toHaveBeenCalledTimes(1);
+    expect(M.listPendingGates).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs only the owner-attention source legs selected by the registry', async () => {
+    M.ownerAttentionSourcesFor.mockReturnValue(['open-owner-questions']);
+    await run();
+    expect(M.listConversations).toHaveBeenCalledTimes(1);
+    expect(M.listEscalations).not.toHaveBeenCalled();
+    expect(M.readNeedsHumanWorkItems).not.toHaveBeenCalled();
+    expect(M.listOwnerWalls).not.toHaveBeenCalled();
+    expect(M.listPendingGates).not.toHaveBeenCalled();
+  });
+
   it('aggregates items from MULTIPLE independent parallel sources (none dropped)', async () => {
     M.listEscalations.mockResolvedValue([
       { msg_id: 'esc-1', severity: 'critical', summary: 'an escalation', plan_slug: null, options: [], from: 'su-x' },
     ]);
     M.listConversations.mockResolvedValue([
-      { id: 'conv-1', title: 'an open question', body: 'q?', asker_id: 'su-y', harness_slug: null, accepted_answer: null },
+      {
+        id: 'conv-1',
+        title: 'an open question',
+        body: 'q?',
+        asker_id: 'su-y',
+        harness_slug: null,
+        accepted_answer: null,
+      },
     ]);
     const p = await run();
     const ids = allItems(p).map((i) => i.id);

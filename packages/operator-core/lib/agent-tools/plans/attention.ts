@@ -31,11 +31,11 @@
  * level and always included.
  */
 
-import { z } from "zod";
-import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
-import { readAllPlans } from "./source";
-import { ctxToPlanSourceOpts } from "./_ctx-opts";
-import { harnessArg, harnessScopedCtx } from "../_harness-scope";
+import { z } from 'zod';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { readAllPlans } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import {
   coordEscalationToAttention,
   coordMessageToAttention,
@@ -50,7 +50,7 @@ import {
   blockedSessionToAttention,
   blockedWorkItemToAttention,
   decisionOwedToAttention,
-} from "../../attention/adapters";
+} from '../../attention/adapters';
 import {
   planItemsToAttention,
   reportTurnsToAttention,
@@ -58,20 +58,16 @@ import {
   dropConvertedPlanItems,
   dropDuplicateNeedsHumanWorkItems,
   dropDuplicateBlockedWorkItems,
-} from "../../attention/sources";
-import { buildAttentionGroups } from "../../attention/group";
-import {
-  applyTriage,
-  deriveAuthorization,
-  groupByTier,
-  type AttentionItem,
-} from "../../attention/types";
-import { readTriageByWorkspace } from "../../attention/triage-store";
-import { shapePlansAttention } from "./attention-shape";
-import { cachedRead, type CachedReadCtx } from "../../cache";
-import { conversationsScopeWorkspace } from "../coordination/conversations";
-import { runWithWorkspace } from "../../workspace-als";
-import { activeWorkspaceId } from "../../workspace-registry";
+} from '../../attention/sources';
+import { buildAttentionGroups } from '../../attention/group';
+import { applyTriage, deriveAuthorization, groupByTier, type AttentionItem } from '../../attention/types';
+import { readTriageByWorkspace } from '../../attention/triage-store';
+import { shapePlansAttention } from './attention-shape';
+import { cachedRead, type CachedReadCtx } from '../../cache';
+import { conversationsScopeWorkspace } from '../coordination/conversations';
+import { runWithWorkspace } from '../../workspace-als';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { ownerAttentionSourcesFor, type OwnerAttentionSource } from '../../interest-profiles';
 
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
@@ -101,7 +97,7 @@ const PLANS_ATTENTION_DEADLINE_MS = 45_000;
  *  failed read"): a deadline is just the whole-aggregate version of that same policy. */
 function emptyAttentionResult(): {
   groups: ReturnType<typeof buildAttentionGroups>;
-  tierCounts: ReturnType<typeof groupByTier>["counts"];
+  tierCounts: ReturnType<typeof groupByTier>['counts'];
   itemCount: number;
 } {
   return { groups: buildAttentionGroups([]), tierCounts: groupByTier([]).counts, itemCount: 0 };
@@ -112,35 +108,30 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe(
-      "Restrict the harness-scoped sources (smoke-fails) to one harness. Omit for workspace-wide.",
-    ),
-  includeArchived: z
-    .boolean()
-    .optional()
-    .describe("Include items from archived plans. Default false."),
+    .describe('Restrict the harness-scoped sources (smoke-fails) to one harness. Omit for workspace-wide.'),
+  includeArchived: z.boolean().optional().describe('Include items from archived plans. Default false.'),
   harness: harnessArg,
 });
 
 export default defineTool({
-  name: "plans:attention",
+  name: 'plans:attention',
   description:
     "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + operator <report> turns, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
   guidance: {
-    when: "You want everything awaiting the human / pickable, in one importance-sorted feed — the Planning tab inbox, or to find the single most-urgent open thing.",
+    when: 'You want everything awaiting the human / pickable, in one importance-sorted feed — the Planning tab inbox, or to find the single most-urgent open thing.',
     notWhen:
-      "You only need plan items (use plans:items), or the full structure of one plan (plans:get). For the orchestrator DONE-gate use plans:items { needsHuman: true }.",
+      'You only need plan items (use plans:items), or the full structure of one plan (plans:get). For the orchestrator DONE-gate use plans:items { needsHuman: true }.',
     chaining:
-      "plans:attention → act on an item via its kind (plans:set-status for plan items, coord:resolve for escalations).",
+      'plans:attention → act on an item via its kind (plans:set-status for plan items, coord:resolve for escalations).',
   },
-  capability: "plans:read",
+  capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
   // Sentinel-as-Herald: the Herald reads "what needs the user's eye on the plans"
   // to suggest what to work on next (paired with its plans:read cap). It only
   // READS here — acting on an item is still file-a-work_item + nudge-the-Queen.
-  agentRoles: [...SU_ROLES, "papercup"],
-  modality: ["text"],
+  agentRoles: [...SU_ROLES, 'papercup'],
+  modality: ['text'],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-013 — the first
   // exemplar). plans:attention is the strongest ROI target: ~9.6k tokens, ~19k
@@ -154,26 +145,22 @@ export default defineTool({
   // force-full-on-mismatch; first/stale/scope-change/over-age → a full snapshot.
   delta: {
     rows: (data) => {
-      const groups = (
-        data as { groups?: Array<{ items?: unknown[] }> } | null | undefined
-      )?.groups;
-      return Array.isArray(groups)
-        ? groups.flatMap((g) => (Array.isArray(g.items) ? g.items : []))
-        : null;
+      const groups = (data as { groups?: Array<{ items?: unknown[] }> } | null | undefined)?.groups;
+      return Array.isArray(groups) ? groups.flatMap((g) => (Array.isArray(g.items) ? g.items : [])) : null;
     },
     itemKey: (row) => (row as AttentionItem).id,
     itemKeyField: 'id',
     rowType: (row) => (row as AttentionItem).kind,
-    orderKey: "importance",
+    orderKey: 'importance',
     scope: (_args, ctx) => {
       const c = ctx as {
         workspaceId?: string;
         harnessSlug?: string | null;
         role?: string | null;
       };
-      return `${c.workspaceId ?? ""}:${c.harnessSlug ?? "*"}:${c.role ?? ""}`;
+      return `${c.workspaceId ?? ''}:${c.harnessSlug ?? '*'}:${c.role ?? ''}`;
     },
-    schemaVersion: "attn-v1",
+    schemaVersion: 'attn-v1',
     // Periodic forced-full reconciliation: a cursor older than 5 min reconciles to a
     // full snapshot, bounding any drift the harness's incremental merge accumulates.
     maxDeltaAge: 5 * 60_000,
@@ -183,8 +170,8 @@ export default defineTool({
   // attention-shape.ts); the UI (HTTP/sync path, no ctx_tier) reads full, and
   // the cache stores the UNSHAPED groups so one read serves every tier.
   shape: {
-    standard: (data) => shapePlansAttention(data, "standard"),
-    trimmed: (data) => shapePlansAttention(data, "trimmed"),
+    standard: (data) => shapePlansAttention(data, 'standard'),
+    trimmed: (data) => shapePlansAttention(data, 'trimmed'),
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
@@ -192,6 +179,11 @@ export default defineTool({
     const opts = await ctxToPlanSourceOpts(sctx);
     const harnessFilter = args.harnessSlug ?? null;
     const includeArchived = args.includeArchived === true;
+    // P-025 / D-019: invoking plans:attention is the owner-presence signal. The
+    // owner-present profile selects which EXISTING source legs participate; it
+    // does not arm a watch, wake the owner, poll, or create a second queue.
+    const ownerAttentionSources = new Set(ownerAttentionSourcesFor('owner-present'));
+    const ownerSourceEnabled = (source: OwnerAttentionSource): boolean => ownerAttentionSources.has(source);
 
     // WI-3348: which workspace partition the open-questions source (#9) reads.
     // coord:ask/ask-owner rows land under the ASKER's identity.workspaceId
@@ -203,8 +195,7 @@ export default defineTool({
     // SWR background refresh (which runs OUTSIDE the request ALS) still reads
     // the SAME partition the key names.
     const ctxWs = (ctx as { workspaceId?: string | null }).workspaceId?.trim();
-    const conversationsWorkspace =
-      ctxWs && ctxWs !== "*" ? ctxWs : conversationsScopeWorkspace();
+    const conversationsWorkspace = ctxWs && ctxWs !== '*' ? ctxWs : conversationsScopeWorkspace();
     // EI-1541: the general workspace-registry partition (harness_smoke_test's
     // own `workspace_id` scheme) resolved the SAME way — the request's
     // ctx.workspaceId when present, else the ambient activeWorkspaceId()
@@ -216,7 +207,7 @@ export default defineTool({
     // fell through to the process-global registry workspace whenever the
     // request's workspace wasn't ambiently threaded, leaking every OTHER
     // workspace's failing smoke tests into an isolated workspace's feed.
-    const smokeWorkspaceId = ctxWs && ctxWs !== "*" ? ctxWs : activeWorkspaceId();
+    const smokeWorkspaceId = ctxWs && ctxWs !== '*' ? ctxWs : activeWorkspaceId();
 
     // Cache the expensive ~10-source attention aggregation (cache-expensive-tool-reads
     // P-003). The feed is NON-principal-scoped: it always builds the HUMAN's attention
@@ -233,14 +224,14 @@ export default defineTool({
     const { groups, tierCounts, itemCount } = await cachedRead(
       ctx as CachedReadCtx,
       {
-        tool: "plans:attention",
+        tool: 'plans:attention',
         key: {
           harnessScope: (opts as { harnessSlug?: string }).harnessSlug ?? null,
           harnessFilter,
           includeArchived,
           conversationsWorkspace,
         },
-        tags: ["harness_plans", "plan_revisions", "plan_runs"],
+        tags: ['harness_plans', 'plan_revisions', 'plan_runs'],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
         // P-007/D-082: the read D-078 measured. :3070 runs 16 workers against
         // per-process L1s, so each paid its OWN cold build of this ~10-source
@@ -262,7 +253,7 @@ export default defineTool({
         // each pushed item can carry `occurredAt` for the Inbox card date
         // (inbox-pane-active-scope-dates-filters-2026-07-19).
         const tsOf = (v: unknown): string | number | null =>
-          typeof v === "string" || typeof v === "number" ? v : null;
+          typeof v === 'string' || typeof v === 'number' ? v : null;
         // plan-slug → harness, so coord escalations/messages that carry a plan_slug
         // but no recorded harness can still be scoped (backfills items raised before
         // coord:escalate/coord:send began recording the originating harness).
@@ -273,8 +264,7 @@ export default defineTool({
           const plans = await readAllPlans({ includeArchived, ...opts });
           const planItems = planItemsToAttention(plans, harnessFilter);
           for (const it of planItems) {
-            if (it.planSlug && it.harnessSlug)
-              planHarness.set(it.planSlug, it.harnessSlug);
+            if (it.planSlug && it.harnessSlug) planHarness.set(it.planSlug, it.harnessSlug);
           }
           items.push(...planItems);
         } catch {
@@ -285,16 +275,8 @@ export default defineTool({
         // stamped by coord:escalate / coord:send for harness-scoped agents), else
         // derived from its plan_slug, else null — a genuinely workspace-level item
         // (operator/SU/oracle broadcast) where a per-harness chat doesn't apply.
-        const resolveHarness = (
-          recHarness: unknown,
-          planSlug: string | null,
-        ): string | null => {
-          if (
-            typeof recHarness === "string" &&
-            recHarness &&
-            recHarness !== "*"
-          )
-            return recHarness;
+        const resolveHarness = (recHarness: unknown, planSlug: string | null): string | null => {
+          if (typeof recHarness === 'string' && recHarness && recHarness !== '*') return recHarness;
           return planSlug ? (planHarness.get(planSlug) ?? null) : null;
         };
 
@@ -316,50 +298,50 @@ export default defineTool({
         // silently falls through to the real implementation. If you add a source
         // that needs PG, prefer a dedicated helper module the test can mock by
         // path (see needs-human-work-items-source.ts) over another getOrgPg call.
-        const dbOrgImportP = import("@papercusp/db-org");
+        const dbOrgImportP = import('@papercusp/db-org');
         await Promise.all([
           // 2. Open coord escalations (workspace-level).
-          (async () => {
-            try {
-              const { listEscalations } =
-                await import("../coordination/escalations");
-              // EI-1541: listEscalations has no workspace param of its own — it
-              // reads through coordLog, whose PG backend resolves its partition
-              // from coordScopeWorkspace() -> activeWorkspaceId(), an AMBIENT
-              // (request-ALS) lookup. Pin that ALS to the workspace resolved up
-              // front (ctx.workspaceId, else the coord-plane fallback) for the
-              // duration of this call, mirroring source #9's WI-3348 fix below —
-              // otherwise a detached SWR background refresh (or any call that
-              // loses the request ALS) falls through to the global registry
-              // workspace and every isolated workspace's Overview/Working "NEEDS
-              // YOU" panel shows every OTHER workspace's open escalations.
-              const escs = await runWithWorkspace(conversationsWorkspace, () =>
-                listEscalations({ status: "open" }),
-              );
-              for (const e of escs) {
-                items.push({
-                  ...coordEscalationToAttention({
-                    msgId: e.msg_id,
-                    severity: e.severity,
-                    summary: typeof e.summary === "string" ? e.summary : "",
-                    body: typeof e.body === "string" ? e.body : undefined,
-                    planSlug:
-                      typeof e.plan_slug === "string" ? e.plan_slug : null,
-                    harnessSlug: resolveHarness(
-                      e.harnessSlug,
-                      typeof e.plan_slug === "string" ? e.plan_slug : null,
-                    ),
-                    options: Array.isArray(e.options) ? e.options : [],
-                    // The escalating agent — drives the "Message owner" action (D-005).
-                    from: typeof e.from === "string" ? e.from : null,
-                  }),
-                  occurredAt: toIsoOrNull(tsOf((e as { ts?: unknown }).ts)),
-                });
-              }
-            } catch {
-              /* best-effort */
-            }
-          })(),
+          ownerSourceEnabled('open-owner-escalations')
+            ? (async () => {
+                try {
+                  const { listEscalations } = await import('../coordination/escalations');
+                  // EI-1541: listEscalations has no workspace param of its own — it
+                  // reads through coordLog, whose PG backend resolves its partition
+                  // from coordScopeWorkspace() -> activeWorkspaceId(), an AMBIENT
+                  // (request-ALS) lookup. Pin that ALS to the workspace resolved up
+                  // front (ctx.workspaceId, else the coord-plane fallback) for the
+                  // duration of this call, mirroring source #9's WI-3348 fix below —
+                  // otherwise a detached SWR background refresh (or any call that
+                  // loses the request ALS) falls through to the global registry
+                  // workspace and every isolated workspace's Overview/Working "NEEDS
+                  // YOU" panel shows every OTHER workspace's open escalations.
+                  const escs = await runWithWorkspace(conversationsWorkspace, () =>
+                    listEscalations({ status: 'open' }),
+                  );
+                  for (const e of escs) {
+                    items.push({
+                      ...coordEscalationToAttention({
+                        msgId: e.msg_id,
+                        severity: e.severity,
+                        summary: typeof e.summary === 'string' ? e.summary : '',
+                        body: typeof e.body === 'string' ? e.body : undefined,
+                        planSlug: typeof e.plan_slug === 'string' ? e.plan_slug : null,
+                        harnessSlug: resolveHarness(
+                          e.harnessSlug,
+                          typeof e.plan_slug === 'string' ? e.plan_slug : null,
+                        ),
+                        options: Array.isArray(e.options) ? e.options : [],
+                        // The escalating agent — drives the "Message owner" action (D-005).
+                        from: typeof e.from === 'string' ? e.from : null,
+                      }),
+                      occurredAt: toIsoOrNull(tsOf((e as { ts?: unknown }).ts)),
+                    });
+                  }
+                } catch {
+                  /* best-effort */
+                }
+              })()
+            : Promise.resolve(),
 
           // 3. Coord messages addressed to the human (most recent, capped).
           //    Drop messages acked from the human's admin coord UI so "Acknowledge"
@@ -368,10 +350,8 @@ export default defineTool({
           //    can't suppress it from the human's inbox (security review).
           (async () => {
             try {
-              const { readInbox, readAckedMsgIds } =
-                await import("../coordination/messages");
-              const { ADMIN_COORD_UI_OWNER } =
-                await import("../coordination/identity");
+              const { readInbox, readAckedMsgIds } = await import('../coordination/messages');
+              const { ADMIN_COORD_UI_OWNER } = await import('../coordination/identity');
               // EI-1541: same coordLog ambient-workspace pitfall as source #2 —
               // pin the ALS so a detached SWR refresh can't fall through to the
               // global registry workspace and leak another workspace's
@@ -388,17 +368,11 @@ export default defineTool({
               // would surface older messages this view has deliberately never shown.
               // (`kinds` is applied inside readInbox, so `enough` already sees it.)
               const WINDOW = 50;
-              const [msgs, acked] = await runWithWorkspace(
-                conversationsWorkspace,
-                () =>
-                  Promise.all([
-                    readInbox(
-                      "human",
-                      { kinds: ["message"] },
-                      { enough: (entries) => entries.length >= WINDOW },
-                    ),
-                    readAckedMsgIds(ADMIN_COORD_UI_OWNER),
-                  ]),
+              const [msgs, acked] = await runWithWorkspace(conversationsWorkspace, () =>
+                Promise.all([
+                  readInbox('human', { kinds: ['message'] }, { enough: (entries) => entries.length >= WINDOW }),
+                  readAckedMsgIds(ADMIN_COORD_UI_OWNER),
+                ]),
               );
               for (const m of msgs.slice(-WINDOW)) {
                 if (acked.has(m.msg_id)) continue;
@@ -410,25 +384,18 @@ export default defineTool({
                 items.push({
                   ...coordMessageToAttention({
                     msgId: m.msg_id,
-                    summary:
-                      typeof m.summary === "string" ? m.summary : undefined,
-                    body: typeof m.body === "string" ? m.body : undefined,
+                    summary: typeof m.summary === 'string' ? m.summary : undefined,
+                    body: typeof m.body === 'string' ? m.body : undefined,
                     from: m.from,
-                    planSlug:
-                      typeof m.plan_slug === "string" ? m.plan_slug : null,
-                    harnessSlug: resolveHarness(
-                      m.harness_slug,
-                      typeof m.plan_slug === "string" ? m.plan_slug : null,
-                    ),
+                    planSlug: typeof m.plan_slug === 'string' ? m.plan_slug : null,
+                    harnessSlug: resolveHarness(m.harness_slug, typeof m.plan_slug === 'string' ? m.plan_slug : null),
                     // Structured lifecycle markers coord:emit stamps (D-003) — classify
                     // an auto lifecycle broadcast as Activity, not a Decision.
                     auto: mm.auto === true,
-                    lifecycle:
-                      typeof mm.lifecycle === "string" ? mm.lifecycle : null,
+                    lifecycle: typeof mm.lifecycle === 'string' ? mm.lifecycle : null,
                     // A message addressed DIRECTLY to the human (not solely a `*`
                     // broadcast) is a genuine ping → Decision.
-                    directToOwner:
-                      Array.isArray(m.to) && m.to.includes("human"),
+                    directToOwner: Array.isArray(m.to) && m.to.includes('human'),
                     // agent-report-cards-2026-07-17 P-002: a structured report card
                     // (coord:send `report`, stamped on the envelope) — passed RAW;
                     // the adapter re-validates it through parseReportBlock and
@@ -462,9 +429,7 @@ export default defineTool({
               const wid = smokeWorkspaceId;
               const hf = harnessFilter;
 
-              const smoke = await sql<
-                { harness_slug: string; failure_content: string | null }[]
-              >`
+              const smoke = await sql<{ harness_slug: string; failure_content: string | null }[]>`
             SELECT harness_slug, failure_content
               FROM harness_shared.harness_smoke_test
              WHERE workspace_id = ${wid}
@@ -490,8 +455,7 @@ export default defineTool({
           //    recent window + triage (resolve → handled) keep the feed clean (D-004).
           (async () => {
             try {
-              const { readRecentOperatorReports } =
-                await import("../../attention/operator-report-source");
+              const { readRecentOperatorReports } = await import('../../attention/operator-report-source');
               const reportTurns = await readRecentOperatorReports();
               items.push(...reportTurnsToAttention(reportTurns));
             } catch {
@@ -508,17 +472,14 @@ export default defineTool({
           //    Learning tab, operator-learning-tab D-001).
           (async () => {
             try {
-              const { readImprovementItems } =
-                await import("../../harness/improvements/read-items");
+              const { readImprovementItems } = await import('../../harness/improvements/read-items');
               const improvements = await readImprovementItems({
-                state: "open",
+                state: 'open',
                 ...(harnessFilter ? { harnessSlug: harnessFilter } : {}),
               });
               for (const c of improvements) {
                 if (c.needsHuman !== true) continue;
-                const slug = c.scope?.startsWith("harness:")
-                  ? c.scope.slice("harness:".length)
-                  : null;
+                const slug = c.scope?.startsWith('harness:') ? c.scope.slice('harness:'.length) : null;
                 items.push({
                   ...improvementToAttention({
                     issueId: c.id,
@@ -529,8 +490,7 @@ export default defineTool({
                   }),
                   occurredAt: toIsoOrNull(
                     tsOf(
-                      (c as { updatedAt?: unknown; createdAt?: unknown })
-                        .updatedAt ??
+                      (c as { updatedAt?: unknown; createdAt?: unknown }).updatedAt ??
                         (c as { createdAt?: unknown }).createdAt,
                     ),
                   ),
@@ -545,12 +505,10 @@ export default defineTool({
           //    in 24h). Cheap cached read — never re-queries audit_log here.
           (async () => {
             try {
-              const { readCandidates } =
-                await import("../../operator-standing-candidates");
+              const { readCandidates } = await import('../../operator-standing-candidates');
               const cands = await readCandidates();
               for (const s of cands) {
-                if (harnessFilter && s.targetHarness !== harnessFilter)
-                  continue;
+                if (harnessFilter && s.targetHarness !== harnessFilter) continue;
                 items.push({
                   ...standingApprovalToAttention({
                     capability: s.capability,
@@ -567,63 +525,53 @@ export default defineTool({
           })(),
 
           // 9. Open agent questions / coord:ask conversations awaiting an answer.
-          (async () => {
-            try {
-              const { listConversationsWithTopics } =
-                await import("../coordination/conversations");
-              // Pinned to the workspace resolved up front (and named in the cache
-              // key) — NOT the ambient ALS, which is absent on agent MCP calls and
-              // on SWR background refreshes and would fall to 'default' (WI-3348).
-              const convs = await runWithWorkspace(conversationsWorkspace, () =>
-                listConversationsWithTopics({
-                  kind: "question",
-                  state: "open",
-                  ...(harnessFilter ? { harness_slug: harnessFilter } : {}),
-                }),
-              );
-              for (const c of convs as unknown as Array<
-                Record<string, unknown>
-              >) {
-                // Already-answered (accepted) questions are not awaiting the human.
-                const answered =
-                  typeof c.accepted_answer === "string" &&
-                  c.accepted_answer.trim().length > 0;
-                if (answered) continue;
-                const id = typeof c.id === "string" ? c.id : null;
-                if (!id) continue;
-                items.push({
-                  ...conversationToAttention({
-                    conversationId: id,
-                    title:
-                      typeof c.title === "string" ? c.title : "Open question",
-                    body: typeof c.body === "string" ? c.body : null,
-                    askerId: typeof c.asker_id === "string" ? c.asker_id : null,
-                    harnessSlug: resolveHarness(c.harness_slug, null),
-                  }),
-                  // The conversation store maps its rows to updated_ts/created_ts
-                  // (conversations-store.ts) — NOT updated_at/created_at.
-                  occurredAt: toIsoOrNull(tsOf(c.updated_ts ?? c.created_ts)),
-                });
-              }
-            } catch {
-              /* best-effort */
-            }
-          })(),
+          ownerSourceEnabled('open-owner-questions')
+            ? (async () => {
+                try {
+                  const { listConversationsWithTopics } = await import('../coordination/conversations');
+                  // Pinned to the workspace resolved up front (and named in the cache
+                  // key) — NOT the ambient ALS, which is absent on agent MCP calls and
+                  // on SWR background refreshes and would fall to 'default' (WI-3348).
+                  const convs = await runWithWorkspace(conversationsWorkspace, () =>
+                    listConversationsWithTopics({
+                      kind: 'question',
+                      state: 'open',
+                      ...(harnessFilter ? { harness_slug: harnessFilter } : {}),
+                    }),
+                  );
+                  for (const c of convs as unknown as Array<Record<string, unknown>>) {
+                    // Already-answered (accepted) questions are not awaiting the human.
+                    const answered = typeof c.accepted_answer === 'string' && c.accepted_answer.trim().length > 0;
+                    if (answered) continue;
+                    const id = typeof c.id === 'string' ? c.id : null;
+                    if (!id) continue;
+                    items.push({
+                      ...conversationToAttention({
+                        conversationId: id,
+                        title: typeof c.title === 'string' ? c.title : 'Open question',
+                        body: typeof c.body === 'string' ? c.body : null,
+                        askerId: typeof c.asker_id === 'string' ? c.asker_id : null,
+                        harnessSlug: resolveHarness(c.harness_slug, null),
+                      }),
+                      // The conversation store maps its rows to updated_ts/created_ts
+                      // (conversations-store.ts) — NOT updated_at/created_at.
+                      occurredAt: toIsoOrNull(tsOf(c.updated_ts ?? c.created_ts)),
+                    });
+                  }
+                } catch {
+                  /* best-effort */
+                }
+              })()
+            : Promise.resolve(),
 
           // 10. Scout grading — ONE rollup nudge if any routed idea is ungraded
           //     (optional feedback, never one item per idea — there can be thousands).
           (async () => {
             try {
-              const { readRoutedIdeas } =
-                await import("../../scout/routed-ledger");
-              const routed = await readRoutedIdeas(
-                harnessFilter ? { harnessSlug: harnessFilter } : {},
-              );
-              const ungraded = routed.filter(
-                (r) => r.humanGrade === undefined,
-              ).length;
-              if (ungraded > 0)
-                items.push(scoutGradeToAttention({ count: ungraded }));
+              const { readRoutedIdeas } = await import('../../scout/routed-ledger');
+              const routed = await readRoutedIdeas(harnessFilter ? { harnessSlug: harnessFilter } : {});
+              const ungraded = routed.filter((r) => r.humanGrade === undefined).length;
+              if (ungraded > 0) items.push(scoutGradeToAttention({ count: ungraded }));
             } catch {
               /* best-effort */
             }
@@ -642,72 +590,70 @@ export default defineTool({
           //     resolved post-fan-out by `dropDuplicateNeedsHumanWorkItems` (D-008).
           //     The read lives in its own module (needs-human-work-items-source)
           //     so tests mock it by path like every other source.
-          (async () => {
-            try {
-              const { readNeedsHumanWorkItems } =
-                await import("../../attention/needs-human-work-items-source");
-              const rows = await readNeedsHumanWorkItems({
-                harness: harnessFilter,
-              });
-              for (const r of rows) {
-                items.push({
-                  ...workItemNeedsHumanToAttention({
-                    workItemId: r.feature_id,
-                    itemKind: r.item_kind ?? "unknown",
-                    title: r.title ?? r.feature_id,
-                    body: r.summary,
-                    harnessSlug: resolveHarness(r.harness_slug, null),
-                    ownerAgentId: r.taken_by,
-                  }),
-                  occurredAt: toIsoOrNull(r.updated_ts),
-                });
-              }
-            } catch {
-              /* best-effort */
-            }
-          })(),
+          ownerSourceEnabled('needs-human-work-items')
+            ? (async () => {
+                try {
+                  const { readNeedsHumanWorkItems } = await import('../../attention/needs-human-work-items-source');
+                  const rows = await readNeedsHumanWorkItems({
+                    harness: harnessFilter,
+                  });
+                  for (const r of rows) {
+                    items.push({
+                      ...workItemNeedsHumanToAttention({
+                        workItemId: r.feature_id,
+                        itemKind: r.item_kind ?? 'unknown',
+                        title: r.title ?? r.feature_id,
+                        body: r.summary,
+                        harnessSlug: resolveHarness(r.harness_slug, null),
+                        ownerAgentId: r.taken_by,
+                      }),
+                      occurredAt: toIsoOrNull(r.updated_ts),
+                    });
+                  }
+                } catch {
+                  /* best-effort */
+                }
+              })()
+            : Promise.resolve(),
 
           // 12. Registered owner-walls (P-005b) — the `coord:walls` union
           //     (loop:checkpoint carry-note walls + needs-human work-items),
           //     reused verbatim (reuse-first) so the SAME rows an owner would
           //     see via `coord:walls` also surface in the unified inbox.
-          (async () => {
-            try {
-              const { listOwnerWalls } =
-                await import("../coordination/tools/walls");
-              const { activeWorkspaceId } =
-                await import("../../workspace-registry");
-              const { walls } = await listOwnerWalls({
-                workspaceId: activeWorkspaceId(),
-                harness: harnessFilter ?? undefined,
-              });
-              for (const w of walls) {
-                items.push({
-                  ...ownerWallToAttention({
-                    source: w.source,
-                    ownerId: w.ownerId,
-                    harnessSlug: resolveHarness(w.harness, null),
-                    claim: w.claim,
-                    recheck: w.recheck ?? null,
-                    ref: w.ref ?? null,
-                    waitingHours: w.waitingHours,
-                    status: w.status,
-                  }),
-                  // A wall has no stored timestamp, but waitingHours is how long
-                  // it has been open — derive when it was raised.
-                  occurredAt:
-                    typeof w.waitingHours === "number" &&
-                    Number.isFinite(w.waitingHours)
-                      ? new Date(
-                          Date.now() - w.waitingHours * 3_600_000,
-                        ).toISOString()
-                      : null,
-                });
-              }
-            } catch {
-              /* best-effort */
-            }
-          })(),
+          ownerSourceEnabled('owner-walls')
+            ? (async () => {
+                try {
+                  const { listOwnerWalls } = await import('../coordination/tools/walls');
+                  const { activeWorkspaceId } = await import('../../workspace-registry');
+                  const { walls } = await listOwnerWalls({
+                    workspaceId: activeWorkspaceId(),
+                    harness: harnessFilter ?? undefined,
+                  });
+                  for (const w of walls) {
+                    items.push({
+                      ...ownerWallToAttention({
+                        source: w.source,
+                        ownerId: w.ownerId,
+                        harnessSlug: resolveHarness(w.harness, null),
+                        claim: w.claim,
+                        recheck: w.recheck ?? null,
+                        ref: w.ref ?? null,
+                        waitingHours: w.waitingHours,
+                        status: w.status,
+                      }),
+                      // A wall has no stored timestamp, but waitingHours is how long
+                      // it has been open — derive when it was raised.
+                      occurredAt:
+                        typeof w.waitingHours === 'number' && Number.isFinite(w.waitingHours)
+                          ? new Date(Date.now() - w.waitingHours * 3_600_000).toISOString()
+                          : null,
+                    });
+                  }
+                } catch {
+                  /* best-effort */
+                }
+              })()
+            : Promise.resolve(),
 
           // 13. Pending dark-flag ratifications (P-005c) — the KNOWN_DARK_FLAGS
           //     allowlist entries whose case genuinely awaits an owner action
@@ -717,10 +663,9 @@ export default defineTool({
           //     PostHog round-trip (bounding this leg's cost).
           (async () => {
             try {
-              const { DARK_FLAGS } = await import("@papercusp/flags");
+              const { DARK_FLAGS } = await import('@papercusp/flags');
               for (const [key, entry] of DARK_FLAGS) {
-                if (entry.case !== "owner-authority" && entry.case !== "cutover")
-                  continue;
+                if (entry.case !== 'owner-authority' && entry.case !== 'cutover') continue;
                 items.push(
                   darkFlagRatificationToAttention({
                     flagKey: key,
@@ -738,44 +683,40 @@ export default defineTool({
           //     the client-agnostic backstop for a client whose hook can't
           //     mirror an unstructured ask as a structured envelope (D-002 —
           //     Codex has no turn-end hook at all; this is its only path in).
-          (async () => {
-            try {
-              const { listPendingGates } =
-                await import("../../attention/gate-store");
-              const { activeWorkspaceId } =
-                await import("../../workspace-registry");
-              const gates = await listPendingGates({
-                workspaceId: activeWorkspaceId(),
-                order: "oldest",
-                limit: 100,
-              });
-              const now = Date.now();
-              for (const g of gates) {
-                if (harnessFilter && g.harness_slug && g.harness_slug !== harnessFilter)
-                  continue;
-                const openedMs = g.opened_at
-                  ? new Date(g.opened_at).getTime()
-                  : null;
-                const waitingHours =
-                  openedMs != null ? (now - openedMs) / 3_600_000 : null;
-                items.push({
-                  ...blockedSessionToAttention({
-                    sessionId: g.session_id,
-                    client: g.client,
-                    refId: g.ref_id,
-                    gateKind: g.kind,
-                    question: g.question,
-                    ownerAgentId: g.owner_id,
-                    harnessSlug: resolveHarness(g.harness_slug, null),
-                    waitingHours,
-                  }),
-                  occurredAt: toIsoOrNull(g.opened_at ?? null),
-                });
-              }
-            } catch {
-              /* best-effort */
-            }
-          })(),
+          ownerSourceEnabled('pending-owner-gates')
+            ? (async () => {
+                try {
+                  const { listPendingGates } = await import('../../attention/gate-store');
+                  const { activeWorkspaceId } = await import('../../workspace-registry');
+                  const gates = await listPendingGates({
+                    workspaceId: activeWorkspaceId(),
+                    order: 'oldest',
+                    limit: 100,
+                  });
+                  const now = Date.now();
+                  for (const g of gates) {
+                    if (harnessFilter && g.harness_slug && g.harness_slug !== harnessFilter) continue;
+                    const openedMs = g.opened_at ? new Date(g.opened_at).getTime() : null;
+                    const waitingHours = openedMs != null ? (now - openedMs) / 3_600_000 : null;
+                    items.push({
+                      ...blockedSessionToAttention({
+                        sessionId: g.session_id,
+                        client: g.client,
+                        refId: g.ref_id,
+                        gateKind: g.kind,
+                        question: g.question,
+                        ownerAgentId: g.owner_id,
+                        harnessSlug: resolveHarness(g.harness_slug, null),
+                        waitingHours,
+                      }),
+                      occurredAt: toIsoOrNull(g.opened_at ?? null),
+                    });
+                  }
+                } catch {
+                  /* best-effort */
+                }
+              })()
+            : Promise.resolve(),
 
           // 15. Blocked work-items of EVERY kind (curated-signal-cards P-001) —
           //     `status='blocked'` rows off the same cross-kind
@@ -788,8 +729,7 @@ export default defineTool({
           //     is work, not a triage verdict.
           (async () => {
             try {
-              const { readBlockedWorkItems } =
-                await import("../../attention/blocked-work-items-source");
+              const { readBlockedWorkItems } = await import('../../attention/blocked-work-items-source');
               const rows = await readBlockedWorkItems({
                 harness: harnessFilter,
               });
@@ -797,7 +737,7 @@ export default defineTool({
                 items.push({
                   ...blockedWorkItemToAttention({
                     workItemId: r.feature_id,
-                    itemKind: r.item_kind ?? "unknown",
+                    itemKind: r.item_kind ?? 'unknown',
                     title: r.title ?? r.feature_id,
                     reason: r.reason,
                     harnessSlug: resolveHarness(r.harness_slug, null),
@@ -805,9 +745,7 @@ export default defineTool({
                     // The curator emits this row's drill-in as
                     // `wi:<harness>#<featureId>`; carrying the same ref lets the
                     // shipped resolveInboxDrillIn select THIS card.
-                    curatorRef: r.harness_slug
-                      ? `${r.harness_slug}#${r.feature_id}`
-                      : null,
+                    curatorRef: r.harness_slug ? `${r.harness_slug}#${r.feature_id}` : null,
                   }),
                   occurredAt: toIsoOrNull(r.updated_ts),
                 });
@@ -824,8 +762,8 @@ export default defineTool({
           //     Alert tier — a nudge to review, never a governed decision.
           (async () => {
             try {
-              const { readDecisionsOwed } = await import("../../attention/decision-owed-source");
-              const { activeWorkspaceId } = await import("../../workspace-registry");
+              const { readDecisionsOwed } = await import('../../attention/decision-owed-source');
+              const { activeWorkspaceId } = await import('../../workspace-registry');
               const owed = await readDecisionsOwed({ workspaceId: activeWorkspaceId() });
               for (const d of owed) {
                 if (harnessFilter && d.harnessSlug && d.harnessSlug !== harnessFilter) continue;
@@ -874,8 +812,7 @@ export default defineTool({
         //     as a Queue decision/row. A needs-human DECISION always stays.
         //     Best-effort: a failed lookup leaves every item (no silent hiding).
         try {
-          const { listConvertedPlanItemRefs } =
-            await import("../../plan-items/convert");
+          const { listConvertedPlanItemRefs } = await import('../../plan-items/convert');
           // Deliberately UNSCOPED: the implements plane is split by family across two
           // workspaces (see listConvertedPlanItemRefs), so pinning this to one tenant —
           // including this request's own — makes the dedupe blind to a whole family and lets
@@ -915,14 +852,10 @@ export default defineTool({
         try {
           let armed = false;
           try {
-            const { FLAGS } = await import("@papercusp/flags");
-            const { getFlag } = await import("@papercusp/flags/server");
-            const { activeWorkspaceId } =
-              await import("../../workspace-registry");
-            armed = await getFlag(
-              FLAGS.MUG_AUTONOMY_ARMED,
-              `autonomy:${activeWorkspaceId()}`,
-            );
+            const { FLAGS } = await import('@papercusp/flags');
+            const { getFlag } = await import('@papercusp/flags/server');
+            const { activeWorkspaceId } = await import('../../workspace-registry');
+            armed = await getFlag(FLAGS.MUG_AUTONOMY_ARMED, `autonomy:${activeWorkspaceId()}`);
           } catch {
             /* fail-safe: treat as unarmed */
           }
@@ -944,7 +877,7 @@ export default defineTool({
       itemCount,
       groupCount: groups.length,
       decisions: tierCounts.decision,
-      scope: harnessFilter ?? "all",
+      scope: harnessFilter ?? 'all',
     });
 
     // {data} envelope so the payload-tier shapers apply; HTTP/sync consumers
