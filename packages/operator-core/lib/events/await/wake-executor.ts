@@ -1912,6 +1912,26 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return degradeToInboxOrDrop(d, 'session ended, not resumable, presence gone — dead waiter', sendCoordMessage);
     }
 
+    // A process-gone loop wake may arrive from an older adv-session row whose
+    // best-effort launch_spec was never persisted. The loop fire's marker carries
+    // the harness scope on current rows; fall back to the current loop routine for
+    // older markers (or ordinary wakes) so the resumed CLI's ptool/MCP scope is not
+    // left empty. Keep the DB read bounded and fail-soft: the persisted session
+    // scope remains the preferred source, and a wake must never stall on bookkeeping.
+    let resumeHarnessSlug = fresh?.harnessSlug ?? null;
+    if (!resumeHarnessSlug) {
+      const markerHarness = readColdLoopMarker(d.payload)?.harness;
+      resumeHarnessSlug = markerHarness ?? null;
+      if (!resumeHarnessSlug) {
+        const loopStatus = await withWakeTimeout(
+          (deps.getLoopStatusFn ?? getLoopStatus)(d.subscriberId),
+          `loop harness/${d.subscriberId}`,
+          1_000,
+        );
+        resumeHarnessSlug = loopStatus?.harnessSlug ?? null;
+      }
+    }
+
     const env: Record<string, string> = {
       PAPERCUSP_SID: d.subscriberId,
       // Scope the resumed agent's user-level MCP to the bee's workspace. omp's
@@ -1930,7 +1950,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // legs that already set this). The event delivery's workspace is the flat
       // coordination workspace; use the persisted session scope for the child.
       PAPERCUSP_WORKSPACE: sessionDelivery.workspaceId,
-      ...(fresh?.harnessSlug ? { PAPERCUSP_HARNESS_SLUG: fresh.harnessSlug } : {}),
+      ...(resumeHarnessSlug ? { PAPERCUSP_HARNESS_SLUG: resumeHarnessSlug } : {}),
       PAPERCUSP_WAKE_DELIVERY_ID: String(d.id),
       // MCP handshake headroom: under fleet load the operator's event loop can
       // stall past claude's default MCP connect timeout, and claude then marks

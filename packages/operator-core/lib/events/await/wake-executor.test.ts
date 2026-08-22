@@ -1138,6 +1138,37 @@ describe('executeWake — the liveness ladder', () => {
     expect(o.env.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
   });
 
+  it('falls back to the loop wake marker when the adv-session launch scope is absent', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ payload: { wakeCount: 1, harness: 'marker-harness' }, wakeHandle: advHandle() }),
+      deps({
+        getSession: vi.fn(async () => session({ harnessSlug: null })) as never,
+        alive: vi.fn(() => false),
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+    expect(o.env.PAPERCUSP_HARNESS_SLUG).toBe('marker-harness');
+  });
+
+  it('falls back to the current loop routine scope when the wake marker has no harness', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ payload: { carry: 'cold', wakeCount: 1 }, wakeHandle: advHandle() }),
+      deps({
+        getSession: vi.fn(async () => session({ harnessSlug: null })) as never,
+        getLoopStatusFn: vi.fn(async () => ({ harnessSlug: 'current-loop-harness' })) as never,
+        alive: vi.fn(() => false),
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+    expect(o.env.PAPERCUSP_HARNESS_SLUG).toBe('current-loop-harness');
+  });
+
   it('exited codex → DETACHED `exec resume <uuid>` with CODEX_HOME, uuid recovered from the rollout (P-009)', async () => {
     let onExit:
       | ((exit: { exitCode: number | null; signal: string | null; stdoutTail: string; stderrTail: string }) => void)
