@@ -101,6 +101,8 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     expect(countSurfacesSrc).not.toContain(
       'document.querySelector(".pc-learning__matchcount")',
     );
+    expect(countSurfacesSrc).not.toContain('"$P014_TAURI_TOOL" wait');
+    expect(countSurfacesSrc.match(/"\$P014_TAURI_POLL" \\\n  --eval/g)).toHaveLength(2);
     expect(countSurfacesSrc).toContain('.pc-learning__retained .pc-advpanel__count');
     expect(countSurfacesSrc).toContain('.pc-adv-gitgrid__count');
     expect(countSurfacesSrc).toContain('Filter option counts cover latest 300 events.');

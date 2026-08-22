@@ -114,10 +114,7 @@ P014_IMPROVE_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
   --clear \
   'input[aria-label="Search ideas and work"]' \
   "$P014_IMPROVE_SENTINEL" >/dev/null
-"$P014_TAURI_TOOL" wait \
-  --pid "$P014_TAURI_PID" \
-  --strict \
-  --timeout 30000 \
+"$P014_TAURI_POLL" \
   --eval 'document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim() === "0 of 0"'
 p014_assert '(() => { const e = document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount"); if (!e) return false; const visible = (e.textContent || "").trim(); const title = e.getAttribute("title") || ""; return visible === "0 of 0" && /^Exact server-authored match count over \d[\d,]* merged Improve rows; at most 500 rows cross the sync wire\.$/.test(title); })()'
 p014_console_clean
@@ -135,10 +132,7 @@ P014_RETAIN_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
   --clear \
   'input[aria-label="Filter retained items"]' \
   "$P014_RETAIN_SENTINEL" >/dev/null
-"$P014_TAURI_TOOL" wait \
-  --pid "$P014_TAURI_PID" \
-  --strict \
-  --timeout 30000 \
+"$P014_TAURI_POLL" \
   --eval 'document.querySelector(".pc-learning__retained .pc-advpanel__count")?.textContent?.trim()?.startsWith("0 of ") === true'
 p014_assert '(() => { const e = document.querySelector(".pc-learning__retained .pc-advpanel__count"); if (!e) return false; const visible = (e.textContent || "").trim(); const aria = e.getAttribute("aria-label") || ""; return /^0 of \d[\d,]* match$/.test(visible) && aria.startsWith(visible) && /complete selected Retain corpus/i.test(aria) && !/loaded/i.test(aria); })()'
 p014_console_clean
