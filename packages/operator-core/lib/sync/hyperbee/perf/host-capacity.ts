@@ -5,8 +5,8 @@
  * WHY THIS EXISTS (measured 2026-08-16, WI-39359):
  * The >64-peer `replication.sustained` ladder produced a convergence signal that
  * looked like a substrate mesh-formation defect and was NOT one. Each perf peer
- * child holds ~430-550MB RSS (`childRssPeak` p50), so an 80-peer mesh needs
- * ~38-42GB and a 96-peer mesh ~41-53GB of anonymous memory. On a shared box
+ * child held ~430-550MB RSS (`childRssPeak` p50) AT THAT TIME, so an 80-peer mesh
+ * needed ~38-42GB and a 96-peer mesh ~41-53GB of anonymous memory. On a shared box
  * already holding a large agent fleet, the run SELF-OVERSUBSCRIBED: one pass
  * began at loadavg 52 / PSI cpu some avg60 0.96% and ended at loadavg 265
  * (2.07x cpus) having moved 470,555 swap pages. Readers then miss the
@@ -29,17 +29,76 @@
  * the defect (serial per-reader deadline; convergence-budget drift; hyperswarm's
  * default `MAX_PEERS = 64`; now per-peer RSS vs host memory). Hence a guard
  * rather than a note: a note does not survive the next agent.
+ *
+ * ⚠ AND A FIFTH, 2026-08-22 (WI-40592) — THIS FILE ITSELF. The per-peer figure
+ * below was calibrated pre-no-PG-loader and then went stale, so the guard refused
+ * meshes the host could comfortably run and the refusal was being read as a
+ * PRODUCT ceiling ("shared-pot p2p converges at 64 peers") in a public-release
+ * GO/NO-GO. A guard is an instrument too. When this one's numbers and the
+ * substrate disagree, re-measure THIS FILE before concluding anything about the
+ * substrate — and see the measurement-envelope warning on `perPeerBytesFor`,
+ * because the way to make it a SIXTH is to quote an extrapolation as a result.
  */
 
 import { readFileSync } from 'node:fs';
 
 /**
- * Per-peer resident-memory budget. Anchored on the measured `childRssPeak` p50
- * across four >64-peer configs (429MB, 478MB, 525MB, 551MB); the default sits
- * near the low end deliberately, so the guard errs toward ALLOWING a run rather
- * than blocking a legitimate one.
+ * Per-peer resident memory is NOT a constant — it GROWS with the peer count,
+ * because each child holds a live connection to every other peer. Measured
+ * 2026-08-22 (WI-40592), post-no-PG-loader, `replication.sustained` at a fixed
+ * workload (rate:10, count:200), every leg passing BOTH `sloPassed` and
+ * `convergencePassed` so these are healthy-mesh numbers rather than degraded ones:
+ *
+ *     peers |  childRssPeak p50
+ *        4  |  167.8 MB
+ *       12  |  184.3 MB
+ *       24  |  190.2 MB
+ *       48  |  267.4 MB
+ *       64  |  285.0 MB
+ *
+ * WHY THIS REPLACED A SCALAR (and why re-scalarising it would be a REGRESSION):
+ * the previous model was `projectedBytes = peers x DEFAULT_PER_PEER_RSS_BYTES`,
+ * which ASSUMES per-peer cost is independent of peer count. The table falsifies
+ * that assumption, so the defect was the model's SHAPE, not merely its
+ * coefficient. That distinction is load-bearing: the obvious "fix" — dropping the
+ * stale 450MB to the freshly measured 285MB — would have permitted 137 peers on a
+ * 39.3GB budget, a mesh that actually costs ~58.6GB. A naive recalibration makes
+ * this guard MORE dangerous than the stale constant it replaces, because it newly
+ * admits exactly the runs that swap. Anyone tempted to collapse this back to one
+ * number should re-read that sentence.
+ *
+ * The old 450MB was measured PRE-loader (429/478/525/551MB across four >64-peer
+ * configs). The no-PG loader (child-driver.ts, `!cfg.hivePubkey`) cut per-peer RSS
+ * by ~144MB at 64 peers, and this file was never revisited — a stale constant, not
+ * a substrate ceiling.
+ *
+ * COEFFICIENTS ARE DELIBERATELY CONSERVATIVE. A capacity guard must never
+ * UNDER-estimate: under-estimating admits a mesh that then evicts other agents'
+ * working set and swaps, which is the failure this whole file exists to prevent
+ * (loadavg 52 -> 265, 470,555 swap pages moved). So these are not a least-squares
+ * fit — a least-squares line runs BELOW the 48-peer point. They are chosen so the
+ * model sits at or above every measured point (+2% to +14%).
  */
-export const DEFAULT_PER_PEER_RSS_BYTES = 450_000_000;
+export const PER_PEER_BASE_BYTES = 162_000_000;
+
+/**
+ * Marginal cost of each additional peer in the mesh, from the same measurement.
+ * Kept separate from the base so a re-measurement can move one without the other.
+ */
+export const PER_PEER_GROWTH_BYTES_PER_PEER = 2_300_000;
+
+/**
+ * Projected resident memory for ONE child in a mesh of `peers` total processes.
+ *
+ * ⚠ MEASUREMENT ENVELOPE: anchored on 4-64 peers. Above 64 this EXTRAPOLATES, and
+ * the extrapolation is explicitly not validated — the growth was non-monotonic in
+ * the measured range (per-peer slopes 2.06, 0.49, 3.22, 1.10 MB/peer), so treat a
+ * >64 projection as an engineering estimate rather than a result. It is quoted in
+ * the refusal text for exactly that reason: so a caller can check it, not trust it.
+ */
+export function perPeerBytesFor(peers: number): number {
+  return PER_PEER_BASE_BYTES + PER_PEER_GROWTH_BYTES_PER_PEER * peers;
+}
 
 /**
  * Fraction of `MemAvailable` a mesh may claim.
@@ -77,7 +136,10 @@ export function decideMeshCapacity(input: {
   perPeerBytes?: number;
   availableFraction?: number;
 }): MeshCapacityDecision {
-  const perPeer = input.perPeerBytes ?? DEFAULT_PER_PEER_RSS_BYTES;
+  // An explicit override stays SCALAR: an operator saying "my peers cost X" is
+  // asserting a flat figure, and silently applying growth on top of it would
+  // quietly refuse the run they deliberately asked for.
+  const perPeer = input.perPeerBytes ?? perPeerBytesFor(input.peers);
   const fraction = input.availableFraction ?? DEFAULT_AVAILABLE_FRACTION;
   const projectedBytes = input.peers * perPeer;
 
@@ -95,7 +157,9 @@ export function decideMeshCapacity(input: {
     budgetBytes,
     reason:
       `host cannot fit a ${input.peers}-peer proc mesh: needs ~${gb(projectedBytes)} ` +
-      `(${input.peers} x ~${gb(perPeer)}/peer, measured childRssPeak p50) but only ` +
+      `(${input.peers} x ~${gb(perPeer)}/peer at this peer count${
+        input.perPeerBytes === undefined && input.peers > 64 ? ', EXTRAPOLATED past the 64-peer measurement envelope' : ''
+      }) but only ` +
       `${gb(budgetBytes)} is safely claimable (${(fraction * 100).toFixed(0)}% of ` +
       `MemAvailable ${gb(input.availableBytes)}). Running anyway would swap, and a ` +
       `swapped reader misses the convergence budget for reasons that have NOTHING to ` +
