@@ -22,6 +22,109 @@ export type RequiredAncestorPreflight = {
   detail?: string;
 };
 
+export type FrozenRepairQueuePreflight = {
+  /** True when the detached writer can reach a suite-producing path. */
+  proceed: boolean;
+  reason: 'clear' | 'repair-in-progress' | 'queue-unreadable';
+  candidate: string | null;
+  repairQueue: FrozenCandidateRepairQueue | null;
+  queueDecision: FrozenRepairQueueDecision['kind'] | null;
+  nextAttempt: number | null;
+  fixerSpawnId: string | null;
+  fixerAlive: boolean | null;
+  detail?: string;
+};
+
+type FrozenRepairQueueState = {
+  repairQueue: FrozenCandidateRepairQueue | null;
+  queueDecision: FrozenRepairQueueDecision;
+  fixerAlive: boolean | null;
+};
+
+/**
+ * Read the same persisted queue and fixer liveness used by the detached checkpoint writer.
+ * Keeping this read beside the required-ancestor guard prevents the manual launcher from
+ * inventing a second queue policy.
+ */
+async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
+  const [
+    { activeWorkspaceId },
+    { operatorHomeHarnessSlug },
+    { readFrozenCandidateRepairQueue, releaseFixerSpawnAlive },
+  ] = await Promise.all([
+    import('../workspace-registry'),
+    import('../harness/operator-home-harness'),
+    import('../harness/routines/release-actions'),
+  ]);
+  const repairQueue = await readFrozenCandidateRepairQueue({
+    workspaceId: activeWorkspaceId(),
+    installSlug: operatorHomeHarnessSlug(),
+  });
+
+  let fixerAlive: boolean | null = null;
+  if (repairQueue?.phase === 'awaiting-fixer' && repairQueue.fixerSpawnId) {
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, repairQueue.fixerSpawnId);
+    } catch {
+      // Liveness UNKNOWN must preserve the queue and refuse a launch that could short-circuit.
+      fixerAlive = null;
+    }
+  }
+
+  return {
+    repairQueue,
+    fixerAlive,
+    queueDecision: decideFrozenCandidateRepairQueue(repairQueue, { nowMs: Date.now(), fixerAlive }),
+  };
+}
+
+/**
+ * Guard an ordinary detached launch against queue states whose writer returns
+ * `repair-in-progress` without running a suite. The writer's `abandon-repair` and
+ * `verify-repair` decisions continue into a suite-producing path, so they are allowed here;
+ * every other queue decision refuses before the systemd unit is created.
+ */
+export async function assessFrozenRepairQueuePreflight(): Promise<FrozenRepairQueuePreflight> {
+  let repairQueue: FrozenCandidateRepairQueue | null = null;
+  let fixerAlive: boolean | null = null;
+  try {
+    const state = await readFrozenRepairQueueState();
+    repairQueue = state.repairQueue;
+    fixerAlive = state.fixerAlive;
+    const { queueDecision } = state;
+    const suiteProducingDecision =
+      queueDecision.kind === 'run-normal-gate' ||
+      queueDecision.kind === 'verify-repair' ||
+      queueDecision.kind === 'abandon-repair';
+    return {
+      proceed: suiteProducingDecision,
+      reason: suiteProducingDecision ? 'clear' : 'repair-in-progress',
+      candidate: repairQueue?.repairHead ?? null,
+      repairQueue,
+      queueDecision: queueDecision.kind,
+      nextAttempt: queueDecision.kind === 'dispatch-fixer' ? queueDecision.nextAttempt : null,
+      fixerSpawnId: repairQueue?.fixerSpawnId ?? null,
+      fixerAlive,
+      ...(!suiteProducingDecision
+        ? { detail: `frozen repair policy chose ${queueDecision.kind}; the writer will not run a suite` }
+        : {}),
+    };
+  } catch (error) {
+    return {
+      proceed: false,
+      reason: 'queue-unreadable',
+      candidate: null,
+      repairQueue,
+      queueDecision: null,
+      nextAttempt: null,
+      fixerSpawnId: null,
+      fixerAlive,
+      detail: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+    };
+  }
+}
+
 /**
  * Resolve and verify the candidate a detached checkpoint writer will use when a caller
  * supplies a release-critical required ancestor. The durable eligibility waiter calls this
@@ -37,30 +140,10 @@ export async function assessRequiredAncestorPreflight(
   let fixerAlive: boolean | null = null;
   let queueDecision: FrozenRepairQueueDecision;
   try {
-    const [
-      { activeWorkspaceId },
-      { operatorHomeHarnessSlug },
-      { readFrozenCandidateRepairQueue, releaseFixerSpawnAlive },
-    ] = await Promise.all([
-      import('../workspace-registry'),
-      import('../harness/operator-home-harness'),
-      import('../harness/routines/release-actions'),
-    ]);
-    repairQueue = await readFrozenCandidateRepairQueue({
-      workspaceId: activeWorkspaceId(),
-      installSlug: operatorHomeHarnessSlug(),
-    });
-
-    if (repairQueue?.phase === 'awaiting-fixer' && repairQueue.fixerSpawnId) {
-      try {
-        const { getOrgPg } = await import('@papercusp/db-org');
-        fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, repairQueue.fixerSpawnId);
-      } catch {
-        // Liveness UNKNOWN must preserve the queue and refuse this exact-lineage launch.
-        fixerAlive = null;
-      }
-    }
-    queueDecision = decideFrozenCandidateRepairQueue(repairQueue, { nowMs: Date.now(), fixerAlive });
+    const state = await readFrozenRepairQueueState();
+    repairQueue = state.repairQueue;
+    fixerAlive = state.fixerAlive;
+    queueDecision = state.queueDecision;
   } catch (error) {
     return {
       ok: false,
