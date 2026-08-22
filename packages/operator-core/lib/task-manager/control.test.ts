@@ -4,6 +4,8 @@ import type { TaskRow, TaskState } from './types';
 const store = vi.hoisted(() => ({
   rows: new Map<string, TaskRow>(),
   closed: [] as { taskId: string; state: string; reason: string | null }[],
+  limitUpdates: [] as { taskId: string; limits: { memoryMaxBytes?: number; cpuWeight?: number; tasksMax?: number } }[],
+  persistLimits: true,
 }));
 
 vi.mock('./store', () => ({
@@ -11,6 +13,17 @@ vi.mock('./store', () => ({
   getSubtree: async (rootId: string) => [...store.rows.values()].filter((r) => r.rootTaskId === rootId),
   closeTask: async (id: string, input: { state: string; exitReason?: string | null }) => {
     store.closed.push({ taskId: id, state: input.state, reason: input.exitReason ?? null });
+    return true;
+  },
+  updateTaskLimits: async (
+    id: string,
+    limits: { memoryMaxBytes?: number; cpuWeight?: number; tasksMax?: number },
+  ) => {
+    if (!store.persistLimits) return false;
+    const current = store.rows.get(id);
+    if (!current || current.endedAt) return false;
+    Object.assign(current, limits);
+    store.limitUpdates.push({ taskId: id, limits });
     return true;
   },
 }));
@@ -41,6 +54,8 @@ function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
 beforeEach(() => {
   store.rows.clear();
   store.closed.length = 0;
+  store.limitUpdates.length = 0;
+  store.persistLimits = true;
 });
 
 describe('verifyPidStillOurs — the recycled-pid rail', () => {
@@ -547,6 +562,27 @@ describe('limitTask', () => {
       'CPUWeight=20',
       'TasksMax=512',
     ]);
+    expect(store.limitUpdates).toEqual([
+      {
+        taskId: 'f1',
+        limits: { memoryMaxBytes: 2_147_483_648, cpuWeight: 20, tasksMax: 512 },
+      },
+    ]);
+    expect(store.rows.get('f1')).toMatchObject({
+      memoryMaxBytes: 2_147_483_648,
+      cpuWeight: 20,
+      tasksMax: 512,
+    });
+  });
+
+  it('reports a persistence failure instead of claiming success after systemd changed the scope', async () => {
+    row({ taskId: 'f1-ledger-failure' });
+    store.persistLimits = false;
+    const out = await limitTask('f1-ledger-failure', { memoryMaxBytes: 2_147_483_648 }, {
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, taskId: 'f1-ledger-failure', error: 'persistence_failed' });
+    expect((out as { detail: string }).detail).toMatch(/systemd accepted MemoryMax=2147483648/);
   });
 
   it('rejects an empty budget rather than issuing a no-op command', async () => {

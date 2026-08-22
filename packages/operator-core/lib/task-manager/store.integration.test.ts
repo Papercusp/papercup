@@ -148,6 +148,63 @@ describe('registerTask unit identity', () => {
   });
 });
 
+describe('updateTaskLimits', () => {
+  it('persists every runtime budget field so the processes:list ledger read reflects systemd changes', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, cpu_weight, tasks_max, detail
+      ) VALUES (
+        't-limits', ${WS}, 't-limits', 'other', 'runtime limits',
+        '[]'::jsonb, 'test', true, 'running', 100, 512, '{}'::jsonb
+      )
+    `;
+
+    await expect(
+      store.updateTaskLimits('t-limits', {
+        memoryMaxBytes: 6_442_450_944,
+        cpuWeight: 20,
+        tasksMax: 256,
+      }),
+    ).resolves.toBe(true);
+
+    const [row] = await db.sql`
+      SELECT memory_max_bytes::text, cpu_weight::text, tasks_max::text
+        FROM harness_shared.task_ledger
+       WHERE task_id = 't-limits'
+    `;
+    expect(row).toEqual({
+      memory_max_bytes: '6442450944',
+      cpu_weight: '20',
+      tasks_max: '256',
+    });
+  });
+
+  it('retains omitted budget fields during a partial runtime retune', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, memory_max_bytes, cpu_weight, tasks_max, detail
+      ) VALUES (
+        't-limits-partial', ${WS}, 't-limits-partial', 'other', 'partial runtime limits',
+        '[]'::jsonb, 'test', true, 'running', 1024, 100, 512, '{}'::jsonb
+      )
+    `;
+
+    await expect(store.updateTaskLimits('t-limits-partial', { cpuWeight: 40 })).resolves.toBe(true);
+    const [row] = await db.sql`
+      SELECT memory_max_bytes::text, cpu_weight::text, tasks_max::text
+        FROM harness_shared.task_ledger
+       WHERE task_id = 't-limits-partial'
+    `;
+    expect(row).toEqual({
+      memory_max_bytes: '1024',
+      cpu_weight: '40',
+      tasks_max: '512',
+    });
+  });
+});
+
 /**
  * D-014 (process-lifecycle-no-orphans-2026-08-02). `markSpawned` stamps the
  * unconfined REASON into `detail`, which is shared jsonb other writers already use —

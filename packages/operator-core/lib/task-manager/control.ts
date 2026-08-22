@@ -25,7 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
-import { closeTask, getSubtree, getTask } from './store';
+import { closeTask, getSubtree, getTask, updateTaskLimits } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
@@ -60,6 +60,7 @@ export type ControlError =
   | 'no_target' // neither a scope nor a verifiable pid
   | 'unsupported' // e.g. freeze on an unconfined task
   | 'command_failed'
+  | 'persistence_failed' // systemd accepted a change, but the ledger did not record it
   | 'incomplete'; // signal(s) sent, but the scope still holds processes after the verification window (EI-19478780721557822) — never `ok:true` on a bare "signalled"
 
 export type ScopeControlOutcome =
@@ -634,14 +635,51 @@ export async function limitTask(
     };
   }
   const props: string[] = [];
-  if (limits.memoryMaxBytes != null) props.push(`MemoryMax=${Math.floor(limits.memoryMaxBytes)}`);
-  if (limits.cpuWeight != null) props.push(`CPUWeight=${Math.floor(limits.cpuWeight)}`);
-  if (limits.tasksMax != null) props.push(`TasksMax=${Math.floor(limits.tasksMax)}`);
+  const appliedLimits: {
+    memoryMaxBytes?: number;
+    cpuWeight?: number;
+    tasksMax?: number;
+  } = {};
+  if (limits.memoryMaxBytes != null) {
+    appliedLimits.memoryMaxBytes = Math.floor(limits.memoryMaxBytes);
+    props.push(`MemoryMax=${appliedLimits.memoryMaxBytes}`);
+  }
+  if (limits.cpuWeight != null) {
+    appliedLimits.cpuWeight = Math.floor(limits.cpuWeight);
+    props.push(`CPUWeight=${appliedLimits.cpuWeight}`);
+  }
+  if (limits.tasksMax != null) {
+    appliedLimits.tasksMax = Math.floor(limits.tasksMax);
+    props.push(`TasksMax=${appliedLimits.tasksMax}`);
+  }
   if (props.length === 0) {
     return { ok: false, taskId, action: 'limit', error: 'no_target', detail: 'no limits supplied' };
   }
   const res = await systemctl(['set-property', '--runtime', row.scopeUnit, ...props], d);
-  return res.ok
-    ? { ok: true, taskId, action: 'limit', detail: props.join(' ') }
-    : { ok: false, taskId, action: 'limit', error: 'command_failed', detail: res.detail };
+  if (!res.ok) {
+    return { ok: false, taskId, action: 'limit', error: 'command_failed', detail: res.detail };
+  }
+
+  try {
+    const persisted = await updateTaskLimits(taskId, appliedLimits);
+    if (!persisted) {
+      return {
+        ok: false,
+        taskId,
+        action: 'limit',
+        error: 'persistence_failed',
+        detail: `systemd accepted ${props.join(' ')}, but the live task ledger did not record the change`,
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      taskId,
+      action: 'limit',
+      error: 'persistence_failed',
+      detail: `systemd accepted ${props.join(' ')}, but persisting the live task ledger failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  return { ok: true, taskId, action: 'limit', detail: props.join(' ') };
 }

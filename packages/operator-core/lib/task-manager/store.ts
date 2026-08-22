@@ -352,6 +352,46 @@ export async function getTask(taskId: string, inject?: Sql): Promise<TaskRow | n
   return rows[0] ? toRow(rows[0]) : null;
 }
 
+/** Persist a budget accepted by systemd for a live task. Omitted fields retain
+ * their current ledger values so a CPU-only retune cannot erase MemoryMax. */
+export interface TaskLimitUpdate {
+  memoryMaxBytes?: number;
+  cpuWeight?: number;
+  tasksMax?: number;
+}
+
+export async function updateTaskLimits(
+  taskId: string,
+  limits: TaskLimitUpdate,
+  inject?: Sql,
+): Promise<boolean> {
+  const sql = sqlOf(inject);
+  const rows = await sql`
+    UPDATE harness_shared.task_ledger
+       SET memory_max_bytes = CASE
+                                 WHEN ${limits.memoryMaxBytes === undefined}
+                                   THEN memory_max_bytes
+                                 ELSE ${limits.memoryMaxBytes ?? null}
+                               END,
+           cpu_weight = CASE
+                          WHEN ${limits.cpuWeight === undefined}
+                            THEN cpu_weight
+                          ELSE ${limits.cpuWeight ?? null}
+                        END,
+           tasks_max = CASE
+                         WHEN ${limits.tasksMax === undefined}
+                           THEN tasks_max
+                         ELSE ${limits.tasksMax ?? null}
+                       END,
+           updated_at = now()
+     WHERE task_id = ${taskId}
+       AND state IN ('pending', 'running')
+       AND ended_at IS NULL
+     RETURNING task_id
+  `;
+  return rows.length > 0;
+}
+
 /**
  * EI-18759519171684432: look up a `capability:bash` background job's ledger row by
  * its `bash_id` (the id `bash-jobs.ts`'s in-memory JOBS map keys on — a DIFFERENT
