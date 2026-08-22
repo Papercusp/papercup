@@ -37,7 +37,13 @@
  * that flag is why it exists.
  */
 
-import { attachListMeta } from './list-meta';
+import {
+  composeCompanionSummary,
+  type CompanionListSummary,
+  type CompanionSummaryAggregateRow,
+  type FacetSelection,
+} from '@papercusp/facets';
+import { attachListMeta, attachListPageMeta } from './list-meta';
 import { createReadDeadline } from './read-deadline';
 import { reasonOf } from './degraded-snapshot';
 
@@ -76,6 +82,88 @@ export interface BoundedListRead<Row extends object> {
   budgetMs?: number;
 }
 
+/** One bounded keyset page before it is flattened onto the sync wire. */
+export interface BoundedListPage<Row extends object> {
+  rows: Row[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  /** Cursor used to request this page; equality with `nextCursor` is no growth. */
+  previousCursor?: string | null;
+}
+
+export interface BoundedListPageRead<Row extends object> {
+  /** One database read that returns the rows and their keyset exhaustion state. */
+  page: Promise<BoundedListPage<Row>>;
+  label: string;
+  budgetMs?: number;
+}
+
+export interface CompanionSummaryRead<M = unknown> {
+  /** Rows from ONE aggregate statement (GROUPING SETS or equivalent). */
+  aggregateRows: Promise<readonly CompanionSummaryAggregateRow<M>[]>;
+  label: string;
+  selection?: FacetSelection;
+  budgetMs?: number;
+}
+
+/** Minimal validator shape shared with the sync named-query registry. */
+export interface CompanionArgsValidator<A> {
+  parse(input: unknown): A;
+}
+
+/**
+ * A registry-compatible entry. Kept structural so this helper extends the
+ * existing resolver registry without importing its large domain module.
+ */
+export interface CompanionQueryEntry<A> {
+  argsSchema?: CompanionArgsValidator<A>;
+  backingTables: readonly string[];
+  resolve: (args: A) => Promise<unknown[]>;
+}
+
+export interface CompanionQueryContext<NormalizedArgs, Predicate> {
+  args: NormalizedArgs;
+  predicate: Predicate;
+}
+
+export interface CompanionListQueryPairConfig<
+  WireArgs,
+  NormalizedArgs,
+  Predicate,
+  Row extends object,
+  M = unknown,
+> {
+  /** Domain prefix for the required `<domain>.summary` companion name. */
+  domain: string;
+  /** Existing bounded row query name (for example `workItems.byHarness`). */
+  rowsQueryName: string;
+  argsSchema?: CompanionArgsValidator<WireArgs>;
+  /** One shared set makes row/summary invalidation coverage structurally equal. */
+  backingTables: readonly string[];
+  /** Canonicalize wire args once before either query compiles its predicate. */
+  normalizeArgs: (args: WireArgs) => NormalizedArgs;
+  /** Compile the one predicate object consumed by rows and every aggregate leg. */
+  buildPredicate: (args: NormalizedArgs) => Predicate;
+  readPage: (
+    context: CompanionQueryContext<NormalizedArgs, Predicate>,
+  ) => Promise<BoundedListPage<Row>>;
+  /** Must execute one aggregate statement and return its flat aggregate rows. */
+  readSummaryAggregateRows: (
+    context: CompanionQueryContext<NormalizedArgs, Predicate>,
+  ) => Promise<readonly CompanionSummaryAggregateRow<M>[]>;
+  summarySelection?: (args: NormalizedArgs) => FacetSelection | undefined;
+  budgetMs?: number;
+}
+
+export interface CompanionListQueryPair<WireArgs> {
+  rowsQueryName: string;
+  summaryQueryName: string;
+  /** Register/bridge both names for every backing-table write. */
+  invalidationQueryNames: readonly [string, string];
+  rowsEntry: CompanionQueryEntry<WireArgs>;
+  summaryEntry: CompanionQueryEntry<WireArgs>;
+}
+
 /**
  * Run a rows+count list read under one shared deadline and return the rows with
  * their list `_meta` attached.
@@ -102,4 +190,100 @@ export async function readBoundedList<Row extends object>(
     rowList,
     total == null ? { totalUnavailable: true } : { total },
   );
+}
+
+/**
+ * Resolve one keyset page under the shared read deadline and carry its cursor
+ * state on the flat row array. No-growth pages are normalized to exhausted by
+ * {@link attachListPageMeta}.
+ */
+export async function readBoundedListPage<Row extends object>(
+  read: BoundedListPageRead<Row>,
+): Promise<Row[]> {
+  const { page, label, budgetMs = LIST_READ_BUDGET_MS } = read;
+  const withinBudget = createReadDeadline(budgetMs);
+  const result = await withinBudget(page, `${label} rows`);
+  return attachListPageMeta(result.rows, {
+    nextCursor: result.nextCursor,
+    hasMore: result.hasMore,
+    previousCursor: result.previousCursor,
+  });
+}
+
+/**
+ * Resolve one companion aggregate under the shared deadline and return exactly
+ * one sync row. A zero-match corpus still returns that row; aggregate failure
+ * propagates so the client renders `unknown` instead of a page-length fallback.
+ */
+export async function readCompanionSummary<M = unknown>(
+  read: CompanionSummaryRead<M>,
+): Promise<[CompanionListSummary<M>]> {
+  const { aggregateRows, label, selection, budgetMs = LIST_READ_BUDGET_MS } = read;
+  const withinBudget = createReadDeadline(budgetMs);
+  const rows = await withinBudget(aggregateRows, `${label} summary`);
+  return [composeCompanionSummary(rows, { selection })];
+}
+
+/**
+ * Create the two registry entries for a bounded row query and its paired
+ * `<domain>.summary` query.
+ *
+ * Both entries close over the SAME normalizer, predicate compiler, args schema,
+ * backing-table array, and invalidation name tuple. A domain supplies only its
+ * SQL readers. This is the mechanical seam that prevents a row predicate or
+ * invalidation source from drifting independently of its totals/facets.
+ */
+export function createCompanionListQueryPair<
+  WireArgs,
+  NormalizedArgs,
+  Predicate,
+  Row extends object,
+  M = unknown,
+>(
+  config: CompanionListQueryPairConfig<WireArgs, NormalizedArgs, Predicate, Row, M>,
+): CompanionListQueryPair<WireArgs> {
+  if (!config.domain || config.domain.split('.').some((segment) => segment.length === 0)) {
+    throw new Error('companion summary domain must contain only non-empty query-name segments');
+  }
+  if (!config.rowsQueryName || config.rowsQueryName === `${config.domain}.summary`) {
+    throw new Error('companion rows query name must be non-empty and distinct from the summary');
+  }
+
+  const summaryQueryName = `${config.domain}.summary`;
+  const context = (args: WireArgs): CompanionQueryContext<NormalizedArgs, Predicate> => {
+    const normalized = config.normalizeArgs(args);
+    return { args: normalized, predicate: config.buildPredicate(normalized) };
+  };
+
+  const rowsEntry: CompanionQueryEntry<WireArgs> = {
+    argsSchema: config.argsSchema,
+    backingTables: config.backingTables,
+    resolve: (args) =>
+      readBoundedListPage({
+        page: config.readPage(context(args)),
+        label: config.rowsQueryName,
+        budgetMs: config.budgetMs,
+      }),
+  };
+  const summaryEntry: CompanionQueryEntry<WireArgs> = {
+    argsSchema: config.argsSchema,
+    backingTables: config.backingTables,
+    resolve: (args) => {
+      const ctx = context(args);
+      return readCompanionSummary({
+        aggregateRows: config.readSummaryAggregateRows(ctx),
+        label: summaryQueryName,
+        selection: config.summarySelection?.(ctx.args),
+        budgetMs: config.budgetMs,
+      });
+    },
+  };
+
+  return {
+    rowsQueryName: config.rowsQueryName,
+    summaryQueryName,
+    invalidationQueryNames: [config.rowsQueryName, summaryQueryName],
+    rowsEntry,
+    summaryEntry,
+  };
 }

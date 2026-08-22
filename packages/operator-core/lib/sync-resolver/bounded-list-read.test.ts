@@ -18,8 +18,14 @@ import { describe, it, expect, vi } from 'vitest';
  * being produced by mutating the tree.
  */
 
-import { readBoundedList, LIST_READ_BUDGET_MS } from './bounded-list-read';
-import { readListMeta } from './list-meta';
+import {
+  createCompanionListQueryPair,
+  readBoundedList,
+  readBoundedListPage,
+  readCompanionSummary,
+  LIST_READ_BUDGET_MS,
+} from './bounded-list-read';
+import { readListHasMore, readListMeta } from './list-meta';
 
 /** A store read that never settles — the wedge, not a rejection. */
 const hang = () => new Promise<never>(() => {});
@@ -156,5 +162,105 @@ describe('readBoundedList — the shared rows+count deadline (WI-39825)', () => 
     const rows = outcome.kind === 'resolved' ? outcome.rows : [];
     expect(readListMeta(rows)?.total).toBe(0);
     expect(readListMeta(rows)?.totalUnavailable).toBeUndefined();
+  });
+});
+
+describe('paired bounded rows + companion summary contract', () => {
+  it('returns one summary row even when the exact match count is zero', async () => {
+    const [summary] = await readCompanionSummary({
+      aggregateRows: Promise.resolve([{ kind: 'totals', total: 31_133, matched: 0 }]),
+      label: 'workItems.summary',
+      budgetMs: 25,
+    });
+    expect(summary).toEqual({ total: 31_133, matched: 0, facets: [] });
+  });
+
+  it('propagates a failed summary instead of substituting the page length', async () => {
+    await expect(
+      readCompanionSummary({
+        aggregateRows: Promise.reject(new Error('aggregate unavailable')),
+        label: 'workItems.summary',
+        budgetMs: 25,
+      }),
+    ).rejects.toThrow('aggregate unavailable');
+  });
+
+  it('carries cursor metadata and terminates a repeated-cursor page', async () => {
+    const first = await readBoundedListPage<Row>({
+      page: Promise.resolve({
+        rows: [{ id: 'r1' }, { id: 'r2' }],
+        nextCursor: 'r2',
+        hasMore: true,
+      }),
+      label: 'test.rows',
+      budgetMs: 25,
+    });
+    expect(readListMeta(first)).toMatchObject({ nextCursor: 'r2', hasMore: true });
+    expect(readListHasMore(first)).toBe(true);
+
+    const stalled = await readBoundedListPage<Row>({
+      page: Promise.resolve({
+        rows: [{ id: 'r2' }],
+        previousCursor: 'r2',
+        nextCursor: 'r2',
+        hasMore: true,
+      }),
+      label: 'test.rows',
+      budgetMs: 25,
+    });
+    expect(readListMeta(stalled)).toMatchObject({ nextCursor: null, hasMore: false });
+    expect(readListHasMore(stalled)).toBe(false);
+  });
+
+  it('builds both registry entries from one normalizer, predicate compiler, and invalidation set', async () => {
+    const argsSchema = { parse: (input: unknown) => input as { states?: string[] } };
+    const backingTables = ['harness_shared.work_items'] as const;
+    const seen: Array<{ leg: 'rows' | 'summary'; fingerprint: string }> = [];
+    const pair = createCompanionListQueryPair({
+      domain: 'workItems',
+      rowsQueryName: 'workItems.byHarness',
+      argsSchema,
+      backingTables,
+      normalizeArgs: (args: { states?: string[] }) => ({
+        states: [...new Set(args.states ?? [])].sort(),
+      }),
+      buildPredicate: (args) => ({ fingerprint: JSON.stringify(args) }),
+      readPage: async ({ predicate }) => {
+        seen.push({ leg: 'rows', fingerprint: predicate.fingerprint });
+        return { rows: [{ id: 'r1' }], nextCursor: null, hasMore: false };
+      },
+      readSummaryAggregateRows: async ({ predicate }) => {
+        seen.push({ leg: 'summary', fingerprint: predicate.fingerprint });
+        return [{ kind: 'totals', total: 1, matched: 1 }];
+      },
+      budgetMs: 25,
+    });
+
+    expect(pair.summaryQueryName).toBe('workItems.summary');
+    expect(pair.invalidationQueryNames).toEqual(['workItems.byHarness', 'workItems.summary']);
+    expect(pair.rowsEntry.argsSchema).toBe(argsSchema);
+    expect(pair.summaryEntry.argsSchema).toBe(argsSchema);
+    expect(pair.rowsEntry.backingTables).toBe(backingTables);
+    expect(pair.summaryEntry.backingTables).toBe(backingTables);
+
+    const wireArgs = { states: ['open', 'blocked', 'open'] };
+    const rows = await pair.rowsEntry.resolve(wireArgs);
+    const summary = await pair.summaryEntry.resolve(wireArgs);
+    expect(rows).toHaveLength(1);
+    expect(summary).toEqual([{ total: 1, matched: 1, facets: [] }]);
+    expect(seen).toEqual([
+      { leg: 'rows', fingerprint: '{"states":["blocked","open"]}' },
+      { leg: 'summary', fingerprint: '{"states":["blocked","open"]}' },
+    ]);
+  });
+
+  it('bounds a hung companion aggregate under the same shared read budget', async () => {
+    await expect(
+      readCompanionSummary({
+        aggregateRows: hang(),
+        label: 'test.summary',
+        budgetMs: 25,
+      }),
+    ).rejects.toThrow('test.summary summary exceeded the read budget');
   });
 });

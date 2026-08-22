@@ -4,7 +4,14 @@
  * relocation, fall back to length, and never report that length as the total.
  */
 import { describe, expect, it } from 'vitest';
-import { attachListMeta, readListMeta, readListTotal, listCountLabel } from './list-meta';
+import {
+  attachListMeta,
+  attachListPageMeta,
+  readListHasMore,
+  readListMeta,
+  readListTotal,
+  listCountLabel,
+} from './list-meta';
 
 interface Row { id: string }
 const rows = (): Row[] => [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
@@ -57,6 +64,45 @@ describe('readListMeta / readListTotal', () => {
     expect(readListTotal(null)).toBe(0);
     expect(readListTotal(undefined)).toBe(0);
     expect(readListMeta(null)).toBeUndefined();
+  });
+});
+
+describe('attachListPageMeta / readListHasMore', () => {
+  it('preserves an advancing cursor and authoritative hasMore bit', () => {
+    const out = attachListPageMeta(rows(), {
+      total: 99,
+      nextCursor: 'cursor-b',
+      previousCursor: 'cursor-a',
+      hasMore: true,
+    });
+    expect(readListMeta(out)).toEqual({ total: 99, nextCursor: 'cursor-b', hasMore: true });
+    expect(readListHasMore(out)).toBe(true);
+  });
+
+  it.each([
+    ['empty page', [], 'cursor-b', 'cursor-a'],
+    ['missing next cursor', rows(), null, 'cursor-a'],
+    ['repeated cursor', rows(), 'cursor-a', 'cursor-a'],
+  ] as const)('normalizes a no-growth %s to exhausted', (_label, page, nextCursor, previousCursor) => {
+    const out = attachListPageMeta([...page], { nextCursor, previousCursor, hasMore: true });
+    expect(readListHasMore(out)).toBe(false);
+    if (out.length > 0) {
+      expect(readListMeta(out)).toMatchObject({ nextCursor: null, hasMore: false });
+    }
+  });
+
+  it('honors an explicit exhausted result even when a cursor was supplied', () => {
+    const out = attachListPageMeta(rows(), {
+      nextCursor: 'unused-cursor',
+      hasMore: false,
+    });
+    expect(readListMeta(out)).toMatchObject({ nextCursor: null, hasMore: false });
+    expect(readListHasMore(out)).toBe(false);
+  });
+
+  it('reads the legacy nextCursor convention when hasMore is absent', () => {
+    const legacy = attachListMeta(rows(), { nextCursor: 'legacy-cursor' });
+    expect(readListHasMore(legacy)).toBe(true);
   });
 });
 
