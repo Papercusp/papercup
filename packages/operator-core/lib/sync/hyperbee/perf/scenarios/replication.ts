@@ -104,6 +104,71 @@ export const sustained: PerfScenario = {
               a.metrics['appendToVisibleMs'] = summarize(allLat, 'ms');
               const w = results[0];
               if (w?.appendMs) a.metrics['appendCallMs'] = w.appendMs;
+
+              // D-033 (harden-shared-hive-to-256-peers-2026-06-29): MESH FORMATION TIME.
+              //
+              // Every peer-child ALREADY timestamped every connection it made
+              // (`net.connections[].atMs`, ms since that child's boot) and the parent
+              // then DISCARDED all of it: `net` was declared on PeerChildResult and
+              // referenced nowhere downstream, so no artifact this rig has ever written
+              // carries a formation number. The measurement existed; only the plumbing
+              // was missing. This is that plumbing — no new probe, nothing added to the
+              // hot path that could perturb what it measures.
+              //
+              // WHY IT MATTERS: hyperswarm's MAX_PARALLEL = 3 (index.js:14) caps
+              // CONCURRENT dials regardless of maxPeers, so mesh formation is
+              // ceil((N-1)/3) SERIALIZED rounds — 21 at N=64 but 85 at N=256 — against a
+              // FIXED wall-clock convergence budget. That is a scaling limit with no
+              // memory component, and it is measurable at SMALL N and extrapolable:
+              // fit formation against N over 16/32/64 and the line predicts 256 without
+              // ever running 256 peers.
+              const lastConnMs: number[] = [];
+              const arrivalGapMs: number[] = [];
+              for (const r of results) {
+                const conns = r?.net?.connections;
+                if (!conns?.length) continue;
+                const ats = conns.map((c) => c.atMs).sort((x, y) => x - y);
+                lastConnMs.push(ats[ats.length - 1]!);
+                for (let i = 1; i < ats.length; i++) arrivalGapMs.push(ats[i]! - ats[i - 1]!);
+              }
+              // Per-peer time from ITS boot to ITS last connection. The mesh is formed
+              // when the slowest peer finishes, so read `max`, not `p50`.
+              if (lastConnMs.length) a.metrics['meshFormationMs'] = summarize(lastConnMs, 'ms');
+              // ⚠ NOT per-ROUND dial latency, and must not be quoted as one. `connections`
+              // fires for INBOUND accepts as well as OUTBOUND dials, and MAX_PARALLEL
+              // bounds only the outbound half — so this is the arrival-burst SIGNATURE
+              // (clustering at ~3) rather than a clean measurement of one dial round.
+              // Separating the two needs the direction flag hyperswarm exposes on
+              // peerInfo, which this rig does not currently record.
+              if (arrivalGapMs.length)
+                a.metrics['connArrivalGapMs'] = summarize(arrivalGapMs, 'ms');
+
+              // D-035 ruling 4: the budget this run ACTUALLY resolved, stamped on the
+              // artifact so a pinned-cap arm is self-describing. An arm that cannot
+              // prove its budget measured NOTHING and is discarded, never recorded.
+              const budgets = new Set(
+                results
+                  .map((r) =>
+                    r?.swarmBudget
+                      ? `maxPeers=${r.swarmBudget.maxPeers} maxClientConnections=${r.swarmBudget.maxClientConnections} pinnedEnv=${r.swarmBudget.pinnedEnv ?? '<unset>'}`
+                      : null,
+                  )
+                  .filter((s): s is string => s !== null),
+              );
+              if (budgets.size === 0) {
+                a.notes.push(
+                  'swarm budget: NOT REPORTED by any child — this run cannot be attributed to a budget (D-035 ruling 4: discard, do not record).',
+                );
+              } else if (budgets.size > 1) {
+                // Children disagreeing means the env did not reach all of them: a split
+                // mesh is not an arm of anything, and averaging across it would be a
+                // number describing no configuration that ever ran.
+                a.notes.push(
+                  `swarm budget: INCONSISTENT across children (${budgets.size} distinct) — ${[...budgets].join(' | ')}`,
+                );
+              } else {
+                a.notes.push(`swarm budget: ${[...budgets][0]} (uniform across ${results.length} children)`);
+              }
             },
             results,
           );

@@ -103,6 +103,18 @@ export interface PeerChildResult {
   keyHex: string;
   /** Network-path observations (always present; zeros on loopback testnets). */
   net?: PeerNetStats;
+  /**
+   * The swarm budget this child ACTUALLY resolved (D-035 ruling 4). Recorded on
+   * the result — not only logged — so an arm's budget is a durable property of
+   * the artifact rather than a line in a run log that has to be found again.
+   *
+   * `pinnedEnv` is the raw PAPERCUSP_SWARM_MAX_PEERS the child observed, null
+   * when unset. It is kept separate from `maxPeers` on purpose: at a pinned 64
+   * the two are indistinguishable from hyperswarm's own default of 64, so the
+   * pair (`pinnedEnv` present) + (`maxClientConnections` === 56, not Infinity)
+   * is what proves the shipped budget path ran at all.
+   */
+  swarmBudget?: { maxPeers: number; maxClientConnections: number; pinnedEnv: string | null };
   /** Reader: replication latency summary (ms) over measurement ops (sentAt → applied). */
   latency?: ReturnType<typeof summarize>;
   /** Reader: the raw latency samples (capped) so the parent can compute exact cross-reader distributions. */
@@ -164,6 +176,31 @@ async function main(): Promise<void> {
   // maxClientConnections — so the rig now exercises the configuration production
   // actually runs. The harness keeps its OWN bootstrap (isolated testnet).
   const { maxPeers, maxClientConnections } = swarmConstructorOpts();
+  // D-035 ruling 4 (harden-shared-hive-to-256-peers-2026-06-29): an arm of a
+  // pinned-cap experiment MUST be able to prove WHICH budget it actually ran.
+  //
+  // The product path logs this at swarm.ts:4001, but that console.info lives
+  // inside the SHARED swarm constructor and this rig deliberately builds its
+  // OWN Hyperswarm (below), so the rig path emitted NO budget line at all —
+  // ruling 4 was unsatisfiable as written until this line existed.
+  //
+  // Why it matters more than ordinary logging: pinning PAPERCUSP_SWARM_MAX_PEERS=64
+  // COLLIDES with hyperswarm's own library default (MAX_PEERS = 64,
+  // hyperswarm/index.js:13). So "the pin was applied" and "swarmConstructorOpts
+  // was bypassed entirely" produce the SAME maxPeers, and a clean 63/63 result
+  // cannot distinguish them. maxClientConnections is the discriminator that can:
+  // hyperswarm defaults it to Infinity (index.js:15) while the shipped budget
+  // derives 56 at maxPeers=64. An arm whose children report Infinity — or report
+  // nothing — measured NOTHING and must be DISCARDED, never recorded as a null.
+  //
+  // STDERR, not stdout: stdout is the ndjson event channel `out()` owns, and a
+  // stray line there corrupts the parent's parse. child-driver.ts:162-164
+  // forwards stderr to the run log prefixed `[child N stderr]`.
+  process.stderr.write(
+    `[peer-child] peer budget: maxPeers=${maxPeers} maxClientConnections=${maxClientConnections} ` +
+      `(${maxPeers - maxClientConnections} reserved for INBOUND; ` +
+      `PAPERCUSP_SWARM_MAX_PEERS=${process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '<unset>'})\n`,
+  );
   const swarm = new Hyperswarm({
     ...(cfg.bootstrap && cfg.bootstrap.length ? { bootstrap: cfg.bootstrap } : {}),
     maxPeers,
@@ -425,6 +462,11 @@ async function main(): Promise<void> {
       peerIndex: cfg.peerIndex,
       keyHex: handle.ownLog.keyHex,
       net,
+      swarmBudget: {
+        maxPeers,
+        maxClientConnections,
+        pinnedEnv: process.env.PAPERCUSP_SWARM_MAX_PEERS ?? null,
+      },
       admittedStats,
       appliedKeys: appliedKeys.size,
       appliedOps,
