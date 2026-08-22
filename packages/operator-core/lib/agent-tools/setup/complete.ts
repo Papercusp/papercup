@@ -40,9 +40,7 @@ export default defineTool({
     const current = await readOperatorState<{ finished_at?: string }>('setup_wizard_state');
     if (current?.finished_at && !args.force) {
       return {
-        content: [
-          { type: 'text', text: JSON.stringify({ finished_at: current.finished_at, alreadyFinished: true }) },
-        ],
+        data: { finished_at: current.finished_at, alreadyFinished: true },
       };
     }
 
@@ -60,19 +58,14 @@ export default defineTool({
         });
         if (undecided.length) {
           return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'required_setup_undecided',
-                  alreadyFinished: false,
-                  undecided: undecided.map((i) => i.key),
-                  message: `Cannot graduate: ${undecided
-                    .map((i) => i.label)
-                    .join(', ')} still needs an explicit decision. Ask the user (a "no" is a valid answer), record it via the matching setup:* verb, then retry. Pass force:true only to override.`,
-                }),
-              },
-            ],
+            data: {
+              error: 'required_setup_undecided',
+              alreadyFinished: false,
+              undecided: undecided.map((i) => i.key),
+              message: `Cannot graduate: ${undecided
+                .map((i) => i.label)
+                .join(', ')} still needs an explicit decision. Ask the user (a "no" is a valid answer), record it via the matching setup:* verb, then retry. Pass force:true only to override.`,
+            },
           };
         }
       }
@@ -80,7 +73,7 @@ export default defineTool({
 
     const next = await mergeSetupWizardState({ finished_at: new Date().toISOString() });
     return {
-      content: [{ type: 'text', text: JSON.stringify({ finished_at: next.finished_at, alreadyFinished: false }) }],
+      data: { finished_at: next.finished_at, alreadyFinished: false },
     };
   },
 });

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 759,
+  "count": 761,
   "tools": [
     {
       "name": "ablation:report",
@@ -5011,7 +5011,7 @@
           "POST"
         ]
       },
-      "description": "Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), and files. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items` and `current_files` (omission preserves; [] clears). A broad \"all remaining items\" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).",
+      "description": "Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), files, and optional ambient-retrieval exclusions. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items`, `current_files`, and `ambient_excluded_refs` (omission preserves; [] clears). A broad \"all remaining items\" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).",
       "capabilities": [
         "coord:write"
       ],
@@ -6470,6 +6470,24 @@
       }
     },
     {
+      "name": "cupboard:install-plan",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-plan",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a plan template from the Cupboard into this workspace: give a listingId (resolves the mirror repo + ref + rubric requirements from the listing) OR a githubUrl + listingRef directly. RESOLVES requires_rubrics FIRST — a required rubric nothing provides refuses the install; one a Cupboard rubric listing provides is offered as a co-install (pass installRequiredRubrics: true to accept); the bundled first-party rubric set counts as provided. Then clones the mirror, validates <listingRef>/plan.md parses as a structured plan, drops the dir into ~/.papercusp/plan-templates/<ref>/, and seeds a status:'draft' plan TEMPLATE row. NO-CLOBBER: an existing plan of that slug always wins. Returns { ok, ref, templateSlug, rubrics, coInstalled, seeded }.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a published plan template so this workspace can instantiate it — you found a plan listing (cupboard:search kind='plan') and want its goal/item-DAG/decisions locally.",
+        "notWhen": "Authoring a plan here (plans:new). Reading plans this workspace already has (plans:list / plans:get). Installing a rubric (cupboard:install-rubric) or an app template (cupboard:install-template).",
+        "chaining": "cupboard:search { kind:'plan' } → cupboard:install-plan { listingId } → plans:get { slug: templateSlug } to read it → plans:start when you actually want to run it. A `required_rubrics_need_co_install` refusal names the rubrics; re-run with installRequiredRubrics: true to pull them in."
+      }
+    },
+    {
       "name": "cupboard:install-plugin",
       "http": {
         "path": "/api/agent-tools/cupboard/install-plugin",
@@ -6539,6 +6557,24 @@
         "when": "Distributing a standalone app you built on the papercusp platform (its own Tauri installer + a published GitHub release with a signed latest.json), so users can find and download it from the Cupboard's Apps tab.",
         "notWhen": "Publishing a plugin/pack that runs INSIDE papercusp (that's knowledge_packs:publish / a plugin publish); a blueprint (blueprint:publish); or before the app's release + latest.json are live on GitHub — this tool validates the manifest resolves, so cut the release first.",
         "chaining": "Cut the app release first (its latest.json must be reachable). The response carries review_status=pending — the submitter sees their own listing; operators approve at /admin/cupboard-moderation, after which it appears on the Apps tab."
+      }
+    },
+    {
+      "name": "cupboard:publish-plan",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-plan",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a plan template on the Cupboard's Plans tab. SANITIZES the source plan first (item statuses → todo, set-status notes / work-item ids / the ## Now block / identity frontmatter removed; goal, item DAG, decisions and prose kept), materializes it as a self-describing dir (plan.md + listing.json) under ~/.papercusp/plan-templates/<ref>/, then points a kind='plan' listing at the public mirror repo you pushed that dir to. Derives requires_rubrics from the plan's acceptance class + any rubricRefs it names. Pass exportOnly to materialize the dir WITHOUT publishing (the honest order is export → push → publish). Plans are a reviewed kind — the publish lands PENDING until an operator approves it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a plan you authored as a reusable template so other workspaces can install and instantiate it.",
+        "notWhen": "Creating or editing a plan here (plans:new / plans:set-*). Exporting a plan for a one-off offline copy (plans:export). Publishing a rubric (cupboard:publish-rubric) or an app template (cupboard:publish-template).",
+        "chaining": "cupboard:publish-plan { slug, exportOnly: true } → push the returned dir to a public mirror repo → cupboard:publish-plan { slug, githubUrl } to create the listing. Read `stripped` in the response to confirm the run log came out."
       }
     },
     {

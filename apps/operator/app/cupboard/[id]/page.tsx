@@ -66,6 +66,9 @@ import { toast } from 'sonner';
 
 interface ProvidedEvent { family: string; keyTemplate: string; describe: string | null }
 interface RequiredEvent { family: string; optional: boolean }
+/** One entry of a `plan` listing's `requires_rubrics` (worker migration 015 /
+ *  cupboard-plan-rubric-recipe-sharing P-012). */
+interface RequiredRubric { rubricRef: string; optional: boolean }
 
 /**
  * Parse a listing's JSON-TEXT array column, dropping any entry the mapper
@@ -407,6 +410,23 @@ export default function CupboardDetailPage() {
       ? { family: e.family, optional: e.optional === true }
       : null,
   );
+  // The RUBRIC axis, consumer half (worker migration 015 / P-011 + P-012). Carried
+  // by `plan` listings: the rubrics a plan template must be gradeable against.
+  //
+  // Shown for exactly the reason `requires_events` is: the install RESOLVES this
+  // before it downloads anything, and a required rubric nothing provides REFUSES.
+  // Meeting that as a refusal after clicking Install is the outcome this section
+  // exists to prevent. There is deliberately no `provides_rubrics` counterpart to
+  // pair it with (D-002) — a kind='rubric' row provides exactly the one rubric its
+  // own listing_ref names, so the provider side needs no separate declaration.
+  //
+  // Parsed FAIL-SOFT, same as the event axis: a third party's malformed entry
+  // degrades this section rather than blanking the page.
+  const requiresRubrics: RequiredRubric[] = parseJsonArray(listing.requires_rubrics, (e) =>
+    typeof e.rubricRef === 'string' && e.rubricRef.length > 0
+      ? { rubricRef: e.rubricRef, optional: e.optional === true }
+      : null,
+  );
 
   return (
     <div style={{ padding: SIZES.lg, maxWidth: 700, margin: '0 auto' }}>
@@ -530,6 +550,37 @@ export default function CupboardDetailPage() {
                 Installing resolves each required family against what this machine already provides — a built-in, an
                 installed unit, or another Cupboard unit it can pull in. A required family that nothing provides will
                 stop the install. Optional families are listen-if-present and never block.
+              </p>
+            </MetaRow>
+          )}
+          {requiresRubrics.length > 0 && (
+            <MetaRow label="Requires rubrics" span>
+              <ul
+                data-testid="cupboard-detail-requires-rubrics"
+                style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}
+              >
+                {requiresRubrics.map((rb) => (
+                  <li
+                    key={rb.rubricRef}
+                    data-testid="cupboard-detail-required-rubric"
+                    data-rubric-ref={rb.rubricRef}
+                    data-optional={rb.optional ? 'true' : 'false'}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+                  >
+                    <code style={eventFamilyStyle}>{rb.rubricRef}</code>
+                    {/* Same required/optional split as the event axis, and for the
+                        same reason: a required rubric nothing provides STOPS the
+                        install; an optional one is simply not graded. */}
+                    <span style={rb.optional ? optionalDepStyle : requiredDepStyle}>
+                      {rb.optional ? 'optional' : 'required'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '6px 0 0' }}>
+                Installing resolves each required rubric against this workspace first — a rubric you already have, or
+                one from the bundled first-party set, counts as provided. A required rubric only a Cupboard listing
+                supplies is offered as a co-install; one nothing provides will stop the install.
               </p>
             </MetaRow>
           )}

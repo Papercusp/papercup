@@ -35,12 +35,7 @@ export default defineTool({
     // staying pinned to local forever (the latch only ever clears on this signal).
     if (args.key === 'openai_api_key') clearOpenAiEmbedHardExhaustion();
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ ok: true, key: args.key, masked: maskSecret(saved[args.key]) }),
-        },
-      ],
+      data: { ok: true, key: args.key, masked: maskSecret(saved[args.key]) },
     };
   },
 });
