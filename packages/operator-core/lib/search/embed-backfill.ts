@@ -179,7 +179,7 @@ async function resolveBatchEmbed(mode: ResolvedMode): Promise<EmbedManyFn | null
   }
 }
 
-interface BackfillStats {
+export interface BackfillStats {
   table: string;
   scanned: number;
   embedded: number;

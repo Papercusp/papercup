@@ -21,6 +21,12 @@ export default defineTool({
     if (ctx.principal.kind !== 'user') throw new Error('personal_purge_owner_principal_required');
     const workspaceId = ctx.principal.workspaceId;
     const user = await getSessionUserOrDefault();
-    return { ok: true, source: args.source ?? 'all', deleted: await purgePersonalSource(ctx.tx!, workspaceId, user.id, args.source) };
+    return {
+      data: {
+        ok: true,
+        source: args.source ?? 'all',
+        deleted: await purgePersonalSource(ctx.tx!, workspaceId, user.id, args.source),
+      },
+    };
   },
 });

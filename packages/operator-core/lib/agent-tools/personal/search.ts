@@ -33,7 +33,7 @@ export default defineTool({
     const user = await getSessionUserOrDefault();
     const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, args.scopes ?? []);
     if (!auth.allowed) {
-      return { allowed: false, refusal: auth.reason, results: [], grantedScopes: auth.scopes };
+      return { data: { allowed: false, refusal: auth.reason, results: [], grantedScopes: auth.scopes } };
     }
     let queryEmbedding: number[] | null = null;
     let vectorLeg: 'gemma' | 'unavailable' = 'unavailable';
@@ -50,11 +50,13 @@ export default defineTool({
       queryEmbedding,
     });
     return {
-      allowed: true,
-      principal: auth.principal,
-      grantedScopes: auth.scopes,
-      vectorLeg,
-      results,
+      data: {
+        allowed: true,
+        principal: auth.principal,
+        grantedScopes: auth.scopes,
+        vectorLeg,
+        results,
+      },
     };
   },
 });

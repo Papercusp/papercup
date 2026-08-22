@@ -1,9 +1,4 @@
-import {
-  computeFacets,
-  type CompanionListSummary,
-  type FacetDef,
-  type FacetSelection,
-} from '@papercusp/facets';
+import { computeFacets, type CompanionListSummary, type FacetDef, type FacetSelection } from '@papercusp/facets';
 
 export interface SeededBeyondCapCorpus<Row> {
   rows: Row[];
@@ -102,6 +97,7 @@ export async function assertCompanionPredicateParity<Row, Args>(
   if (!loadedIds.includes(probe.beyondPageRowId)) fail('a match beyond page one is unreachable');
 
   const summary = await probe.readSummary(probe.args);
+  if (!summary || typeof summary !== 'object') fail('row result lost its companion summary response');
   if (summary.total !== probe.corpus.length) fail('summary total is not the declared corpus size');
   if (summary.matched !== expectedRows.length) fail('summary matched total and row predicate disagree');
 
@@ -119,6 +115,7 @@ export async function assertCompanionPredicateParity<Row, Args>(
   }
 
   const zero = await probe.readSummary(probe.zeroMatchArgs);
+  if (!zero || typeof zero !== 'object') fail('zero-row result lost its exact summary/reset response');
   if (zero.total !== probe.corpus.length || zero.matched !== 0 || !Array.isArray(zero.facets)) {
     fail('zero-row result lost its exact summary/reset response');
   }
@@ -132,9 +129,7 @@ export interface PairedConvergenceProbe<Row> {
 }
 
 /** Prove an adjacent-snapshot mismatch converges after one paired invalidation. */
-export async function assertPairConvergesAfterInvalidation<Row>(
-  probe: PairedConvergenceProbe<Row>,
-): Promise<void> {
+export async function assertPairConvergesAfterInvalidation<Row>(probe: PairedConvergenceProbe<Row>): Promise<void> {
   const before = await probe.readRowsBeforeWrite();
   await probe.writeBetweenQueries();
   const raced = await probe.readRacedSummary();
