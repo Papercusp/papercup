@@ -562,6 +562,31 @@ describe('await-event store (PG)', () => {
     expect(alerts[0]?.remedy).toContain('claim/take over WI-42');
   });
 
+  // EI-21139615450004027: a legacy verdict can identify the waiting monitor as
+  // its own owner without a work item. It cannot meaningfully wake or take over
+  // itself, so the leader-facing read must suppress that impossible remedy.
+  it('suppresses a self-referential takeover row with no owning work item', async () => {
+    const stalled = await registerAwait({ subscriberId: 'su-monitor', eventKey: 'release:green:papercusp' });
+    const result = {
+      classification: 'absent',
+      nextAction: 'wake-owner-or-takeover',
+      producer: { kind: 'green-checkpoint', id: 'run-legacy' },
+      owner: { ownerId: 'su-monitor', workItemId: null },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+    };
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'verified-timeout',
+             timeout_verification = ${JSON.stringify(result)}::jsonb
+       WHERE id = ${stalled.id}
+    `;
+
+    expect(await listVerifiedWaitTakeoversForSubscribers(['su-monitor'])).toEqual([]);
+  });
+
   // ── EI-20540454577146535: a stalled/absent verdict is a snapshot taken when the
   // fallback verifier fired; it must not survive the owning work item going terminal.
   it('suppresses a takeover row once its owning work item has since gone terminal', async () => {

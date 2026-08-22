@@ -696,7 +696,13 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   const nonTerminal = candidates.filter(
     ({ alert }) => !alert.owner.workItemId || !terminalOwners.has(alert.owner.workItemId),
   );
-  if (nonTerminal.length === 0) return [];
+  // EI-21139615450004027: a legacy certificate can point an owner-less wait
+  // back at its subscriber. That subscriber cannot wake or take over itself;
+  // without a work item there is no distinct actionable ownership target.
+  const actionable = nonTerminal.filter(
+    ({ alert }) => !(alert.owner.workItemId == null && alert.owner.ownerId === alert.subscriberId),
+  );
+  if (actionable.length === 0) return [];
 
   const observeProducer = deps.observeProducer ?? observeCheckpointProducer;
   const observations = new Map<string, Promise<ProducerHealthObservation | null>>();
@@ -710,7 +716,7 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   };
 
   const fresh = await Promise.all(
-    nonTerminal.map(async ({ alert, certificate }) => {
+    actionable.map(async ({ alert, certificate }) => {
       // Certificates were added after the original timeout projection. Keep
       // legacy rows visible because there is no authoritative producer to probe.
       if (!certificate) return alert;
