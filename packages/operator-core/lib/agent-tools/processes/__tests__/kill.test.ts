@@ -78,6 +78,8 @@ describe('processes:kill guidance matches what it can actually do', () => {
     }
     // The specific false claim this replaced: absent vs. merely-invisible.
     expect(returns).toContain('EI-18698120633403217');
+    expect(returns).toContain('termination is still pending');
+    expect(returns).toContain('no retry');
   });
 });
 

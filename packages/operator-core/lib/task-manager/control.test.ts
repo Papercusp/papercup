@@ -95,7 +95,7 @@ describe('killTask — confined path', () => {
     expect(store.closed).toEqual([{ taskId: 'b1', state: 'killed', reason: 'scope kill SIGTERM' }]);
   });
 
-  it('escalates to SIGKILL only when the scope still holds processes', async () => {
+  it('reports SIGKILL-delivered teardown as pending instead of advising a retry', async () => {
     row({ taskId: 'b2' });
     const calls: string[][] = [];
     const out = await killTask('b2', {
@@ -108,11 +108,48 @@ describe('killTask — confined path', () => {
       }) as never,
     });
     expect(calls.map((c) => c[2])).toEqual(['--signal=SIGTERM', '--signal=SIGKILL']);
-    // EI-19478780721557822: even after escalating to SIGKILL, a scope that STILL
-    // holds processes after the re-probe window must never be reported as a bare
-    // success — that silent false ok:true is the bug this fixes.
-    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
-    expect((out as { detail: string }).detail).toMatch(/1 process\(es\) still alive/);
+    // EI-20130774106283501: SIGKILL delivery is terminal even when cgroup
+    // teardown/reaping outlives the bounded response window. The row remains
+    // live for reconciliation, but the caller must not retry a successful kill.
+    expect(out).toMatchObject({ ok: true, taskId: 'b2' });
+    expect((out as { detail: string }).detail).toMatch(/termination pending/);
+    expect((out as { detail: string }).detail).toMatch(/no retry is required/);
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it('handles a slow SIGTERM trap that exits after the SIGKILL response window', async () => {
+    row({ taskId: 'b2-slow' });
+    const scopePath = '/sys/fs/cgroup/papercusp.slice/pc-b2-slow.scope';
+    const calls: string[][] = [];
+    let sigkillDelivered = false;
+    let postKillReads = 0;
+    const fs = {
+      readFile: (path: string) => {
+        if (path !== `${scopePath}/cgroup.procs`) return '';
+        if (!sigkillDelivered) return '999\n';
+        postKillReads++;
+        return postKillReads <= 6 ? '999\n' : '';
+      },
+      readDir: () => [],
+      isDir: () => true,
+    };
+    const out = await killTask('b2-slow', {
+      escalateAfterMs: 1,
+      sleep: async () => {},
+      fs,
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args[2] === '--signal=SIGKILL') sigkillDelivered = true;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(calls.map((c) => c[2])).toEqual(['--signal=SIGTERM', '--signal=SIGKILL']);
+    expect(out).toMatchObject({ ok: true, taskId: 'b2-slow' });
+    expect((out as { detail: string }).detail).toMatch(/termination pending/);
+    // The simulated trap has now completed, just after the bounded response
+    // window; the kill result did not misclassify it as a retryable failure.
+    expect(fs.readFile(`${scopePath}/cgroup.procs`)).toBe('');
+    expect(store.closed).toHaveLength(0);
   });
 
   it('EI-19478780721557822 recurrence guard: never reports ok:true while the subtree survives, and leaves the row LIVE for a retry', async () => {

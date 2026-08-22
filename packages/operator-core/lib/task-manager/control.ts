@@ -301,6 +301,18 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     // reporting anything, and never close the row as `killed` while it is not.
     const { empty, survivors, residue } = await waitForScopeEmpty(row, d);
     if (!empty) {
+      if (escalated) {
+        // A SIGKILL is terminal even when cgroup teardown/reaping is slower than
+        // this bounded response window. Keep the row live so reconciliation can
+        // continue to observe the scope, but do not turn a successful kill into
+        // a retry instruction (EI-20130774106283501).
+        return {
+          ok: true,
+          taskId,
+          action: 'kill',
+          detail: `scope ${row.scopeUnit} signalled ${signal} (escalated to SIGKILL) — termination pending; ${survivors} process(es) remained during the verification window, so no retry is required and the task remains tracked until the scope is observed empty${residue ? describeResidue(residue) : ''}`,
+        };
+      }
       return {
         ok: false,
         taskId,
@@ -403,6 +415,14 @@ export async function killScopeUnit(
 
   const { empty, survivors, residue } = await waitForCgroupEmpty(resolved.cgroupPath, d);
   if (!empty) {
+    if (escalated) {
+      return {
+        ok: true,
+        scopeUnit,
+        action,
+        detail: `scope ${scopeUnit} signalled ${signal} (escalated to SIGKILL) — termination pending; ${survivors} process(es) remained during the verification window, so no retry is required${residue ? describeResidue(residue) : ''}`,
+      };
+    }
     return {
       ok: false,
       scopeUnit,
