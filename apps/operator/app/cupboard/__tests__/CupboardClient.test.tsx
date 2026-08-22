@@ -85,6 +85,9 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
         listings: [
           listing({ id: 1, title: 'Harness listing', listing_kind: 'harness', hive_pubkey: HIVE_PK }),
           listing({ id: 2, title: 'Plugin listing', listing_kind: 'plugin' }),
+          listing({ id: 3, title: 'Rubric listing', listing_kind: 'rubric' }),
+          listing({ id: 4, title: 'Plan listing', listing_kind: 'plan' }),
+          listing({ id: 5, title: 'Recipe listing', listing_kind: 'recipe' }),
         ],
       }),
       { status: 200 },
@@ -108,6 +111,25 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Plugin listing')).toBeTruthy();
     expect(screen.queryByText('Harness listing')).toBeNull();
+  });
+
+  it('renders and filters the Rubrics, Plans, and Recipes tabs', async () => {
+    withTooltips(<CupboardClient />);
+    await waitFor(() => expect(screen.getByText('Plugin listing')).toBeTruthy());
+
+    for (const [kind, label, title] of [
+      ['rubric', 'Rubrics', 'Rubric listing'],
+      ['plan', 'Plans', 'Plan listing'],
+      ['recipe', 'Recipes', 'Recipe listing'],
+    ] as const) {
+      const tab = screen.getByTestId(`cupboard-kind-tab-${kind}`);
+      expect(tab.textContent).toContain(label);
+      fireEvent.click(tab);
+      expect(screen.getByText(title)).toBeTruthy();
+      expect(screen.queryByText('Plugin listing')).toBeNull();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('shows an explicit listings loading indicator while the fetch is in flight', () => {

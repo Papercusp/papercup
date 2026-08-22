@@ -5,6 +5,7 @@ import {
   CUPBOARD_ERROR_KINDS,
   CUPBOARD_GITHUB_PERMISSIONS,
   CUPBOARD_SCHEMA_VERSION,
+  LISTING_KINDS,
   LIST_DEFAULT_LIMIT,
   LIST_MAX_LIMIT,
   PUBLISH_RATE_LIMIT_PER_HOUR,
@@ -436,8 +437,8 @@ describe('groupHarnessRowsByHive (hive-first browse, comb-hive-native-sharing P-
 });
 
 describe('isListingKind / listingKindOf — kind resolution', () => {
-  it('isListingKind accepts the 7 canonical kinds, rejects everything else', () => {
-    for (const k of ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template', 'app']) {
+  it('isListingKind accepts every canonical kind, rejects everything else', () => {
+    for (const k of LISTING_KINDS) {
       expect(isListingKind(k)).toBe(true);
     }
     expect(isListingKind('tool-pack')).toBe(false); // interim alias is NOT a canonical kind (mig 010)
@@ -450,8 +451,10 @@ describe('isListingKind / listingKindOf — kind resolution', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'tool-pack' }))).toBe('pack');
   });
 
-  it('listingKindOf passes a canonical kind through, and defaults absent/invalid to harness', () => {
-    expect(listingKindOf(makeListing({ listing_kind: 'plugin' }))).toBe('plugin');
+  it('listingKindOf round-trips every canonical kind, and defaults absent/invalid to harness', () => {
+    for (const kind of LISTING_KINDS) {
+      expect(listingKindOf(makeListing({ listing_kind: kind }))).toBe(kind);
+    }
     expect(listingKindOf(makeListing({}))).toBe('harness'); // absent → harness (pre-004 rows)
     expect(listingKindOf(makeListing({ listing_kind: 'bogus' as never }))).toBe('harness');
   });

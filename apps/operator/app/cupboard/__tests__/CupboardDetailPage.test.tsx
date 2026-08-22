@@ -89,6 +89,18 @@ function rubricListing(overrides: Partial<HarnessListing> = {}): HarnessListing 
   });
 }
 
+function planListing(overrides: Partial<HarnessListing> = {}): HarnessListing {
+  return listingBase({
+    slug: 'release-plan',
+    title: 'Release plan',
+    description: 'A reusable plan template.',
+    listing_kind: 'plan',
+    listing_ref: 'release-plan',
+    github_repo: 'acme/plans',
+    ...overrides,
+  });
+}
+
 const realFetch = globalThis.fetch;
 afterEach(() => {
   cleanup();
@@ -313,7 +325,9 @@ describe('CupboardDetailPage — rubric criteria + METHOD.md (P-005)', () => {
   const rubricUrl = 'https://raw.example/release-readiness/rubric.json';
   const methodUrl = 'https://raw.example/release-readiness/METHOD.md';
 
-  function mockRubricFetch(opts: { contentsStatus?: number; malformed?: boolean } = {}) {
+  function mockRubricFetch(
+    opts: { contentsStatus?: number; malformed?: boolean; omitMethod?: boolean } = {},
+  ) {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const u = String(url);
       if (u.includes('/api/cupboard/listings/')) {
@@ -323,10 +337,15 @@ describe('CupboardDetailPage — rubric criteria + METHOD.md (P-005)', () => {
         if (opts.contentsStatus && opts.contentsStatus !== 200) {
           return new Response('{}', { status: opts.contentsStatus });
         }
-        return new Response(JSON.stringify([
-          { name: 'rubric.json', type: 'file', download_url: rubricUrl },
-          { name: 'METHOD.md', type: 'file', download_url: methodUrl },
-        ]), { status: 200 });
+        return new Response(
+          JSON.stringify([
+            { name: 'rubric.json', type: 'file', download_url: rubricUrl },
+            ...(opts.omitMethod
+              ? []
+              : [{ name: 'METHOD.md', type: 'file', download_url: methodUrl }]),
+          ]),
+          { status: 200 },
+        );
       }
       if (u === rubricUrl) {
         return new Response(JSON.stringify(opts.malformed ? { title: 'broken' } : {
@@ -383,6 +402,57 @@ describe('CupboardDetailPage — rubric criteria + METHOD.md (P-005)', () => {
     const link = error.querySelector('a');
     expect(link?.getAttribute('href')).toBe('https://github.com/acme/rubrics/tree/HEAD/release-readiness');
     // The content miss degrades this panel, not the whole listing or its install action.
+    expect(screen.getByTestId('cupboard-detail-action')).toBeTruthy();
+  });
+
+  it('fails soft when rubric.json is present but malformed', async () => {
+    mockRubricFetch({ malformed: true });
+    render(<CupboardDetailPage />);
+
+    const error = await screen.findByTestId('cupboard-rubric-contents-error');
+    expect(error.textContent).toContain('rubric.json is not a valid rubric manifest');
+    expect(error.querySelector('a')?.getAttribute('href')).toBe(
+      'https://github.com/acme/rubrics/tree/HEAD/release-readiness',
+    );
+    expect(screen.getByTestId('cupboard-detail-action')).toBeTruthy();
+  });
+
+  it('renders criteria without fetching an optional METHOD.md that was not published', async () => {
+    const fetchMock = mockRubricFetch({ omitMethod: true });
+    render(<CupboardDetailPage />);
+
+    expect(await screen.findByTestId('cupboard-rubric-criteria')).toBeTruthy();
+    expect(screen.getByTestId('cupboard-rubric-method').textContent).toContain(
+      'No METHOD.md runbook was published with this rubric.',
+    );
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain(methodUrl);
+  });
+});
+
+describe('CupboardDetailPage — plan rubric dependencies before install (P-012)', () => {
+  it('renders every required and optional rubric with its blocking posture', async () => {
+    mockFetch(
+      planListing({
+        requires_rubrics: JSON.stringify([
+          { rubricRef: 'plan-class-feature-ship' },
+          { rubricRef: 'release-readiness', optional: true },
+        ]),
+      }),
+      { status: 200, body: {} },
+    );
+    render(<CupboardDetailPage />);
+
+    const panel = await screen.findByTestId('cupboard-detail-requires-rubrics');
+    expect(panel.textContent).toContain('plan-class-feature-ship');
+    expect(panel.textContent).toContain('release-readiness');
+    const rows = screen.getAllByTestId('cupboard-detail-required-rubric');
+    expect(rows.map((row) => row.getAttribute('data-rubric-ref'))).toEqual([
+      'plan-class-feature-ship',
+      'release-readiness',
+    ]);
+    expect(rows.map((row) => row.getAttribute('data-optional'))).toEqual(['false', 'true']);
+    expect(panel.textContent).toContain('required');
+    expect(panel.textContent).toContain('optional');
     expect(screen.getByTestId('cupboard-detail-action')).toBeTruthy();
   });
 });
