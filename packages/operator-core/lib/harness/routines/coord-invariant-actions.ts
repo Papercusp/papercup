@@ -80,6 +80,10 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 // Reuse the per-handle drain GC's retention window + batch bounds so the global
 // sweep below (EI-436) stays consistent with the inline GC it backstops.
 import { OUTBOX_GC_AGE_MS, OUTBOX_GC_BATCH, OUTBOX_GC_MAX_BATCHES } from '../../sync/hyperbee/outbox-drain';
+// EI-21096375006041139: whether this process currently holds a booted
+// substrate handle for a scope — see the `residentInProcess` opt threaded into
+// runSharedHiveMonitorPass/scanOutboxHealth below for why this matters.
+import { getBootedHarness } from '../../sync/hyperbee/boot-all';
 import { captureImprovement } from '../improvements/capture-core';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
 import { isWorkspaceGlobalLabel } from '../../pot-membership';
@@ -1278,6 +1282,13 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
       } catch {
         /* presence/lease legs degraded — the PG scans below still run */
       }
+      // EI-21096375006041139: this process's own boot-residency for the scope —
+      // if `getBootedHarness` is null, no outbox-drain loop can possibly be
+      // running for it right now, so an aged (but not oversized) backlog is
+      // expected/self-healing, not a stuck drain. See scanOutboxHealth's
+      // `residentInProcess` doc for the full rationale; the DEPTH leg (storage
+      // bloat) is unaffected and still fires unconditionally.
+      const residentInProcess = getBootedHarness(ctx.workspaceId, scope.harness_slug) != null;
       await runSharedHiveMonitorPass({
         sql,
         workspaceId: ctx.workspaceId,
@@ -1285,6 +1296,7 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
         isAuthority,
         presence,
         liveLeases,
+        residentInProcess,
         fileIncident: async (incident) => {
           const plan = planSharedHiveCapture(incident, scope.harness_slug);
           await captureImprovement({
