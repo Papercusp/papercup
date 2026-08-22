@@ -1202,6 +1202,11 @@ function ReleaseReadinessStrip() {
 const LANES = ["all", "auto", "human"] as const;
 type Lane = (typeof LANES)[number];
 
+type LearningServerFilters = Pick<
+  LearningImprovementsArgs,
+  "kinds" | "severities" | "scopes" | "stages" | "ideaTypes" | "lenses" | "score" | "ageDays"
+>;
+
 /** Provenance scope — the mockup's scope bar (owner-approved 2026-07-27).
  *
  *  It filters by WHERE A ROW CAME FROM, and it is the single control that makes
@@ -1371,23 +1376,31 @@ function ImprovementsView({
   );
   const [src, setSrc] = useQueryState("lsrc", parseAsString);
   const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
-  const serverFilters = useMemo(() => {
+  const serverFilters = useMemo<LearningServerFilters>(() => {
     const valuesFor = (key: string): string[] => {
       const value = filterState?.[key];
       if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
       return typeof value === "string" && value ? [value] : [];
     };
-    const kinds = valuesFor("kind").filter((kind) => kind === "bug" || kind === "change" || kind === "feature");
-    const severities = valuesFor("severity").filter((severity) => ["critical", "major", "minor", "nit"].includes(severity));
+    const kinds = valuesFor("kind").filter(
+      (kind): kind is NonNullable<LearningImprovementsArgs["kinds"]>[number] =>
+        kind === "bug" || kind === "change" || kind === "feature",
+    );
+    const severities = valuesFor("severity").filter(
+      (severity): severity is NonNullable<LearningImprovementsArgs["severities"]>[number] =>
+        ["critical", "major", "minor", "nit"].includes(severity),
+    );
     const scopes = valuesFor("scope").filter((scopeValue) => scopeValue !== "—");
     const stages = valuesFor("stage").flatMap((label) => {
-      if (label in PIPELINE_STATES) return [label as keyof typeof PIPELINE_STATES];
+      if (label in PIPELINE_STATES) {
+        return [label as NonNullable<LearningImprovementsArgs["stages"]>[number]];
+      }
       const hit = Object.entries(PIPELINE_STATES).find(([, meta]) => meta.label === label);
-      return hit ? [hit[0] as keyof typeof PIPELINE_STATES] : [];
+      return hit ? [hit[0] as NonNullable<LearningImprovementsArgs["stages"]>[number]] : [];
     });
     const ideaTypes = valuesFor("ideaType").filter((value) => value !== "—");
     const lenses = valuesFor("lens").filter((value) => value !== "—");
-    const rangeFor = (key: string) => {
+    const rangeFor = (key: string): NonNullable<LearningImprovementsArgs["score"]> | undefined => {
       const value = filterState?.[key];
       if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
       const min = typeof value.min === "number" && Number.isFinite(value.min) ? value.min : undefined;
