@@ -152,6 +152,30 @@ function isVitestPackageDir(dir) {
   }
 }
 
+// `templates/` is shipped content rather than an npm workspace, but its portable fixture
+// suites are owned by @papercusp/template-kit's Vitest config. The affected-tests selector has
+// the same cross-tree ownership, and test:file must honor it too; walking ancestors alone can
+// never discover a config under libs/generic/template-kit for a path under templates/.
+const NON_WORKSPACE_VITEST_ROUTES = [
+  {
+    prefix: 'templates/',
+    pathPattern: /\/checks\/[^/]+\.fixture\.test\.[cm]?[jt]sx?$/,
+    cwd: 'libs/generic/template-kit',
+    config: 'vitest.config.ts',
+  },
+];
+
+function nonWorkspaceVitestRoute(rootRelative, absolute, root) {
+  const normalized = rootRelative.split(sep).join('/');
+  const match = NON_WORKSPACE_VITEST_ROUTES.find(
+    (candidate) => normalized.startsWith(candidate.prefix) && candidate.pathPattern.test(normalized),
+  );
+  if (!match) return null;
+  const cwd = resolve(root, match.cwd);
+  if (!existsSync(resolve(cwd, match.config))) return null;
+  return { cwd, config: match.config, absolute, requested: relative(cwd, absolute) };
+}
+
 export function discoverVitestRoute(file, root = REPO_ROOT) {
   root = resolve(root);
   const absolute = resolveRequestedTestFile(file, root);
@@ -160,6 +184,9 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
   if (rootRelative.startsWith(`..${sep}`) || rootRelative === '..' || isAbsolute(rootRelative)) {
     throw new Error(`requested test file is outside the repository: ${absolute}`);
   }
+
+  const nonWorkspaceRoute = nonWorkspaceVitestRoute(rootRelative, absolute, root);
+  if (nonWorkspaceRoute) return nonWorkspaceRoute;
 
   const wantsIntegration = /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(absolute);
   let dir = dirname(absolute);
@@ -267,7 +294,20 @@ export function withoutOutputFileArg(vitestArgs) {
   return out;
 }
 
-export function listedFiles(output, cwd) {
+export function listedFiles(output, cwd, filesOnly = false) {
+  if (filesOnly) {
+    return [...new Set(
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        // Keep unit-test stubs that still return Vitest's tree form working while the
+        // production call uses --filesOnly. A format-only launcher change must not turn
+        // those tests into false route reds.
+        .map((line) => line.includes(' > ') ? line.split(' > ', 1)[0]?.trim() ?? '' : line)
+        .filter((line) => line !== '' && !/\s/.test(line) && /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(line))
+        .map((file) => resolve(cwd, file)),
+    )];
+  }
   return [...new Set(
     output
       .split(/\r?\n/)
@@ -1276,7 +1316,9 @@ export function main(argv = process.argv.slice(2)) {
     for (const file of requested) console.log(`  requested ${file}`);
 
     warnIfInstallInFlight(`\`vitest list\` (group cwd=${cwdLabel})`);
-    const listed = run('npx', ['vitest', 'list', ...configArgs, ...requested], {
+    // Vitest 4's default tree output omits files whose collected tests are all skipped.
+    // File-level output keeps the route guard about requested FILES, not runnable tests.
+    const listed = run('npx', ['vitest', 'list', '--filesOnly', ...configArgs, ...requested], {
       cwd: group.cwd,
       env: process.env,
     });
@@ -1296,7 +1338,7 @@ export function main(argv = process.argv.slice(2)) {
       });
       continue;
     }
-    const listedMatches = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd);
+    const listedMatches = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd, true);
     // EI-21108362231170830: do not trust every path Vitest emits after an explicit request. A
     // matching test in `.papercusp/worktrees/` is not part of this run and must never reach the
     // exact `vitest run` argument list below.
@@ -1332,12 +1374,12 @@ export function main(argv = process.argv.slice(2)) {
         // the batch as broken. Deliberately only for multi-file groups: a single-file group's
         // error already IS about the one file the caller named — no ambiguity to resolve.
         const perFile = group.routes.map((route) => {
-          const singleListed = run('npx', ['vitest', 'list', ...configArgs, route.requested], {
+          const singleListed = run('npx', ['vitest', 'list', '--filesOnly', ...configArgs, route.requested], {
             cwd: group.cwd,
             env: process.env,
           });
           const singleOutput = `${singleListed.stdout ?? ''}\n${singleListed.stderr ?? ''}`;
-          const singleMatched = listedFiles(singleOutput, group.cwd);
+          const singleMatched = listedFiles(singleOutput, group.cwd, true);
           return { requested: route.requested, ok: singleListed.status === 0 && singleMatched.includes(route.absolute) };
         });
         const attributionMarker = collectionAttributionMarker({

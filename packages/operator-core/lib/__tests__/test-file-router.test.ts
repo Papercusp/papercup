@@ -131,6 +131,20 @@ describe('test-files router', () => {
     ]);
   });
 
+  it('extracts skipped-only files from Vitest filesOnly output', () => {
+    const cwd = resolve(REPO_ROOT, 'packages/operator-core');
+    expect(listedFiles('lib/agent-tools/computer/computer-live.test.ts\n', cwd, true)).toEqual([
+      resolve(cwd, 'lib/agent-tools/computer/computer-live.test.ts'),
+    ]);
+  });
+
+  it('keeps the filesOnly parser compatible with Vitest tree-shaped test stubs', () => {
+    const cwd = resolve(REPO_ROOT, 'packages/operator-core');
+    expect(listedFiles('lib/a.test.ts > suite > skipped test\n', cwd, true)).toEqual([
+      resolve(cwd, 'lib/a.test.ts'),
+    ]);
+  });
+
   // EI-21108362231170830: an explicit Vitest path can also list a matching test from a sibling
   // frozen candidate under `.papercusp/worktrees/`. Only the canonical requested path may be
   // passed to the subsequent `vitest run`; otherwise the duplicate suite executes too.
@@ -165,6 +179,17 @@ describe('test-files router', () => {
     // tooldef HAS its own config — the fallback must not shadow it.
     const route = discoverVitestRoute('libs/generic/tooldef/src/strict-args.test.ts');
     expect(route.config).toBe('vitest.config.ts');
+  });
+
+  it('routes mobile fixture files from shipped templates/ to template-kit', () => {
+    const route = discoverVitestRoute(
+      'templates/papercusp-android-app/checks/composition-integrity.fixture.test.ts',
+    );
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/template-kit'));
+    expect(route.config).toBe('vitest.config.ts');
+    expect(route.requested).toBe(
+      '../../../templates/papercusp-android-app/checks/composition-integrity.fixture.test.ts',
+    );
   });
 });
 
