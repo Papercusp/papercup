@@ -35,6 +35,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { totalmem } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES, fuzzyEnumAsync } from '@papercusp/agent-mcp';
@@ -87,6 +88,9 @@ import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
 import type { ColorScheme } from '../../console-color-schemes';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { listLiveTasks } from '../../task-manager/store';
+import type { TaskRow } from '../../task-manager/types';
+import { agentSpawnScopeMemoryMaxG } from '../../systemd-scope';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
@@ -460,6 +464,96 @@ export interface FleetLaunchCapacityClamp {
   reason: string;
 }
 
+/** The fraction of host RAM deliberately left for the operator, sidecars, and the OS. */
+export const HEADLESS_HOST_MEMORY_RESERVED_FRACTION = 0.25;
+
+/**
+ * Rows returned by listLiveTasks that represent an agent scope with a real memory
+ * ceiling. Keep this predicate pure: the launch handler owns the live ledger read,
+ * while the admission math stays deterministic and easy to regression-test.
+ */
+export function isProtectedAgentSessionTask(
+  task: Pick<TaskRow, 'class' | 'memoryMaxBytes'>,
+): boolean {
+  return (
+    task.class === 'agent-session' &&
+    typeof task.memoryMaxBytes === 'number' &&
+    Number.isFinite(task.memoryMaxBytes) &&
+    task.memoryMaxBytes > 0
+  );
+}
+
+export interface HeadlessHostMemoryClamp {
+  requestedOpenCount: number;
+  openCount: number;
+  clamped: boolean;
+  hostTotalMemoryBytes: number;
+  reservedFraction: number;
+  reservedMemoryBytes: number;
+  usableMemoryBytes: number;
+  perScopeMemoryBytes: number;
+  activeProtectedAgentScopes: number;
+  maxProtectedAgentScopes: number;
+  availableProtectedAgentScopes: number;
+  reason: string;
+}
+
+/**
+ * Pure aggregate admission for headless agent scopes.
+ *
+ * Every headless member receives the shared agent-scope MemoryMax. The host can
+ * therefore admit only floor(total * (1 - reserve) / cap) protected scopes in
+ * aggregate; existing active protected agent-session scopes consume that budget
+ * before this wave is considered. This is intentionally independent of gateway
+ * capacity: it protects the machine even when inference accounts are healthy.
+ */
+export function clampHeadlessLaunchToHostMemory(
+  requestedOpenCount: number,
+  opts: {
+    hostTotalMemoryBytes: number;
+    activeProtectedAgentScopes: number;
+    perScopeMemoryBytes: number;
+    reservedFraction?: number;
+  },
+): HeadlessHostMemoryClamp {
+  const requested = Number.isFinite(requestedOpenCount) ? Math.max(0, Math.floor(requestedOpenCount)) : 0;
+  const total = Number.isFinite(opts.hostTotalMemoryBytes) ? Math.max(0, opts.hostTotalMemoryBytes) : 0;
+  const perScope = Number.isFinite(opts.perScopeMemoryBytes) ? Math.max(1, opts.perScopeMemoryBytes) : 1;
+  const active = Number.isFinite(opts.activeProtectedAgentScopes)
+    ? Math.max(0, Math.floor(opts.activeProtectedAgentScopes))
+    : 0;
+  const reservedFraction =
+    typeof opts.reservedFraction === 'number' && Number.isFinite(opts.reservedFraction)
+      ? Math.min(1, Math.max(0, opts.reservedFraction))
+      : HEADLESS_HOST_MEMORY_RESERVED_FRACTION;
+  const reservedMemoryBytes = total * reservedFraction;
+  const usableMemoryBytes = Math.max(0, total - reservedMemoryBytes);
+  const maxProtectedAgentScopes = Math.floor(usableMemoryBytes / perScope);
+  const availableProtectedAgentScopes = Math.max(0, maxProtectedAgentScopes - active);
+  const openCount = Math.min(requested, availableProtectedAgentScopes);
+  const clamped = openCount < requested;
+  const hostGiB = (total / 1024 ** 3).toFixed(1);
+  const usableGiB = (usableMemoryBytes / 1024 ** 3).toFixed(1);
+  const capGiB = (perScope / 1024 ** 3).toFixed(1);
+  const reason = clamped
+    ? `host-memory-clamped headless top-up ${requested}→${openCount} — ${active} active protected agent-session scope(s), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per scope, ${availableProtectedAgentScopes} protected scope slot(s) available`
+    : `host-memory-ok headless top-up ${requested} — ${active} active protected agent-session scope(s), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per scope, ${availableProtectedAgentScopes} protected scope slot(s) available`;
+  return {
+    requestedOpenCount: requested,
+    openCount,
+    clamped,
+    hostTotalMemoryBytes: total,
+    reservedFraction,
+    reservedMemoryBytes,
+    usableMemoryBytes,
+    perScopeMemoryBytes: perScope,
+    activeProtectedAgentScopes: active,
+    maxProtectedAgentScopes,
+    availableProtectedAgentScopes,
+    reason,
+  };
+}
+
 function floorCap(n: number | null | undefined): number | null {
   return typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
 }
@@ -616,7 +710,7 @@ export function describeFleetFillOutcome(o: {
   /** Noun for a member, e.g. 'HEADLESS member'. Default 'member'. */
   noun?: string;
   /** Why a successful bounded wave can still leave the fleet below target. */
-  limitedBy?: 'capacity' | 'wave';
+  limitedBy?: 'capacity' | 'host-memory' | 'wave';
 }): { fleetSize: number; shortfall: number; complete: boolean; clause: string } {
   const nonNeg = (n: number) => (Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
   const requested = nonNeg(o.requested);
@@ -636,7 +730,9 @@ export function describeFleetFillOutcome(o: {
         ? ` (${failedThisWave} of this wave's ${attempted} terminal${attempted === 1 ? '' : 's'} failed to open)`
         : o.limitedBy === 'wave'
           ? ' (the remaining deficit exceeded the per-wave launch limit — every terminal this wave attempted DID open; re-read live membership before the next top-up)'
-          : ' (the deficit was capacity-clamped — every terminal this wave attempted DID open, so the fleet is still under target)');
+          : o.limitedBy === 'host-memory'
+            ? ' (the deficit was host-memory-clamped — every terminal this wave attempted DID open, so the fleet is still under target)'
+            : ' (the deficit was capacity-clamped — every terminal this wave attempted DID open, so the fleet is still under target)');
   return { fleetSize, shortfall, complete, clause };
 }
 
@@ -1159,6 +1255,7 @@ export default defineTool({
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     name: z
@@ -2353,11 +2450,51 @@ export default defineTool({
       capacityClamp = null;
       sizingAdvisory = null;
     }
+
+    // Headless members are each placed in a protected agent-session scope with the
+    // shared MemoryMax. The gateway capacity signal above protects inference
+    // admission, but it cannot see the host-wide cgroup population that caused the
+    // memory-reclaim incident behind EI-21170449710478148. Count the live/pending
+    // protected scopes before opening this wave and compose that ceiling with the
+    // gateway result. This is deliberately LOCAL only: remote placement is admitted
+    // by each honoring host against its own resource ledger.
+    let hostMemoryClamp: HeadlessHostMemoryClamp | null = null;
+    let hostMemoryAdmissionError: string | null = null;
+    if (args.headless && openCount > 0) {
+      try {
+        const liveTasks = await listLiveTasks(workspaceId);
+        const activeProtectedAgentScopes = liveTasks.filter(isProtectedAgentSessionTask).length;
+        // A spawned headless leader consumes the same protected scope as a member,
+        // but has not enrolled in the ledger yet. Reserve that slot before deciding
+        // how many member scopes this call may open.
+        const reservedForSpawnedLeader = spawningLeader ? 1 : 0;
+        hostMemoryClamp = clampHeadlessLaunchToHostMemory(openCount, {
+          hostTotalMemoryBytes: totalmem(),
+          activeProtectedAgentScopes: activeProtectedAgentScopes + reservedForSpawnedLeader,
+          perScopeMemoryBytes: agentSpawnScopeMemoryMaxG() * 1024 ** 3,
+        });
+        if (hostMemoryClamp.clamped) openCount = hostMemoryClamp.openCount;
+      } catch (e: any) {
+        // This is a safety admission, not an advisory telemetry read. If the
+        // protected-scope ledger cannot be read, do not open an unbounded headless
+        // wave against an unknown host population; visible launches remain
+        // unaffected because they do not use this guard.
+        hostMemoryAdmissionError = `host-memory admission unavailable — refusing new headless members until the live task ledger can be read: ${e?.message ?? e}`;
+        openCount = 0;
+      }
+    }
     if (openCount <= 0) {
+      const hostMemorySuppressed = Boolean(hostMemoryAdmissionError || hostMemoryClamp?.clamped);
       const lines = [
-        `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but capacity allows 0 new member terminals now.`,
-        capacityClamp?.reason ?? 'capacity report unavailable',
-        'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
+        hostMemoryAdmissionError
+          ? `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but host-memory admission is unavailable, so 0 new headless members are allowed now.`
+          : hostMemoryClamp?.clamped
+            ? `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but host-memory admission allows 0 new headless members now.`
+            : `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but capacity allows 0 new member terminals now.`,
+        hostMemoryAdmissionError ?? hostMemoryClamp?.reason ?? capacityClamp?.reason ?? 'capacity report unavailable',
+        hostMemoryAdmissionError
+          ? 'NO new headless members were opened. Re-call this tool after the live task ledger recovers; the guard will re-evaluate the remaining deficit.'
+          : 'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
         planSlug
           ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
           : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
@@ -2387,7 +2524,10 @@ export default defineTool({
         opened: [],
         failed: [],
         relaunchSuppressed: true,
-        capacitySuppressed: true,
+        capacitySuppressed: Boolean(capacityClamp?.clamped && !hostMemorySuppressed),
+        hostMemorySuppressed,
+        hostMemoryClamp,
+        hostMemoryAdmissionError,
         message: lines.join('\n'),
       });
     }
@@ -3341,6 +3481,8 @@ export default defineTool({
     // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
     // weekly-token-budget is merely tight (utilizationTight — advisory; members still launch).
     if (capacityClamp && (capacityClamp.clamped || capacityClamp.utilizationTight)) lines.push(capacityClamp.reason);
+    if (hostMemoryClamp?.clamped) lines.push(hostMemoryClamp.reason);
+    if (hostMemoryAdmissionError) lines.push(hostMemoryAdmissionError);
     // #3 failsafe report: tell the leader if the launch had to backstop a missing
     // plans:start, or if promotion was refused by the spec-triad gate. The latter
     // is not an idempotent no-op: the lane is empty and the remedy is actionable.
@@ -3368,11 +3510,22 @@ export default defineTool({
       attempted: openCount,
       opened: opened.length,
       noun: args.headless ? 'HEADLESS member' : 'member',
-      limitedBy: capacityClamp?.clamped ? 'capacity' : topUpWave.waveCapped ? 'wave' : undefined,
+      limitedBy: hostMemoryClamp?.clamped
+        ? 'host-memory'
+        : capacityClamp?.clamped
+          ? 'capacity'
+          : topUpWave.waveCapped
+            ? 'wave'
+            : undefined,
     });
+    const clampSuffix = hostMemoryClamp?.clamped
+      ? `; the deficit was host-memory-clamped ${hostMemoryClamp.requestedOpenCount}→${hostMemoryClamp.openCount}`
+      : capacityClamp?.clamped
+        ? `; the deficit was capacity-clamped ${requestedOpenCount}→${openCount}`
+        : '';
     lines.push(
       opened.length
-        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${fill.clause}${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; the deficit was capacity-clamped ${requestedOpenCount}→${openCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
+        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${fill.clause}${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${clampSuffix}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
         : `No ${args.headless ? 'headless ' : ''}member${args.headless ? 's were' : ' terminals were'} started for fleet \`${fleetSlug}\`.`,
     );
     for (const o of opened) {
@@ -3561,6 +3714,8 @@ export default defineTool({
         shortfall: fill.shortfall,
         fleetComplete: fill.complete,
         capacityClamp,
+        hostMemoryClamp,
+        hostMemoryAdmissionError,
         sizingAdvisory,
         // EI-20362893066852316: non-null when the codex model preflight could not get a
         // definitive answer (auth/transport/etc.) and the launch proceeded fail-open.
