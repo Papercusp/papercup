@@ -2302,6 +2302,28 @@ export async function runTscBaselineGate({
   }
   const ownBaselineByFile = baseline.files ?? {};
 
+  // Load each owning package's baseline BEFORE any initialization path. A new gate must know
+  // which measured files belong to another package before it persists its first snapshot; otherwise
+  // --seed copies foreign rows into this gate's own baseline and effectiveBaselineByFile can never
+  // inherit the owner's canonical count on later runs.
+  //
+  // Fail-SOFT per source: an unreadable foreign baseline degrades to the old absent⇒0 behaviour
+  // (a possible false red we WARN about) rather than crashing the gate or silently passing. The
+  // ownership prefix still applies when the source is unreadable, so a seed never creates a
+  // duplicate owner record merely because the owner baseline could not be read right now.
+  const loadedForeign = [];
+  for (const source of foreignBaselines) {
+    try {
+      const parsed = JSON.parse(readFileSync(source.baselineFile, 'utf-8'));
+      loadedForeign.push({ ...source, files: parsed.files ?? {} });
+    } catch {
+      console.warn(
+        `⚠ Could not read the baseline owning ${source.prefix} (${source.baselineFile}) — ` +
+          `files under it fall back to an implicit 0 baseline and may report as false regressions.`,
+      );
+    }
+  }
+
   // --seed: one-time initialization for a BRAND-NEW project's baseline. `--update` cannot do this
   // (by design — decidePerFile always treats a file absent from the baseline as a REGRESSION, per
   // EI-18766822535373909, so a truly empty baseline can never self-populate via the normal ratchet
@@ -2332,30 +2354,31 @@ export async function runTscBaselineGate({
       process.exit(1);
       return;
     }
-    baseline.files = Object.fromEntries(Object.entries(currentByFile).sort(([a], [b]) => a.localeCompare(b)));
-    baseline[countField] = sumValues(currentByFile);
+    // A foreign prefix is owned by another package's gate, even if that owner's baseline is
+    // temporarily unreadable. Persisting the current count here would make this gate's explicit
+    // row win over effectiveBaselineByFile forever and silently fork the owner's debt record.
+    const foreignSeedFiles = Object.keys(currentByFile).filter((file) =>
+      foreignBaselines.some((source) => file.startsWith(source.prefix)),
+    );
+    const ownSeedByFile = Object.fromEntries(
+      Object.entries(currentByFile)
+        .filter(([file]) => !foreignSeedFiles.includes(file))
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+    baseline.files = ownSeedByFile;
+    baseline[countField] = sumValues(ownSeedByFile);
     baseline.updatedAt = new Date().toISOString();
     writeFileSync(baselineFile, JSON.stringify(baseline, null, 2) + '\n');
     console.log(
-      `✓ seeded: baseline → ${sumValues(currentByFile)} errors across ${Object.keys(currentByFile).length} file(s) (${baselineFile})`,
+      `✓ seeded: baseline → ${sumValues(ownSeedByFile)} errors across ${Object.keys(ownSeedByFile).length} file(s) (${baselineFile})`,
     );
-    return;
-  }
-
-  // Load each owning package's baseline for the cross-package files this gate measures but does not
-  // own. Fail-SOFT per source: an unreadable foreign baseline degrades to the old absent⇒0 behaviour
-  // (a possible false red we WARN about) rather than crashing the gate or silently passing.
-  const loadedForeign = [];
-  for (const source of foreignBaselines) {
-    try {
-      const parsed = JSON.parse(readFileSync(source.baselineFile, 'utf-8'));
-      loadedForeign.push({ ...source, files: parsed.files ?? {} });
-    } catch {
-      console.warn(
-        `⚠ Could not read the baseline owning ${source.prefix} (${source.baselineFile}) — ` +
-          `files under it fall back to an implicit 0 baseline and may report as false regressions.`,
+    if (foreignSeedFiles.length > 0) {
+      console.log(
+        `   (${foreignSeedFiles.length} cross-package file(s) omitted from this baseline; ` +
+          `they inherit from their owning package on later runs.)`,
       );
     }
+    return;
   }
 
   const { effective: baselineByFile, inherited } = effectiveBaselineByFile({

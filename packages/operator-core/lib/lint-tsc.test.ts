@@ -1910,6 +1910,61 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
   });
 });
 
+describe('a first seed preserves foreign-baseline inheritance (EI-21159980101594599)', () => {
+  // This is intentionally a real subprocess around runTscBaselineGate rather than a pure helper
+  // test: the defect lived in the production ordering of baseline loading and the --seed write.
+  // A unit test of effectiveBaselineByFile alone cannot catch a seed branch that returns before
+  // that helper is ever called.
+  const REPO_ROOT_S = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const GATE_S = pathToFileURL(join(REPO_ROOT_S, 'scripts', 'lib', 'tsc-baseline-gate.mjs')).href;
+
+  it('does not persist a measured foreign file into the new gate baseline', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-seed-inheritance-'));
+    const baselineFile = join(root, 'baseline.json');
+    const foreignBaselineFile = join(root, 'operator-core-baseline.json');
+    try {
+      writeFileSync(
+        join(root, 'tsc-output.txt'),
+        [
+          "packages/agent-mcp/src/own.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.",
+          'packages/operator-core/lib/owned.ts(2,1): error TS2339: Property x does not exist.',
+        ].join('\n') + '\n',
+      );
+      writeFileSync(baselineFile, JSON.stringify({ files: {} }));
+      writeFileSync(
+        foreignBaselineFile,
+        JSON.stringify({ files: { 'packages/operator-core/lib/owned.ts': 1 } }),
+      );
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE_S)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(baselineFile)},\n` +
+          `  label: 'agent-mcp-seed-test',\n` +
+          `  argv: ['--seed'],\n` +
+          `  foreignBaselines: [{\n` +
+          `    prefix: 'packages/operator-core/',\n` +
+          `    baselineFile: ${JSON.stringify(foreignBaselineFile)},\n` +
+          `    label: 'operator-core',\n` +
+          `  }],\n` +
+          `});\n`,
+      );
+
+      execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      const seeded = JSON.parse(readFileSync(baselineFile, 'utf-8')) as {
+        errorCount?: number;
+        files: Record<string, number>;
+      };
+      expect(seeded.files).toEqual({ 'packages/agent-mcp/src/own.ts': 1 });
+      expect(seeded.errorCount).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('a crashed tsc with non-empty garbage output must NOT read as clean (WI-37485)', () => {
   // WHY THIS EXISTS. Confirmed live against green-checkpoint candidate b15ff819ad2e (a real,
   // committed TS2741 in federated-presence.ts): `npx tsc -p packages/operator-core/tsconfig.json
