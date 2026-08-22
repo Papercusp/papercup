@@ -32,6 +32,13 @@ vi.mock('./bash-jobs', async (importOriginal) => ({
   // reason to call the launch seam, even when resolution fails.
   startBackground: jobs.startBackground,
 }));
+vi.mock('../../process-identity', () => ({
+  readProcessIdentity: vi.fn(() => 'linux:boot-test:4242'),
+}));
+vi.mock('../../task-manager/cgroup-read', () => ({
+  readProcessCgroupPath: vi.fn(() => '/papercusp.slice/pc-task-carry-1.scope'),
+  readProcessCmdline: vi.fn(() => 'bash -o pipefail -c sleep 60'),
+}));
 
 import bashOutputTool from './bash_output';
 
@@ -59,6 +66,8 @@ function taskRow(overrides: Partial<TaskRow> = {}): TaskRow {
     launchedBy: 'su-test',
     logPath: '/tmp/bash-carry-1.log',
     detail: { bashJobId: 'bash-carry-1' },
+    pid: 4242,
+    processIdentity: 'linux:boot-test:4242',
     ...overrides,
   };
 }
@@ -124,6 +133,28 @@ describe('capability:bash_output — durable task attachment', () => {
       running: true,
       output: 'still working\n',
     });
+  });
+
+  it('returns a normal running recovery when the registry misses but the ledger proves the process alive', async () => {
+    jobs.getJob.mockReturnValue(null);
+
+    const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx());
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+    expect(result.isError).toBeUndefined();
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-carry-1',
+      task_id: 'task-carry-1',
+      status: 'running',
+      running: true,
+      recovered_from_ledger: true,
+      tracking_lost: true,
+      output_is_tail: true,
+      output: '',
+    });
+    expect(payload).not.toHaveProperty('reason', 'tracking_lost_process_alive');
+    expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
   it('hides a cross-workspace task as unknown and does not touch the job registry', async () => {

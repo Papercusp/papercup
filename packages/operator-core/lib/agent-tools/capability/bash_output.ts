@@ -751,6 +751,13 @@ export default defineTool({
         }
 
         if (ledgerVerdict.kind === 'confirmed_alive') {
+          // EI-20218784292451325: a durable liveness proof is a successful
+          // recovery, not a tool failure. The worker-local JOBS map may be
+          // missing after a cross-worker read, but the task is still healthy;
+          // surfacing `isError:true` made callers and the watchdog treat this
+          // expected degraded read as a failed command. The recovered log is a
+          // tail (there is no worker-local cursor), so say that explicitly while
+          // preserving the normal running/status shape.
           // EI-19915289191989412: the "log tail will keep growing" promise below is
           // FALSE for a command whose last pipeline stage is a buffering filter
           // (`| tail -45`, `| head`, …) — that stage flushes nothing until the
@@ -770,9 +777,22 @@ export default defineTool({
               {
                 type: 'text' as const,
                 text: JSON.stringify({
-                  ok: false,
+                  ok: true,
                   ...jobIdentity,
-                  reason: 'tracking_lost_process_alive',
+                  status: 'running',
+                  exit_code: null,
+                  running: true,
+                  pid: ledgerVerdict.pid,
+                  scope_unit: ledgerVerdict.scopeUnit,
+                  recovered_from_ledger: true,
+                  tracking_lost: true,
+                  output_is_tail: true,
+                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                  ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
+                  ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
+                  ...(diedMarkerWritten ? { job_died_marker_written: true } : {}),
+                  ...strandedOutput,
+                  output: strandedLog.output,
                   advice:
                     `This job's in-memory tracking is gone, but its real OS process (pid ${ledgerVerdict.pid}` +
                     `${ledgerVerdict.scopeUnit ? `, systemd scope ${ledgerVerdict.scopeUnit}` : ''}) is CONFIRMED ` +
@@ -780,16 +800,9 @@ export default defineTool({
                     'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
                     `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
                     confirmedAliveStopAdvice(),
-                  pid: ledgerVerdict.pid,
-                  scope_unit: ledgerVerdict.scopeUnit,
-                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
-                  ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
-                  ...(diedMarkerWritten ? { job_died_marker_written: true } : {}),
-                  ...strandedOutput,
                 }),
               },
             ],
-            isError: true,
           };
         }
 
