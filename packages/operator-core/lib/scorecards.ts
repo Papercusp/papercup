@@ -1455,12 +1455,13 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // had no scorecards at all, which makes the diagnostic claim "never been graded"
   // false (EI-21167213678011223). Keep computeRubricStaleness's pure/direct-call
   // contract intact and add the aggregation context only where it is available.
-  const excludedPopulations: Array<[kind: string, count: number]> = [
+  const excludedPopulationCounts: Array<[kind: string, count: number]> = [
     ['superseded', supersededExcluded],
     ['pre-contract-reset', preContractResetExcluded],
     ['provisional', provisionalExcluded],
     ['grading-audit-pending', gradingAuditPendingExcluded],
-  ].filter(([, count]) => count > 0);
+  ];
+  const excludedPopulations = excludedPopulationCounts.filter(([, count]) => count > 0);
   const excludedTotal = excludedPopulations.reduce((total, [, count]) => total + count, 0);
   const stalenessWithExclusionContext =
     finalCards.length === 0 && !staleness.assessed && excludedTotal > 0
