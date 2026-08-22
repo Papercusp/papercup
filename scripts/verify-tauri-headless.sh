@@ -1682,7 +1682,10 @@ export VERIFY_TAURI_SPA_DIST="$SPA_DIST"
 # Fixed sleeps make those checks depend on machine/DB timing, so expose a
 # bounded assertion helper for every run. Callers pass normal
 # `tauri-agent-tools check` arguments; the helper pins our verified PID and
-# retries until the assertion succeeds or the diagnostic timeout expires.
+# retries until the assertion succeeds or the diagnostic timeout expires. Pass
+# --quiet when a caller intentionally probes for an optional element and will
+# handle the nonzero result itself; this suppresses only timeout diagnostics,
+# while configuration and liveness failures remain loud.
 POLL="$WORK/poll-dom.sh"
 cat > "$POLL" <<'POLL_SCRIPT'
 #!/usr/bin/env bash
@@ -1690,6 +1693,11 @@ set -uo pipefail
 
 timeout="${VERIFY_TAURI_DOM_TIMEOUT:-30}"
 interval="${VERIFY_TAURI_DOM_POLL_INTERVAL:-1}"
+quiet_failure=0
+if [ "${1:-}" = "--quiet" ]; then
+  quiet_failure=1
+  shift
+fi
 case "$timeout" in
   ''|*[!0-9]*) echo "FATAL: VERIFY_TAURI_DOM_TIMEOUT must be a non-negative integer" >&2; exit 2 ;;
 esac
@@ -1714,8 +1722,10 @@ while :; do
     exit 0
   fi
   if [ "$SECONDS" -ge "$deadline" ]; then
-    echo "FATAL: DOM assertion did not pass within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
-    [ -n "$last_output" ] && printf '%s\n' "$last_output" >&2
+    if [ "$quiet_failure" -eq 0 ]; then
+      echo "FATAL: DOM assertion did not pass within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
+      [ -n "$last_output" ] && printf '%s\n' "$last_output" >&2
+    fi
     exit 1
   fi
   sleep "$interval"
