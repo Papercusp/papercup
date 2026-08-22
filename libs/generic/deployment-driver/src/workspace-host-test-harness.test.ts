@@ -11,6 +11,7 @@ import type {
   WorkspaceHostResourceRef,
 } from './workspace-host-types';
 import {
+  type WorkspaceHostLiveCanarySpec,
   DeterministicWorkspaceHostFaultInjector,
   WORKSPACE_HOST_CANARY_TAG_KEYS,
   WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS,
@@ -35,7 +36,9 @@ function desired(): WorkspaceHostDesiredSpec {
     size: 'small',
     image: { id: 'ubuntu-2404', version: '1' },
     data: { volumeGiB: 50, encrypted: true },
-    credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'resolver://cloud/test' } },
+    credentials: {
+      cloudCredentialRef: { kind: 'cloud', ref: 'resolver://cloud/test' },
+    },
     labels: { purpose: 'contract-test' },
     provider: { networkTier: 'standard' },
   };
@@ -113,7 +116,13 @@ function fakeProvider(): WorkspaceHostProvider {
   return {
     target: 'fake',
     capabilities: {
-      discovery: { scopes: true, regions: true, sizes: true, images: true, priceEstimates: true },
+      discovery: {
+        scopes: true,
+        regions: true,
+        sizes: true,
+        images: true,
+        priceEstimates: true,
+      },
       lifecycle: {
         start: true,
         stop: true,
@@ -127,7 +136,13 @@ function fakeProvider(): WorkspaceHostProvider {
       transportKinds: ['fake-ssh'],
     },
     async validateConnection() {
-      return { ok: true, checkedAt: NOW, identity: 'fake:test', warnings: [], errors: [] };
+      return {
+        ok: true,
+        checkedAt: NOW,
+        identity: 'fake:test',
+        warnings: [],
+        errors: [],
+      };
     },
     async listScopes() {
       return [{ kind: 'project', id: 'project-1', label: 'Test project' }];
@@ -136,13 +151,33 @@ function fakeProvider(): WorkspaceHostProvider {
       return [{ id: 'us-test1', label: 'Test', available: true }];
     },
     async listSizes() {
-      return [{ id: 'small', label: 'Small', cpuCount: 2, memoryMiB: 4096, available: true }];
+      return [
+        {
+          id: 'small',
+          label: 'Small',
+          cpuCount: 2,
+          memoryMiB: 4096,
+          available: true,
+        },
+      ];
     },
     async listImages() {
-      return [{ id: 'ubuntu-2404', version: '1', label: 'Ubuntu 24.04', signed: true }];
+      return [
+        {
+          id: 'ubuntu-2404',
+          version: '1',
+          label: 'Ubuntu 24.04',
+          signed: true,
+        },
+      ];
     },
     async estimatePrice() {
-      return { currency: 'USD', hourlyAmount: 0.05, observedAt: NOW, confidence: 'estimated' };
+      return {
+        currency: 'USD',
+        hourlyAmount: 0.05,
+        observedAt: NOW,
+        confidence: 'estimated',
+      };
     },
     async plan(request) {
       return plan(request);
@@ -152,13 +187,24 @@ function fakeProvider(): WorkspaceHostProvider {
       return apply(request);
     },
     async observe(host) {
-      return { host, state: 'running', resources: host.resources, observedAt: NOW, drift: [] };
+      return {
+        host,
+        state: 'running',
+        resources: host.resources,
+        observedAt: NOW,
+        drift: [],
+      };
     },
     async getTransportProfile() {
       return {
         kind: 'fake-ssh',
         supportedClientPlatforms: ['linux'],
-        features: { command: true, pty: true, tcpForward: true, fileTransfer: true },
+        features: {
+          command: true,
+          pty: true,
+          tcpForward: true,
+          fileTransfer: true,
+        },
         prerequisites: [],
         constraints: [],
         reconnect: 'resume',
@@ -166,12 +212,17 @@ function fakeProvider(): WorkspaceHostProvider {
       };
     },
     async attestHealth(host) {
-      return { hostId: host.hostId, observedAt: NOW, status: 'healthy', checks: [{ name: 'ready', ok: true }] };
+      return {
+        hostId: host.hostId,
+        observedAt: NOW,
+        status: 'healthy',
+        checks: [{ name: 'ready', ok: true }],
+      };
     },
   };
 }
 
-function canarySpec() {
+function canarySpec(): WorkspaceHostLiveCanarySpec {
   return {
     runId: 'canary-1',
     workspaceId: 'workspace-1',
@@ -234,8 +285,19 @@ describe('workspace-host provider contract suite', () => {
 describe('deterministic provider fault injection', () => {
   it('models before-call throttling and ambiguous timeout-after-success at exact occurrences', async () => {
     const injector = new DeterministicWorkspaceHostFaultInjector([
-      { point: 'apply:vm', occurrence: 1, retryClass: 'throttled', message: '429' },
-      { point: 'apply:vm', occurrence: 2, timing: 'after', retryClass: 'ambiguous', message: 'timeout' },
+      {
+        point: 'apply:vm',
+        occurrence: 1,
+        retryClass: 'throttled',
+        message: '429',
+      },
+      {
+        point: 'apply:vm',
+        occurrence: 2,
+        timing: 'after',
+        retryClass: 'ambiguous',
+        message: 'timeout',
+      },
     ]);
     let sideEffects = 0;
     const operation = () => ++sideEffects;
@@ -261,20 +323,33 @@ describe('real-account canary safety harness', () => {
     expect(
       () =>
         new WorkspaceHostLiveCanaryHarness(
-          { ...canarySpec(), contractApproval: undefined } as unknown as ReturnType<typeof canarySpec>,
+          {
+            ...canarySpec(),
+            contractApproval: undefined,
+          } as unknown as ReturnType<typeof canarySpec>,
           () => NOW,
         ),
     ).toThrow('blocked until the current fake-provider contract report is approved');
-    expect(
-      () => new WorkspaceHostLiveCanaryHarness({ ...canarySpec(), maxSpendCents: 2_501 }, () => NOW),
-    ).toThrow(`between 1 and ${WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS}`);
+    expect(() => new WorkspaceHostLiveCanaryHarness({ ...canarySpec(), maxSpendCents: 2_501 }, () => NOW)).toThrow(
+      `between 1 and ${WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS}`,
+    );
   });
 
   it('enforces reservations before spend and stops at the cumulative USD 25 ceiling', () => {
     const harness = new WorkspaceHostLiveCanaryHarness(canarySpec(), () => NOW);
-    harness.reserveSpend({ id: 'vm-hour', purpose: 'one VM hour', cents: 2_400, reservedAt: NOW });
+    harness.reserveSpend({
+      id: 'vm-hour',
+      purpose: 'one VM hour',
+      cents: 2_400,
+      reservedAt: NOW,
+    });
     expect(() =>
-      harness.reserveSpend({ id: 'disk', purpose: 'disk', cents: 101, reservedAt: NOW }),
+      harness.reserveSpend({
+        id: 'disk',
+        purpose: 'disk',
+        cents: 101,
+        reservedAt: NOW,
+      }),
     ).toThrow('would exceed the 2500-cent ceiling');
     harness.settleSpend({
       reservationId: 'vm-hour',
@@ -282,16 +357,24 @@ describe('real-account canary safety harness', () => {
       observedAt: NOW,
       providerEvidenceRef: 'billing://gcp/cost-1',
     });
-    harness.recordObservedSpend({ cents: 101, observedAt: NOW, providerEvidenceRef: 'billing://gcp/delayed' });
+    harness.recordObservedSpend({
+      cents: 101,
+      observedAt: NOW,
+      providerEvidenceRef: 'billing://gcp/delayed',
+    });
     expect(() => harness.assertCanStartProviderWork()).toThrow('spend ceiling has been exceeded');
   });
 
   it('requires immutable run tags, watchdogs teardown, and distinguishes absence from proof', () => {
     const harness = new WorkspaceHostLiveCanaryHarness(canarySpec(), () => NOW);
-    const resource: WorkspaceHostResourceRef = { target: 'gcp', kind: 'vm', providerId: 'instance-1' };
-    expect(() =>
-      harness.registerResource({ resource, tags: {}, createdAt: NOW }),
-    ).toThrow(`missing required tag '${WORKSPACE_HOST_CANARY_TAG_KEYS.canary}=true'`);
+    const resource: WorkspaceHostResourceRef = {
+      target: 'gcp',
+      kind: 'vm',
+      providerId: 'instance-1',
+    };
+    expect(() => harness.registerResource({ resource, tags: {}, createdAt: NOW })).toThrow(
+      `missing required tag '${WORKSPACE_HOST_CANARY_TAG_KEYS.canary}=true'`,
+    );
     const tags = harness.tags({ purpose: 'workspace-host-test' });
     harness.registerResource({ resource, tags, createdAt: NOW });
 
@@ -317,14 +400,25 @@ describe('real-account canary safety harness', () => {
       providerEvidence: { operationRef: 'gcp-operation-1' },
     });
     harness.recordManualDestroyReceipt(receipt);
-    expect(harness.teardownWatchdog(LATER)).toMatchObject({ overdue: false, pending: [] });
+    expect(harness.teardownWatchdog(LATER)).toMatchObject({
+      overdue: false,
+      pending: [],
+    });
     expect(harness.orphanCensus([])).toMatchObject({ clean: true });
   });
 
   it('requires cost evidence and a clean orphan census before emitting a completion receipt', () => {
     const harness = new WorkspaceHostLiveCanaryHarness(canarySpec(), () => NOW);
-    const resource: WorkspaceHostResourceRef = { target: 'gcp', kind: 'disk', providerId: 'disk-1' };
-    harness.registerResource({ resource, tags: harness.tags(), createdAt: NOW });
+    const resource: WorkspaceHostResourceRef = {
+      target: 'gcp',
+      kind: 'disk',
+      providerId: 'disk-1',
+    };
+    harness.registerResource({
+      resource,
+      tags: harness.tags(),
+      createdAt: NOW,
+    });
     harness.confirmResourceAbsent({
       hostId: 'host-1',
       providerResourceId: 'disk-1',
@@ -332,7 +426,11 @@ describe('real-account canary safety harness', () => {
       source: 'provider-read',
     });
     expect(() => harness.finalize([], LATER)).toThrow('without provider cost evidence');
-    harness.recordObservedSpend({ cents: 75, observedAt: LATER, providerEvidenceRef: 'billing://gcp/final' });
+    harness.recordObservedSpend({
+      cents: 75,
+      observedAt: LATER,
+      providerEvidenceRef: 'billing://gcp/final',
+    });
     expect(harness.finalize([], LATER)).toMatchObject({
       runId: 'canary-1',
       spentCents: 75,
@@ -343,6 +441,13 @@ describe('real-account canary safety harness', () => {
 
   it('rejects secret material in persisted metadata and manual receipts', () => {
     expect(() => assertWorkspaceHostSecretIsolation({ private_key: 'not-even-needed' })).toThrow('Secret-shaped field');
+    expect(() =>
+      assertWorkspaceHostSecretIsolation({
+        accessKeyId: 'AKIAEXAMPLE',
+        secretAccessKey: 'plaintext',
+        sessionToken: 'plaintext',
+      }),
+    ).toThrow("Secret-shaped field 'metadata.accessKeyId'");
     expect(() =>
       createWorkspaceHostManualDestroyReceipt({
         runId: 'canary-1',

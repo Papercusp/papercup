@@ -27,8 +27,7 @@ export const WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS = [
   'observation-health-transport',
   'confirmed-destroy',
 ] as const;
-export type WorkspaceHostProviderContractCheck =
-  (typeof WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS)[number];
+export type WorkspaceHostProviderContractCheck = (typeof WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS)[number];
 
 export class WorkspaceHostContractAssertionError extends Error {
   constructor(
@@ -42,6 +41,11 @@ export class WorkspaceHostContractAssertionError extends Error {
 
 const SECRET_KEY = /(?:^|[_-])(api[_-]?key|access[_-]?key|secret|token|password|passphrase|private[_-]?key)(?:$|[_-])/i;
 const SECRET_VALUE = /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/;
+
+function isSecretShapedKey(key: string): boolean {
+  const normalized = key.replace(/([a-z\d])([A-Z])/g, '$1_$2');
+  return SECRET_KEY.test(normalized);
+}
 
 /**
  * Reject secret-shaped values from artifacts that are safe to persist in a
@@ -62,7 +66,7 @@ export function assertWorkspaceHostSecretIsolation(value: unknown, path = 'metad
       return;
     }
     for (const [key, entry] of Object.entries(candidate as Record<string, unknown>)) {
-      if (SECRET_KEY.test(key)) {
+      if (isSecretShapedKey(key)) {
         throw new Error(`Secret-shaped field '${currentPath}.${key}' is forbidden in workspace-host public metadata`);
       }
       visit(entry, `${currentPath}.${key}`);
@@ -173,7 +177,12 @@ export async function runFakeWorkspaceHostProviderContractSuite(
   assertWorkspaceHostSecretIsolation(fixture.context.connection.provider, 'context.connection.provider');
   assertWorkspaceHostSecretIsolation(fixture.desired.provider, 'desired.provider');
   assertWorkspaceHostSecretIsolation(fixture.desired.labels, 'desired.labels');
-  requireContract(checks, 'target-and-secret-isolation', provider.target === fixture.desired.target, 'desired target mismatch');
+  requireContract(
+    checks,
+    'target-and-secret-isolation',
+    provider.target === fixture.desired.target,
+    'desired target mismatch',
+  );
   requireContract(
     checks,
     'target-and-secret-isolation',
@@ -189,10 +198,23 @@ export async function runFakeWorkspaceHostProviderContractSuite(
   );
 
   const validation = await provider.validateConnection(fixture.context);
-  requireContract(checks, 'connection-validation', validation.ok, validation.errors.join('; ') || 'connection rejected');
-  requireContract(checks, 'connection-validation', validation.errors.length === 0, 'successful validation returned errors');
+  requireContract(
+    checks,
+    'connection-validation',
+    validation.ok,
+    validation.errors.join('; ') || 'connection rejected',
+  );
+  requireContract(
+    checks,
+    'connection-validation',
+    validation.errors.length === 0,
+    'successful validation returned errors',
+  );
 
-  const query = { scope: fixture.desired.scope, region: fixture.desired.region };
+  const query = {
+    scope: fixture.desired.scope,
+    region: fixture.desired.region,
+  };
   const [scopes, regions, sizes, images, price] = await Promise.all([
     provider.listScopes(fixture.context),
     provider.listRegions(query, fixture.context),
@@ -206,9 +228,24 @@ export async function runFakeWorkspaceHostProviderContractSuite(
     scopes.some((scope) => scope.kind === fixture.desired.scope.kind && scope.id === fixture.desired.scope.id),
     'desired scope is absent from discovery',
   );
-  requireContract(checks, 'catalog-discovery', regions.some((region) => region.id === fixture.desired.region), 'desired region is absent');
-  requireContract(checks, 'catalog-discovery', sizes.some((size) => size.id === fixture.desired.size), 'desired size is absent');
-  requireContract(checks, 'catalog-discovery', images.some((image) => image.id === fixture.desired.image.id), 'desired image is absent');
+  requireContract(
+    checks,
+    'catalog-discovery',
+    regions.some((region) => region.id === fixture.desired.region),
+    'desired region is absent',
+  );
+  requireContract(
+    checks,
+    'catalog-discovery',
+    sizes.some((size) => size.id === fixture.desired.size),
+    'desired size is absent',
+  );
+  requireContract(
+    checks,
+    'catalog-discovery',
+    images.some((image) => image.id === fixture.desired.image.id),
+    'desired image is absent',
+  );
   requireContract(
     checks,
     'price-estimate',
@@ -239,12 +276,27 @@ export async function runFakeWorkspaceHostProviderContractSuite(
   const applyResults: WorkspaceHostApplyResult[] = [];
   for (const step of firstPlan.steps) {
     const result = await provider.apply(
-      { planId: firstPlan.planId, operationId: firstPlan.operationId, step, knownResources: [...knownResources] },
+      {
+        planId: firstPlan.planId,
+        operationId: firstPlan.operationId,
+        step,
+        knownResources: [...knownResources],
+      },
       fixture.context,
     );
-    requireContract(checks, 'idempotent-apply-reconcile', result.operationId === firstPlan.operationId, 'apply changed operationId');
+    requireContract(
+      checks,
+      'idempotent-apply-reconcile',
+      result.operationId === firstPlan.operationId,
+      'apply changed operationId',
+    );
     requireContract(checks, 'idempotent-apply-reconcile', result.stepId === step.id, 'apply changed stepId');
-    requireContract(checks, 'idempotent-apply-reconcile', result.state !== 'in-progress', 'fake apply did not settle deterministically');
+    requireContract(
+      checks,
+      'idempotent-apply-reconcile',
+      result.state !== 'in-progress',
+      'fake apply did not settle deterministically',
+    );
     if ('resource' in result && result.resource) {
       if (!knownResources.some((resource) => resource.providerId === result.resource!.providerId)) {
         knownResources.push(result.resource);
@@ -252,10 +304,20 @@ export async function runFakeWorkspaceHostProviderContractSuite(
     }
     applyResults.push(result);
   }
-  requireContract(checks, 'idempotent-apply-reconcile', knownResources.length > 0, 'provisioning produced no resource identities');
+  requireContract(
+    checks,
+    'idempotent-apply-reconcile',
+    knownResources.length > 0,
+    'provisioning produced no resource identities',
+  );
 
   const firstApplied = applyResults.find((result) => 'resource' in result && result.resource);
-  requireContract(checks, 'idempotent-apply-reconcile', firstApplied && 'resource' in firstApplied, 'no applied resource to reconcile');
+  requireContract(
+    checks,
+    'idempotent-apply-reconcile',
+    firstApplied && 'resource' in firstApplied,
+    'no applied resource to reconcile',
+  );
   const firstStep = firstPlan.steps.find((step) => step.id === firstApplied.stepId)!;
   const reconciled = await provider.reconcile(
     {
@@ -268,8 +330,18 @@ export async function runFakeWorkspaceHostProviderContractSuite(
     },
     fixture.context,
   );
-  requireContract(checks, 'idempotent-apply-reconcile', reconciled.operationId === firstApplied.operationId, 'reconcile changed operationId');
-  requireContract(checks, 'idempotent-apply-reconcile', reconciled.stepId === firstApplied.stepId, 'reconcile changed stepId');
+  requireContract(
+    checks,
+    'idempotent-apply-reconcile',
+    reconciled.operationId === firstApplied.operationId,
+    'reconcile changed operationId',
+  );
+  requireContract(
+    checks,
+    'idempotent-apply-reconcile',
+    reconciled.stepId === firstApplied.stepId,
+    'reconcile changed stepId',
+  );
   if ('resource' in firstApplied && firstApplied.resource && 'resource' in reconciled && reconciled.resource) {
     requireContract(
       checks,
@@ -279,14 +351,28 @@ export async function runFakeWorkspaceHostProviderContractSuite(
     );
   }
 
-  const host = { hostId: fixture.desired.hostId, target: provider.target, resources: knownResources };
+  const host = {
+    hostId: fixture.desired.hostId,
+    target: provider.target,
+    resources: knownResources,
+  };
   const [observation, transport, health] = await Promise.all([
     provider.observe(host, fixture.context),
     provider.getTransportProfile(host, fixture.context),
     provider.attestHealth(host, fixture.context),
   ]);
-  requireContract(checks, 'observation-health-transport', observation.host.hostId === host.hostId, 'observation changed host identity');
-  requireContract(checks, 'observation-health-transport', health.hostId === host.hostId, 'health attestation changed host identity');
+  requireContract(
+    checks,
+    'observation-health-transport',
+    observation.host.hostId === host.hostId,
+    'observation changed host identity',
+  );
+  requireContract(
+    checks,
+    'observation-health-transport',
+    health.hostId === host.hostId,
+    'health attestation changed host identity',
+  );
   requireContract(checks, 'observation-health-transport', !!transport.kind.trim(), 'transport profile needs a kind');
   requireContract(
     checks,
@@ -301,21 +387,45 @@ export async function runFakeWorkspaceHostProviderContractSuite(
     idempotencyKey: `${fixture.idempotencyKey}:destroy`,
     host,
     disposition: 'discard',
-    confirmation: { expectedHostId: host.hostId, confirmedBy: fixture.confirmedBy, confirmedAt: now() },
+    confirmation: {
+      expectedHostId: host.hostId,
+      confirmedBy: fixture.confirmedBy,
+      confirmedAt: now(),
+    },
   };
   const destroyPlan = await provider.plan(destroyRequest, fixture.context);
   validatePlanShape(checks, destroyPlan, destroyRequest, provider.target);
-  requireContract(checks, 'confirmed-destroy', destroyPlan.steps.some((step) => step.destructive), 'destroy plan has no destructive step');
+  requireContract(
+    checks,
+    'confirmed-destroy',
+    destroyPlan.steps.some((step) => step.destructive),
+    'destroy plan has no destructive step',
+  );
   const destroyConfirmations: WorkspaceHostDestroyConfirmation[] = [];
   for (const step of destroyPlan.steps) {
     const result = await provider.apply(
-      { planId: destroyPlan.planId, operationId: destroyPlan.operationId, step, knownResources },
+      {
+        planId: destroyPlan.planId,
+        operationId: destroyPlan.operationId,
+        step,
+        knownResources,
+      },
       fixture.context,
     );
     if (!step.destructive) continue;
-    requireContract(checks, 'confirmed-destroy', result.state === 'destroyed', `destructive step '${step.id}' lacks absence proof`);
+    requireContract(
+      checks,
+      'confirmed-destroy',
+      result.state === 'destroyed',
+      `destructive step '${step.id}' lacks absence proof`,
+    );
     if (result.state === 'destroyed') {
-      requireContract(checks, 'confirmed-destroy', result.confirmation.source === 'provider-read', 'destroy proof is not a fresh provider read');
+      requireContract(
+        checks,
+        'confirmed-destroy',
+        result.confirmation.source === 'provider-read',
+        'destroy proof is not a fresh provider read',
+      );
       requireContract(
         checks,
         'confirmed-destroy',
@@ -325,7 +435,12 @@ export async function runFakeWorkspaceHostProviderContractSuite(
       destroyConfirmations.push(result.confirmation);
     }
   }
-  requireContract(checks, 'confirmed-destroy', destroyConfirmations.length > 0, 'destroy returned no absence confirmations');
+  requireContract(
+    checks,
+    'confirmed-destroy',
+    destroyConfirmations.length > 0,
+    'destroy returned no absence confirmations',
+  );
 
   return {
     suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
@@ -356,9 +471,7 @@ export interface WorkspaceHostFaultHistoryEntry {
 }
 
 export class WorkspaceHostInjectedFault extends Error {
-  constructor(
-    readonly fault: Required<WorkspaceHostInjectedFaultSpec>,
-  ) {
+  constructor(readonly fault: Required<WorkspaceHostInjectedFaultSpec>) {
     super(fault.message);
     this.name = 'WorkspaceHostInjectedFault';
   }
@@ -382,8 +495,8 @@ export class DeterministicWorkspaceHostFaultInjector {
   async invoke<T>(point: string, operation: () => Promise<T> | T): Promise<T> {
     const occurrence = (this.counts.get(point) ?? 0) + 1;
     this.counts.set(point, occurrence);
-    const index = this.script.findIndex((fault, candidate) =>
-      !this.triggered.has(candidate) && fault.point === point && fault.occurrence === occurrence,
+    const index = this.script.findIndex(
+      (fault, candidate) => !this.triggered.has(candidate) && fault.point === point && fault.occurrence === occurrence,
     );
     const configured = index >= 0 ? this.script[index] : undefined;
     const timing = configured?.timing ?? 'before';
@@ -497,7 +610,9 @@ function sameResource(a: WorkspaceHostResourceRef, b: WorkspaceHostResourceRef):
   return a.target === b.target && a.kind === b.kind && a.providerId === b.providerId;
 }
 
-export function createWorkspaceHostManualDestroyReceipt(input: Omit<WorkspaceHostManualDestroyReceipt, 'kind'>): WorkspaceHostManualDestroyReceipt {
+export function createWorkspaceHostManualDestroyReceipt(
+  input: Omit<WorkspaceHostManualDestroyReceipt, 'kind'>,
+): WorkspaceHostManualDestroyReceipt {
   requireNonEmpty(input.runId, 'manual destroy runId');
   requireNonEmpty(input.actorId, 'manual destroy actorId');
   requireNonEmpty(input.reason, 'manual destroy reason');
@@ -559,7 +674,7 @@ export class WorkspaceHostLiveCanaryHarness {
 
   tags(extra: Readonly<Record<string, string>> = {}): Readonly<Record<string, string>> {
     assertWorkspaceHostSecretIsolation(extra, 'canary.tags');
-    const required = {
+    const required: Record<string, string> = {
       [WORKSPACE_HOST_CANARY_TAG_KEYS.canary]: 'true',
       [WORKSPACE_HOST_CANARY_TAG_KEYS.runId]: this.spec.runId,
       [WORKSPACE_HOST_CANARY_TAG_KEYS.workspaceId]: this.spec.workspaceId,
@@ -602,7 +717,9 @@ export class WorkspaceHostLiveCanaryHarness {
       throw new Error(`Duplicate spend reservation '${input.id}'`);
     }
     if (this.spentCents() + this.reservedCents() + input.cents > this.maxSpendCents) {
-      throw new Error(`Live canary spend reservation '${input.id}' would exceed the ${this.maxSpendCents}-cent ceiling`);
+      throw new Error(
+        `Live canary spend reservation '${input.id}' would exceed the ${this.maxSpendCents}-cent ceiling`,
+      );
     }
     const stored = { ...input };
     this.reservations.set(stored.id, stored);
@@ -635,7 +752,8 @@ export class WorkspaceHostLiveCanaryHarness {
   registerResource(input: WorkspaceHostCanaryResource): WorkspaceHostCanaryResource {
     this.assertCanStartProviderWork();
     requireTimestamp(input.createdAt, 'canary resource createdAt');
-    if (input.resource.target !== this.spec.target) throw new Error('Canary resource target does not match the run target');
+    if (input.resource.target !== this.spec.target)
+      throw new Error('Canary resource target does not match the run target');
     const requiredTags = this.tags();
     for (const [key, value] of Object.entries(requiredTags)) {
       if (input.tags[key] !== value) throw new Error(`Canary resource is missing required tag '${key}=${value}'`);
@@ -650,10 +768,12 @@ export class WorkspaceHostLiveCanaryHarness {
   }
 
   confirmResourceAbsent(confirmation: WorkspaceHostDestroyConfirmation): void {
-    if (confirmation.source !== 'provider-read') throw new Error('Resource deletion requires provider-read absence proof');
+    if (confirmation.source !== 'provider-read')
+      throw new Error('Resource deletion requires provider-read absence proof');
     requireTimestamp(confirmation.confirmedAbsentAt, 'confirmedAbsentAt');
     const record = this.resources.find((entry) => entry.resource.providerId === confirmation.providerResourceId);
-    if (!record) throw new Error(`Destroy confirmation references unregistered resource '${confirmation.providerResourceId}'`);
+    if (!record)
+      throw new Error(`Destroy confirmation references unregistered resource '${confirmation.providerResourceId}'`);
     record.deletionConfirmation = { ...confirmation };
   }
 
@@ -663,7 +783,8 @@ export class WorkspaceHostLiveCanaryHarness {
     }
     const checked = createWorkspaceHostManualDestroyReceipt(receipt);
     const record = this.resources.find((entry) => sameResource(entry.resource, checked.resource));
-    if (!record) throw new Error(`Manual destroy receipt references unregistered resource '${checked.resource.providerId}'`);
+    if (!record)
+      throw new Error(`Manual destroy receipt references unregistered resource '${checked.resource.providerId}'`);
     record.deletionConfirmation = { ...checked.confirmation };
   }
 
@@ -679,7 +800,9 @@ export class WorkspaceHostLiveCanaryHarness {
 
   orphanCensus(observed: readonly WorkspaceHostObservedCanaryResource[]): WorkspaceHostCanaryOrphanCensus {
     const tagged = observed.filter((entry) => entry.tags[WORKSPACE_HOST_CANARY_TAG_KEYS.runId] === this.spec.runId);
-    const untracked = tagged.filter((entry) => !this.resources.some((known) => sameResource(known.resource, entry.resource)));
+    const untracked = tagged.filter(
+      (entry) => !this.resources.some((known) => sameResource(known.resource, entry.resource)),
+    );
     const stillLive = this.resources.filter(
       (known) => !known.deletionConfirmation && tagged.some((entry) => sameResource(known.resource, entry.resource)),
     );
@@ -688,18 +811,34 @@ export class WorkspaceHostLiveCanaryHarness {
     );
     return {
       clean: tagged.length === 0 && this.resources.every((entry) => !!entry.deletionConfirmation),
-      observedTagged: tagged.map((entry) => ({ ...entry, tags: { ...entry.tags } })),
-      untracked: untracked.map((entry) => ({ ...entry, tags: { ...entry.tags } })),
-      stillLive: stillLive.map((entry) => ({ ...entry, tags: { ...entry.tags } })),
-      missingWithoutReceipt: missingWithoutReceipt.map((entry) => ({ ...entry, tags: { ...entry.tags } })),
+      observedTagged: tagged.map((entry) => ({
+        ...entry,
+        tags: { ...entry.tags },
+      })),
+      untracked: untracked.map((entry) => ({
+        ...entry,
+        tags: { ...entry.tags },
+      })),
+      stillLive: stillLive.map((entry) => ({
+        ...entry,
+        tags: { ...entry.tags },
+      })),
+      missingWithoutReceipt: missingWithoutReceipt.map((entry) => ({
+        ...entry,
+        tags: { ...entry.tags },
+      })),
     };
   }
 
-  finalize(observed: readonly WorkspaceHostObservedCanaryResource[], completedAt = this.clock()): WorkspaceHostCanaryCompletionReceipt {
+  finalize(
+    observed: readonly WorkspaceHostObservedCanaryResource[],
+    completedAt = this.clock(),
+  ): WorkspaceHostCanaryCompletionReceipt {
     requireTimestamp(completedAt, 'canary completedAt');
     if (this.reservations.size > 0) throw new Error('Cannot finalize a canary with unsettled spend reservations');
     if (this.costs.length === 0) throw new Error('Cannot finalize a canary without provider cost evidence');
-    if (this.spentCents() > this.maxSpendCents) throw new Error('Cannot finalize a canary that exceeded its hard spend ceiling');
+    if (this.spentCents() > this.maxSpendCents)
+      throw new Error('Cannot finalize a canary that exceeded its hard spend ceiling');
     const census = this.orphanCensus(observed);
     if (!census.clean) throw new Error('Cannot finalize a canary until the orphan census is clean');
     return {
