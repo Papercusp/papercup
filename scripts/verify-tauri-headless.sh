@@ -508,6 +508,21 @@ VERIFY_SCOPE_ENABLED=0
 VERIFY_SCOPE_MODE="process-group"
 VERIFY_SCOPE_INHERITED=0
 
+# A verifier launched from a visible terminal already has an external lifecycle
+# owner: the terminal window.  Keep its children in that same cgroup so the task
+# manager's existing VTE/console classification can expose the window as the
+# owner, rather than creating a verifier-local sibling that looks like an escape.
+# The capability:bash marker remains the stronger, ledger-backed path below; this
+# fallback is only for direct visible-terminal launches where no marker exists.
+verifier_caller_is_terminal_scope() {
+  local caller_cgroup
+  caller_cgroup="$(sed -n 's/^0:://p' "/proc/$$/cgroup" 2>/dev/null | head -1)"
+  case "$caller_cgroup" in
+    */vte-spawn-*.scope|*/papercup-console-*.scope) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # `capability:bash` forcibly stamps this reserved marker only after
 # `beginSyncEnrolment` has minted a durable task id and placed the shell in its
 # managed task service. The bash-job service is the cgroup root we must inherit;
@@ -519,6 +534,10 @@ if [ -n "$CAPABILITY_BASH_BACKGROUND_TASK_ID" ]; then
   VERIFY_SCOPE_MODE="inherit"
   VERIFY_SCOPE_INHERITED=1
   log "verifier cgroup inheritance enabled: children stay in capability:bash managed task scope (task=${CAPABILITY_BASH_BACKGROUND_TASK_ID})"
+elif verifier_caller_is_terminal_scope; then
+  VERIFY_SCOPE_MODE="terminal"
+  VERIFY_SCOPE_INHERITED=1
+  log "verifier cgroup inheritance enabled: children stay in the visible terminal scope (terminal window owns lifecycle)"
 elif [ "$(uname -s 2>/dev/null || true)" = "Linux" ] && command -v systemd-run >/dev/null 2>&1; then
   # Probe the actual user manager, rather than trusting the binary to be on PATH
   # (containers often ship systemd-run without a usable user bus). A failed probe
@@ -623,12 +642,12 @@ log "contention: $(contention_summary)"
 XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
 TAURI_SCOPE_UNIT=""
 
-# Launch a long-lived verifier process. Managed callers use the plain `setsid`
-# branch so the payload remains in their ledgered cgroup; untracked callers use
-# the sibling user scope when Route A is available. The caller keeps the
-# systemd-run client PID as the process-group handle in that fallback, and the
-# generated stop script also stops the named scopes for a cgroup-complete
-# teardown.
+# Launch a long-lived verifier process. Managed callers and visible-terminal
+# callers use the plain `setsid` branch so the payload remains in the caller's
+# externally-owned cgroup; other callers use the sibling user scope when Route A
+# is available. The caller keeps the systemd-run client PID as the process-group
+# handle in that fallback, and the generated stop script also stops the named
+# scopes for a cgroup-complete teardown.
 start_verify_process() {
   local unit="$1" output="$2"
   shift 2
@@ -654,7 +673,11 @@ write_freshness_check_script() {
 # Usage: bash "\$VERIFY_TAURI_FRESHNESS_CHECK"  — run BEFORE re-verifying an edit
 # against an already-booted instance. Exits 1 (and warns loudly on stderr) if the
 # shared apps/operator-vite/dist has changed since this instance's SPA snapshot was
-# frozen; exits 0 (silent) if nothing changed since boot.
+# frozen; exits 0 (silent) if nothing changed since boot. The generated docs site
+# under dist/docs is excluded by default: docs/pagefind rebuilds are independent
+# of the operator SPA and otherwise make every app verification look stale. Set
+# VERIFY_TAURI_FRESHNESS_INCLUDE_DOCS=1 when the run is specifically verifying
+# the docs surface too.
 SPA_DIST="$SPA_DIST"
 SHARED_SPA_DIST="$SHARED_SPA_DIST"
 if [ -z "\$SPA_DIST" ] || [ ! -f "\$SPA_DIST/.frozen-at" ]; then
@@ -666,7 +689,8 @@ fi
 # regenerated) and gives a concrete "rebuilt at <time>" instead of just "some
 # file changed".
 SPA_HB="\${VITE_WATCH_HEARTBEAT:-\${VITE_WATCH_LOCK:-/tmp/papercup-operator-vite-watch.lock}.heartbeat}"
-if [ -f "\$SPA_DIST/.frozen-heartbeat-built-at-ms" ] && [ -f "\$SPA_HB" ]; then
+if [ "\${VERIFY_TAURI_FRESHNESS_INCLUDE_DOCS:-0}" = "1" ] \
+  && [ -f "\$SPA_DIST/.frozen-heartbeat-built-at-ms" ] && [ -f "\$SPA_HB" ]; then
   FROZEN_HB_MS="\$(cat "\$SPA_DIST/.frozen-heartbeat-built-at-ms" 2>/dev/null)"
   CUR_HB_MS="\$(sed -n 's/.*"builtAtMs": *\([0-9]*\).*/\1/p' "\$SPA_HB" 2>/dev/null | head -1)"
   if [ -n "\$FROZEN_HB_MS" ] && [ -n "\$CUR_HB_MS" ] && [ "\$CUR_HB_MS" -gt "\$FROZEN_HB_MS" ] 2>/dev/null; then
@@ -674,7 +698,24 @@ if [ -f "\$SPA_DIST/.frozen-heartbeat-built-at-ms" ] && [ -f "\$SPA_HB" ]; then
     echo "[check-freshness] the shared watcher has rebuilt at least once since this snapshot's freeze (latest shared build: \${CUR_HB_AT:-unknown})." >&2
   fi
 fi
-CHANGED="\$(find "\$SHARED_SPA_DIST" -newer "\$SPA_DIST/.frozen-at" -type f 2>/dev/null | head -5)"
+case "\${VERIFY_TAURI_FRESHNESS_INCLUDE_DOCS:-0}" in
+  1)
+    # Docs verification opts into the complete frozen input tree.
+    CHANGED="\$(find "\$SHARED_SPA_DIST" -newer "\$SPA_DIST/.frozen-at" -type f 2>/dev/null | head -5)"
+    ;;
+  0|'')
+    # The operator SPA does not consume the generated docs/pagefind subtree for
+    # ordinary app checks. Prune it before applying -newer so docs-only churn is
+    # not reported as stale app code.
+    CHANGED="\$(find "\$SHARED_SPA_DIST" \\
+      -path "\$SHARED_SPA_DIST/docs" -prune -o \\
+      -newer "\$SPA_DIST/.frozen-at" -type f -print 2>/dev/null | head -5)"
+    ;;
+  *)
+    echo "[check-freshness] VERIFY_TAURI_FRESHNESS_INCLUDE_DOCS must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 if [ -n "\$CHANGED" ]; then
   {
     echo

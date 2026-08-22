@@ -111,4 +111,30 @@ describe('EI-19444780917356384 — the freshness guard is reachable in assertion
     // …and it must point at the decisive check rather than dead-ending.
     expect(driftBlock).toContain('VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS');
   });
+
+  it('ignores unrelated generated docs churn in the default freshness scope', () => {
+    // apps/operator-vite/dist/docs is a separately rebuilt static site. A
+    // pagefind refresh must not invalidate an ordinary operator-SPA run whose
+    // frozen app bundle did not change.
+    const helperStart = src.indexOf('cat > "$WORK/check-freshness.sh" <<FRESH');
+    const helperEnd = src.indexOf('\nFRESH\n', helperStart);
+    const helper = src.slice(helperStart, helperEnd);
+    expect(helper).toContain('VERIFY_TAURI_FRESHNESS_INCLUDE_DOCS');
+    const defaultStart = helper.indexOf('  0|');
+    const defaultBranch = helper.slice(defaultStart, helper.indexOf('  *)', defaultStart));
+    expect(defaultBranch).toContain('-path "\\$SHARED_SPA_DIST/docs" -prune -o');
+    expect(defaultBranch).toContain('-newer "\\$SPA_DIST/.frozen-at" -type f -print');
+  });
+
+  it('supports an explicit docs-inclusive freshness check for docs UI verification', () => {
+    const helperStart = src.indexOf('cat > "$WORK/check-freshness.sh" <<FRESH');
+    const helperEnd = src.indexOf('\nFRESH\n', helperStart);
+    const helper = src.slice(helperStart, helperEnd);
+    const docsStart = helper.indexOf('  1)');
+    const docsBranch = helper.slice(docsStart, helper.indexOf('  0|', docsStart));
+    expect(docsBranch).toContain(
+      'CHANGED="\\$(find "\\$SHARED_SPA_DIST" -newer "\\$SPA_DIST/.frozen-at" -type f',
+    );
+    expect(helper).toContain('must be 0 or 1');
+  });
 });
