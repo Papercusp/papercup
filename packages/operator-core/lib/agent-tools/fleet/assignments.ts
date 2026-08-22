@@ -145,7 +145,7 @@ export function filterActiveCoverage(
  * wakeability fetcher — no PG needed. Mutates `agents` in place and returns them;
  * a `fetchWakeabilityFn` rejection propagates — the caller decides best-effort.
  */
-export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource }>(
+export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; wakeable?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
   fetchRecordedLiveFn: (ownerIds: string[]) => Promise<Set<string>> = recordedLiveOwnerIds,
@@ -185,6 +185,11 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
       selfWake.get(a.agentId),
     );
     a.sessionState = v.sessionState;
+    // EI-21125380796386851: `suspect` is recoverable when the coordinator can
+    // still deliver a wake. Keep the oracle's wakeability axis alongside the
+    // session verdict so downstream lifecycle projections do not collapse that
+    // state into terminal `dead`.
+    a.wakeable = v.wakeable;
     // EI-19407725333778711: the forward-looking axis. Assigned only when the leg
     // actually resolved — an absent field means UNKNOWN, and must never be
     // written as `'none'`, which is an escalation-worthy claim.
@@ -232,6 +237,7 @@ export type MemberVerdict =
   | 'speaking'
   | MonitorState
   | 'stalled'
+  | 'suspect'
   | 'dead';
 
 /** A tool call within this window ⇒ `speaking` (really working right now). */
@@ -330,6 +336,8 @@ export function deriveMemberVerdict(
     present: boolean;
     alive: boolean;
     sessionState?: SessionState | null;
+    /** The oracle's delivery axis; `suspect` is recoverable only when true. */
+    wakeable?: boolean | null;
     /** The per-claim progress-stall rollup (AgentAssignment.stalled). */
     stalled: boolean;
     /** Work-item claims held (AgentAssignment.load). */
@@ -363,7 +371,11 @@ export function deriveMemberVerdict(
   // gone holder. A fresh tool call now overrides a bare (unconfirmed) heartbeat-dead
   // read, matching this function's own "speaking outranks stalled" precedent.
   const speakingNow = a.lastToolCallAtMs != null && nowMs - a.lastToolCallAtMs <= VERDICT_SPEAKING_FRESH_MS;
-  if (a.sessionState === 'ended' || a.sessionState === 'suspect' || a.sessionState === 'draining') return 'dead';
+  if (a.sessionState === 'ended' || a.sessionState === 'draining') return 'dead';
+  // EI-21125380796386851: a suspect owner with a live inbox-wake await is
+  // recoverable by waking it before any claim takeover. A suspect owner without
+  // that delivery path remains terminal and must be reclaimed/relaunched.
+  if (a.sessionState === 'suspect') return a.wakeable === true ? 'suspect' : 'dead';
   // EI-20980974612370508: a cold loop can be between wakes long enough for its
   // coord_presence heartbeat to disappear. The loop engine (and, below, a
   // registered event-await) is the stronger intentional-parking signal in that
@@ -400,6 +412,7 @@ export function deriveMemberVerdict(
 export async function decorateMemberVerdicts<
   T extends AgentAssignment & {
     sessionState?: SessionState | null;
+    wakeable?: boolean | null;
     verdict?: MemberVerdict;
     wakeMode?: WakeMode;
     lastToolCallAt?: string | null;
@@ -428,6 +441,7 @@ export async function decorateMemberVerdicts<
         present: a.present,
         alive: a.alive,
         sessionState: a.sessionState,
+        wakeable: a.wakeable,
         stalled: a.stalled,
         load: a.load,
         lastToolCallAtMs: Number.isFinite(lastMs as number) ? lastMs : null,
@@ -826,6 +840,7 @@ export default defineTool({
     );
     const agents: (AgentAssignment & {
       sessionState?: SessionState | null;
+      wakeable?: boolean | null;
       /** Stamped by decorateMemberVerdicts — the holder's last GENUINE work signal
        *  (WI-5975 reads it to tell a quiet-but-working holder from an absent one). */
       lastToolCallAt?: string | null;

@@ -35,6 +35,7 @@ const {
   readDerivedSnapshotMock,
   registerDerivedReadMock,
   computeSnapshotMock,
+  computeSummaryMock,
   recordQueueExposureMock,
 } = vi.hoisted(() => ({
   readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
@@ -56,6 +57,7 @@ const {
   ),
   registerDerivedReadMock: vi.fn(),
   computeSnapshotMock: vi.fn(async (_a: unknown) => [] as unknown[]),
+  computeSummaryMock: vi.fn(async (_a: unknown) => [{ total: 0, matched: 0, facets: [] }]),
   recordQueueExposureMock: vi.fn(async (_ids: string[]) => {}),
 }));
 
@@ -66,6 +68,7 @@ vi.mock('../derived-reads/registry', () => ({
 }));
 vi.mock('../harness/improvements/learning-digest-snapshot', () => ({
   computeLearningImprovementsSnapshot: computeSnapshotMock,
+  computeLearningImprovementsSummary: computeSummaryMock,
 }));
 vi.mock('../owner-preference/interactions', () => ({
   recordQueueExposure: recordQueueExposureMock,
@@ -77,6 +80,28 @@ const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
 describe('learning.improvements resolver gate', () => {
   it('registers the learning.improvements query name', () => {
     expect(knownQueryNamesV2()).toContain('learning.improvements');
+    expect(knownQueryNamesV2()).toContain('learning.improvements.summary');
+  });
+
+  it('routes every merged predicate axis unchanged to the paired summary', async () => {
+    const args = {
+      hive: 'alpha-hive',
+      q: 'tier reason',
+      lanes: ['human'],
+      sources: ['Scout'],
+      rails: ['plan'],
+      kinds: ['feature'],
+      severities: ['major'],
+      scopes: ['harness:alpha'],
+      stages: ['in-flight'],
+      ideaTypes: ['code-bug'],
+      lenses: ['reframing'],
+      score: { min: 20, max: 90 },
+      ageDays: { min: 1, max: 30 },
+    };
+    const { resolveNamedQueryV2: r } = await import('./index');
+    await r('learning.improvements.summary', args);
+    expect(computeSummaryMock).toHaveBeenCalledWith(args);
   });
 
   describe('default vs non-default routing + exposure side-effect', () => {
@@ -86,6 +111,7 @@ describe('learning.improvements resolver gate', () => {
         readDerivedSnapshotRowsMock,
         readDerivedSnapshotMock,
         computeSnapshotMock,
+        computeSummaryMock,
         recordQueueExposureMock,
       ])
         m.mockClear();

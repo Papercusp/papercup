@@ -182,7 +182,10 @@ export async function runDecaySweep(
 
   if (result.verified || result.recurred) {
     void trackDetached(
-      import('../../sync-sse').then((m) => m.notifySyncInvalidate('learning.improvements')),
+      import('../../sync-sse').then((m) => Promise.all([
+        m.notifySyncInvalidate('learning.improvements'),
+        m.notifySyncInvalidate('learning.improvements.summary'),
+      ])),
     ).catch(() => {});
     // Push-on-write for the Health tab's improvements panel
     // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —

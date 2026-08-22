@@ -23,6 +23,7 @@ import {
   countIssues,
   listIssueScopes,
   listIssues,
+  projectAllIssuesForBoundedRead,
   type EngineerIssue,
   type IssueSeverity,
   type IssueState,
@@ -336,6 +337,81 @@ export async function readImprovementItems(
   deps: ReadImprovementDeps = defaultDeps,
 ): Promise<ImprovementCandidate[]> {
   return readBySelector({ topic: IMPROVEMENT_TOPIC }, opts, deps);
+}
+
+export interface ProjectImprovementDeps {
+  projectIssues: typeof projectAllIssuesForBoundedRead;
+  readLoopOutputIds?: () => Promise<readonly string[]>;
+}
+
+const defaultProjectImprovementDeps: ProjectImprovementDeps = {
+  projectIssues: projectAllIssuesForBoundedRead,
+  readLoopOutputIds: async () => (await (await import('./loop-output')).readLoopOutputIds()).ids,
+};
+
+/**
+ * Whole-corpus improvement read whose only escape is a caller-declared bounded
+ * projection. Classification may inspect every scoped candidate, but an
+ * unbounded candidate array can never cross back into a sync response.
+ */
+export async function projectImprovementItemsForBoundedRead<T>(
+  opts: ReadImprovementOpts,
+  projection: {
+    maxRows: number;
+    project: (items: readonly ImprovementCandidate[]) => Promise<readonly T[]> | readonly T[];
+  },
+  deps: ProjectImprovementDeps = defaultProjectImprovementDeps,
+): Promise<T[]> {
+  const origins = opts.origins ?? ORGANIC_ONLY;
+  const scopeSet = effectiveScopes(opts);
+  if (scopeSet?.length === 0) {
+    return deps.projectIssues(
+      { issueIds: [] },
+      { maxRows: projection.maxRows, project: () => projection.project([]) },
+    );
+  }
+
+  let issueIds: readonly string[] | undefined;
+  if (opts.loopOutputOnly) {
+    if (!deps.readLoopOutputIds) {
+      throw new Error(
+        'projectImprovementItemsForBoundedRead: loopOutputOnly requires deps.readLoopOutputIds',
+      );
+    }
+    issueIds = await deps.readLoopOutputIds();
+    if (issueIds.length === 0) {
+      return deps.projectIssues(
+        { issueIds: [] },
+        { maxRows: projection.maxRows, project: () => projection.project([]) },
+      );
+    }
+  }
+
+  return deps.projectIssues(
+    {
+      topic: IMPROVEMENT_TOPIC,
+      state: opts.state,
+      q: opts.q,
+      kinds: opts.kinds,
+      severities: opts.severities,
+      signalOrigins: origins,
+      ...(scopeSet?.length === 1 ? { scope: scopeSet[0] } : {}),
+      ...(scopeSet && scopeSet.length > 1 ? { scopes: scopeSet } : {}),
+      ...(issueIds ? { issueIds } : {}),
+      ...(opts.createdBefore ? { createdBefore: opts.createdBefore } : {}),
+    },
+    {
+      maxRows: projection.maxRows,
+      project: async (issues) => {
+        const allowedScopes = scopeSet ? new Set(scopeSet) : null;
+        const candidates = issues
+          .filter((issue) => originAllowed(issue.signalOrigin, origins))
+          .filter((issue) => !allowedScopes || allowedScopes.has(issue.scope))
+          .map(issueToCandidate);
+        return projection.project(candidates);
+      },
+    },
+  );
 }
 
 /**

@@ -10558,7 +10558,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "AFTER a wake: \"who is working / stuck / unanswered / about to compact across MY fleet\". PARK, do not poll: events:await the fleet:*:<slug> keys (events:catalog) + work-item:claimable; loop:arm is then a LONG fallback heartbeat (15m+), never the monitor. Folded into coord:orient { mode:'monitor' }. Spec: agent-insights/leading-a-fleet-without-polling.",
-        "notWhen": "The Mug/placement read over the WHOLE roster (fleet:assignments), or a member's message history (coord:inbox { agent }).",
+        "notWhen": "Mug/placement read over the WHOLE roster (fleet:assignments), or a member's message history (coord:inbox { agent }).",
         "chaining": "A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero `unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. `spinning:true` → coord:send{wake:\"required\"}. Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release=no-op); the `…Federated` sibling is remote + unclaimable (WI-6846). Every `*Alert` ships `*AlertFalsifier` — RUN its `check` before acting; it confirms or KILLS the alert."
       }
     },

@@ -637,6 +637,15 @@ vi.mock("@papercusp/sync", async () => ({
         invalidate: vi.fn(),
       };
     }
+    if (opts.queryName === "learning.improvements.summary") {
+      return {
+        data: [{ total: 4, matched: 1, facets: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
     return opts.queryName === "learning.apiary"
         ? apiaryResult
         : opts.queryName === "learning.hiveEvalTrend"
@@ -893,6 +902,21 @@ describe("LearningTab — Improvements view (default)", () => {
     nuqsState.impq = "";
   });
 
+  it("preserves a server-classified auto-row whose only search hit was raw tierReason", () => {
+    nuqsState.impq = "no protected path";
+    improvementsResult = {
+      data: [{ ...improvementsDigest, humanQueue: [], routedRows: [] }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+
+    render(<LearningTab />);
+
+    expect(screen.getByText("cup:spawn children are coordination-MUTE")).toBeTruthy();
+  });
+
   it("threads bounded impf storage axes and impq to the server while leaving presentation filters client-side", () => {
     nuqsState.impf = {
       kind: ["bug"],
@@ -911,6 +935,9 @@ describe("LearningTab — Improvements view (default)", () => {
       kinds: ["bug"],
       severities: ["critical"],
       scopes: ["harness:foo"],
+      stages: ["in-flight"],
+      ideaTypes: ["code-bug"],
+      lenses: ["risk-first"],
       q: "timeout",
     });
   });

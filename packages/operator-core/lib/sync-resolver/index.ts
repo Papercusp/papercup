@@ -77,6 +77,7 @@ import {
   type LearningObservationRow,
   type LearningObservationsWireArgs,
 } from './learning-observations-read';
+import type { LearningImprovementsArgs } from '../harness/improvements/learning-digest-snapshot';
 
 /**
  * Shared deadline for the fan-outs bounded IN PLACE (WI-39825). 6s — the budget
@@ -3993,9 +3994,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         state: z.enum(['open', 'resolved', 'closed']).optional(),
         limit: clampedLimitOpt(500),
         q: z.string().max(200).optional(),
-        kinds: z.array(z.enum(['bug', 'change', 'task'])).max(3).optional(),
+        kinds: z.array(z.enum(['bug', 'change', 'feature', 'task'])).max(4).optional(),
         severities: z.array(z.enum(['critical', 'major', 'minor', 'nit'])).max(4).optional(),
         scopes: z.array(z.string().min(1).max(120)).max(50).optional(),
+        lanes: z.array(z.enum(['auto', 'human'])).max(2).optional(),
+        sources: z.array(z.string().min(1).max(120)).max(50).optional(),
+        rails: z.array(z.string().min(1).max(120)).max(20).optional(),
+        stages: z.array(z.enum(['not-ready', 'approved', 'in-flight', 'shipped', 'dropped'])).max(5).optional(),
+        ideaTypes: z.array(z.string().min(1).max(120)).max(50).optional(),
+        lenses: z.array(z.string().min(1).max(120)).max(50).optional(),
+        score: z.object({ min: z.number().finite().optional(), max: z.number().finite().optional() }).strict().optional(),
+        ageDays: z.object({ min: z.number().finite().optional(), max: z.number().finite().optional() }).strict().optional(),
         // (per-hive-learning-loops P-040) the per-Hive lens: a Hive HOME slug
         // narrows the feed to that Hive's member-harness scopes (D-008). Omit ⇒
         // the whole workspace (papercusp + every harness).
@@ -4008,16 +4017,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       })
       .optional(),
     resolve: async (args) => {
-      const a = (args ?? {}) as {
-        state?: 'open' | 'resolved' | 'closed';
-        limit?: number;
-        q?: string;
-        kinds?: ('bug' | 'change' | 'task')[];
-        severities?: ('critical' | 'major' | 'minor' | 'nit')[];
-        scopes?: string[];
-        hive?: string;
-        scope?: 'loop' | 'all';
-      };
+      const a = (args ?? {}) as LearningImprovementsArgs;
       // PRECOMPUTED (phase2 P-003, WI-5460 follow-up) — but ONLY the DEFAULT variant.
       // buildDigest + human-queue ranking + flow-metrics over the whole improvement
       // corpus was measured 0.4-0.5s on this user-facing read; the routine now fills
@@ -4036,6 +4036,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         a.kinds === undefined &&
         a.severities === undefined &&
         a.scopes === undefined &&
+        a.lanes === undefined &&
+        a.sources === undefined &&
+        a.rails === undefined &&
+        a.stages === undefined &&
+        a.ideaTypes === undefined &&
+        a.lenses === undefined &&
+        a.score === undefined &&
+        a.ageDays === undefined &&
         a.hive === undefined &&
         a.scope !== 'all';
       // WI-7432: ...and the PER-POT lens, which is the variant the owner is
@@ -4057,6 +4065,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         a.kinds === undefined &&
         a.severities === undefined &&
         a.scopes === undefined &&
+        a.lanes === undefined &&
+        a.sources === undefined &&
+        a.rails === undefined &&
+        a.stages === undefined &&
+        a.ideaTypes === undefined &&
+        a.lenses === undefined &&
+        a.score === undefined &&
+        a.ageDays === undefined &&
         a.hive !== undefined &&
         a.scope !== 'all';
       let rows: Array<Record<string, unknown>>;
@@ -4152,6 +4168,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           .catch(() => {});
       }
       return rows;
+    },
+  },
+
+  'learning.improvements.summary': {
+    argsSchema: z
+      .object({
+        state: z.enum(['open', 'resolved', 'closed']).optional(),
+        limit: clampedLimitOpt(500),
+        q: z.string().max(200).optional(),
+        kinds: z.array(z.enum(['bug', 'change', 'feature', 'task'])).max(4).optional(),
+        severities: z.array(z.enum(['critical', 'major', 'minor', 'nit'])).max(4).optional(),
+        scopes: z.array(z.string().min(1).max(120)).max(50).optional(),
+        lanes: z.array(z.enum(['auto', 'human'])).max(2).optional(),
+        sources: z.array(z.string().min(1).max(120)).max(50).optional(),
+        rails: z.array(z.string().min(1).max(120)).max(20).optional(),
+        stages: z.array(z.enum(['not-ready', 'approved', 'in-flight', 'shipped', 'dropped'])).max(5).optional(),
+        ideaTypes: z.array(z.string().min(1).max(120)).max(50).optional(),
+        lenses: z.array(z.string().min(1).max(120)).max(50).optional(),
+        score: z.object({ min: z.number().finite().optional(), max: z.number().finite().optional() }).strict().optional(),
+        ageDays: z.object({ min: z.number().finite().optional(), max: z.number().finite().optional() }).strict().optional(),
+        hive: z.string().max(120).optional(),
+        scope: z.enum(['loop', 'all']).optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const { computeLearningImprovementsSummary } = await import(
+        '../harness/improvements/learning-digest-snapshot'
+      );
+      return computeLearningImprovementsSummary((args ?? {}) as LearningImprovementsArgs);
     },
   },
 

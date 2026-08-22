@@ -304,7 +304,10 @@ export async function applyTriageDecision(
   // Push the Learning tab's improvements feed (lazy + fire-and-forget — the
   // capture-core pattern; a missing SSE bus is a no-op).
   void trackDetached(import('../../sync-sse'))
-    .then((m) => m.notifySyncInvalidate('learning.improvements'))
+    .then((m) => Promise.all([
+      m.notifySyncInvalidate('learning.improvements'),
+      m.notifySyncInvalidate('learning.improvements.summary'),
+    ]))
     .catch(() => {});
   // Push-on-write for the Health tab's improvements panel
   // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —

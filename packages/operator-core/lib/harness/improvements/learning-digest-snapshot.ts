@@ -20,6 +20,22 @@
  */
 import type { ImprovementDigest, ScoredItem } from './digest';
 import type { IssueSeverity, IssueStoreKind } from '../../issues-engineer';
+import type { CompanionListSummary } from '@papercusp/facets';
+import type { ScoutRoutedItem } from '../../sync-resolver/learning-scout-read';
+import type { RoutedIdeaProvenance } from '../../scout/outcome-feedback';
+import {
+  hasLearningImproveViewPredicate,
+  learningImproveRowMatches,
+  mergeLearningImproveRows,
+  normalizeLearningImproveViewArgs,
+  projectLearningImproveRows,
+  summarizeLearningImproveRows,
+  type LearningImproveMergedRow,
+  type LearningImproveNumberRange,
+  type LearningImproveStage,
+  type LearningImproveViewArgs,
+  type NormalizedLearningImproveViewArgs,
+} from '../../sync-resolver/learning-improve-view-query';
 
 /**
  * The humanQueue fields this read actually puts ON THE WIRE (WI-7279).
@@ -92,6 +108,8 @@ export type SlimHumanQueueItem = Pick<ScoredItem, (typeof HUMAN_QUEUE_WIRE_FIELD
 /** The `learning.improvements` payload row as served to the Learning tab. */
 export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
   humanQueue: SlimHumanQueueItem[];
+  /** Predicate-bearing reads carry the complete idea half for their bounded merged rows. */
+  routedRows?: ScoutRoutedItem[];
   flow: import('./flow-metrics').ImprovementFlow;
   /**
    * The legend for {@link SlimHumanQueueItem.trc} — every distinct `tierReason`
@@ -106,9 +124,17 @@ export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
 export interface LearningImprovementsArgs {
   state?: 'open' | 'resolved' | 'closed';
   q?: string;
-  kinds?: readonly IssueStoreKind[];
+  kinds?: readonly (IssueStoreKind | 'feature')[];
   severities?: readonly IssueSeverity[];
   scopes?: readonly string[];
+  lanes?: readonly ('auto' | 'human')[];
+  sources?: readonly string[];
+  rails?: readonly string[];
+  stages?: readonly LearningImproveStage[];
+  ideaTypes?: readonly string[];
+  lenses?: readonly string[];
+  score?: LearningImproveNumberRange;
+  ageDays?: LearningImproveNumberRange;
   limit?: number;
   /** A Hive HOME slug narrows to that Hive's member-harness scopes; omit ⇒ whole workspace. */
   hive?: string;
@@ -128,6 +154,204 @@ export interface LearningImprovementsArgs {
   scope?: 'loop' | 'all';
 }
 
+function normalizedViewArgs(a: LearningImprovementsArgs): NormalizedLearningImproveViewArgs {
+  const view: LearningImproveViewArgs = {
+    q: a.q,
+    lanes: a.lanes,
+    sources: a.sources,
+    rails: a.rails,
+    kinds: a.kinds,
+    severities: a.severities,
+    scopes: a.scopes,
+    stages: a.stages,
+    ideaTypes: a.ideaTypes,
+    lenses: a.lenses,
+    score: a.score,
+    ageDays: a.ageDays,
+    limit: a.limit,
+  };
+  return normalizeLearningImproveViewArgs(view);
+}
+
+async function resolveLearningImproveHarnessScopes(hive: string | undefined): Promise<string[] | undefined> {
+  if (!hive) return undefined;
+  try {
+    const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../../harness-registry');
+    const reg = await loadHarnessRegistry();
+    return hiveMemberHarnessScopes(reg.projects, hive);
+  } catch (err) {
+    console.warn('[learning.improvements] hive scope resolution failed:', err instanceof Error ? err.message : err);
+    return undefined;
+  }
+}
+
+interface LearningImproveCorpus {
+  candidates: readonly import('./policy').ImprovementCandidate[];
+  scored: readonly ScoredItem[];
+  routedRows: readonly ScoutRoutedItem[];
+  merged: readonly LearningImproveMergedRow[];
+  normalized: NormalizedLearningImproveViewArgs;
+  nowMs: number;
+  ownerFullAutonomy: boolean;
+}
+
+async function projectLearningImproveCorpus<T>(
+  a: LearningImprovementsArgs,
+  maxRows: number,
+  project: (corpus: LearningImproveCorpus) => Promise<readonly T[]> | readonly T[],
+): Promise<T[]> {
+  const { projectImprovementItemsForBoundedRead } = await import('./read-items');
+  const { scoreImprovementCandidates } = await import('./digest');
+  const { activeWorkspaceId } = await import('../../workspace-registry');
+  const { readOwnerFullAutonomyGrant } = await import('./full-autonomy-grant');
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { readLearningImproveRoutedRows } = await import('../../sync-resolver/learning-scout-read');
+  const workspaceId = activeWorkspaceId();
+  const nowMs = Date.now();
+  const normalized = normalizedViewArgs(a);
+  const harnessScopes = await resolveLearningImproveHarnessScopes(a.hive);
+  const ownerFullAutonomy = await readOwnerFullAutonomyGrant(workspaceId);
+  const { sql } = getOrgPg();
+  const memberSlugs = harnessScopes?.map((scope) => scope.replace(/^harness:/, ''));
+
+  return projectImprovementItemsForBoundedRead(
+    {
+      state: a.state,
+      ...(harnessScopes ? { harnessScopes } : {}),
+      ...(a.scope === 'all' ? {} : { loopOutputOnly: true }),
+    },
+    {
+      maxRows,
+      project: async (candidates) => {
+        const routedRows = await readLearningImproveRoutedRows({
+          sql,
+          workspaceId,
+          hive: a.hive,
+          hiveMemberSlugs: memberSlugs,
+        });
+        const routedIdeas: RoutedIdeaProvenance[] = routedRows.map((row) => ({
+          ideaId: row.ideaId,
+          lens: row.lens as RoutedIdeaProvenance['lens'],
+          rail: row.rail as RoutedIdeaProvenance['rail'],
+          routedRef: row.routedRef,
+          ...(row.title ? { title: row.title } : {}),
+          ...(row.routedAt ? { routedAt: row.routedAt } : {}),
+          ...(row.cycleId ? { cycleId: row.cycleId } : {}),
+          ...(row.humanGrade != null ? { humanGrade: row.humanGrade } : {}),
+          ...(row.humanFeedback ? { humanFeedback: row.humanFeedback } : {}),
+          ...(row.gradedBy ? { gradedBy: row.gradedBy } : {}),
+          ...(row.addressesPatternRefs.length > 0 ? { addressesPatternRefs: row.addressesPatternRefs } : {}),
+        }));
+        const scored = scoreImprovementCandidates(candidates, { nowMs, ownerFullAutonomy });
+        const merged = mergeLearningImproveRows(scored, routedIdeas, nowMs);
+        return project({ candidates, scored, routedRows, merged, normalized, nowMs, ownerFullAutonomy });
+      },
+    },
+  );
+}
+
+async function computeFlowForDigest(
+  items: readonly import('./policy').ImprovementCandidate[],
+  digest: ImprovementDigest,
+  nowMs: number,
+): Promise<import('./flow-metrics').ImprovementFlow> {
+  const { computeImprovementFlow, readWatchdogFlowTicks } = await import('./flow-metrics');
+  const { activeWorkspaceId } = await import('../../workspace-registry');
+  let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
+  try {
+    ticks = await readWatchdogFlowTicks(activeWorkspaceId());
+  } catch (err) {
+    console.warn('[learning.improvements] watchdog tick read failed:', err instanceof Error ? err.message : err);
+  }
+  let dispatchStats: import('./dispatch-ledger').DispatchStats | null = null;
+  try {
+    const { readRecentDispatches, computeDispatchStats } = await import('./dispatch-ledger');
+    dispatchStats = computeDispatchStats(await readRecentDispatches(activeWorkspaceId()), { nowMs });
+  } catch (err) {
+    console.warn('[learning.improvements] dispatch ledger read failed:', err instanceof Error ? err.message : err);
+  }
+  return computeImprovementFlow([...items], ticks, {
+    nowMs,
+    recurringSignatureCount: digest.recurringSignatures.length,
+    dispatchStats,
+  });
+}
+
+function toLearningImprovementsWireRow(
+  digest: ImprovementDigest,
+  flow: import('./flow-metrics').ImprovementFlow,
+  routedRows?: ScoutRoutedItem[],
+): LearningImprovementsRow {
+  const tierReasonLegend: string[] = [];
+  const tierReasonCodes = new Map<string, number>();
+  const humanQueue: SlimHumanQueueItem[] = digest.humanQueue.map((item) => {
+    const slim = {} as Record<string, unknown>;
+    for (const key of HUMAN_QUEUE_WIRE_FIELDS) {
+      const value = (item as unknown as Record<string, unknown>)[key];
+      if (value !== undefined && value !== null) slim[key] = value;
+    }
+    if (item.tierReason) {
+      let code = tierReasonCodes.get(item.tierReason);
+      if (code === undefined) {
+        code = tierReasonLegend.length;
+        tierReasonLegend.push(item.tierReason);
+        tierReasonCodes.set(item.tierReason, code);
+      }
+      slim[TIER_REASON_CODE_KEY] = code;
+    }
+    return slim as unknown as SlimHumanQueueItem;
+  });
+  return {
+    ...digest,
+    humanQueue,
+    flow,
+    tierReasonLegend,
+    ...(routedRows ? { routedRows } : {}),
+  };
+}
+
+async function computeFilteredLearningImprovements(
+  a: LearningImprovementsArgs,
+): Promise<LearningImprovementsRow[]> {
+  return projectLearningImproveCorpus(a, 1, async (corpus) => {
+    const { buildDigest } = await import('./digest');
+    const matchingRows = corpus.merged.filter((row) => learningImproveRowMatches(row, corpus.normalized));
+    const projectedRows = projectLearningImproveRows(corpus.merged, corpus.normalized);
+    const matchingItemIds = new Set(
+      matchingRows.flatMap((row) => (row.item ? [row.item.id] : [])),
+    );
+    const matchingCandidates = corpus.candidates.filter((candidate) => matchingItemIds.has(candidate.id));
+    const digest = buildDigest([...matchingCandidates], {
+      nowMs: corpus.nowMs,
+      ownerFullAutonomy: corpus.ownerFullAutonomy,
+      corpusTotal: matchingCandidates.length,
+      nearDuplicates: false,
+    });
+    const projectedItems = projectedRows.flatMap((row) => (row.item ? [row.item] : []));
+    digest.autoEligible = projectedItems.filter((item) => item.tier === 'auto');
+    digest.humanQueue = projectedItems.filter((item) => item.tier !== 'auto');
+    digest.returned = projectedItems.length;
+    digest.total = matchingCandidates.length;
+    digest.windowed = matchingCandidates.length > projectedItems.length;
+
+    const projectedIdeaIds = new Set(
+      projectedRows.flatMap((row) => (row.idea ? [row.idea.ideaId] : [])),
+    );
+    const routedRows = corpus.routedRows.filter((row) => projectedIdeaIds.has(row.ideaId));
+    const flow = await computeFlowForDigest(matchingCandidates, digest, corpus.nowMs);
+    return [toLearningImprovementsWireRow(digest, flow, routedRows)];
+  });
+}
+
+/** Paired exact total + drill-down facets for the same merged predicate as rows. */
+export async function computeLearningImprovementsSummary(
+  a: LearningImprovementsArgs,
+): Promise<CompanionListSummary[]> {
+  return projectLearningImproveCorpus(a, 1, (corpus) => [
+    summarizeLearningImproveRows(corpus.merged, corpus.normalized),
+  ]);
+}
+
 /**
  * Build the `learning.improvements` payload row (the client reads `data[0]`).
  * Pure of the owner-exposure side-effect (see the module note) so it is safe to
@@ -136,10 +360,13 @@ export interface LearningImprovementsArgs {
 export async function computeLearningImprovementsSnapshot(
   a: LearningImprovementsArgs,
 ): Promise<Array<LearningImprovementsRow>> {
+  const normalized = normalizedViewArgs(a);
+  if (hasLearningImproveViewPredicate(normalized)) {
+    return computeFilteredLearningImprovements(a);
+  }
   const { readImprovementItems, countImprovementItems } = await import('./read-items');
   const { buildDigest } = await import('./digest');
   const { applyHumanQueueRanking } = await import('../../queue-ranker/human-queue');
-  const { computeImprovementFlow, readWatchdogFlowTicks } = await import('./flow-metrics');
   const { activeWorkspaceId } = await import('../../workspace-registry');
   const { readOwnerFullAutonomyGrant } = await import('./full-autonomy-grant');
   const nowMs = Date.now();
@@ -152,20 +379,11 @@ export async function computeLearningImprovementsSnapshot(
   // tenancy unit) so the feed only shows that Hive's improvements. Best-effort:
   // a registry read failure degrades to the unfiltered (workspace) feed rather
   // than 500ing the tab.
-  let harnessScopes: string[] | undefined;
-  if (a.hive) {
-    try {
-      const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../../harness-registry');
-      const reg = await loadHarnessRegistry();
-      harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
-    } catch (err) {
-      console.warn('[learning.improvements] hive scope resolution failed:', err instanceof Error ? err.message : err);
-    }
-  }
+  const harnessScopes = await resolveLearningImproveHarnessScopes(a.hive);
   const readOpts = {
     state: a.state,
     q: a.q,
-    kinds: a.kinds,
+    kinds: a.kinds?.filter((kind): kind is IssueStoreKind => kind !== 'feature'),
     severities: a.severities,
     scopes: a.scopes,
     limit: a.limit,
@@ -196,83 +414,6 @@ export async function computeLearningImprovementsSnapshot(
     buildDigest(items, { nowMs, ownerFullAutonomy, corpusTotal }),
     { candidates: items },
   );
-  // Watchdog ticks are best-effort: a tick-read failure degrades the flow
-  // strip to "watchdog: never" rather than 500ing the whole improvements view.
-  let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
-  try {
-    ticks = await readWatchdogFlowTicks(activeWorkspaceId());
-  } catch (err) {
-    console.warn('[learning.improvements] watchdog tick read failed:', err instanceof Error ? err.message : err);
-  }
-  // Dispatch-ledger rollup (consume-edges P-010 / B-04) — same best-effort
-  // rule: a ledger read failure degrades the strip's dispatch chip to "—".
-  let dispatchStats: import('./dispatch-ledger').DispatchStats | null = null;
-  try {
-    const { readRecentDispatches, computeDispatchStats } = await import('./dispatch-ledger');
-    dispatchStats = computeDispatchStats(await readRecentDispatches(activeWorkspaceId()), { nowMs });
-  } catch (err) {
-    console.warn('[learning.improvements] dispatch ledger read failed:', err instanceof Error ? err.message : err);
-  }
-  const flow = computeImprovementFlow(items, ticks, {
-    nowMs,
-    // Reuse the digest's recurrence computation (P-041) — do not re-derive.
-    recurringSignatureCount: digest.recurringSignatures.length,
-    dispatchStats,
-  });
-  // Wire slimming (WI-5412, widened to a strict projection): the ranked
-  // humanQueue items each carry a ~1KB `rank` breakdown + `impact` struct that
-  // NO Learning-tab consumer renders — across ~380 items that was ~65% of a
-  // 479KB payload. The ORDER the ranker produced is preserved; the per-feature
-  // "why" stays on the improvements:digest tool for consumers that want it.
-  //
-  // It is now an ALLOWLIST rather than the original `omit impact/rank`
-  // denylist. A denylist re-inflates the wire silently every time a field is
-  // added upstream, which is exactly what happened: by 2026-08-03 the payload
-  // was back to 318,082B / 453 rows (695 B/row) against the 250,000 default
-  // ceiling, carrying TEN fields no consumer reads. Projecting to the verified
-  // read-set instead makes the next upstream addition wire-invisible until
-  // someone deliberately adds it here.
-  //
-  // The read-set below is every field reachable from a real consumer — both
-  // sync consumers were enumerated and their mappers read (WI-7279):
-  //   LearningTab.tsx  — renders `title`; filter-engine accessors read `kind`,
-  //     `severity`, `scope`, `ideaType`, `score`, `ageDays`; `source` drives the
-  //     provenance chips; pipelineState() reads `state` + `assignee`; and the
-  //     `impq` quick-search haystack (LearningTab.tsx ~L1636) reads `id`,
-  //     `title`, `tierReason`, `scope`.
-  //   LearningLoopFace.tsx — reads `humanQueue.length` only.
-  //
-  // ⚠ `tierReason` is never RENDERED, but it IS a quick-search input, so
-  // dropping it would silently narrow what the owner can find — no error, just
-  // fewer hits. It is therefore INTERNED rather than dropped (WI-39773 / D-008):
-  // 30.6% of the humanQueue across only SIX distinct sentences, measured live.
-  // See TIER_REASON_CODE_KEY above for the numbers and the stale ones it corrects.
-  const tierReasonLegend: string[] = [];
-  const tierReasonCodes = new Map<string, number>();
-  const humanQueue: SlimHumanQueueItem[] = digest.humanQueue.map((item) => {
-    const slim = {} as Record<string, unknown>;
-    for (const key of HUMAN_QUEUE_WIRE_FIELDS) {
-      const v = (item as unknown as Record<string, unknown>)[key];
-      // Null-omit (D-025): `assignee` is null on 452 of 453 rows, and every
-      // consumer reads it as falsy-or-set (pipelineState), so an omitted key is
-      // indistinguishable from an explicit null at the read site.
-      if (v === undefined || v === null) continue;
-      slim[key] = v;
-    }
-    // Intern the tier reason. An EMPTY reason is left off entirely rather than
-    // interned as a code for '': it carries nothing, and a legend entry for it
-    // would put an empty string in every consumer's search haystack.
-    const reason = item.tierReason;
-    if (reason) {
-      let code = tierReasonCodes.get(reason);
-      if (code === undefined) {
-        code = tierReasonLegend.length;
-        tierReasonLegend.push(reason);
-        tierReasonCodes.set(reason, code);
-      }
-      slim[TIER_REASON_CODE_KEY] = code;
-    }
-    return slim as unknown as SlimHumanQueueItem;
-  });
-  return [{ ...digest, humanQueue, flow, tierReasonLegend }];
+  const flow = await computeFlowForDigest(items, digest, nowMs);
+  return [toLearningImprovementsWireRow(digest, flow)];
 }

@@ -57,6 +57,10 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // "really runnable" from "just looks alive" without a second coord:presence
       // call. null when the wakeability read was unavailable (state unknown).
       sessionState: typeof r.sessionState === "string" ? r.sessionState : null,
+      // EI-21125380796386851: keep the oracle's delivery axis beside the
+      // recoverable `suspect` verdict. null means the wakeability read was
+      // unavailable, not that the member is known non-wakeable.
+      wakeable: typeof r.wakeable === "boolean" ? r.wakeable : null,
       // WI-4400: before taking over a draining/suspect row, send
       // coord:send { wake:'required' } and inspect woken/recipient_absent.
       confirmLiveness: typeof r.confirmLiveness === "boolean" ? r.confirmLiveness : null,
@@ -74,7 +78,7 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // second, independently-staleable spelling of one fact on the wire.
       selfWake: typeof r.selfWake === "string" ? r.selfWake : null,
       // EI-8995: the single derived lifecycle verdict (booted|joined|first-turn-
-      // done|speaking|stalled|dead) + the member's wake mode (a MANUAL member
+      // done|speaking|stalled|suspect|dead) + the member's wake mode (a MANUAL member
       // silently stages directed wakes) — the leader's relaunch/re-steer read,
       // kept at EVERY tier (two short strings; the monitor loop runs trimmed).
       verdict: typeof r.verdict === "string" ? r.verdict : null,

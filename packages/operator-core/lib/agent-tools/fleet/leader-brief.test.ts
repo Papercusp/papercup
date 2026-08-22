@@ -448,11 +448,26 @@ describe('projectMember (pure)', () => {
     const m = projectMember(baseAgent({}), NOW);
     expect(m.verdict).toBeNull();
     expect(m.sessionState).toBeNull();
+    expect(m.wakeable).toBeNull();
     expect(m.wakeMode).toBeNull();
     expect(m.monitorState).toBeNull();
     expect(m.nextFireAt).toBeNull();
     expect(m.contextPressure).toBeNull();
     expect(m.loopMode).toBeNull();
+  });
+
+  it('EI-21125380796386851: projects suspect+wakeable distinctly from terminal dead', () => {
+    const recoverable = projectMember(
+      baseAgent({ sessionState: 'suspect', wakeable: true, verdict: 'suspect' }),
+      NOW,
+    );
+    expect(recoverable).toMatchObject({ sessionState: 'suspect', wakeable: true, verdict: 'suspect' });
+
+    const terminal = projectMember(
+      baseAgent({ sessionState: 'suspect', wakeable: false, verdict: 'dead' }),
+      NOW,
+    );
+    expect(terminal).toMatchObject({ sessionState: 'suspect', wakeable: false, verdict: 'dead' });
   });
 
   it('carries healthy loop lifecycle and next fire through verbatim', () => {

@@ -17,6 +17,7 @@ import {
   type ImprovementSeverity,
   type RiskTierPolicy,
   type Tier,
+  type TierDecision,
   type WorkItemKind,
   DEFAULT_RISK_TIER_POLICY,
 } from './policy';
@@ -649,6 +650,46 @@ function scoreOf(c: ImprovementCandidate, tier: Tier, ageDays: number): number {
   return Math.round(sev + age + autoNudge);
 }
 
+function scoredItemOf(c: ImprovementCandidate, decision: TierDecision, nowMs: number): ScoredItem {
+  const ageDays = c.createdAt ? Math.max(0, (nowMs - Date.parse(c.createdAt)) / DAY_MS) : 0;
+  const { type: ideaType } = classifyIdeaType(c);
+  return {
+    id: c.id,
+    kind: c.kind,
+    title: c.title,
+    scope: c.scope,
+    severity: c.severity,
+    state: c.state,
+    assignee: c.assignee ?? null,
+    assignedAt: c.assignedAt ?? null,
+    updatedAt: c.updatedAt ?? null,
+    attempts: c.attempts ?? 0,
+    tier: decision.tier,
+    score: scoreOf(c, decision.tier, ageDays),
+    ageDays: Math.round(ageDays * 10) / 10,
+    tierReason: decision.reasons[decision.reasons.length - 1] ?? '',
+    ideaType,
+    ...(c.ideaLifecycle ? { ideaLifecycleState: c.ideaLifecycle.state } : {}),
+    ...(c.ideaLifecycle?.triageDecision ? { triageDecision: c.ideaLifecycle.triageDecision } : {}),
+    ...(c.sourceRole ? { source: c.sourceRole } : {}),
+    ...(c.dispatchHoldUntil ? { dispatchHoldUntil: c.dispatchHoldUntil } : {}),
+    ...(c.watchdogKey ? { watchdogKey: c.watchdogKey } : {}),
+    ...(c.workItemOrigin === 'remote' ? { workItemOrigin: 'remote' as const } : {}),
+  };
+}
+
+/** Classify every candidate, retaining terminal rows for server-side stage filters. */
+export function scoreImprovementCandidates(
+  candidates: readonly ImprovementCandidate[],
+  opts: BuildDigestOptions = {},
+): ScoredItem[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const { decisions } = partitionByTier([...candidates], opts.policy ?? DEFAULT_RISK_TIER_POLICY, {
+    ...(opts.ownerFullAutonomy !== undefined ? { ownerFullAutonomy: opts.ownerFullAutonomy } : {}),
+  });
+  return candidates.map((candidate) => scoredItemOf(candidate, decisions[candidate.id], nowMs));
+}
+
 /**
  * Build the triage digest from a set of candidates. Pure + deterministic given
  * `nowMs`. The auto/human split uses the risk-tier policy; only OPEN items are
@@ -679,33 +720,9 @@ export function buildDigest(
     if (isOpen) open += 1;
 
     const decision = decisions[c.id];
-    const ageDays = c.createdAt ? Math.max(0, (nowMs - Date.parse(c.createdAt)) / DAY_MS) : 0;
     // Full-fidelity classification (D-005): the candidate carries paths +
     // watchdogKey + kind, which the taxonomy keys off — never a scope-only call.
-    const { type: ideaType } = classifyIdeaType(c);
-    const scored: ScoredItem = {
-      id: c.id,
-      kind: c.kind,
-      title: c.title,
-      scope: c.scope,
-      severity: c.severity,
-      state: c.state,
-      assignee: c.assignee ?? null,
-      assignedAt: c.assignedAt ?? null,
-      updatedAt: c.updatedAt ?? null,
-      attempts: c.attempts ?? 0,
-      tier: decision.tier,
-      score: scoreOf(c, decision.tier, ageDays),
-      ageDays: Math.round(ageDays * 10) / 10,
-      tierReason: decision.reasons[decision.reasons.length - 1] ?? '',
-      ideaType,
-      ...(c.ideaLifecycle ? { ideaLifecycleState: c.ideaLifecycle.state } : {}),
-      ...(c.ideaLifecycle?.triageDecision ? { triageDecision: c.ideaLifecycle.triageDecision } : {}),
-      ...(c.sourceRole ? { source: c.sourceRole } : {}),
-      ...(c.dispatchHoldUntil ? { dispatchHoldUntil: c.dispatchHoldUntil } : {}),
-      ...(c.watchdogKey ? { watchdogKey: c.watchdogKey } : {}),
-      ...(c.workItemOrigin === 'remote' ? { workItemOrigin: 'remote' } : {}),
-    };
+    const scored = scoredItemOf(c, decision, nowMs);
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;
     (decision.tier === 'auto' ? autoEligible : humanQueue).push(scored);

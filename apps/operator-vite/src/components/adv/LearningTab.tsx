@@ -65,9 +65,11 @@ import {
 // wire type, not ScoredItem, so reading a field that is no longer sent fails to
 // compile here instead of silently evaluating to `undefined` at runtime.
 import type {
+  LearningImprovementsArgs,
   LearningImprovementsRow,
   SlimHumanQueueItem,
 } from "@papercusp/operator-core/lib/harness/improvements/learning-digest-snapshot";
+import type { CompanionListSummary } from "@papercusp/facets";
 // `tierReason` ships INTERNED (WI-39773 / D-008) — a `trc` code plus a
 // per-payload legend. Resolve it through this helper, never by indexing the
 // legend inline: pairing a row with the wrong payload's legend would resolve to
@@ -1363,36 +1365,84 @@ function ImprovementsView({
   ], []);
   const [filterState] = useQueryState("impf", parseAsColumnFilters(filterCols));
   const [search, setSearch] = useQueryState("impq", parseAsString.withDefault(""));
+  const [lane, setLane] = useQueryState(
+    "lane",
+    parseAsStringEnum<Lane>([...LANES]).withDefault("all"),
+  );
+  const [src, setSrc] = useQueryState("lsrc", parseAsString);
+  const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
   const serverFilters = useMemo(() => {
     const valuesFor = (key: string): string[] => {
       const value = filterState?.[key];
       if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
       return typeof value === "string" && value ? [value] : [];
     };
-    const selectedKinds = valuesFor("kind").filter((kind) => kind === "bug" || kind === "change" || kind === "feature");
-    const kinds = Array.from(new Set(selectedKinds.map((kind) => kind === "feature" ? "change" : kind)));
+    const kinds = valuesFor("kind").filter((kind) => kind === "bug" || kind === "change" || kind === "feature");
     const severities = valuesFor("severity").filter((severity) => ["critical", "major", "minor", "nit"].includes(severity));
     const scopes = valuesFor("scope").filter((scopeValue) => scopeValue !== "—");
+    const stages = valuesFor("stage").flatMap((label) => {
+      if (label in PIPELINE_STATES) return [label as keyof typeof PIPELINE_STATES];
+      const hit = Object.entries(PIPELINE_STATES).find(([, meta]) => meta.label === label);
+      return hit ? [hit[0] as keyof typeof PIPELINE_STATES] : [];
+    });
+    const ideaTypes = valuesFor("ideaType").filter((value) => value !== "—");
+    const lenses = valuesFor("lens").filter((value) => value !== "—");
+    const rangeFor = (key: string) => {
+      const value = filterState?.[key];
+      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+      const min = typeof value.min === "number" && Number.isFinite(value.min) ? value.min : undefined;
+      const max = typeof value.max === "number" && Number.isFinite(value.max) ? value.max : undefined;
+      return min === undefined && max === undefined ? undefined : { min, max };
+    };
+    const score = rangeFor("score");
+    const ageDays = rangeFor("ageDays");
     return {
-      kinds: kinds.length > 0 ? kinds : undefined,
-      severities: severities.length > 0 ? severities : undefined,
-      scopes: scopes.length > 0 ? scopes : undefined,
+      ...(kinds.length > 0 ? { kinds } : {}),
+      ...(severities.length > 0 ? { severities } : {}),
+      ...(scopes.length > 0 ? { scopes } : {}),
+      ...(stages.length > 0 ? { stages } : {}),
+      ...(ideaTypes.length > 0 ? { ideaTypes } : {}),
+      ...(lenses.length > 0 ? { lenses } : {}),
+      ...(score ? { score } : {}),
+      ...(ageDays ? { ageDays } : {}),
     };
   }, [filterState]);
+  const serverArgs = useMemo<LearningImprovementsArgs>(() => ({
+    ...(hive ? { hive } : {}),
+    ...(scope === "all" ? { scope: "all" as const } : {}),
+    ...(lane !== "all" ? { lanes: [lane] } : {}),
+    ...(src ? { sources: [src] } : {}),
+    ...(railFilter ? { rails: [railFilter] } : {}),
+    ...serverFilters,
+    ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
+  }), [hive, lane, railFilter, scope, search, serverFilters, src]);
+  const serverPredicateActive =
+    lane !== "all" ||
+    Boolean(src) ||
+    Boolean(railFilter) ||
+    Boolean((search ?? "").trim()) ||
+    Object.values(serverFilters).some((value) => value !== undefined);
   const sync = useSyncQuery<LearningImprovementsRow>({
     queryName: "learning.improvements",
-    args: {
-      ...(hive ? { hive } : {}),
-      ...(scope === "all" ? { scope: "all" } : {}),
-      ...(serverFilters.kinds ? { kinds: serverFilters.kinds } : {}),
-      ...(serverFilters.severities ? { severities: serverFilters.severities } : {}),
-      ...(serverFilters.scopes ? { scopes: serverFilters.scopes } : {}),
-      ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
-    },
+    args: serverArgs,
     staleTime: 30_000,
     enabled: hiveReady,
   });
   const digest = sync.data?.[0];
+  const summarySync = useSyncQuery<CompanionListSummary>({
+    queryName: "learning.improvements.summary",
+    args: serverArgs,
+    staleTime: 30_000,
+    enabled: hiveReady && serverPredicateActive,
+  });
+  const improveSummaryCandidate = summarySync.data?.[0];
+  const improveSummary =
+    improveSummaryCandidate &&
+    Number.isSafeInteger(improveSummaryCandidate.total) &&
+    Number.isSafeInteger(improveSummaryCandidate.matched) &&
+    Array.isArray(improveSummaryCandidate.facets)
+      ? improveSummaryCandidate
+      : undefined;
   // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — LearningTab
   // begins the interaction on the view change (EI-19375505819043214).
   //
@@ -1423,8 +1473,11 @@ function ImprovementsView({
   // away (warmViews below), so on a revisit `improvementsSettled` is already
   // true and never changes — an effect keyed on it alone would never re-run and
   // the switch would measure nothing (EI-19383745196363732).
+  const summarySettled =
+    !serverPredicateActive ||
+    (!summarySync.loading && (summarySync.data !== undefined || Boolean(summarySync.error)));
   const improvementsSettled =
-    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error)) && summarySettled;
   useInteractionSettle(
     PERF_INTERACTIONS.learningViewSwitch,
     improvementsSettled,
@@ -1440,7 +1493,10 @@ function ImprovementsView({
     enabled: hiveReady,
   });
   const snap = scoutSync.data?.[0];
-  const routed = useMemo(() => snap?.recent ?? [], [snap]);
+  const routed = useMemo(
+    () => digest?.routedRows ?? snap?.recent ?? [],
+    [digest?.routedRows, snap?.recent],
+  );
   const rails = snap?.railCounts ?? [];
   const health = snap?.health ?? { status: "neutral" as const, markers: [] };
   const groundingTitles = snap?.groundingTitles ?? {};
@@ -1474,18 +1530,11 @@ function ImprovementsView({
     draftsSync.data?.[0],
     "Drafts in iteration",
   );
-  const [lane, setLane] = useQueryState(
-    "lane",
-    parseAsStringEnum<Lane>([...LANES]).withDefault("all"),
-  );
-  // Source facet (`?lsrc=`): who filed it — Scout / Queen / system / … (payload.sourceRole).
-  const [src, setSrc] = useQueryState("lsrc", parseAsString);
   // Selected item (`?lsel=`): set by deep-links (e.g. a Scout-routed improvement
   // click) — the row is highlighted + scrolled into view; clicking it dismisses.
   const [lsel, setLsel] = useQueryState("lsel", parseAsString);
   // Absorbed from the retired Ideas view, both URL state so an agent can drive
   // them through ui:dispatch: the rail facet and the pipeline-trace expansion.
-  const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
   const [traceOpen, setTraceOpen] = useQueryState("itrace", parseAsString);
 
   // ── Grading, absorbed from the Ideas view. The note popover's open-state is
@@ -1677,6 +1726,8 @@ function ImprovementsView({
   }, [digest, ideaByItemId, lane, routed]);
 
   const sources = useMemo<string[]>(() => {
+    const serverFacet = improveSummary?.facets?.find((facet) => facet.key === "source");
+    if (serverFacet) return serverFacet.values.map((value) => value.value);
     const s = new Set<string>();
     for (const it of [
       ...(digest?.autoEligible ?? []),
@@ -1685,7 +1736,7 @@ function ImprovementsView({
       if (it.source) s.add(it.source);
     }
     return [...s].sort();
-  }, [digest]);
+  }, [digest, improveSummary]);
 
   // The rows the RAIL facet runs on: everything the view loaded, narrowed only
   // by the upstream source chip. Split out of `rows` below so the rail chip
@@ -1708,6 +1759,10 @@ function ImprovementsView({
   // The corpus number is not lost — it moves to the chip's tooltip, where it is
   // context rather than a promise (and to the honest `N of total` denominators).
   const railCounts = useMemo(() => {
+    const serverFacet = improveSummary?.facets?.find((facet) => facet.key === "rail");
+    if (serverFacet) {
+      return new Map(serverFacet.values.map((value) => [value.value, value.count]));
+    }
     const counts = new Map<string, number>();
     for (const row of railScopedRows) {
       const rail = row.idea?.rail;
@@ -1715,7 +1770,7 @@ function ImprovementsView({
       counts.set(rail, (counts.get(rail) ?? 0) + 1);
     }
     return counts;
-  }, [railScopedRows]);
+  }, [improveSummary, railScopedRows]);
   const rows = useMemo<LoopRow[]>(() => {
     // Which rail the idea routed into (`?irail=`, absorbed from Ideas). A rail
     // is a property of the IDEA, so filtering by one necessarily narrows to
@@ -1755,21 +1810,45 @@ function ImprovementsView({
   // Accessors read THROUGH the work-item half: an idea-only row answers "—" to
   // every work-item column, so it drops out of any such filter by itself, and
   // the lens column is the one facet an idea-only row can actually answer.
-  const improveCountEvidence = useMemo<CountEvidence>(
-    () => digest == null
+  const improveCountEvidence = useMemo<CountEvidence>(() => {
+    if (serverPredicateActive) {
+      if (summarySync.error) return { kind: "unknown", reason: "failed" };
+      if (!improveSummary || summarySync.loading) return { kind: "unknown", reason: "updating" };
+      return {
+        kind: "corpus",
+        count: improveSummary.matched,
+        total: improveSummary.total,
+        population: "the complete scoped Improve corpus",
+      };
+    }
+    return digest == null
       ? { kind: "unknown", reason: "loading" }
       : {
           kind: "window",
           count: rows.length,
           window: "the current bounded Improve digest window after source and rail scope",
-        },
-    [digest, rows.length],
-  );
+        };
+  }, [digest, improveSummary, rows.length, serverPredicateActive, summarySync.error, summarySync.loading]);
+  const serverEnumOptions = useMemo(() => {
+    if (!improveSummary || !Array.isArray(improveSummary.facets)) return undefined;
+    return new Map(
+      improveSummary.facets.map((facet) => [
+        facet.key,
+        facet.values.map((value) => ({ value: value.value, count: value.count })),
+      ]),
+    );
+  }, [improveSummary]);
   const cf = useColumnFilters(filterCols, rows, {
     ns: "imp",
     countEvidence: improveCountEvidence,
+    serverEnumOptions,
   });
   const visibleRows = useMemo(() => {
+    // Predicate-bearing server payloads carry `routedRows` (empty is still a
+    // marker). The server already searched raw tierReason before interning it;
+    // re-running q here would erase auto-lane tierReason-only hits because only
+    // the human queue is interned on the legacy wire shape.
+    if (digest?.routedRows !== undefined) return cf.rows;
     const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;
     // Search spans BOTH halves — an idea's title is often the only text an
@@ -1785,11 +1864,7 @@ function ImprovementsView({
         .includes(q),
     );
   }, [cf.rows, search, digest]);
-  const isFiltered =
-    cf.hasActive ||
-    (search ?? "").trim() !== "" ||
-    Boolean(src) ||
-    Boolean(railFilter);
+  const isFiltered = serverPredicateActive;
 
   // Everything a row needs, bundled once. A merged row draws on both halves of
   // the view's state (selection, trace, grading, navigation), and threading a
@@ -1829,7 +1904,7 @@ function ImprovementsView({
   // — owner 2026-07-27]. Retiring the queue's remaining vocabulary is P-004.
   useEffect(() => {
     onStatus?.(
-      sync.error || scoutSync.error
+      sync.error || scoutSync.error || (serverPredicateActive && summarySync.error)
         ? "bad"
         : health.status !== "neutral"
           ? health.status
@@ -1839,7 +1914,7 @@ function ImprovementsView({
               ? "good"
               : "neutral",
     );
-  }, [digest, health.status, onStatus, scoutSync.error, sync.error]);
+  }, [digest, health.status, onStatus, scoutSync.error, serverPredicateActive, summarySync.error, sync.error]);
 
   return (
     <section className="pc-learning__section">
@@ -2058,27 +2133,19 @@ function ImprovementsView({
               className="pc-learning__matchcount"
               aria-live="polite"
               title={
-                // D-003 again, one level up from the chips: this denominator is
-                // the LOADED row set, and saying "everything in scope" claimed
-                // it was the corpus. When the digest reports itself windowed
-                // (`total > returned` — honest since WI-39675 counted the corpus
-                // instead of measuring its own window), the label says "loaded"
-                // and the true population moves here, where it is context.
-                //
-                // It is deliberately NOT rendered as `N of digest.total`: this
-                // list merges two populations — improvement items AND routed
-                // ideas not yet filed as work — while `digest.total` counts only
-                // the first. Printing it as the denominator of a mixed list
-                // would be a fresh instance of the very defect being fixed.
-                digest?.windowed
-                  ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
+                isFiltered && improveSummary
+                  ? `Exact server-authored match count over ${improveSummary.total} merged Improve rows; at most 500 rows cross the sync wire.`
                   : isFiltered
-                    ? "Rows matching the current filter / search, out of everything in scope."
+                    ? "The paired exact summary is updating; no page-local denominator is substituted."
+                    : digest?.windowed
+                  ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
                     : "Rows in scope — ideas and the work they became."
               }
             >
               {isFiltered
-                ? `${visibleRows.length} of ${allRows.length}${digest?.windowed ? " loaded" : ""}`
+                ? improveSummary && !summarySync.loading
+                  ? `${visibleRows.length} of ${improveSummary.matched}`
+                  : "updating"
                 : `${rows.length}${digest?.windowed ? " loaded" : " items"}`}
             </span>
             {/* The "who filed it" facet is now a chip in the scope bar above —

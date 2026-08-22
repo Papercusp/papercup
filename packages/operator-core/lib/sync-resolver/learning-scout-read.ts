@@ -134,6 +134,27 @@ export interface ScoutRoutedItem {
   harnessSlug: string | null;
 }
 
+function toScoutRoutedItem(r: Record<string, unknown>): ScoutRoutedItem {
+  return {
+    ideaId: String(r.idea_id ?? ''),
+    lens: String(r.lens ?? ''),
+    rail: String(r.rail ?? ''),
+    routedRef: String(r.routed_ref ?? ''),
+    title: typeof r.title === 'string' && r.title ? r.title : null,
+    routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
+    outcome: typeof r.outcome === 'string' && r.outcome ? r.outcome : null,
+    humanGrade: r.human_grade == null ? null : Number(r.human_grade),
+    humanFeedback: typeof r.human_feedback === 'string' && r.human_feedback ? r.human_feedback : null,
+    gradedBy: typeof r.graded_by === 'string' && r.graded_by ? r.graded_by : null,
+    origin: typeof r.origin === 'string' && r.origin ? r.origin : null,
+    cycleId: typeof r.cycle_id === 'string' && r.cycle_id ? r.cycle_id : null,
+    addressesPatternRefs: Array.isArray(r.addresses_pattern_refs)
+      ? (r.addresses_pattern_refs as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [],
+    harnessSlug: typeof r.harness_slug === 'string' && r.harness_slug ? r.harness_slug : null,
+  };
+}
+
 /**
  * One fired drift marker for the Ideas view's health badge (learning-tab-alignment
  * P-003). Each marker instruments a named criterion of the blender-release-readiness
@@ -570,6 +591,33 @@ export function routedIdeasPotFilter(
     : sql`AND sri.harness_slug IN ${sql(memberSlugs)}`;
 }
 
+/** Complete routed-idea corpus for an internal bounded Improve projection. */
+export async function readLearningImproveRoutedRows({
+  sql,
+  workspaceId,
+  hive = null,
+  hiveMemberSlugs = null,
+}: {
+  sql: Sql;
+  workspaceId: string;
+  hive?: string | null;
+  hiveMemberSlugs?: string[] | null;
+}): Promise<ScoutRoutedItem[]> {
+  const lens = typeof hive === 'string' && hive.trim() ? hive.trim() : null;
+  const memberSlugs = lens ? (hiveMemberSlugs?.length ? hiveMemberSlugs : [lens]) : null;
+  const potFilter = routedIdeasPotFilter(sql, { hive: lens, memberSlugs });
+  const rows = (await sql`
+    SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome,
+           human_grade, human_feedback, graded_by, origin, cycle_id,
+           addresses_pattern_refs, harness_slug
+      FROM harness_shared.scout_routed_ideas sri
+     WHERE sri.workspace_id = ${workspaceId}
+       ${potFilter}
+     ORDER BY routed_at DESC
+  `) as Array<Record<string, unknown>>;
+  return rows.map(toScoutRoutedItem);
+}
+
 /**
  * Drafts-in-iteration: rail='plan' routed-ledger rows joined to the draft
  * plans they became (version > 1 = the grade/feedback → typed-revision loop
@@ -687,24 +735,7 @@ export async function readScoutSnapshot(
      ORDER BY routed_at DESC
      LIMIT 50
   `) as Array<Record<string, unknown>>;
-  const recent: ScoutRoutedItem[] = items.map((r) => ({
-    ideaId: String(r.idea_id ?? ''),
-    lens: String(r.lens ?? ''),
-    rail: String(r.rail ?? ''),
-    routedRef: String(r.routed_ref ?? ''),
-    title: typeof r.title === 'string' && r.title ? r.title : null,
-    routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
-    outcome: typeof r.outcome === 'string' && r.outcome ? r.outcome : null,
-    humanGrade: r.human_grade == null ? null : Number(r.human_grade),
-    humanFeedback: typeof r.human_feedback === 'string' && r.human_feedback ? r.human_feedback : null,
-    gradedBy: typeof r.graded_by === 'string' && r.graded_by ? r.graded_by : null,
-    origin: typeof r.origin === 'string' && r.origin ? r.origin : null,
-    cycleId: typeof r.cycle_id === 'string' && r.cycle_id ? r.cycle_id : null,
-    addressesPatternRefs: Array.isArray(r.addresses_pattern_refs)
-      ? (r.addresses_pattern_refs as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0)
-      : [],
-    harnessSlug: typeof r.harness_slug === 'string' && r.harness_slug ? r.harness_slug : null,
-  }));
+  const recent: ScoutRoutedItem[] = items.map(toScoutRoutedItem);
 
   // P-004 pipeline trace: resolve the opaque grounding refs (the wi:EI-… class)
   // to titles so the trace's first stage reads as evidence, not ids. One bounded

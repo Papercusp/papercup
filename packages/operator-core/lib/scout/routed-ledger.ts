@@ -283,7 +283,11 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.
   void trackDetached(import('../sync-sse'))
-    .then((m) => m.notifySyncInvalidate('learning.scout'))
+    .then((m) => Promise.all([
+      m.notifySyncInvalidate('learning.scout'),
+      m.notifySyncInvalidate('learning.improvements'),
+      m.notifySyncInvalidate('learning.improvements.summary'),
+    ]))
     .catch(() => {});
 }
 
@@ -396,7 +400,11 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
   // Push the Learning tab's Scout view — same lazy fire-and-forget seam as
   // recordRoutedIdea (a missing SSE bus is a no-op). Applied writes only.
   void trackDetached(import('../sync-sse'))
-    .then((m) => m.notifySyncInvalidate('learning.scout'))
+    .then((m) => Promise.all([
+      m.notifySyncInvalidate('learning.scout'),
+      m.notifySyncInvalidate('learning.improvements'),
+      m.notifySyncInvalidate('learning.improvements.summary'),
+    ]))
     .catch(() => {});
   return { applied: true };
 }

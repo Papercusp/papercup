@@ -40,6 +40,7 @@ import type { LoopStatus } from '../../harness/routines/loop';
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
   sessionState?: SessionState | null;
   confirmLiveness?: boolean | null;
+  wakeable?: boolean | null;
 } {
   return {
     agentId: 'su-agent-1',
@@ -123,6 +124,19 @@ describe('reconcileWakeability (EI-6077)', () => {
     expect(out.alive).toBe(false);
   });
 
+  it('EI-21125380796386851: suspect + wakeable stays recoverable and carries wakeability', async () => {
+    const agent = baseAgent({
+      alive: false,
+      load: 1,
+      heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+    });
+    const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    expect(out.sessionState).toBe('suspect');
+    expect(out.wakeable).toBe(true);
+    expect(out.alive).toBe(false);
+  });
+
   it('fleet-liveness-zombie-await-2026-07-07: wakeable but hour-cold heartbeat → ended, not parked', async () => {
     // The reboot-zombie shape on the fleet:assignments surface: a lingering
     // (never-cancelled) wake-await makes it wakeable, but the heartbeat has been
@@ -183,6 +197,15 @@ function verdictInput(overrides: Partial<Parameters<typeof deriveMemberVerdict>[
 describe('deriveMemberVerdict (EI-8995)', () => {
   it('sessionState ended → dead, regardless of a warm heartbeat', () => {
     expect(deriveMemberVerdict(verdictInput({ sessionState: 'ended', alive: true }), NOW)).toBe('dead');
+  });
+
+  it('EI-21125380796386851: suspect + wakeable → recoverable suspect', () => {
+    expect(deriveMemberVerdict(verdictInput({ sessionState: 'suspect', wakeable: true }), NOW)).toBe('suspect');
+  });
+
+  it('EI-21125380796386851: suspect without wakeability → terminal dead', () => {
+    expect(deriveMemberVerdict(verdictInput({ sessionState: 'suspect', wakeable: false }), NOW)).toBe('dead');
+    expect(deriveMemberVerdict(verdictInput({ sessionState: 'suspect' }), NOW)).toBe('dead');
   });
 
   it('heartbeat-dead → dead', () => {
@@ -777,6 +800,25 @@ describe('shapeFleetAssignments carries confirmLiveness at every tier (WI-4400)'
     const shaped = shapeFleetAssignments(data, tier) as { agents: Array<Record<string, unknown>> };
     expect(shaped.agents[0].confirmLiveness).toBe(true);
     expect(shaped.agents[1].confirmLiveness).toBe(false);
+  });
+});
+
+describe('shapeFleetAssignments carries wakeable at every tier (EI-21125380796386851)', () => {
+  const data = {
+    ok: true,
+    summary: { agents: 2 },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      { agentId: 'a1', sessionState: 'suspect', wakeable: true, verdict: 'suspect', claims: [], queued: [] },
+      { agentId: 'a2', sessionState: 'suspect', wakeable: false, verdict: 'dead', claims: [], queued: [] },
+    ],
+  };
+
+  it.each(['trimmed', 'standard'] as const)('%s keeps the oracle delivery axis and verdict', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as { agents: Array<Record<string, unknown>> };
+    expect(shaped.agents[0]).toMatchObject({ wakeable: true, verdict: 'suspect' });
+    expect(shaped.agents[1]).toMatchObject({ wakeable: false, verdict: 'dead' });
   });
 });
 
