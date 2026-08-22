@@ -15,13 +15,17 @@
  *   --reconcile says so out loud.
  * Both live in ONE file precisely so their guards can be read against each other.
  *
- *   node --import tsx scripts/project-authored-docs.ts              # dry run, both-way report
- *   node --import tsx scripts/project-authored-docs.ts --ingest     # bootstrap file → PG
- *   node --import tsx scripts/project-authored-docs.ts --write      # project PG → file
- *   node --import tsx scripts/project-authored-docs.ts --check      # CI: corpus == projection
- *   node --import tsx scripts/project-authored-docs.ts --ingest --reconcile \
+ * This `.ts` file is the implementation and remains CJS-compatible for the existing
+ * Vitest/projector internals. For Node/tsx consumers that need static named ESM imports,
+ * use `scripts/project-authored-docs.mts`, the thin facade around this implementation.
+ *
+ *   node --import tsx scripts/project-authored-docs.mts             # dry run, both-way report
+ *   node --import tsx scripts/project-authored-docs.mts --ingest    # bootstrap file → PG
+ *   node --import tsx scripts/project-authored-docs.mts --write     # project PG → file
+ *   node --import tsx scripts/project-authored-docs.mts --check     # CI: corpus == projection
+ *   node --import tsx scripts/project-authored-docs.mts --ingest --reconcile \
  *     --doc=agent-insights/example.mdx                         # reconcile one exact doc
- *   node --import tsx scripts/project-authored-docs.ts --ingest --reconcile \
+ *   node --import tsx scripts/project-authored-docs.mts --ingest --reconcile \
  *     --files=agent-insights/a.mdx,agent-insights/b.mdx         # reconcile an exact list
  *
  * P-009 (ephemeral corpus) adds two more, and their ORDER matters:
@@ -634,7 +638,7 @@ async function main(): Promise<number> {
         console.error(`      nor a projection we wrote — somebody edited the FILE. Writing would erase that edit.`);
         for (const d of drifted.slice(0, 10)) console.error(`      - ${d}`);
         console.error(`      Resolve: move the edit into PG (docs:author { overwrite: true }), or accept the file`);
-        console.error(`      with: node --import tsx scripts/project-authored-docs.ts --ingest --reconcile`);
+        console.error(`      with: node --import tsx scripts/project-authored-docs.mts --ingest --reconcile`);
       }
       if (check && (tally.wrote > 0 || drifted.length > 0)) {
         console.error(
@@ -675,10 +679,14 @@ async function main(): Promise<number> {
 // Symlink-robust self-exec guard: node realpaths import.meta.url while process.argv[1]
 // keeps the invoked path, so comparing them naively fails through the workspace symlink.
 //
-// `.then` rather than top-level await, deliberately: tsx transforms this file to CJS, where
+// `.then` rather than top-level await, deliberately: tsx transforms this implementation to CJS, where
 // a top-level await is a hard transform error ("not supported with the cjs output format")
 // — the script would not run at all, which is how this was found.
-if (process.argv[1] && resolve(process.argv[1]).endsWith(`${sep}project-authored-docs.ts`)) {
+if (
+  process.argv[1] &&
+  (resolve(process.argv[1]).endsWith(`${sep}project-authored-docs.ts`) ||
+    resolve(process.argv[1]).endsWith(`${sep}project-authored-docs.mts`))
+) {
   void main().then(
     (code) => process.exit(code),
     (err: unknown) => {

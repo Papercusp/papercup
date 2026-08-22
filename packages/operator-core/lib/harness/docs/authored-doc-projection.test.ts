@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   applyProjectionBanner,
@@ -23,6 +24,7 @@ import {
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * P-008 — PG becomes canonical for authored doc prose, projected back to .mdx.
@@ -45,7 +47,26 @@ const SAMPLE = doc(
   '# Heading\n\nSome prose.',
 );
 
+const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
+
 describe('authored-doc projection (P-008)', () => {
+  describe('ESM entrypoint (EI-20185101375739809)', () => {
+    it('exposes projector helpers as static named imports under tsx', () => {
+      const output = execFileSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '-e',
+          "import { listCorpusDocs, resolveDocsRoot } from './scripts/project-authored-docs.mts'; console.log(typeof listCorpusDocs, typeof resolveDocsRoot)",
+        ],
+        { cwd: REPO_ROOT, encoding: 'utf8' },
+      );
+      expect(output.trim()).toBe('function function');
+    });
+  });
+
   describe('the round trip — strip(apply(c)) === c', () => {
     it('is byte-identical for an ordinary doc', () => {
       const projected = applyProjectionBanner(SAMPLE, 'agent-insights/a-doc.mdx');
