@@ -4,8 +4,8 @@
  * WeatherWidget — local weather for the operator dashboard
  * (platform-ops-batch-2026-07-09 P-003). Reads via `@papercusp/sync`
  * (weather.current), never a hand-rolled fetch — the resolver does the
- * live third-party call server-side, keyed by WEATHER_API_KEY
- * (apps/operator/.env.local, gitignored).
+ * live third-party call server-side, keyed by WEATHER_API_KEY from injected
+ * host config outside the repository.
  */
 import { useSyncQuery } from '@papercusp/sync';
 
