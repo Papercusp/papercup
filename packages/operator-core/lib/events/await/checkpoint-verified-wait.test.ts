@@ -18,6 +18,13 @@ function snapshot(overrides: Partial<GitPipelineSnapshot> = {}): GitPipelineSnap
   } as GitPipelineSnapshot;
 }
 
+function papercuspSnapshot(overrides: Partial<GitPipelineSnapshot> = {}): GitPipelineSnapshot {
+  return snapshot({
+    deploy: { integrationRoot: '/workspace/papercusp' } as GitPipelineSnapshot['deploy'],
+    ...overrides,
+  });
+}
+
 describe('checkpoint verified-wait producer adapter', () => {
   it('captures producer identity, ownership, cadence, and baseline progress', () => {
     expect(
@@ -50,6 +57,70 @@ describe('checkpoint verified-wait producer adapter', () => {
       producerPresent: true,
       completedAtMs: null,
       lastProgressAtMs: 1_100,
+    });
+  });
+
+  it('EI-21132791298856136: a held run-lock upgrades a systemd-inactive snapshot to active', async () => {
+    const current = papercuspSnapshot({
+      activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+    });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'papercusp',
+      ownerId: 'su-1',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: current,
+    });
+
+    const observed = await observeCheckpointProducer(certificate, {
+      snapshot: async () => current,
+      runLock: () => ({ held: true, elapsedSec: 3_610, pid: 27_158_55 }),
+    });
+
+    expect(observed).toMatchObject({
+      producerPresent: true,
+      state: 'active',
+      lastProgressAtMs: -3_608_000,
+      evidence: {
+        active: true,
+        candidate: null,
+        activeSource: 'run-lock',
+        runLockPid: 27_158_55,
+        producerState: 'active',
+      },
+    });
+    expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
+      classification: 'progressing',
+      nextAction: 're-await',
+    });
+  });
+
+  it('does not fabricate liveness when the live run-lock is not held', async () => {
+    const current = papercuspSnapshot({ activeRun: null });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'papercusp',
+      ownerId: 'su-1',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: current,
+    });
+
+    const observed = await observeCheckpointProducer(certificate, {
+      snapshot: async () => current,
+      runLock: () => ({ held: false, elapsedSec: null }),
+    });
+
+    expect(observed).toMatchObject({
+      producerPresent: true,
+      state: 'unknown',
+      evidence: { active: false, candidate: null, producerState: 'unknown' },
+    });
+    expect(observed.evidence).not.toHaveProperty('activeSource');
+    expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
+      classification: 'unknown',
+      nextAction: 're-await',
     });
   });
 

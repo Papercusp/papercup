@@ -1,4 +1,5 @@
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from '../../git-pipeline-stats';
+import { pipelineName } from '../../release/pipeline-name';
 import type {
   ProducerHealthCertificate,
   ProducerHealthObservation,
@@ -10,6 +11,64 @@ export interface CheckpointProducerDetails extends Record<string, unknown> {
   pipeline: string;
   candidateSha?: string;
   runId?: string;
+}
+
+interface CheckpointRunLockReading {
+  held: boolean;
+  elapsedSec: number | null;
+  pid?: number;
+}
+
+type CheckpointRunLockReader = (
+  root: string,
+) => CheckpointRunLockReading | null | Promise<CheckpointRunLockReading | null>;
+
+async function readCheckpointRunLock(root: string): Promise<CheckpointRunLockReading | null> {
+  try {
+    // Keep the timeout verifier on the same cheap, PID-verified lock source as
+    // gitPipelinePosition. Dynamic import preserves the adapter's existing cold
+    // path and keeps a probe failure fail-soft to the snapshot-only behavior.
+    const { isCheckpointRunLockHeldCheap } = await import('../../release-checkpoint-launch');
+    return isCheckpointRunLockHeldCheap(root);
+  } catch {
+    return null;
+  }
+}
+
+function checkpointRunLockRoot(
+  pipeline: string,
+  snapshot: GitPipelineSnapshot,
+): string | null {
+  const configuredRoot = snapshot.deploy?.integrationRoot;
+  if (configuredRoot && pipelineName(configuredRoot) === pipeline) return configuredRoot;
+
+  // A missing or mismatched root must degrade to UNKNOWN rather than attach
+  // another pipeline's lock to this wait. The snapshot's deploy state is the
+  // same root used by the pipeline-position lock seam; do not guess from the
+  // process cwd or an environment fallback here.
+  return null;
+}
+
+function snapshotWithLiveCheckpointRunLock(
+  snapshot: GitPipelineSnapshot,
+  lock: CheckpointRunLockReading | null,
+): GitPipelineSnapshot {
+  if (!lock?.held || snapshot.activeRun?.active === true) return snapshot;
+
+  const startedAtMs =
+    lock.elapsedSec != null && Number.isFinite(lock.elapsedSec)
+      ? snapshot.generatedAtMs - Math.max(0, lock.elapsedSec) * 1_000
+      : null;
+  return {
+    ...snapshot,
+    activeRun: {
+      active: true,
+      candidate: null,
+      startedAtMs,
+      progressAtMs: startedAtMs,
+      elapsedSec: lock.elapsedSec ?? null,
+    },
+  };
 }
 
 function checkpointProgressAtMs(snapshot: GitPipelineSnapshot): number | null {
@@ -125,30 +184,42 @@ export function checkpointProducerCertificate(input: {
 
 export async function observeCheckpointProducer(
   certificate: ProducerHealthCertificate,
-  deps: { snapshot?: (pipeline: string) => Promise<GitPipelineSnapshot> } = {},
+  deps: {
+    snapshot?: (pipeline: string) => Promise<GitPipelineSnapshot>;
+    /** Test seam for the same live run-lock read used by gitPipelinePosition. */
+    runLock?: CheckpointRunLockReader;
+  } = {},
 ): Promise<ProducerHealthObservation> {
   const details = certificate.details as CheckpointProducerDetails | undefined;
   if (!details?.pipeline) throw new Error('checkpoint producer certificate is missing details.pipeline');
   const snapshot = await (deps.snapshot ?? ((pipeline) => gitPipelineSnapshot(pipeline, { includeActiveRun: true })))(
     details.pipeline,
   );
-  const verdict = matchingVerdict(snapshot, certificate.issuedAtMs, details);
-  const producerPresent = snapshot.activeRun?.active === true || snapshot.routines?.greenCheckpoint?.active === true;
-  const state = checkpointObservationState(snapshot, details);
+  const lockRoot = checkpointRunLockRoot(details.pipeline, snapshot);
+  const lock = lockRoot
+    ? await (deps.runLock ?? readCheckpointRunLock)(lockRoot)
+    : null;
+  const observedSnapshot = snapshotWithLiveCheckpointRunLock(snapshot, lock);
+  const verdict = matchingVerdict(observedSnapshot, certificate.issuedAtMs, details);
+  const producerPresent =
+    observedSnapshot.activeRun?.active === true || observedSnapshot.routines?.greenCheckpoint?.active === true;
+  const state = checkpointObservationState(observedSnapshot, details);
   return {
-    checkedAtMs: snapshot.generatedAtMs,
+    checkedAtMs: observedSnapshot.generatedAtMs,
     producerPresent,
     ...(state ? { state } : {}),
-    lastProgressAtMs: checkpointProgressAtMs(snapshot),
+    lastProgressAtMs: checkpointProgressAtMs(observedSnapshot),
     lastFireAtMs: verdict?.createdAtMs ?? null,
     completedAtMs: verdict?.createdAtMs ?? null,
     evidence: {
       pipeline: details.pipeline,
-      active: snapshot.activeRun?.active ?? false,
-      candidate: snapshot.activeRun?.candidate ?? null,
+      active: observedSnapshot.activeRun?.active ?? false,
+      candidate: observedSnapshot.activeRun?.candidate ?? null,
+      ...(lock?.held && observedSnapshot.activeRun?.active === true ? { activeSource: 'run-lock' } : {}),
+      ...(lock?.pid != null ? { runLockPid: lock.pid } : {}),
       ...(state ? { producerState: state } : {}),
-      routineActive: snapshot.routines?.greenCheckpoint?.active ?? false,
-      routinePauseReason: snapshot.routines?.greenCheckpoint?.pause?.reason ?? null,
+      routineActive: observedSnapshot.routines?.greenCheckpoint?.active ?? false,
+      routinePauseReason: observedSnapshot.routines?.greenCheckpoint?.pause?.reason ?? null,
       verdictStatus: verdict?.status ?? null,
     },
   };
