@@ -182,6 +182,17 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
     expect(detectUnguardedHalt({ ...halt, autonomousModeActive: false })).toBeNull();
   });
 
+  it('a machine-injected turn is not guaranteed by an absent autonomous mode row', () => {
+    const machineHalt = { ...halt, autonomousModeActive: false, machineTurn: true };
+    expect(isRewakeGuaranteed(machineHalt)).toBe(false);
+    expect(detectUnguardedHalt(machineHalt)).not.toBeNull();
+  });
+
+  it('a machine-injected turn remains safe when a concrete wake is active', () => {
+    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false, machineTurn: true, loopActive: true })).toBe(true);
+    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false, machineTurn: true, activeAwaitCount: 1 })).toBe(true);
+  });
+
   it('an autonomous session with an armed loop is guaranteed', () => {
     expect(isRewakeGuaranteed({ ...halt, loopActive: true })).toBe(true);
     expect(detectUnguardedHalt({ ...halt, loopActive: true })).toBeNull();

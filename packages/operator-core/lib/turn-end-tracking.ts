@@ -329,6 +329,12 @@ export interface RewakeGuaranteeState {
   /** An autonomous mode (auto/drain) is active — the owner is, by that mode's
    *  own semantics, NOT the guaranteed next speaker. */
   autonomousModeActive: boolean;
+  /**
+   * The current turn was injected by the machine (for example, a loop-fire or
+   * wake-pump turn), so the owner cannot be treated as the next speaker merely
+   * because the mode row is absent or stale.
+   */
+  machineTurn?: boolean;
   /** The engine loop is armed (loop:status.active === true). */
   loopActive: boolean;
   /** Count of this owner's active event-await registrations that actually
@@ -355,6 +361,11 @@ export interface RewakeGuaranteeState {
  * session with none of those — the unguarded halt.
  */
 export function isRewakeGuaranteed(s: RewakeGuaranteeState): boolean {
+  // A machine-injected turn has no implicit human wake. Check the concrete wake
+  // sources first, even when the mode row is absent/stale (EI-21189324808136207).
+  if (s.machineTurn) {
+    return s.loopActive || s.activeAwaitCount > 0;
+  }
   if (!s.autonomousModeActive) return true; // interactive/normal: owner speaks next
   if (s.ownerInteractiveTurn) return true; // a human is here this turn
   if (s.loopActive) return true; // armed engine loop re-wakes it

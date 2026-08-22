@@ -247,6 +247,7 @@ async function checkpointOnReleaseImpl(input: {
 export async function sweepUnguardedHalt(input: {
   ownerId: string;
   workspaceId: string;
+  machineTurn?: boolean;
 }): Promise<UnguardedHaltTripwire | null> {
   try {
     const [{ getModes }, { getLoopStatus }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }] =
@@ -275,6 +276,7 @@ export async function sweepUnguardedHalt(input: {
     ).length;
     return detectUnguardedHalt({
       autonomousModeActive,
+      machineTurn: input.machineTurn,
       loopActive: Boolean(loop?.active),
       activeAwaitCount,
     });
@@ -286,6 +288,7 @@ export async function sweepUnguardedHalt(input: {
 export async function boundedUnguardedHaltSweep(input: {
   ownerId: string;
   workspaceId: string;
+  machineTurn?: boolean;
 }): Promise<UnguardedHaltTripwire | null> {
   const { value } = await withBoundedTimeout(sweepUnguardedHalt(input), {
     fallback: null,

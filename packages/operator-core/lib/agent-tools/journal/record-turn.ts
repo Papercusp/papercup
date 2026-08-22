@@ -26,6 +26,7 @@ import {
   ledgerEntriesSince,
   recordTurnJournal,
 } from '../../turn-journal-store';
+import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 
 /** Without a previous journal row the turn window falls back to this. */
 const DEFAULT_TURN_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -75,6 +76,10 @@ export default defineTool({
     if (!turn) {
       return { data: { ok: false, recorded: false, reason: 'no_assistant_turn' } };
     }
+    const currentTurn = ownerId
+      ? await resolveCurrentTurnStamp(ownerId, { filePath, sessionId: args.session_id }).catch(() => null)
+      : null;
+    const machineTurn = currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface';
     const extracted = extractJournalFromAssistantText(turn.text);
     if (!extracted) {
       return { data: { ok: false, recorded: false, reason: 'no_note' } };
@@ -105,7 +110,11 @@ export default defineTool({
     // session > a lost file); never masks a dishonest note (claim wins).
     const unguardedHaltTripwire =
       ownerId && !claimTripwire
-        ? await ioMod.boundedUnguardedHaltSweep({ ownerId, workspaceId: identity.workspaceId ?? '*' })
+        ? await ioMod.boundedUnguardedHaltSweep({
+            ownerId,
+            workspaceId: identity.workspaceId ?? '*',
+            machineTurn,
+          })
         : null;
     const tripwire = claimTripwire ?? unguardedHaltTripwire ?? artifactTripwire;
 

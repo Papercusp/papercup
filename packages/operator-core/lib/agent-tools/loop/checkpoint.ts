@@ -72,6 +72,7 @@ import { detectAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
+import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -860,8 +861,10 @@ export default defineTool({
             listActiveAwaits(ownerId).catch(() => []),
             workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
           ]);
+          const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
+            machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
             loopActive: Boolean(loop?.active),
             activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
           });
