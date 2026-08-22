@@ -368,6 +368,57 @@ const cfg: ReleaseConfig = releaseConfig({
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
+describe("EI-21175363643337524: real disk-headroom admission", () => {
+  it("rejects a warning-floor breach on any watched filesystem and preserves every snapshot", async () => {
+    const gib = 1024 ** 3;
+    const snapshots = [
+      {
+        path: "/tmp",
+        totalBytes: 1_000 * gib,
+        freeBytes: 200 * gib,
+        freePct: 0.2,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+      {
+        path: "/mnt/data",
+        totalBytes: 1_000 * gib,
+        freeBytes: 80 * gib,
+        freePct: 0.08,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+    ];
+    let sampleCount = 0;
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-warning-floor-run",
+      undefined,
+      undefined,
+      async () => {
+        sampleCount++;
+        return snapshots;
+      },
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain("/tmp 200.0 GiB free");
+    expect(result?.summary).toContain("/mnt/data 80.0 GiB free");
+    expect(result?.summary).toContain(
+      "/mnt/data low-bytes breaches the standing warning/reserved headroom floor",
+    );
+    expect(result?.summary).toContain("floor is 5.0 GiB and 10.00% bytes");
+    expect(sampleCount).toBe(1);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () => {
   const preflightCfg: ReleaseConfig = { ...cfg, checkpointRoot: typecheckTree };
 

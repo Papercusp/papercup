@@ -10552,10 +10552,14 @@ export function realCheckpointDeps(
   const sampleCheckpointDisk =
     sampleDiskSnapshotsOverride ??
     (async (): Promise<CheckpointDiskSnapshot[]> => {
-      const { sampleDiskSnapshots } = await import(
+      const { sampleDiskSnapshots, watchedPaths } = await import(
         "@papercusp/operator-core/lib/storage/disk-space-alarm"
       );
-      return sampleDiskSnapshots([os.tmpdir()]);
+      // Reuse the alarm's canonical watched set. The checkpoint writes through the
+      // temp filesystem, but that filesystem can share a backing volume with the
+      // workspace root, backups, or operator-configured paths; sampling only
+      // os.tmpdir() makes those consumers invisible to admission control.
+      return sampleDiskSnapshots(watchedPaths());
     });
   const checkpointDiskPolicy = async (): Promise<DiskInfraFaultPolicy> => {
     const { diskPolicyFromEnv } = await import(
@@ -10798,35 +10802,48 @@ export function realCheckpointDeps(
     workspaceRerun,
     runId,
     async checkDiskHeadroom() {
-      const {
-        detectCriticalWriteHeadroom,
-        diskPolicyFromEnv,
-      } = await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
-      const tempPath = os.tmpdir();
+      const { detectLowSpace, diskPolicyFromEnv } = await import(
+        "@papercusp/operator-core/lib/storage/disk-space-alarm"
+      );
       const snapshots = await sampleCheckpointDisk();
-      const snapshot = snapshots[0];
-      if (!snapshot) {
+      if (snapshots.length === 0) {
         return {
           ok: false,
-          summary: `${tempPath} statfs produced no readable snapshot; refusing a full-suite write workload`,
+          summary:
+            "watched filesystem statfs produced no readable snapshots; refusing a full-suite write workload",
         };
       }
       const policy = diskPolicyFromEnv();
-      const breaches = detectCriticalWriteHeadroom([snapshot], policy);
       const gib = 1024 ** 3;
-      const measured =
-        `${tempPath} ${(snapshot.freeBytes / gib).toFixed(1)} GiB free ` +
-        `(${(snapshot.freePct * 100).toFixed(2)}%), ` +
-        `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`;
+      const measured = snapshots
+        .map(
+          (snapshot) =>
+            `${snapshot.path} ${(snapshot.freeBytes / gib).toFixed(1)} GiB free ` +
+            `(${(snapshot.freePct * 100).toFixed(2)}%), ` +
+            `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
+        )
+        .join("; ");
+      // A checkpoint reserves the standing WARNING floor, not merely the alarm's
+      // tighter critical tier: a long full-suite copy can consume the cleanup
+      // runway before writes are technically at the point of immediate failure.
+      // Evaluate every watched filesystem, because any one shared backing volume
+      // can exhaust while the others remain healthy.
+      const breaches = detectLowSpace(snapshots, policy);
       if (breaches.length === 0) return { ok: true, summary: measured };
-      const kinds = breaches[0].kinds.join("+");
+      const breachDetails = breaches
+        .map(
+          (breach) =>
+            `${breach.path} ${breach.kinds.join("+")} breaches the standing ` +
+            "warning/reserved headroom floor",
+        )
+        .join("; ");
       return {
         ok: false,
         summary:
-          `${measured}; ${kinds} breaches the gate floor ` +
-          `(${(policy.criticalFreeBytesMin / gib).toFixed(1)} GiB and ` +
-          `${(policy.criticalFreePctMin * 100).toFixed(2)}% bytes, ` +
-          `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes)`,
+          `${breachDetails}; measured all watched filesystems: ${measured}; ` +
+          `floor is ${(policy.freeBytesMin / gib).toFixed(1)} GiB and ` +
+          `${(policy.freePctMin * 100).toFixed(2)}% bytes, ` +
+          `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes`,
       };
     },
     ...(repairTarget
