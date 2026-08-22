@@ -24,6 +24,10 @@ import * as xtermAddonSerialize from '@xterm/addon-serialize';
 import { getCachedRateLimitConfig } from './rate-limit-config';
 import { getResourceProfile } from './resource-profile';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import {
+  samePtyAccessScope,
+  type PtyAccessScope,
+} from './pty-ticket';
 
 // @xterm/headless + @xterm/addon-serialize are CJS; their named exports aren't
 // statically visible to ESM named-import LINKING (cjs-module-lexer) under tsx now
@@ -60,6 +64,8 @@ const getHeadlessTerminal = () => xtermHeadless.Terminal;
 const getSerializeAddon = () => xtermAddonSerialize.SerializeAddon;
 
 export interface SpawnPtyOpts {
+  /** Authorization boundary captured by the handle and required for every id lookup. */
+  accessScope: PtyAccessScope;
   /** Binary to launch (e.g. 'omp', 'bash', '/usr/local/bin/omp'). */
   command: string;
   /** Arguments to pass. */
@@ -75,6 +81,8 @@ export interface SpawnPtyOpts {
 
 export interface PtyHandle {
   id: string;
+  /** Tenant/workspace/harness/host/principal boundary that owns this handle. */
+  accessScope: PtyAccessScope;
   pty: IPty;
   command: string;
   args: readonly string[];
@@ -168,7 +176,7 @@ function startReaper(): void {
     for (const handle of handles.values()) {
       if (handle.killed) continue;
       if (now - handle.lastActivityMs > IDLE_TIMEOUT_MS) {
-        killPty(handle.id);
+        killPty(handle.id, handle.accessScope);
       }
     }
   }, { category: 'global-sweep' });
@@ -255,6 +263,7 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
 
   const handle: PtyHandle = {
     id,
+    accessScope: { ...opts.accessScope },
     pty,
     command: opts.command,
     args: opts.args,
@@ -318,13 +327,14 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
   return handle;
 }
 
-export function getPty(id: string): PtyHandle | undefined {
-  return handles.get(id);
+export function getPty(id: string, accessScope: PtyAccessScope): PtyHandle | undefined {
+  const handle = handles.get(id);
+  return handle && samePtyAccessScope(handle.accessScope, accessScope) ? handle : undefined;
 }
 
 /** Write user keystrokes to the pty stdin. No-op if killed. */
-export function writePty(id: string, data: Buffer): boolean {
-  const handle = handles.get(id);
+export function writePty(id: string, data: Buffer, accessScope: PtyAccessScope): boolean {
+  const handle = getPty(id, accessScope);
   if (!handle || handle.killed) return false;
   handle.lastActivityMs = Date.now();
   handle.pty.write(data.toString('utf8'));
@@ -332,8 +342,8 @@ export function writePty(id: string, data: Buffer): boolean {
 }
 
 /** Resize the underlying pty. No-op if killed. */
-export function resizePty(id: string, cols: number, rows: number): boolean {
-  const handle = handles.get(id);
+export function resizePty(id: string, cols: number, rows: number, accessScope: PtyAccessScope): boolean {
+  const handle = getPty(id, accessScope);
   if (!handle || handle.killed) return false;
   handle.lastActivityMs = Date.now();
   try {
@@ -348,8 +358,8 @@ export function resizePty(id: string, cols: number, rows: number): boolean {
 }
 
 /** Kill the pty process. Idempotent. */
-export function killPty(id: string): boolean {
-  const handle = handles.get(id);
+export function killPty(id: string, accessScope: PtyAccessScope): boolean {
+  const handle = getPty(id, accessScope);
   if (!handle) return false;
   if (!handle.killed) {
     try { handle.pty.kill(); } catch { /* already dying */ }
@@ -363,8 +373,8 @@ export function killPty(id: string): boolean {
 }
 
 /** Mark this pty as actively consumed by a subscriber so the reaper spares it. */
-export function markActive(id: string): void {
-  const handle = handles.get(id);
+export function markActive(id: string, accessScope: PtyAccessScope): void {
+  const handle = getPty(id, accessScope);
   if (handle) handle.lastActivityMs = Date.now();
 }
 
@@ -376,8 +386,8 @@ export function markActive(id: string): void {
  * clients prefer getScreenSerialization which is bounded by screen
  * size rather than session bytes.
  */
-export function getHistory(id: string): Buffer | null {
-  const handle = handles.get(id);
+export function getHistory(id: string, accessScope: PtyAccessScope): Buffer | null {
+  const handle = getPty(id, accessScope);
   if (!handle || handle.history.length === 0) return null;
   return Buffer.concat(handle.history);
 }
@@ -400,8 +410,8 @@ export function getHistory(id: string): Buffer | null {
  * Returns null if the pty is unknown or the headless terminal has
  * been disposed.
  */
-export async function getScreenSerialization(id: string): Promise<string | null> {
-  const handle = handles.get(id);
+export async function getScreenSerialization(id: string, accessScope: PtyAccessScope): Promise<string | null> {
+  const handle = getPty(id, accessScope);
   if (!handle) return null;
   try {
     await new Promise<void>((resolve) => handle.headless.write('', resolve));
@@ -416,8 +426,11 @@ export async function getScreenSerialization(id: string): Promise<string | null>
  * Used by /pty/spawn to honor a `resumePtyId` request from a remounting
  * client.
  */
-export function getPtyMeta(id: string): { id: string; command: string; args: readonly string[]; cwd: string; pid: number } | null {
-  const handle = handles.get(id);
+export function getPtyMeta(
+  id: string,
+  accessScope: PtyAccessScope,
+): { id: string; command: string; args: readonly string[]; cwd: string; pid: number } | null {
+  const handle = getPty(id, accessScope);
   if (!handle || handle.killed) return null;
   return {
     id: handle.id,

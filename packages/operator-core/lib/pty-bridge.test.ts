@@ -11,6 +11,8 @@ import {
   spawnPty,
   killPty,
   getHistory,
+  getPty,
+  getPtyMeta,
   getScreenSerialization,
   resizePty,
   writePty,
@@ -18,6 +20,7 @@ import {
   deriveMaxConcurrentPtys,
 } from './pty-bridge';
 import { getResourceProfile } from './resource-profile';
+import type { PtyAccessScope } from './pty-ticket';
 
 const require = createRequire(import.meta.url);
 
@@ -32,12 +35,19 @@ function readEsmBuild(pkgJsonSpecifier: string, moduleRelPath: string): string {
 }
 
 const liveIds: string[] = [];
+const TEST_SCOPE: PtyAccessScope = {
+  tenantId: 'tenant-a',
+  workspaceId: 'workspace-a',
+  harnessSlug: 'harness-a',
+  hostId: 'host-a',
+  principalId: 'user-a',
+};
 
 /** Reap each test's pty as soon as that test ends. */
 function reap(): void {
   for (const id of liveIds.splice(0)) {
     try {
-      killPty(id);
+      killPty(id, TEST_SCOPE);
     } catch {
       /* already exited */
     }
@@ -57,11 +67,11 @@ afterAll(reap);
 async function waitForOutput(id: string, predicate: (s: string) => boolean, timeoutMs = 2000): Promise<string> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const s = (getHistory(id)?.toString('utf8') ?? '');
+    const s = (getHistory(id, TEST_SCOPE)?.toString('utf8') ?? '');
     if (predicate(s)) return s;
     await new Promise((r) => setTimeout(r, 30));
   }
-  return getHistory(id)?.toString('utf8') ?? '';
+  return getHistory(id, TEST_SCOPE)?.toString('utf8') ?? '';
 }
 
 describe('xterm ESM export shape (EI-13212)', () => {
@@ -92,6 +102,7 @@ describe('xterm ESM export shape (EI-13212)', () => {
 describe('pty-bridge', () => {
   it('spawns a process and accumulates byte history', async () => {
     const handle = spawnPty({
+      accessScope: TEST_SCOPE,
       command: 'bash',
       args: ['-c', 'echo PTY_BRIDGE_TEST_MARKER && sleep 0.1'],
       cwd: process.cwd(),
@@ -105,6 +116,7 @@ describe('pty-bridge', () => {
 
   it('serializes screen state via xterm-headless (P4)', async () => {
     const handle = spawnPty({
+      accessScope: TEST_SCOPE,
       command: 'bash',
       args: ['-c', 'printf "LINE_ALPHA\\nLINE_BETA\\n"; sleep 0.1'],
       cwd: process.cwd(),
@@ -113,18 +125,19 @@ describe('pty-bridge', () => {
     });
     liveIds.push(handle.id);
     await waitForOutput(handle.id, (s) => s.includes('LINE_BETA'));
-    const replay = await getScreenSerialization(handle.id);
+    const replay = await getScreenSerialization(handle.id, TEST_SCOPE);
     expect(replay).toBeTruthy();
     expect(replay!).toContain('LINE_ALPHA');
     expect(replay!).toContain('LINE_BETA');
     // Bounded — should be way smaller than the byte history.
-    const history = getHistory(handle.id)!;
+    const history = getHistory(handle.id, TEST_SCOPE)!;
     expect(replay!.length).toBeLessThanOrEqual(80 * 24 * 8 + 4096);
     expect(history.length).toBeGreaterThan(0);
   });
 
   it('keeps screen serialization geometry-correct after resize', async () => {
     const handle = spawnPty({
+      accessScope: TEST_SCOPE,
       command: 'bash',
       args: ['-c', 'echo PRE_RESIZE; sleep 0.5; echo POST_RESIZE; sleep 0.1'],
       cwd: process.cwd(),
@@ -133,9 +146,9 @@ describe('pty-bridge', () => {
     });
     liveIds.push(handle.id);
     await waitForOutput(handle.id, (s) => s.includes('PRE_RESIZE'));
-    expect(resizePty(handle.id, 100, 30)).toBe(true);
+    expect(resizePty(handle.id, 100, 30, TEST_SCOPE)).toBe(true);
     await waitForOutput(handle.id, (s) => s.includes('POST_RESIZE'));
-    const replay = await getScreenSerialization(handle.id);
+    const replay = await getScreenSerialization(handle.id, TEST_SCOPE);
     expect(replay).toBeTruthy();
     expect(replay!).toContain('PRE_RESIZE');
     expect(replay!).toContain('POST_RESIZE');
@@ -143,6 +156,7 @@ describe('pty-bridge', () => {
 
   it('forwards keystrokes via writePty', async () => {
     const handle = spawnPty({
+      accessScope: TEST_SCOPE,
       command: 'bash',
       args: ['-c', 'read x; echo GOT_$x; sleep 0.05'],
       cwd: process.cwd(),
@@ -151,9 +165,32 @@ describe('pty-bridge', () => {
     });
     liveIds.push(handle.id);
     await new Promise((r) => setTimeout(r, 100));
-    expect(writePty(handle.id, Buffer.from('TYPED\n'))).toBe(true);
+    expect(writePty(handle.id, Buffer.from('TYPED\n'), TEST_SCOPE)).toBe(true);
     const out = await waitForOutput(handle.id, (s) => s.includes('GOT_TYPED'));
     expect(out).toContain('GOT_TYPED');
+  });
+
+  it('partitions handle lookup and mutations by the complete access scope', () => {
+    const handle = spawnPty({
+      accessScope: TEST_SCOPE,
+      command: 'bash',
+      args: ['-c', 'sleep 1'],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    });
+    liveIds.push(handle.id);
+    const foreignScope = { ...TEST_SCOPE, principalId: 'user-b' };
+
+    expect(handle.accessScope).toEqual(TEST_SCOPE);
+    expect(handle.accessScope).not.toBe(TEST_SCOPE);
+    expect(getPty(handle.id, TEST_SCOPE)?.id).toBe(handle.id);
+    expect(getPty(handle.id, foreignScope)).toBeUndefined();
+    expect(getPtyMeta(handle.id, foreignScope)).toBeNull();
+    expect(writePty(handle.id, Buffer.from('blocked\n'), foreignScope)).toBe(false);
+    expect(resizePty(handle.id, 100, 30, foreignScope)).toBe(false);
+    expect(killPty(handle.id, foreignScope)).toBe(false);
+    expect(getPty(handle.id, TEST_SCOPE)?.killed).toBe(false);
   });
 
   // EI-151: a recorded pid can be recycled by the OS to a DIFFERENT agent's
@@ -163,6 +200,7 @@ describe('pty-bridge', () => {
   describe('findPtyByPid owner-scoping (cross-agent misroute guard)', () => {
     it('stamps ownerSid from the spawn env and never matches a foreign owner', async () => {
       const handle = spawnPty({
+        accessScope: TEST_SCOPE,
         command: 'bash',
         args: ['-c', 'sleep 1'],
         cwd: process.cwd(),
@@ -185,6 +223,7 @@ describe('pty-bridge', () => {
 
     it('an UNTAGGED pty (no SID, e.g. a shell pane) still matches any owner — never stricter than pid-only', async () => {
       const handle = spawnPty({
+        accessScope: TEST_SCOPE,
         command: 'bash',
         args: ['-c', 'sleep 1'],
         cwd: process.cwd(),
