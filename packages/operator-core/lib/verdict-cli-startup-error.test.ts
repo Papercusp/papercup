@@ -5,8 +5,9 @@
  * test launches the installed CLI and replaces only the spawned `node` command
  * with a deterministic failing daemon fixture.
  */
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:http';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -163,6 +164,68 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
       await rm(fixtureRoot, { recursive: true, force: true });
     }
   }, 12_000);
+
+  it('reports a normal stop when a named session closes its response socket', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-session-stop-'));
+    const dataDir = join(fixtureRoot, 'data');
+    const sessionName = 'socket-close';
+    let requestCount = 0;
+    const server = createServer((req) => {
+      requestCount += 1;
+      req.resume();
+      req.once('end', () => req.socket.destroy());
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('fixture server did not bind');
+      await mkdir(join(dataDir, 'sessions', sessionName), { recursive: true });
+      await writeFile(
+        join(dataDir, 'sessions', sessionName, 'verdict.json'),
+        JSON.stringify({
+          port: address.port,
+          token: 'fixture-token',
+          pid: process.pid,
+          started: new Date().toISOString(),
+        }),
+        'utf8',
+      );
+
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [require.resolve('verdict-cli/bin/browse.mjs'), 'sessions', 'stop', sessionName],
+        {
+          env: {
+            ...process.env,
+            VERDICT_DATA_DIR: dataDir,
+            VERDICT_SESSION: '',
+            PAPERCUSP_SID: '',
+            CODEX_SESSION_ID: '',
+          },
+          maxBuffer: 32 * 1024,
+          timeout: 8_000,
+        },
+      );
+
+      expect(stdout).toBe(`Session "${sessionName}" stopped.\n`);
+      expect(stdout).not.toContain('was not responding');
+      expect(requestCount).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (!server.listening) {
+          resolve();
+          return;
+        }
+        server.close(() => resolve());
+      });
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 8_000);
 
   it('clears console evidence when the active page navigates', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-navigation-evidence-'));

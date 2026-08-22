@@ -61,7 +61,14 @@ index a3392d2..e8a9dc0 100755
  }
  
  async function send(state, command, args) {
-@@ -193,9 +213,18 @@ if (!state || !isAlive(state.pid)) {
+@@ -179,1 +179,5 @@ if (command === 'sessions') {
+-    } catch { output(`Session "${target}" stopped (was not responding).`); }
++    } catch {
++      // A normal daemon shutdown can close the response socket before fetch
++      // receives it; the session has still been stopped.
++      output(`Session "${target}" stopped.`);
++    }
+@@ -193,9 +217,18 @@ if (!state || !isAlive(state.pid)) {
  try {
    output(await send(state, command, args));
  } catch (e) {
