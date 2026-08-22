@@ -45,7 +45,7 @@ export default defineTool({
       planHarnessSlug: args.harness,
       planSlug: args.plan,
       eventPattern: args.eventPattern,
-      eventFilter: args.filter,
+      eventFilter: args.filter as Record<string, unknown> | undefined,
       stormPolicy: args.stormPolicy,
       createdBy: actorId,
     });

@@ -1,9 +1,9 @@
-import type { ToolContext } from '@papercusp/agent-mcp';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 
-export function triggerToolContext(ctx: ToolContext): {
+export function triggerToolContext(ctx: UnifiedToolContext): {
   sql: ReturnType<typeof getOrgPg>['sql'];
   workspaceId: string;
   actorId: string;
