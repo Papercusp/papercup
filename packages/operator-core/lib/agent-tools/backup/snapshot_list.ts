@@ -10,11 +10,10 @@ export default defineTool({
   capability: 'backup:read',
   guidance: {
     when: `List backup snapshots — point-in-time captures of the workspace's PG + filesystem state.`,
-    notWhen: `For HARNESS snapshots (portable artifacts you can publish), use \`snapshots:list\`. backup:snapshot_list is the full-workspace recovery view.`,
+    notWhen: `For publishable per-harness artifacts — this surface lists only full-workspace recovery snapshots, so use the artifact/catalog surface that owns the harness payload instead.`,
     seeAlso: [
       'backup:snapshot_create (create a new snapshot)',
       'backup:restore (apply a snapshot from the list)',
-      'snapshots:list (portable per-harness snapshots — a different surface)',
     ],
   },
   requirePrincipal: false,

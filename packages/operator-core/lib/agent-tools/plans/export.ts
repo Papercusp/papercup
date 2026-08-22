@@ -45,7 +45,7 @@ export default defineTool({
   guidance: {
     when: 'You need the raw markdown of a plan to pipe/share, or want a one-off offline dump of all plans as files.',
     notWhen:
-      'You want the parsed structure (items/decisions/now) — use plans:get. You want to edit a plan — use the plans:set-* verbs (they write PG).',
+      'You want the parsed structure (items/decisions/now) — use plans:get. You want to edit a plan — use a concrete write verb such as plans:set-content or plans:set-now (they write PG).',
     chaining: 'plans:list → plans:export { slug } for the markdown of any plan.',
   },
   capability: 'plans:read',
