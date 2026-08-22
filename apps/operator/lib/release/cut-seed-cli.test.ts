@@ -8,6 +8,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   parseGitDepth,
   pickGitEncryption,
@@ -25,6 +28,7 @@ import {
   RO_OPEN_RETRY_ATTEMPTS,
   CUT_SEED_DRAIN_STALL_MS,
   mergeReleaseSeedRedactionValues,
+  deriveSourceStoreDirs,
 } from './cut-seed-cli';
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
@@ -48,6 +52,23 @@ describe('mergeReleaseSeedRedactionValues (WI-37894)', () => {
     );
 
     expect(values).toEqual([FIXTURE_REAL_HOST, FIXTURE_BUILD_HOST, FIXTURE_BUILD_USER]);
+  });
+});
+
+describe('deriveSourceStoreDirs (WI-37822)', () => {
+  it('discovers existing sibling hive stores and excludes the current store', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cut-seed-source-dirs-'));
+    try {
+      const current = join(root, '.papercusp', 'current-harness', 'hyperbee');
+      const siblingA = join(root, '.papercusp', 'a-harness', 'hyperbee');
+      const siblingB = join(root, '.papercusp', 'b-harness', 'hyperbee');
+      await Promise.all([current, siblingA, siblingB].map((dir) => mkdir(dir, { recursive: true })));
+
+      expect(await deriveSourceStoreDirs(current)).toEqual([siblingA, siblingB]);
+      expect(await deriveSourceStoreDirs(join(root, 'not-a-hyperbee'))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

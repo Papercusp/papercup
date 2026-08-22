@@ -219,6 +219,83 @@ describe('corestore seed provider', () => {
     expect(await coreC.get(0, { wait: false })).toMatchObject({ hbKey: 'P-0' }); // prefix PRESENT on a full seed
   });
 
+  it('WI-37822 resolves a requested core from a sibling host for full, sparse, and filtered cuts', async () => {
+    // The cut process has its own empty source store, while the requested admitted
+    // log exists only in a sibling harness store. This models the separate CLI
+    // process after remote-core-host's in-memory registry has been lost.
+    const sourceStore = makeStore(tmpDir('seed-cross-process-source-'));
+    await sourceStore.ready();
+
+    const hostDir = tmpDir('seed-cross-process-host-');
+    const hostStore = makeStore(hostDir);
+    await hostStore.ready();
+    const hostLog = await openOwnLog(hostStore);
+    const prefixLength = 12;
+    for (let i = 0; i < prefixLength; i++) await hostLog.append(op(i));
+    const snapshot = await produceLogSnapshot(hostLog, { now: 1000, schemaVersion: 1 });
+    expect(snapshot.appended).toBe(true);
+    for (let i = prefixLength; i < prefixLength + 2; i++) await hostLog.append(op(i));
+    const keyHex = hostLog.keyHex;
+    const fullLength = hostLog.length;
+    // A real sibling host is another process, so close this fixture's writable
+    // handle before the provider opens the candidate read-only.
+    await hostStore.close();
+    const sourceStoreDirs = [hostDir];
+    const provider = createCorestoreSeedProvider();
+
+    const fullStage = tmpDir('seed-cross-process-full-stage-');
+    const { entry: fullEntry, payload: fullPayload } = await provider.cut({
+      sourceStore,
+      sourceStoreDirs,
+      coreKeys: [keyHex],
+      stagingDir: fullStage,
+    });
+    const fullMeta = fullEntry.meta as { coreLengths: Record<string, number> };
+    expect(fullMeta.coreLengths[keyHex]).toBe(fullLength);
+    expect(await provider.verify(fullEntry, fullPayload)).toEqual({ ok: true });
+    const fullTargetDir = join(tmpDir('seed-cross-process-full-target-'), 'hyperbee');
+    await provider.restore(fullEntry, fullPayload, { targetStoreDir: fullTargetDir });
+    const fullTarget = makeStore(fullTargetDir);
+    await fullTarget.ready();
+    const fullCore = fullTarget.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+    await fullCore.ready();
+    expect(fullCore.length).toBe(fullLength);
+    expect(await fullCore.get(0, { wait: false })).toMatchObject({ hbKey: 'P-0' });
+
+    const sparseStage = tmpDir('seed-cross-process-sparse-stage-');
+    const { entry: sparseEntry, payload: sparsePayload } = await provider.cut({
+      sourceStore,
+      sourceStoreDirs,
+      coreKeys: [keyHex],
+      stagingDir: sparseStage,
+      sparse: true,
+    });
+    const sparseMeta = sparseEntry.meta as { coreLengths: Record<string, number>; coreSparseFrom: Record<string, number> };
+    expect(sparseMeta.coreSparseFrom[keyHex]).toBe(snapshot.coversUpTo);
+    expect(sparseMeta.coreLengths[keyHex]).toBe(fullLength);
+    const sparseTargetDir = join(tmpDir('seed-cross-process-sparse-target-'), 'hyperbee');
+    await provider.restore(sparseEntry, sparsePayload, { targetStoreDir: sparseTargetDir });
+    const sparseTarget = makeStore(sparseTargetDir);
+    await sparseTarget.ready();
+    const sparseCore = sparseTarget.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+    await sparseCore.ready();
+    expect(await sparseCore.get(0, { wait: false })).toBeNull();
+    expect(await sparseCore.get(snapshot.coversUpTo, { wait: false })).toMatchObject({ table: SNAPSHOT_TABLE_TAG });
+
+    const filteredStage = tmpDir('seed-cross-process-filtered-stage-');
+    const { entry: filteredEntry } = await provider.cut({
+      sourceStore,
+      sourceStoreDirs,
+      coreKeys: [keyHex],
+      stagingDir: filteredStage,
+      filtered: true,
+    });
+    const filteredMeta = filteredEntry.meta as { coreKeys: string[]; coreLengths: Record<string, number> };
+    const filteredKeyHex = filteredMeta.coreKeys[0]!;
+    expect(filteredKeyHex).not.toBe(keyHex);
+    expect(filteredMeta.coreLengths[filteredKeyHex]).toBeGreaterThan(0);
+  });
+
   it('restore works from a READ-ONLY, moved seed (packaged-install regression, WI-2902)', async () => {
     // The real failure: a bundled seed is a COPY (built into the .deb, dpkg-extracted
     // to a root-owned read-only dir). corestore 7.x's storage guards every writable

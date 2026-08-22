@@ -62,6 +62,11 @@ export interface GitCutSpec {
 export interface CorestoreCutSpec {
   /** The live/quiescent source store to cut from (the owner's store). */
   readonly sourceStore: Corestore;
+  /**
+   * Optional sibling Corestore directories for cross-process host resolution.
+   * The release CLI derives these from the source store's `.papercusp` root.
+   */
+  readonly sourceStoreDirs?: readonly string[];
   /** Hex keys of the admitted author logs to seed (read-only, no secrets). */
   readonly coreKeys: readonly string[];
   /**
@@ -200,6 +205,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
     const stagingDir = join(outDir, CORESTORE_SUBDIR);
     const { entry } = await provider.cut({
       sourceStore: corestore.sourceStore,
+      ...(corestore.sourceStoreDirs ? { sourceStoreDirs: corestore.sourceStoreDirs } : {}),
       coreKeys: corestore.coreKeys,
       stagingDir,
       ...(corestore.sparse ? { sparse: true } : {}),

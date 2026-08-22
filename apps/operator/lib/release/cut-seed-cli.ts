@@ -80,7 +80,7 @@
  *   --json                 print the manifest + size report as JSON
  */
 
-import { resolve, join, dirname } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -1049,6 +1049,34 @@ function resolveWorkspaceRoot(): string {
   return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(here, '..', '..', '..', '..');
 }
 
+/**
+ * Find sibling harness stores that may host admitted remote logs. The
+ * remote-core-host registry is process-local, while this release cutter runs
+ * separately from the harness operators, so the `.papercusp/<harness>/hyperbee`
+ * siblings are the explicit cross-process discovery surface.
+ */
+export async function deriveSourceStoreDirs(storeDir: string): Promise<string[]> {
+  const resolvedStoreDir = resolve(storeDir);
+  if (basename(resolvedStoreDir) !== 'hyperbee') return [];
+
+  const harnessDir = dirname(resolvedStoreDir);
+  const papercuspDir = dirname(harnessDir);
+  if (basename(papercuspDir) !== '.papercusp') return [];
+
+  let entries;
+  try {
+    entries = await readdir(papercuspDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(papercuspDir, entry.name, 'hyperbee'))
+    .filter((candidate) => resolve(candidate) !== resolvedStoreDir && existsSync(candidate))
+    .sort();
+}
+
 interface Args {
   [k: string]: string | boolean;
 }
@@ -1317,6 +1345,7 @@ async function main(): Promise<void> {
       .map((s) => s.trim())
       .filter(Boolean);
     const coreKeys = [...new Set([...own, ...extra])];
+    const sourceStoreDirs = await deriveSourceStoreDirs(storeDir);
     if (extra.length === 0) {
       console.warn(
         '[cut-seed] seeding the OWNER own-log only (' +
@@ -1326,6 +1355,7 @@ async function main(): Promise<void> {
     }
     corestore = {
       sourceStore: store!,
+      ...(sourceStoreDirs.length > 0 ? { sourceStoreDirs } : {}),
       coreKeys,
       ...(sparse ? { sparse: true as const } : {}),
       // A public desktop seed is a release projection, not a byte-for-byte copy of the

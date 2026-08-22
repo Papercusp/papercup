@@ -354,6 +354,13 @@ interface ReadableCore {
 export interface CorestoreCutContext {
   /** The live/quiescent source store to cut from (the owner's store). */
   readonly sourceStore: Corestore;
+  /**
+   * Optional sibling Corestore directories to inspect when the cut runs in a
+   * separate process from the host harness. `remote-core-host` is process-local,
+   * so the release cut must supply this explicit discovery seam for admitted
+   * logs whose blocks were opened by another harness on the same machine.
+   */
+  readonly sourceStoreDirs?: readonly string[];
   /** Hex keys of the admitted author logs to seed (read-only). */
   readonly coreKeys: readonly string[];
   /** Directory the read-only replica is materialized into — becomes the payload. */
@@ -696,6 +703,62 @@ function pipeReplicate(a: Corestore, b: Corestore): { streams: Pipeable[]; teard
 }
 
 /**
+ * Open the explicitly discovered sibling stores read-only for the duration of
+ * one cut. A candidate open failure is fatal: silently dropping an unreadable
+ * candidate would recreate the original short/empty-seed failure under a new
+ * path. The source store itself remains owned by the caller.
+ */
+async function openSourceStoreCandidates(sourceStoreDirs: readonly string[] | undefined): Promise<Corestore[]> {
+  const dirs = [...new Set((sourceStoreDirs ?? []).map((dir) => dir.trim()).filter(Boolean))];
+  const opened: Corestore[] = [];
+  try {
+    for (const dir of dirs) {
+      const store = new Corestore(dir, { readOnly: true });
+      try {
+        await store.ready();
+        opened.push(store);
+      } catch (error) {
+        await store.close().catch(() => {});
+        throw new Error(`[seed:corestore] could not open source-store candidate ${dir}`, { cause: error });
+      }
+    }
+    return opened;
+  } catch (error) {
+    for (const store of opened.reverse()) await store.close().catch(() => {});
+    throw error;
+  }
+}
+
+/** True when a store has the requested core's first block locally. */
+async function hasLocalCoreBlocks(store: Corestore, keyHex: string): Promise<boolean> {
+  const core = store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
+  await core.ready();
+  if (core.length <= 0) return false;
+  if (typeof core.has === 'function') return Boolean(await core.has(0));
+  return (await core.get(0, { wait: false })) != null;
+}
+
+/**
+ * Resolve a requested key to the store that physically holds its blocks.
+ * Without candidates this intentionally returns `sourceStore` without probing,
+ * preserving the pre-WI-37822 source-store-only behavior for direct callers.
+ */
+async function resolveSourceStoreForKey(
+  sourceStore: Corestore,
+  candidates: readonly Corestore[],
+  keyHex: string,
+): Promise<Corestore> {
+  if (candidates.length === 0) return sourceStore;
+  if (await hasLocalCoreBlocks(sourceStore, keyHex)) return sourceStore;
+  for (const candidate of candidates) {
+    if (await hasLocalCoreBlocks(candidate, keyHex)) return candidate;
+  }
+  // Keep the source as the fallback so the existing downstream diagnostics and
+  // staged-range guard remain authoritative when no discovered store has it.
+  return sourceStore;
+}
+
+/**
  * The corestore SeedProvider. Register it in a
  * {@link import('@papercusp/seed-bundle').SeedProviderRegistry}.
  */
@@ -706,6 +769,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
       const {
         sourceStore,
+        sourceStoreDirs,
         coreKeys,
         stagingDir,
         sparse,
@@ -718,42 +782,107 @@ export function createCorestoreSeedProvider(): SeedProvider {
         ctx as unknown as CorestoreCutContext;
       await mkdir(stagingDir, { recursive: true });
 
-      if (filtered) {
+      const candidateStores = await openSourceStoreCandidates(sourceStoreDirs);
+      const sourceStoresByKey = new Map<string, Corestore>();
+      try {
+        for (const keyHex of coreKeys) {
+          sourceStoresByKey.set(keyHex, await resolveSourceStoreForKey(sourceStore, candidateStores, keyHex));
+        }
+
+        if (filtered) {
+          const replica = new Corestore(stagingDir);
+          await replica.ready();
+          const filteredCoreKeys: string[] = [];
+          const coreLengths: Record<string, number> = {};
+          try {
+            for (const ownerKeyHex of coreKeys) {
+              const minted = await mintFilteredSeedContentCore({
+                sourceStore: sourceStoresByKey.get(ownerKeyHex) ?? sourceStore,
+                ownerKeyHex,
+                stagingStore: replica,
+                redactValues,
+                onProgress,
+                onStall,
+                filteredScanStallMs,
+              });
+              filteredCoreKeys.push(minted.keyHex);
+              coreLengths[minted.keyHex] = minted.length;
+              // EI-20592896313306826 — same guard as the sparse branch: never declare a
+              // length the staging replica cannot actually serve. This is the branch that
+              // produced the truncated 2026-08-15 seed (76 declared, 64 present).
+              await assertStagedRangeIsLocal({
+                store: replica,
+                keyHex: minted.keyHex,
+                from: 0,
+                len: minted.length,
+              });
+              await assertShippedRangeCarriesNoExcludedTables({
+                store: replica,
+                keyHex: minted.keyHex,
+                from: 0,
+                len: minted.length,
+                excludeTables: SEED_EXCLUDED_TABLES,
+              });
+            }
+          } finally {
+            await replica.close();
+          }
+
+          const hash = await hashDir(stagingDir);
+          const sizeBytes = await dirSize(stagingDir);
+          const entry: SeedStoreEntry = {
+            kind: CORESTORE_SEED_KIND,
+            hash,
+            sizeBytes,
+            source: { type: 'resource', path: stagingDir },
+            // This is a complete current-state projection, not a source-log suffix. Do not
+            // label it sparse: a start index of 0 is honest here and must not trip the
+            // history-degradation guard as though a private prefix had been dropped.
+            meta: { coreKeys: filteredCoreKeys, coreLengths },
+          };
+          return { entry, payload: { path: stagingDir } };
+        }
+
+        // P-004 — sparse: resolve each core's suffix start from the FULL host store
+        // (all blocks local, no replication for the scan) BEFORE downloading. The
+        // reader seeds its cursor to the SAME index (findLatestCompleteSnapshot), so
+        // `[from, len)` is exactly the span a snapshot-aware joiner folds.
+        const coreSparseFrom: Record<string, number> = {};
+        if (sparse) {
+          for (const keyHex of coreKeys) {
+            // computeSparseFrom does its own reporting now — it is the only place that can
+            // tell an UNREADABLE tail from a genuinely absent snapshot (WI-37553), and those
+            // two have opposite remedies.
+            const from = await computeSparseFrom(sourceStoresByKey.get(keyHex) ?? sourceStore, keyHex);
+            coreSparseFrom[keyHex] = from;
+          }
+        }
         const replica = new Corestore(stagingDir);
         await replica.ready();
-        const filteredCoreKeys: string[] = [];
+        const replications = [...new Set(sourceStoresByKey.values())].map((host) => pipeReplicate(host, replica));
         const coreLengths: Record<string, number> = {};
         try {
-          for (const ownerKeyHex of coreKeys) {
-            const minted = await mintFilteredSeedContentCore({
-              sourceStore,
-              ownerKeyHex,
-              stagingStore: replica,
-              redactValues,
-              onProgress,
-              onStall,
-              filteredScanStallMs,
-            });
-            filteredCoreKeys.push(minted.keyHex);
-            coreLengths[minted.keyHex] = minted.length;
-            // EI-20592896313306826 — same guard as the sparse branch: never declare a
-            // length the staging replica cannot actually serve. This is the branch that
-            // produced the truncated 2026-08-15 seed (76 declared, 64 present).
-            await assertStagedRangeIsLocal({
-              store: replica,
-              keyHex: minted.keyHex,
-              from: 0,
-              len: minted.length,
-            });
+          for (const keyHex of coreKeys) {
+            const from = coreSparseFrom[keyHex] ?? 0;
+            const len = await downloadCoreRange(replica, keyHex, from);
+            coreLengths[keyHex] = len;
+            // EI-20592896313306826 — the range about to be DECLARED must actually be present
+            // in the replica. `downloadCoreRange` returning `len` does not establish that.
+            await assertStagedRangeIsLocal({ store: replica, keyHex, from, len });
+            // EI-20108164746219771 — verify the bytes that actually landed, before they are
+            // hashed into a seed entry. Filtering the head snapshot is necessary but not
+            // sufficient (see this function's note: a presence keep-alive can land a raw op
+            // inside the shipped span after the snapshot was taken).
             await assertShippedRangeCarriesNoExcludedTables({
               store: replica,
-              keyHex: minted.keyHex,
-              from: 0,
-              len: minted.length,
+              keyHex,
+              from,
+              len,
               excludeTables: SEED_EXCLUDED_TABLES,
             });
           }
         } finally {
+          for (const replication of replications.reverse()) replication.teardown();
           await replica.close();
         }
 
@@ -764,66 +893,12 @@ export function createCorestoreSeedProvider(): SeedProvider {
           hash,
           sizeBytes,
           source: { type: 'resource', path: stagingDir },
-          // This is a complete current-state projection, not a source-log suffix. Do not
-          // label it sparse: a start index of 0 is honest here and must not trip the
-          // history-degradation guard as though a private prefix had been dropped.
-          meta: { coreKeys: filteredCoreKeys, coreLengths },
+          meta: { coreKeys: [...coreKeys], coreLengths, ...(sparse ? { coreSparseFrom } : {}) },
         };
         return { entry, payload: { path: stagingDir } };
-      }
-
-      // P-004 — sparse: resolve each core's suffix start from the FULL source
-      // (all blocks local, no replication for the scan) BEFORE downloading. The
-      // reader seeds its cursor to the SAME index (findLatestCompleteSnapshot), so
-      // `[from, len)` is exactly the span a snapshot-aware joiner folds.
-      const coreSparseFrom: Record<string, number> = {};
-      if (sparse) {
-        for (const keyHex of coreKeys) {
-          // computeSparseFrom does its own reporting now — it is the only place that can
-          // tell an UNREADABLE tail from a genuinely absent snapshot (WI-37553), and those
-          // two have opposite remedies.
-          const from = await computeSparseFrom(sourceStore, keyHex);
-          coreSparseFrom[keyHex] = from;
-        }
-      }
-      const replica = new Corestore(stagingDir);
-      await replica.ready();
-      const { teardown } = pipeReplicate(sourceStore, replica);
-      const coreLengths: Record<string, number> = {};
-      try {
-        for (const keyHex of coreKeys) {
-          const from = coreSparseFrom[keyHex] ?? 0;
-          const len = await downloadCoreRange(replica, keyHex, from);
-          coreLengths[keyHex] = len;
-          // EI-20592896313306826 — the range about to be DECLARED must actually be present
-          // in the replica. `downloadCoreRange` returning `len` does not establish that.
-          await assertStagedRangeIsLocal({ store: replica, keyHex, from, len });
-          // EI-20108164746219771 — verify the bytes that actually landed, before they are
-          // hashed into a seed entry. Filtering the head snapshot is necessary but not
-          // sufficient (see this function's note: a presence keep-alive can land a raw op
-          // inside the shipped span after the snapshot was taken).
-          await assertShippedRangeCarriesNoExcludedTables({
-            store: replica,
-            keyHex,
-            from,
-            len,
-            excludeTables: SEED_EXCLUDED_TABLES,
-          });
-        }
       } finally {
-        teardown();
-        await replica.close();
+        for (const store of candidateStores.reverse()) await store.close().catch(() => {});
       }
-      const hash = await hashDir(stagingDir);
-      const sizeBytes = await dirSize(stagingDir);
-      const entry: SeedStoreEntry = {
-        kind: CORESTORE_SEED_KIND,
-        hash,
-        sizeBytes,
-        source: { type: 'resource', path: stagingDir },
-        meta: { coreKeys: [...coreKeys], coreLengths, ...(sparse ? { coreSparseFrom } : {}) },
-      };
-      return { entry, payload: { path: stagingDir } };
     },
 
     async verify(entry: SeedStoreEntry, payload: SeedPayload): Promise<VerifyResult> {
