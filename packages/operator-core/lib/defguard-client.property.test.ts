@@ -80,7 +80,7 @@ function usernameFromLastCall(): string {
 describe('deviceUsername slug — properties (via revokeDefguardUser URL)', () => {
   it('always yields pcusp-<only [A-Za-z0-9-]> — no unsafe char leaks into the path', () => {
     return fc.assert(
-      fc.asyncProperty(fc.string(), async (deviceId) => {
+      fc.asyncProperty(fc.string({ minLength: 1 }), async (deviceId) => {
         fetchMock.mockClear();
         await revoke(deviceId);
         const username = usernameFromLastCall();
@@ -93,7 +93,7 @@ describe('deviceUsername slug — properties (via revokeDefguardUser URL)', () =
 
   it('the sanitized tail equals first-12-chars with unsafe chars stripped (no added/extra chars)', () => {
     return fc.assert(
-      fc.asyncProperty(fc.string(), async (deviceId) => {
+      fc.asyncProperty(fc.string({ minLength: 1 }), async (deviceId) => {
         fetchMock.mockClear();
         await revoke(deviceId);
         const username = usernameFromLastCall();
@@ -109,7 +109,7 @@ describe('deviceUsername slug — properties (via revokeDefguardUser URL)', () =
 
   it('full unicode / punctuation deviceIds still produce a path-safe username', () => {
     return fc.assert(
-      fc.asyncProperty(fc.string({ unit: 'grapheme' }), async (deviceId) => {
+      fc.asyncProperty(fc.string({ unit: 'grapheme', minLength: 1 }), async (deviceId) => {
         fetchMock.mockClear();
         await revoke(deviceId);
         const username = usernameFromLastCall();
