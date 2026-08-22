@@ -31,9 +31,11 @@ import { join } from 'node:path';
 
 const SRC = join(__dirname, 'issues-engineer.ts');
 
-/** Slice out one top-level `export async function <name>` body. */
+/** Slice out one top-level async function body (exported or private). */
 function functionSource(src: string, name: string): string {
-  const start = src.indexOf(`export async function ${name}(`);
+  const exportedStart = src.indexOf(`export async function ${name}(`);
+  const privateStart = src.indexOf(`async function ${name}(`);
+  const start = exportedStart === -1 ? privateStart : exportedStart;
   expect(start, `${name} not found in issues-engineer.ts`).toBeGreaterThan(-1);
   const next = src.indexOf('\nexport async function ', start + 1);
   return src.slice(start, next === -1 ? src.length : next);
@@ -50,7 +52,9 @@ function hasCorrelatedTagProbe(fn: string): boolean {
 
 describe('WI-9252: listIssues topic membership is resolved once, behind a fence', () => {
   const src = readFileSync(SRC, 'utf8');
-  const listIssues = functionSource(src, 'listIssues');
+  // listIssues is now a bounded public wrapper; listIssuesWithLimit owns the SQL
+  // for both the bounded and file-export paths, so guard the actual writer.
+  const listIssues = functionSource(src, 'listIssuesWithLimit');
 
   it('resolves topic membership behind a MATERIALIZED fence', () => {
     expect(hasMaterializedFence(listIssues)).toBe(true);

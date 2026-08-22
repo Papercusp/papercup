@@ -469,7 +469,9 @@ describe('TABLE_TO_QUERY_NAMES shape', () => {
       expect(vs.length, `value for ${k}`).toBeGreaterThan(0);
       for (const v of vs) {
         const name = typeof v === 'string' ? v : v.name;
-        expect(name, `entry in ${k}`).toMatch(/^\w+\.\w+$/);
+        // Query families may own nested lenses (for example
+        // learning.observations.summary); require 2+ identifier segments.
+        expect(name, `entry in ${k}`).toMatch(/^\w+(?:\.\w+)+$/);
         if (typeof v !== 'string') {
           expect(typeof v.scope, `scope fn for ${name} in ${k}`).toBe('function');
         }

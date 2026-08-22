@@ -141,7 +141,7 @@ function isAuthorityMetadata(
 export default defineTool({
   name: 'recipes:run',
   description:
-    'Run one OR many saved code:run RECIPEs by id — the reuse path. Each recipe\'s script executes under YOUR ' +
+    'Run saved code:run recipes by id — reuse path. Each recipe\'s script executes under YOUR ' +
     'role-scoped tool envelope (NOT the author\'s — no privilege travels with a recipe); returns ' +
     'only each script\'s summary. Pass the exact runArgs from a recipes:search/code:run recommendation, or pass the ' +
     'authority metadata returned by recipes:get; both are revalidated against the stored revision and YOUR live lane. ' +

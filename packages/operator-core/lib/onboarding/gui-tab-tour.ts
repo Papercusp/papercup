@@ -96,6 +96,12 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
       'The project’s documentation tree — the same docs agents read first when asked how something works.',
   },
   {
+    id: 'history',
+    label: 'History',
+    blurb:
+      'The durable record of completed work, releases, and other past activity — use it to trace what changed and when.',
+  },
+  {
     id: 'insights',
     label: 'Insights',
     blurb:
