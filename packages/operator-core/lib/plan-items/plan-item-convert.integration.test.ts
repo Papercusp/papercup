@@ -30,6 +30,10 @@ const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
 
 const readMigration = (f: string) =>
   readFileSync(resolve(SQL_DIR, f), 'utf8')
+    // Throwaway test DBs do not create the runtime roles. Remove the guarded
+    // grant-only DO block as one unit; line-filtering just the GRANT statements
+    // leaves an invalid empty BEGIN/EXCEPTION shell behind.
+    .replace(/DO \$grant\$[\s\S]*?\$grant\$;/g, '')
     .split('\n')
     .filter(
       (line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
@@ -124,6 +128,18 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  // Work-item release/terminal transitions retire lifecycle-bound interest
+  // machinery. Use the production schema chain instead of a hand-rolled
+  // event_awaits stub so the conversion fixture stays faithful as watch
+  // cardinality and lifecycle columns evolve.
+  for (const migration of [
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '541-predicate-watches.sql',
+    '871-lifecycle-bound-watches.sql',
+  ]) {
+    await db.sql.unsafe(readMigration(migration)).simple();
+  }
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
