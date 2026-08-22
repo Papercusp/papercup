@@ -523,6 +523,24 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', checkDuplicatesOnly: true }, d);
     expect(res.created).toBe(false);
     expect(d.created).toHaveLength(0);
+    expect(res.hint).toContain('title-only pre-check');
+    expect(res.hint).toContain('final body');
+  });
+
+  it('warns that a check-only result with a body is valid only for that exact body', async () => {
+    const d = deps({ found: [] });
+    const res = await captureImprovement(
+      {
+        title: 'capture pre-check changes when the body changes',
+        body: 'Placeholder for dedup check',
+        kind: 'bug',
+        checkDuplicatesOnly: true,
+      },
+      d,
+    );
+    expect(res.possibleDuplicates).toEqual([]);
+    expect(res.hint).toContain('exact title and body');
+    expect(res.hint).toContain('rerun checkDuplicatesOnly with the final body');
   });
 
   it("dedupScope:'open' — a RESOLVED duplicate does NOT decline (a regression re-files)", async () => {

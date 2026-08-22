@@ -1157,6 +1157,9 @@ export async function captureImprovement(
       possibleDuplicates,
       dedupCoverage,
       admissionIdentity: identity,
+      hint: input.body
+        ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.'
+        : 'This was a title-only pre-check. A final body can surface additional semantic duplicates, so rerun checkDuplicatesOnly with the final body before treating an empty result as clean.',
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }
