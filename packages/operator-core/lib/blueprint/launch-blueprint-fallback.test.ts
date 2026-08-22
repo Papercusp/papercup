@@ -18,7 +18,8 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 // Heartbeat the launch row (P-011 liveness fix) — the SPAWN_HEARTBEAT_INTERVAL_MS
 // is kept SMALL here so the interval fires within the test (the real 60s never would).
-// The /invoke route, not this firing process, stamps the actual child PID.
+// Release-fix also stamps its short-lived firing process until /invoke hands the row
+// to the actual child; other roles remain route-stamped only.
 vi.mock('../fleet/spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(),
   recordSpawnPid: vi.fn(() => Promise.resolve()),
@@ -95,13 +96,23 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     expect(input.runId).toMatch(/^launch-\d+-[0-9a-f]{6}$/);
   });
 
-  it('hands the recorded row id to /invoke for actual child PID stamping', async () => {
+  it('records release-fix pre-handoff ownership, then hands the same row id to /invoke for child PID stamping', async () => {
     await fireLaunchBlueprint('release-fix', opts);
 
     const recordedSpawnId = vi.mocked(recordSpawn).mock.calls[0]![1].spawnId;
     const [, init] = vi.mocked(loopbackFetch).mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.spawnRecordId).toBe(recordedSpawnId);
+    expect(recordSpawnPid).toHaveBeenCalledOnce();
+    expect(recordSpawnPid).toHaveBeenCalledWith(mockSql, recordedSpawnId, process.pid);
+    expect(vi.mocked(recordSpawnPid).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(loopbackFetch).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('keeps non-release fallback rows route-stamped only', async () => {
+    await fireLaunchBlueprint('cup', opts);
+
     expect(recordSpawnPid).not.toHaveBeenCalled();
   });
 

@@ -45,7 +45,8 @@ export function ensureCargoCacheTag(targetDir) {
 }
 
 /**
- * Keep native-suite admission aligned with the standing disk alarm. WI-5080
+ * Keep native-suite admission anchored to the standing disk alarm without turning
+ * its percentage warning into an absolute gate on very large filesystems. WI-5080
  * deliberately keeps Cargo targets warm during normal operation, so this is an
  * admission guard, not an unconditional cache cleaner.
  */
@@ -53,6 +54,16 @@ export const DEFAULT_CARGO_DISK_POLICY = Object.freeze({
   freePctMin: 0.1,
   freeBytesMin: 5 * GIB,
 });
+
+/**
+ * EI-21149612505559395: a 7.3 TiB volume at 97% used still had 284 GiB free, yet
+ * the percentage leg refused Cargo and red-pinned every release. 128 GiB is a
+ * deliberately conservative absolute working-headroom escape hatch: it is far
+ * above the hard 5 GiB safety floor and the observed native target footprint,
+ * while preserving the percentage refusal for genuinely tight volumes (for
+ * example the existing 2 TiB / 80 GiB regression case).
+ */
+export const CARGO_PERCENT_FLOOR_BYPASS_BYTES = 128 * GIB;
 
 /** EX_TEMPFAIL: the suite did not run and becomes valid after space is reclaimed. */
 export const CARGO_DISK_REFUSAL_EXIT_CODE = 75;
@@ -102,7 +113,9 @@ export function assessCargoDiskAdmission(
 
   const freePct = Math.min(1, freeBytes / totalBytes);
   const reasons = [];
-  if (freePct < policy.freePctMin) reasons.push('free-percent');
+  if (freePct < policy.freePctMin && freeBytes < CARGO_PERCENT_FLOOR_BYPASS_BYTES) {
+    reasons.push('free-percent');
+  }
   if (freeBytes < policy.freeBytesMin) reasons.push('free-bytes');
   return {
     allowed: reasons.length === 0,
@@ -113,6 +126,7 @@ export function assessCargoDiskAdmission(
     freePct,
     usedPct: Math.round((1 - freePct) * 100),
     freeGiB: Math.floor(freeBytes / GIB),
+    percentFloorBypassGiB: Math.floor(CARGO_PERCENT_FLOOR_BYPASS_BYTES / GIB),
     policy,
   };
 }
@@ -122,7 +136,9 @@ export function formatCargoDiskRefusal(admission) {
   const minFreeGiB = Math.round((admission.policy.freeBytesMin / GIB) * 10) / 10;
   return (
     `[report-cargo-tests] REFUSED before spawning Cargo: filesystem is ${admission.usedPct}% used ` +
-    `with ${admission.freeGiB} GiB available; admission requires at least ${minFreePct}% and ${minFreeGiB} GiB free. ` +
+    `with ${admission.freeGiB} GiB available; admission requires at least ${minFreePct}% free ` +
+    `unless absolute working headroom is at least ${Math.floor(CARGO_PERCENT_FLOOR_BYPASS_BYTES / GIB)} GiB, ` +
+    `and always requires at least ${minFreeGiB} GiB free. ` +
     `Reclaim inactive build caches, then retry. Warm targets are preserved by default (WI-5080).`
   );
 }

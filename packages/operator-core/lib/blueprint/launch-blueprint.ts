@@ -44,7 +44,7 @@ import {
   isReleaseFixerNoTurnFailure,
   recordReleaseFixerNoTurnEscalation,
 } from '../release/fixer-liveness';
-import { heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
+import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 import type { Db } from '../fleet/pg-stores';
@@ -486,11 +486,23 @@ const defaultFire: LaunchFireFn = async ({
         runId,
         status: 'running',
       });
-      // The /invoke route owns the actual invoke-once child, and may run in a
-      // different operator/cluster process from this firing process.
-      // Do not stamp this row with the firing process's pid/launcher_boot_id: that
-      // provenance makes a healthy child look like a prior-boot orphan to reclaim.
-      // The route receives spawnRecordId below and stamps the actual child pid.
+      // EI-21144257978207759: a release-fixer can be fired by the short-lived
+      // green-checkpoint CLI.  Without pre-handoff provenance that CLI could exit before
+      // its fire-and-forget /invoke request admitted a child, leaving a fresh-heartbeat
+      // `running` row with no session, PID, output, or tools.  The serialized repair queue
+      // then treated that phantom as its live owner for the full stale-heartbeat window.
+      //
+      // Stamp ONLY release-fix with the process that currently owns the pending request.
+      // Once /invoke admits the real child it calls recordSpawnPid(..., { handoff:true }),
+      // atomically replacing this PID/boot identity and changing run_id from launch-* to
+      // invoke-launch-*.  Other blueprint roles retain the cross-process route-only stamp
+      // introduced by EI-20981156698708733.
+      if (blueprintId === 'release-fix') {
+        await recordSpawnPid(db, spawnId, process.pid).catch(() => {
+          /* best-effort — releaseFixerSpawnAlive also rejects a null-pickup row after
+             one heartbeat cadence, so a stamp miss cannot recreate the 300s phantom. */
+        });
+      }
     };
     if (role === 'mug') {
       const admission = await sql.begin(

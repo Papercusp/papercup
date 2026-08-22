@@ -69,6 +69,37 @@ describe('createOneWorkItem × path-affinity fallback (EI-16028)', () => {
     ]);
   });
 
+  it('keeps explicit paths unchanged but returns a warn-only advisory for a missing path', async () => {
+    const explicit = 'packages/operator-core/lib/agent-tools/work-items/complete.ts';
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'source path spelling drift',
+        payload: { paths: [explicit] },
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect((r.workItem.payload as { paths?: string[] } | null)?.paths).toEqual([explicit]);
+    expect(r.explicitPathsWarning).toContain(explicit);
+    expect(r.explicitPathsWarning).toMatch(/advisory only/);
+  });
+
+  it('does not warn when an explicit path exists in the selected tree', async () => {
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'source path is present',
+        payload: { paths: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'] },
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.explicitPathsWarning).toBeUndefined();
+  });
+
   it('leaves payload untouched when title/summary carry no derivable path', async () => {
     const r = await createOneWorkItem({ kind: 'bug', title: 'the gateway is confused' }, ctx);
     expect(r.ok).toBe(true);

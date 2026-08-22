@@ -236,7 +236,7 @@ export default defineTool({
     const reading = await readClaimSpecDelta(
       { filter: record.spec.view.filter, states: record.spec.states, spec: record.spec },
       { filter: proposedSpec.view.filter, states: proposedSpec.states, spec: proposedSpec },
-      { harness, assignee: ident.ownerId },
+      { harness, workspaceId, assignee: ident.ownerId },
       { limit: args.limit ?? 25 },
     );
 

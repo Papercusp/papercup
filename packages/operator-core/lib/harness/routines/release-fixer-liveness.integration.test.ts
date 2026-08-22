@@ -82,13 +82,14 @@ async function seedSpawn(
     startedAgoMin?: number;
     lastOutputAgoMin?: number | null;
     sessionOwner?: string | null;
+    runId?: string;
   } = {},
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, session_owner, run_id, status, started_at, heartbeat_at,
        last_output_at, pid, launcher_host, launcher_boot_id)
-    VALUES (${spawnId}, 'papercusp-workspace', ${identity.sessionOwner === undefined ? spawnId : identity.sessionOwner}, ${spawnId}, ${status},
+    VALUES (${spawnId}, 'papercusp-workspace', ${identity.sessionOwner === undefined ? spawnId : identity.sessionOwner}, ${identity.runId ?? spawnId}, ${status},
             now() - make_interval(mins => ${identity.startedAgoMin ?? 0}),
             ${heartbeatAgoMin == null ? null : sql`now() - make_interval(mins => ${heartbeatAgoMin})`},
             ${
@@ -141,6 +142,42 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
   it('a RUNNING fixer with a fresh heartbeat is ALIVE → covered (skip re-dispatch)', async () => {
     await seedSpawn('s-fixer-live', 'running', 1);
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-live')).toBe(true);
+  });
+
+  it('EI-21144257978207759: a heartbeat-only launch past one pickup cadence is not owned-live', async () => {
+    // This is the exact phantom signature: the firing row exists and is freshly
+    // heartbeated, but /invoke never stamped a PID/session or produced output/tools.
+    // Two minutes is safely beyond the release-fix pickup grace and well below the
+    // old generic 300s first-output/stale window.
+    await seedSpawn('s-fixer-null-pickup', 'running', 0, {
+      startedAgoMin: 2,
+      sessionOwner: null,
+      runId: 'launch-null-pickup',
+    });
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-null-pickup')).toBe(false);
+  });
+
+  it('EI-21144257978207759: a dead pre-handoff launcher PID defeats a fresh heartbeat immediately', async () => {
+    await seedSpawn('s-fixer-dead-launcher', 'running', 0, {
+      startedAgoMin: 0,
+      launcherHost: hostname(),
+      launcherBootId: launcherBootId(),
+      pid: 999_999_999,
+      runId: 'launch-dead-launcher',
+    });
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-dead-launcher')).toBe(false);
+  });
+
+  it('keeps a newly-recorded null-pickup launch covered during its one-cadence admission grace', async () => {
+    await seedSpawn('s-fixer-admitting', 'running', 0, {
+      startedAgoMin: 0,
+      sessionOwner: null,
+      runId: 'launch-admitting',
+    });
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-admitting')).toBe(true);
   });
 
   it('a fixer whose spawn FAILED is gone → re-dispatch (the incident: a dead fixer)', async () => {

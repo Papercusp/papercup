@@ -12,13 +12,27 @@
 import type postgres from 'postgres';
 import { hostname } from 'node:os';
 import { STALE_MS } from '../liveness';
-import { FIRST_OUTPUT_STALL_MS, isSpawnProcessAlive, launcherBootId } from '../fleet/spawn-reclaim';
+import {
+  FIRST_OUTPUT_STALL_MS,
+  isSpawnProcessAlive,
+  launcherBootId,
+  spawnRowKind,
+} from '../fleet/spawn-reclaim';
 
 /** The durable escalation phase for a release-fixer that died before its first turn. */
 export const RELEASE_FIXER_NO_TURN_PHASE = 'green-checkpoint-release-fixer-no-turn';
 
 /** Keep the legacy task-to-spawn temporal join deliberately narrow. */
 const LEGACY_TASK_LINK_SKEW_SEC = 5;
+
+/**
+ * A launch-blueprint row should reach /invoke admission (PID/session/output/tool pickup)
+ * well inside one supervisor heartbeat.  This is deliberately shorter than the generic
+ * five-minute first-output allowance: the latter protects a child that is already admitted
+ * and starting its model turn, while this guard detects a request that never produced a
+ * child at all (EI-21144257978207759).
+ */
+export const RELEASE_FIXER_LAUNCH_PICKUP_GRACE_MS = 60_000;
 
 export interface ReleaseFixerNoTurnEscalationInput {
   installSlug: string;
@@ -137,9 +151,10 @@ export async function releaseFixerSpawnAlive(
   if (!spawnId) return null;
   const graceSec = Math.max(1, Math.round(STALE_MS / 1000));
   const preTurnGraceSec = Math.max(1, Math.round(FIRST_OUTPUT_STALL_MS / 1000));
+  const launchPickupGraceSec = Math.max(1, Math.round(RELEASE_FIXER_LAUNCH_PICKUP_GRACE_MS / 1000));
   try {
     const rows = (await sql.unsafe(
-      `SELECT sa.launcher_host, sa.launcher_boot_id, sa.pid,
+      `SELECT sa.launcher_host, sa.launcher_boot_id, sa.pid, sa.run_id,
               (sa.status IN ('running','restarting')
                 AND sa.heartbeat_at IS NOT NULL
                 AND (now() - sa.heartbeat_at) < make_interval(secs => $2)) AS spawn_lease_live,
@@ -176,6 +191,18 @@ export async function releaseFixerSpawnAlive(
                      AND ti.spawn_id = sa.spawn_id
                 )
               ) AS task_scope_progress_eligible
+              ,(
+                sa.started_at >= now() - ($5::double precision * interval '1 second')
+                OR sa.pid IS NOT NULL
+                OR sa.session_id IS NOT NULL
+                OR sa.last_output_at IS NOT NULL
+                OR EXISTS (
+                  SELECT 1
+                    FROM harness_shared.tool_invocations ti
+                   WHERE ti.workspace_id = sa.workspace_id
+                     AND ti.spawn_id = sa.spawn_id
+                )
+              ) AS launch_pickup_eligible
               ,legacy_task.candidate_count AS legacy_task_candidate_count,
               legacy_task.live AS legacy_task_live
          FROM harness_shared.spawned_agents sa
@@ -200,15 +227,17 @@ export async function releaseFixerSpawnAlive(
          ) AS legacy_task ON TRUE
         WHERE sa.spawn_id = $1
         LIMIT 1`,
-      [spawnId, graceSec, LEGACY_TASK_LINK_SKEW_SEC, preTurnGraceSec],
+      [spawnId, graceSec, LEGACY_TASK_LINK_SKEW_SEC, preTurnGraceSec, launchPickupGraceSec],
     )) as Array<{
       launcher_host?: string | null;
       launcher_boot_id?: string | null;
       pid?: number | string | null;
+      run_id?: string | null;
       spawn_lease_live?: boolean;
       live_task_scope?: boolean;
       task_scope_ended?: boolean;
       task_scope_progress_eligible?: boolean;
+      launch_pickup_eligible?: boolean;
       legacy_task_candidate_count?: number | string;
       legacy_task_live?: boolean | null;
     }>;
@@ -249,6 +278,12 @@ export async function releaseFixerSpawnAlive(
 
     if (!row.spawn_lease_live) return false;
 
+    // EI-21144257978207759: a launch heartbeat proves only that the process which
+    // issued the HTTP request is/was alive.  Past one heartbeat cadence it is not
+    // evidence that /invoke ever admitted a child.  Require an admission/pickup
+    // signal before calling a null-session/null-PID/null-output row owned-live.
+    if (row.launch_pickup_eligible !== true) return false;
+
     // A PID is only meaningful within the launcher boot that recorded it. A
     // same-host row from an earlier boot is provably orphaned even when its
     // heartbeat was refreshed before the host noticed the restart; treating the
@@ -258,11 +293,16 @@ export async function releaseFixerSpawnAlive(
     const sameHost = row.launcher_host === localHost;
     if (sameHost && row.launcher_boot_id && row.launcher_boot_id !== launcherBootId()) return false;
 
-    // For a same-host row with a recorded child, use the existing PID-reuse-
-    // hardened probe. Missing/invalid PIDs retain the heartbeat fallback for
-    // legacy and admission-gap rows; the boot mismatch check above handles the
-    // cross-restart case even when that PID is absent.
-    if (sameHost && row.pid != null) return isSpawnProcessAlive(Number(row.pid));
+    // For a same-host row with recorded process ownership, use the existing
+    // row-kind-aware PID probe: launch-* means the pre-handoff firing process;
+    // invoke-launch-* means the admitted invoke-once child. Missing PIDs retain
+    // the heartbeat fallback only during the bounded pickup grace (or when another
+    // concrete pickup signal above proves admission).
+    if (sameHost && row.pid != null) {
+      const pid = Number(row.pid);
+      const kind = spawnRowKind({ spawnId, runId: row.run_id ?? null, pid });
+      return isSpawnProcessAlive(pid, kind);
+    }
     return true;
   } catch {
     return null;

@@ -128,6 +128,14 @@ const call = async (args: Record<string, unknown>) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('events:await wrapper defaults', () => {
+  it('guidance warns before registration that self-assignee status/done awaits are refused', () => {
+    const guidance = awaitTool.guidance;
+    expect(guidance).toBeDefined();
+    expect(guidance!.when).toMatch(/work-item:status:<id>.*work-item:done:<id>/);
+    expect(guidance!.when).toMatch(/unsatisfiable self-deadlock/);
+    expect(guidance!.when).toMatch(/before registration/);
+  });
+
   it('defaults: policy:wake, timeoutBehavior:wake, timeoutSec:AWAIT_DEFAULT_TIMEOUT_SEC (1800 = 30min), and the sweeper starts', async () => {
     await call({ event: 'lock:grant:t1' });
     expect(startAwaitSweeper).toHaveBeenCalledTimes(1);

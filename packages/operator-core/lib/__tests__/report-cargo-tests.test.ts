@@ -15,6 +15,7 @@ import {
   assessCargoDiskAdmission,
   CARGO_CACHE_TAG,
   CARGO_DISK_REFUSAL_EXIT_CODE,
+  CARGO_PERCENT_FLOOR_BYPASS_BYTES,
   cargoDiskPolicyFromEnv,
   classifyCargoRun,
   detectCargoTermination,
@@ -136,6 +137,29 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
     expect(
       assessCargoDiskAdmission({ totalBytes: 2_000 * GIB, freeBytes: 240 * GIB }),
     ).toMatchObject({ allowed: true, status: 'ok', reasons: [], usedPct: 88, freeGiB: 240 });
+  });
+
+  it('EI-21149612505559395: allows a huge filesystem with conservative absolute headroom despite a low free percentage', () => {
+    const result = assessCargoDiskAdmission({
+      totalBytes: 7.3 * 1024 * GIB,
+      freeBytes: 284 * GIB,
+    });
+
+    expect(CARGO_PERCENT_FLOOR_BYPASS_BYTES).toBe(128 * GIB);
+    expect(result).toMatchObject({
+      allowed: true,
+      status: 'ok',
+      reasons: [],
+      usedPct: 96,
+      freeGiB: 284,
+      percentFloorBypassGiB: 128,
+    });
+  });
+
+  it('never lets the percentage bypass weaken the hard absolute free-space floor', () => {
+    expect(
+      assessCargoDiskAdmission({ totalBytes: 20 * GIB, freeBytes: 4 * GIB }),
+    ).toMatchObject({ allowed: false, status: 'blocked', reasons: ['free-bytes'] });
   });
 
   it('reuses the disk alarm tuning keys and their positive-number fallback', () => {
