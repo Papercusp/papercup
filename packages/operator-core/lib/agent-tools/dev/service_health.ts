@@ -9,7 +9,13 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { probeAll, supervisedProcesses, PORTLESS_PROBE_NAMES, type ProbeResult } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
-import { supervisionSnapshot, isActiveStateDown, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
+import {
+  supervisionSnapshot,
+  isActiveStateDown,
+  isAdministrativelyPaused,
+  type SupervisionStatusEntry,
+  type SupervisionFlapState,
+} from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
@@ -140,6 +146,14 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
    * here carries no alarm. Present only when true.
    */
   episodic?: boolean;
+  /**
+   * WI-20039196108947848: systemd's persisted enablement state. `disabled` or
+   * `masked` means an inactive unit is intentionally paused, not unhealthy.
+   */
+  unitFileState?: string;
+  /** Explicit companion to `unitFileState` so callers need not reimplement the
+   * `disabled`/`masked` check when deciding whether a down-looking row is actionable. */
+  administrativelyPaused?: boolean;
 };
 
 /**
@@ -182,13 +196,21 @@ export async function overlaySystemdRestartRecency(
       // WI-6149: the VERDICT, from the reconciler's own oracle — never a second
       // definition of "down" maintained here.
       const episodic = row?.episodic === true;
+      // WI-20039196108947848: `ActiveState=inactive` is also the expected read
+      // after `systemctl --user disable --now`. Read the persisted enablement
+      // state before applying the persistent-unit down rule so a deliberate
+      // pause cannot become a permanent false alarm. The timer remains
+      // non-episodic: an ENABLED inactive timer is still genuinely unhealthy.
+      const administrativelyPaused = isAdministrativelyPaused(info.unitFileState);
       const healthy = !isActiveStateDown(info.activeState, { episodic });
       const stated: SupervisionStatusEntryWithRecency = {
         ...entry,
         active,
         activeState: info.activeState,
-        healthy,
+        healthy: administrativelyPaused ? true : healthy,
         ...(episodic ? { episodic: true } : {}),
+        ...(info.unitFileState !== undefined ? { unitFileState: info.unitFileState } : {}),
+        ...(administrativelyPaused ? { administrativelyPaused: true } : {}),
         // EI-20093902925801178: systemd's own restart counter, from the same
         // `systemctl show` this probe already made. The one restart number in
         // this payload that is not hostage to which process is answering.
@@ -492,7 +514,7 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state. Each probed entry carries the `url` it hit. "bg-host-ticker" is separate from :3070 — if it is down, nextVerb points at the bg-host restart, not the operator. An absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. Omitted = the probe could not tell, never "down". `units:[...]` + `scope:\'user\'|\'system\'|\'all\'` answers `systemctl is-active|is-failed` for ANY unit: unitStates[] (LoadState/ActiveState/SubState) plus unitsUnknown[] — read unitsUnknown FIRST, since a unit systemd never heard of reports `inactive` exactly like a stopped one.',
+    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state. Each probed entry carries the `url` it hit. "bg-host-ticker" is separate from :3070 — if it is down, nextVerb points at the bg-host restart, not the operator. An absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. `administrativelyPaused:true` with `unitFileState:"disabled"|"masked"` is an intentional pause, not an unhealthy timer; an enabled/static inactive timer remains unhealthy. Omitted = the probe could not tell, never "down". `units:[...]` + `scope:\'user\'|\'system\'|\'all\'` answers `systemctl is-active|is-failed` for ANY unit: unitStates[] (LoadState/ActiveState/SubState) plus unitsUnknown[] — read unitsUnknown FIRST, since a unit systemd never heard of reports `inactive` exactly like a stopped one.',
   guidance: {
     when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercup-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:

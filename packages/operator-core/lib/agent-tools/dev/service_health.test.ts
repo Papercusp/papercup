@@ -681,6 +681,22 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
       const probeFn = vi.fn(async () => ({ ok: true, activeState: "inactive" }));
       const out = await overlaySystemdRestartRecency([timerEntry], probeFn, timerRegistry);
       expect(out[0]?.active).toBe(false);
+      expect(out[0]?.healthy).toBe(false);
+    });
+
+    it("a deliberately disabled .timer is paused, not unhealthy — and stays non-episodic", async () => {
+      const timerEntry = { ...stagingEntry, name: "live-federation-gate-timer" };
+      const timerRegistry = [{ name: "live-federation-gate-timer", unit: "papercup-live-federation-gate.timer" }];
+      const probeFn = vi.fn(async () => ({ ok: true, activeState: "inactive", unitFileState: "disabled" }));
+      const out = await overlaySystemdRestartRecency([timerEntry], probeFn, timerRegistry);
+      expect(out[0]).toMatchObject({
+        active: false,
+        activeState: "inactive",
+        healthy: true,
+        unitFileState: "disabled",
+        administrativelyPaused: true,
+      });
+      expect(out[0]?.episodic).toBeUndefined();
     });
   });
 });

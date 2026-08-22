@@ -112,6 +112,29 @@ describe('probeServiceStart LoadState guard (EI-210532)', () => {
       mainPid: 0,
     });
   });
+
+  it('preserves UnitFileState so a disabled timer is distinguishable from an enabled stopped timer', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const info = await probeServiceStart('papercup-live-federation-gate.timer', async (command, args) => {
+      calls.push({ command, args });
+      return {
+        stdout:
+          'Id=papercup-live-federation-gate.timer\n' +
+          'LoadState=loaded\n' +
+          'UnitFileState=disabled\n' +
+          'ActiveState=inactive\n',
+      };
+    });
+
+    expect(calls[0]?.args).toEqual(expect.arrayContaining(['-p', 'UnitFileState']));
+    expect(info).toMatchObject({
+      ok: true,
+      activeState: 'inactive',
+      loadState: 'loaded',
+      known: true,
+      unitFileState: 'disabled',
+    });
+  });
 });
 
 /**

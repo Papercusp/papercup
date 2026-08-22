@@ -102,6 +102,12 @@ export interface ServiceStartInfo {
    * an absent unit is down.
    */
   known?: boolean;
+  /**
+   * WI-20039196108947848: systemd's persisted enablement state. `disabled` and
+   * `masked` mean the unit was intentionally paused; unlike `ActiveState`, this
+   * field distinguishes that choice from an enabled unit that stopped running.
+   */
+  unitFileState?: string;
 }
 
 /** systemd unit-type suffixes this probe recognizes as already-complete — anything
@@ -146,12 +152,14 @@ export function parseSystemctlShowOutput(stdout: string): Map<string, string> {
  */
 export function serviceStartStateFromProps(
   props: Map<string, string>,
-): Pick<ServiceStartInfo, 'activeState' | 'loadState' | 'known'> {
+): Pick<ServiceStartInfo, 'activeState' | 'loadState' | 'known' | 'unitFileState'> {
   const activeState = props.get('ActiveState');
   const loadState = props.get('LoadState');
+  const unitFileState = props.get('UnitFileState');
   return {
     ...(activeState === undefined ? {} : { activeState }),
     ...(loadState === undefined ? {} : { loadState, known: loadState === 'loaded' }),
+    ...(unitFileState === undefined ? {} : { unitFileState }),
   };
 }
 
@@ -444,9 +452,24 @@ export async function probeServiceStart(
     const svc = resolveUnitName(unit);
     const { stdout } = await exec(
       'systemctl',
-      // EI-20093902925801178: `NRestarts` rides along on the EXISTING show call —
-      // one more `-p` on a query already being made, no extra subprocess.
-      ['--user', 'show', '-p', 'MainPID', '-p', 'ActiveState', '-p', 'LoadState', '-p', 'NRestarts', svc],
+      // EI-20093902925801178 / WI-20039196108947848: these properties ride along
+      // on the EXISTING show call — no extra subprocess for restart history or
+      // the persisted enablement state.
+      [
+        '--user',
+        'show',
+        '-p',
+        'MainPID',
+        '-p',
+        'ActiveState',
+        '-p',
+        'LoadState',
+        '-p',
+        'UnitFileState',
+        '-p',
+        'NRestarts',
+        svc,
+      ],
       { timeout: 3000 },
     );
     const props = parseSystemctlShowOutput(stdout);
