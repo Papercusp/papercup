@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const flagEnabled = vi.fn(async () => true);
-const loadSnapshot = vi.fn(async () => ({
+const loadSnapshot = vi.fn(async (_sql: unknown, _workspace: string) => ({
   enabled: true,
   counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 },
   sources: [],
@@ -19,7 +19,7 @@ const setStorm = vi.fn(async (_sql: unknown, _workspace: string, id: string, inp
   stormPolicy: input,
   updatedAt: '2026-08-22T00:00:00.000Z',
 }));
-const notify = vi.fn(async () => {});
+const notify = vi.fn(async (..._args: unknown[]) => {});
 const sql = {};
 
 vi.mock('../../auth/require-principal', () => ({
@@ -41,10 +41,15 @@ vi.mock('../../auth/require-principal', () => ({
     }
   },
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql }),
+}));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: () => flagEnabled() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...args: unknown[]) => notify(...args) }));
+vi.mock('../../sync-sse', () => ({
+  notifySyncInvalidate: (...args: Parameters<typeof notify>) => notify(...args),
+}));
 vi.mock('../../external-triggers/admin', () => ({
   disabledExternalTriggerAdminSnapshot: () => ({
     enabled: false,
@@ -53,9 +58,9 @@ vi.mock('../../external-triggers/admin', () => ({
     bindings: [],
     recentRuns: [],
   }),
-  loadExternalTriggerAdminSnapshot: (...args: unknown[]) => loadSnapshot(...args),
-  setExternalTriggerBindingArmed: (...args: unknown[]) => setArmed(...args),
-  updateExternalTriggerBindingStormPolicy: (...args: unknown[]) => setStorm(...args),
+  loadExternalTriggerAdminSnapshot: (...args: Parameters<typeof loadSnapshot>) => loadSnapshot(...args),
+  setExternalTriggerBindingArmed: (...args: Parameters<typeof setArmed>) => setArmed(...args),
+  updateExternalTriggerBindingStormPolicy: (...args: Parameters<typeof setStorm>) => setStorm(...args),
 }));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
