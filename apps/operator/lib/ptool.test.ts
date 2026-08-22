@@ -284,10 +284,13 @@ describe('ptool invocation output mode (EI-20202581520430575)', () => {
   });
 });
 
-describe('ptool truncation recovery guidance (EI-20242487440417233)', () => {
+describe('ptool truncation recovery guidance (EI-20242487440417233, EI-21115345376541249)', () => {
   it('exposes the bounded-read projection path instead of only saying to retry', () => {
     expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('dispatch-level `projection`');
-    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('results[].id');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('items[].item.id');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('items[].item.status');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('items[].item.workItemId');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).not.toContain('results[].id');
     expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('payloadTier:"full"');
     expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('verify its state before retrying');
   });

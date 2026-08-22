@@ -63,6 +63,23 @@ import {
 import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { clampText, LIMITS, softText } from '../limits';
+import { GATE_VERDICT_CELL } from '../../cell-registrations';
+
+type SeeAlsoContext = { harnessSlug?: unknown };
+
+/**
+ * `release:checkpoint-run` is workspace-global, but the state-plane handles it
+ * emits are not: the verdict cell is harness-visible to the operator home. A
+ * workspace-scoped SU caller therefore gets `cell_absent` if it follows the
+ * pointer without first selecting that harness. Keep the pointer conditional on
+ * the same concrete harness named by the registration rather than advertising a
+ * handle that the current caller cannot execute.
+ */
+function canFollowGateCellFromSeeAlso(ctx: unknown): boolean {
+  if (!ctx || typeof ctx !== 'object' || GATE_VERDICT_CELL.visibility.kind !== 'harness') return false;
+  const harnessSlug = (ctx as SeeAlsoContext).harnessSlug;
+  return typeof harnessSlug === 'string' && harnessSlug.trim() === GATE_VERDICT_CELL.visibility.ref;
+}
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -94,7 +111,7 @@ export default defineTool({
      * is the alternative to the re-fire reflex, which during a rescue window discards
      * the auto-refire and costs a full ~55min suite.
      */
-    seeAlso: (result) => {
+    seeAlso: (result, _args, ctx) => {
       const j = readJsonResult<{
         already_running?: boolean;
         launched?: boolean;
@@ -121,12 +138,13 @@ export default defineTool({
         refusalReason === 'condition_claimed' || refusalReason === 'condition_claimed_liveness_confirmed';
       const workItem = j?.work_item ?? serializedField('work_item');
       const takenBy = j?.taken_by ?? serializedField('taken_by');
+      const canFollowGateCell = canFollowGateCellFromSeeAlso(ctx);
 
       const out: SeeAlsoEntry[] = [
         'release:deploy (deploy the now-green pin — op:status then op:trigger)',
         'release:checkpoint-config (tune the checkpoint gate)',
       ];
-      if (verdictIsComing) {
+      if (verdictIsComing && canFollowGateCell) {
         out.push(
           {
             tool: 'state:read',
@@ -150,19 +168,24 @@ export default defineTool({
             reason:
               'the refusal does not carry the current gate/run status — re-read it before deciding whether another fire or an override is justified',
           },
-          {
-            tool: 'state:read',
-            selector: "{ cell: 'gate.greenCheckpoint.verdict' }",
-            reason:
-              'the gate verdict can change while the claimed rescue continues — re-read the authoritative status before acting on this refusal',
-          },
-          {
-            tool: 'state:read',
-            selector: "{ cell: 'gate.greenCheckpoint.ownership' }",
-            reason:
-              'the claim and holder liveness can change after this response — re-read the current ownership before taking the incident',
-          },
         );
+
+        if (canFollowGateCell) {
+          out.push(
+            {
+              tool: 'state:read',
+              selector: "{ cell: 'gate.greenCheckpoint.verdict' }",
+              reason:
+                'the gate verdict can change while the claimed rescue continues — re-read the authoritative status before acting on this refusal',
+            },
+            {
+              tool: 'state:read',
+              selector: "{ cell: 'gate.greenCheckpoint.ownership' }",
+              reason:
+                'the claim and holder liveness can change after this response — re-read the current ownership before taking the incident',
+            },
+          );
+        }
 
         // Only materialize direct selectors when the serialized result contains the exact
         // identifiers. A malformed or partial envelope must not turn a guidance pointer into

@@ -1426,8 +1426,8 @@ describe('release:checkpoint-run routes to the state plane (P-002)', () => {
   const load = async () => {
     const { default: tool } = await import('./checkpoint-run');
     const { resolveSeeAlso } = await import('@papercusp/agent-mcp');
-    const ptrs = (text: string) =>
-      resolveSeeAlso(tool.guidance?.seeAlso, { content: [{ type: 'text' as const, text }] } as never, {}, {});
+    const ptrs = (text: string, ctx: unknown = { harnessSlug: 'papercusp', role: 'su' }) =>
+      resolveSeeAlso(tool.guidance?.seeAlso, { content: [{ type: 'text' as const, text }] } as never, {}, ctx);
     const cells = (text: string) =>
       ptrs(text)
         .filter((p) => p.tool.startsWith('state:'))
@@ -1503,6 +1503,23 @@ describe('release:checkpoint-run routes to the state plane (P-002)', () => {
     const { ptrs } = await load();
     const p = ptrs(JSON.stringify({ ok: false, launched: false, reason: 'condition_claimed' }));
     expect(p.some((x) => x.tool === 'work_items:get' || x.tool === 'coord:send')).toBe(false);
+  });
+
+  it('does not emit harness-scoped cell handles to an unscoped caller', async () => {
+    const { ptrs } = await load();
+    const contexts = [{}, { harnessSlug: '*' }, { harnessSlug: 'all', role: 'su' }, { harnessSlug: 'other-harness' }];
+
+    for (const ctx of contexts) {
+      const launched = ptrs(JSON.stringify({ ok: true, launched: true }), ctx);
+      expect(launched.filter((x) => x.tool.startsWith('state:'))).toEqual([]);
+
+      const claimed = ptrs(
+        JSON.stringify({ ok: false, launched: false, reason: 'condition_claimed', work_item: 'WI-38026' }),
+        ctx,
+      );
+      expect(claimed.filter((x) => x.tool.startsWith('state:'))).toEqual([]);
+      expect(claimed.some((x) => x.tool === 'release:deploy')).toBe(true);
+    }
   });
 });
 

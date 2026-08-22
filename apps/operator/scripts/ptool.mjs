@@ -616,7 +616,7 @@ const RESULT_DOOR_TRUNCATION_RE = /\[result-door:[\s\S]{0,2000}\btruncated\b/i;
  */
 export const PTOOL_TRUNCATED_RESULT_MESSAGE =
   'ptool: operator reply was truncated before a complete JSON payload; the tool call may have executed — verify its state before retrying. ' +
-  'For a large read, retry with a dispatch-level `projection` in the JSON args (for example `{"projection":{"pick":["results[].id","results[].state"]}}`) to bound the response; ' +
+  'For a large read, retry with a dispatch-level `projection` in the JSON args using paths from the actual payload root; `plans:items` uses `items[].item.id`, `items[].item.status`, and `items[].item.workItemId`. ' +
   'use `payloadTier:"full"` only when you need the unshaped detail and it fits the transport.';
 
 function isInvalidTruncatedJson(text) {
