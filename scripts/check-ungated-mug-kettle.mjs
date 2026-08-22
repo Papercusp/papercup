@@ -460,8 +460,7 @@ if (offenders.length) {
   console.error(`    if (isRetiredTierRole(role) && !(await mugKettleSystemEnabled())) return <refusal>;`);
   for (const line of substrateRemediationLines(offenders)) console.error(line);
   console.error(`Plan: retire-mug-kettle-su-only-2026-08-09 (D-017/D-018/D-019/D-020/D-021/D-022).`);
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  console.log('\n✓ no new ungated mug/kettle entry points');
 }
-
-console.log('\n✓ no new ungated mug/kettle entry points');
-process.exit(0);
