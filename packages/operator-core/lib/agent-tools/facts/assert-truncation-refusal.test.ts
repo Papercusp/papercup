@@ -54,6 +54,15 @@ vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: boundedTxnHarness.bounde
 import assertTool from './assert';
 import { FACT_BODY_MAX_CHARS, clampFactBody } from '../../agent-facts/store';
 
+type AssertSchemaField = { description?: string };
+
+const assertSchemaField = (name: string): AssertSchemaField => {
+  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
+  const field = options.map((option) => option.shape[name]).find(Boolean);
+  if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
+  return field as AssertSchemaField;
+};
+
 const ctx = { isSuperuser: true, uiClientId: 'su-test-truncation-refusal' } as never;
 
 /** Stand-in for the persisted row: echoes the input through the REAL clamp, so
@@ -238,7 +247,7 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
   });
 
   it('the acceptTruncation arg description documents the escape hatch (P-007 regression guard stays visible)', () => {
-    const description = assertTool.args.shape.acceptTruncation.description ?? '';
+    const description = assertSchemaField('acceptTruncation').description ?? '';
     expect(description).toMatch(/REFUSED/);
     expect(description).toMatch(/never/i);
   });
