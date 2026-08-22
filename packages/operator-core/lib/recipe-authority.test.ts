@@ -515,4 +515,112 @@ describe('recipe recommendation authority (P-008)', () => {
     const result = await validateRecipeAuthorityProof({ script, updatedAt: '2026-07-13T12:00:00.000Z' });
     expect(result).toMatchObject({ ok: false, error: 'authority_unresolved' });
   });
+
+  // EI-21163571260786543 — the recurrence guard. The real
+  // `goal-mode-e2e-post-boundary-activity-rubric-authorship-histogram-for-subject`
+  // recipe hardcoded ONE grading run's agent id (SUBJ) and time window into a
+  // `sessions:timeline({ owner, since })` call. recipes:search recommended it
+  // anyway, and the recommendation's authority proof carried the CURRENT
+  // caller's own live subject/harness — so the search result looked "bound to
+  // your own goal subject" when the script's real, hardcoded identity/window had
+  // nothing to do with either. Two independent things were wrong here, and both
+  // are pinned below: (1) THIS exact literal happens to be caught by
+  // `findVolatileCoordinationOwnerId`'s su-id text scan, so it is already
+  // `unresolved` and unrecommendable on its own; (2) the deeper, general defect —
+  // `buildRecipeAuthorityRecommendation` echoed the CALLER's context into the
+  // returned proof verbatim instead of deriving it from what the recipe's own
+  // script actually references — meant a script whose frozen identity/window
+  // ISN'T caught by any recognizer (e.g. a non-`su-`-shaped agent id) was
+  // recommended with a proof that falsely claimed binding to the caller's own
+  // resources/harness. Case (2) is the actual fix (recipe-authority.ts,
+  // `buildRecipeAuthorityRecommendation`); case (1) is pinned so it can't regress.
+  it('fails closed for a hardcoded su-id agent identity passed to a non-coord tool argument (EI-21163571260786543)', async () => {
+    const histogramScript = `const SUBJ = 'su-6e9985dd-9a17-49b9-aaef-804852cd94d5';
+const tl = await tools.sessions.timeline({ owner: SUBJ, since: '2026-08-09T09:40:00Z', limit: 300 });
+const entries = tl.entries || [];
+const toolRows = entries.filter(e => e.kind === 'tool' && !e.auto);
+return { windowFrom: '2026-08-09T09:40:00Z', totalAgentToolCalls: toolRows.length };`;
+
+    expect(findVolatileCoordinationOwnerId(histogramScript)).toBe('su-6e9985dd-9a17-49b9-aaef-804852cd94d5');
+    await expect(deriveRecipeAuthority(histogramScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-owner-id',
+        ownerId: 'su-6e9985dd-9a17-49b9-aaef-804852cd94d5',
+      },
+    });
+
+    // The exact reported shape: search is asked under a DIFFERENT caller whose own
+    // live subject is su-9bf03ac3-... — the recipe must NOT be recommended just
+    // because the caller's own context happens to be supplied alongside it.
+    await expect(buildRecipeAuthorityRecommendation({
+      script: histogramScript,
+      updatedAt: '2026-08-09T14:12:07.701Z',
+      context: { harness: 'papercusp', resources: ['su-9bf03ac3-0000-0000-0000-000000000000'] },
+    })).resolves.toBeNull();
+
+    // ...and recipes:run refuses it outright, so the stale runArgs from an older
+    // (pre-fix) search response can never silently execute against the wrong agent.
+    await expect(validateRecipeAuthorityProof({
+      script: histogramScript,
+      updatedAt: '2026-08-09T14:12:07.701Z',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'authority_unresolved',
+      reason: expect.stringContaining('concrete agent owner id'),
+    });
+  });
+
+  // The GENERAL case behind EI-21163571260786543: the exact same recipe shape,
+  // except the frozen agent id does NOT happen to match the `su-` regex (e.g. a
+  // different agent-kind prefix, or an opaque session id). No existing detector
+  // — not the owner-id scan above, not the coord-only cursor/sender check (this
+  // call's namespace is `sessions`, not `coord`) — can see this literal is
+  // volatile, so the descriptor is (correctly, given today's detectors)
+  // `unresolved: false, bound: false`. That is exactly the case
+  // `buildRecipeAuthorityRecommendation` must treat as advertising NOTHING: its
+  // returned proof must never manufacture a binding to the caller's own live
+  // fleet/harness/items/resources just because the caller happened to supply
+  // them. Before the fix this asserted a non-empty, caller-echoed `context`
+  // (`{ harness: 'goal-mode-e2e', items: ['P-777'], resources: [...] }`) even
+  // though the script references NONE of those.
+  it('does not manufacture a caller-context proof for an unbound recipe with a non-catchable frozen identity (EI-21163571260786543)', async () => {
+    const histogramScript = `const SUBJ = 'codex-6e9985dd';
+const tl = await tools.sessions.timeline({ owner: SUBJ, since: '2026-08-09T09:40:00Z', limit: 300 });
+return { windowFrom: '2026-08-09T09:40:00Z', totalAgentToolCalls: (tl.entries || []).length };`;
+
+    const descriptor = await deriveRecipeAuthority(histogramScript);
+    expect(descriptor).toMatchObject({ unresolved: false, bound: false });
+    expect(descriptor.refs).toEqual({
+      workspaces: [], fleets: [], plans: [], harnesses: [], items: [], resources: [],
+    });
+
+    const recommendation = await buildRecipeAuthorityRecommendation({
+      script: histogramScript,
+      updatedAt: '2026-08-09T14:12:07.701Z',
+      // A caller's real search request always carries its own live fleet/harness,
+      // and may pass its own items/resources too (e.g. "my current goal subject").
+      // None of these are referenced by the script above.
+      context: {
+        fleet: 'goal-mode-e2e-fleet',
+        harness: 'goal-mode-e2e',
+        items: ['P-777'],
+        resources: ['su-9bf03ac3-0000-0000-0000-000000000000'],
+      },
+    });
+    // The recipe is genuinely context-free, so it is still recommended (a
+    // truly generic script never needs a proof) — but the proof it carries
+    // must say so, not fabricate a binding to the caller's own lane.
+    expect(recommendation).not.toBeNull();
+    expect(recommendation?.proof.context).toEqual({});
+    expect(recommendation?.refs).toEqual(descriptor.refs);
+
+    // The stored proof is also self-consistent: revalidating it (with NO live
+    // context at all) still succeeds, exactly because it claims no binding.
+    await expect(validateRecipeAuthorityProof({
+      script: histogramScript,
+      updatedAt: '2026-08-09T14:12:07.701Z',
+      proof: recommendation!.proof,
+    })).resolves.toMatchObject({ ok: true });
+  });
 });

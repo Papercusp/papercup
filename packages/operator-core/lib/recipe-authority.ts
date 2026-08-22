@@ -537,23 +537,6 @@ export function recipeRevision(script: string, updatedAt: string): string {
   return createHash('sha256').update(updatedAt).update('\0').update(script).digest('hex');
 }
 
-/**
- * A proof records WHICH LANE it authorizes, and the caller-side check that revalidates it is
- * deliberately strict. So an operator-scope caller must not be handed a proof that merely
- * echoes `'*'` back — it would be rejected by that strict check on the very next hop. Under
- * operator scope the authorized lane is the recipe's OWN harness, so resolve the sentinel to
- * that concrete slug. A recipe binding several distinct harnesses has no single lane to name
- * and is left untouched (a multi-harness scalar can never satisfy `every`, so it stays
- * unmatchable exactly as before).
- */
-function resolveOperatorScopeLane(
-  descriptor: RecipeAuthorityDescriptor,
-  context: RecipeAuthorityContext = {},
-): RecipeAuthorityContext {
-  if (!isAllHarnessSentinel(context.harness) || descriptor.refs.harnesses.length !== 1) return context;
-  return { ...context, harness: descriptor.refs.harnesses[0] };
-}
-
 export async function buildRecipeAuthorityRecommendation(input: {
   script: string;
   updatedAt: string;
@@ -566,7 +549,24 @@ export async function buildRecipeAuthorityRecommendation(input: {
     proof: {
       version: 1,
       revision: recipeRevision(input.script, input.updatedAt),
-      context: normalizeRecipeAuthorityContext(resolveOperatorScopeLane(descriptor, input.context)),
+      // EI-21163571260786543: the proof's context states what the RECIPE itself is bound
+      // to (descriptor.refs) — NEVER an unfiltered echo of the caller's live context.
+      // `input.context` only had to be a SUPERSET of the descriptor's refs to pass the
+      // `recipeAuthorityMatches` check above (workspace/fleet/harness are always populated
+      // from the caller's live session by recipes:search, and a caller may pass its own
+      // items/resources too) — so echoing it verbatim let a recipe with NO bound identity at
+      // all (descriptor.bound === false, e.g. one that freezes an unrecognized owner/window
+      // literal — `subject`/`since` args a namespace-agnostic script consumes — outside any
+      // authority-tracked argument key) be advertised as "bound" to whatever fleet/harness/
+      // item/resource the CALLER happened to be working in, even though the script's own
+      // hardcoded identity/window has nothing to do with it. `recipeAuthorityContextFromRefs`
+      // derives ONLY what the descriptor actually proved is referenced — for an unbound
+      // recipe that is `{}`, so recipes:search can no longer misreport a context-free recipe
+      // as scoped to the caller's own subject. This also subsumes the old operator-scope
+      // sentinel rewrite (`resolveOperatorScopeLane`): the harness value here is always
+      // read from `descriptor.refs.harnesses`, so a caller-carried `'*'`/`'all'` sentinel is
+      // never echoed into a stored proof in the first place.
+      context: recipeAuthorityContextFromRefs(descriptor.refs),
     },
     refs: descriptor.refs,
   };
