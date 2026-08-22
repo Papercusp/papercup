@@ -247,7 +247,11 @@ export function suggestedWatchesForContext(input: {
 }
 
 function isConcreteCatalogEvent(key: string): boolean {
-  return keyMatchesCatalog(key) && !findRequiredParamPrefixMatch(key) && !findZeroParamSuffixMismatch(key);
+  return (
+    keyMatchesCatalog(key) &&
+    !findRequiredParamPrefixMatch(key) &&
+    !findZeroParamSuffixMismatch(key)
+  );
 }
 
 /**
@@ -386,7 +390,7 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
     context: 'plan-holder',
     watch: { kind: 'cell', cell: GATE_VERDICT_CELL.cell },
     tier: 'fold',
-    why: "A red gate blocks promotion for every item in the plan at once, so it is the plan holder's problem before it is any single item's. Folded rather than armed because the holder should learn it on the next read, not be woken per flip.",
+    why: 'A red gate blocks promotion for every item in the plan at once, so it is the plan holder\'s problem before it is any single item\'s. Folded rather than armed because the holder should learn it on the next read, not be woken per flip.',
   },
   {
     context: 'plan-holder',
@@ -452,7 +456,7 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
     watch: { kind: 'event', family: 'conversation-answered' },
     tier: 'auto-arm',
     of: ['conversation.id'],
-    why: "A concrete answer resolves the requester's decision edge. Auto-arming that one request avoids hidden polling without subscribing the requester to unrelated conversations.",
+    why: 'A concrete answer resolves the requester\'s decision edge. Auto-arming that one request avoids hidden polling without subscribing the requester to unrelated conversations.',
   },
   {
     context: 'answer-requester',
@@ -552,7 +556,9 @@ export interface InterestProfileViolation {
  * violate several at once and a caller is entitled to see all of them, exactly as
  * validateCellSpec reports its full rejection set.
  */
-export function validateInterestProfiles(rows: readonly InterestProfileRow[]): InterestProfileViolation[] {
+export function validateInterestProfiles(
+  rows: readonly InterestProfileRow[],
+): InterestProfileViolation[] {
   const violations: InterestProfileViolation[] = [];
   const registered = new Set(BUILTIN_CELLS.map((spec) => spec.cell));
 
@@ -591,9 +597,7 @@ export function validateInterestProfiles(rows: readonly InterestProfileRow[]): I
             row,
             detail: `event family '${family}' requires ${required.length} key param(s) (${required
               .map((p) => p.name)
-              .join(
-                ', ',
-              )}) but 'of' names ${supplied} context field(s). An unresolved key param produces a key nothing emits — a silent forever-wait.`,
+              .join(', ')}) but 'of' names ${supplied} context field(s). An unresolved key param produces a key nothing emits — a silent forever-wait.`,
           });
         }
       }

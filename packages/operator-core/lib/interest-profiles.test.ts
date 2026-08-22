@@ -72,16 +72,16 @@ describe('interest profiles — referential integrity (the drift guard)', () => 
   it('every referenced cell is REGISTERED, not merely defined', () => {
     const registered = new Set(BUILTIN_CELLS.map((spec) => spec.cell));
     for (const cell of referencedCellIds()) {
-      expect(registered.has(cell), `cell '${cell}' is referenced by a profile but is not in BUILTIN_CELLS`).toBe(true);
+      expect(registered.has(cell), `cell '${cell}' is referenced by a profile but is not in BUILTIN_CELLS`).toBe(
+        true,
+      );
     }
   });
 
   it('every referenced event family resolves in EVENT_CATALOG', () => {
     for (const family of referencedEventFamilies()) {
-      expect(
-        catalogEntry(family),
-        `event family '${family}' is referenced by a profile but is not in EVENT_CATALOG`,
-      ).toBeDefined();
+      expect(catalogEntry(family), `event family '${family}' is referenced by a profile but is not in EVENT_CATALOG`)
+        .toBeDefined();
     }
   });
 
@@ -147,12 +147,7 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
 
   it('catches an event family that is not in the catalog', () => {
     const violations = validateInterestProfiles([
-      {
-        context: 'fleet-leader',
-        watch: { kind: 'event', family: 'fleet-no-such-familyZZQQ' },
-        tier: 'fold',
-        why: 'control',
-      },
+      { context: 'fleet-leader', watch: { kind: 'event', family: 'fleet-no-such-familyZZQQ' }, tier: 'fold', why: 'control' },
     ]);
     expect(violations.map((v) => v.rule)).toEqual(['unknown-event-family']);
   });
@@ -160,12 +155,7 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
   it('catches an event row that leaves a REQUIRED key param unresolved', () => {
     // fleet-member-dead requires <slug>. Omitting `of` is the silent-forever-wait shape.
     const violations = validateInterestProfiles([
-      {
-        context: 'fleet-leader',
-        watch: { kind: 'event', family: 'fleet-member-dead' },
-        tier: 'auto-arm',
-        why: 'control',
-      },
+      { context: 'fleet-leader', watch: { kind: 'event', family: 'fleet-member-dead' }, tier: 'auto-arm', why: 'control' },
     ]);
     expect(violations.map((v) => v.rule)).toEqual(['unresolved-required-params']);
   });
@@ -217,7 +207,9 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
   });
 
   it('each violation names its own remedy, so a reader need not consult this test', () => {
-    const violations = validateInterestProfiles([{ ...CELL_ROW, watch: { kind: 'cell', cell: 'no.such.cellZZQQ' } }]);
+    const violations = validateInterestProfiles([
+      { ...CELL_ROW, watch: { kind: 'cell', cell: 'no.such.cellZZQQ' } },
+    ]);
     expect(violations).toHaveLength(1);
     expect(violations[0].detail.length).toBeGreaterThan(40);
   });

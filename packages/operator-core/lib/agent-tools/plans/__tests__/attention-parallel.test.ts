@@ -185,14 +185,7 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
       { msg_id: 'esc-1', severity: 'critical', summary: 'an escalation', plan_slug: null, options: [], from: 'su-x' },
     ]);
     M.listConversations.mockResolvedValue([
-      {
-        id: 'conv-1',
-        title: 'an open question',
-        body: 'q?',
-        asker_id: 'su-y',
-        harness_slug: null,
-        accepted_answer: null,
-      },
+      { id: 'conv-1', title: 'an open question', body: 'q?', asker_id: 'su-y', harness_slug: null, accepted_answer: null },
     ]);
     const p = await run();
     const ids = allItems(p).map((i) => i.id);
