@@ -25,6 +25,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 import {
   clearSessionBriefReleasedForFleet,
+  getSessionBriefAmbientExcludedRefs,
   getSessionBrief,
   getSessionBriefLifecycle,
   markSessionBriefReleased,
@@ -117,6 +118,31 @@ describe('writeSessionBrief (best-effort upsert)', () => {
     await writeSessionBrief(identity, { intent: 'off those files', currentFiles: [] });
     expect(rec.calls[0]).toContain('[]');
   });
+
+  it('omitting ambientExcludedRefs binds the untouched NULL sentinel', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    await writeSessionBrief(identity, { intent: 'keep the existing fence' });
+    expect(rec.calls).toHaveLength(1);
+    expect(rec.calls[0]).not.toContain('[]');
+  });
+
+  it('an explicit ambientExcludedRefs list is serialized verbatim for the JSONB cast', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    await writeSessionBrief(identity, {
+      intent: 'exclude held-out refs',
+      ambientExcludedRefs: ['WI-40293', 'EI-21096338043071922'],
+    });
+    expect(rec.calls[0]).toContain(JSON.stringify(['WI-40293', 'EI-21096338043071922']));
+  });
+
+  it('an explicit empty ambientExcludedRefs list is a real clear', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    await writeSessionBrief(identity, { intent: 'clear the fence', ambientExcludedRefs: [] });
+    expect(rec.calls[0]).toContain('[]');
+  });
 });
 
 describe('getSessionBrief (fail-soft read)', () => {
@@ -147,6 +173,7 @@ describe('getSessionBrief (fail-soft read)', () => {
         intent: 'continue the lane',
         current_plan_slug: 'plan-x',
         current_files: ['a.ts'],
+        ambient_excluded_refs: [' WI-40293 ', 'WI-40293', 'EI-21096338043071922'],
         harness_slug: 'papercusp',
         hive_slug: null,
         native_session_id: null,
@@ -160,6 +187,7 @@ describe('getSessionBrief (fail-soft read)', () => {
     expect(rec?.intent).toBe('continue the lane');
     expect(rec?.currentPlanSlug).toBe('plan-x');
     expect(rec?.currentFiles).toEqual(['a.ts']);
+    expect(rec?.ambientExcludedRefs).toEqual(['WI-40293', 'EI-21096338043071922']);
     expect(rec?.updatedAt).toBe('2026-06-20T05:00:00Z');
   });
 
@@ -187,6 +215,60 @@ describe('getSessionBrief (fail-soft read)', () => {
   it('ignores malformed release markers', async () => {
     fakeSql = recordingSql([{ control_state: { lifecycle: { released: { fleet: '' } } } }]).sql;
     await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toBeNull();
+  });
+});
+
+describe('getSessionBriefAmbientExcludedRefs (durable retrieval fence)', () => {
+  it('treats a missing row as an available empty fence', async () => {
+    fakeSql = recordingSql([]).sql;
+    await expect(getSessionBriefAmbientExcludedRefs('su-test-ei1742')).resolves.toEqual({
+      available: true,
+      refs: new Set(),
+    });
+  });
+
+  it('treats a legacy NULL column as an available empty fence', async () => {
+    fakeSql = recordingSql([{ ambient_excluded_refs: null }]).sql;
+    await expect(getSessionBriefAmbientExcludedRefs('su-test-ei1742')).resolves.toEqual({
+      available: true,
+      refs: new Set(),
+    });
+  });
+
+  it('normalizes a valid stored list into a de-duplicated set', async () => {
+    fakeSql = recordingSql([
+      { ambient_excluded_refs: [' WI-40293 ', 'WI-40293', 'EI-21096338043071922'] },
+    ]).sql;
+    await expect(getSessionBriefAmbientExcludedRefs('su-test-ei1742')).resolves.toEqual({
+      available: true,
+      refs: new Set(['WI-40293', 'EI-21096338043071922']),
+    });
+  });
+
+  it('fails closed when the stored fence is malformed', async () => {
+    fakeSql = recordingSql([{ ambient_excluded_refs: ['WI-40293', 42] }]).sql;
+    await expect(getSessionBriefAmbientExcludedRefs('su-test-ei1742')).resolves.toEqual({
+      available: false,
+      refs: new Set(),
+    });
+  });
+
+  it('fails closed when the fence read errors', async () => {
+    fakeSql = () => Promise.reject(new Error('session brief database unavailable'));
+    await expect(getSessionBriefAmbientExcludedRefs('su-test-ei1742')).resolves.toEqual({
+      available: false,
+      refs: new Set(),
+    });
+  });
+
+  it('fails closed without querying when the owner id is empty', async () => {
+    const rec = recordingSql([{ ambient_excluded_refs: ['WI-40293'] }]);
+    fakeSql = rec.sql;
+    await expect(getSessionBriefAmbientExcludedRefs('')).resolves.toEqual({
+      available: false,
+      refs: new Set(),
+    });
+    expect(rec.calls).toHaveLength(0);
   });
 });
 
