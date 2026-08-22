@@ -2643,6 +2643,17 @@ describe('grep/rg → `| head` false-absence advisory (EI-20041520588565350)', (
     expect(hso.additionalContext).toContain('grep -rl');
   };
 
+  const expectNoFalseAbsenceAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    // A real `head` pipeline still receives the older SIGPIPE advisory. The
+    // regression here is specifically that this new false-absence class does
+    // not fire for an explicitly bounded search or a non-search pipeline.
+    if (!out.stdout.trim()) return;
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow');
+    expect(hso.additionalContext ?? '').not.toContain('grep-to-head false-absence advisory');
+  };
+
   it('fires on the reported recursive grep pipeline', () => {
     expectFalseAbsenceAdvisory(
       runGate(
@@ -2663,16 +2674,16 @@ describe('grep/rg → `| head` false-absence advisory (EI-20041520588565350)', (
     ['quiet boolean', 'grep -rq foo apps | head -10'],
     ['long files-with-matches', 'grep --files-with-matches foo apps | head -10'],
     ['long count', 'grep --count foo apps | head -10'],
-  ])('stays silent for an explicit %s search mode', (_label, command) => {
-    expectAllow(runGate(bashWithInput({ command })));
+  ])('does not emit the false-absence advisory for an explicit %s search mode', (_label, command) => {
+    expectNoFalseAbsenceAdvisory(runGate(bashWithInput({ command })));
   });
 
-  it('stays silent for a head pipeline with no grep/rg stage', () => {
-    expectAllow(runGate(bashWithInput({ command: 'git status --short | head -10' })));
+  it('does not emit the false-absence advisory for a head pipeline with no grep/rg stage', () => {
+    expectNoFalseAbsenceAdvisory(runGate(bashWithInput({ command: 'git status --short | head -10' })));
   });
 
   it('does not treat a quoted pipe as a real pipeline', () => {
-    expectAllow(runGate(bashWithInput({ command: 'grep -E "a|head" some-file.ts' })));
+    expectNoFalseAbsenceAdvisory(runGate(bashWithInput({ command: 'grep -E "a|head" some-file.ts' })));
   });
 
   it('a deny gate still WINS over the false-absence advisory', () => {
