@@ -172,12 +172,7 @@ describe('release:deploy — status', () => {
         deploy: { ...mkStatus().deploy, deployedSha: 'deployed-plane-sha' },
       }),
     );
-    const b = body(
-      await tool.handler(
-        { op: 'status' } as never,
-        { role: 'su', harnessSlug: 'papercusp' } as never,
-      ),
-    );
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'su', harnessSlug: 'papercusp' } as never));
     expect(b.plane?.cells).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

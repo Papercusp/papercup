@@ -179,12 +179,7 @@ describe('routines:list', () => {
     });
     sqlMock.mockResolvedValue([row('home-harness', 2), row('sidestage', 7)]);
 
-    const b = body(
-      await listTool.handler(
-        {} as never,
-        { role: 'su', harnessSlug: 'papercusp' } as never,
-      ),
-    );
+    const b = body(await listTool.handler({} as never, { role: 'su', harnessSlug: 'papercusp' } as never));
     expect(b.routines[0].plane?.cells).toEqual([
       expect.objectContaining({
         path: 'health.gate_health.consecutiveReds',
