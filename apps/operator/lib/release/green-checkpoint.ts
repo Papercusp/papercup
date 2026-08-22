@@ -3317,6 +3317,7 @@ export function rescueGateIdsFrom(
 
 type FrozenRepairOutcomeProof =
   | { kind: "proved"; tip: string; summary: string }
+  | { kind: "full-suite-required"; tip: string; summary: string }
   | {
       kind: "unavailable" | "failed" | "tip-moved";
       summary: string;
@@ -3325,10 +3326,13 @@ type FrozenRepairOutcomeProof =
 /** EI-210830: determine whether canonical staging already resolves EVERY failure that
  * opened the frozen-repair queue, even when its fix has different patch identity.
  *
- * This is deliberately all-or-nothing. A flat queue signature is admitted only when every
- * entry maps to the existing file or deterministic-gate re-run seams; a missing runner, an
- * execution error, a failing arm, or a staging-tip movement leaves the exact-patch alignment
- * path in charge. Passing a subset must never clear the serialized repair queue. */
+ * This is deliberately all-or-nothing. A flat queue signature is admitted to the cheap proof
+ * only when every entry maps to the existing file or deterministic-gate re-run seams. When the
+ * persisted signature is not selectively re-runnable, return the exact current tip for a FULL
+ * canonical suite instead of leaving the queue permanently pinned to an obsolete patch identity.
+ * A missing tip resolver, execution error, failing arm, or staging-tip movement still leaves the
+ * exact-patch alignment path in charge. Passing a subset must never clear the serialized repair
+ * queue. */
 async function proveFrozenRepairOutcomeAtStableTip(
   deps: Pick<CheckpointDeps, "resolveTip" | "runTestsAtRef" | "runGateAtRef">,
   queue: FrozenCandidateRepairQueue,
@@ -3349,15 +3353,27 @@ async function proveFrozenRepairOutcomeAtStableTip(
     (failure) => !fileRescueCovers(failure, failingFiles),
   );
   const gateIds = rescueGateIdsFrom(failures, failingFiles);
-  if (
+  const requiresFullSuite =
     (uncovered.length > 0 && gateIds.length === 0) ||
     (failingFiles.length > 0 && !deps.runTestsAtRef) ||
     (gateIds.length > 0 && !deps.runGateAtRef) ||
-    (failingFiles.length === 0 && gateIds.length === 0)
-  ) {
+    (failingFiles.length === 0 && gateIds.length === 0);
+  if (requiresFullSuite) {
+    const tip = (await deps.resolveTip().catch(() => null)) ?? null;
+    if (!tip) {
+      return {
+        kind: "unavailable",
+        summary:
+          "canonical staging tip could not be resolved for full-suite outcome proof",
+      };
+    }
     return {
-      kind: "unavailable",
-      summary: `failure signature is not fully re-runnable (${failingFiles.length} file(s), ${gateIds.length} gate(s), ${uncovered.length} non-file entry/entries)`,
+      kind: "full-suite-required",
+      tip,
+      summary:
+        `failure signature is not fully selectively re-runnable ` +
+        `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${uncovered.length} non-file entry/entries); ` +
+        `the full canonical suite must decide staging ${tip.slice(0, 8)}`,
     };
   }
 
@@ -6734,7 +6750,10 @@ export async function runGreenCheckpoint(
           deps,
           repairQueue,
         );
-        if (outcomeProof.kind === "proved") {
+        if (
+          outcomeProof.kind === "proved" ||
+          outcomeProof.kind === "full-suite-required"
+        ) {
           const reconciledQueue = repairQueue;
           await deps.writeFrozenRepairQueue?.(null);
           await deps
@@ -6749,7 +6768,9 @@ export async function runGreenCheckpoint(
           repairOutcomeReconciled = true;
           candidate = await revParse(cfg.integrationRoot, outcomeProof.tip);
           deps.log(
-            `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`,
+            outcomeProof.kind === "proved"
+              ? `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`
+              : `${outcomeProof.summary}; retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact tip`,
           );
         } else {
           deps.log(

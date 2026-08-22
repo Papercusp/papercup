@@ -733,6 +733,64 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(stagingTip);
   });
 
+  it("runs the full canonical suite at staging when an obsolete repair signature cannot be selectively replayed", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("b", "fixed independently", "canonical independent fix");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 2,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      // These are real full-gate task labels, but deliberately not eligible for the
+      // narrow file/gate rescue. Before EI-211596 they pinned the queue forever on an
+      // exact patch even though the only complete proof — the full suite — was available.
+      failingTests: [
+        "@papercusp/desktop",
+        "papercusp-desktop :: cargo test",
+        "bin/lib/b3-revocation-kcut.selftest.sh",
+      ],
+    };
+    const { deps, calls } = stubDeps(true);
+    let cleanupCount = 0;
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.cleanupFrozenRepairWorktree = async () => {
+      cleanupCount += 1;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: stagingTip,
+      from: ready,
+    });
+    expect(queue).toBeNull();
+    expect(cleanupCount).toBe(1);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(await revParse(repo, "ready")).toBe(stagingTip);
+  });
+
   it("keeps EI-210831 alignment retry in charge when any queued failure still reproduces", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
