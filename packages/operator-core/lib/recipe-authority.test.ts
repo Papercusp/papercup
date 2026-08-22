@@ -122,6 +122,37 @@ describe('recipe recommendation authority (P-008)', () => {
     await expect(deriveRecipeAuthority(liveOwnerScript)).resolves.toMatchObject({ unresolved: false });
   });
 
+  it('fails closed for short coordination owner selectors used by coord:send', async () => {
+    // The live recipe that exposed this defect froze the short owner label rather
+    // than a UUID: coord:send accepts this selector, but it still names one
+    // session and can target the wrong/dead lane after a respawn or rotation.
+    const shortOwnerScript = `
+      await tools.coord.send({ to: ['su-f765ba8b'], wake: 'required' });
+      await tools.improvements.capture({ kind: 'bug', title: 'leader-brief bug' });
+    `;
+    expect(findVolatileCoordinationOwnerId(shortOwnerScript)).toBe('su-f765ba8b');
+    await expect(deriveRecipeAuthority(shortOwnerScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-owner-id',
+        ownerId: 'su-f765ba8b',
+      },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: shortOwnerScript,
+      updatedAt: '2026-08-22T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+    await expect(validateRecipeAuthorityProof({
+      script: shortOwnerScript,
+      updatedAt: '2026-08-22T00:00:00.000Z',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'authority_unresolved',
+      reason: expect.stringContaining('concrete agent owner id'),
+    });
+  });
+
   // EI-20480226881133232 — the recurrence guard. The real `distill-exact-active-checkpoint-log`
   // recipe froze ONE gate run's /tmp log into a `const`, then reported that dead run's terminal
   // red as the LIVE gate's verdict (11 runs, misclassifying an in-flight candidate). The literal

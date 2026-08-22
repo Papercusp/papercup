@@ -167,7 +167,12 @@ const VOLATILE_COORDINATION_ARG_KEYS = new Set([
 // fleet rotation. Keep this deliberately narrow: ordinary UUIDs in a recipe
 // may be durable domain data, while the `su-` owner prefix is the coordination
 // identity shape that must be resolved from the current live context.
-const VOLATILE_COORDINATION_OWNER_ID = /\bsu-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+// coord:send and the other coordination tools accept unique short owner selectors
+// (for example `su-f765ba8b`) as well as full UUID owner ids. A recipe can freeze
+// either form, so keep the full UUID alternative first to avoid truncating it to
+// its first hex segment, then recognize the short 4-64-hex owner-label form.
+const VOLATILE_COORDINATION_OWNER_ID =
+  /\bsu-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64})\b/i;
 
 export function findVolatileCoordinationOwnerId(script: string): string | null {
   return script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0] ?? null;
