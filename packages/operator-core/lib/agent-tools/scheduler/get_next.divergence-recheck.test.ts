@@ -53,7 +53,8 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   getFlag: vi.fn(async () => true),
 }));
 vi.mock('../../events/await/store', () => ({ cancelClaimableAwaits: vi.fn(async () => 0) }));
-vi.mock('../../scheduler/fleet-scope-admission', () => ({
+vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/fleet-scope-admission')>()),
   // A fleet-scoped member: this is the path that can report a divergence at all.
   reconcileFleetScopeClaims: vi.fn(async () => ({
     scope: { fleetSlug: 'drain-fleet', ownerId: 'su-member', record: { source: 'fleet', spec: { specId: 'drain', revision: 8, view: { filter: undefined }, states: ['open'] } } },
@@ -185,13 +186,16 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     getNextForBeeM.mockResolvedValue(null);
     issueFloorMissM.mockResolvedValue(zeroMatches);
     planTerminalityM.mockResolvedValue(planTerminality);
-    leaderLivenessM.mockResolvedValue(false);
+    // The preflight saw a live leader, so the pull was admitted. The fresh
+    // zero-match diagnostic then observes that the leader disappeared and
+    // carries that transition into the miss verdict.
+    leaderLivenessM.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
 
     const res = await call();
 
     expect(res.ok).toBe(false);
     expect(planTerminalityM).toHaveBeenCalledTimes(1);
-    expect(leaderLivenessM).toHaveBeenCalledTimes(1);
+    expect(leaderLivenessM).toHaveBeenCalledTimes(2);
     expect(missOpts()).toMatchObject({ planTerminality, leaderLiveness: false });
   });
 

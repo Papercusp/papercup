@@ -11,6 +11,8 @@ describe('lifecycleBindingsForWorkItem (state-plane P-013)', () => {
       }),
     ).toEqual([
       { kind: 'work-item', ref: 'WI-40313' },
+      { kind: 'work-item-claim', ref: 'WI-40313' },
+      { kind: 'work-item-blocked', ref: 'WI-40313' },
       { kind: 'plan-lane', ref: 'state-plane-interest-and-hardening-2026-08-21#P-013' },
       { kind: 'plan-lane', ref: 'state-plane-interest-and-hardening-2026-08-21#P-014' },
     ]);
@@ -23,6 +25,10 @@ describe('lifecycleBindingsForWorkItem (state-plane P-013)', () => {
         sourcePlanSlug: null,
         sourcePlanItemIds: ['P-999'],
       }),
-    ).toEqual([{ kind: 'work-item', ref: 'EI-1' }]);
+    ).toEqual([
+      { kind: 'work-item', ref: 'EI-1' },
+      { kind: 'work-item-claim', ref: 'EI-1' },
+      { kind: 'work-item-blocked', ref: 'EI-1' },
+    ]);
   });
 });

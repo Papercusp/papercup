@@ -20,6 +20,10 @@ const h = vi.hoisted(() => ({
   memBlock: null as string | null,
 }));
 
+// Delta/history behavior is independent of the catalog, which has its own
+// strict registry tests. Avoid coupling this suite to production bootstrap.
+vi.mock('../../../operator-mcp-tools', () => ({ ALL_AGENT_MCP_TOOLS: [] }));
+
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: vi.fn(async () => h.memBlock),
   lastUserContext: vi.fn(() => ''),

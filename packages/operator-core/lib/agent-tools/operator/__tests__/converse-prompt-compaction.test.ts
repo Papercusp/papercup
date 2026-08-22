@@ -18,6 +18,10 @@ const h = vi.hoisted(() => ({
   readCalls: [] as string[],
 }));
 
+// Compaction behavior is independent of the catalog, which has its own strict
+// registry tests. Avoid coupling this focused suite to production bootstrap.
+vi.mock('../../../operator-mcp-tools', () => ({ ALL_AGENT_MCP_TOOLS: [] }));
+
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: vi.fn(async () => null),
   lastUserContext: vi.fn(() => ''),

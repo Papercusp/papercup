@@ -21,6 +21,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const buildMemoryContextBlockMock = vi.fn<(opts: unknown) => Promise<string | null>>();
 
+// This suite owns memory placement, not the independently-covered tool catalog.
+// Keep the real persona/playbook readers while isolating catalog registration
+// from the deliberately narrow dependency graph below.
+vi.mock('../../prompt-assembly', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../prompt-assembly')>()),
+  renderToolsCatalog: vi.fn(() => ''),
+}));
+
 vi.mock('../../operator-state-pg', () => ({
   readOperatorState: vi.fn(async (key: string) => {
     if (key === 'operator_oracle_prompt') return { content: 'You are the Oracle.' };

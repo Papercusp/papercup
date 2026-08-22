@@ -10,6 +10,14 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+// The surface contract needs one real catalog entry to prove colon→underscore
+// display rewriting. Keep the allowlist narrow and register that definition.
+import '../../agent_tools/list';
+
+vi.mock('../../../operator-mcp-tools', () => ({
+  ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__agent_tools:list'],
+}));
+
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: vi.fn(async () => null),
   lastUserContext: vi.fn(() => ''),
@@ -80,7 +88,7 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     // onto the underscore catalog name (the form Claude Code presents).
     expect(systemPromptText).toContain('Calling tools');
     expect(systemPromptText).toContain('ToolSearch');
-    expect(systemPromptText).toContain('harness_status');
+    expect(systemPromptText).toContain('agent_tools_list');
     expect(systemPromptText).toMatch(/underscores, never colons/i);
   });
 
