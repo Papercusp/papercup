@@ -22,11 +22,9 @@ type ExportResult = {
   content: Array<{ type: 'text'; text: string }>;
 };
 
-const handler = (
-  tool as unknown as {
-    handler: (args: Record<string, unknown>) => Promise<ExportResult>;
-  }
-).handler;
+const handler = (tool as unknown as {
+  handler: (args: Record<string, unknown>) => Promise<ExportResult>;
+}).handler;
 
 const cleanup: string[] = [];
 
@@ -87,8 +85,9 @@ function payload(result: ExportResult): Record<string, unknown> {
 
 describe('work_items:export harness enumeration', () => {
   it('writes large exports with bounded parallelism and no dropped rows', async () => {
-    const rows = Array.from({ length: WORK_ITEM_EXPORT_WRITE_CONCURRENCY * 2 + 1 }, (_, index) =>
-      row(`WI-${index + 1}`),
+    const rows = Array.from(
+      { length: WORK_ITEM_EXPORT_WRITE_CONCURRENCY * 2 + 1 },
+      (_, index) => row(`WI-${index + 1}`),
     );
     const writtenFiles: string[] = [];
     let active = 0;
@@ -99,12 +98,7 @@ describe('work_items:export harness enumeration', () => {
       maxActive = Math.max(maxActive, active);
       writtenFiles.push(file);
       expect(encoding).toBe('utf8');
-      expect(JSON.parse(body)).toMatchObject({
-        id: file
-          .split('/')
-          .at(-1)
-          ?.replace(/\.json$/, ''),
-      });
+      expect(JSON.parse(body)).toMatchObject({ id: file.split('/').at(-1)?.replace(/\.json$/, '') });
       await new Promise((resolve) => setTimeout(resolve, 1));
       active--;
     });

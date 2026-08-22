@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   capabilitySetsDiffer,
+  consumerVitestArgs,
   diffManifestSet,
   isTemplateGymCliEntry,
   MOBILE_TEMPLATE_IDS,
@@ -48,6 +49,19 @@ describe('mobile template-gym policy', () => {
   it('treats optional-capability diversity as set diversity, not ordering', () => {
     expect(capabilitySetsDiffer(['push', 'camera'], ['camera', 'push'])).toBe(false);
     expect(capabilitySetsDiffer(['push', 'camera'], ['media-playback'])).toBe(true);
+  });
+
+  it('restricts consumer Vitest discovery to the canonical template tree', () => {
+    const files = [
+      'templates/papercusp-mobile-base/checks/mobile-base-contract.test.ts',
+      'templates/papercusp-android-shell/checks/android-shell-contract.test.ts',
+    ];
+    expect(consumerVitestArgs(files)).toEqual([
+      'run',
+      '--dir',
+      'templates',
+      ...files,
+    ]);
   });
 
   it('reports missing mobile consumer configs without throwing out of a packaged sidecar boot', async () => {

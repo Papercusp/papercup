@@ -202,6 +202,15 @@ function vitestBin(root: string): string {
   return path.join(root, 'node_modules', '.bin', 'vitest');
 }
 
+export function consumerVitestArgs(files: readonly string[]): string[] {
+  // Vitest treats positional file arguments as substring filters. Without an
+  // explicit discovery root, a canonical path such as
+  // `templates/papercusp-android-shell/...` also matches retained green-candidate
+  // worktrees and packaged sidecar copies beneath this repository. Those copies
+  // are evidence/artifacts, not another source of truth for the template gym.
+  return ['run', '--dir', 'templates', ...files];
+}
+
 function runProcess(
   bin: string,
   args: string[],
@@ -292,7 +301,7 @@ async function runConsumerLeg(papercuspRoot: string, consumer: MobileConsumer): 
     ];
     const result = await runProcess(
       vitestBin(papercuspRoot),
-      ['run', ...files],
+      consumerVitestArgs(files),
       papercuspRoot,
       { ...process.env, TEMPLATE_CHECKS_CONFIG: configPath },
       STATIC_TIMEOUT_MS,

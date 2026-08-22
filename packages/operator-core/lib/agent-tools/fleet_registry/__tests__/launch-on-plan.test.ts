@@ -369,6 +369,67 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a fleet-wide Codex full-context recipe before every mutating launch seam (WI-39948)', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    const claimSlot = claimFleetLaunchSlot as ReturnType<typeof vi.fn>;
+    claimSlot.mockClear();
+    launchTransaction.persist.mockClear();
+
+    const res = await tool.handler(
+      {
+        name: 'Unlaunchable Codex Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        agent: 'codex',
+        contextSize: 'full',
+        headless: true,
+      } as never,
+      {} as never,
+    );
+
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain("agent='codex' with contextSize='full'");
+    expect((res as any).content[0].text).toContain('NO plan items were promoted');
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(claimSlot).not.toHaveBeenCalled();
+    expect(launchTransaction.persist).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a per-member Codex/full override before a safe fleet-wide recipe mutates state (WI-39948)', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    const claimSlot = claimFleetLaunchSlot as ReturnType<typeof vi.fn>;
+    claimSlot.mockClear();
+    launchTransaction.persist.mockClear();
+
+    const res = await tool.handler(
+      {
+        name: 'Mixed Context Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        agent: 'codex',
+        contextSize: 'trimmed',
+        members: [{}, { contextSize: 'full' }],
+      } as never,
+      {} as never,
+    );
+
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain('Member 2');
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(claimSlot).not.toHaveBeenCalled();
+    expect(launchTransaction.persist).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('installs caller-led control immediately after the presence role and reports its health', async () => {
     const res = await tool.handler(
       { name: 'Caller Led', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,

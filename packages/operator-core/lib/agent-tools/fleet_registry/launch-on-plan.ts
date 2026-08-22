@@ -221,6 +221,35 @@ export function memberSpecIndexForLaunch(liveMembers: number, waveIndex: number)
 }
 
 /**
+ * WI-39948: identify the first target member whose effective launch config asks
+ * Codex to advertise the full Papercusp tool catalog. Codex's code-mode bridge
+ * serializes that catalog into every tool-call frame; the measured frame is
+ * ~128 MiB, above the bridge's hard 64 MiB limit. The psu child has a final
+ * guard too, but fleet:launch-on-plan must refuse BEFORE it promotes plan items,
+ * creates/joins a fleet, claims a launch slot, or pre-pins member identities.
+ *
+ * Keep the check on the folded effective config so a per-member override cannot
+ * evade a safe fleet-wide default (or vice versa). `targetCount` is the
+ * declarative fleet target at this pre-mutation point; checking its complete
+ * recipe also prevents persisting an unlaunchable headcount profile for a later
+ * top-up wave.
+ */
+export function firstUnlaunchableCodexFullContextMember(
+  agent: string,
+  contextSize: 'full' | 'trimmed' | undefined,
+  members: readonly (MemberSpec | undefined)[] = [],
+  targetCount = 1,
+): number | null {
+  const count = Number.isFinite(targetCount) ? Math.max(0, Math.floor(targetCount)) : 0;
+  const base: FleetMemberDefaults = { agent, contextSize };
+  for (let i = 0; i < count; i += 1) {
+    const effective = foldMemberSpec(base, members[i]);
+    if (effective.agent === 'codex' && effective.contextSize === 'full') return i;
+  }
+  return null;
+}
+
+/**
  * EI-21010422711013687: every visible fleet launch carries a command that must
  * execute. A server-side gnome-terminal client can successfully open a window
  * while its D-Bus factory silently drops that command, leaving only a wrapper
@@ -1378,6 +1407,28 @@ export default defineTool({
     if ('error' in agentResolution) return err(agentResolution.error);
     const { agent, model: memberModel } = agentResolution;
     const count = args.count ?? 1;
+
+    // WI-39948 — PRE-MUTATION transport preflight. The child-side psu guard is
+    // intentionally retained as defense in depth, but reaching it is already too
+    // late for this tool: promotion/fleet/launch-transaction state would exist and
+    // the pre-pinned member would boot unable to invoke a single tool. Refuse the
+    // complete declarative recipe here, before even the plan lookup can lead into
+    // promotion or fleet creation.
+    const unlaunchableMember = firstUnlaunchableCodexFullContextMember(
+      agent,
+      args.contextSize,
+      args.members,
+      count,
+    );
+    if (unlaunchableMember !== null) {
+      return err(
+        `Member ${unlaunchableMember + 1} resolves to agent='codex' with contextSize='full', which is not launchable: ` +
+          "the full Papercusp tool catalog produces a ~128 MiB code-mode IPC frame above the bridge's hard 64 MiB limit, " +
+          'so every tool call would fail before execution. Use contextSize=\'trimmed\' (tools:find/tools:invoke retain full ' +
+          'capability reachability). NO plan items were promoted, NO fleet was created or joined, NO launch slot or member ' +
+          'identity was reserved, and NO terminal was opened (WI-39948).',
+      );
+    }
 
     // P-003: `plan` is optional. A pure claim-spec fleet launches with no plan — its
     // members self-pull by `claimKinds`, so require a lane when no plan is given (else
