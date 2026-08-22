@@ -109,7 +109,7 @@ export default defineTool({
         },
       };
     }
-    await setCompactionLimit(identity.ownerId, applied);
+    await setCompactionLimit(identity.ownerId, applied, { explicit: true });
     const presence = await getPresence(identity.ownerId);
     const persisted = presence?.compactionLimit ?? null;
     // { data } shape (tool-data-shape ratchet P-003): the framework owns wire encoding.

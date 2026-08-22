@@ -74,6 +74,15 @@ export interface SpawnPtyOpts {
   cwd: string;
   /** Environment to pass; merged with sidecar env. */
   env?: Record<string, string | undefined>;
+  /**
+   * Whether to inherit the operator process environment before applying `env`.
+   * Defaults to true for the existing desktop-pane callers. Capability tools set
+   * this false and provide a scrubbed environment so operator secrets never cross
+   * the execution boundary.
+   */
+  inheritEnv?: boolean;
+  /** Durable task-ledger identity for capability-owned sessions. */
+  taskId?: string | null;
   /** Initial terminal size. xterm.js sends a resize on its first frame too. */
   cols: number;
   rows: number;
@@ -81,6 +90,8 @@ export interface SpawnPtyOpts {
 
 export interface PtyHandle {
   id: string;
+  /** Durable task-ledger identity; null for legacy/UI-owned panes. */
+  taskId: string | null;
   /** Tenant/workspace/harness/host/principal boundary that owns this handle. */
   accessScope: PtyAccessScope;
   pty: IPty;
@@ -203,8 +214,10 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
   }
 
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v === 'string') env[k] = v;
+  if (opts.inheritEnv !== false) {
+    for (const [k, v] of Object.entries(process.env)) {
+      if (typeof v === 'string') env[k] = v;
+    }
   }
   if (opts.env) {
     for (const [k, v] of Object.entries(opts.env)) {
@@ -263,6 +276,7 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
 
   const handle: PtyHandle = {
     id,
+    taskId: opts.taskId ?? null,
     accessScope: { ...opts.accessScope },
     pty,
     command: opts.command,
@@ -330,6 +344,20 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
 export function getPty(id: string, accessScope: PtyAccessScope): PtyHandle | undefined {
   const handle = handles.get(id);
   return handle && samePtyAccessScope(handle.accessScope, accessScope) ? handle : undefined;
+}
+
+/**
+ * Resolve a capability-owned PTY through its durable task id. The task id is the
+ * only model-facing session handle: process-local PTY ids stay an implementation
+ * detail, while the complete access scope is still re-checked on every lookup.
+ */
+export function getPtyByTaskId(taskId: string, accessScope: PtyAccessScope): PtyHandle | undefined {
+  for (const handle of handles.values()) {
+    if (handle.taskId === taskId && samePtyAccessScope(handle.accessScope, accessScope)) {
+      return handle;
+    }
+  }
+  return undefined;
 }
 
 /**

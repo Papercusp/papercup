@@ -69,7 +69,7 @@ describe('config:set-compaction-limit runtime validation', () => {
     // 400k default, inside the 825k window ceiling. Asking below 400k would pass
     // under the OLD clamp too, so it could not detect the defect at all.
     const out = (await tool.handler({ limit: 700_000 }, {} as never)) as ToolOut;
-    expect(setLimitMock).toHaveBeenCalledWith('su-test', 700_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-test', 700_000, { explicit: true });
     expect(out.data.ok).toBe(true);
     expect(out.data.clamped).toBeUndefined();
     expect(out.data.compactionLimit).toBe(700_000);

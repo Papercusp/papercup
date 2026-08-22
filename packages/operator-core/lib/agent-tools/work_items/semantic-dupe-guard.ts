@@ -30,6 +30,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { issuesScopeWorkspace } from '../../issues-engineer';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { withIterativeScan } from '../search/hnsw-iterative-scan';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../../search/prose-vector-dims';
@@ -161,7 +162,7 @@ function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
   });
 }
 
-async function queryCandidatesReal(vec: number[], mode: string, harness?: string, title?: string): Promise<SemanticDupeCandidate[]> {
+export async function queryCandidatesReal(vec: number[], mode: string, harness?: string, title?: string): Promise<SemanticDupeCandidate[]> {
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
   // ONE query covers BOTH families: migration 374 unified issues + features
@@ -172,21 +173,21 @@ async function queryCandidatesReal(vec: number[], mode: string, harness?: string
   // admit both.
   const terminal = [...ALL_TERMINAL_STATUSES];
   const workspaces = [...new Set([issuesScopeWorkspace(), activeWorkspaceId()])];
-  const rows = await sql<Array<{ id: string; title: string; state: string; harness_slug: string; similarity: number; title_similarity: number | null }>>`
+  const rows = await withIterativeScan(sql, (scanSql) => scanSql<Array<{ id: string; title: string; state: string; harness_slug: string; similarity: number; title_similarity: number | null }>>`
     SELECT feature_id AS id, COALESCE(title, '') AS title, COALESCE(status, 'todo') AS state, harness_slug,
            1 - (embedding <=> ${vecLit}::vector) AS similarity,
            -- Scored HERE, in pg_trgm, because the co-signal threshold was
            -- calibrated against pg_trgm similarity() and does not transfer to a
            -- hand-rolled word-overlap score.
-           ${title ? sql`similarity(COALESCE(title, ''), ${title})` : sql`NULL::real`} AS title_similarity
+           ${title ? scanSql`similarity(COALESCE(title, ''), ${title})` : scanSql`NULL::real`} AS title_similarity
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND embedding IS NOT NULL
        AND embedding_mode = ${mode}
        AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))
-       AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
+       AND ${harness ? scanSql`harness_slug = ${harness}` : scanSql`TRUE`}
      ORDER BY embedding <=> ${vecLit}::vector
-     LIMIT ${TOP_K * 2}`;
+     LIMIT ${TOP_K * 2}`);
   return rows.map((r) => ({
     id: r.id,
     title: r.title,

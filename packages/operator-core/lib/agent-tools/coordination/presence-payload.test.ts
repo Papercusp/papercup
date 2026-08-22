@@ -56,6 +56,7 @@ const MAXIMAL_ROW: RosterRow = {
   currentView: 'harness/papercup',
   currentFiles: ['a.ts'],
   claimedItems: ['P-001'],
+  claimCount: 2,
   claimedPlanItemRefs: ['plan-x#P-002'],
   awaitingEvent: true,
   awaitingEventKey: 'k',
@@ -121,7 +122,12 @@ describe('partitionPresenceRow', () => {
   it('classifies a local enriched row into identity / state / liveness', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
     expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', potSlug: 'papercup-hive' });
-    expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
+    expect(state).toMatchObject({
+      intent: 'doing things',
+      claimedItems: ['P-001'],
+      claimCount: 2,
+      wakeMode: 'auto',
+    });
     expect(liveness).toEqual({ lastActiveSecAgo: 42, lastActiveSource: 'presence', intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, confirmLiveness: false, onDesktop: true, viewerAttached: true, contextPressure: 'ok' });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');

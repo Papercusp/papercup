@@ -9,6 +9,7 @@ import { lookupByMcpName } from '@papercusp/agent-mcp';
 import './bash';
 import './bash_output';
 import './bash_kill';
+import './pty';
 import './read';
 import './write';
 import './edit';
@@ -20,6 +21,10 @@ const EXPECTED: Array<{ name: string; capability: string }> = [
   { name: 'capability:bash', capability: 'capability:bash' },
   { name: 'capability:bash_output', capability: 'capability:bash' },
   { name: 'capability:bash_kill', capability: 'capability:bash' },
+  { name: 'capability:pty_open', capability: 'capability:bash' },
+  { name: 'capability:pty_write_stdin', capability: 'capability:bash' },
+  { name: 'capability:pty_read_screen', capability: 'capability:bash' },
+  { name: 'capability:pty_kill', capability: 'capability:bash' },
   { name: 'capability:read', capability: 'capability:fs-read' },
   { name: 'capability:write', capability: 'capability:fs-write' },
   { name: 'capability:edit', capability: 'capability:fs-write' },

@@ -48,6 +48,7 @@ import {
   markDeliveryParked,
   reopenDeliveredAfterResumeDeath,
   recoverStuckDeliveries,
+  settleCancelledInboxWakeDeliveries,
   settleVerifiedAwaitTimeout,
 } from './store';
 import { payloadMatchesFilter } from './pattern';
@@ -662,6 +663,8 @@ const pumpsInFlight = new Set<string>();
 
 export interface PumpStats {
   claimed: number;
+  /** Claimed deliveries settled without a turn because their standing inbox-wake await was cancelled. */
+  cancelled: number;
   delivered: number;
   parked: number;
   dropped: number;
@@ -805,6 +808,7 @@ export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
 export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWakeDeps = {}): Promise<PumpStats> {
   const stats: PumpStats = {
     claimed: 0,
+    cancelled: 0,
     delivered: 0,
     parked: 0,
     dropped: 0,
@@ -819,11 +823,15 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
   try {
     const claimed = await claimDueDeliveries({ limit: 25 });
     stats.claimed = claimed.length;
-    if (claimed.length === 0) return stats;
+    const cancelledIds = await settleCancelledInboxWakeDeliveries(claimed);
+    stats.cancelled = cancelledIds.length;
+    const cancelled = new Set(cancelledIds);
+    const executable = claimed.filter((delivery) => !cancelled.has(delivery.id));
+    if (executable.length === 0) return stats;
 
     // Group claimed deliveries by subscriber — the coalesce + floor unit.
     const bySubscriber = new Map<string, DeliveryWork[]>();
-    for (const d of claimed) {
+    for (const d of executable) {
       const arr = bySubscriber.get(d.subscriberId);
       if (arr) arr.push(d);
       else bySubscriber.set(d.subscriberId, [d]);
@@ -831,7 +839,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
 
     // The per-subscriber floor anchor (last actual wake). Only queried when some delivery
     // declares a floor — the common one-shot-grant case (min_sleep=0) needs no extra read.
-    const needFloor = claimed.some((d) => (d.minSleepSec ?? 0) > 0);
+    const needFloor = executable.some((d) => (d.minSleepSec ?? 0) > 0);
     const lastWoken = needFloor
       ? await lastWokenAtForSubscribers([...bySubscriber.keys()])
       : new Map<string, number>();

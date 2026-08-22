@@ -2501,6 +2501,52 @@ _FA_SYMLINK_DENY = (
     'subject.'
 )
 
+# ── invalid relative find timestamp guard (EI-21185971718818430) ────────────
+# `find` is bfs 4.1.1 on this box. bfs rejects human-relative values such as
+# `12 minutes ago` and `-10 minutes` for `-newermt`, while a common shell idiom
+# suppresses stderr and lets an empty result look like a genuine absence. The
+# same failure occurs for `-newerXY` forms whose Y operand is `t` (the date
+# operand form, e.g. `-newermt`).
+#
+# This is deterministic and deliberately narrow: only a literal timestamp is
+# judged, and only when it is the operand of a find/bfs command at command
+# position. Variables and command substitutions fail open because the hook
+# cannot know their expanded value without executing user code.
+_FA_TIMESTAMP_DENY = (
+    'invalid find timestamp guard (EI-21185971718818430): `{cmd}` passes '
+    'the literal timestamp `{stamp}` to `{op}`. This box uses bfs 4.1.1, '
+    'which rejects human-relative or non-ISO timestamp text; with stderr '
+    'redirected, the failure can look like a real empty search result. Use '
+    '`TZ=UTC stat -c "%y %n" <paths>` or `git status --porcelain` for '
+    '"changed since" checks. If find is unavoidable, pass an ISO-8601-like '
+    'date/time with `Z` or a numeric offset and keep stderr visible.'
+)
+_FA_ISO_TIMESTAMP_RE = re.compile(
+    r'^\d{4}-\d{2}-\d{2}'
+    r'(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?'
+    r'(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?$'
+)
+
+
+def _fa_invalid_find_timestamp(argv):
+    """Return (operator, literal) for a non-ISO `-newer?t` date operand."""
+    for _i, _arg in enumerate(argv):
+        _head, _eq, _inline = _arg.partition('=')
+        _m = re.fullmatch(r'-newer([A-Za-z])([A-Za-z])', _head)
+        if not _m or _m.group(2).lower() != 't':
+            continue
+        if _eq:
+            _stamp = _inline
+        elif _i + 1 < len(argv):
+            _stamp = argv[_i + 1]
+        else:
+            continue
+        if (not _stamp or any(c in _stamp for c in _FA_UNRESOLVABLE)
+                or _FA_ISO_TIMESTAMP_RE.fullmatch(_stamp)):
+            continue
+        return _arg, _stamp
+    return None
+
 _FA_SEARCH_CMDS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'ls'))
 # `find` joins this guard for the symlink shape ONLY. It is deliberately NOT in
 # _FA_SEARCH_CMDS: its operand grammar is unrelated to grep's (paths come
@@ -2729,6 +2775,14 @@ try:
             if _fa_name in _FA_TRAVERSAL_CMDS:
                 # A DIFFERENT false-absence shape with a different grammar —
                 # judged here, then the scan ends on the same rule as below.
+                _fa_bad_timestamp = _fa_invalid_find_timestamp(_fa_argv)
+                if _fa_bad_timestamp:
+                    _fa_flag, _fa_stamp = _fa_bad_timestamp
+                    deny(_FA_TIMESTAMP_DENY.format(
+                        cmd=' '.join(_fa_argv)[:160],
+                        stamp=_fa_stamp[:200],
+                        op=_fa_flag,
+                    ))
                 _fa_symlink_traversal(_fa_argv, _fa_cwd)
                 break
             if _fa_name not in _FA_SEARCH_CMDS:

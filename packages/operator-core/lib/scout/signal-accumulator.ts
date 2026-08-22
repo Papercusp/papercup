@@ -29,7 +29,11 @@
  *   - scorecard-rating-changes  EXACT: new rubric-graded observation criteria
  *     whose rating DIFFERS from that criterion's most recent prior grade (a
  *     re-grade at the same rating is NOT new signal; a first-ever grade is).
- *   - observations   EXACT: new engineer_issues rows carrying an observation.
+ *   - observations   EXACT: observation FILINGS since the watermark — the
+ *     GREATER of (a) new engineer_issues rows carrying an observation and
+ *     (b) work_item_occurrences appended against such a row. See the
+ *     "counting filings, not rows" note on readLaneCounts for why the row
+ *     count alone stopped being safe once captures could fold.
  *   - captures       EXACT: new engineer_issues rows NOT carrying one (bug /
  *     feature / improvement filings).
  *   - completions    PROXY: work_items in a terminal-success status whose
@@ -163,6 +167,32 @@ function toLaneCount(lane: SignalLane, rows: readonly CountRow[]): LaneCount {
   };
 }
 
+/**
+ * PURE: combine two independent measurements of the SAME lane by taking the
+ * stronger signal — the greater count, and the later high-water mark.
+ *
+ * This is a RATCHET, and that is the point. A lane whose basis is being
+ * migrated has two legs that can each fail in a different way: the row leg
+ * under-counts once filings can fold, and the filings leg reads zero if its
+ * ledger is not being written. Taking the max means the migrated lane can
+ * never report LESS signal than the basis it replaced, whatever happens to
+ * either leg — so the change cannot silence the Scout by any route, which is
+ * the exact failure it exists to prevent.
+ *
+ * The high-water mark is taken independently of the count: whichever leg saw
+ * signal latest is the one that should advance the watermark, even if the
+ * other leg counted more.
+ */
+export function strongerLaneCount(a: LaneCount, b: LaneCount): LaneCount {
+  const aHw = a.highWaterAt?.getTime() ?? -Infinity;
+  const bHw = b.highWaterAt?.getTime() ?? -Infinity;
+  return {
+    lane: a.lane,
+    newCount: Math.max(a.newCount, b.newCount),
+    highWaterAt: bHw > aHw ? b.highWaterAt : a.highWaterAt,
+  };
+}
+
 /** Bound on how many graded-observation rows one rating-changes recount
  *  expands (volumes are ~100s/week — a runaway guard, not a working limit). */
 const RATING_CHANGE_SCAN_CAP = 500;
@@ -181,6 +211,48 @@ const RATING_PRIOR_CONTEXT_MS = 30 * 86_400_000;
  * name) — a slug-keyed count silently goes stale on the next drift, a
  * workspace-keyed one cannot. `updated_ts` on work_items is an EPOCH-MS
  * bigint; engineer_issues timestamps are timestamptz.
+ *
+ * COUNTING FILINGS, NOT ROWS (learning-loop-identity-and-consumption-2026-08-08
+ * D-043, leader-ratified — the mandatory co-change to P-013's capture-seam
+ * fold):
+ *
+ * The observations lane used to count NEW ROWS. That was a faithful proxy for
+ * "how much did agents file" only while every filing minted a row. P-013 breaks
+ * that: an agent filing whose identity matches an open observation now FOLDS
+ * onto it — repeatCount bumped, reporter recorded, evidence appended, no new
+ * row. The filing is not refused (D-003's no-rejection half is unweakened) and
+ * the agent is not silenced. But a row-based count cannot see it, so the lane
+ * would have read a large drop in signal that never happened, the weighted
+ * score would fall, and the Scout would fire LESS — silencing agents through
+ * the back door, by measurement rather than by policy. That is precisely the
+ * outcome D-042 forbids, arrived at without anyone deciding it.
+ *
+ * So the lane counts FILINGS, off the occurrence ledger
+ * (issue-occurrence-ledger.ts) that capture already writes one row to per
+ * capture call — including `reportKind:'coalesced'`, with its reporter. No new
+ * table, no new write path: the ledger was already recording exactly the event
+ * this lane wants to count.
+ *
+ * Measured before the switch (7d to 2026-08-22T20:31Z, this workspace, both
+ * legs under the SAME `payload ? 'observation'` predicate): 12,953 observation
+ * rows minted vs 13,607 observation filings in the ledger. The ledger basis is
+ * already the larger of the two, by 654 filings that decompose as coalesced
+ * 300 + promoted 203 + duplicate 152 — filings that landed on an ALREADY
+ * EXISTING row and so were invisible to the row count even before P-013. The
+ * lane was under-reporting before P-013; P-013 merely widens the gap.
+ *
+ * CORRECTION (2026-08-22, measured): an earlier revision of this note quoted
+ * "897 coalesced filings per 7d". That is the CROSS-LANE coalesced count (916
+ * at re-measurement); the observations lane's own coalesced count is 300. The
+ * conclusion is unchanged — the ledger basis was already the larger — but the
+ * gap is coalesced + promoted + duplicate, not coalesced alone. Quote the
+ * lane-scoped number for a lane-scoped claim.
+ *
+ * ⚠ FOR ANY BEFORE/AFTER COMPARISON (P-016): work_item_occurrences' first row
+ * in this workspace is 2026-08-13T19:12Z. The filings leg reads 0 before that
+ * — not because agents filed nothing, but because the ledger did not exist.
+ * A window straddling that date measures the ledger's birth, not agent
+ * behaviour, and would read as a spectacular (false) increase in filings.
  */
 export async function readLaneCounts(
   sql: Sql,
@@ -190,13 +262,27 @@ export async function readLaneCounts(
   const wmMs = watermark.getTime();
   const wmIso = watermark.toISOString();
 
-  const [observations, captures, ratingChanges, completions, reverts, deferrals] = await Promise.all([
+  const [observations, observationFilings, captures, ratingChanges, completions, reverts, deferrals] = await Promise.all([
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
          AND created_at > ${wmIso}
          AND payload ? 'observation'`,
+    // The FILINGS leg (see the note above readLaneCounts). One row per capture
+    // call that landed, including the ones that folded onto an existing row and
+    // therefore minted nothing. Classified by the SAME `payload ? 'observation'`
+    // predicate as the row leg, read off the canonical row the filing landed on,
+    // so the lane's MEANING is unchanged and only its COUNTING BASIS moves.
+    sql<CountRow[]>`
+      SELECT count(*)::int AS c, max(o.occurred_at) AS hw
+        FROM harness_shared.work_item_occurrences o
+        JOIN harness_shared.work_items wi
+          ON wi.feature_id = o.canonical_work_item_id
+         AND wi.workspace_id = o.workspace_id
+       WHERE o.workspace_id = ${workspaceId}
+         AND o.occurred_at > ${wmIso}
+         AND wi.payload ? 'observation'`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
@@ -255,7 +341,7 @@ export async function readLaneCounts(
 
   return [
     toLaneCount('scorecard-rating-changes', ratingChanges),
-    toLaneCount('observations', observations),
+    strongerLaneCount(toLaneCount('observations', observations), toLaneCount('observations', observationFilings)),
     toLaneCount('captures', captures),
     toLaneCount('reverts', reverts),
     toLaneCount('deferrals', deferrals),

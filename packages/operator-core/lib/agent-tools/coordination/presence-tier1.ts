@@ -16,6 +16,7 @@
  *     activity-truth: the 60s supervisor beat keeps a parked/idle psu host "alive",
  *     so a heartbeat-only read makes peers/Queen think abandoned work is handled).
  *   - claimedItems     — the agent's plan-item lane (plan_item_claims).
+ *   - claimCount       — unified occupancy across plan-item and work-item claims.
  *   - model            — its model tier (spawned_agents.model_tier).
  *   - awaitingEvent(+key/note) — is it parked on an events:await (blocked-on)?
  *   - wakeMode         — auto/manual.
@@ -61,6 +62,10 @@ export interface PresenceTier1 {
   intentStale: boolean | null;
   /** Plan-item ids the agent currently holds (its lane). */
   claimedItems: string[];
+  /** Unified occupancy count across the independent plan-item and work-item
+   *  claim domains. This count projection does not merge work-item ids into
+   *  `claimedItems`, whose contract remains the plan-item lane. */
+  claimCount?: number;
   /** Unified work-item ids held by this owner; used only to classify a dead
    *  process as `suspect` until claim cleanup finishes. Not emitted in the
    *  compact presence payload. */
@@ -111,6 +116,14 @@ export interface PresenceTier1 {
 /** The join-derived half of the enrichment (everything except the record-derived
  *  lastActiveSecAgo + its derived intentStale). */
 export type PresenceTier1Joins = Omit<PresenceTier1, 'lastActiveSecAgo' | 'intentStale'>;
+
+/** Pure unified occupancy projection; both independent claim lanes contribute. */
+export function deriveUnifiedClaimCount(
+  planItemClaims: readonly string[] | null | undefined,
+  workItemClaims: readonly string[] | null | undefined,
+): number {
+  return (planItemClaims?.length ?? 0) + (workItemClaims?.length ?? 0);
+}
 
 /** Pure: seconds since lastActiveAt (clamped ≥0), or null when unset/unparseable. */
 export function computeLastActiveSecAgo(lastActiveAt: string | null, nowMs: number): number | null {
@@ -340,9 +353,12 @@ export async function fetchPresenceTier1(
     const aw = awaitByOwner.get(ownerId);
     const planItemRefs = planItemRefsByOwner.get(ownerId);
     const turnPartLastAt = turnPartByOwner.get(ownerId);
+    const claimedItems = claimsByOwner.get(ownerId) ?? [];
+    const workItems = workItemClaimsByOwner.get(ownerId) ?? [];
     out.set(ownerId, {
-      claimedItems: claimsByOwner.get(ownerId) ?? [],
-      workItemClaims: workItemClaimsByOwner.get(ownerId) ?? [],
+      claimedItems,
+      claimCount: deriveUnifiedClaimCount(claimedItems, workItems),
+      workItemClaims: workItems,
       // Omitted rather than `[]` when empty: `pick` drops undefined, so a roster of
       // agents occupying nothing pays no payload for the field at all.
       ...(planItemRefs && planItemRefs.size > 0

@@ -8,7 +8,7 @@
  * semantics that wiring will consume.
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,18 @@ import {
 import { makeAdmissionDecider } from './sync/hyperbee/read-admission';
 import type { DeviceAttestationEntry } from './harness/contributor-row-types';
 import { applyPot557RenameAndFixups } from './sync/hyperbee/__tests__/_hive-substrate-rig';
+
+// WI-40537: intercept the upsert hook's re-key grant (dynamically imported inside
+// upsertHiveMember) so the tests below can assert on the EXACT grant set the hook
+// computes — the real PG-backed loadRevokedHivePubkeys still runs (same file, unmocked).
+const rekeyHook = vi.hoisted(() => ({ calls: [] as Array<readonly string[]> }));
+vi.mock('./sync/hyperbee/hive-epoch-boundary-wiring', () => ({
+  grantEpochKeysToMembers: async (opts: { newMemberPubkeys: readonly string[] }) => {
+    rekeyHook.calls.push(opts.newMemberPubkeys);
+    return { applied: true, newEpoch: 0, distributed: opts.newMemberPubkeys.length };
+  },
+  isHiveRekeyEnabled: async () => true,
+}));
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-p006';
@@ -278,5 +290,83 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     expect(
       await decide({ device_pubkey: 'good-pk', github_login: 'a', github_user_id: 1, attestation_gist_id: 'g', sigValid: true }),
     ).toEqual({ admit: true });
+  });
+
+  describe('WI-40537 — the grant hook subtracts the HIVE-WIDE revoked union (already_member re-announce)', () => {
+    it('a device banned on the OWNER row — which the row-local merge scrub cannot see — is excluded from the grant set; live devices still granted', async () => {
+      await seedHive();
+      // The owner's row: a hive-wide ban (addRevokedHivePubkeys) writes the blocklist HERE,
+      // never on the banned member's own row — the exact shape the upsert's row-local scrub
+      // (this row's blocklist ∪ EXCLUDED's) is structurally unable to catch.
+      await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 99, githubUsername: 'owner' }, db.sql);
+
+      // POSITIVE CONTROL: pre-ban, the pipeline DOES carry both devices into the grant set —
+      // so the post-ban absence below is a real exclusion, not a broken pipeline.
+      rekeyHook.calls.length = 0;
+      await upsertHiveMember(
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'm', deviceAttestations: [dev('pk-banned'), dev('pk-live')] },
+        db.sql,
+      );
+      expect(rekeyHook.calls).toHaveLength(1);
+      expect([...rekeyHook.calls[0]].sort()).toEqual(['pk-banned', 'pk-live']);
+
+      // The hive-wide ban lands on the OWNER's (gh 99) row.
+      await addRevokedHivePubkeys(WS, HIVE, 99, ['pk-banned'], db.sql);
+      // c75949/c75950 BOUND 3 (fail-open falsifier): the union is NON-EMPTY at the point of
+      // filtering — this distinguishes "we filtered it out" from "there was nothing to filter"
+      // (an empty union subtracts nothing and leaves the K-cut broken while looking green).
+      const union = await loadRevokedHivePubkeys(WS, HIVE_SCOPE, db.sql);
+      expect(union.has('pk-banned')).toBe(true);
+
+      // The banned member's re-announce — the already_member branch, the WI-40537 replay.
+      rekeyHook.calls.length = 0;
+      const rec = await upsertHiveMember(
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'm', deviceAttestations: [dev('pk-banned'), dev('pk-live')] },
+        db.sql,
+      );
+      // The row-local scrub did NOT drop the attestation (the ban is on the OWNER's row)...
+      expect(rec.deviceAttestations.map((d) => d.device_pubkey).sort()).toEqual(['pk-banned', 'pk-live']);
+      // ...so ONLY the hive-wide union filter stands between the banned device and the epoch
+      // keys — and it holds: the grant set carries the live device alone.
+      expect(rekeyHook.calls).toHaveLength(1);
+      expect(rekeyHook.calls[0]).toEqual(['pk-live']);
+    });
+
+    it('EVERY announced device hive-wide banned ⇒ the grant is not called at all (0 keys, loud skip)', async () => {
+      await seedHive();
+      await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 99, githubUsername: 'owner' }, db.sql);
+      await upsertHiveMember(
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'm', deviceAttestations: [dev('pk-banned')] },
+        db.sql,
+      );
+      await addRevokedHivePubkeys(WS, HIVE, 99, ['pk-banned'], db.sql);
+      expect((await loadRevokedHivePubkeys(WS, HIVE_SCOPE, db.sql)).has('pk-banned')).toBe(true); // bound 3: non-empty
+      rekeyHook.calls.length = 0;
+      await upsertHiveMember(
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'm', deviceAttestations: [dev('pk-banned')] },
+        db.sql,
+      );
+      expect(rekeyHook.calls).toHaveLength(0);
+    });
+
+    it('the POST-SCRUB record is the authority, not the raw frame: a device revoked on the MEMBER’S OWN row is scrub-dropped AND absent from the grant set', async () => {
+      await seedHive();
+      await upsertHiveMember(
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'm', deviceAttestations: [dev('pk-a')] },
+        db.sql,
+      );
+      await addRevokedHivePubkeys(WS, HIVE, 7, ['pk-evil'], db.sql); // this member's OWN row
+      rekeyHook.calls.length = 0;
+      const rec = await upsertHiveMember(
+        { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'm', deviceAttestations: [dev('pk-evil'), dev('pk-a')] },
+        db.sql,
+      );
+      // The merge scrub drops the row-local-revoked attestation from the stored record...
+      expect(rec.deviceAttestations.map((d) => d.device_pubkey)).toEqual(['pk-a']);
+      // ...and the grant set is derived from that record, so pk-evil never reaches the keys —
+      // pre-fix the hook read the RAW frame and granted pk-evil despite the scrub.
+      expect(rekeyHook.calls).toHaveLength(1);
+      expect(rekeyHook.calls[0]).toEqual(['pk-a']);
+    });
   });
 });

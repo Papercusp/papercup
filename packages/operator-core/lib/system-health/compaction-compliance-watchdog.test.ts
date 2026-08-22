@@ -152,6 +152,7 @@ function fakeSql(opts: {
     owner_label: string;
     workspace_id?: string;
     compaction_limit: number;
+    compaction_limit_explicit?: boolean | null;
     fleet_slug?: string | null;
     fleet_role?: string | null;
   }>;
@@ -244,10 +245,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       fakeSql({ unseeded: [{ owner_id: 'su-wide' }, { owner_id: 'su-narrow' }] }),
     );
     expect(out.seeded).toEqual(['su-wide', 'su-narrow']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-wide', 400_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-wide', 400_000, { explicit: false });
     // WI-3383: an UNRESOLVABLE spec no longer mis-seeds the haiku-sized 158k — on this
     // opus[1m]-default fleet a truly-unknown spec is an opus[1m] session ⇒ the 400k policy.
-    expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 400_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 400_000, { explicit: false });
   });
 
   it('shapes the [1m] default by fleet role: member → 200k, leader/solo → 400k (owner directive 2026-07-19)', async () => {
@@ -267,10 +268,10 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       }),
     );
     expect(out.seeded).toEqual(['su-member', 'su-leader', 'su-solo', 'su-spawned-member']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-member', 200_000);
-    expect(setLimitMock).toHaveBeenCalledWith('su-leader', 400_000);
-    expect(setLimitMock).toHaveBeenCalledWith('su-solo', 400_000);
-    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 200_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-member', 200_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-leader', 400_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-solo', 400_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 200_000, { explicit: false });
   });
 
   it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
@@ -289,9 +290,9 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       }),
     );
     expect(out.seeded).toEqual(['s-tier', 's-spec', 's-none']);
-    expect(setLimitMock).toHaveBeenCalledWith('s-tier', 120_000);
-    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 400_000);
-    expect(setLimitMock).toHaveBeenCalledWith('s-none', 400_000);
+    expect(setLimitMock).toHaveBeenCalledWith('s-tier', 120_000, { explicit: true });
+    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 400_000, { explicit: false });
+    expect(setLimitMock).toHaveBeenCalledWith('s-none', 400_000, { explicit: false });
     // the fs/argv resolver only ran for the record-less owner
     expect(specMock).toHaveBeenCalledTimes(1);
     expect(specMock).toHaveBeenCalledWith('s-none');
@@ -348,7 +349,7 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       contextWindowMock.mockResolvedValue(CODEX_WINDOW);
       const out = await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
       expect(out.seeded).toEqual(['cx']);
-      expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+      expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT, { explicit: false });
       expect(setLimitMock).not.toHaveBeenCalledWith('cx', 158_000);
     });
 
@@ -362,7 +363,7 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       // this model. The extended family's 400k derivation is pinned by its own
       // case below against its own spec — keeping the two contracts on separate
       // fixtures is what lets both stay truthful.
-      expect(setLimitMock).toHaveBeenCalledWith('cx', 158_000);
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 158_000, { explicit: false });
     });
 
     it('derives the 400k role cap — NOT the 158k fallback — for an EXTENDED codex spec (D-001/D-002)', async () => {
@@ -374,7 +375,7 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       // 400k su/leader role cap (D-001). This is the falsifier for a revert of the
       // codex-aware branch in modelWindowForSpec — without it, that branch is
       // untested at this consumer and a revert passes silently.
-      expect(setLimitMock).toHaveBeenCalledWith('cx', 400_000);
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 400_000, { explicit: false });
       expect(setLimitMock).not.toHaveBeenCalledWith('cx', 158_000);
     });
 
@@ -383,7 +384,7 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       contextWindowMock.mockResolvedValue(CODEX_WINDOW);
       resolveLaunchLimitMock.mockResolvedValue(120_000);
       await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
-      expect(setLimitMock).toHaveBeenCalledWith('cx', 120_000);
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 120_000, { explicit: true });
       expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
     });
 
@@ -397,7 +398,7 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
           spawnRecords: { cx: { model_spec: 'opus:high', model_tier: 'deep' } },
         }),
       );
-      expect(setLimitMock).toHaveBeenCalledWith('cx', 120_000);
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 120_000, { explicit: true });
       expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
     });
   });
@@ -1047,13 +1048,60 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
     const out = await checkCompactionCompliance(
       fakeSql({
         seeded: [
-          { owner_id: 'stale', owner_label: 'su · stale', compaction_limit: 500_000, fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+          {
+            owner_id: 'stale',
+            owner_label: 'su · stale',
+            compaction_limit: 500_000,
+            compaction_limit_explicit: false,
+            fleet_slug: 'backlog-clearance',
+            fleet_role: 'member',
+          },
         ],
       }),
     );
     expect(setLimitMock).toHaveBeenCalledWith('stale', 200_000);
     expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 200_000 }]);
     expect(out.overLimit).toEqual([]); // 40k < the corrected 200k
+  });
+
+  it('preserves an explicit 680k runtime override below the measured self-set ceiling', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    contextWindowMock.mockResolvedValue(828_400);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          {
+            owner_id: 'explicit',
+            owner_label: 'su · explicit',
+            compaction_limit: 680_000,
+            compaction_limit_explicit: true,
+          },
+        ],
+      }),
+    );
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.relimited).toEqual([]);
+    expect(out.overLimit).toEqual([]);
+  });
+
+  it('lowers an explicit override only when it exceeds the measured self-set ceiling', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    contextWindowMock.mockResolvedValue(828_400);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          {
+            owner_id: 'too-wide',
+            owner_label: 'su · too-wide',
+            compaction_limit: 700_000,
+            compaction_limit_explicit: true,
+          },
+        ],
+      }),
+    );
+    expect(setLimitMock).toHaveBeenCalledWith('too-wide', 681_000);
+    expect(out.relimited).toEqual([{ owner: 'too-wide', from: 700_000, to: 681_000 }]);
+    expect(out.overLimit).toEqual([]);
   });
 
   it('a leader/solo stale limit is lowered to the leader cap (400k), not the member 200k', async () => {

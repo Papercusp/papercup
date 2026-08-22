@@ -25,7 +25,9 @@ import {
   signalAccumulatorLookbackSec,
   signalAccumulatorSweepSec,
   scoutSignalAccumulatorSweep,
+  strongerLaneCount,
   __resetSweepThrottleForTests,
+  type LaneCount,
 } from './signal-accumulator';
 
 const NOW = Date.parse('2026-07-12T12:00:00Z');
@@ -160,5 +162,118 @@ describe('scoutSignalAccumulatorSweep — fail-soft shell', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * strongerLaneCount — the observations lane's two-leg ratchet
+ * (learning-loop-identity-and-consumption-2026-08-08 D-043).
+ *
+ * P-013 lets an agent's observation FOLD onto an existing row instead of
+ * minting one. The filing lands either way, but a row-based count cannot see a
+ * fold, so counting rows would have reported a signal collapse that never
+ * happened and made the Scout fire less — silencing agents by measurement.
+ * The lane therefore reads two legs (rows minted, filings recorded) and takes
+ * the stronger. These tests fix the property that makes that safe: the
+ * combined count is never below EITHER leg, so no failure of either one can
+ * push the lane below the basis it replaced.
+ */
+describe('strongerLaneCount — the observations lane cannot report less signal than before', () => {
+  const at = (iso: string | null): Date | null => (iso === null ? null : new Date(iso));
+  const lane = (newCount: number, hw: string | null): LaneCount => ({
+    lane: 'observations',
+    newCount,
+    highWaterAt: at(hw),
+  });
+
+  it('takes the greater count — folding raises the filings leg above the rows leg', () => {
+    // The post-P-013 steady state: fewer rows minted than filings received.
+    const rows = lane(40, '2026-07-12T11:00:00Z');
+    const filings = lane(140, '2026-07-12T11:30:00Z');
+    expect(strongerLaneCount(rows, filings).newCount).toBe(140);
+  });
+
+  it('is symmetric — argument order cannot change the answer', () => {
+    const rows = lane(40, '2026-07-12T11:00:00Z');
+    const filings = lane(140, '2026-07-12T11:30:00Z');
+    expect(strongerLaneCount(filings, rows).newCount).toBe(strongerLaneCount(rows, filings).newCount);
+  });
+
+  it('THE RATCHET: a dead filings leg falls back to the row count, never to zero', () => {
+    // If the occurrence ledger stops being written, the filings leg reads 0.
+    // Taking the max means the lane degrades to exactly today's behaviour
+    // rather than reporting silence.
+    const rows = lane(37, '2026-07-12T11:00:00Z');
+    const ledgerDown = lane(0, null);
+    expect(strongerLaneCount(rows, ledgerDown).newCount).toBe(37);
+  });
+
+  it('THE RATCHET, other direction: a fold-suppressed row leg falls back to the filings count', () => {
+    const allFolded = lane(0, null);
+    const filings = lane(212, '2026-07-12T11:30:00Z');
+    expect(strongerLaneCount(allFolded, filings).newCount).toBe(212);
+  });
+
+  it('both legs silent is genuinely 0 — a quiet pot must still be able to NOT fire', () => {
+    // The ratchet must not manufacture signal: "score 0 never fires" is the
+    // whole point of the accumulator, so a real quiet window has to survive it.
+    const combined = strongerLaneCount(lane(0, null), lane(0, null));
+    expect(combined.newCount).toBe(0);
+    expect(combined.highWaterAt).toBeNull();
+  });
+
+  it('advances the high-water mark to whichever leg saw signal LATEST, independent of which counted more', () => {
+    // Deliberately crossed: the smaller count carries the later timestamp.
+    const rows = lane(500, '2026-07-12T11:00:00Z');
+    const filings = lane(3, '2026-07-12T11:45:00Z');
+    expect(strongerLaneCount(rows, filings).highWaterAt?.toISOString()).toBe('2026-07-12T11:45:00.000Z');
+  });
+
+  it('a null high-water mark never beats a real one', () => {
+    expect(strongerLaneCount(lane(5, '2026-07-12T11:00:00Z'), lane(9, null)).highWaterAt?.toISOString()).toBe(
+      '2026-07-12T11:00:00.000Z',
+    );
+  });
+
+  it('preserves the lane label', () => {
+    expect(strongerLaneCount(lane(1, null), lane(2, null)).lane).toBe('observations');
+  });
+
+  /**
+   * P-014 falsifiability control (tier-2 / module route — a permanent
+   * wrong-implementation kept IN the test file, never an in-tree mutation of
+   * the shared checkout).
+   *
+   * The risk with a max() ratchet is that a plausible-looking alternative —
+   * "just use the new filings leg" — passes most of the tests above while
+   * quietly reintroducing the silencing this exists to prevent. These two
+   * cases prove the suite can TELL THEM APART: the wrong impls fail exactly
+   * where the real one holds, so a green run is evidence about behaviour and
+   * not merely that the tests ran.
+   */
+  describe('CONTROLS: the assertions above actually discriminate', () => {
+    const takeFilingsLeg = (_rows: LaneCount, filings: LaneCount): LaneCount => filings;
+    const takeRowsLeg = (rows: LaneCount, _filings: LaneCount): LaneCount => rows;
+
+    it('"just use the filings leg" is caught by the dead-ledger case', () => {
+      const rows = lane(37, '2026-07-12T11:00:00Z');
+      const ledgerDown = lane(0, null);
+      expect(takeFilingsLeg(rows, ledgerDown).newCount).toBe(0); // the wrong answer…
+      expect(strongerLaneCount(rows, ledgerDown).newCount).toBe(37); // …vs the real one
+    });
+
+    it('"keep counting rows" is caught by the folding case — this is the D-043 silencing itself', () => {
+      const allFolded = lane(0, null);
+      const filings = lane(212, '2026-07-12T11:30:00Z');
+      expect(takeRowsLeg(allFolded, filings).newCount).toBe(0); // Scout goes quiet…
+      expect(strongerLaneCount(allFolded, filings).newCount).toBe(212); // …and this is why it must not
+    });
+
+    it('CALIBRATION: both wrong impls agree with the real one when the legs match, so the controls above are not vacuous', () => {
+      const a = lane(50, '2026-07-12T11:00:00Z');
+      const b = lane(50, '2026-07-12T11:00:00Z');
+      expect(takeFilingsLeg(a, b).newCount).toBe(strongerLaneCount(a, b).newCount);
+      expect(takeRowsLeg(a, b).newCount).toBe(strongerLaneCount(a, b).newCount);
+    });
   });
 });

@@ -14,7 +14,13 @@ const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }))
 vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
 import type { DoorableResult } from './result-door';
-import { applyResultDoor, buildProjectionHint, RESULT_DOOR_TOKENS } from './result-door';
+import {
+  applyResultDoor,
+  beginResultDoorAggregate,
+  buildProjectionHint,
+  resetResultDoorAggregatesForTests,
+  RESULT_DOOR_TOKENS,
+} from './result-door';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -33,6 +39,7 @@ beforeEach(() => {
   delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
   doorConstantsMock.mockReset();
   doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
+  resetResultDoorAggregatesForTests();
 });
 
 afterEach(() => {
@@ -207,7 +214,7 @@ describe('applyResultDoor', () => {
     expect(next).toContain('head');
   });
 
-  it('non-text items pass through intact; text budget is consumed in order', () => {
+  it('D-021: mixed over-budget text/non-text is stored once behind a typed reference', () => {
     const img = { type: 'image', data: 'aaaa', mimeType: 'image/png' };
     const doored = applyResultDoor(
       {
@@ -219,12 +226,19 @@ describe('applyResultDoor', () => {
       },
       { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
     );
-    expect(doored.content).toContainEqual(img);
-    // Every text item is represented by one complete JSON envelope; the exact
-    // original ordering remains in the spill.
+    expect(doored.content).not.toContainEqual(img);
     expect(doored.content.filter((c) => (c as { type?: string }).type === 'text')).toHaveLength(1);
+    const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+    expect(envelope).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      summaryProvenance: 'authored',
+      state: 'incomplete',
+      incomplete: { reason: 'non-text-result-budget-exceeded', omittedItems: 3 },
+      content: [{ kind: 'reference', byteCount: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+    });
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('trailing text fully over budget');
+    expect(spill).toContain('"type":"image"');
   });
 
   it('a genuine delta ENVELOPE result (_meta.delta.mode !== "full") is NEVER doored — its text is client-parsed JSON', () => {
@@ -288,20 +302,14 @@ describe('applyResultDoor', () => {
     expect(doorConstantsMock).toHaveBeenCalledWith('su-x'); // keyed on the caller's identity
   });
 
-  // WI-36613 — borrow item 10. The door measures TEXT ONLY, so a result whose
-  // bulk is a base64 image has a tiny `totalChars`, takes the identity fast-path,
-  // and reaches the model uncapped AND unmentioned. Measured exposure is
-  // currently zero (computer:* is the only image-emitting path and has never been
-  // invoked), so this deliberately does not CAP — it only removes the silence,
-  // which is the part that made the exemption invisible.
-  describe('non-text payloads are not capped, but no longer silent (WI-36613)', () => {
+  describe('D-021 non-text payloads share the hard output budget', () => {
     const bigImage = (chars: number) => ({
       type: 'image',
       data: 'A'.repeat(chars),
       mimeType: 'image/png',
     });
 
-    it('discloses an over-budget image even though the TEXT fit and nothing was truncated', () => {
+    it('spills an over-budget image and returns only a typed reference envelope', () => {
       const result: DoorableResult = {
         content: [{ type: 'text' as const, text: 'tiny caption' }, bigImage(BUDGET_CHARS * 3)],
       };
@@ -311,14 +319,22 @@ describe('applyResultDoor', () => {
         runId: RUN_ID,
       });
 
-      const notice = (doored.content.at(-1) as { text: string }).text;
-      expect(notice).toContain('UNCAPPED NON-TEXT PAYLOAD');
-      // The image itself is untouched — this is a disclosure, not a cap.
-      expect(doored.content).toContainEqual(bigImage(BUDGET_CHARS * 3));
-      expect((doored.content[0] as { text: string }).text).toBe('tiny caption');
-      expect(
-        (doored._meta as { resultDoor?: { nonTextChars?: number } } | undefined)?.resultDoor,
-      ).toBeUndefined(); // fast path stamps no door meta: nothing was truncated
+      expect(doored.content).not.toContainEqual(bigImage(BUDGET_CHARS * 3));
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.state).toBe('incomplete');
+      expect(envelope.content[0]).toMatchObject({
+        kind: 'reference',
+        uri: expect.stringContaining('papercusp://scratch/ws-1/computer:screenshot/'),
+        byteCount: expect.any(Number),
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        truncated: true,
+        structural: true,
+        reason: 'non-text-result-budget-exceeded',
+        nonTextBytes: BUDGET_CHARS * 3,
+      });
+      expect(readSpill('ws-1', 'computer:screenshot', RUN_ID)).toContain('tiny caption');
     });
 
     it('CONTROL: a SMALL non-text item keeps the identity fast-path byte-identical', () => {
@@ -333,7 +349,7 @@ describe('applyResultDoor', () => {
       ).toBe(result);
     });
 
-    it('counts non-text chars in _meta when the result IS doored', () => {
+    it('counts non-text UTF-8 bytes in structural metadata when the result is doored', () => {
       const input: DoorableResult = {
         content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }, bigImage(5_000)],
       };
@@ -342,9 +358,90 @@ describe('applyResultDoor', () => {
         workspaceId: 'ws-1',
         runId: RUN_ID,
       });
-      const meta = (doored._meta as { resultDoor?: { nonTextChars?: number } } | undefined)
+      const meta = (doored._meta as { resultDoor?: { nonTextBytes?: number } } | undefined)
         ?.resultDoor;
-      expect(meta?.nonTextChars).toBe(5_000);
+      expect(meta?.nonTextBytes).toBe(5_000);
+    });
+
+    it('spill failure returns a bounded explicit error and never re-exposes binary data', () => {
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+      const original = bigImage(BUDGET_CHARS * 3);
+      const input: DoorableResult = { content: [original] };
+      const doored = applyResultDoor(
+        input,
+        { toolName: 'computer:screenshot', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope).toMatchObject({
+        state: 'error',
+        error: { code: 'output_spill_failed', retryable: true },
+      });
+      expect((doored.content[0] as { text: string }).text).not.toContain(original.data);
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+      });
+    });
+  });
+
+  describe('P-006 aggregate budget spans one explicit or compatibility cohort', () => {
+    const medium = (): DoorableResult => ({
+      content: [{ type: 'text' as const, text: 'm'.repeat(5_000) }],
+    });
+
+    it('uses one budget across explicit fan-out and spills the result that crosses it', () => {
+      const firstScope = beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-7' });
+      const secondScope = beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-7' });
+      const thirdScope = beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-7' });
+      const opts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID };
+
+      const first = applyResultDoor(medium(), { ...opts, aggregateScope: firstScope });
+      const second = applyResultDoor(medium(), { ...opts, aggregateScope: secondScope });
+      const third = applyResultDoor(medium(), { ...opts, aggregateScope: thirdScope });
+
+      expect((first._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+      expect((second._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+      const envelope = JSON.parse((third.content[0] as { text: string }).text);
+      expect(envelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+      const aggregate = (third._meta as { resultDoor?: { aggregate?: Record<string, unknown> } })
+        .resultDoor?.aggregate;
+      expect(aggregate).toMatchObject({
+        mode: 'explicit',
+        budgetBytes: 12_000,
+        consumedBeforeBytes: 10_000,
+        chargedBytes: 5_000,
+        sourceBytes: 5_000,
+        acceptedBytes: 2_000,
+        consumedAfterBytes: 12_000,
+        exceeded: true,
+      });
+      expect(JSON.stringify(aggregate)).not.toContain('turn-7');
+      expect(readSpill('ws-1', 'plans:get', RUN_ID)).toContain('m'.repeat(100));
+    });
+
+    it('keeps separate explicit turns independent', () => {
+      const opts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID };
+      for (let i = 0; i < 2; i += 1) {
+        applyResultDoor(medium(), {
+          ...opts,
+          aggregateScope: beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-a' }),
+        });
+      }
+      const other = applyResultDoor(medium(), {
+        ...opts,
+        aggregateScope: beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-b' }),
+      });
+      expect((other._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+    });
+
+    it('declares and deterministically groups the <=2s compatibility fallback at request start', () => {
+      const a = beginResultDoorAggregate({ sessionKey: 'owner-compat', startedAtMs: 1_000 });
+      const b = beginResultDoorAggregate({ sessionKey: 'owner-compat', startedAtMs: 2_999 });
+      const c = beginResultDoorAggregate({ sessionKey: 'owner-compat', startedAtMs: 5_001 });
+      expect(a).toEqual(b);
+      expect(a.mode).toBe('compatibility');
+      expect(c.key).not.toBe(a.key);
     });
   });
 

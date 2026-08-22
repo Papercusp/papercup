@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
 const getLoopStatus = vi.fn();
+const getSessionBrief = vi.fn();
 const getPresence = vi.fn();
 const readInbox = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const readWatermark = vi.fn(async (..._a: unknown[]) => ({ messages_since_ts: '' }));
@@ -155,6 +156,7 @@ vi.mock('../../pot/wake', () => ({
 // default. Most tests have no armed routine (null), so they fall through to the old
 // arg/ctx/home-hive chain.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
+vi.mock('../../session-brief', () => ({ getSessionBrief: (...a: unknown[]) => getSessionBrief(...a) }));
 vi.mock('../../bounded-timeout', () => ({
   withBoundedTimeout: (...a: unknown[]) => withBoundedTimeout(...a),
 }));
@@ -189,6 +191,7 @@ beforeEach(() => {
   setLoopCarryNote.mockResolvedValue('stored-note');
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
+  getSessionBrief.mockResolvedValue(null); // default: no durable coord:orient scope found
   getPresence.mockResolvedValue(null);
   readInbox.mockResolvedValue([]);
   readWatermark.mockResolvedValue({ messages_since_ts: '' });
@@ -444,6 +447,19 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     await call({ next: 'x' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'papercusp' }),
+      expect.any(String),
+    );
+  });
+
+  it('EI-21183575241304993: uses the durable session scope before an unrelated owner loop under wildcard transport', async () => {
+    getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive' } as never);
+
+    await call({ next: 'x' }, { harnessSlug: '*', workspaceId: 'ws-1' });
+
+    expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'papercusp', ownerId: 'su-caller' }),
       expect.any(String),
     );
   });

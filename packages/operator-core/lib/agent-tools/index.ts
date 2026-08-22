@@ -559,6 +559,10 @@ import './locks/check_command';
 import './capability/bash';
 import './capability/bash_output';
 import './capability/bash_kill';
+// Orchestration runtime unification P-011: task-ledger-backed interactive PTY
+// sessions. The durable task id is the only model-facing handle; read-screen
+// returns its own non-text content item through the shared result door.
+import './capability/pty';
 // Visible-terminal sibling of bash: opens a NEW terminal window on the user's
 // HOST desktop and runs an arbitrary command in it. Reuses the console-launcher
 // envelope + console-spawn primitive; runs OUTSIDE bwrap (the visible terminal

@@ -49,11 +49,28 @@ describe('PgPresenceStore compaction columns (agent-managed-compaction)', () => 
     const s = store();
     const o = owner();
     await s.write(identity(o), { intent: 'work' });
-    await s.setCompactionLimit(o, 160_000);
+    await s.setCompactionLimit(o, 160_000, { explicit: true });
     expect((await s.get(o))?.compactionLimit).toBe(160_000);
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(true);
     // ON CONFLICT DO UPDATE must NOT wipe the limit on a later declare/heartbeat.
     await s.write(identity(o), { intent: 'more' });
     expect((await s.get(o))?.compactionLimit).toBe(160_000);
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(true);
+  });
+
+  it('preserves provenance for derived writes and can mark a watchdog seed non-explicit', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), {});
+    await s.setCompactionLimit(o, 500_000, { explicit: false });
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(false);
+    // A derived repair omits provenance and must not accidentally turn a seed
+    // into an explicit override.
+    await s.setCompactionLimit(o, 400_000);
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(false);
+    await s.setCompactionLimit(o, 680_000, { explicit: true });
+    await s.setCompactionLimit(o, 670_000);
+    expect((await s.get(o))?.compactionLimitExplicit).toBe(true);
   });
 
   it('setContextEstimate persists tokens + a timestamp', async () => {
@@ -80,6 +97,7 @@ describe('PgPresenceStore compaction columns (agent-managed-compaction)', () => 
     await s.write(identity(o), {});
     const rec = await s.get(o);
     expect(rec?.compactionLimit ?? null).toBeNull();
+    expect(rec?.compactionLimitExplicit).toBe(false);
     expect(rec?.contextTokens ?? null).toBeNull();
   });
 });

@@ -708,6 +708,15 @@ state the scope you actually searched. For "where is this symbol defined" use
 `gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL
 exist", `tools:find`.
 
+⚠ **Do not use human-relative timestamps with `find -newermt` on this box.**
+`find` resolves to **bfs 4.1.1** here, and values such as `12 minutes ago`,
+`-10 minutes`, or `America/New_York` are rejected. If stderr is hidden, the
+empty output can look like a valid "nothing changed" result. For "files
+modified since T", use `git status --porcelain` or `TZ=UTC stat -c '%y %n'
+<paths>`; if you must use `find`, pass an ISO-8601-like timestamp with `Z` or
+a numeric offset and keep stderr visible. The PreToolUse Bash gate refuses
+literal non-ISO `-newer?t` operands and names this remediation.
+
 ⚠ **Line-oriented matching cannot see a phrase split by hard wrapping.** Generated
 or rendered prose may insert a newline inside a multi-word phrase, so
 `grep -c 'IN THIS SAME TURN' rendered.md` → 0 does **not** prove the clause is

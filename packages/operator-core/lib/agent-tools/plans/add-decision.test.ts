@@ -75,6 +75,34 @@ describe('plans:add-decision — itemRefs alias for refs', () => {
   });
 });
 
+describe('plans:add-decision — affects uses the cross-plan slug namespace', () => {
+  it('accepts an existing-plan-shaped slug and documents the namespace on each item', () => {
+    const parsed = tool.args.safeParse({
+      slug: 'home-plan',
+      title: 'A decision',
+      body: 'Body text.',
+      affects: ['other-plan-2026-08-22'],
+    });
+    expect(parsed.success).toBe(true);
+
+    const affectsSchema = tool.args.shape.affects;
+    expect(affectsSchema.description).toMatch(/existing plan slugs of OTHER plans/i);
+    const itemDescription = affectsSchema.unwrap().element.description;
+    expect(itemDescription).toMatch(/not a surface label/i);
+    expect(itemDescription).toMatch(/refs\/itemRefs/i);
+  });
+
+  it('rejects free-form surface labels instead of silently reporting unknown_affects after the write', () => {
+    const parsed = tool.args.safeParse({
+      slug: 'home-plan',
+      title: 'A decision',
+      body: 'Body text.',
+      affects: ['orchestration public API', 'capability preflight'],
+    });
+    expect(parsed.success).toBe(false);
+  });
+});
+
 describe('plans:add-decision — decision references do not inflate allocation (EI-19989843927675996)', () => {
   it('ignores cross-plan D-NNN citations inside decision bodies', () => {
     const body = [

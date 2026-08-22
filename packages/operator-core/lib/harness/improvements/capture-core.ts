@@ -39,6 +39,13 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import {
+  classifyObservationFold,
+  type FoldCandidate,
+  type FoldClassification,
+} from './observation-fold';
 import { trackDetached } from '../../detached-imports';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
 import {
@@ -317,15 +324,70 @@ export interface CoalesceEffect {
   repeatCount: number;
   /** Did THIS call's title/body actually replace the row's text? */
   bodyPersisted: boolean;
-  /** Only when `bodyPersisted` is false — the caller's prose was DISCARDED. */
+  /** Only when the caller's prose was DISCARDED (a FAILED refresh). Absent on an
+   *  `append-only` fold, where the prose was retained as an occurrence and
+   *  nothing was lost — see `textDisposition`, which distinguishes the two
+   *  `bodyPersisted:false` cases that a boolean alone conflates. */
   bodyDiscarded?: true;
+  /** WHY the caller's text is or is not on the survivor row.
+   *  `refreshed`   — it replaced the row's text (keyed folds: latest reading wins).
+   *  `append-only` — BY DESIGN. A derived fold appends the reading to the
+   *                  occurrence ledger and leaves the survivor's text alone,
+   *                  because overwriting a row whose identity was INFERRED
+   *                  would let one wrong guess destroy another agent's account.
+   *                  Nothing was lost.
+   *  `lost`        — the refresh FAILED. The repeatCount bump landed, the prose
+   *                  did not. This is the silent write-loss case. */
+  textDisposition: 'refreshed' | 'append-only' | 'lost';
   /** `createdBy` of the row merged onto (null on rows predating the column). */
   priorAuthor: string | null;
   /** True when `priorAuthor` is a DIFFERENT agent than this caller — i.e. this
    *  write landed on a peer's row. Undecidable (false) when either side is null. */
   crossAuthor: boolean;
+  /** P-015 (D-042): HOW this fold's identity was established, because the two
+   *  routes carry different confidence and a reader must not conflate them.
+   *  `condition-key` — the caller supplied a stable `watchdogKey`; the match is
+   *  an exact indexed lookup, not a guess (P-001/P-002, machine emitters).
+   *  `derived` — no key was supplied; identity was DERIVED from content
+   *  similarity plus the D-036 subject discriminator (P-013, agent filings).
+   *  A derived fold is a judgement and can be wrong; a keyed one cannot. */
+  identity: 'condition-key' | 'derived';
+  /** Derived folds only: which classifier rule fired. Absent on a keyed fold —
+   *  there is no rule to name, the key matched. */
+  foldRule?: FoldClassification['rule'];
+  /** Derived folds only: the classifier's own explanation, including the
+   *  subject tokens that agreed. Kept verbatim so an over-merge is auditable
+   *  from the response alone. */
+  foldNote?: string;
+  /** Derived folds only: the cosine that carried the match. */
+  similarity?: number;
   /** Plain-language statement of what happened, for a reader who will not
    *  interpret the booleans. */
+  note: string;
+}
+
+/**
+ * P-013/P-015 (D-042): a SOFT fold — the filing was minted as its OWN row and
+ * LINKED to a similar open observation. Both rows survive.
+ *
+ * This exists so a filing agent is told what happened in EVERY branch, not only
+ * when its row was absorbed. A soft fold is the classifier saying "similar
+ * enough to be worth a cross-reference, not similar enough to merge" — most
+ * often the D-036 template trap, where two filings share a wording template but
+ * name different subjects.
+ */
+export interface FoldLinkEffect {
+  /** The open observation this filing was linked to. */
+  id: string;
+  /** Cosine similarity to that row, 0..1. */
+  similarity: number;
+  /** Which classifier rule produced the SOFT verdict. */
+  rule: FoldClassification['rule'];
+  /** Did the `relates` edge actually get written? The link is best-effort — a
+   *  failure never costs the filing, but it does mean the cross-reference is
+   *  missing, so the caller is told rather than left to assume. */
+  linkWritten: boolean;
+  /** Plain-language statement of what happened and why it was NOT folded. */
   note: string;
 }
 
@@ -336,6 +398,9 @@ export interface CaptureImprovementResult {
   /** P-006/D-004: present ONLY on a coalesce. What this write did to the row it
    *  merged onto, and whether the caller's own text survived. */
   coalescedOnto?: CoalesceEffect;
+  /** P-013/P-015 (D-042): present ONLY on a SOFT derived fold. The row WAS
+   *  created (`created:true`) and linked to a similar open observation. */
+  linkedTo?: FoldLinkEffect;
   /** Native engineer_issues storage kind. Always agrees with issue.kind. */
   kind?: 'bug' | 'change';
   /** Caller-facing capture classification; `feature` is stored as kind=`change`. */
@@ -426,6 +491,12 @@ export interface CaptureDeps {
   recordIssueOccurrence?: (
     input: RecordIssueOccurrenceInput,
   ) => Promise<RecordedIssueOccurrence | null>;
+  /** P-013 (D-042) SOFT-fold seam: write a `relates` edge between the row just
+   *  minted and the similar open observation the classifier declined to fold
+   *  onto. Optional — the production default lazy-loads `linkWorkItem` so
+   *  capture-core keeps its PG-free import graph, and a link failure is
+   *  reported (`linkWritten:false`) rather than costing the filing. */
+  linkIssues?: (srcId: string, dstId: string, rel: string, by?: string) => Promise<void>;
   /** P-005 bounded pressure reader. Optional/injectable so pure tests never open PG. */
   readIssueAdmissionPressure?: (input: {
     canonicalId: string;
@@ -443,6 +514,17 @@ const defaultDeps: CaptureDeps = {
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
   recordIssueOccurrence,
   readIssueAdmissionPressure,
+  // Lazy on purpose: work-items.ts is a large PG-bound module, and capture-core
+  // is imported by pure/vitest paths that must not pull it in. Resolving the
+  // ObjectRef through the same `resolveWorkItemRef` the work_items:link tool
+  // uses keeps issue-family vs feature-family ref shaping in ONE place.
+  linkIssues: async (srcId, dstId, rel, by) => {
+    const { linkWorkItem, resolveWorkItemRef } = await import('../../work-items');
+    const dst = await resolveWorkItemRef(dstId);
+    if (!dst) throw new Error(`link target '${dstId}' not found`);
+    const result = await linkWorkItem(srcId, dst, rel, by ? { by } : {});
+    if ('error' in result) throw new Error(result.error);
+  },
 };
 
 function harnessFromScope(scope: string | undefined): string | null {
@@ -700,28 +782,60 @@ function buildCoalesceEffect(args: {
   input: CaptureImprovementInput;
   repeatCount: number;
   bodyPersisted: boolean;
+  /** P-013: `append-only` when the survivor's text was deliberately left alone
+   *  (derived folds), so a policy decision is never reported as a write loss.
+   *  Defaults to the keyed behaviour: persisted ⇒ refreshed, else ⇒ lost. */
+  textDisposition?: 'refreshed' | 'append-only' | 'lost';
+  /** P-013/P-015: the DERIVED-identity classification, when this fold was not
+   *  keyed. Omitted ⇒ the fold came from an exact `watchdogKey` match. Without
+   *  it the note below rendered a literal "conditionKey `undefined`" on every
+   *  derived fold — a false claim that a key existed. */
+  fold?: FoldClassification;
 }): CoalesceEffect {
-  const { finalIssue, prior, input, repeatCount, bodyPersisted } = args;
+  const { finalIssue, prior, input, repeatCount, bodyPersisted, fold } = args;
+  const textDisposition = args.textDisposition ?? (bodyPersisted ? 'refreshed' : 'lost');
   const priorAuthor = prior.createdBy ?? null;
   // Undecidable when either side is unknown: an unattributed row must not be
   // reported as a peer's (it would manufacture a cross-author claim), nor as
   // your own. False = "not established", never "verified same author".
   const crossAuthor = Boolean(priorAuthor && input.createdBy && priorAuthor !== input.createdBy);
+  // The identity clause must state WHICH route matched. A derived fold has no
+  // key, so interpolating `input.watchdogKey` there renders "conditionKey
+  // `undefined`" — a claim that a key existed when none did.
+  const identityClause = fold
+    ? `derived identity — ${fold.rule}` +
+      (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
+    : `conditionKey \`${input.watchdogKey}\``;
   return {
     id: finalIssue.id,
     repeatCount,
     bodyPersisted,
-    ...(bodyPersisted ? {} : { bodyDiscarded: true as const }),
+    ...(textDisposition === 'lost' ? { bodyDiscarded: true as const } : {}),
+    textDisposition,
     priorAuthor,
     crossAuthor,
+    identity: fold ? 'derived' : 'condition-key',
+    ...(fold
+      ? {
+          foldRule: fold.rule,
+          foldNote: fold.note,
+          ...(typeof fold.candidate?.similarity === 'number' ? { similarity: fold.candidate.similarity } : {}),
+        }
+      : {}),
     note:
       `No new row was created: this reading COALESCED onto still-live ${finalIssue.id} ` +
-      `(conditionKey \`${input.watchdogKey}\`), now at repeatCount ${repeatCount}. ` +
-      (bodyPersisted
+      `(${identityClause}), now at repeatCount ${repeatCount}. ` +
+      (textDisposition === 'refreshed'
         ? `Your title/body REPLACED the text that row previously carried`
-        : `⚠ YOUR TITLE/BODY WAS DISCARDED — the refresh failed, so the row still shows the ` +
-          `PREVIOUS reading. The repeatCount bump landed, your prose did not; re-read ` +
-          `${finalIssue.id} before asserting anywhere that it reflects what you just wrote`) +
+        : textDisposition === 'append-only'
+          ? `Your reading was APPENDED as an occurrence and the survivor's own text was left ` +
+            `unchanged — deliberate, not a failure: this fold's identity was INFERRED from ` +
+            `content, and an inferred match must never be allowed to overwrite another agent's ` +
+            `account. Nothing you wrote was lost; ${finalIssue.id}'s visible text is simply not ` +
+            `yours, so do not re-read it expecting your words`
+          : `⚠ YOUR TITLE/BODY WAS DISCARDED — the refresh failed, so the row still shows the ` +
+            `PREVIOUS reading. The repeatCount bump landed, your prose did not; re-read ` +
+            `${finalIssue.id} before asserting anywhere that it reflects what you just wrote`) +
       (crossAuthor
         ? `. That row was authored by ${priorAuthor}, not you — you have written onto a PEER's ` +
           `row. This is intended (the shared conditionKey is what stops a flood of near-identical ` +
@@ -729,6 +843,82 @@ function buildCoalesceEffect(args: {
           `writer's, so do not read it as that author's own account.`
         : `.`),
   };
+}
+
+/** How many scored candidates the derived fold hydrates. Bounded because each
+ *  is a row read; the classifier sorts by similarity, so a real match is at the
+ *  top of the list, not the tail. */
+const DERIVED_FOLD_MAX_CANDIDATES = 8;
+
+/**
+ * P-013 (D-042): establish a DERIVED identity for an agent filing that supplied
+ * no `watchdogKey`, and classify it against the open observations it might be a
+ * repeat of.
+ *
+ * Returns `null` for NO VERDICT — the embedding leg is disabled, timed out, or
+ * vitest-inert. Null means "mint, exactly as before"; it must never be read as
+ * "nothing similar", which is what a `verdict:'none'` says.
+ *
+ * Three filters run HERE rather than inside the classifier, deliberately: scope
+ * and lifecycle are correctness, and burying them in a scorer is how a fold
+ * silently crosses a Pot boundary.
+ *  1. OPEN, observation-lane, same signal origin, same scope grain — the same
+ *     rails the keyed path enforces via `sameWatchdogIdentity`.
+ *  2. NOT already keyed. A row carrying a `watchdogKey` belongs to the emitter
+ *     that keys it; letting an inferred match fold onto it would let one wrong
+ *     guess rewrite a machine emitter's standing row. Consolidating those is a
+ *     separate, and much more dangerous, change.
+ *  3. Not the same row twice — the guard's two bands can both name a candidate.
+ */
+async function classifyDerivedObservationFold(args: {
+  input: CaptureImprovementInput;
+  origin: string;
+  deps: CaptureDeps;
+}): Promise<{ fold: FoldClassification; prior: EngineerIssue | null } | null> {
+  const { input, origin, deps } = args;
+  const sem = await (deps.findSemanticDupes ?? findSemanticDupes)({
+    title: input.title,
+    ...(input.body ? { summary: input.body } : {}),
+  }).catch(() => null);
+  if (!sem) return null;
+
+  // Union BOTH bands. The guard buckets by ITS thresholds; the fold decider
+  // applies its own (co-signal 0.86/0.45, soft 0.90), which cut the same range
+  // differently — so it must see every scored candidate, never the guard's
+  // verdict about them.
+  const scored = new Map<string, { id: string; similarity: number; titleSimilarity?: number }>();
+  for (const band of ['hard', 'soft'] as const) {
+    for (const c of sem[band]) if (!scored.has(c.id)) scored.set(c.id, c);
+  }
+
+  const fetchIssue = deps.getIssue ?? getIssue;
+  const hydrated = new Map<string, EngineerIssue>();
+  const candidates: FoldCandidate[] = [];
+  for (const scoredCandidate of [...scored.values()]
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, DERIVED_FOLD_MAX_CANDIDATES)) {
+    const issue = await fetchIssue(scoredCandidate.id).catch(() => null);
+    if (!issue || issue.state !== 'open') continue;
+    const payload = (issue.payload as Record<string, unknown> | null) ?? {};
+    if (payload.lane !== 'observation') continue;
+    if (typeof payload.watchdogKey === 'string' && payload.watchdogKey) continue;
+    if (effectiveOrigin(issue.signalOrigin) !== origin) continue;
+    if (!issueScopeMatchesCapture(issue, input.scope)) continue;
+    hydrated.set(issue.id, issue);
+    candidates.push({
+      id: issue.id,
+      // The row's CURRENT title, not the one the vector was built from: the
+      // discriminator compares subjects, and a stale title names stale subjects.
+      title: issue.title,
+      similarity: scoredCandidate.similarity,
+      ...(typeof scoredCandidate.titleSimilarity === 'number'
+        ? { titleSimilarity: scoredCandidate.titleSimilarity }
+        : {}),
+    });
+  }
+
+  const fold = classifyObservationFold(input.title, candidates);
+  return { fold, prior: fold.candidate ? (hydrated.get(fold.candidate.id) ?? null) : null };
 }
 
 /**
@@ -1467,6 +1657,114 @@ export async function captureImprovement(
     }
   }
 
+  // ─── P-013 (owner amendment D-042): DERIVED-identity fold for AGENT filings ───
+  //
+  // The keyed branch above covers callers that supply a stable conditionKey —
+  // machine emitters, and it already works (5,491 keyed rows over 4,718 distinct
+  // keys = 1.16 rows per condition). Agents filing by hand supply none, so
+  // ~1,583 rows/day reached this point and minted unconditionally. This branch
+  // gives those filings an identity DERIVED from content and folds a repeat onto
+  // the row it repeats.
+  //
+  // Three dispositions, and NONE is a rejection — D-003's no-rejection half is
+  // unweakened, and the classifier's return type has no 'reject' variant, so the
+  // guarantee is structural rather than a comment a later edit can quietly break:
+  //   hard → fold onto the survivor (repeatCount, reporter, occurrence appended)
+  //   soft → MINT the row anyway, and link it
+  //   none → mint cleanly
+  // Every path below returns ok:true. The filing always lands.
+  //
+  // HARD is the semantic-dupe-guard CO-SIGNAL (cosine ≥ 0.86 AND pg_trgm title
+  // ≥ 0.45), not a pure cosine cut, because on this corpus known-duplicates
+  // (0.861–0.892) OVERLAP known-distinct pairs (0.857–0.868): no single cosine
+  // threshold separates them, so a second independent signal has to.
+  let softFold: { fold: FoldClassification; prior: EngineerIssue } | null = null;
+  if (isObservation && !input.watchdogKey) {
+    // Fail-open on the flag read exactly like the classifier's own null: a flag
+    // service blip must never change what happens to an agent's filing.
+    const foldEnabled = await getFlag(FLAGS.OBSERVATION_DERIVED_FOLD, `observation-fold:${origin}`).catch(
+      () => false,
+    );
+    const derived = foldEnabled
+      ? await classifyDerivedObservationFold({ input, origin, deps }).catch(() => null)
+      : null;
+    // `null` is NO VERDICT (flag off, embedder down, vitest-inert) — mint, as
+    // before. It is NOT the same as verdict:'none', which is a measured "nothing
+    // similar enough", and the two must not collapse into one branch.
+    if (derived?.fold.verdict === 'hard' && derived.prior) {
+      const prior = derived.prior;
+      const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
+      const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+      // WHO has now reported this condition. The occurrence ledger holds the
+      // per-filing detail; this list is what makes "two agents, one row" legible
+      // on the row itself without a join.
+      const priorReporters = Array.isArray(priorPayload.reporters)
+        ? priorPayload.reporters.filter((r): r is string => typeof r === 'string')
+        : [];
+      const reporters = [...new Set([...priorReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+      const mergePatch: Record<string, unknown> = {
+        repeatCount,
+        lastSeenAt: new Date().toISOString(),
+        reporters,
+        // Provenance of the fold itself, so an over-merge is diagnosable from the
+        // row and not only from a response nobody kept.
+        derivedFold: {
+          rule: derived.fold.rule,
+          similarity: derived.fold.candidate?.similarity ?? null,
+          at: new Date().toISOString(),
+          by: input.createdBy ?? null,
+        },
+      };
+      if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+      if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+      const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch).catch(() => null);
+      if (merged) {
+        // NOTE the asymmetry with the keyed path, which refreshes title/body:
+        // there, the caller PROVED the identity with a key. Here it was inferred,
+        // so the reading is APPENDED (the occurrence below carries the full
+        // title/body) and the survivor's own text is left alone. One wrong guess
+        // must not be able to erase another agent's account of a problem.
+        await appendCaptureOccurrence(
+          deps,
+          input,
+          identity,
+          'coalesced',
+          merged.id,
+          possibleDuplicates,
+          dedupCoverage,
+          harnessFromScope(merged.scope),
+        );
+        return {
+          ok: true,
+          created: false,
+          reason: 'coalesced',
+          coalescedOnto: buildCoalesceEffect({
+            finalIssue: merged,
+            prior,
+            input,
+            repeatCount,
+            bodyPersisted: false,
+            textDisposition: 'append-only',
+            fold: derived.fold,
+          }),
+          kind: merged.kind as 'bug' | 'change',
+          improvementKind: input.kind,
+          issue: merged,
+          topics,
+          possibleDuplicates,
+          dedupCoverage,
+          ...(alreadyDecided.length ? { alreadyDecided } : {}),
+        };
+      }
+      // The merge failed. Fall THROUGH to the mint below rather than returning an
+      // error: a fold is an optimization, and losing the filing to protect it
+      // would be exactly the silencing D-042 forbids.
+    } else if (derived?.fold.verdict === 'soft' && derived.prior) {
+      // Recorded now, applied after the row exists — the link needs both ids.
+      softFold = { fold: derived.fold, prior: derived.prior };
+    }
+  }
+
   // Kind-specific payload: the 'feature' refinement + candidate paths (close-loop D-002) + sourceRole (P-010).
   const payload: Record<string, unknown> = {};
   if (isObservation) {
@@ -1665,6 +1963,35 @@ export async function captureImprovement(
     ).catch(() => null);
   }
 
+  // P-013 SOFT fold: the row was minted (both survive) — now record the
+  // cross-reference. Best-effort: a link failure is REPORTED, never fatal. The
+  // filing has already landed, and losing it to protect a cross-reference would
+  // invert the priority D-042 sets.
+  let linkedTo: FoldLinkEffect | undefined;
+  if (softFold) {
+    const { fold, prior } = softFold;
+    const linkWritten = await (deps.linkIssues ?? defaultDeps.linkIssues!)(
+      issue.id,
+      prior.id,
+      'relates',
+      input.createdBy,
+    )
+      .then(() => true)
+      .catch(() => false);
+    linkedTo = {
+      id: prior.id,
+      similarity: fold.candidate?.similarity ?? 0,
+      rule: fold.rule,
+      linkWritten,
+      note:
+        fold.note +
+        (linkWritten
+          ? ''
+          : ` ⚠ The cross-reference edge to ${prior.id} could NOT be written, so the two rows are ` +
+            `related in fact but not in the graph — cite ${prior.id} by hand if that matters.`),
+    };
+  }
+
   return {
     ok: true,
     created: true,
@@ -1675,6 +2002,7 @@ export async function captureImprovement(
     possibleDuplicates,
     dedupCoverage,
     admissionIdentity: identity,
+    ...(linkedTo ? { linkedTo } : {}),
     ...(alreadyDecided.length ? { alreadyDecided } : {}),
   };
 }

@@ -2290,6 +2290,68 @@ describe('false-absence search-path guard (EI-20580705812821502)', () => {
 });
 
 /**
+ * invalid relative find timestamp guard (EI-21185971718818430).
+ *
+ * bfs 4.1.1 rejects human-relative and named-timezone timestamp text for
+ * `-newermt`. When stderr is hidden, the empty result is easy to misread as
+ * "nothing changed". The hook can safely judge literal values, but must leave
+ * variables and command substitutions alone because expansion would execute
+ * user code and is outside a PreToolUse lexical guard's scope.
+ */
+describe('invalid relative find timestamp guard (EI-21185971718818430)', () => {
+  const bashWithInput = (command: string) => ({
+    tool_name: 'Bash',
+    tool_input: { command },
+    session_id: 's-find-timestamp',
+    cwd: '/tmp',
+  });
+
+  const expectTimestampDeny = (out: { stdout: string; stderr?: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out).hookSpecificOutput;
+    expect(decision.permissionDecision).toBe('deny');
+    expect(decision.permissionDecisionReason).toContain('invalid find timestamp guard');
+    expect(decision.permissionDecisionReason).toContain('bfs 4.1.1');
+    expect(decision.permissionDecisionReason).toContain('ISO-8601-like');
+    expect(decision.permissionDecisionReason).toContain('stderr');
+  };
+
+  it('denies bfs human-relative text even when stderr is redirected', () => {
+    expectTimestampDeny(
+      runGate(bashWithInput("bfs . -newermt '12 minutes ago' 2>/dev/null")),
+    );
+  });
+
+  it('denies find negative-relative text', () => {
+    expectTimestampDeny(runGate(bashWithInput("find . -newermt '-10 minutes'")));
+  });
+
+  it('denies a named timezone that is not ISO-8601-like', () => {
+    expectTimestampDeny(
+      runGate(bashWithInput("find . -newermt '2026-08-22 20:34:00 America/New_York'")),
+    );
+  });
+
+  it('denies the generic -newerXY date form when Y is t', () => {
+    expectTimestampDeny(runGate(bashWithInput("find . -newerBt 'yesterday'")));
+  });
+
+  it.each([
+    "find . -newermt '2026-08-22'",
+    "find . -newermt '2026-08-22T20:34:00Z'",
+    "find . -newermt '2026-08-22 20:34:00 +00:00'",
+    'find . -newermt "$STAMP"',
+    'find . -newermt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+  ])('allows an ISO or runtime-produced timestamp: %s', (command) => {
+    expectAllow(runGate(bashWithInput(command)));
+  });
+
+  it('does not inspect prose that merely mentions find', () => {
+    expectAllow(runGate(bashWithInput('echo "find . -newermt \'12 minutes ago\'"')));
+  });
+});
+
+/**
  * false-absence SYMLINK-TRAVERSAL guard (EI-20825101204716643).
  *
  * Same class as the suite above, different mechanism — and a worse one. A

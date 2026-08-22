@@ -2406,6 +2406,12 @@ export async function setIssueState(
     assumptions?: StoredAssumptionDeclaration;
     skipCompletionGate?: boolean;
     /**
+     * A deliberate same-terminal correction from work_items:set_state. When a
+     * force close supplies only a completionRef, it must not clear the
+     * structured record already stored by work_items:complete.
+     */
+    force?: boolean;
+    /**
      * agent-protocol-authority-semantics-2026-07-26 P-004 — the completion-authority
      * judgement the gate reached for THIS close (`authorityForCompletion(evidence)`).
      * Supplying it SATISFIES the completion-integrity gate in place of `completionRef`:
@@ -2456,6 +2462,16 @@ export async function setIssueState(
   }
   const ws = await resolveIssueWorkspace(id);
   const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
+  // EI-21184699633369991: work_items:set_state { force:true } accepts a
+  // completionRef without structured evidence. Preserve the existing authority
+  // on that ref-only correction; otherwise the terminal UPDATE turns a valid
+  // completion into an authority:null row. The payload branch below already
+  // preserves _completionEvidence when no new evidence is supplied.
+  const preserveExistingCompletionRecord =
+    Boolean(opts.force) &&
+    !opts.skipCompletionGate &&
+    !opts.completionAuthority &&
+    !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0);
   // EI-19284963139619048: this UPDATE is the state-write half of EVERY issue-family
   // work_items:complete/set_state call — the highest-traffic write in the fleet's
   // completion path. It used to run on the raw, unbounded `getOrgPg()` admin pool
@@ -2525,6 +2541,8 @@ export async function setIssueState(
                -- the skipCompletionGate system paths and for any writer not yet migrated.
                authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
                                   THEN COALESCE(authority, ${opts.completionAuthority ?? null})
+                                WHEN ${preserveExistingCompletionRecord}
+                                  THEN authority
                                 ELSE ${opts.completionAuthority ?? null} END,
                payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                               THEN payload

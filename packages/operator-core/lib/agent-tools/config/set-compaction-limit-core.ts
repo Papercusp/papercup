@@ -154,7 +154,7 @@ export async function setCompactionLimitForOwner(
       note: 'The requested limit was not written because it would require clamping.',
     };
   }
-  await setCompactionLimit(targetOwnerId, applied);
+  await setCompactionLimit(targetOwnerId, applied, { explicit: true });
   const after = await getPresence(targetOwnerId).catch(() => null);
   const persisted = after?.compactionLimit ?? null;
 

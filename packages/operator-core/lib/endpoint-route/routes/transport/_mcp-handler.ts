@@ -73,7 +73,7 @@ import {
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
-import { applyResultDoor } from '../../../result-door';
+import { applyResultDoor, beginResultDoorAggregate } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
   PROJECTION_ARG,
@@ -1869,7 +1869,16 @@ const handler = createMcpHandler(
           params: {
             name: string;
             arguments?: Record<string, unknown>;
-            _meta?: { progressToken?: string | number; format?: string; idempotencyKey?: string; delta?: string };
+            _meta?: {
+              progressToken?: string | number;
+              format?: string;
+              idempotencyKey?: string;
+              delta?: string;
+              /** Canonical aggregate-output cohort supplied by a turn-aware client. */
+              outputGroupId?: string | number;
+              /** Compatibility alias used by clients that already expose a turn id. */
+              turnId?: string | number;
+            };
           };
         },
         extra: unknown,
@@ -2305,6 +2314,16 @@ const handler = createMcpHandler(
           // per-session SID for SU/power sessions, where spawnId is per-request)
           // falling back to spawnId (stable for signed orchestrator spawns).
           const replayOwnerKey = spawnRes.ctx.uiClientId ?? spawnRes.ctx.spawnId;
+          // P-006 / D-014: reserve the aggregate cohort at REQUEST START. A
+          // turn-aware client supplies outputGroupId/turnId; older MCP clients
+          // use beginResultDoorAggregate's explicit best-effort start cohort.
+          // Reserving here (rather than when the result completes) keeps a slow
+          // member of a parallel fan-out in the same cohort as its siblings.
+          const aggregateScope = beginResultDoorAggregate({
+            sessionKey: replayOwnerKey,
+            outputGroupId: req.params._meta?.outputGroupId ?? req.params._meta?.turnId,
+            startedAtMs: callStartedAt,
+          });
           // Superuser per-call workspace scoping (EI-30) — the inverse of the
           // power-user clamp. An unscoped superuser session (workspaceId '*')
           // that passes a concrete `workspace` arg dispatches under THAT
@@ -2370,13 +2389,33 @@ const handler = createMcpHandler(
                       (err instanceof Error ? err.message : String(err)),
                   );
                 }
-                return withScopeGuessWarning(
-                  stored as {
+                const storedResult = stored as {
                     content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
                     isError?: boolean;
                     _meta?: Record<string, unknown>;
                     structuredContent?: unknown;
-                  },
+                  };
+                // P-006 / D-014: a replay is still model-facing output. Stored
+                // outcomes were already per-result-doored before persistence,
+                // but this request must consume the CURRENT aggregate cohort or
+                // retry fan-out can bypass the one-budget invariant entirely.
+                const replayedResult = projected.skipResultDoor
+                  ? storedResult
+                  : applyResultDoor(storedResult, {
+                      toolName,
+                      workspaceId: dispatchSpawnCtx.workspaceId,
+                      runId: dispatchSpawnCtx.runId ?? null,
+                      ownerId: (() => {
+                        try {
+                          return resolveAgentIdentity(baseCtx).ownerId;
+                        } catch {
+                          return null;
+                        }
+                      })(),
+                      aggregateScope,
+                    });
+                return withScopeGuessWarning(
+                  replayedResult,
                   dispatchSpawnCtx,
                 );
               }
@@ -2519,6 +2558,7 @@ const handler = createMcpHandler(
                       return null;
                     }
                   })(),
+                  aggregateScope,
                 },
               );
               // EI-19415249247575123: a `not_found` returned while this process is KNOWN to

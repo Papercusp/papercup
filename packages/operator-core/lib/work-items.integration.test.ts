@@ -740,6 +740,44 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
     expect(after?.terminalOwner).toBe('agB');
   });
 
+  it('a force ref-only re-close preserves structured evidence and authority for both families', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'verified completion',
+      completionEvidence: RICH,
+      completionAuthority: 'committed',
+    });
+    const bugAfter = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'ref-only corrective close',
+      force: true,
+    });
+    expect(bugAfter?.terminalOwner).toBe('agA');
+    expect(bugAfter?.terminalCompletionRef).toBe('ref-only corrective close');
+    expect(bugAfter?.terminalCompletionEvidence).toEqual(RICH);
+    expect(bugAfter?.completionAuthority).toBe('committed');
+
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feature.id, 'passed', {
+      harness: 'papercup',
+      by: 'agA',
+      completionRef: 'verified feature completion',
+      completionEvidence: RICH,
+      completionAuthority: 'committed',
+    });
+    const featureAfter = await wi.setWorkItemState(feature.id, 'passed', {
+      harness: 'papercup',
+      by: 'agA',
+      completionRef: 'ref-only corrective close',
+      force: true,
+    });
+    expect(featureAfter?.terminalOwner).toBe('agA');
+    expect(featureAfter?.terminalCompletionRef).toBe('ref-only corrective close');
+    expect(featureAfter?.terminalCompletionEvidence).toEqual(RICH);
+    expect(featureAfter?.completionAuthority).toBe('committed');
+  });
+
   it('the guard is family-agnostic — a feature is protected identically', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(feat.id, 'passed', {

@@ -1706,6 +1706,17 @@ export function runBootstrap(): void {
       }
     })();
 
+  // External-triggers P-006: Slack Socket Mode is an outbound, process-local
+  // lifecycle connection. Start it only in the background owner process; its
+  // managed timer is visible through schedule:inventory and retries cold gaps
+  // and disconnects without requiring public ingress.
+  if (backgroundWorkers && cluster.isPrimary)
+    void import('@papercusp/operator-core/lib/external-triggers/slack-socket-manager')
+      .then(({ startSlackSocketManager }) => startSlackSocketManager())
+      .catch((e) => {
+        console.warn('[slack-socket] boot-start failed (non-fatal):', e instanceof Error ? e.message : e);
+      });
+
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
   // Gated by BOTH backgroundWorkersEnabled() and PAPERCUSP_DBOS_ENABLE=1; both
   // are required before this process can register DBOS routines. The routines

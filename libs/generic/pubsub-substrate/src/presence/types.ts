@@ -101,6 +101,10 @@ export interface PresenceRecord {
    *  Optional: only the PG store (live presence) carries it; roster/snapshot
    *  transforms may omit it. */
   compactionLimit?: number | null;
+  /** True when compactionLimit was deliberately set at runtime, rather than
+   *  derived/seeding by the watchdog. Optional for roster/snapshot projections
+   *  that do not carry the live provenance column. */
+  compactionLimitExplicit?: boolean;
   /** Cached context-size estimate in tokens + when it was taken. The
    *  compaction-compliance watchdog writes these on a cadence (off the hot path);
    *  the coord:inbox usage signal reads them vs compactionLimit. */

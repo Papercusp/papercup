@@ -12,6 +12,7 @@ import {
   killPty,
   getHistory,
   getPty,
+  getPtyByTaskId,
   getPtyMeta,
   getScreenSerialization,
   resizePty,
@@ -191,6 +192,29 @@ describe('pty-bridge', () => {
     expect(resizePty(handle.id, 100, 30, foreignScope)).toBe(false);
     expect(killPty(handle.id, foreignScope)).toBe(false);
     expect(getPty(handle.id, TEST_SCOPE)?.killed).toBe(false);
+  });
+
+  it('reattaches a live interactive session by durable task id without exposing the PTY id', async () => {
+    const taskId = 'mepersistenttask01';
+    const handle = spawnPty({
+      accessScope: TEST_SCOPE,
+      command: 'bash',
+      args: ['-c', 'read x; echo TASK_$x; sleep 0.05'],
+      cwd: process.cwd(),
+      inheritEnv: false,
+      env: { PATH: process.env.PATH },
+      taskId,
+      cols: 80,
+      rows: 24,
+    });
+    liveIds.push(handle.id);
+
+    expect(handle.taskId).toBe(taskId);
+    expect(getPtyByTaskId(taskId, TEST_SCOPE)?.id).toBe(handle.id);
+    expect(getPtyByTaskId(taskId, { ...TEST_SCOPE, principalId: 'user-b' })).toBeUndefined();
+    expect(writePty(getPtyByTaskId(taskId, TEST_SCOPE)!.id, Buffer.from('RESUMED\n'), TEST_SCOPE)).toBe(true);
+    const out = await waitForOutput(handle.id, (value) => value.includes('TASK_RESUMED'));
+    expect(out).toContain('TASK_RESUMED');
   });
 
   // EI-151: a recorded pid can be recycled by the OS to a DIFFERENT agent's

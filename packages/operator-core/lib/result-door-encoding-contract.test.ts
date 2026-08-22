@@ -96,6 +96,37 @@ function doorOversizedResult(): { cursor: SpillCursor; next: string } {
   return { cursor: body._projection.cursor, next: body._projection.next };
 }
 
+/** A valid JSON result whose tool-owned record body is already clipped. */
+function doorOversizedPartialJsonResult(): { cursor: SpillCursor; next: string } {
+  const records = Array.from({ length: 11 }, (_, i) =>
+    `### D-${String(i + 1).padStart(3, '0')}\n${'decision text '.repeat(80)}`,
+  ).join('\n\n');
+  const text = JSON.stringify({
+    ok: true,
+    results: [{
+      section: {
+        heading: 'Decisions',
+        level: 2,
+        body: records,
+        body_truncated: true,
+        body_full_chars: records.length + 10_000,
+        body_records_shown: 11,
+        body_records_total: 22,
+      },
+    }],
+  });
+  expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+  const doored = applyResultDoor(
+    { content: [{ type: 'text' as const, text }] },
+    { toolName: TOOL, workspaceId: WS, runId: RUN_ID },
+  ) as DoorableResult;
+  const body = JSON.parse(
+    (doored.content.find((c) => (c as { type?: string }).type === 'text') as { text: string }).text,
+  ) as { _projection: { cursor: SpillCursor; next: string } };
+  return { cursor: body._projection.cursor, next: body._projection.next };
+}
+
 /** The single spill file the door wrote, as RAW BYTES (never utf8-decoded — the
  *  whole question here is what the bytes on disk actually are). */
 function spillBytes(): Buffer {
@@ -113,6 +144,26 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // The exact field that caused the misread: unscoped, and adjacent to
     // `file_path`, it reads as a property of the file. It must not come back.
     expect(cursor).not.toHaveProperty('encoding');
+  });
+
+  it('does not advertise exact JSON recovery for a tool-internally clipped body (EI-21185758364267344)', () => {
+    const { cursor, next } = doorOversizedPartialJsonResult();
+
+    // The spill remains readable for inspection, but bodyByteOffset is an
+    // exact-complete-JSON contract and must not be emitted for a body that
+    // already says records were omitted before this door ran.
+    expect(cursor.kind).toBe('scratch-page');
+    expect(cursor.bodyByteOffset).toBeUndefined();
+    expect(next).toContain('inspect the emitted spill bytes');
+    expect(next).toContain('body_truncated');
+    expect(next).toContain('this JSON is partial');
+    expect(next).toContain('paging cannot recover omitted fields');
+    expect(next).toContain('Re-call work_items:get');
+    expect(next).not.toContain('recover the exact spill bytes');
+
+    const spill = spillBytes().toString('utf8');
+    expect(spill).toContain('D-011');
+    expect(spill).not.toContain('D-012');
   });
 
   it('keeps the JSON recovery pointer no longer than the ambiguous one it replaced', () => {

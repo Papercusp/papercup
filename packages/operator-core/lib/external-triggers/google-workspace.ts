@@ -5,6 +5,9 @@ import {
   upsertOwnedExternalTriggerSource,
 } from './source-store';
 import { ensureExternalTriggerBinding } from './admin';
+import { getProvider, loadAndRegisterProvidersFromDisk } from '../oauth/providers';
+import { fsTokenStorage } from '../oauth/storage-fs';
+import { getOAuthToken } from '../oauth/token';
 
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
 export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal'] as const;
@@ -33,6 +36,23 @@ export function assertGoogleWorkspaceOwnerUserId(ownerUserId: string | undefined
   const normalized = ownerUserId?.trim() ?? '';
   if (!UUID.test(normalized)) throw new Error('google_workspace_owner_user_id_invalid');
   return normalized;
+}
+
+/** Resolve the shared Google Workspace Desktop OAuth token for either source. */
+export async function resolveGoogleWorkspaceAccessToken(
+  source: ExternalTriggerSourceRow,
+  installSlug: string,
+): Promise<string> {
+  const field = googleWorkspaceOAuthField(source.credentialRef);
+  if (!getProvider('google')) await loadAndRegisterProvidersFromDisk();
+  const token = await getOAuthToken({
+    plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+    harness: installSlug,
+    storage: fsTokenStorage,
+    resolveProvider: (candidate) => candidate === field ? { provider: 'google' } : null,
+  }, field);
+  if (!token) throw new Error(`google_workspace_oauth_not_connected:${field}`);
+  return token;
 }
 
 /**

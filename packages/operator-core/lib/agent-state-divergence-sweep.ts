@@ -67,6 +67,17 @@ export const SWEEP_ROW_CAP = 20_000;
 
 const DEFAULT_INSTALL_SLUG = 'papercusp';
 
+/**
+ * Goal states that cannot produce an actionable intent-divergence finding.
+ *
+ * `blocked` is deliberately the only non-terminal state here: a blocked work
+ * item is parked behind a dependency, so asking its holder to redeclare intent
+ * would be just as fruitless as paging about a completed item. Keep this list
+ * narrow; `needs-human` and other non-active states have different ownership
+ * semantics and must not be silently folded into this detector.
+ */
+const NON_ACTIONABLE_GOAL_STATES: readonly string[] = [...ANY_FAMILY_TERMINAL_STATES, 'blocked'];
+
 /** Synthetic identity for the background notification (mirrors the siblings). */
 const DIVERGENCE_IDENTITY: AgentIdentity = {
   ownerId: 'intent-divergence-detector',
@@ -236,7 +247,8 @@ export async function loadRecentCalls(opts: {
 }
 
 /**
- * Which of these goal refs are already FINISHED (P-010, EI-18830083673617307).
+ * Which of these goal refs are already non-actionable (P-010,
+ * EI-18830083673617307, EI-21184798433375271).
  *
  * ⚠ DERIVED FROM `ANY_FAMILY_TERMINAL_STATES`, NEVER RE-LISTED. A goal ref can be
  * either kind-family (EI-/WI- issue, F- feature) and the two spell their terminals
@@ -246,8 +258,9 @@ export async function loadRecentCalls(opts: {
  * ~88% phantoms because every consumer reads "not in the set ⇒ still active" — which
  * is exactly how THIS function is read too.
  *
- * Returns only the terminal subset; a ref absent from `work_items` entirely is NOT
- * treated as terminal, because "I could not find it" is not "it is finished".
+ * Returns only the terminal/blocked subset; a ref absent from `work_items`
+ * entirely is NOT treated as non-actionable, because "I could not find it" is
+ * not evidence that it is finished or deliberately parked.
  */
 export async function loadTerminalGoalRefs(opts: {
   workspaceId: string;
@@ -262,7 +275,7 @@ export async function loadTerminalGoalRefs(opts: {
       FROM harness_shared.work_items
      WHERE workspace_id = ${opts.workspaceId}
        AND feature_id = ANY(${refs as string[]}::text[])
-       AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+       AND status = ANY(${NON_ACTIONABLE_GOAL_STATES as string[]}::text[])
   `;
   return new Set(rows.map((r) => r.feature_id));
 }

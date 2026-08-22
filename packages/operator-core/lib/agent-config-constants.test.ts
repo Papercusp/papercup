@@ -8,6 +8,7 @@ import {
   isDefault1mModelSpec,
   defaultCompactionLimitForSpec,
   defaultCompactionLimitForWindow,
+  selfSetCeilingForWindow,
   selfSetCeilingForSpec,
   clampCompactionLimit,
   MIN_COMPACTION_LIMIT_TOKENS,
@@ -180,6 +181,22 @@ describe('defaultCompactionLimitForWindow (live backend window)', () => {
   it('preserves the established 1M and 200k derivations', () => {
     expect(defaultCompactionLimitForWindow(1_000_000)).toBe(400_000);
     expect(defaultCompactionLimitForWindow(200_000)).toBe(158_000);
+  });
+});
+
+describe('selfSetCeilingForWindow (measured runtime override ceiling)', () => {
+  it('allows a leader/solo override above the 400k seeded cap when the window supports it', () => {
+    expect(selfSetCeilingForWindow(828_400)).toBe(681_000);
+  });
+
+  it('keeps fleet members at their role ceiling even with a wider measured window', () => {
+    expect(selfSetCeilingForWindow(828_400, { fleetMember: true })).toBe(
+      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    );
+  });
+
+  it('honors the minimum for an invalid or tiny measurement', () => {
+    expect(selfSetCeilingForWindow(1)).toBe(MIN_COMPACTION_LIMIT_TOKENS);
   });
 });
 

@@ -31,6 +31,7 @@ import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
+import { resetResultDoorAggregatesForTests } from '../../result-door';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -582,6 +583,7 @@ beforeEach(() => {
   h.replayStores.length = 0;
   h.storedReplay = null;
   h.invocations.length = 0;
+  resetResultDoorAggregatesForTests();
   h.scopedClampFlag.value = false;
   invokeProbeSeen.length = 0;
   txlessRoleProbeSeen.length = 0;
@@ -947,6 +949,39 @@ describe('a replayed call records a tool_invocation row', () => {
     expect(row.args).toEqual({ probe: 'v' });
     // The retry key rides metadata so a storm is groupable by the key re-sent.
     expect(row.metadataJson).toMatchObject({ replayIdempotencyKey: 'idem-replay-1' });
+  });
+
+  it('counts replayed output in the same explicit aggregate cohort', async () => {
+    h.storedReplay = { content: [{ type: 'text', text: 'r'.repeat(4_500) }] };
+    const meta = { idempotencyKey: 'idem-replay-budget', outputGroupId: 'turn-replay-budget' };
+    const signed = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-replay-budget' }));
+
+    const first = await callTool('gatingtest:scoped', {}, signed, meta);
+    const second = await callTool('gatingtest:scoped', {}, signed, meta);
+    const third = await callTool('gatingtest:scoped', {}, signed, meta);
+
+    expect(textOf(first)).toBe('r'.repeat(4_500));
+    expect(textOf(second)).toBe('r'.repeat(4_500));
+    const envelope = JSON.parse(third.content[0]!.text!);
+    expect(envelope).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      incomplete: { reason: 'aggregate-output-budget-exceeded' },
+    });
+    expect(third._meta).toMatchObject({
+      replayed: true,
+      resultDoor: {
+        aggregate: {
+          mode: 'explicit',
+          budgetBytes: 12_000,
+          consumedBeforeBytes: 9_000,
+          consumedAfterBytes: 12_000,
+          exceeded: true,
+        },
+      },
+    });
+    expect(seen).toHaveLength(0);
+    expect(h.replayStores).toEqual([]);
   });
 
   it('attributes the row exactly as a fresh call would — the point of building ctx first', async () => {

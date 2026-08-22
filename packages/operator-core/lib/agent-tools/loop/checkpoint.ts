@@ -54,6 +54,7 @@ import {
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { getSessionBrief } from '../../session-brief';
 import { HARVESTED_FIRST_LINE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import { getPresence } from '../coordination/presence';
@@ -390,7 +391,6 @@ export default defineTool({
     // uses). Only fall back to the old session-context chain when no routine is armed yet
     // (e.g. a checkpoint written before the first loop:arm — an edge case, since
     // loop:checkpoint's whole purpose assumes an armed loop already exists).
-    const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
     // EI-7734: the pre-armed-routine fallback is routed through resolvePotHomeSlug
     // (not a raw `??` chain) so its '*'-skip logic runs — every superuser/operator
     // session sets ctx.harnessSlug='*' (the wildcard sentinel), which would otherwise
@@ -400,8 +400,34 @@ export default defineTool({
       requestedHarness && requestedHarness !== '*' && requestedHarness.toLowerCase() !== 'all'
         ? resolvePotHomeSlug(requestedHarness, undefined)
         : null;
+    const hasConcreteContextHarness = (value?: string | null): boolean => {
+      const trimmed = value?.trim().toLowerCase();
+      return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
+    };
+    const contextHarness = hasConcreteContextHarness(ctx.harnessSlug)
+      ? resolvePotHomeSlug(undefined, ctx.harnessSlug)
+      : null;
+
+    // EI-21183575241304993: a client-less ptool dispatch has no concrete harness in
+    // ctx (the transport supplies '*'), but coord:orient has already persisted the
+    // session's real harness in session_briefs. Read that durable scope BEFORE the
+    // owner-only getLoopStatus fallback: an owner may have loops under several
+    // harnesses, and getLoopStatus intentionally returns only one of them. Selecting
+    // that arbitrary row silently writes this note where the current cold reader will
+    // never look. Explicit args and a concrete context still follow the existing
+    // routine-first rule so the writer matches the armed routine's read-side key.
+    const sessionBrief =
+      !explicitHarness && !contextHarness ? await getSessionBrief({ ownerId }).catch(() => null) : null;
+    const briefHarness = hasConcreteContextHarness(sessionBrief?.harnessSlug)
+      ? resolvePotHomeSlug(sessionBrief!.harnessSlug, undefined)
+      : null;
+    const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
     const harness =
-      explicitHarness ?? armedRoutine?.harnessSlug ?? resolvePotHomeSlug(undefined, ctx.harnessSlug);
+      explicitHarness ??
+      briefHarness ??
+      armedRoutine?.harnessSlug ??
+      contextHarness ??
+      resolvePotHomeSlug(undefined, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [

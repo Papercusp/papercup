@@ -101,7 +101,7 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     );
     // 150k is below the fleet-member cap (200k) → applied verbatim, not clamped.
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', 150_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 150_000); // within cap → verbatim
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 150_000, { explicit: true }); // within cap → verbatim
     expect(out).toMatchObject({ ok: true, invokedAs: 'queen', compactionLimit: 150_000 });
     expect(out.clamped).toBeUndefined();
   });
@@ -124,7 +124,7 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     // 500k is above the SEEDED 400k default but inside the 825k self-set ceiling. This
     // silently clamped back to 400k until 2026-08-08 — the exact defect the split fixed.
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-lead2', 500_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', 500_000);
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', 500_000, { explicit: true });
     expect(out).toMatchObject({
       ok: true,
       invokedAs: 'owner',
@@ -158,7 +158,7 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
       id === 'su-gone' ? null : { agentRole: 'su' },
     );
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-gone', 150_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-gone', 150_000);
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-gone', 150_000, { explicit: true });
     expect(out.ok).toBe(false);
     expect(out.note).toMatch(/no live presence row/);
   });

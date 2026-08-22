@@ -13,6 +13,7 @@ import {
   divergenceFireKey,
   formatDivergenceAlert,
   loadRecentCalls,
+  loadTerminalGoalRefs,
   DIVERGENCE_REPEAT_LOOKBACK_HOURS,
   DIVERGENCE_DEBOUNCE_HOURS,
 } from './agent-state-divergence-sweep';
@@ -113,6 +114,23 @@ describe('loadRecentCalls', () => {
       goalRef: 'WI-1',
       declaredGoalRefs: ['WI-1', 'WI-2'],
     });
+  });
+});
+
+describe('loadTerminalGoalRefs', () => {
+  it('includes blocked goals in the non-actionable resolver query', async () => {
+    const sql = vi.fn(async () => [{ feature_id: 'WI-blocked' }]);
+    const refs = await loadTerminalGoalRefs({
+      workspaceId: 'test-workspace',
+      goalRefs: ['WI-live', 'WI-blocked'],
+      sql: sql as never,
+    });
+
+    expect(refs).toEqual(new Set(['WI-blocked']));
+    const [template, ...values] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(Array.from(template).join(' ')).toContain('status = ANY');
+    const stateValues = values.filter((value): value is string[] => Array.isArray(value));
+    expect(stateValues.some((states) => states.includes('blocked'))).toBe(true);
   });
 });
 
@@ -322,6 +340,17 @@ describe('P-010 — the sweep resolves goal state before it pages anyone', () =>
     expect(d.sendMessage).not.toHaveBeenCalled();
     expect(out.report?.structuralZero).toBe('all-goals-terminal');
     expect(out.outcomes[0].reason).toMatch(/STRUCTURAL ZERO/);
+  });
+
+  it('sends nothing when the secondary goal is blocked — the held-dependency false positive', async () => {
+    const d = deps({
+      loadRecentCalls: vi.fn(async () => goalDriftCalls('WI-live', 'WI-blocked')),
+      loadTerminalGoalRefs: vi.fn(async () => new Set(['WI-blocked'])),
+    } as never);
+    const out = await divergenceSweep(d);
+    expect(d.sendMessage).not.toHaveBeenCalled();
+    expect(out.report?.divergences).toEqual([]);
+    expect(out.report?.coverage.terminalGoalCallsExcluded).toBe(1);
   });
 
   it('passes every cited goal ref to the resolver, deduped', async () => {

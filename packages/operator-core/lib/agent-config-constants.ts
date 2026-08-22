@@ -736,6 +736,21 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
  */
 export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 200_000;
 
+/** Derive the maximum safe limit for a DELIBERATE runtime override from a
+ * measured effective model window. Unlike the seeded default, this deliberately
+ * does not impose the 400k leader/solo role cap: a self-set may use the wider
+ * measured runway, while fleet members remain bounded by their 200k role cap. */
+export function selfSetCeilingForWindow(
+  window: number,
+  opts?: { fleetMember?: boolean },
+): number {
+  const finiteWindow = Number.isFinite(window) && window > 0 ? Math.floor(window) : MODEL_WINDOW_DEFAULT;
+  const raw = (finiteWindow - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
+  const derived = Math.floor(raw / 1000) * 1000;
+  const roleCap = opts?.fleetMember ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP : Number.POSITIVE_INFINITY;
+  return Math.max(MIN_COMPACTION_LIMIT_TOKENS, Math.min(roleCap, derived));
+}
+
 /** Derive a safe seeded soft limit from a LIVE effective model window. This is
  * the backend-neutral twin of the spec-based resolver below and is load-bearing
  * for Codex, whose rollout reports 258400 after applying the CLI's 95% effective

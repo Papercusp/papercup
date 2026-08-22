@@ -88,11 +88,12 @@ export async function reseedLeaderCompactionLimit(
       await import('../../agent-config-constants');
     const spec = await resolveModelSpecForOwner(ownerId).catch(() => null);
     const leaderCap = defaultCompactionLimitForSpec(spec, { fleetMember: false });
-    const current = (await getPresence(ownerId).catch(() => null))?.compactionLimit ?? null;
+    const currentRecord = await getPresence(ownerId).catch(() => null);
+    const current = currentRecord?.compactionLimit ?? null;
 
     if (opts?.compactionLimit != null) {
       const applied = clampCompactionLimit(opts.compactionLimit, spec, { fleetMember: false });
-      await setCompactionLimit(ownerId, applied);
+      await setCompactionLimit(ownerId, applied, { explicit: true });
       return { applied, from: current, reason: 'explicit-limit' };
     }
     if (opts?.contextSize) {
@@ -102,8 +103,8 @@ export async function reseedLeaderCompactionLimit(
     if (leaderCap <= COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) {
       return { applied: current ?? leaderCap, from: current, reason: 'non-1m-no-cap-gap' };
     }
-    if (current === COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) {
-      await setCompactionLimit(ownerId, leaderCap);
+    if (current === COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP && !currentRecord?.compactionLimitExplicit) {
+      await setCompactionLimit(ownerId, leaderCap, { explicit: false });
       return { applied: leaderCap, from: current, reason: 'member-cap-lifted' };
     }
     return { applied: current ?? leaderCap, from: current, reason: 'already-leader-grade' };

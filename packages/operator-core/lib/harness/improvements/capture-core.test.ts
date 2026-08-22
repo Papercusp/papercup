@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   captureImprovement,
   validateScoutEvidenceCitations,
@@ -7,6 +7,9 @@ import {
   CONTAINMENT_THRESHOLD,
   type CaptureDeps,
 } from './capture-core';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import type { SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
@@ -1026,7 +1029,27 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     expect(res.possibleDuplicates[0].similarity).toBe(1);
   });
 
-  it('observations still skip the semantic net entirely (recurrence IS the signal)', async () => {
+  // P-013 (D-042) narrowed this test's original claim, and deliberately so. It
+  // used to read "observations skip the semantic net ENTIRELY". They no longer
+  // do: the derived-identity fold consults the same embedder. What survives —
+  // and is the invariant P-011 actually cared about — is that the DECLINE net
+  // never applies to an observation. Folding is not declining: the filing lands
+  // either way (ok:true), which is the D-003 half the owner left unweakened.
+  it('the semantic DECLINE net still never applies to an observation, however similar', async () => {
+    setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+    // 0.99 — far above every hard threshold. For an improvement this declines.
+    const d = semDeps(deps({ found: [] }), { hard: [{ id: 'EI-57', similarity: 0.99 }], soft: [] }, []);
+
+    const res = await captureImprovement({ title: 'x', kind: 'change', lane: 'observation' }, d);
+
+    expect(res.ok).toBe(true);
+    expect(res.reason).not.toBe('likely-duplicate');
+    expect(res.created).toBe(true); // the scored row does not hydrate, so it mints
+    setFlagOverridesForTest(null);
+  });
+
+  it('with the derived fold OFF, an observation consults no embedder at all (the pre-P-013 behaviour)', async () => {
+    setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: false });
     let called = false;
     const d = {
       ...deps(),
@@ -1038,6 +1061,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     const res = await captureImprovement({ title: 'x', kind: 'change', lane: 'observation' }, d);
     expect(res.created).toBe(true);
     expect(called).toBe(false);
+    setFlagOverridesForTest(null);
   });
 });
 
@@ -1961,5 +1985,336 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
     await expect(
       captureImprovement({ title: 'unrelated unique failure', kind: 'bug', watchdogKey: 'condition:k' }, d),
     ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_condition_key_uq' });
+  });
+});
+
+/**
+ * P-013 (owner amendment D-042) — the DERIVED-identity fold, at the WIRING level.
+ *
+ * observation-fold.test.ts already proves the decider's precision on a labelled
+ * sample. What it cannot prove is that captureImprovement actually ROUTES a
+ * verdict: that a 'hard' verdict really bumps repeatCount on the survivor
+ * instead of minting, that 'soft' really mints AND links, and — the clause the
+ * owner made non-negotiable — that NO path rejects the filing. Those are
+ * properties of this file's branch, so they are tested here.
+ *
+ * Every seam is injected; nothing below opens PG or an embedder.
+ */
+describe('captureImprovement — derived-identity fold for agent filings (P-013 / D-042)', () => {
+  // Restore normal flag resolution. `null` CLEARS the override map; `{}` does
+  // not — it is a truthy map that pins every flag to FLAG_DEFAULTS for the rest
+  // of the process, which would silently govern later tests in this file.
+  afterEach(() => setFlagOverridesForTest(null));
+
+  const PRIOR_ID = 'EI-500';
+
+  /** An open, unkeyed observation row in the same scope + origin — i.e. one the
+   *  retrieval filter is supposed to ACCEPT as a fold candidate. */
+  function priorObservation(p: Partial<EngineerIssue> = {}): EngineerIssue {
+    return existing({
+      id: PRIOR_ID,
+      title: '`coord:send` rejects a body over the size cap without naming the cap',
+      kind: 'change',
+      severity: 'nit',
+      state: 'open',
+      scope: 'operator',
+      signalOrigin: 'organic',
+      createdBy: 'su-first-reporter',
+      payload: { lane: 'observation', repeatCount: 1, reporters: ['su-first-reporter'] },
+      ...p,
+    });
+  }
+
+  function semantic(hard: SemanticDupeResult['hard'], soft: SemanticDupeResult['soft'] = []): SemanticDupeResult {
+    return { hard, soft, thresholds: { hard: 0.93, soft: 0.8 } };
+  }
+
+  /** A candidate the guard scored. `title`/`state`/`harness` are the guard's own
+   *  columns; the fold path re-reads the row via getIssue, so only `id` and the
+   *  scores steer the decision. */
+  function scored(similarity: number, titleSimilarity?: number): SemanticDupeResult['hard'][number] {
+    return {
+      id: PRIOR_ID,
+      title: 'from the vector index',
+      state: 'open',
+      harness: null,
+      similarity,
+      ...(typeof titleSimilarity === 'number' ? { titleSimilarity } : {}),
+    };
+  }
+
+  function foldDeps(opts: {
+    sem?: SemanticDupeResult | null;
+    prior?: EngineerIssue | null;
+    mergeFails?: boolean;
+    linkFails?: boolean;
+  }): CaptureDeps & {
+    created: CreateIssueInput[];
+    occurrences: RecordIssueOccurrenceInput[];
+    merges: { id: string; patch: Record<string, unknown> }[];
+    links: { src: string; dst: string; rel: string }[];
+    patched: string[];
+  } {
+    const base = deps();
+    const merges: { id: string; patch: Record<string, unknown> }[] = [];
+    const links: { src: string; dst: string; rel: string }[] = [];
+    const patched: string[] = [];
+    const prior = opts.prior === undefined ? priorObservation() : opts.prior;
+    return {
+      ...base,
+      merges,
+      links,
+      patched,
+      findSemanticDupes: async () => (opts.sem === undefined ? semantic([scored(0.88, 0.62)]) : opts.sem),
+      getIssue: async (id: string) => (prior && id === prior.id ? prior : null),
+      mergeIssuePayload: async (id, patch) => {
+        merges.push({ id, patch });
+        if (opts.mergeFails) return null;
+        const before = ((prior?.payload as Record<string, unknown> | null) ?? {}) as Record<string, unknown>;
+        return existing({
+          ...(prior ?? {}),
+          id,
+          title: prior?.title ?? 'survivor',
+          payload: { ...before, ...patch },
+        });
+      },
+      // The derived fold must NEVER call this: rewriting the survivor's text on
+      // an INFERRED match is the over-merge D-042 warns about. Recording the
+      // call (rather than throwing) lets the assertion name the violation.
+      updateIssuePatch: async (id) => {
+        patched.push(id);
+        return prior;
+      },
+      linkIssues: async (src, dst, rel) => {
+        if (opts.linkFails) throw new Error('link write failed');
+        links.push({ src, dst, rel });
+      },
+    };
+  }
+
+  /** The same observation, filed by a second agent. Shares the backticked
+   *  subject `coord:send` with the prior row, so the D-036 discriminator finds
+   *  the subjects AGREE and does not demote. */
+  const repeatFiling = {
+    title: '`coord:send` refuses an oversized body and never says what the limit is',
+    kind: 'change' as const,
+    lane: 'observation' as const,
+    createdBy: 'su-second-reporter',
+  };
+
+  describe('HARD verdict — two agents, one row', () => {
+    it('folds onto the survivor: no new row, repeatCount 2, BOTH reporters recorded', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({});
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.ok).toBe(true); // D-003: the filing always lands
+      expect(res.created).toBe(false);
+      expect(res.reason).toBe('coalesced');
+      expect(d.created).toHaveLength(0); // the whole point: no second row
+      expect(d.merges).toHaveLength(1);
+      expect(d.merges[0].id).toBe(PRIOR_ID);
+      expect(d.merges[0].patch).toMatchObject({
+        repeatCount: 2,
+        reporters: ['su-first-reporter', 'su-second-reporter'],
+      });
+    });
+
+    it("reports the fold as DERIVED identity and append-only text — not a keyed fold, not a write loss", async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({});
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.coalescedOnto).toMatchObject({
+        id: PRIOR_ID,
+        repeatCount: 2,
+        identity: 'derived',
+        textDisposition: 'append-only',
+        foldRule: 'co-signal',
+        similarity: 0.88,
+        crossAuthor: true,
+        priorAuthor: 'su-first-reporter',
+      });
+      // append-only is a POLICY, so it must not be reported with the
+      // write-loss marker the keyed path uses when a refresh actually failed.
+      expect(res.coalescedOnto?.bodyDiscarded).toBeUndefined();
+    });
+
+    it('REGRESSION: the note never renders a literal "conditionKey `undefined`" (there is no key on this path)', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({});
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.coalescedOnto?.note).not.toContain('undefined');
+      expect(res.coalescedOnto?.note).toContain('derived identity');
+    });
+
+    it("appends the reading to the occurrence ledger as 'coalesced' with the second agent as reporter", async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({});
+
+      await captureImprovement(repeatFiling, d);
+
+      expect(d.occurrences).toHaveLength(1);
+      expect(d.occurrences[0]).toMatchObject({
+        canonicalId: PRIOR_ID,
+        reportKind: 'coalesced',
+        reporter: 'su-second-reporter',
+        reportedTitle: repeatFiling.title,
+      });
+    });
+
+    it("leaves the survivor's own title/body ALONE — an inferred match must not overwrite another agent's account", async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({});
+
+      await captureImprovement(repeatFiling, d);
+
+      expect(d.patched).toEqual([]); // updateIssuePatch never called
+    });
+
+    it('NEVER REJECTS: a failed merge falls through to a normal mint instead of erroring', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({ mergeFails: true });
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.ok).toBe(true);
+      expect(res.created).toBe(true);
+      expect(d.created).toHaveLength(1);
+    });
+  });
+
+  describe('SOFT verdict — both rows survive, linked', () => {
+    it('mints the row AND writes a `relates` edge to the similar one', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      // 0.91: above the soft floor, below pure-cosine, and no title score, so
+      // the co-signal cannot fire — the soft-band rule.
+      const d = foldDeps({ sem: semantic([], [scored(0.91)]) });
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.created).toBe(true);
+      expect(d.created).toHaveLength(1);
+      expect(d.merges).toHaveLength(0);
+      expect(res.linkedTo).toMatchObject({
+        id: PRIOR_ID,
+        rule: 'soft-band',
+        similarity: 0.91,
+        linkWritten: true,
+      });
+      expect(d.links).toEqual([{ src: 'EI-100', dst: PRIOR_ID, rel: 'relates' }]);
+    });
+
+    it('a link-write failure is REPORTED, never fatal — the filing still lands', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({ sem: semantic([], [scored(0.91)]), linkFails: true });
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.ok).toBe(true);
+      expect(res.created).toBe(true);
+      expect(res.linkedTo?.linkWritten).toBe(false);
+      expect(res.linkedTo?.note).toContain('could NOT be written');
+    });
+
+    it('D-036 over-merge guard, end to end: same template, DIFFERENT subjects → links instead of folding', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      // Co-signal scores that WOULD fold, against a row naming a different tool.
+      const d = foldDeps({
+        sem: semantic([scored(0.88, 0.62)]),
+        prior: priorObservation({
+          title: '`locks:acquire` rejects a body over the size cap without naming the cap',
+        }),
+      });
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.created).toBe(true); // NOT folded
+      expect(d.merges).toHaveLength(0);
+      expect(res.linkedTo?.rule).toBe('discriminator-demoted');
+    });
+  });
+
+  describe('the retrieval filter — which rows are eligible to be folded onto', () => {
+    const cases: { why: string; prior: EngineerIssue | null }[] = [
+      {
+        why: 'a KEYED row (a machine emitter’s standing condition) is never rewritten by an inferred match',
+        prior: priorObservation({
+          payload: { lane: 'observation', repeatCount: 1, watchdogKey: 'condition:some-machine-key' },
+        }),
+      },
+      { why: 'a CLOSED row does not absorb a fresh report', prior: priorObservation({ state: 'resolved' }) },
+      {
+        why: 'an improvement-lane row is not an observation',
+        prior: priorObservation({ payload: { lane: 'improvement' } }),
+      },
+      {
+        why: 'a different signalOrigin (a drill row must never suppress an organic filing)',
+        prior: priorObservation({ signalOrigin: 'drill' }),
+      },
+      {
+        why: 'a different Pot scope',
+        prior: priorObservation({ scope: 'harness:some-other-pot' }),
+      },
+      { why: 'the scored candidate no longer resolves', prior: null },
+    ];
+
+    for (const { why, prior } of cases) {
+      it(`mints instead of folding: ${why}`, async () => {
+        setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+        const d = foldDeps({ prior });
+
+        const res = await captureImprovement(repeatFiling, d);
+
+        expect(res.created).toBe(true);
+        expect(d.created).toHaveLength(1);
+        expect(d.merges).toHaveLength(0);
+        expect(res.linkedTo).toBeUndefined();
+      });
+    }
+  });
+
+  describe('fail-open paths — no verdict is NOT a verdict of none', () => {
+    it('flag OFF: today’s behaviour exactly — mint, no fold, no link', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: false });
+      const d = foldDeps({});
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.created).toBe(true);
+      expect(d.created).toHaveLength(1);
+      expect(d.merges).toHaveLength(0);
+      expect(res.linkedTo).toBeUndefined();
+    });
+
+    it('embedder unavailable (null verdict): mints, and does not consult the fold decider at all', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({ sem: null });
+
+      const res = await captureImprovement(repeatFiling, d);
+
+      expect(res.created).toBe(true);
+      expect(d.merges).toHaveLength(0);
+    });
+
+    it('a KEYED capture still takes the conditionKey path, not the derived one', async () => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+      const d = foldDeps({});
+
+      const res = await captureImprovement(
+        { ...repeatFiling, watchdogKey: 'condition:explicitly-keyed' },
+        d,
+      );
+
+      // No keyed row exists to coalesce onto here, so it mints — the point is
+      // that the DERIVED branch never ran (no merge, no link) for a keyed filing.
+      expect(res.created).toBe(true);
+      expect(d.merges).toHaveLength(0);
+      expect(res.linkedTo).toBeUndefined();
+    });
   });
 });

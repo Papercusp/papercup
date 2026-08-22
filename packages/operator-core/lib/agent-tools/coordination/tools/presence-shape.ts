@@ -47,6 +47,10 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   const project = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
     const claimed = Array.isArray(r.claimedItems) ? r.claimedItems : [];
+    // `claimedItems` is the plan-item lane only. Tier-1 carries the unified
+    // count separately so work-item-only holders remain visibly occupied
+    // without leaking WI-/EI- ids into that plan-local array.
+    const claimCount = typeof r.claimCount === "number" ? r.claimCount : claimed.length;
     const base = {
       ownerId: r.ownerId ?? null,
       label: r.ownerLabel ?? null,
@@ -66,7 +70,7 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       coordHook: r.coordHook ?? null,
       intent: clip(r.intent, c.intent),
       plan: r.currentPlanSlug ?? null,
-      claims: claimed.length,
+      claims: claimCount,
       lastActiveSecAgo: r.lastActiveSecAgo ?? null,
       // P-011: the age is ambiguous without its provenance. Keep the source in
       // every model-facing tier so live reads can distinguish transcript-derived

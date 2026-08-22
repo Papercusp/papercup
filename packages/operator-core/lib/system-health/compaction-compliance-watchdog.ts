@@ -33,6 +33,7 @@ import {
   clampCompactionLimit,
   defaultCompactionLimitForSpec,
   defaultCompactionLimitForWindow,
+  selfSetCeilingForWindow,
   supersededDerivedCompactionLimits,
   MODEL_WINDOW_1M,
   modelWindowForSpec,
@@ -1262,7 +1263,10 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
           const measured = await estimateContextWindowForOwner(r.owner_id).catch(() => null);
           if (measured != null) limit = defaultCompactionLimitForWindow(measured, { fleetMember });
         }
-        await setCompactionLimit(r.owner_id, limit);
+        // Record whether this seed came from an explicit launch/tier setting;
+        // later derived repairs intentionally omit provenance so they preserve
+        // this marker instead of turning a deliberate override into a seed.
+        await setCompactionLimit(r.owner_id, limit, { explicit: seed.explicit });
         out.seeded.push(r.owner_id);
       } catch {
         /* best-effort per owner */
@@ -1282,12 +1286,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         owner_id: string;
         owner_label: string;
         compaction_limit: number;
+        compaction_limit_explicit: boolean | null;
         workspace_id: string;
         fleet_slug: string | null;
         fleet_role: string | null;
       }[]
     >`
-      SELECT owner_id, owner_label, workspace_id, compaction_limit, fleet_slug, fleet_role
+      SELECT owner_id, owner_label, workspace_id, compaction_limit, compaction_limit_explicit, fleet_slug, fleet_role
         FROM harness_shared.coord_presence
        WHERE compaction_limit IS NOT NULL
          AND heartbeat_at > now() - interval '10 minutes'
@@ -1315,7 +1320,7 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       // >cap check (steady-state passes resolve NOTHING) and one-directional (only lowers), so it
       // never clobbers an explicit lower override. Mutate r.compaction_limit so the over-limit gate
       // below re-checks against the corrected limit THIS pass (a now-over session force-compacts).
-      if (r.compaction_limit > COMPACTION_LIMIT_DEFAULT_1M_CAP) {
+      if (!r.compaction_limit_explicit && r.compaction_limit > COMPACTION_LIMIT_DEFAULT_1M_CAP) {
         try {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
           // WI-38347: re-derives through the SAME precedence the seed pass uses
@@ -1396,14 +1401,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       // a GOOD input into the unfixable one.
       //
       // So the direction is now decided by PROVENANCE, not by sign:
-      //   • ABOVE the safe limit ⇒ always lower. Unchanged, and unconditional:
-      //     a limit above the true window means the session never preempts and
-      //     the host compacts it mid-task. Safety outranks intent here.
-      //   • BELOW the safe limit ⇒ raise ONLY a limit that is still exactly the
-      //     spec-derived default nobody chose. A deliberate smaller override
-      //     (agent-managed-compaction D-006 leanness) has a value that differs
-      //     from the derived seed, so it is left alone — as is any EXPLICIT
-      //     `--compaction-limit` / per-tier limit, whatever its value.
+      //   • EXPLICIT values may exceed the 400k seeded role cap. Keep them
+      //     unless they exceed the measured self-set ceiling, which is the
+      //     actual model-safety bound for a deliberate runtime override.
+      //   • NON-EXPLICIT values above the seeded safe limit still lower, while
+      //     values below it raise only when they match a current/superseded
+      //     derived seed. This preserves the legacy healing behavior without
+      //     clobbering config:set-compaction-limit.
       // The raise gate is cheap-gated on `<` so a healed session pays for the
       // re-derive exactly once: afterwards the stored limit EQUALS safeLimit and
       // neither branch is taken.
@@ -1413,8 +1417,11 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         if (liveWindow != null) {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
           const safeLimit = defaultCompactionLimitForWindow(liveWindow, { fleetMember });
+          const selfSetCeiling = selfSetCeilingForWindow(liveWindow, { fleetMember });
           let apply: number | null = null;
-          if (r.compaction_limit > safeLimit) {
+          if (r.compaction_limit_explicit) {
+            if (r.compaction_limit > selfSetCeiling) apply = selfSetCeiling;
+          } else if (r.compaction_limit > safeLimit) {
             apply = safeLimit;
           } else if (r.compaction_limit < safeLimit) {
             const seed = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);

@@ -151,8 +151,11 @@ async function findDueReplyDeadlines(nowMs: number, limit: number): Promise<DueR
        AND (e1.body->>'replyDeadlineAt')::bigint <= ${nowMs}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.coord_event_log e2
-          WHERE e2.workspace_id = e1.workspace_id
-            AND e2.surface = 'messages'
+          -- msg_id is generated as a global coordination identity. A reply
+          -- marker can therefore land in a different workspace partition than
+          -- the original message (for example after a workspace restamp or
+          -- federation), and must still retire the original deadline.
+          WHERE e2.surface = 'messages'
             -- The body ? 'related_msg_id' clause is logically REDUNDANT with the equality
             -- below (body->>key is NULL when the key is absent, and NULL never equals a
             -- msg_id), but it is REQUIRED for the planner to use

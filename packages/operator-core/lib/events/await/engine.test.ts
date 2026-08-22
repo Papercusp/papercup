@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
     fireAwaitsForKey: vi.fn(async (): Promise<unknown[]> => []),
     insertDeliveries: vi.fn(async () => 0),
     claimDueDeliveries: vi.fn(async (): Promise<unknown[]> => []),
+    settleCancelledInboxWakeDeliveries: vi.fn(async (): Promise<number[]> => []),
     markDeliveryDelivered: vi.fn(async () => {}),
     markDeliveriesCoalesced: vi.fn(async () => {}),
     lastWokenAtForSubscribers: vi.fn(async () => new Map<string, number>()),
@@ -163,6 +164,7 @@ beforeEach(() => {
   h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
   h.store.fireTimedOutAwaits.mockResolvedValue([]);
   h.store.claimDueDeliveries.mockResolvedValue([]);
+  h.store.settleCancelledInboxWakeDeliveries.mockResolvedValue([]);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
   // The engine logs wake outcomes deliberately (visible drops, D-004);
   // the suite-wide fail-on-console guard must not count those.
@@ -714,6 +716,25 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
+  it('settles claimed deliveries for cancelled standing inbox-wake awaits before grouping or execution', async () => {
+    const cancelled = workRow({
+      id: 120,
+      subscriberId: 'su-cancelled',
+      eventKey: 'coord:inbox-wake:su-cancelled',
+    });
+    const live = workRow({ id: 121, subscriberId: 'su-live', eventKey: 'release:green:papercusp' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([cancelled, live]);
+    h.store.settleCancelledInboxWakeDeliveries.mockResolvedValueOnce([cancelled.id]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.store.settleCancelledInboxWakeDeliveries).toHaveBeenCalledWith([cancelled, live]);
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ id: live.id }), expect.anything());
+    expect(h.executeWake).not.toHaveBeenCalledWith(expect.objectContaining({ id: cancelled.id }), expect.anything());
+    expect(stats).toMatchObject({ claimed: 2, cancelled: 1, delivered: 1 });
+  });
+
   it('reopens ordinary event deliveries when Codex exits 0 without turn.completed', async () => {
     const first = workRow({
       id: 90,

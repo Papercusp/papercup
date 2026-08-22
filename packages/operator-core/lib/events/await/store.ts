@@ -1567,6 +1567,45 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
   return rows.length;
 }
 
+/**
+ * Settle claimed inbox-wake deliveries whose standing await was cancelled
+ * after the delivery was queued but before the pump could execute it.
+ *
+ * The pump claims a delivery by moving it to `delivering`; cancellation of the
+ * standing await does not remove already-queued delivery rows. Re-checking the
+ * joined await in this single UPDATE closes that race atomically and records a
+ * no-turn `coalesced` settlement. The caller supplies only the rows it just
+ * claimed, so an older or concurrently-owned delivery cannot be swept here.
+ */
+export async function settleCancelledInboxWakeDeliveries(
+  deliveries: readonly Pick<DeliveryWork, 'id'>[],
+): Promise<number[]> {
+  const ids = [...new Set(deliveries.map((delivery) => delivery.id))];
+  if (ids.length === 0) return [];
+
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql<Array<{ id: number }>>`
+    UPDATE harness_shared.event_wake_deliveries AS d
+       SET status = 'delivered',
+           channel = 'coalesced',
+           delivered_at = now(),
+           last_error = 'cancelled standing inbox-wake await before pump execution (EI-21183631307094531)'
+      FROM harness_shared.event_awaits AS a
+     WHERE d.workspace_id = ${ws}
+       AND d.id = ANY(${ids}::bigint[])
+       AND d.status = 'delivering'
+       AND a.workspace_id = ${ws}
+       AND a.id = d.await_id
+       AND a.policy = 'wake'
+       AND a.once = false
+       AND a.event_key LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+       AND a.cancelled_at IS NOT NULL
+     RETURNING d.id
+  `;
+  return rows.map((row) => Number(row.id));
+}
+
 /** Recent deliveries for a subscriber (events:status). */
 export async function listRecentDeliveries(subscriberId: string, limit = 10): Promise<DeliveryRow[]> {
   const { sql } = getOrgPg();

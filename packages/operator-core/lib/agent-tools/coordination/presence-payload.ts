@@ -168,6 +168,10 @@ export const PRESENCE_STATE_FIELDS = [
   'currentView',
   'currentFiles',
   'claimedItems',
+  // Unified plan-item + work-item occupancy count. The work-item ids remain
+  // off the compact row; this keeps claim presence visible without merging id
+  // spaces into the plan-local `claimedItems` lane.
+  'claimCount',
   // EI-20200393414409502: plan-QUALIFIED refs (`<slug>#<item>`) for the plan items an
   // agent occupies through held, non-terminal work-items. It is emitted (unlike its
   // sibling join `workItemClaims`, which is deliberately not) because the coupling

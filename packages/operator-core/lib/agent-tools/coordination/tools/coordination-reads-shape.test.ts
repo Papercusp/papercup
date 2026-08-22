@@ -42,6 +42,7 @@ function rosterRow(i: number, overrides: Record<string, unknown> = {}) {
     currentView: null,
     currentFiles: ["a.ts", "b.ts"],
     claimedItems: ["some-plan#P-001", "some-plan#P-002"],
+    claimCount: 2,
     awaitingEvent: null,
     awaitingEventKey: null,
     awaitingNote: "waiting on the lock grant cascade to reach my ticket",
@@ -105,6 +106,18 @@ describe("shapeCoordPresence (P-022)", () => {
     expect(std.active[0].harness).toBe("papercusp");
     expect(std.active[0].claimRefs).toBe("some-plan#P-001,some-plan#P-002");
     expect(std.active[0].files).toBe(2);
+  });
+
+  it("uses the unified claimCount while retaining the plan-item claimRefs lane", () => {
+    const out = shapeCoordPresence(
+      {
+        ...snapshot,
+        active: [rosterRow(0, { claimedItems: [], claimCount: 2 })],
+      },
+      "standard",
+    ) as { active: Record<string, unknown>[] };
+    expect(out.active[0].claims).toBe(2);
+    expect(out.active[0].claimRefs).toBeNull();
   });
 
   it("caps rows with a uniform-key notice row", () => {

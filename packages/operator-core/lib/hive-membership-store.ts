@@ -524,17 +524,62 @@ export async function upsertHiveMember(
   // is the source of truth; the grant retries on the next admission). DYNAMIC import avoids the
   // hive-membership-store ↔ hive-epoch-boundary-wiring cycle.
   try {
-    const newMemberPubkeys = (input.deviceAttestations ?? [])
+    // WI-40537 / D-063 §4 (as refined by c75945): the grant set is the POST-SCRUB `record`'s
+    // devices intersected with THIS announce's frame, then filtered against the HIVE-WIDE
+    // revoked union — never the raw frame alone. The raw `input.deviceAttestations` is exactly
+    // what a banned member's re-announce controls: on the `already_member` branch a hive-wide
+    // ban lands on the OWNER's row (addRevokedHivePubkeys), so the row-local merge scrub above
+    // (this row's blocklist ∪ EXCLUDED's) cannot see it — and the pre-fix code read the raw
+    // frame anyway (never the scrubbed output), re-granting every epoch key [0..current] to the
+    // banned device. The structure now mirrors the SAFE sibling leg
+    // (reconcileEpochKeysForCurrentMembers :382-406): the announce frame is a FILTER over
+    // independently-derived truth, never the authority.
+    const announced = new Set(
+      (input.deviceAttestations ?? [])
+        .map((d) => d.device_pubkey)
+        .filter((pk): pk is string => typeof pk === 'string' && pk.length > 0),
+    );
+    // Post-scrub survivors of THIS announce (`record` is the stored row AFTER the merge dropped
+    // row-local-revoked attestations) — announced − row-local-revoked.
+    const surviving = (record.deviceAttestations ?? [])
       .map((d) => d.device_pubkey)
-      .filter((pk): pk is string => typeof pk === 'string' && pk.length > 0);
-    if (newMemberPubkeys.length > 0) {
+      .filter((pk): pk is string => typeof pk === 'string' && pk.length > 0 && announced.has(pk));
+    if (surviving.length > 0) {
       const { grantEpochKeysToMembers, isHiveRekeyEnabled } = await import(
         './sync/hyperbee/hive-epoch-boundary-wiring'
       );
+      const enabled = await isHiveRekeyEnabled();
+      // Hive-wide revoked union — read only when the grant could actually run (flag on), and
+      // per-ADMISSION, never per-member-per-epoch (c75945 ruling 1: the hook is the primary fix
+      // site precisely because this read is per-admission here). Same FEDERATED scope as the
+      // row write above: `input.potHomeSlug` is branded FederatedPotScope, and reading this
+      // union under a local handle returns an EMPTY set = silent re-grant
+      // (EI-18777176681958978's fail-open trap).
+      const revoked = enabled
+        ? await loadRevokedHivePubkeys(input.workspaceId, input.potHomeSlug, sql)
+        : new Set<string>();
+      const newMemberPubkeys = surviving.filter((pk) => !revoked.has(pk));
+      if (newMemberPubkeys.length === 0) {
+        // Every announced-and-surviving device is hive-wide banned (the WI-40537 shape: a banned
+        // member's re-announce). The grant is NOT called; record the same loud queryable skip the
+        // grant's own early-returns get below — 0 keys minted must never be silent.
+        try {
+          const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
+          recordBootEvent(
+            input.workspaceId,
+            input.potHomeSlug,
+            'rekey_grant_skipped',
+            `grantEpochKeysToMembers on upsertHiveMember skipped for gh=${input.githubUserId}: all-revoked`,
+          );
+        } catch {
+          /* boot-history unavailable */
+        }
+        return record;
+      }
       const grantResult = await grantEpochKeysToMembers({
         workspaceId: input.workspaceId,
         potHomeSlug: input.potHomeSlug,
-        enabled: await isHiveRekeyEnabled(),
+        enabled,
         newMemberPubkeys,
         sql,
       });

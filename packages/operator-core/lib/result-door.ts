@@ -41,7 +41,7 @@
  * turn a good result into a failure.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { projectBoundedPayload } from '@papercusp/tooldef';
@@ -50,6 +50,7 @@ import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
 import { classifyProjectionBody } from './result-projection';
+import { buildOutputEnvelope, type OutputReferenceContentItem } from './output-envelope';
 
 /** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
  *  The live door is resolved per call through the P-023 config surface
@@ -78,6 +79,121 @@ export interface ResultDoorOpts {
   /** Caller's resolved agent ownerId (resolveAgentIdentity) — keys the P-023
    *  per-session door override; absent ⇒ workspace/baked constants. */
   ownerId?: string | null;
+  /** Aggregate cohort reserved when this MCP call STARTED. Explicit client
+   *  outputGroupId/turnId is preferred; legacy clients use a documented
+   *  start-time compatibility cohort (see beginResultDoorAggregate). */
+  aggregateScope?: ResultDoorAggregateScope | null;
+}
+
+export interface ResultDoorAggregateScope {
+  /** Opaque, bounded server key. Never contains the caller's raw ids. */
+  key: string;
+  mode: 'explicit' | 'compatibility';
+  groupIdHash: string;
+}
+
+export interface ResultDoorAggregateReservation {
+  mode: ResultDoorAggregateScope['mode'];
+  groupIdHash: string;
+  budgetBytes: number;
+  consumedBeforeBytes: number;
+  /** Bytes charged to the aggregate after applying the per-result ceiling.
+   *  Raw sourceBytes remains visible separately for diagnosis. */
+  chargedBytes: number;
+  sourceBytes: number;
+  acceptedBytes: number;
+  consumedAfterBytes: number;
+  exceeded: boolean;
+}
+
+const AGGREGATE_COMPAT_IDLE_GAP_MS = 2_000;
+const AGGREGATE_STATE_TTL_MS = 5 * 60_000;
+const aggregateCohorts = new Map<string, { generation: number; lastStartedAtMs: number }>();
+const aggregateUsage = new Map<string, { usedBytes: number; lastTouchedAtMs: number }>();
+let aggregateGeneration = 0;
+let aggregateOps = 0;
+
+function shortHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 24);
+}
+
+/**
+ * Reserve a cohort at REQUEST START, not result completion. Parallel calls in a
+ * legacy client therefore remain grouped even when one tool runs much longer
+ * than its siblings. Clients that can identify a model turn/run should pass an
+ * explicit outputGroupId (or compatibility alias turnId); that is the exact
+ * route. The fallback groups starts separated by <=2s and is deliberately
+ * declared best-effort because an MCP request alone carries no model-turn id.
+ */
+export function beginResultDoorAggregate(input: {
+  sessionKey: string;
+  outputGroupId?: string | number | null;
+  startedAtMs?: number;
+}): ResultDoorAggregateScope {
+  const sessionHash = shortHash(input.sessionKey || 'unscoped');
+  if (input.outputGroupId !== undefined && input.outputGroupId !== null && String(input.outputGroupId).trim()) {
+    const groupIdHash = shortHash(String(input.outputGroupId));
+    return { key: `${sessionHash}:explicit:${groupIdHash}`, mode: 'explicit', groupIdHash };
+  }
+
+  const startedAtMs = Number.isFinite(input.startedAtMs) ? Number(input.startedAtMs) : Date.now();
+  const previous = aggregateCohorts.get(sessionHash);
+  const generation =
+    !previous || startedAtMs - previous.lastStartedAtMs > AGGREGATE_COMPAT_IDLE_GAP_MS
+      ? ++aggregateGeneration
+      : previous.generation;
+  aggregateCohorts.set(sessionHash, {
+    generation,
+    lastStartedAtMs: Math.max(startedAtMs, previous?.lastStartedAtMs ?? startedAtMs),
+  });
+  const groupIdHash = shortHash(`compatibility:${generation}`);
+  return { key: `${sessionHash}:compatibility:${generation}`, mode: 'compatibility', groupIdHash };
+}
+
+function pruneAggregateState(now: number): void {
+  aggregateOps += 1;
+  if (aggregateOps % 256 !== 0) return;
+  for (const [key, value] of aggregateUsage) {
+    if (now - value.lastTouchedAtMs > AGGREGATE_STATE_TTL_MS) aggregateUsage.delete(key);
+  }
+  for (const [key, value] of aggregateCohorts) {
+    if (now - value.lastStartedAtMs > AGGREGATE_STATE_TTL_MS) aggregateCohorts.delete(key);
+  }
+}
+
+function reserveAggregateBytes(
+  scope: ResultDoorAggregateScope,
+  sourceBytes: number,
+  chargedBytes: number,
+  budgetBytes: number,
+): ResultDoorAggregateReservation {
+  const now = Date.now();
+  pruneAggregateState(now);
+  const prior = aggregateUsage.get(scope.key);
+  const consumedBeforeBytes = prior?.usedBytes ?? 0;
+  const remaining = Math.max(0, budgetBytes - consumedBeforeBytes);
+  const acceptedBytes = Math.min(chargedBytes, remaining);
+  const consumedAfterBytes = consumedBeforeBytes + acceptedBytes;
+  aggregateUsage.set(scope.key, { usedBytes: consumedAfterBytes, lastTouchedAtMs: now });
+  return {
+    mode: scope.mode,
+    groupIdHash: scope.groupIdHash,
+    budgetBytes,
+    consumedBeforeBytes,
+    chargedBytes,
+    sourceBytes,
+    acceptedBytes,
+    consumedAfterBytes,
+    exceeded: chargedBytes > remaining,
+  };
+}
+
+/** Test-only state reset; exported so focused tests never depend on process order. */
+export function resetResultDoorAggregatesForTests(): void {
+  aggregateCohorts.clear();
+  aggregateUsage.clear();
+  aggregateGeneration = 0;
+  aggregateOps = 0;
 }
 
 // EI-18745696571494110: some tools truncate individual FIELDS inside their own
@@ -194,9 +310,9 @@ export function buildProjectionHint(
  *  in this corpus is a near-empty population. */
 function nonTextSize(it: unknown): number {
   const data = (it as { data?: unknown } | undefined)?.data;
-  if (typeof data === 'string') return data.length;
+  if (typeof data === 'string') return Buffer.byteLength(data, 'utf8');
   try {
-    return JSON.stringify(it)?.length ?? 0;
+    return Buffer.byteLength(JSON.stringify(it) ?? '', 'utf8');
   } catch {
     return 0;
   }
@@ -224,10 +340,114 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
 }
 
 /**
- * Cap `result`'s text content at the resultEach door; over-door → spill the FULL
- * text to scratch + append a pointer line. Returns the ORIGINAL result object
- * unchanged when it fits, is a delta result, the kill-switch is on, or anything
- * goes wrong (fail-soft).
+ * Hard overflow route for aggregate exhaustion and non-text results. The
+ * existing text projector cannot safely slice an image/audio/resource block,
+ * so the full MCP content array is serialized once to the existing scratch
+ * store and replaced by the shared typed reference envelope.
+ */
+function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
+  result: T;
+  opts: ResultDoorOpts;
+  reason: 'aggregate-output-budget-exceeded' | 'non-text-result-budget-exceeded';
+  sourceBytes: number;
+  nonTextBytes: number;
+  doorTokens: number;
+  aggregate?: ResultDoorAggregateReservation;
+}): T {
+  const payload = JSON.stringify({
+    content: input.result.content,
+    ...(input.result.isError !== undefined ? { isError: input.result.isError } : {}),
+  });
+  const byteCount = Buffer.byteLength(payload, 'utf8');
+  const sha256 = createHash('sha256').update(payload).digest('hex');
+  let spillPath: string | null = null;
+  let spillUri: string | null = null;
+  let spillError: string | null = null;
+  let spillErrorCode: string | null = null;
+  try {
+    const parts = scratchParts(input.opts);
+    const basename = `result-door-${Date.now()}-${randomUUID().slice(0, 8)}.json`;
+    spillUri = buildScratchUri({ ...parts, basename });
+    spillPath = safeScratchFilesystemPath(spillUri);
+    mkdirSync(dirname(spillPath), { recursive: true });
+    writeFileSync(spillPath, payload, { mode: 0o600 });
+  } catch (err) {
+    spillError = err instanceof Error ? err.message : String(err);
+    spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+    spillPath = null;
+    spillUri = null;
+  }
+
+  const firstText = input.result.content.find(isTextItem)?.text ?? '';
+  const preview = firstText
+    ? firstText.slice(0, 240)
+    : `[${input.result.content
+        .map((item) => String((item as { type?: unknown }).type ?? 'unknown'))
+        .join(', ')}]`;
+  const reference: OutputReferenceContentItem | null = spillUri
+    ? {
+        kind: 'reference',
+        uri: spillUri,
+        preview,
+        byteCount,
+        sha256,
+        ...(input.opts.ownerId ? { ownerId: input.opts.ownerId, audience: 'owner' as const } : {}),
+      }
+    : null;
+  const envelope = reference
+    ? buildOutputEnvelope(
+        {
+          summary: '',
+          content: [reference],
+          state: 'incomplete',
+          incomplete: { reason: input.reason, omittedItems: input.result.content.length },
+        },
+        { summaryBudgetChars: 0 },
+      )
+    : buildOutputEnvelope(
+        {
+          summary: '',
+          state: 'error',
+          error: {
+            code: 'output_spill_failed',
+            message: `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}).`,
+            retryable: true,
+          },
+        },
+        { summaryBudgetChars: 0 },
+      );
+
+  return {
+    ...input.result,
+    content: [{ type: 'text' as const, text: JSON.stringify(envelope) }],
+    _meta: {
+      ...(input.result._meta ?? {}),
+      resultDoor: {
+        truncated: true,
+        structural: true,
+        spillPath,
+        spillUri,
+        spillFailed: spillPath == null,
+        spillError,
+        spillErrorCode,
+        originalChars: input.sourceBytes,
+        originalBytes: input.sourceBytes,
+        nonTextChars: input.nonTextBytes,
+        nonTextBytes: input.nonTextBytes,
+        doorTokens: input.doorTokens,
+        reason: input.reason,
+        ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        outputEnvelope: envelope,
+      },
+    },
+  } as T;
+}
+
+/**
+ * Apply both model-facing output rails: the existing per-result door and, when
+ * the transport supplied a cohort, one aggregate budget across the fan-out.
+ * Text overflow is structurally projected; non-text or aggregate overflow is
+ * stored once and replaced by the shared typed-reference envelope.
  */
 export function applyResultDoor<T extends DoorableResult>(result: T, opts: ResultDoorOpts): T {
   try {
@@ -244,7 +464,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
 
     // P-023: the effective resultEach door for THIS caller (workspace defaults ⟵
     // session override; sync snapshot, fail-soft to the baked 1500-token floor).
-    const doorTokens = computeTurnDoors(0, getDoorConstantsSync(opts.ownerId)).resultEach;
+    const effectiveConstants = getDoorConstantsSync(opts.ownerId);
+    const doors = computeTurnDoors(0, effectiveConstants);
+    const doorTokens = doors.resultEach;
     const budgetChars = doorTokens * CHARS_PER_TOKEN_ESTIMATE;
     // EI-13918: `result.data` may ALREADY have been replaced upstream by a
     // lossy payload-tier projection (payload-tier.ts) BEFORE this door ever
@@ -261,32 +483,53 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } } | undefined
     )?.payloadProjection;
     let totalChars = 0;
-    // WI-36613 (borrow item 10). The door measures TEXT ONLY — `totalChars` sums
-    // text items and the rebuild below passes every non-text item through intact.
-    // That means a result of 2MB of base64 PNG plus 100 chars of text has
-    // totalChars=100, takes the identity fast-path directly below, and reaches
-    // the model uncapped, unspilled, and UNMENTIONED.
-    //
-    // OMP has the same shape (its universal cap measures only block.type==='text'),
-    // and the transferable point is that NOTHING IN THE CODE LOOKS WRONG when a
-    // byte cap written against text silently exempts every other content type.
-    //
-    // Measured exposure here is currently ZERO — the only image-emitting path is
-    // computer:* (computer.ts:161) and tool_invocations has never recorded one
-    // (0 rows ever, against 1,116,788 rows / 302 distinct tools in 14 days). So
-    // this deliberately does NOT cap: no data justifies a number, and a
-    // speculative cap on a path nobody uses is churn. It only makes the exemption
-    // VISIBLE the day it activates, which is the part that was actually missing.
+    let textBytes = 0;
+    // D-021 activates the old WI-36613 detector: non-text content is now a live
+    // output path, so it participates in the same byte accounting as text.
     let nonTextChars = 0;
     for (const it of items) {
-      if (isTextItem(it)) totalChars += it.text.length;
+      if (isTextItem(it)) {
+        totalChars += it.text.length;
+        textBytes += Buffer.byteLength(it.text, 'utf8');
+      }
       else nonTextChars += nonTextSize(it);
     }
-    // Only worth saying when the non-text payload is itself over the door budget:
-    // below that it is noise, and the fast path must stay byte-identical for the
-    // overwhelmingly common ordinary result.
-    const nonTextOverBudget = nonTextChars > budgetChars;
-    if (totalChars <= budgetChars) {
+    const sourceBytes = textBytes + nonTextChars;
+    const aggregate = opts.aggregateScope
+      ? reserveAggregateBytes(
+          opts.aggregateScope,
+          sourceBytes,
+          // Aggregate accounting is downstream of the per-result rail. A
+          // 20KB single result becomes a <=6KB structural projection and must
+          // not consume the whole 12KB fan-out budget by its pre-door size.
+          // Charging the per-result ceiling is conservative (the returned
+          // envelope is normally smaller) while preserving the existing
+          // structural projection path and enforcing the aggregate invariant.
+          Math.min(sourceBytes, budgetChars),
+          doors.resultEach * doors.resultSlots * CHARS_PER_TOKEN_ESTIMATE,
+        )
+      : undefined;
+
+    // D-021 activates the old WI-36613 revisit condition: now that media is a
+    // live output path, non-text participates in the SAME hard accounting. A
+    // non-text block cannot be structurally sliced, so spill the whole MCP
+    // content array once and return the typed reference envelope. Aggregate
+    // exhaustion takes the same route for text or non-text.
+    if (aggregate?.exceeded || (nonTextChars > 0 && sourceBytes > budgetChars)) {
+      return spillResultAsReferenceEnvelope({
+        result,
+        opts,
+        reason: aggregate?.exceeded
+          ? 'aggregate-output-budget-exceeded'
+          : 'non-text-result-budget-exceeded',
+        sourceBytes,
+        nonTextBytes: nonTextChars,
+        doorTokens,
+        aggregate,
+      });
+    }
+
+    if (sourceBytes <= budgetChars) {
       // EI-19361771982678588: FITTING THE DOOR IS NOT BEING COMPLETE. This
       // early return is the fast path for an ordinary small result — but a
       // result that was tier-trimmed upstream and THEN landed under the door
@@ -300,18 +543,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // Nothing to spill (the omitted rows were never serialized), so this
       // discloses in-band and returns; the identity fast-path is preserved for
       // the overwhelmingly common untruncated case.
-      if (!upstreamProjection?.truncated && !nonTextOverBudget) return result;
+      if (!upstreamProjection?.truncated) return result;
       const fastPathNotices: string[] = [];
-      if (nonTextOverBudget) {
-        fastPathNotices.push(
-          `\n[⚠ UNCAPPED NON-TEXT PAYLOAD — the text in this result fit the per-result door, so ` +
-            `nothing was truncated, but it also carries ~${nonTextChars} chars of NON-TEXT content ` +
-            `(image/binary blocks). The door measures TEXT ONLY and passes non-text through intact, ` +
-            `so that payload entered your context in full — ~${Math.round(nonTextChars / budgetChars)}× ` +
-            `the ~${doorTokens}-token text budget. Nothing is wrong; it is simply not bounded by this ` +
-            `door. If you did not need the capture, re-call without the argument that produced it.]`,
-        );
-      }
       if (upstreamProjection?.truncated) {
         fastPathNotices.push(
           `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
@@ -454,11 +687,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       spillError,
       spillErrorCode,
       originalChars: totalChars,
-      /** Approximate chars of NON-text content (images/binary) this result
-       *  carried. The door does NOT cap these — it measures text only — so this
-       *  field is the only place that number is stated (WI-36613). 0 for the
-       *  overwhelming majority of results. */
+      /** UTF-8 bytes of non-text content carried by this result. Kept under the
+       *  legacy key for telemetry compatibility; D-021 makes it enforced. */
       nonTextChars,
+      nonTextBytes: nonTextChars,
       doorTokens,
       /** True when `data` was ALREADY a lossy upstream projection before this
        *  door saw it — i.e. paging the spill cannot recover what was omitted. */
@@ -483,6 +715,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // cursor and no client ever has to parse a chopped prefix plus a prose footer.
     const bodyShape = classifyProjectionBody(textItems);
     const parsedJsonBody = bodyShape.json != null;
+    // A valid JSON body can still be only the tool's emitted SAMPLE: custom
+    // shapers such as plans:get mark clipped record fields with
+    // `body_truncated:true`.  It is safe to expose the spill for inspection,
+    // but it is NOT safe to advertise the byte boundary as an exact, complete
+    // JSON recovery point — the omitted records were never serialized.
+    const partialJsonBody = parsedJsonBody && innerTruncationMarkers.length > 0;
     const spillBodyByteOffset = Buffer.byteLength(spillPrefix, 'utf8');
     const recovery = fsPath != null && uri != null
       ? {
@@ -505,8 +743,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             // The spill is plaintext with a Markdown header (and, for
             // list-shaped results, an index) before the body. JSON callers
             // need the exact byte boundary instead of guessing where jq can
-            // start parsing.
-            ...(parsedJsonBody ? { bodyByteOffset: spillBodyByteOffset } : {}),
+            // start parsing — but only when the tool emitted a complete JSON
+            // body. A tool-internally clipped JSON body is valid JSON while
+            // still being an incomplete population, so do not present its
+            // boundary as an exact recovery cursor.
+            ...(parsedJsonBody && !partialJsonBody ? { bodyByteOffset: spillBodyByteOffset } : {}),
           },
           next:
             // `response.data` rather than a bare `data`: naming the field's OWNER
@@ -516,10 +757,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             // — this pointer is NET SHORTER than the ambiguous version it
             // replaced, which is the only reason it clears WI-5656 below.
             `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
-            `next_cursor until eof to recover the exact spill bytes. File is plaintext; ` +
-            (parsedJsonBody
-              ? `skip cursor.bodyByteOffset bytes for JSON.`
-              : `it opens with a text header.`) +
+            `next_cursor until eof to ` +
+            (partialJsonBody
+              ? `inspect the emitted spill bytes. The tool marked ${innerTruncationMarkers.join(', ')}; ` +
+                `this JSON is partial and paging cannot recover omitted fields. Re-call ${opts.toolName} ` +
+                `with a wider per-field limit.`
+              : `recover the exact spill bytes. File is plaintext; ` +
+                (parsedJsonBody
+                  ? `skip cursor.bodyByteOffset bytes for JSON.`
+                  : `it opens with a text header.`)) +
             // Keep the established JSON recovery pointer deliberately terse. The
             // payload projector budgets the pointer together with the retained
             // JSON preview; expanding it here can evict coord:orient's recovery
@@ -534,7 +780,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               ? ''
               : ` The spill FILE is plaintext — grep/tail it directly; \`base64 -d\` on ` +
                 `args.file_path fails EMPTY, which reads as an empty spill.`) +
-            (parsedJsonBody
+            (parsedJsonBody || partialJsonBody
               ? ''
               : upstreamProjection
                 ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +

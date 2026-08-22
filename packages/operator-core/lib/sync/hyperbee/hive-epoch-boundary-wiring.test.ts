@@ -604,3 +604,45 @@ describe('reconcileOwnedHiveEpochKeys (WI-887 gap-aware sweep)', () => {
     ]);
   });
 });
+
+describe('WI-40537 (c75949 RULING 5) — the caller set of grantEpochKeysToMembers is PINNED', () => {
+  // grantEpochKeysToMembers applies NO revocation filter of its own — deliberately. Its two
+  // known callers are each safe at their OWN site: the upsertHiveMember hook filters the grant
+  // set against the hive-wide revoked union BEFORE calling (hive-membership-store.ts, the
+  // WI-40537 fix), and the reconcile delegation pre-filters at :382-406. A THIRD caller is the
+  // event that reopens the grant-internal-filter question (an unfiltered new caller re-creates
+  // the WI-40537 hole) — this pin is what surfaces it. Scope: packages/operator-core/lib
+  // (non-test .ts) — the function is defined here and both known callers live here; a caller
+  // added in another package should extend this list AND re-read c75949/c75950 first.
+  it('exactly two non-test files reference it: the upsert hook + this wiring module', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join, dirname, relative } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const libRoot = join(dirname(fileURLToPath(import.meta.url)), '../..'); // packages/operator-core/lib
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === '__tests__') continue;
+          walk(full);
+        } else if (
+          entry.name.endsWith('.ts') &&
+          !entry.name.endsWith('.test.ts') &&
+          // CALL-shape only (`grantEpochKeysToMembers(`): 4 other lib files mention the name in
+          // prose comments (deferred-git-restore, hive-epoch-boot-deps, hive-epoch-boundary,
+          // seed-cutter — verified 2026-08-22, all doc mentions, zero callers). A mention does
+          // not reopen RULING 5; a new CALL does.
+          /\bgrantEpochKeysToMembers\s*\(/.test(readFileSync(full, 'utf8'))
+        ) {
+          hits.push(relative(libRoot, full));
+        }
+      }
+    };
+    walk(libRoot);
+    expect(hits.sort()).toEqual([
+      'hive-membership-store.ts', // the upsert hook — filters hive-wide revoked BEFORE calling
+      'sync/hyperbee/hive-epoch-boundary-wiring.ts', // definition + the pre-filtered reconcile delegation
+    ]);
+  });
+});

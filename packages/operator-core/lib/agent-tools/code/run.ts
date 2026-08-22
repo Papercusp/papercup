@@ -12,6 +12,7 @@ import {
   listFacadeNamespaces,
   nearestByLevenshtein,
   AGENT_ROLES,
+  type ToolResult,
   type UnifiedToolContext,
   type WrapDispatch,
 } from '@papercusp/agent-mcp';
@@ -47,7 +48,8 @@ export default defineTool({
   name: 'code:run',
   description:
     'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
-    'call, returning only the script\'s summary — collapsing N sequential model turns into one and ' +
+    'call, returning only the script\'s summary (plus explicitly returned image/audio blocks) — ' +
+    'collapsing N sequential model turns into one and ' +
     'keeping intermediate payloads out of context. Write the ' +
     'script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true ' +
     'previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` ' +
@@ -103,6 +105,8 @@ export default defineTool({
         .max(20_000)
         .describe(
             'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+            'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
+            'media from intermediate tool calls is never emitted implicitly. ' +
             'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
             'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
             'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
@@ -249,8 +253,12 @@ export default defineTool({
     // WI-7061: annotate AFTER shapeMutationEcho, never inside it — that function returns early
     // when the script planned no mutations, which is exactly the read-only case whose failed
     // child call had no naming signal at all.
+    // D-019/P-027: media is an MCP content-item variant, not part of P-006's JSON envelope.
+    // Keep it out of the serialized text payload (which would duplicate the base64 and charge
+    // context twice); append only the orchestrator's validated final blocks below.
+    const { media, ...resultForPayload } = result;
     const shownResult = shapeCodeRunSummary(
-      shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(result))),
+      shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(resultForPayload))),
     );
 
     const similarRecipePayload = similarRecipes.length > 0 ? shapeCodeRunSimilarRecipes(similarRecipes) : {};
@@ -323,7 +331,12 @@ export default defineTool({
     }
     ctx.metadata?.(invocationMetadata);
 
-    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+    return {
+      content: [
+        { type: 'text' as const, text: JSON.stringify(payload) },
+        ...(media ?? []),
+      ],
+    } as unknown as ToolResult;
   },
 });
 

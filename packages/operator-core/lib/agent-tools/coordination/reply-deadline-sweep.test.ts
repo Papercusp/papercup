@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
    *  coord_event_log fixtures. */
   effectRows: [] as unknown[],
   sqlCalls: [] as unknown[][],
+  sqlTexts: [] as string[],
   /** Per-test override of the whole dispatch (e.g. to simulate a probe
    *  failure) — null means "use the default rows/threadRows/supersedeRows
    *  dispatch". */
@@ -46,6 +47,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         h.sqlCalls.push(values);
         if (h.sqlImpl) return h.sqlImpl(strings, ...values);
         const text = strings.join('');
+        h.sqlTexts.push(text);
         if (text.includes('coord_thread_posts')) return Promise.resolve(h.threadRows);
         if (text.includes('recipient-reply-check')) return Promise.resolve(h.recipientReplyRows);
         if (text.includes('supersede-check')) return Promise.resolve(h.supersedeRows);
@@ -156,6 +158,7 @@ beforeEach(() => {
   h.recipientReplyRows = [];
   h.effectRows = [];
   h.sqlCalls = [];
+  h.sqlTexts = [];
   h.sqlImpl = null;
 });
 
@@ -245,6 +248,25 @@ describe('runReplyDeadlineSweepOnce', () => {
     expect(h.sqlCalls.length).toBeGreaterThan(0);
     expect(h.sqlCalls[0]).toContain(NOW);
     expect(REPLY_DEADLINE_SWEEP_BATCH_LIMIT).toBeGreaterThan(0);
+  });
+
+  it('uses related_msg_id markers globally across workspace partitions', async () => {
+    // A deadline can remain in the legacy workspace partition while its
+    // one-shot nudge marker is written after a workspace restamp. The marker
+    // is keyed by the globally-generated msg_id, not by workspace_id.
+    h.rows = [
+      row({
+        workspace_id: '/home/marsh-office/papercupai-workspace/papercusp',
+        msg_id: 'mt427rhz-0000-bcb413b4152841d5bf13575dcaaf6f6b',
+      }),
+    ];
+
+    await runReplyDeadlineSweepOnce({ nowMs: NOW });
+
+    const dueQuery = h.sqlTexts.find((text) => text.includes('FROM harness_shared.coord_event_log e1'));
+    expect(dueQuery).toBeDefined();
+    expect(dueQuery).toContain("e2.body->>'related_msg_id' = e1.msg_id");
+    expect(dueQuery).not.toContain('e2.workspace_id = e1.workspace_id');
   });
 
   describe('directive effects and terminal references (P-013 / EI-20330285752095560)', () => {

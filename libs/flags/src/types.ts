@@ -1593,6 +1593,22 @@ export const FLAGS = {
   // OFF = the kill-switch: the timer still ticks but every sweep no-ops before
   // reading engineer_issues.
   UNSERVABLE_CRITICAL_WATCHDOG: "papercusp-unservable-critical-watchdog",
+  // learning-loop-identity-and-consumption-2026-08-08 P-013 (owner amendment
+  // D-042): DERIVED-identity fold-in-place for AGENT-filed observations at the
+  // `improvements:capture` seam. Keyed folding (a caller-supplied conditionKey)
+  // already works and is untouched; this covers the ~1,583 rows/day filed with
+  // NO key, which skipped dedupe entirely and minted a row every time. An
+  // incoming filing whose identity matches an existing OPEN observation folds
+  // into it (repeatCount bump, reporter recorded, occurrence appended) instead
+  // of forking a near-identical sibling.
+  //
+  // It NEVER REJECTS a filing — D-003's no-rejection half is unweakened and is
+  // enforced by the classifier's own type (there is no 'reject' variant). OFF
+  // restores today's always-mint behaviour exactly; the classifier is not even
+  // consulted. DEFAULT ON (derived FLAG_DEFAULTS — deliberately NOT in
+  // DARK_FLAGS): the change is reversible, and shipping it dark would leave the
+  // measured row-minting problem unaddressed while looking done.
+  OBSERVATION_DERIVED_FOLD: "papercusp-observation-derived-fold",
   // EI-20581099901890760 (1): gates the GOAL-mode edit-deny guard wired into
   // agent-tools/locks/acquire.ts — a session whose REGISTERED mode is 'goal'
   // (an agent_modes row; the contract binds at mode:set) is denied PreToolUse

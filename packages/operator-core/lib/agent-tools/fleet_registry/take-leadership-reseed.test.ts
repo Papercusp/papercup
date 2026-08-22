@@ -50,7 +50,7 @@ beforeEach(() => {
 describe('reseedLeaderCompactionLimit (P-009 become-a-leader cap re-seed)', () => {
   it('lifts a stuck 300k member-cap seed to the 400k leader default on a [1m] session', async () => {
     const out = await reseedLeaderCompactionLimit(OWNER);
-    expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP);
+    expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP, { explicit: false });
     expect(out).toEqual({ applied: LEADER_CAP, from: MEMBER_CAP, reason: 'member-cap-lifted' });
   });
 
@@ -68,9 +68,16 @@ describe('reseedLeaderCompactionLimit (P-009 become-a-leader cap re-seed)', () =
     expect(out).toMatchObject({ reason: 'already-leader-grade', from: 250_000 });
   });
 
+  it('does not auto-lift an explicit member-cap override when taking leadership', async () => {
+    getPresence.mockResolvedValue({ compactionLimit: MEMBER_CAP, compactionLimitExplicit: true });
+    const out = await reseedLeaderCompactionLimit(OWNER);
+    expect(setCompactionLimit).not.toHaveBeenCalled();
+    expect(out).toEqual({ applied: MEMBER_CAP, from: MEMBER_CAP, reason: 'already-leader-grade' });
+  });
+
   it('an explicit compactionLimit wins and is clamped to the leader ceiling', async () => {
     const out = await reseedLeaderCompactionLimit(OWNER, { compactionLimit: 999_999 });
-    expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP); // clamped down to 400k
+    expect(setCompactionLimit).toHaveBeenCalledWith(OWNER, LEADER_CAP, { explicit: true }); // clamped down to 400k
     expect(out).toMatchObject({ applied: LEADER_CAP, reason: 'explicit-limit' });
   });
 

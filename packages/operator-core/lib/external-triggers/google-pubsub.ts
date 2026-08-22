@@ -6,6 +6,7 @@
  * provisioner uses google-auth-library for a short-lived bearer token and the
  * Pub/Sub REST API, avoiding gcloud and a second Google SDK dependency.
  */
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 
@@ -13,12 +14,13 @@ export const GMAIL_PUSH_PUBLISHER = 'serviceAccount:gmail-api-push@system.gservi
 export const PUBSUB_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 
 const DEFAULT_TOPIC_ID = 'papercusp-gmail-push';
-const DEFAULT_SUBSCRIPTION_ID = 'papercusp-gmail-pull';
 const PUBSUB_API_ORIGIN = 'https://pubsub.googleapis.com';
 const RESOURCE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._~+%:-]{0,254}$/;
 const requireCjs = createRequire(import.meta.url);
 
 export interface GooglePubSubProvisionInput {
+  /** Every workspace gets an independent pull subscription on the shared topic. */
+  workspaceId: string;
   /** Defaults to project_id in the service-account JSON. */
   projectId?: string;
   /** Defaults to GOOGLE_APPLICATION_CREDENTIALS. */
@@ -30,6 +32,7 @@ export interface GooglePubSubProvisionInput {
 
 export interface GooglePubSubProvisionResult {
   projectId: string;
+  subscriptionId: string;
   topicName: string;
   subscriptionName: string;
   topic: 'created' | 'existing';
@@ -41,6 +44,20 @@ export interface GooglePubSubProvisionDeps {
   fetch?: typeof fetch;
   getAccessToken?: (serviceAccountPath: string) => Promise<string>;
   apiOrigin?: string;
+}
+
+export interface GooglePubSubReceivedMessage {
+  ackId: string;
+  message?: {
+    data?: string;
+    messageId?: string;
+    publishTime?: string;
+    attributes?: Record<string, string>;
+  };
+}
+
+export interface GooglePubSubPullInput extends GooglePubSubProvisionInput {
+  maxMessages?: number;
 }
 
 interface IamBinding {
@@ -63,6 +80,20 @@ function resourceSegment(value: string | undefined, field: string): string {
   return normalized;
 }
 
+/** Stable, collision-resistant subscription id for one workspace. */
+export function googleGmailSubscriptionId(workspaceId: string): string {
+  const normalized = workspaceId.trim();
+  if (!normalized) throw new Error('google_pubsub_invalid_workspace_id');
+  const readable =
+    normalized
+      .toLowerCase()
+      .replace(/[^a-z0-9._~+%-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 200) || 'workspace';
+  const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 12);
+  return resourceSegment(`papercusp-gmail-pull-${readable}-${digest}`, 'subscription_id');
+}
+
 function serviceAccountPath(input?: string): string {
   const path = input?.trim() || process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
   if (!path) throw new Error('google_pubsub_service_account_path_required');
@@ -83,6 +114,35 @@ async function defaultAccessToken(path: string): Promise<string> {
   const { token } = await client.getAccessToken();
   if (!token) throw new Error('google_pubsub_access_token_empty');
   return token;
+}
+
+async function runtimeContext(
+  input: GooglePubSubProvisionInput,
+  deps: GooglePubSubProvisionDeps,
+): Promise<{
+  projectId: string;
+  subscriptionId: string;
+  token: string;
+  fetchImpl: typeof fetch;
+  origin: string;
+}> {
+  const credentialPath = serviceAccountPath(input.serviceAccountPath);
+  const projectId = resourceSegment(
+    input.projectId ?? (await projectIdFromServiceAccount(credentialPath)),
+    'project_id',
+  );
+  const subscriptionId = resourceSegment(
+    input.subscriptionId ?? googleGmailSubscriptionId(input.workspaceId),
+    'subscription_id',
+  );
+  const token = await (deps.getAccessToken ?? defaultAccessToken)(credentialPath);
+  return {
+    projectId,
+    subscriptionId,
+    token,
+    fetchImpl: deps.fetch ?? fetch,
+    origin: (deps.apiOrigin ?? PUBSUB_API_ORIGIN).replace(/\/$/, ''),
+  };
 }
 
 async function responseJson<T>(response: Response, operation: string): Promise<T> {
@@ -160,22 +220,13 @@ export async function provisionGoogleGmailPubSub(
   input: GooglePubSubProvisionInput,
   deps: GooglePubSubProvisionDeps = {},
 ): Promise<GooglePubSubProvisionResult> {
-  const credentialPath = serviceAccountPath(input.serviceAccountPath);
-  const projectId = resourceSegment(
-    input.projectId ?? (await projectIdFromServiceAccount(credentialPath)),
-    'project_id',
-  );
+  const { projectId, subscriptionId, token, fetchImpl, origin } = await runtimeContext(input, deps);
   const topicId = resourceSegment(input.topicId ?? DEFAULT_TOPIC_ID, 'topic_id');
-  const subscriptionId = resourceSegment(input.subscriptionId ?? DEFAULT_SUBSCRIPTION_ID, 'subscription_id');
   const ackDeadlineSeconds = input.ackDeadlineSeconds ?? 60;
   if (!Number.isInteger(ackDeadlineSeconds) || ackDeadlineSeconds < 10 || ackDeadlineSeconds > 600) {
     throw new Error('google_pubsub_invalid_ack_deadline_seconds');
   }
 
-  const getAccessToken = deps.getAccessToken ?? defaultAccessToken;
-  const token = await getAccessToken(credentialPath);
-  const fetchImpl = deps.fetch ?? fetch;
-  const origin = (deps.apiOrigin ?? PUBSUB_API_ORIGIN).replace(/\/$/, '');
   const projectSegment = encodeURIComponent(projectId);
   const topicSegment = encodeURIComponent(topicId);
   const subscriptionSegment = encodeURIComponent(subscriptionId);
@@ -227,5 +278,61 @@ export async function provisionGoogleGmailPubSub(
     throw new Error(`google_pubsub_subscription_topic_mismatch:${existingSubscription.value?.topic ?? 'unset'}`);
   }
 
-  return { projectId, topicName, subscriptionName, topic, subscription, publisherGrant };
+  return {
+    projectId,
+    subscriptionId,
+    topicName,
+    subscriptionName,
+    topic,
+    subscription,
+    publisherGrant,
+  };
+}
+
+/** Pull a bounded doorbell batch from this workspace's subscription. */
+export async function pullGoogleGmailNotifications(
+  input: GooglePubSubPullInput,
+  deps: GooglePubSubProvisionDeps = {},
+): Promise<GooglePubSubReceivedMessage[]> {
+  const { projectId, subscriptionId, token, fetchImpl, origin } = await runtimeContext(input, deps);
+  const maxMessages = input.maxMessages ?? 100;
+  if (!Number.isInteger(maxMessages) || maxMessages < 1 || maxMessages > 1_000) {
+    throw new Error('google_pubsub_invalid_max_messages');
+  }
+  const url =
+    `${origin}/v1/projects/${encodeURIComponent(projectId)}` +
+    `/subscriptions/${encodeURIComponent(subscriptionId)}:pull`;
+  const pulled = await request<{ receivedMessages?: GooglePubSubReceivedMessage[] }>(
+    fetchImpl,
+    token,
+    'pull',
+    url,
+    'POST',
+    { maxMessages, returnImmediately: true },
+  );
+  if (pulled.status === 404) throw new Error(`google_pubsub_subscription_missing:${subscriptionId}`);
+  return (pulled.value?.receivedMessages ?? []).filter(
+    (received): received is GooglePubSubReceivedMessage =>
+      typeof received?.ackId === 'string' && received.ackId.length > 0,
+  );
+}
+
+/** Ack only notifications whose Gmail reconciliation and cursor commit succeeded. */
+export async function acknowledgeGoogleGmailNotifications(
+  input: GooglePubSubProvisionInput,
+  ackIds: string[],
+  deps: GooglePubSubProvisionDeps = {},
+): Promise<number> {
+  const uniqueAckIds = [...new Set(ackIds.filter((ackId) => ackId.trim()))];
+  if (uniqueAckIds.length === 0) return 0;
+  if (uniqueAckIds.length > 1_000) throw new Error('google_pubsub_too_many_ack_ids');
+  const { projectId, subscriptionId, token, fetchImpl, origin } = await runtimeContext(input, deps);
+  const url =
+    `${origin}/v1/projects/${encodeURIComponent(projectId)}` +
+    `/subscriptions/${encodeURIComponent(subscriptionId)}:acknowledge`;
+  const acknowledged = await request(fetchImpl, token, 'acknowledge', url, 'POST', { ackIds: uniqueAckIds });
+  if (acknowledged.status === 404) {
+    throw new Error(`google_pubsub_subscription_missing:${subscriptionId}`);
+  }
+  return uniqueAckIds.length;
 }

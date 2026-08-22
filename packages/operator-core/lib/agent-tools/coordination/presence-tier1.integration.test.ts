@@ -38,7 +38,7 @@ describe('fetchPresenceTier1 (live PG)', () => {
   });
   afterEach(cleanup);
 
-  it('joins claims + active await + wake-mode by ownerId; model null with no spawn', async (ctx) => {
+  it('projects plan-item-only occupancy; joins active await + wake-mode by ownerId', async (ctx) => {
     if (!ready) {
       ctx.skip();
       return;
@@ -61,6 +61,7 @@ describe('fetchPresenceTier1 (live PG)', () => {
     const e = map.get(OWNER);
     expect(e).toBeDefined();
     expect(e!.claimedItems).toEqual(['P-777', 'P-778']); // array_agg ORDER BY item_id
+    expect(e!.claimCount).toBe(2); // plan-item claims remain visible in unified occupancy
     expect(e!.awaitingEvent).toBe(true);
     expect(e!.awaitingEventKey).toBe('plan-run:finished:42');
     expect(e!.awaitingNote).toBe('blocked on the run');
@@ -77,6 +78,7 @@ describe('fetchPresenceTier1 (live PG)', () => {
     const e = map.get(OWNER);
     expect(e).toBeDefined();
     expect(e!.claimedItems).toEqual([]);
+    expect(e!.claimCount).toBe(0);
     expect(e!.awaitingEvent).toBe(false);
     expect(e!.model).toBeNull();
     // The semantic under test: NO per-owner override → falls through to the GLOBAL default.
@@ -105,7 +107,7 @@ describe('fetchPresenceTier1 (live PG)', () => {
   // against the PRODUCER can, so the jsonb path, the terminal filter and the ref
   // format are asserted against live PG here.
   // ---------------------------------------------------------------------------
-  it('derives plan-item occupancy from a held work-item stamp, EXCLUDING terminal work', async (ctx) => {
+  it('projects work-item-only occupancy and derives plan-item refs, EXCLUDING terminal work', async (ctx) => {
     if (!ready) {
       ctx.skip();
       return;
@@ -137,6 +139,34 @@ describe('fetchPresenceTier1 (live PG)', () => {
     // Occupancy is NOT plan-item claims: nothing was seeded in plan_item_claims, and
     // that surface staying empty is precisely the starvation this field routes around.
     expect(e!.claimedItems).toEqual([]);
+    expect(e!.claimCount).toBe(3); // all three held work-item rows occupy work-item space
+  });
+
+  it('adds both independent claim lanes to the unified occupancy count', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.plan_item_claims
+        (workspace_id, harness_slug, plan_slug, item_id, owner, expires_ts)
+      VALUES
+        (${WS}, 'papercup', 'tier1-it-both', 'P-201', ${OWNER}, now() + interval '1 hour')
+    `;
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, payload)
+      VALUES
+        (${WS}, 'papercup', ${`${OWNER}-both-a`}, 'task', 'open', ${OWNER}, ${sql.json({})}),
+        (${WS}, 'papercup', ${`${OWNER}-both-b`}, 'task', 'open', ${OWNER}, ${sql.json({})})
+    `;
+
+    const e = (await fetchPresenceTier1([OWNER])).get(OWNER);
+    expect(e).toBeDefined();
+    expect(e!.claimedItems).toEqual(['P-201']);
+    expect(e!.workItemClaims).toEqual([`${OWNER}-both-a`, `${OWNER}-both-b`]);
+    expect(e!.claimCount).toBe(3);
   });
 
   it('OMITS claimedPlanItemRefs entirely when the owner occupies nothing (no empty-array payload cost)', async (ctx) => {

@@ -47,6 +47,7 @@ interface CoordPresenceDbRow {
   pot_slug: string | null;
   capability_tags: unknown;
   compaction_limit: number | null;
+  compaction_limit_explicit: boolean | null;
   context_tokens: number | null;
   context_estimated_at: string | null;
   user_id: string | null;
@@ -98,6 +99,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     potSlug: r.pot_slug,
     capabilityTags,
     compactionLimit: r.compaction_limit,
+    compactionLimitExplicit: r.compaction_limit_explicit ?? false,
     contextTokens: r.context_tokens,
     contextEstimatedAt: r.context_estimated_at,
     stale: now - new Date(r.heartbeat_at).getTime() > PRESENCE_STALE_MS,
@@ -271,16 +273,26 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
-  async setCompactionLimit(ownerId: string, limit: number): Promise<void> {
+  async setCompactionLimit(ownerId: string, limit: number, opts: { explicit?: boolean } = {}): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // Per-session SOFT compaction target in tokens (agent-managed-compaction-2026-07-01).
-    // No-op when no row exists, like touchHeartbeat / touchActivity.
-    await sql`
-      UPDATE harness_shared.coord_presence
-         SET compaction_limit = ${limit}
-       WHERE owner_id = ${ownerId}
-    `;
+    // Omitted provenance is a derived repair: update the value while preserving
+    // whether a prior runtime write was explicit. A supplied boolean is an
+    // authoritative seed/override provenance transition.
+    if (opts.explicit === undefined) {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET compaction_limit = ${limit}
+         WHERE owner_id = ${ownerId}
+      `;
+    } else {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET compaction_limit = ${limit}, compaction_limit_explicit = ${opts.explicit}
+         WHERE owner_id = ${ownerId}
+      `;
+    }
   }
 
   async setContextEstimate(ownerId: string, tokens: number): Promise<void> {
@@ -339,7 +351,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.tty, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit,
+             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit, cp.compaction_limit_explicit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -360,7 +372,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.tty, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit,
+             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit, cp.compaction_limit_explicit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -423,6 +435,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       pot_slug          text,
       capability_tags   jsonb       NOT NULL DEFAULT '[]'::jsonb,
       compaction_limit  integer,
+      compaction_limit_explicit boolean NOT NULL DEFAULT false,
       context_tokens    integer,
       context_estimated_at timestamptz
     )
@@ -438,6 +451,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS pot_slug         text,
       ADD COLUMN IF NOT EXISTS capability_tags  jsonb NOT NULL DEFAULT '[]'::jsonb,
       ADD COLUMN IF NOT EXISTS compaction_limit integer,
+      ADD COLUMN IF NOT EXISTS compaction_limit_explicit boolean NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS context_tokens   integer,
       ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz,
       ADD COLUMN IF NOT EXISTS intent_declared_at timestamptz

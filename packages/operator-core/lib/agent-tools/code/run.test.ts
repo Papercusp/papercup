@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import {
+  applyResultDoor,
+  beginResultDoorAggregate,
+  resetResultDoorAggregatesForTests,
+} from '../../result-door';
 
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
@@ -87,6 +92,127 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain("tr '\\\\0' ' '");
     expect(scriptDescription).toContain('two backslashes in the script source');
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
+  });
+
+  it('documents the explicit final-media return contract', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ?? '';
+    expect(scriptDescription).toContain('{ summary, media:');
+    expect(scriptDescription).toContain('"image"|"audio"');
+    expect(scriptDescription).toContain('intermediate tool calls is never emitted implicitly');
+  });
+});
+
+describe('code:run → explicit final media (P-027 / D-021)', () => {
+  const codeRun = () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    return tool;
+  };
+  const mkCtx = () =>
+    ({
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'su',
+      isSuperuser: true,
+      uiClientId: 'su-test',
+    }) as never;
+
+  beforeEach(() => {
+    captureRecipeMock.mockClear();
+    resetResultDoorAggregatesForTests();
+  });
+
+  it('preserves summary JSON once and appends validated image/audio content items', async () => {
+    const res = await codeRun().fn(
+      {
+        script: `return {
+          summary: { rendered: 2, kept: true },
+          media: [
+            { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+            { type: 'audio', data: 'd29ybGQ=', mimeType: 'audio/mpeg' }
+          ]
+        };`,
+      },
+      mkCtx(),
+    ) as unknown as { content: Array<Record<string, unknown>> };
+
+    expect(res.content).toEqual([
+      expect.objectContaining({ type: 'text' }),
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+      { type: 'audio', data: 'd29ybGQ=', mimeType: 'audio/mpeg' },
+    ]);
+    const payload = JSON.parse(String(res.content[0].text));
+    expect(payload.summary).toEqual({ rendered: 2, kept: true });
+    expect(payload.media).toBeUndefined();
+    expect(String(res.content[0].text)).not.toContain('aGVsbG8=');
+  });
+
+  it('rejects invalid final media without placing a non-text item on the wire', async () => {
+    const res = await codeRun().fn(
+      {
+        script:
+          `return { summary: { kept: true }, ` +
+          `media: [{ type: 'audio', data: 'not base64!', mimeType: 'audio/mpeg' }] };`,
+      },
+      mkCtx(),
+    ) as unknown as { content: Array<Record<string, unknown>> };
+
+    expect(res.content).toHaveLength(1);
+    expect(res.content[0].type).toBe('text');
+    const payload = JSON.parse(String(res.content[0].text));
+    expect(payload.ok).toBe(false);
+    expect(payload.summary).toEqual({ kept: true });
+    expect(payload.error).toContain('invalid_media_result');
+  });
+
+  it('counts emitted media bytes toward the shared aggregate budget and spills on exhaustion', async () => {
+    const res = await codeRun().fn(
+      {
+        script:
+          `return { summary: { rendered: true }, ` +
+          `media: [{ type: 'image', data: 'YWFh'.repeat(1250), mimeType: 'image/png' }] };`,
+      },
+      mkCtx(),
+    ) as unknown as Parameters<typeof applyResultDoor>[0];
+    const aggregateScope = beginResultDoorAggregate({
+      sessionKey: 'p027-media-accounting',
+      outputGroupId: 'turn-1',
+    });
+
+    let doored = res;
+    for (let index = 0; index < 20; index += 1) {
+      doored = applyResultDoor(res, {
+        toolName: 'code:run',
+        workspaceId: 'ws-test',
+        ownerId: 'owner-x',
+        aggregateScope,
+      });
+      const aggregate = (
+        doored._meta as {
+          resultDoor?: { aggregate?: { exceeded?: boolean; sourceBytes?: number } };
+        } | undefined
+      )?.resultDoor?.aggregate;
+      if (aggregate?.exceeded) break;
+    }
+
+    const resultDoor = (
+      doored._meta as {
+        resultDoor?: {
+          reason?: string;
+          nonTextBytes?: number;
+          aggregate?: { exceeded?: boolean; sourceBytes?: number };
+        };
+      } | undefined
+    )?.resultDoor;
+    expect(resultDoor?.reason).toBe('aggregate-output-budget-exceeded');
+    expect(resultDoor?.aggregate?.exceeded).toBe(true);
+    expect(resultDoor?.nonTextBytes).toBe(5_000);
+    expect(resultDoor?.aggregate?.sourceBytes).toBeGreaterThan(5_000);
+    expect(doored.content).toHaveLength(1);
+    expect(doored.content[0]?.type).toBe('text');
   });
 });
 

@@ -3288,6 +3288,7 @@ export async function setWorkItemState(
       assumptions: opts.assumptions,
       skipCompletionGate: opts.skipCompletionGate,
       completionAuthority: opts.completionAuthority,
+      force: opts.force,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
@@ -3372,6 +3373,11 @@ export async function setWorkItemState(
              -- for the skipCompletionGate system paths and any writer not yet migrated.
              authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
                                 THEN COALESCE(authority, ${opts.completionAuthority ?? null})
+                              WHEN ${Boolean(opts.force) &&
+                              !opts.skipCompletionGate &&
+                              !opts.completionAuthority &&
+                              !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0)}
+                                THEN authority
                               ELSE ${opts.completionAuthority ?? null} END,
              payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                             THEN payload

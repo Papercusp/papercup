@@ -3,6 +3,7 @@ import {
   computeIntentStale,
   computeIntentDivergent,
   computeLastActiveSecAgo,
+  deriveUnifiedClaimCount,
   deriveLastActive,
   formatIdleAge,
   INTENT_STALE_SEC,
@@ -15,6 +16,22 @@ import {
 
 const NOW = 1_700_000_000_000;
 const iso = (ms: number): string => new Date(ms).toISOString();
+
+describe('deriveUnifiedClaimCount', () => {
+  it.each([
+    ['plan-item-only', ['P-001', 'P-002'], [], 2],
+    ['work-item-only', [], ['WI-001', 'EI-002', 'WI-003'], 3],
+    ['both independent claim lanes', ['P-001'], ['WI-001', 'EI-002'], 3],
+  ])('%s contributes occupancy from both claim domains', (_label, plan, work, expected) => {
+    expect(deriveUnifiedClaimCount(plan, work)).toBe(expected);
+  });
+
+  it('treats absent claim arrays as empty without fabricating occupancy', () => {
+    expect(deriveUnifiedClaimCount(undefined, undefined)).toBe(0);
+    expect(deriveUnifiedClaimCount(null, ['WI-001'])).toBe(1);
+    expect(deriveUnifiedClaimCount(['P-001'], null)).toBe(1);
+  });
+});
 
 describe('computeLastActiveSecAgo', () => {
   it('null when lastActiveAt is null or unparseable', () => {
@@ -236,6 +253,7 @@ describe('mergeTier1', () => {
         'a',
         {
           claimedItems: ['P-001', 'P-002'],
+          claimCount: 4,
           model: 'opus',
           awaitingEvent: true,
           awaitingEventKey: 'plan-run:finished:7',
@@ -251,6 +269,7 @@ describe('mergeTier1', () => {
       lastActiveSecAgo: 10,
       intentStale: false, // active 10s ago → its intent is current
       claimedItems: ['P-001', 'P-002'],
+      claimCount: 4,
       model: 'opus',
       awaitingEvent: true,
       awaitingEventKey: 'plan-run:finished:7',
@@ -282,6 +301,7 @@ describe('mergeTier1', () => {
         'su-native',
         {
           claimedItems: [],
+          claimCount: 0,
           model: null,
           awaitingEvent: false,
           awaitingEventKey: null,

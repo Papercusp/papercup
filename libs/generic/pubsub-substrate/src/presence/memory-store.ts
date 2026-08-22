@@ -167,6 +167,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       potSlug: r.input.potSlug ?? null,
       capabilityTags: r.input.capabilityTags ?? [],
       compactionLimit: null,
+      compactionLimitExplicit: false,
       contextTokens: null,
       contextEstimatedAt: null,
       stale: now - r.heartbeatAt > PRESENCE_STALE_MS,

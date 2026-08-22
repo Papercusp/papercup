@@ -200,6 +200,8 @@ interface ReleasedRow {
   new_status: string;
   requeue_count: number;
   reason: ClaimReason;
+  /** Persisted work-item touch-set used to release the former holder's locks. */
+  payload: unknown;
 }
 
 /** Classify a freed row from its former/new status + counter. WI-6039: issue-family
@@ -426,6 +428,7 @@ export async function reclaimStaleWorkItemClaims(
       SELECT f.workspace_id, f.harness_slug, f.feature_id, f.item_kind,
              f.taken_by AS former_taken_by, f.status AS former_status,
              f.requeue_count AS former_requeue_count,
+             f.payload,
              -- Priority-ordered reason (spawn-exit before dead before stalled).
              CASE
                WHEN EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by) THEN 'spawn-exit'
@@ -568,7 +571,8 @@ export async function reclaimStaleWorkItemClaims(
        AND f.feature_id = d.feature_id
     RETURNING d.workspace_id, d.harness_slug, d.feature_id, d.item_kind,
               d.former_taken_by, d.former_status, d.reason,
-              f.status AS new_status, f.requeue_count AS requeue_count`;
+              f.status AS new_status, f.requeue_count AS requeue_count,
+              f.payload`;
   const released = rows.map((r) => ({
     workspace_id: r.workspace_id,
     harness_slug: r.harness_slug,
@@ -581,6 +585,36 @@ export async function reclaimStaleWorkItemClaims(
     action: classify(r, cap),
     reason: r.reason,
   }));
+  // EI-21185878360894454: reclaiming the work-item claim must also release the
+  // former holder's declared file-lock touch-set. Keep this targeted (rather
+  // than owner-wide): one owner may hold locks for another concurrent item.
+  // The helper groups by domain + lock_id and calls tryRelease, which preserves
+  // unrelated paths in a shared lock set and fires grant_cascade for successors.
+  // Fail-open is intentional: the work-item reclaim remains authoritative and
+  // the lock TTL is the fallback if the side database is unavailable.
+  if (rows.length > 0) {
+    try {
+      const [{ releaseReclaimedWorkItemLocks }, { readWorkItemPaths }] = await Promise.all([
+        import('./work-item-lock-release'),
+        import('./work-items-release-request'),
+      ]);
+      for (const row of rows) {
+        const lockRelease = await releaseReclaimedWorkItemLocks({
+          ownerId: row.former_taken_by,
+          paths: readWorkItemPaths(row.payload),
+        });
+        if (lockRelease.failures > 0) {
+          console.warn(
+            `[stale-claims] ${row.feature_id}: targeted lock release had ${lockRelease.failures} failure(s); claim reclaim continues with lock TTL fallback`,
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[stale-claims] targeted lock cleanup unavailable; claim reclaim continues with lock TTL fallback (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+  }
   // EI-6480: clear the per-Hive authority LEASE for every freed row. A stale lease that survives a
   // taken_by-clear (this reaper just freed a dead holder's item back to the claimable pool) makes
   // the item read as unclaimed yet FAIL lease arbitration for every new claimer until the lease TTL

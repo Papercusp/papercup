@@ -114,6 +114,41 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ status: 'delivered', channel: 'plan-run-resume' });
   });
 
+  it('settles only claimed deliveries for a cancelled standing inbox-wake await (EI-21183631307094531)', async () => {
+    const key = `${store.INBOX_WAKE_KEY_PREFIX}su-cancelled-wake`;
+    await store.upsertInboxWakeAwait({ subscriberId: 'su-cancelled-wake', eventKey: key, note: 'standing wake' });
+
+    const first = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: first, summary: 'claimed-before-cancel' });
+    const [claimed] = await store.claimDueDeliveries({ limit: 5 });
+    expect(claimed.status).toBe('delivering');
+
+    // A second delivery remains pending to prove this helper only settles the
+    // rows claimed by this pump invocation, not every row behind the cancelled
+    // standing await.
+    const second = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: second, summary: 'pending-before-cancel' });
+    expect(await store.cancelInboxWakeAwaits('su-cancelled-wake')).toBe(1);
+
+    expect(await store.settleCancelledInboxWakeDeliveries([claimed])).toEqual([claimed.id]);
+
+    const recent = await store.listRecentDeliveries('su-cancelled-wake', 10);
+    expect(recent.find((delivery) => delivery.summary === 'claimed-before-cancel')).toMatchObject({
+      status: 'delivered',
+      channel: 'coalesced',
+    });
+    expect(recent.find((delivery) => delivery.summary === 'pending-before-cancel')).toMatchObject({
+      status: 'pending',
+    });
+
+    // The pending row is deliberately outside this invocation's claimed set;
+    // claim and settle it explicitly before the next shared-database test.
+    const pendingId = recent.find((delivery) => delivery.summary === 'pending-before-cancel')!.id;
+    const [claimedLater] = (await store.claimDueDeliveries({ limit: 10 })).filter((delivery) => delivery.id === pendingId);
+    expect(await store.settleCancelledInboxWakeDeliveries([claimedLater])).toEqual([pendingId]);
+    expect(await store.settleCancelledInboxWakeDeliveries([claimed])).toEqual([]);
+  });
+
   it('failure path: backoff-retry then dead at max attempts', async () => {
     const fired = await store
       .registerAwait({ subscriberId: 'su-7', eventKey: 'fail:k' })

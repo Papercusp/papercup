@@ -1,22 +1,13 @@
 /** Durable system action for the Google Calendar sync/time-wheel (P-019). */
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import {
-  syncGoogleCalendarSource,
-  type GoogleCalendarSyncResult,
-} from '../../external-triggers/google-calendar';
+import { syncGoogleCalendarSource, type GoogleCalendarSyncResult } from '../../external-triggers/google-calendar';
 import {
   type ExternalTriggerSourceRow,
   listPollableExternalTriggerSources,
   updateExternalTriggerSourceSyncState,
 } from '../../external-triggers/source-store';
-import {
-  GOOGLE_WORKSPACE_OAUTH_PLUGIN,
-  googleWorkspaceOAuthField,
-} from '../../external-triggers/google-workspace';
-import { getProvider, loadAndRegisterProvidersFromDisk } from '../../oauth/providers';
-import { fsTokenStorage } from '../../oauth/storage-fs';
-import { getOAuthToken } from '../../oauth/token';
+import { resolveGoogleWorkspaceAccessToken } from '../../external-triggers/google-workspace';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export interface GoogleCalendarPollFailure {
@@ -38,28 +29,13 @@ export interface GoogleCalendarPollResult {
 export interface GoogleCalendarPollDeps {
   sql?: postgres.Sql;
   listSources?: typeof listPollableExternalTriggerSources;
-  resolveAccessToken?: (
-    source: ExternalTriggerSourceRow,
-    installSlug: string,
-  ) => Promise<string>;
+  resolveAccessToken?: (source: ExternalTriggerSourceRow, installSlug: string) => Promise<string>;
   syncSource?: typeof syncGoogleCalendarSource;
   updateSource?: typeof updateExternalTriggerSourceSyncState;
 }
 
-async function defaultResolveAccessToken(
-  source: ExternalTriggerSourceRow,
-  installSlug: string,
-): Promise<string> {
-  const field = googleWorkspaceOAuthField(source.credentialRef);
-  if (!getProvider('google')) await loadAndRegisterProvidersFromDisk();
-  const token = await getOAuthToken({
-    plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
-    harness: installSlug,
-    storage: fsTokenStorage,
-    resolveProvider: (candidate) => candidate === field ? { provider: 'google' } : null,
-  }, field);
-  if (!token) throw new Error(`google_workspace_oauth_not_connected:${field}`);
-  return token;
+async function defaultResolveAccessToken(source: ExternalTriggerSourceRow, installSlug: string): Promise<string> {
+  return resolveGoogleWorkspaceAccessToken(source, installSlug);
 }
 
 function positiveLeadMinutes(value: unknown): number | undefined {
@@ -72,7 +48,9 @@ function errorText(cause: unknown): string {
 }
 
 function terminalAuthError(message: string): boolean {
-  return /(?:oauth|credential_ref|access_token).*(?:invalid|expired|not_connected|not_registered|required)|still_401/i.test(message);
+  return /(?:oauth|credential_ref|access_token).*(?:invalid|expired|not_connected|not_registered|required)|still_401/i.test(
+    message,
+  );
 }
 
 /**
@@ -103,12 +81,9 @@ export async function runGoogleCalendarPoll(
   for (const source of sources) {
     try {
       const accessToken = await resolveAccessToken(source, ctx.installSlug);
-      const synced: GoogleCalendarSyncResult = await syncSource(
-        sql,
-        source,
-        accessToken,
-        { leadMinutes: positiveLeadMinutes(ctx.triggerConfig.lead_minutes) },
-      );
+      const synced: GoogleCalendarSyncResult = await syncSource(sql, source, accessToken, {
+        leadMinutes: positiveLeadMinutes(ctx.triggerConfig.lead_minutes),
+      });
       result.succeeded += 1;
       result.created += synced.created;
       result.updated += synced.updated;

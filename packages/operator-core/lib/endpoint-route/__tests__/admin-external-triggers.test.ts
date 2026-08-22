@@ -20,6 +20,13 @@ const setStorm = vi.fn(async (_sql: unknown, _workspace: string, id: string, inp
   updatedAt: '2026-08-22T00:00:00.000Z',
 }));
 const notify = vi.fn(async (..._args: unknown[]) => {});
+const connectSlack = vi.fn(async (_sql: unknown, input: Record<string, unknown>) => ({
+  id: '20000000-0000-4000-8000-000000000001',
+  kind: 'slack',
+  status: 'connecting',
+  credentialRef: `slack-socket:${input.field ?? input.ownerUserId}`,
+  config: { teamId: 'T1' },
+}));
 const sql = {};
 
 vi.mock('../../auth/require-principal', () => ({
@@ -47,6 +54,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: () => flagEnabled() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../../auth', () => ({
+  getSessionUserOrDefault: vi.fn(async () => ({ id: '22222222-2222-4222-8222-222222222222' })),
+}));
 vi.mock('../../sync-sse', () => ({
   notifySyncInvalidate: (...args: Parameters<typeof notify>) => notify(...args),
 }));
@@ -62,6 +72,10 @@ vi.mock('../../external-triggers/admin', () => ({
   setExternalTriggerBindingArmed: (...args: Parameters<typeof setArmed>) => setArmed(...args),
   updateExternalTriggerBindingStormPolicy: (...args: Parameters<typeof setStorm>) => setStorm(...args),
 }));
+vi.mock('../../external-triggers/slack', () => ({
+  SLACK_APP_MANIFEST_TEMPLATE: { settings: { socket_mode_enabled: true } },
+  connectOwnedSlackSource: (...args: Parameters<typeof connectSlack>) => connectSlack(...args),
+}));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 import { registerRoute } from '../define-route';
@@ -70,14 +84,14 @@ import type { ZodTypeAny } from 'zod';
 import routes from '../routes/admin/external-triggers';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
-const [read, mutate] = routes as unknown as AnyRoute[];
+const [read, mutate, slackManifest, slackConnect] = routes as unknown as AnyRoute[];
 const URL = 'http://127.0.0.1:3070/admin/triggers';
 const BINDING_ID = '10000000-0000-4000-8000-000000000001';
 
-async function request(route: AnyRoute, method: 'GET' | 'PATCH', body?: unknown, headers: Record<string, string> = {}) {
+async function request(route: AnyRoute, method: 'GET' | 'PATCH' | 'POST', body?: unknown, headers: Record<string, string> = {}) {
   const app = new Hono();
   registerRoute(app, route);
-  return app.request(URL, {
+  return app.request(`http://127.0.0.1:3070${route.path}`, {
     method,
     headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -95,6 +109,8 @@ describe('external-trigger admin route pair', () => {
     expect(mutate).toMatchObject({ method: 'PATCH', path: '/admin/triggers' });
     expect(read.auth).toEqual({ trust: ['verified', 'trusted', 'unverified-loopback'] });
     expect(mutate.auth).toEqual(read.auth);
+    expect(slackManifest).toMatchObject({ method: 'GET', path: '/admin/triggers/slack/manifest', auth: read.auth });
+    expect(slackConnect).toMatchObject({ method: 'POST', path: '/admin/triggers/slack/connect', auth: read.auth });
   });
 
   it('returns the shared snapshot and the default-ON flag fails open on provider errors', async () => {
@@ -158,5 +174,28 @@ describe('external-trigger admin route pair', () => {
     });
     expect(response.status).toBe(200);
     expect(setStorm).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID, { maxRuns: 3, windowSeconds: 120 });
+  });
+
+  it('serves the reusable Socket Mode manifest without exposing a secret', async () => {
+    const response = await request(slackManifest, 'GET');
+    expect(await response.json()).toEqual({ ok: true, manifest: { settings: { socket_mode_enabled: true } } });
+  });
+
+  it('stores Slack tokens through the connection seam and never echoes them', async () => {
+    const response = await request(slackConnect, 'POST', {
+      appToken: 'xapp-private', botToken: 'xoxb-private', installSlug: 'papercusp', channels: ['C1'],
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: true, source: { kind: 'slack', status: 'connecting' } });
+    expect(JSON.stringify(body)).not.toContain('xapp-private');
+    expect(JSON.stringify(body)).not.toContain('xoxb-private');
+    expect(connectSlack).toHaveBeenCalledWith(sql, expect.objectContaining({
+      workspaceId: 'ws-test',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      appToken: 'xapp-private',
+      botToken: 'xoxb-private',
+    }));
+    expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
   });
 });

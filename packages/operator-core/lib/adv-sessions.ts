@@ -924,6 +924,15 @@ export async function markAdvSessionEnded(
        RETURNING id
     `;
     if (r.length) {
+      // EI-21185611167428939: the psu parent can authoritatively observe +
+      // record a child exit even when the separate best-effort SessionEnd
+      // lifecycle hook never reaches activity:report. Schedule the same lease
+      // hygiene behind a short settle/liveness check so a genuine death cannot
+      // strand file/resource locks or work-item claims until TTL, while a
+      // carry/resume successor under the same owner remains protected.
+      void trackDetached(import('./session-end-lease-release-hook'))
+        .then((m) => m.scheduleSessionEndLeaseRelease(id))
+        .catch((e) => console.warn(`[adv-sessions] lease-release hook unavailable: ${(e as Error)?.message ?? e}`));
       // End-of-session fast path (session-db-archive-retire-dirs-2026-07-10
       // P-004): archive-then-delete the session's files after a settle delay.
       // Dynamic import: no module cycle, and this hot end path stays free of

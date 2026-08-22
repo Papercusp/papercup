@@ -29,7 +29,7 @@ import {
   type PlanDecision,
 } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { readPlanBySlug } from './source';
+import { readPlanBySlug, VALID_PLAN_SLUG } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -42,12 +42,17 @@ const REFS = z
 const ITEM_REFS_ALIAS_DESC =
   'Alias for `refs` (EI-18735663944089262) — plans:get returns a decision\'s item refs under this exact name (itemRefs), so accepting it here means a read-then-write roundtrip does not need a field rename. Both fields enforce the same in-plan `P-NNN` reference format; work-item/issue ids are not accepted. Prefer `refs`; if both are given, `refs` wins.';
 
-const AFFECTS = z
-  .array(z.string().min(1))
-  .max(20)
+const AFFECTED_PLAN_SLUG = z
+  .string()
+  .min(1)
+  .regex(VALID_PLAN_SLUG, 'existing plan slug (filename stem)')
   .describe(
-    'Slugs of OTHER plans this decision bears on. The decision stays canonically in `slug`; each affected plan gets a cross-reference plan_event + a notify to its watchers. Never duplicates the decision.',
+    'An existing OTHER plan slug (the plan filename stem). This is not a surface label, work-item/issue id, or P-NNN item reference; use refs/itemRefs for in-plan P-NNN references.',
   );
+
+const AFFECTS = z.array(AFFECTED_PLAN_SLUG).max(20);
+const AFFECTS_DESC =
+  'Existing plan slugs of OTHER plans this decision bears on. The decision stays canonically in `slug`; each affected plan gets a cross-reference plan_event + a notify to its watchers. Surface labels and item/work-item ids are not accepted here.';
 
 const itemSpec = z.object({
   slug: z.string().min(1),
@@ -55,7 +60,7 @@ const itemSpec = z.object({
   body: hardText(5000).describe('The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling.'),
   refs: REFS.optional(),
   itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
-  affects: AFFECTS.optional(),
+  affects: AFFECTS.optional().describe(AFFECTS_DESC),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
 });
@@ -68,7 +73,7 @@ const argsSchema = z
     body: hardText(5000).optional().describe('The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling.'),
     refs: REFS.optional(),
     itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
-    affects: AFFECTS.optional(),
+    affects: AFFECTS.optional().describe(AFFECTS_DESC),
     items: z
       .array(itemSpec)
       .min(1)
