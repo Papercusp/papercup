@@ -1934,6 +1934,120 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
   });
 });
 
+describe('EI-21025158485847408 — ambient host memory-pressure infra crit downgrades to advisory (no page/thrash)', () => {
+  const ambientPerf = {
+    status: 'crit',
+    critAttribution: {
+      operatorDefect: [],
+      ambientHost: [
+        'PSI memory full avg60 10.13 ≥ 5 — all tasks stalled on memory reclaim/swap (WI-5471 class: real thrashing, not a CPU issue)',
+      ],
+    },
+  };
+  const mixedPerf = {
+    status: 'crit',
+    critAttribution: {
+      operatorDefect: ['event-loop lag p95 1200ms ≥ 1000ms'],
+      ambientHost: ['PSI memory full avg60 10.13 ≥ 5 — all tasks stalled on memory reclaim/swap'],
+    },
+  };
+
+  it('a PURELY ambient-host infra crit fires as advisory, not blocker — never pages', () => {
+    const h = mkHealth({
+      panels: {
+        infra: {
+          status: 'crit',
+          summary: 'HOST MEMORY PRESSURE: PSI memory full avg60 10.13 ≥ 5',
+          data: { perf: ambientPerf },
+        },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    const infraSig = sigs.find((s) => s.key === 'panel:infra');
+    expect(infraSig).toBeDefined();
+    expect(infraSig?.severity).toBe('advisory');
+    expect(infraSig?.summary).toMatch(/ambient host pressure, non-blocking/);
+  });
+
+  it('an infra crit that ALSO carries an operator-defect leg still pages as blocker', () => {
+    const h = mkHealth({
+      panels: {
+        infra: {
+          status: 'crit',
+          summary: 'PER-THREAD WEDGE: event-loop lag p95 1200ms ≥ 1000ms',
+          data: { perf: mixedPerf },
+        },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    expect(sigs.find((s) => s.key === 'panel:infra')?.severity).toBe('blocker');
+  });
+
+  it('an infra crit with NO critAttribution at all (older projection) fails SAFE toward blocker', () => {
+    const h = mkHealth({
+      panels: {
+        infra: { status: 'crit', summary: 'some infra crit', data: { perf: { status: 'crit' } } },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    expect(sigs.find((s) => s.key === 'panel:infra')?.severity).toBe('blocker');
+  });
+
+  it('a non-perf infra crit (a broken tool handler) still pages, even alongside an ambient-only perf reason', () => {
+    const h = mkHealth({
+      panels: {
+        infra: {
+          status: 'crit',
+          summary: 'TOOL FAILING FLEET-WIDE: facts:assert 100% (500)',
+          data: {
+            perf: ambientPerf,
+            toolFailures: {
+              rating: 'broken', evidence: 'facts:assert 100% (500)', brokenTools: ['facts:assert'],
+              windowMin: 15, worstPct: 100, totalCalls: 20,
+            },
+          },
+        },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    expect(sigs.find((s) => s.key === 'panel:infra')?.severity).toBe('blocker');
+  });
+
+  it('runLivenessAlarmTick still records a panel:infra advisory durably, with severity carried through to the escalation writer (never `blocker`)', async () => {
+    const health = mkHealth({
+      panels: {
+        infra: {
+          status: 'crit',
+          summary: 'HOST MEMORY PRESSURE: PSI memory full avg60 10.13 ≥ 5',
+          data: { perf: ambientPerf },
+        },
+      },
+    });
+    // A minimal store that just captures what severity was actually escalated —
+    // `runLivenessAlarmTick` only reaches its fleet-wide page path
+    // (`newBlockerSignals`, gated on `s.severity === 'blocker'`) for signals it
+    // ALSO passed to `escalate()` at that same severity, so asserting the
+    // escalated severity here is the load-bearing check that this never pages.
+    const escalated: Array<{ severity: string; summary: string }> = [];
+    const t = await runLivenessAlarmTick('ws', {
+      readLast: () => health,
+      computeHealth: async () => health,
+      escalate: async (input: { severity: string; summary: string }) => {
+        escalated.push({ severity: input.severity, summary: input.summary });
+      },
+      listOpen: async () => [],
+      resolve: async () => {},
+      now: () => 1_000_000,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    });
+    expect(t.signals.map((s) => s.key)).toContain('panel:infra');
+    expect(t.fired.map((s) => s.key)).toContain('panel:infra');
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0]?.severity).toBe('advisory');
+  });
+});
+
 describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as "recovered"', () => {
   beforeEach(() => _resetLivenessAlarmDebounce());
 
