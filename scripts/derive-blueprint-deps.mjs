@@ -8,8 +8,10 @@
  * For every blueprint under libs/papercusp/packages/harness/blueprints/:
  *   roles = declared roles[] ∪ spine.decider ∪ roles referenced by spine edges
  *           ∪ reactive[].role
- *   personas = blueprints/<id>/prompts/<role>.md (blueprint-local)
- *            ∪ libs/papercusp/packages/harness/prompts/<role>.md (global)
+ *   personas = the same leaf-first extends-chain used by prompt-resolve.ts:
+ *            blueprints/<id>/prompts/<role>.md
+ *            ∪ each ancestor's prompt
+ *            ∪ blueprints/base/prompts/<role>.md (always)
  *            ∪ apps/operator/prompts/<role>.{tools,persona}.md (operator-side)
  *   mentions = backtick-wrapped `group:verb` tokens (the tools-md-sync regex)
  *   program ops (steps/gate) are listed separately — only ones that are REAL
@@ -30,7 +32,6 @@ import { parse as parseYaml } from 'yaml';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BLUEPRINTS = join(REPO, 'libs/papercusp/packages/harness/blueprints');
-const HARNESS_PROMPTS = join(REPO, 'libs/papercusp/packages/harness/prompts');
 const OPERATOR_PROMPTS = join(REPO, 'apps/operator/prompts');
 
 // ── static tool catalog (mirrors tools-md-sync.test.ts) ─────────────────────
@@ -100,14 +101,41 @@ function mentionsIn(md) {
   return out;
 }
 
-function personaFilesFor(blueprintId, role) {
+function blueprintExtends(id) {
+  const path = join(BLUEPRINTS, id, 'blueprint.yaml');
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = parseYaml(readFileSync(path, 'utf8'));
+    if (parsed?.extends == null) return [];
+    return Array.isArray(parsed.extends) ? parsed.extends.map(String) : [String(parsed.extends)];
+  } catch {
+    return [];
+  }
+}
+
+// Keep this chain calculation structurally aligned with prompt-resolve.ts:
+// leaf first, cycle guarded, and always terminated by the universal base library.
+function resolveBlueprintChain(blueprintId) {
+  const chain = [];
+  const seen = new Set();
+  const walk = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    chain.push(id);
+    for (const parent of blueprintExtends(id)) walk(parent);
+  };
+  walk(blueprintId);
+  if (!chain.includes('base')) chain.push('base');
+  return chain;
+}
+
+export function personaFilesFor(blueprintId, role) {
   const files = [];
-  for (const f of [
-    join(BLUEPRINTS, blueprintId, 'prompts', `${role}.md`),
-    join(HARNESS_PROMPTS, `${role}.md`),
-    join(OPERATOR_PROMPTS, `${role}.tools.md`),
-    join(OPERATOR_PROMPTS, `${role}.persona.md`),
-  ]) {
+  for (const id of resolveBlueprintChain(blueprintId)) {
+    const f = join(BLUEPRINTS, id, 'prompts', `${role}.md`);
+    if (existsSync(f)) files.push(f);
+  }
+  for (const f of [join(OPERATOR_PROMPTS, `${role}.tools.md`), join(OPERATOR_PROMPTS, `${role}.persona.md`)]) {
     if (existsSync(f)) files.push(f);
   }
   return files;

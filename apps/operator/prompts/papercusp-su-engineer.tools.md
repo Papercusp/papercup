@@ -86,7 +86,8 @@ one credential set; `papercusp:list_workspaces`). **Run/spawn** = one agent
 invocation (tracked in `harness_shared.spawned_agents`). **Role** = agent kind —
 the runtime source of truth is `AGENT_ROLES`
 (`packages/agent-mcp/src/role-config.ts`); spawn personas at
-`libs/papercusp/packages/harness/prompts/<role>.md`. **Issue** = folded into
+`libs/papercusp/packages/harness/blueprints/<blueprintId>/prompts/<role>.md`, resolved through
+the blueprint's extends-chain with `blueprints/base/prompts/<role>.md` always consulted. **Issue** = folded into
 work_items (kind=`bug`/`change`); `features:*`/`issues:*` are legacy per-kind
 views. **Phase** = staging/testing/production worktrees per harness.
 **Endpoint system** = one typed `defineTool` fn projected onto HTTP/MCP/IPC

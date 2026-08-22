@@ -1,7 +1,7 @@
 /**
  * `agent:role` — the read-side role-prompt PROJECTION: external clients fetch the
  * exact persona md Papercusp dispatches its own agents with
- * (libs/papercusp/packages/harness/prompts/<role>.md). `__tests__/prompts.test.ts`
+ * (libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md). `__tests__/prompts.test.ts`
  * exercises tooldef's prompt *registry* with fixtures; this is the only coverage
  * of the real `agent:role` resolver itself:
  *   - the id guard (rejects empty + path-traversal — the only auth boundary here)
