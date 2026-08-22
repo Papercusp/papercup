@@ -25,6 +25,13 @@ import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { readOutbox } from '../coordination/messages';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { clampText, softText } from '../limits';
+
+const RELEASE_REASON_MAX_CHARS = 500;
+const releaseReasonSchema = () =>
+  softText(RELEASE_REASON_MAX_CHARS)
+    .optional()
+    .describe('Optional audit/park reason — auto-truncated to 500 chars if longer.');
 
 /**
  * A completion assertion is intentionally a narrow, advisory signal. It is not
@@ -141,11 +148,7 @@ const itemSpec = z.object({
     .optional()
     .describe('per-item claim-hold override (else the batch `claimHold` default)'),
   force: z.boolean().optional().describe('per-item override of the batch `force` default'),
-  reason: z
-    .string()
-    .max(500)
-    .optional()
-    .describe('per-item override of the batch `reason` (required when force clears a peer\'s claim)'),
+  reason: releaseReasonSchema().describe('per-item override of the batch `reason` (required when force clears a peer\'s claim)'),
 });
 
 export default defineTool({
@@ -184,13 +187,9 @@ export default defineTool({
         .describe(
           'default force for the inline id / every id in `ids`: release even if held by ANOTHER agent. CHECKED override (WI-4198): allowed only when the holder is not live, or you are queen, or you lead the HOLDER\'s fleet — and a cross-holder force requires `reason` and is audited + notifies holder/owner. Default false: refuses with { error:"not_holder", holder } when the caller is not the current holder.',
         ),
-      reason: z
-        .string()
-        .max(500)
-        .optional()
-        .describe(
-          'default reason for the inline id / every id in `ids` — REQUIRED when force clears another agent\'s claim (recorded in the audit row and both notifications); with claimHold:true it is also recorded as the durable park reason.',
-        ),
+      reason: releaseReasonSchema().describe(
+        'default reason for the inline id / every id in `ids` — REQUIRED when force clears another agent\'s claim; auto-truncated to 500 chars if longer, then recorded in the audit row/notifications and any durable park.',
+      ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
@@ -207,10 +206,14 @@ export default defineTool({
       async (it) => {
         const harness = it.harness ?? args.harness;
         const force = it.force ?? args.force ?? false;
+        const rawReason = it.reason ?? args.reason;
+        const reason = clampText(rawReason, RELEASE_REASON_MAX_CHARS);
+        const reasonTruncated = typeof rawReason === 'string' && rawReason.length > RELEASE_REASON_MAX_CHARS;
+        const reasonDisclosure = reasonTruncated ? { reasonTruncated: true as const } : {};
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness
         // guard, carry a reason, and leave an audit + notification trail.
-        let forced: { holder: string; basis: ForceReleaseBasis; reason: string } | undefined;
+        let forced: { holder: string; basis: ForceReleaseBasis; reason: string; reasonTruncated?: true } | undefined;
         // WI-6678: the force path already reads the row — reuse that read for the
         // released/previousAssignee delta below instead of paying a second round-trip.
         let forcedPrior: string | null | undefined;
@@ -220,8 +223,8 @@ export default defineTool({
           forcedPrior = current.assignee ?? null;
           const holder = current.assignee?.trim();
           if (holder && holder !== ident.ownerId) {
-            const reason = (it.reason ?? args.reason ?? '').trim();
-            if (!reason) {
+            const forceReason = (reason ?? '').trim();
+            if (!forceReason) {
               return {
                 ok: false as const,
                 id: it.id,
@@ -247,7 +250,12 @@ export default defineTool({
                 hint: forceRefusalHint(holder),
               };
             }
-            forced = { holder, basis: verdict.basis as ForceReleaseBasis, reason };
+            forced = {
+              holder,
+              basis: verdict.basis as ForceReleaseBasis,
+              reason: forceReason,
+              ...(reasonTruncated ? { reasonTruncated: true as const } : {}),
+            };
           }
         }
         // WI-6678: capture the PRE-state so the caller can tell a real release from a
@@ -324,6 +332,7 @@ export default defineTool({
             holder: forced.holder,
             basis: forced.basis,
             reason: forced.reason,
+            ...(forced.reasonTruncated ? { reasonTruncated: true } : {}),
             harness: workItem.harness ?? null,
           });
           await notifyForceRelease(ident, {
@@ -444,7 +453,9 @@ export default defineTool({
             }
           : {};
         const claimHold = it.claimHold ?? args.claimHold;
-        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced, ...delta, ...stranding, ...completion };
+        if (claimHold === undefined) {
+          return { ok: true as const, id: it.id, workItem, forced, ...delta, ...stranding, ...completion, ...reasonDisclosure };
+        }
         // WI-321 boomerang fix: a release-park is a DURABLE park (claim_hold_* provenance),
         // NOT a held_open_* lease — a lease dies ~2h after the parker's session ends
         // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
@@ -453,7 +464,7 @@ export default defineTool({
         const held = await setWorkItemClaimHold(it.id, claimHold, {
           harness,
           parkedBy: ident.ownerId,
-          parkedReason: it.reason ?? args.reason,
+          parkedReason: reason,
         });
         return {
           ok: true as const,
@@ -464,6 +475,7 @@ export default defineTool({
           ...stranding,
           ...completion,
           claimHold: held?.applicable ? held.hold : undefined,
+          ...reasonDisclosure,
         };
       },
       { keyOf: (it) => ({ id: it.id }) },
