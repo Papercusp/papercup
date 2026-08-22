@@ -84,7 +84,11 @@ describe('agent-e2e doc stays in sync with the live-drove-ui completion gate', (
     // this cannot be satisfied by prose — only by an example the gate genuinely accepts.
     const recommended = sectionOneThree()
       .split('\n')
-      .filter((l) => l.includes('tauri-agent-tools') && LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS.some((s) => l.includes(s)));
+      // Restrict this to actual shell command lines. Prose such as "--json belongs
+      // to check, not eval" names both the tool and an accepted subcommand but is
+      // not itself evidence-bearing output.
+      .filter((l) => /^\s*tauri-agent-tools\s+\S/.test(l))
+      .filter((l) => LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS.some((s) => l.includes(s)));
     expect(recommended.length, '§1.3 must show at least one gate-satisfying command').toBeGreaterThan(0);
     for (const line of recommended) {
       expect(citesScreenshotArtifact(line), `§1.3 shows a command the gate would REJECT: ${line}`).toBe(true);
