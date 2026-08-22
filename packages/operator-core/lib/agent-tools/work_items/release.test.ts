@@ -58,6 +58,8 @@ const assessM = vi.mocked(assessForceRelease);
 const auditM = vi.mocked(recordForceReleaseAudit);
 const notifyM = vi.mocked(notifyForceRelease);
 const tool = (await import('./release')).default;
+const LONG_REASON = 'r'.repeat(501);
+const CLAMPED_REASON = LONG_REASON.slice(0, 500);
 // vitest 4 infers a vi.fn mock's Parameters from its initial implementation —
 // a zero-arg arrow made `.mock.calls[N]` the empty tuple `[]`, so indexing
 // `[1]` below (line 262) failed to typecheck (TS2493) even though the real
@@ -102,6 +104,24 @@ describe('work_items:release handler (keyed-array)', () => {
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-X' });
     expect(String(b.results[1].error)).toMatch(/WI-X.*not found/i);
+  });
+});
+
+describe('work_items:release reason soft cap', () => {
+  it('accepts an over-length reason in both batch and per-item schemas', () => {
+    const batch = tool.args.safeParse({ id: 'WI-1', reason: LONG_REASON });
+    const perItem = tool.args.safeParse({ items: [{ id: 'WI-1', reason: LONG_REASON }] });
+
+    expect(batch.success).toBe(true);
+    expect(perItem.success).toBe(true);
+    if (batch.success) expect(batch.data.reason).toHaveLength(LONG_REASON.length);
+    if (perItem.success) expect(perItem.data.items?.[0]?.reason).toHaveLength(LONG_REASON.length);
+  });
+
+  it('reports reasonTruncated on a normal release instead of rejecting the call', async () => {
+    const b = await body({ id: 'WI-1', reason: LONG_REASON });
+
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', reasonTruncated: true });
   });
 });
 
@@ -231,6 +251,22 @@ describe('work_items:release remote-origin guard (WI-6031)', () => {
 
 // WI-4198: force is a CHECKED override — authority/liveness guard + reason + audit + notify.
 describe('work_items:release force guard (WI-4198)', () => {
+  it('clamps an over-length force reason in the result, audit, and notification', async () => {
+    getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer', lastProgressAt: 'ts' } as never);
+    const b = await body({ id: 'WI-HELD', force: true, reason: LONG_REASON });
+
+    expect(b.results[0].forced).toMatchObject({ reason: CLAMPED_REASON, reasonTruncated: true });
+    expect(auditM).toHaveBeenCalledWith(
+      'me',
+      'WI-HELD',
+      expect.objectContaining({ reason: CLAMPED_REASON, reasonTruncated: true }),
+    );
+    expect(notifyM).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'me' }),
+      expect.objectContaining({ itemId: 'WI-HELD', reason: CLAMPED_REASON }),
+    );
+  });
+
   it('an authorized cross-holder force releases, reports `forced`, and audits + notifies', async () => {
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer', lastProgressAt: 'ts' } as never);
     const b = await body({ id: 'WI-HELD', force: true, reason: 'holder session dead 3h; reclaiming for the drain' });
@@ -291,6 +327,17 @@ describe('work_items:release force guard (WI-4198)', () => {
 
 // WI-2797: claimHold — the durable self-select-exclusion lever a release can ALSO apply.
 describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
+  it('clamps an over-length durable park reason and reports reasonTruncated', async () => {
+    const b = await body({ id: 'WI-1', claimHold: true, reason: LONG_REASON });
+
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, {
+      harness: undefined,
+      parkedBy: 'me',
+      parkedReason: CLAMPED_REASON,
+    });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: true, reasonTruncated: true });
+  });
+
   it('omitting claimHold never calls setWorkItemClaimHold (no extra write when not requested)', async () => {
     const b = await body({ id: 'WI-1' });
     expect(holdM).not.toHaveBeenCalled();
