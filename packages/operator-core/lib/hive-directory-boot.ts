@@ -481,11 +481,43 @@ export async function wireHiveDirectoryForWorkspace(
     // address, P-006) sourced from the keychain/hives table — only the owning Swarm
     // holds it, and publish only runs for owned hives. Not persisted in the registry
     // meta (it lives in hives.public_key); attached fresh at publish time.
-    const { loadHivePubkey } = await import('./identity/hive-keypair');
+    // WI-3496 / D-032 R-3+R-3b: this read decides whether the announce carries the
+    // cross-Hive dial address, and it used to be `loadHivePubkey(...).catch(() => null)`
+    // — which flattens FOUR distinct outcomes into one silent `null`: not_found,
+    // io_error, decryption_failed, and a throw. Holding the key does NOT prevent the
+    // omission, because the omit is keyed on THE READ, not on presence. The result is
+    // replayed forever: the pubkey is resolved once here, and dir.startReannounce()
+    // re-announces whatever was published, so ONE transient keychain error at wire time
+    // poisons every later announce until the process restarts. Reporting merely "null"
+    // reproduces the exact conflation that made this defect invisible, so this reports
+    // WHICH outcome fired, per hive, with the keychainId actually used.
+    const { loadHiveKeyStatus, hiveKeychainId } = await import('./identity/hive-keypair');
     const { deriveHiveMemberRepoRefs } = await import('./hive-member-repos');
     const ownedHives = await Promise.all(
       ownedHivesRaw.map(async (h) => {
-        const pk = await loadHivePubkey(workspaceId, h.potId).catch(() => null);
+        let pk: string | null = null;
+        let pkOutcome: string;
+        try {
+          const st = await loadHiveKeyStatus(workspaceId, h.potId);
+          if (st.kind === 'ok') {
+            pk = st.pubkeyBase64;
+            pkOutcome = 'ok';
+          } else if (st.kind === 'not_found') {
+            pkOutcome = 'not_found';
+          } else {
+            pkOutcome = `error:${st.reason}`;
+          }
+        } catch (e) {
+          pkOutcome = `threw:${e instanceof Error ? e.message : String(e)}`;
+        }
+        if (pkOutcome !== 'ok') {
+          console.warn(
+            `[hive-directory] hivePubkey OMITTED from announce for hive ${h.potId} ` +
+              `(workspace ${workspaceId}): ${pkOutcome} — keychainId=${hiveKeychainId(workspaceId, h.potId)}. ` +
+              `This announce carries NO cross-Hive dial address, and the omission is replayed by ` +
+              `every reannounce until this process restarts.`,
+          );
+        }
         // member_repos: the repo→Hive binding signal (P-003) — derived fresh at
         // publish time like the pubkey, never persisted in the registry meta.
         const memberRepos = await deriveHiveMemberRepoRefs(workspaceId, h.potId).catch(
