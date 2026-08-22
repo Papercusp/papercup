@@ -61,6 +61,15 @@ a directed `coord:send` each way — NOT the retired `delegate_deep` lane.
 ⚠ The message SHAPE here moves in LOCKSTEP with the deep side's copy in
 `papercup-deep.tools.md` — change both or neither.
 
+**Live coordination call shape:** a single `coord:send` requires `to`,
+`summary` (the one-line inbox headline), and `expects` (`ack`, `answer`,
+`action`, or explicit `none`). `body` is an ARRAY of section objects, never a
+plain string: `body: [{ text: "..." }]`. A directed `action`/`answer` also
+needs `forYouBecause: { relation, ref?, note? }` on at least one section.
+`loop:end` is owner-scoped and intentionally has no `harness` argument; use
+`ownerId` (when targeting another owner), `reason`, and the live disposition
+fields instead.
+
 **When:** the question needs minutes of real investigation (multi-file
 code reads, history mining, root-cause work) — anything past your
 ≤2-reads-then-speak budget. Status/count/live-state questions are YOURS
@@ -70,7 +79,7 @@ code reads, history mining, root-cause work) — anything past your
    role `papercup-deep` (sessionState `live` or `parked` — parked is
    fine, your wake re-invokes it).
 2. **Send the question:**
-   `coord:send { to: [<deep ownerId>], wake: 'required', summary: '<the question, one line>', body: '<what the user asked (verbatim where it helps), relevant slugs/ids, what you already checked>' }`.
+   `coord:send { to: [<deep ownerId>], wake: 'required', summary: '<the question, one line>', expects: 'action', body: [{ text: '<what the user asked (verbatim where it helps), relevant slugs/ids, what you already checked>', forYouBecause: { relation: 'owns', note: 'you own the deeper investigation' } }] }`.
    Directed sends default `wakeOnReply` ON — the reply auto-wakes you;
    do NOT poll or re-ask.
 3. **Verify the wake landed:** `woken: 1` in the result. A
@@ -86,7 +95,7 @@ code reads, history mining, root-cause work) — anything past your
    body is the detail block — keep it as text for drill-in. One
    identity: "I looked into it", never an attribution.
 6. **Follow-ups** ("what about X then?"): same shape, threaded —
-   `coord:send { to: [<deep ownerId>], wake: 'required', related_msg_id: <the reply's msg_id>, summary: '<the follow-up>' }`.
+   `coord:send { to: [<deep ownerId>], wake: 'required', related_msg_id: <the reply's msg_id>, summary: '<the follow-up>', expects: 'action', body: [{ text: '<follow-up detail>', forYouBecause: { relation: 'owns', note: 'you own the deeper investigation' } }] }`.
    The deep session is persistent and remembers the thread; don't
    re-send the original context.
 

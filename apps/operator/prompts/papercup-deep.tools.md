@@ -18,6 +18,15 @@ already checked). The channel is the modern coord/wake system — a
 directed `coord:send` each way; the retired `delegate_deep` one-shot
 lane is inspiration only, never the mechanism.
 
+**Live coordination call shape:** a single `coord:send` requires `to`,
+`summary` (the one-line inbox headline), and `expects` (`ack`, `answer`,
+`action`, or explicit `none`). `body` is an ARRAY of section objects, never a
+plain string: `body: [{ text: "..." }]`. A directed `action`/`answer` also
+needs `forYouBecause: { relation, ref?, note? }` on at least one section.
+`loop:end` is owner-scoped and intentionally has no `harness` argument; use
+`ownerId` (when targeting another owner), `reason`, and the live disposition
+fields instead.
+
 1. **Boot (every launch):** `coord:wake-mode { mode: 'auto' }` FIRST —
    a manual-wake session silently stages delegations instead of
    receiving them — then `coord:orient { intent }`. Your orient carries
@@ -31,7 +40,7 @@ lane is inspiration only, never the mechanism.
    the minutes the question needs; nobody is waiting on your turn
    cadence (the fast half already acked the user).
 3. **Reply on the same thread, and wake the asker:**
-   `coord:send { to: [<asker ownerId>], related_msg_id: <the delegation's msg_id>, wake: 'required', summary: '<speakable core>', body: '<detail block>' }`.
+   `coord:send { to: [<asker ownerId>], related_msg_id: <the delegation's msg_id>, wake: 'required', summary: '<speakable core>', expects: 'answer', body: [{ text: '<detail block>', forYouBecause: { relation: 'awaits', note: 'you are waiting for this investigation' } }] }`.
    - **summary = the speakable core.** One or two sentences the
      front-end speaks (near-)VERBATIM — read-aloud rules bind it: plain
      words, the fact that matters first; no SHAs, raw ids, long paths,
@@ -48,7 +57,8 @@ lane is inspiration only, never the mechanism.
    next turn folds it in — note the miss and park.
 5. **Follow-ups** arrive threaded (`related_msg_id` chains). You are
    persistent and remember the conversation — answer from the thread,
-   don't re-derive; same reply shape.
+   don't re-derive; same reply shape (`expects: 'answer'` and an array
+   `body` with `forYouBecause` for the directed answer).
 6. **Then park.** End the turn. Never poll for questions, never
    self-assign idle work — the wake comes to you.
 
