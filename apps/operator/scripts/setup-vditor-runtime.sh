@@ -55,11 +55,58 @@ fi
 VERSION="$(node -p "require('$SRC/../package.json').version" 2>/dev/null || echo unknown)"
 DEST="public/vditor/dist"
 STAMP="public/vditor/.version"
+LOCAL_DEST="public/vditor-local"
+LOCAL_STAMP="$LOCAL_DEST/.versions"
 
-# Skip the copy when the mirror already matches the installed vditor. The stamp
-# is written LAST, so an interrupted copy leaves it stale/absent and the next run
-# redoes the work rather than trusting a half-populated tree.
-if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ] && [ -f "$DEST/js/lute/lute.min.js" ]; then
+# Vditor's markmap bundle injects these three scripts itself instead of routing
+# them through its `options.cdn` base. Keep the browser copies beside the
+# mirror, under a stable root that the patched loader can address directly.
+# Resolve each package from the workspace first, but prefer the operator-local
+# copy when npm kept the exact workspace version there (d3 is also used by
+# other workspaces at a different major version).
+resolve_asset() {
+  local package_name="$1"
+  local relative_asset="$2"
+  local expected_version="$3"
+  local package_root actual_version
+
+  for package_root in \
+    "$(pwd)/node_modules/$package_name" \
+    "$(pwd)/../../node_modules/$package_name"; do
+    if [ ! -f "$package_root/$relative_asset" ]; then
+      continue
+    fi
+    actual_version="$(node -p "require(process.argv[1]).version" "$package_root/package.json" 2>/dev/null || true)"
+    if [ "$actual_version" = "$expected_version" ]; then
+      printf '%s\n' "$package_root/$relative_asset"
+      return 0
+    fi
+  done
+
+  echo "ERR: can't find $package_name@$expected_version/$relative_asset; install the declared runtime dependency first" >&2
+  exit 1
+}
+
+D3_ASSET="$(resolve_asset d3 dist/d3.min.js 6.7.0)"
+MARKMAP_VIEW_ASSET="$(resolve_asset markmap-view dist/index.min.js 0.14.3)"
+WEBFONTLOADER_ASSET="$(resolve_asset webfontloader webfontloader.js 1.6.28)"
+MARKMAP="$DEST/js/markmap/markmap.min.js"
+
+# The stamp is written LAST, so a failed copy or rewrite cannot make the next
+# run trust a half-populated mirror. The local assets and URL rewrite are part
+# of the stamp contract too; this deliberately repairs an existing v3.11.2
+# mirror produced before WI-7118 instead of taking the old early-exit path.
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ] \
+  && [ -f "$DEST/js/lute/lute.min.js" ] \
+  && [ -f "$MARKMAP" ] \
+  && [ -f "$LOCAL_STAMP" ] \
+  && [ "$(cat "$LOCAL_STAMP")" = "d3=6.7.0\nmarkmap-view=0.14.3\nwebfontloader=1.6.28" ] \
+  && [ -f "$LOCAL_DEST/d3.min.js" ] \
+  && [ -f "$LOCAL_DEST/markmap-view.min.js" ] \
+  && [ -f "$LOCAL_DEST/webfontloader.js" ] \
+  && ! grep -qF 'https://cdn.jsdelivr.net/npm/d3@6.7.0' "$MARKMAP" \
+  && ! grep -qF 'https://cdn.jsdelivr.net/npm/markmap-view@0.14.3' "$MARKMAP" \
+  && ! grep -qF 'https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js' "$MARKMAP"; then
   echo "vditor-runtime: already current (v$VERSION) — skipping copy"
   exit 0
 fi
@@ -76,5 +123,34 @@ if [ ! -f "$DEST/js/lute/lute.min.js" ]; then
   exit 1
 fi
 
+# These URLs are inside Vditor's prebuilt markmap loader, not in our app code,
+# so setting VDITOR_CDN cannot redirect them. The loader injects them as
+# <script src> tags; replace only the three exact executable URLs with local
+# browser assets. Other source-attribution URLs in vendored files stay intact.
+if [ ! -f "$MARKMAP" ]; then
+  echo "ERR: vditor mirror is missing js/markmap/markmap.min.js after copy" >&2
+  exit 1
+fi
+
+mkdir -p "$LOCAL_DEST"
+cp "$D3_ASSET" "$LOCAL_DEST/d3.min.js"
+cp "$MARKMAP_VIEW_ASSET" "$LOCAL_DEST/markmap-view.min.js"
+cp "$WEBFONTLOADER_ASSET" "$LOCAL_DEST/webfontloader.js"
+
+sed -i \
+  -e 's|https://cdn.jsdelivr.net/npm/d3@6.7.0|/vditor-local/d3.min.js|g' \
+  -e 's|https://cdn.jsdelivr.net/npm/markmap-view@0.14.3|/vditor-local/markmap-view.min.js|g' \
+  -e 's|https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js|/vditor-local/webfontloader.js|g' \
+  "$MARKMAP"
+
+if grep -qF 'https://cdn.jsdelivr.net/npm/d3@6.7.0' "$MARKMAP" \
+  || grep -qF 'https://cdn.jsdelivr.net/npm/markmap-view@0.14.3' "$MARKMAP" \
+  || grep -qF 'https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js' "$MARKMAP"; then
+  echo "ERR: markmap loader still contains a live jsDelivr URL after rewrite" >&2
+  exit 1
+fi
+
+printf 'd3=6.7.0\nmarkmap-view=0.14.3\nwebfontloader=1.6.28' > "$LOCAL_STAMP"
+
 echo "$VERSION" > "$STAMP"
-echo "vditor-runtime: mirrored vditor v$VERSION into $DEST/ ($(du -sh "$DEST" | cut -f1))"
+echo "vditor-runtime: mirrored vditor v$VERSION and local markmap assets into $DEST/ ($(du -sh "$DEST" | cut -f1))"
