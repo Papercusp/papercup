@@ -1139,10 +1139,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // `buildScopedApply`) so the WI-259 P-002 `resolveAuthorDevice` seam threads into the
   // content projections that `buildScopedApply` builds below; `resolveAuthorId` (the
   // rate limiter's, far below) reads this same map.
-  const admittedIdentities = new Map<
-    string,
-    { devicePubkey: string; githubLogin: string; githubUserId: number; attestationGistId: string }
-  >();
+  type AdmittedIdentity = {
+    devicePubkey: string;
+    githubLogin: string;
+    githubUserId: number;
+    attestationGistId: string;
+    /** Bootstrap/known-member admissions deliberately bypass channel-2 I/O. */
+    channel2Verified: boolean;
+  };
+  type QueuedAdmission = {
+    frame: SignedAnnounce;
+    channel2Verified: boolean;
+  };
+  const admittedIdentities = new Map<string, AdmittedIdentity>();
 
   // WI-259 P-002 (membership-aware cross-member content apply): map an op's source-log
   // core key → the admission-VERIFIED device pubkey that vouched for that log (its
@@ -1836,7 +1845,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // re-verified or enqueued.) Own-log and identity-less entries are dropped
     // HERE rather than skipped in the loop so they cannot consume a batch slot.
     const snapshot = [...admittedIdentities.entries()]
-      .filter(([logKey, identity]) => logKey !== ownLog.keyHex && !!identity)
+      .filter(
+        ([logKey, identity]) =>
+          logKey !== ownLog.keyHex && !!identity && identity.channel2Verified,
+      )
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     if (snapshot.length === 0) return;
 
@@ -2187,7 +2199,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the merge gate; mergeNow coalesces (a request landing mid-pass re-runs the
   // pass before the gate releases), so awaiting mergeNow after a queue push
   // always covers that admission.
-  const admissionQueue: SignedAnnounce[] = [];
+  const admissionQueue: QueuedAdmission[] = [];
 
   // ── WI-3684 repair-on-detect: replication-liveness episode → ACTIVE repair ──
   // The liveness registry DETECTS a connected-but-dead log (the ef7a8160 class:
@@ -2715,7 +2727,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function drainAdmissionQueue(): Promise<void> {
     const newlyResolvedSourceLogs: string[] = [];
     while (admissionQueue.length > 0) {
-      const frame = admissionQueue.shift()!;
+      const { frame, channel2Verified } = admissionQueue.shift()!;
       // Revocation can land BETWEEN enqueue and drain (the queue defers the
       // admission); admitting then would resurrect a revoked peer. The decider
       // checked `revoked` at announce time — re-check at drain time.
@@ -2756,6 +2768,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           githubLogin: frame.github_login,
           githubUserId: frame.github_user_id,
           attestationGistId: frame.attestation_gist_id,
+          channel2Verified,
         });
         newlyResolvedSourceLogs.push(frame.log_core_key);
         await persistPeerLifecycle(
@@ -3900,7 +3913,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // admitted via this buffer: admit() refuses it first on every retry, keeping the C-001 read cut
   // intact (shared-hive-rekey). Returns the AdmissionResult to RETURN (admit, or pending-buffered),
   // or null when this is not a same-hive-member candidate (caller falls through to A-003 / conclusive).
-  async function resolveSameHiveMember(frame: SignedAnnounce): Promise<AdmissionResult | null> {
+  async function resolveSameHiveMember(
+    frame: SignedAnnounce,
+    channel2Verified: boolean,
+  ): Promise<AdmissionResult | null> {
     const originSlug = frame.harness_slug ?? null;
     if (!(originSlug != null && originSlug !== slug)) return null;
     const { potHomeSlugForHarness } = await loadHiveFederationModule();
@@ -3927,7 +3943,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         'announce_admitted',
         `owner_bootstrap hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
       );
-      return admitPeer(frame);
+      return admitPeer(frame, channel2Verified);
     }
     const memberDevices = await loadHiveMembers(myHiveHome);
     const isKnownMember = memberDevices.includes(frame.device_pubkey);
@@ -3959,7 +3975,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         'announce_admitted',
         `${isKnownMember ? 'same_hive_member' : 'owner_admit_joiner'} origin=${originSlug} hive=${myHiveHome} ${peerLabel(frame.log_core_key)}`,
       );
-      return admitPeer(frame);
+      return admitPeer(frame, channel2Verified);
     }
     // decision === 'miss' here (the pre-checks above already returned null for 'not-candidate').
     // MEMBERSHIP-MISS (WI-559) — plausible same-hive cross-member whose hive_members row has not
@@ -4068,6 +4084,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
+    let channel2Verified = true;
     try {
       const verifyResult = verifyAnnounceDetailed(frame);
       const sigValid = verifyResult.ok;
@@ -4089,9 +4106,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         attestation_gist_id: frame.attestation_gist_id,
         sigValid,
       };
-      decision = (await admitsAsKnownHiveMember(frame, sigValid))
-        ? { admit: true }
-        : await admit(input);
+      const admittedByKnownMember = await admitsAsKnownHiveMember(frame, sigValid);
+      channel2Verified = !admittedByKnownMember;
+      decision = admittedByKnownMember ? { admit: true } : await admit(input);
     } catch (e) {
       recordBootEvent(
         opts.workspaceId,
@@ -4193,7 +4210,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // immediately. On a membership-MISS (hive home resolved but not yet federated A in) the helper
       // BUFFERS for retry rather than letting the frame fall through to a conclusive drop (the WI-559
       // asymmetric-stall fix). Shared with retryPendingOnce so the decision can't drift.
-      const sameHive = await resolveSameHiveMember(frame);
+      const sameHive = await resolveSameHiveMember(frame, channel2Verified);
       if (sameHive) return sameHive;
       // A-003 fix: the slug scope can be UNRESOLVED at admit time. A joiner's member
       // harness only learns its hive-home slug at the 2c re-key (`hiveHomeProjectionSlug`
@@ -4229,7 +4246,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
       return { admit: false, reason: 'out_of_scope' };
     }
-    return admitPeer(frame);
+    return admitPeer(frame, channel2Verified);
   }
 
   /**
@@ -4240,8 +4257,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * returned promise resolves (audit P-022). Extracted so the pending-retry
    * path uses the same logic as the initial admit path.
    */
-  async function admitPeer(frame: SignedAnnounce): Promise<AdmissionResult> {
-    admissionQueue.push(frame);
+  async function admitPeer(
+    frame: SignedAnnounce,
+    channel2Verified: boolean,
+  ): Promise<AdmissionResult> {
+    admissionQueue.push({ frame, channel2Verified });
     await mergeNow();
     return { admit: true };
   }
@@ -4397,9 +4417,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           attestation_gist_id: entry.frame.attestation_gist_id,
           sigValid,
         };
-        const decision = (await admitsAsKnownHiveMember(entry.frame, sigValid))
-          ? ({ admit: true } as const)
-          : await admit(input);
+        const admittedByKnownMember = await admitsAsKnownHiveMember(entry.frame, sigValid);
+        const channel2Verified = !admittedByKnownMember;
+        const decision = admittedByKnownMember ? ({ admit: true } as const) : await admit(input);
         if (decision.admit) {
           // A-003 + WI-559: identity is re-verified (admit() above re-checked revocation); now
           // re-resolve SCOPE against the now-current state, in the SAME order as onAnnounce.
@@ -4421,10 +4441,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             // actually landed in `admitted` (a failed drain re-buffers the
             // frame into pendingPeers — an unconditional delete here would
             // erase that re-buffered entry).
-            await admitPeer(entry.frame);
+            await admitPeer(entry.frame, channel2Verified);
             if (admitted.has(logCoreKey)) pendingPeers.delete(logCoreKey);
           } else {
-            const sameHive = await resolveSameHiveMember(entry.frame);
+            const sameHive = await resolveSameHiveMember(entry.frame, channel2Verified);
             if (sameHive?.admit) {
               // resolveSameHiveMember admitted it (called admitPeer) → stop
               // retrying — but only once the log actually landed in `admitted`

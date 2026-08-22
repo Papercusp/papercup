@@ -603,6 +603,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       swarmJoinRetryMs: 0,
       mergePollMs: 0,
       pendingRetryMs: 0,
+      reverifyIntervalMs: 0,
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: verifyBinding,
       loadHiveMembersOverride: async () => [], // empty roster — the WI-780/797 condition
@@ -627,6 +628,14 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     // bypassed for the bound owner device. Pre-fix this returned { admit:false, binding_invalid }.
     expect(ownerDeviceForHive).toHaveBeenCalledWith(HIVE_PUBKEY);
     expect(decision).toEqual({ admit: true });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+
+    // WI-40604: this bootstrap admission bypasses the channel-2 gist check, so
+    // the reverify sweep must not evict it when that check conclusively fails.
+    verifyBinding.mockClear();
+    await handle.reverifyAdmitted();
+    await handle.mergeNow();
+    expect(verifyBinding).not.toHaveBeenCalled();
     expect(handle.admitted.has(frame.log_core_key)).toBe(true);
   });
 
