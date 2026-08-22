@@ -90,6 +90,8 @@ export interface ControlTransitionProvenance {
 
 export interface ControlTransition {
   schemaVersion: typeof CONTROL_TRANSITION_SCHEMA;
+  /** The owner/session this transition was produced for, not merely its actor. */
+  targetOwnerId: string;
   previousGeneration: number;
   generation: number;
   state: ControlAnchorState;
@@ -103,7 +105,12 @@ export interface ControlTransition {
 
 export interface ControlTransitionDelivery extends ControlTransition {
   kind: 'transition' | 'full-resync';
-  reason: 'next-generation' | 'missing-transition' | 'schema-mismatch' | 'generation-mismatch';
+  reason:
+    | 'next-generation'
+    | 'missing-transition'
+    | 'schema-mismatch'
+    | 'generation-mismatch'
+    | 'owner-mismatch';
   budget: { estimatedTokens: number; maxTokens: number };
 }
 
@@ -282,8 +289,10 @@ export function decideControlTransitionDelivery(input: {
   updatedAt: string;
 }): ControlTransitionDelivery {
   const pending = input.transition;
+  const targetMatches = pending?.targetOwnerId === input.ownerId;
   const exactNext =
     pending?.schemaVersion === CONTROL_TRANSITION_SCHEMA &&
+    targetMatches &&
     pending.previousGeneration === input.deliveredGeneration &&
     pending.generation === input.generation;
   if (exactNext) {
@@ -297,18 +306,21 @@ export function decideControlTransitionDelivery(input: {
     ? 'missing-transition'
     : pending.schemaVersion !== CONTROL_TRANSITION_SCHEMA
       ? 'schema-mismatch'
+      : !targetMatches
+        ? 'owner-mismatch'
       : 'generation-mismatch';
   // Reject the pending payload wholesale. Full-state replacement is built
   // from the current authoritative anchor row, never the stale transition.
   return renderControlTransitionDelivery({
     schemaVersion: CONTROL_TRANSITION_SCHEMA,
+    targetOwnerId: input.ownerId,
     kind: 'full-resync',
     reason,
     previousGeneration: input.deliveredGeneration,
     generation: input.generation,
     state: input.state,
     provenance:
-      pending?.generation === input.generation
+      pending?.generation === input.generation && targetMatches
         ? pending.provenance
         : {
             ...defaultTransitionProvenance(input.ownerId),
@@ -382,6 +394,7 @@ export async function persistControlAnchor(
   };
   const initialTransition: ControlTransition = {
     schemaVersion: CONTROL_TRANSITION_SCHEMA,
+    targetOwnerId: input.ownerId,
     previousGeneration: 0,
     generation: 1,
     state,

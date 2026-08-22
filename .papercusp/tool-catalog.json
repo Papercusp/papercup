@@ -23716,7 +23716,7 @@
           "POST"
         ]
       },
-      "description": "Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: \"filter\" (the view.filter disagrees) or \"states\" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused.",
+      "description": "Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: \"filter\" (the view.filter disagrees) or \"states\" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused. ⚠ ISSUE-FAMILY ONLY — never sees feature-family rows, unlike scheduler:get_next. `familyScopeIncomplete:true` + a leading warning mean a count here can be a FALSE ZERO for feature-family work — verify with scheduler:get_next before trusting a low/zero reading.",
       "capabilities": [
         "work_items:read"
       ],

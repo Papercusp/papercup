@@ -150,6 +150,7 @@ describe('compact durable CTRL anchor', () => {
   it('delivers only an exact next-generation transition and preserves mutation provenance', () => {
     const transition = {
       schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      targetOwnerId: 'su-x',
       previousGeneration: 4,
       generation: 5,
       state: state({ carry: 'cold' }),
@@ -188,6 +189,7 @@ describe('compact durable CTRL anchor', () => {
     const current = state({ carry: 'cold', modes: ['auto'] });
     const stale = {
       schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      targetOwnerId: 'su-x',
       previousGeneration: 2,
       generation: 3,
       state: state({ carry: 'warm', modes: ['ideate'] }),
@@ -221,6 +223,46 @@ describe('compact durable CTRL anchor', () => {
       provenance: { origin: 'system', source: 'control-anchor:reconcile' },
     });
     expect(delivery.state).not.toEqual(stale.state);
+  });
+
+  it('rejects a transition addressed to another owner even when its generation is exact', () => {
+    const current = state({ carry: 'cold', modes: ['auto'] });
+    const foreign = {
+      schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      targetOwnerId: 'su-ended-prior-owner',
+      previousGeneration: 4,
+      generation: 5,
+      state: state({ carry: 'warm', modes: [] }),
+      provenance: {
+        origin: 'agent' as const,
+        actorId: 'su-ended-prior-owner',
+        source: 'fleet:membership' as const,
+        ownerDirected: false,
+        recordedAt: '2026-07-13T18:03:00.000Z',
+      },
+      resync: {
+        verb: 'coord:orient' as const,
+        args: { afterCompaction: true as const },
+        rule: 'replace-full-never-merge-behind' as const,
+      },
+    };
+    const delivery = decideControlTransitionDelivery({
+      ownerId: 'su-current-owner',
+      deliveredGeneration: 4,
+      generation: 5,
+      state: current,
+      transition: foreign,
+      updatedAt: '2026-07-13T18:04:00.000Z',
+    });
+
+    expect(delivery).toMatchObject({
+      kind: 'full-resync',
+      reason: 'owner-mismatch',
+      targetOwnerId: 'su-current-owner',
+      state: normalizeControlAnchorState(current),
+      provenance: { origin: 'system', source: 'control-anchor:reconcile', actorId: 'su-current-owner' },
+    });
+    expect(delivery.state).not.toEqual(foreign.state);
   });
 });
 

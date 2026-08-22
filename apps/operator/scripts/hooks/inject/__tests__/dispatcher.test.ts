@@ -207,6 +207,40 @@ describe('the happy path (so the fail-silent tests below are not vacuous)', () =
   });
 });
 
+describe('CTRL target-owner fence', () => {
+  it('drops a foreign CTRL block but preserves following context', async () => {
+    const op = fakeOperator({
+      text: '⟦CTRL:transition⟧ {"targetOwnerId":"sid-previous"}\n\n## Orientation\nkeep this',
+    });
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=codex', '--event=UserPromptSubmit'],
+      JSON.stringify({ prompt: 'continue' }),
+      { PAPERCUSP_SID: 'sid-current', PAPERCUSP_OPERATOR_URL: base },
+    );
+
+    expect(res.code).toBe(0);
+    const output = JSON.parse(res.stdout).hookSpecificOutput.additionalContext as string;
+    expect(output).not.toContain('CTRL:');
+    expect(output).toContain('## Orientation\nkeep this');
+  });
+
+  it('keeps a CTRL block addressed to the requesting owner', async () => {
+    const op = fakeOperator({ text: '⟦CTRL:full-resync⟧ {"targetOwnerId":"sid-current"}' });
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=codex', '--event=UserPromptSubmit'],
+      JSON.stringify({ prompt: 'continue' }),
+      { PAPERCUSP_SID: 'sid-current', PAPERCUSP_OPERATOR_URL: base },
+    );
+
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toContain('CTRL:full-resync');
+  });
+});
+
 describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
   const cases: Array<{ name: string; args: string[]; stdin: string; env: Record<string, string> }> =
     [

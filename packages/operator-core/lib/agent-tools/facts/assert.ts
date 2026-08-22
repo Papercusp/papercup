@@ -258,7 +258,7 @@ export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
   description:
-    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; 90d for kind:convention) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.',
+    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; kind:convention with no ttlSec is permanent) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.',
   guidance: {
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
@@ -376,7 +376,7 @@ export default defineTool({
       .max(90 * 24 * 3600)
       .optional()
       .describe(
-        `TTL seconds (default 7d for ordinary facts; 90d for omitted kind:convention; max 90d). ` +
+        `TTL seconds (default 7d for ordinary facts; omitted kind:convention means permanent; max 90d). ` +
           `When subjectVolatile:true, ttlSec must be ≤${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes); ` +
           `subjectVolatile:true also requires measuredAt.`,
       ),

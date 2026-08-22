@@ -16,6 +16,17 @@
  * over it — it resolves the CURRENT spec exactly as scheduler:get_claim_spec does and
  * validates the PROPOSED spec exactly as scheduler:set_claim_spec does, so a proposal that
  * previews clean is one set_claim_spec will accept.
+ *
+ * ⚠ EI-21177555351818650: `readClaimSpecDelta` shares scheduler:get_next's FLOOR logic but
+ * NOT its claim-family coverage — the engine's candidate subquery is issue-family-only
+ * (`item_kind IN ('bug','change','task')`), while scheduler:get_next's real claim ladder also
+ * runs tiers 1/2 against feature-family rows. Reproduced live: this preview reported
+ * `currentClaimable: 0` / `proposedClaimable: 0` for a feature-family id it was explicitly
+ * asked about, and `scheduler:get_next` claimed that exact id under the same stored spec
+ * seconds later. See {@link deltaFamilyScopeIncomplete} / {@link FAMILY_SCOPE_BLIND_SPOT_WARNING}
+ * for the mitigation: this tool now loudly flags (`familyScopeIncomplete` + a `warnings` entry)
+ * whenever either spec's own `kind` filter does not restrict exclusively to issue-family kinds,
+ * so a false zero can never be mistaken for a confirmed one.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -29,6 +40,7 @@ import {
 import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/get-next';
+import { specIsIssueFamilyOnly } from './get_next';
 
 /**
  * Resolve the concrete harness used by the delta read. Operator-context `'*'`
@@ -94,6 +106,44 @@ export function deriveSpecDeltaWarnings(reading: ClaimSpecDeltaReading): string[
 }
 
 /**
+ * EI-21177555351818650: `readClaimSpecDelta` (like every other claimability read in
+ * `scheduler/get-next.ts`) is an ISSUE-FAMILY-ONLY oracle — its candidate subquery is
+ * `WHERE wi.item_kind IN ('bug', 'change', 'task')`. `scheduler:get_next` is not: its claim
+ * ladder also runs tier 1/2 against the FEATURE-family table (`item_kind = 'feature'`/
+ * `'chunk'`), which `readClaimSpecDelta` never queries at all. So whenever a spec's own
+ * `kind` filter does not restrict EXCLUSIVELY to issue-family kinds (no kind leaf at all, or
+ * one that also admits feature/chunk/…), a feature-family row can be genuinely claimable via
+ * `scheduler:get_next` while this preview's `currentClaimable`/`proposedClaimable` reports it
+ * as excluded — a FALSE ZERO with no structural way to tell it apart from a genuine one.
+ *
+ * Reproduced live (EI-21177555351818650): `preview_spec_delta` reported
+ * `currentClaimable: 0` / `proposedClaimable: 0` — including for a proposal naming
+ * feature-family WI-40469/WI-40491/WI-40500 by id explicitly — and
+ * `scheduler:get_next` claimed WI-40469 immediately afterward under the SAME stored spec.
+ * No intervening state changed; the two oracles simply cover different populations.
+ *
+ * True when EITHER side of the delta could reach a feature-family row (i.e. the reading is
+ * not exhaustive for that side). False only when BOTH the current and proposed spec restrict
+ * exclusively to issue-family kinds, in which case a feature-family row is structurally
+ * unreachable under either spec and the 0/exclusion is genuine.
+ */
+export function deltaFamilyScopeIncomplete(currentSpec: unknown, proposedSpec: unknown): boolean {
+  return !specIsIssueFamilyOnly(currentSpec) || !specIsIssueFamilyOnly(proposedSpec);
+}
+
+/** The loud caveat `deltaFamilyScopeIncomplete` gates — prepended to `warnings` so it is the
+ *  first thing a reader sees, mirroring `buildMissDiagnosis`'s `familyScopeNote` for
+ *  `scheduler:get_next`'s own miss diagnosis (the sibling fix for the same blind spot). */
+export const FAMILY_SCOPE_BLIND_SPOT_WARNING =
+  'FAMILY SCOPE: this preview evaluates ONLY the issue-family (bug/change/task) claim path — it never ' +
+  'queries feature-family rows (kind:"feature"/"chunk") at all, while scheduler:get_next claims from BOTH. ' +
+  "Neither the current nor the proposed spec's own kind filter restricts EXCLUSIVELY to issue-family kinds, " +
+  'so a feature-family item can be genuinely claimable via scheduler:get_next RIGHT NOW even though this ' +
+  'preview reports it excluded or reports currentClaimable/proposedClaimable as 0. Do NOT read a low or ' +
+  'zero count here as proof nothing is claimable, and do NOT let it suppress a fleet launch — verify with ' +
+  'scheduler:get_next (or work_items:get on the specific id) before trusting this reading for feature-family work.';
+
+/**
  * Render the human-facing summary from the exact count fields, while refusing to turn an
  * internally inconsistent reading into a reassuring "NO CHANGE". The row lists are deliberately
  * capped, so a short list is expected when its side is marked truncated; an uncapped list whose
@@ -142,7 +192,7 @@ export default defineTool({
   name: 'scheduler:preview_spec_delta',
   profile: 'engineer',
   description:
-    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused.',
+    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused. ⚠ ISSUE-FAMILY ONLY — never sees feature-family rows, unlike scheduler:get_next. `familyScopeIncomplete:true` + a leading warning mean a count here can be a FALSE ZERO for feature-family work — verify with scheduler:get_next before trusting a low/zero reading.',
   guidance: {
     when:
       'Before scheduler:set_claim_spec on a live cup/fleet — especially a NARROWING revision, a `not:`/glob exclusion, or any `states` change. Also to explain a starved lane: preview the CURRENT spec against a wider candidate to see what it is holding back.',
@@ -242,6 +292,12 @@ export default defineTool({
 
     const net = reading.proposedClaimable - reading.currentClaimable;
     const warnings = deriveSpecDeltaWarnings(reading);
+    // EI-21177555351818650: `readClaimSpecDelta` is issue-family-only and structurally
+    // cannot see a feature-family row — prepend the caveat so it is the FIRST thing a
+    // reader sees, before any narrowing/starvation judgment computed from the (possibly
+    // false-zero) counts above.
+    const familyScopeIncomplete = deltaFamilyScopeIncomplete(record.spec, proposedSpec);
+    if (familyScopeIncomplete) warnings.unshift(FAMILY_SCOPE_BLIND_SPOT_WARNING);
 
     return {
       data: {
@@ -269,6 +325,9 @@ export default defineTool({
         newlyExcluded: reading.newlyExcluded,
         newlyAdmitted: reading.newlyAdmitted,
         truncated: reading.truncated,
+        // EI-21177555351818650: programmatic sibling of the warning above — true whenever
+        // this reading's counts cover only a SUBSET of what scheduler:get_next can claim.
+        familyScopeIncomplete,
         ...(warnings.length > 0 ? { warnings } : {}),
         note: deriveSpecDeltaNote(reading),
       },

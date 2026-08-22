@@ -56,6 +56,43 @@ export function sessionId(env = process.env) {
 }
 
 /**
+ * Keep a returned CTRL block bound to the session that requested it.
+ *
+ * The operator already enforces this at the durable-anchor read, but the hook
+ * is the last boundary before text reaches a client. A stale operator response
+ * (or an older server that does not stamp `targetOwnerId`) must not be able to
+ * change a successor's mode, loop, route, or scope. CTRL is the first block in
+ * the turn-start response, followed by ordinary orientation/memory context;
+ * reject only that block so useful non-control context can still be delivered.
+ *
+ * @param {unknown} text
+ * @param {string} owner
+ * @returns {string | null}
+ */
+export function fenceControlTransition(text, owner) {
+  if (typeof text !== 'string' || !text) return null;
+  if (!text.startsWith('⟦CTRL:')) return text;
+
+  // The server renders CTRL as one marker + one JSON line, then separates the
+  // following orientation/memory blocks with a blank line. Keep this parser
+  // deliberately narrow: an unrecognisable first block is not control we can
+  // safely trust, so it is dropped rather than guessed at.
+  const match = /^⟦CTRL:(?:transition|full-resync)⟧[ \t]*([^\r\n]*)(?:\r?\n\r?\n|$)/.exec(text);
+  if (!match) return null;
+
+  let payload;
+  try {
+    payload = JSON.parse(match[1]);
+  } catch {
+    payload = null;
+  }
+  if (payload && typeof payload === 'object' && payload.targetOwnerId === owner) return text;
+
+  const remainder = text.slice(match[0].length);
+  return remainder || null;
+}
+
+/**
  * Build the request envelope shared by every client and both ports.
  *
  * ⚠ `cwd` is load-bearing, not decoration (EI-18893248175645463).
@@ -231,9 +268,10 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     };
 
     const text = await postInjection(port, request, { env, fetchImpl });
-    if (!text) return null;
+    const safeText = fenceControlTransition(text, owner);
+    if (!safeText) return null;
 
-    const payload = adapter.render(port, text, event);
+    const payload = adapter.render(port, safeText, event);
     return typeof payload === 'string' && payload.length > 0 ? payload : null;
   } catch {
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.
