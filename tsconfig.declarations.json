@@ -111,6 +111,11 @@
     "scripts/check-migration-forward-compat.mjs",
     "scripts/check-green-checkpoint-tag.mjs",
     "scripts/check-js-syntax.mjs",
+    // WI-40358 — format-check-script.test.ts imports this module directly so the
+    // range parser can be falsified without running Prettier. Leaving it unenrolled
+    // turns that import into TS7016 and lets its next real type error hide in the
+    // importer's permanent baseline.
+    "scripts/check-format.mjs",
     // WI-37605, same reason as okf-frontmatter-sweep.mjs below: check-green-checkpoint-tag.mjs
     // now imports it (it stopped hand-rolling its own stripComments), so tsc emits this
     // declaration REGARDLESS and leaving it unregistered makes it an untracked byproduct that
@@ -204,6 +209,9 @@
     // untracked byproducts that `--check` does not police and that reappear every run.
     // Registering all three is what keeps the emitted set and the tracked set equal.
     "apps/operator/scripts/psu-launcher.mjs",
+    // BYOC P-014 — imported directly by the TypeScript-focused controller test and
+    // by psu-launcher.mjs; keep its inferred surface generated and drift-checked.
+    "apps/operator/scripts/psu-connection-front-controller.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",
     // EI-20228184337467634 — ptool.mjs is imported by TypeScript tests; register
     // its runtime dependency too so the complete CLI import surface is typed.

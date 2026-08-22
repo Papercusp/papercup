@@ -57,15 +57,17 @@ export interface WorkspaceHostProtocolRange {
 }
 
 export class IncompatibleWorkspaceHostProtocolError extends Error {
-  constructor(
-    readonly client: WorkspaceHostProtocolRange,
-    readonly remote: WorkspaceHostProtocolRange,
-  ) {
+  readonly client: WorkspaceHostProtocolRange;
+  readonly remote: WorkspaceHostProtocolRange;
+
+  constructor(client: WorkspaceHostProtocolRange, remote: WorkspaceHostProtocolRange) {
     super(
       `No compatible workspace-host protocol: client ${client.minVersion}-${client.maxVersion}, ` +
         `remote ${remote.minVersion}-${remote.maxVersion}`,
     );
     this.name = 'IncompatibleWorkspaceHostProtocolError';
+    this.client = client;
+    this.remote = remote;
   }
 }
 
@@ -154,6 +156,16 @@ export interface OpenSshCommand {
   args: readonly string[];
 }
 
+export interface OpenSshPtySessionSpec {
+  executable?: string;
+  /** Must match the destination used to create the ControlMaster. */
+  target: string;
+  /** Existing multiplex socket created by buildOpenSshControlMasterCommand. */
+  controlPath: string;
+  /** Exact remote argv. It is encoded once for OpenSSH's remote POSIX shell. */
+  remoteArgv: readonly string[];
+}
+
 function requirePort(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 65_535) {
     throw new Error(`${label} must be an integer from 1 through 65535`);
@@ -166,6 +178,14 @@ function requireArg(value: string, label: string): string {
     throw new Error(`${label} must be a non-empty single OpenSSH argument`);
   }
   return value;
+}
+
+/** Encode one argv cell for the POSIX shell OpenSSH uses for a remote command. */
+export function quotePosixShellArg(value: string): string {
+  if (typeof value !== 'string' || value.includes('\0')) {
+    throw new Error('Remote command arguments must be strings without NUL bytes');
+  }
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function openSshOptionName(value: string, label: string): string {
@@ -263,6 +283,31 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
   };
 }
 
+/**
+ * Build a PTY-backed remote command that reuses an established multiplex
+ * socket. Quoting happens here, once, because OpenSSH joins trailing command
+ * operands and asks the remote login shell to parse them.
+ */
+export function buildOpenSshPtySessionCommand(spec: OpenSshPtySessionSpec): OpenSshCommand {
+  const target = requireArg(spec.target, 'OpenSSH target');
+  if (target.startsWith('-') || /\s/.test(target)) {
+    throw new Error('OpenSSH target must be one host argument and may not begin with a dash');
+  }
+  const controlPath = requireArg(spec.controlPath, 'OpenSSH ControlPath');
+  if (Buffer.byteLength(controlPath) > MAX_OPENSSH_CONTROL_PATH_BYTES) {
+    throw new Error(`OpenSSH ControlPath must be at most ${MAX_OPENSSH_CONTROL_PATH_BYTES} bytes`);
+  }
+  if (!Array.isArray(spec.remoteArgv) || spec.remoteArgv.length === 0) {
+    throw new Error('Remote command argv must contain at least one argument');
+  }
+  const remoteCommand = spec.remoteArgv.map(quotePosixShellArg).join(' ');
+
+  return {
+    command: requireArg(spec.executable ?? 'ssh', 'OpenSSH executable'),
+    args: ['-tt', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-S', controlPath, '--', target, remoteCommand],
+  };
+}
+
 export interface OpenSshTunnelExit {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -293,7 +338,11 @@ function wait(milliseconds: number): Promise<void> {
 
 /** Real process adapter; lifecycle policy remains in LocalWorkspaceHostConnectionManager. */
 export class NodeOpenSshTunnelRunner implements OpenSshTunnelRunner {
-  constructor(private readonly spawn: OpenSshSpawn = nodeSpawn) {}
+  private readonly spawn: OpenSshSpawn;
+
+  constructor(spawn: OpenSshSpawn = nodeSpawn) {
+    this.spawn = spawn;
+  }
 
   async start(spec: OpenSshControlMasterSpec): Promise<OpenSshTunnelHandle> {
     const command = buildOpenSshControlMasterCommand(spec);
@@ -438,6 +487,7 @@ function validateConnectionInput(input: LocalWorkspaceHostConnectionInput): void
  * loopback UI target, protocol handshake, monitoring, and reconnect policy.
  */
 export class LocalWorkspaceHostConnectionManager {
+  private readonly deps: LocalWorkspaceHostConnectionManagerDeps;
   private readonly runner: OpenSshTunnelRunner;
   private readonly allocatePort: () => Promise<LoopbackPortLease>;
   private readonly now: () => string;
@@ -454,7 +504,8 @@ export class LocalWorkspaceHostConnectionManager {
   private serial: Promise<void> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly deps: LocalWorkspaceHostConnectionManagerDeps) {
+  constructor(deps: LocalWorkspaceHostConnectionManagerDeps) {
+    this.deps = deps;
     this.runner = deps.tunnelRunner ?? new NodeOpenSshTunnelRunner();
     this.allocatePort = deps.reservePort ?? reserveLoopbackPort;
     this.now = deps.now ?? (() => new Date().toISOString());

@@ -8,7 +8,9 @@ import {
   IncompatibleWorkspaceHostProtocolError,
   LocalWorkspaceHostConnectionManager,
   buildOpenSshControlMasterCommand,
+  buildOpenSshPtySessionCommand,
   negotiateWorkspaceHostProtocol,
+  quotePosixShellArg,
   reserveLoopbackPort,
   type LocalWorkspaceHostConnectionInput,
   type LoopbackPortLease,
@@ -28,6 +30,26 @@ const profile: WorkspaceHostTransportProfile = {
   constraints: ['No public IP'],
   reconnect: 'recreate',
   audited: true,
+  compatibility: {
+    requirements: [],
+    traffic: { interactive: 'recommended', 'bulk-transfer': 'supported' },
+    limits: { unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'], notes: [] },
+    proxy: { mode: 'supported', notes: [] },
+    cost: { model: 'included', meters: [], notes: [] },
+    audit: {
+      controlPlaneEvents: true,
+      sessionMetadata: true,
+      sessionContent: false,
+      fileTransferEvents: false,
+      notes: [],
+    },
+    hostKey: {
+      initialEnrollment: 'verify-before-connect',
+      replacement: 'block-and-reverify',
+      notes: [],
+    },
+    fallbacks: [],
+  },
 };
 
 function input(overrides: Partial<LocalWorkspaceHostConnectionInput> = {}): LocalWorkspaceHostConnectionInput {
@@ -201,6 +223,32 @@ describe('OpenSSH ControlMaster planning', () => {
     expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['attacker.example'] })).toThrow(
       'bare OpenSSH destination',
     );
+  });
+
+  it('reuses the established ControlPath for a forced-PTY command and encodes exact remote argv', () => {
+    const command = buildOpenSshPtySessionCommand({
+      target: 'alice@host-1',
+      controlPath: '/tmp/papercusp-host-1.sock',
+      remoteArgv: ['tmux', 'new-session', '-A', '-s', 'psu-a1', '--', 'psu', '--resume=session 1', "it's", ''],
+    });
+
+    expect(command).toEqual({
+      command: 'ssh',
+      args: [
+        '-tt',
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ControlMaster=no',
+        '-S',
+        '/tmp/papercusp-host-1.sock',
+        '--',
+        'alice@host-1',
+        `'tmux' 'new-session' '-A' '-s' 'psu-a1' '--' 'psu' '--resume=session 1' 'it'"'"'s' ''`,
+      ],
+    });
+    expect(quotePosixShellArg('a b')).toBe("'a b'");
+    expect(() => quotePosixShellArg('bad\0arg')).toThrow('without NUL');
   });
 });
 
