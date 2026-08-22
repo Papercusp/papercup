@@ -161,11 +161,22 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-handed-off')).toBe(true);
   });
 
-  it('a live correlated scope remains covered during the pre-turn grace', async () => {
-    await seedSpawn('s-fixer-starting', 'failed', 30, { startedAgoMin: 1 });
+  it('a RUNNING fixer with a live correlated scope remains covered during the pre-turn grace', async () => {
+    await seedSpawn('s-fixer-starting', 'running', 30, { startedAgoMin: 1 });
     await seedTaskScope('s-fixer-starting', 'running');
 
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-starting')).toBe(true);
+  });
+
+  it('EI-21135879707775738: a reclaimed zero-invocation fixer is not covered by pre-turn grace', async () => {
+    // reclaimOrphanedSpawns settles the launch row as failed while the task
+    // reconciler can still report the handoff scope as live for a short window.
+    // With no output or tool invocation, that stale scope must not suppress a
+    // replacement fixer merely because the spawn started recently.
+    await seedSpawn('s-fixer-reclaimed-no-turn', 'failed', 1, { startedAgoMin: 1 });
+    await seedTaskScope('s-fixer-reclaimed-no-turn', 'running');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-reclaimed-no-turn')).toBe(false);
   });
 
   it('WI-40422: a heartbeat-only correlated scope past the pre-turn grace does not mask a failed spawn', async () => {

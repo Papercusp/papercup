@@ -164,7 +164,10 @@ export async function releaseFixerSpawnAlive(
                    AND tl.detail->>'spawnRecordId' = sa.spawn_id
               ) AS task_scope_ended
               ,(
-                sa.started_at >= now() - make_interval(secs => $4)
+                (
+                  sa.status IN ('running','restarting')
+                  AND sa.started_at >= now() - make_interval(secs => $4)
+                )
                 OR sa.last_output_at IS NOT NULL
                 OR EXISTS (
                   SELECT 1
@@ -214,13 +217,12 @@ export async function releaseFixerSpawnAlive(
 
     // The named scope owns the real payload after systemd-run's client handoff, but
     // its task_ledger heartbeat proves only that the cgroup exists. Before the
-    // first-output grace expires that is enough to cover normal CLI startup. After
-    // the grace, require concrete child output or a tool call from this exact spawn;
-    // otherwise an idle Node/Claude/socat scope can mask a failed pre-turn spawn
-    // forever and prevent the serialized repair queue from advancing (WI-40422).
-    const taskScopeProgressEligible = row.task_scope_progress_eligible === true;
-    if (row.live_task_scope && taskScopeProgressEligible) return true;
-
+    // first-output grace expires that is enough to cover normal CLI startup, but
+    // only while the launch row remains active. A terminal/reclaimed launch must
+    // provide concrete child output or a tool call from this exact spawn to remain
+    // covered; otherwise an idle Node/Claude/socat scope can mask a failed
+    // pre-turn spawn forever and prevent the serialized repair queue from advancing
+    // (WI-40422 / EI-21135879707775738).
     // EI-21019097008328015: the task reconciler already proved THIS spawn's own
     // process ended. That is decisive even though the spawn row itself still
     // reads `running` with a fresh heartbeat (a `loopbackFetch` heartbeat that
@@ -228,6 +230,9 @@ export async function releaseFixerSpawnAlive(
     // window below) — a pid-reuse false-alive can only mislead the checks that
     // follow, never this one, because it is keyed on the exact spawn id.
     if (row.task_scope_ended) return false;
+
+    const taskScopeProgressEligible = row.task_scope_progress_eligible === true;
+    if (row.live_task_scope && taskScopeProgressEligible) return true;
 
     // Legacy task-manager rows have no spawn id in detail. A single matching
     // scope/time candidate is safe to use; no candidate means this fallback is
