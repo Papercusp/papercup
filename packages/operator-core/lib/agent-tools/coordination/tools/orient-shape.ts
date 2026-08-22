@@ -307,6 +307,60 @@ function projectCoverageCollision(row: unknown, textCap: number): unknown {
   };
 }
 
+/** Project one assignment-coverage row to the placement fields an orient caller
+ * can act on. `fleet:assignments` may return a coverage row with a large `links`
+ * array; carrying that nested evidence through `me` is what made the generic
+ * result projection amputate the post-compaction recovery block. The standalone
+ * assignment shaper already uses this vocabulary for standard rows, but orient
+ * also needs the same protection when a degraded/narrow assignment payload has
+ * no `agents` array and therefore cannot go through that shaper. */
+function projectCoverageRow(row: unknown, textCap: number): unknown {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const r = row as Record<string, unknown>;
+  const workers = Array.isArray(r.workers)
+    ? r.workers.map((worker) => String(worker)).join(',') || null
+    : typeof r.workers === 'string'
+      ? cap(r.workers, textCap)
+      : null;
+  return {
+    plan: cap(r.plan, textCap) ?? null,
+    item: cap(r.item, textCap) ?? null,
+    level: cap(r.level, textCap) ?? null,
+    workers,
+  };
+}
+
+/** Apply the nested coverage contract even when the assignment payload is not a
+ * full roster object. This is intentionally separate from projectAssignmentObject:
+ * the latter requires `agents[]` to rank the caller's row, while coverage must be
+ * bounded for every object-shaped `me` payload. */
+function projectCoverageTable(me: unknown, tier: TierName): unknown {
+  if (!me || typeof me !== 'object' || Array.isArray(me)) return me;
+  const r = me as Record<string, unknown>;
+  if (!Array.isArray(r.coverage)) return me;
+
+  const total = r.coverage.length;
+  const textCap = tier === 'trimmed' ? 180 : 260;
+  const rowCap = tier === 'trimmed' ? 0 : 24;
+  if (rowCap === 0) {
+    const { coverage: _coverage, ...withoutCoverage } = r;
+    return {
+      ...withoutCoverage,
+      coverage_note: `coverage table (${total} rows) omitted at trimmed tier — payloadTier:"standard"/"full", or narrow with {plan}`,
+    };
+  }
+
+  return {
+    ...r,
+    coverage: r.coverage.slice(0, rowCap).map((row) => projectCoverageRow(row, textCap)),
+    ...(total > rowCap
+      ? {
+          coverage_note: `nested orient coverage showing ${rowCap} of ${total}; use fleet:assignments { plan } for the full list`,
+        }
+      : {}),
+  };
+}
+
 /**
  * Object-shaped `me` needs a second projection from the canonical assignments
  * shape. `shapeFleetAssignments` caps the standalone read, but its trimmed
@@ -392,8 +446,9 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
 }
 
 function projectMe(me: unknown, tier: TierName, chars: number): unknown {
-  if (me && typeof me === 'object' && Array.isArray((me as { agents?: unknown }).agents)) {
-    return projectAssignmentObject(me, tier);
+  if (me && typeof me === 'object' && !Array.isArray(me)) {
+    const projected = Array.isArray((me as { agents?: unknown }).agents) ? projectAssignmentObject(me, tier) : me;
+    return projectCoverageTable(projected, tier);
   }
   return trimMe(me, chars);
 }

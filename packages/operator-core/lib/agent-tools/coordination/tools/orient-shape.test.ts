@@ -206,6 +206,50 @@ describe('shapeOrient trimmed', () => {
     expect(shapedMe.stalled_note).toContain('fleet:assignments');
   });
 
+  it('does not pass a narrow me.coverage table through when the roster is absent', () => {
+    const me = {
+      ok: true,
+      summary: { agents: 1 },
+      coverage: Array.from({ length: 18 }, (_, i) => ({
+        plan: `plan-${i}`,
+        item: `P-${i}`,
+        level: 'full',
+        links: Array.from({ length: 20 }, (_, j) => ({ id: `WI-${i}-${j}`, blob: 'x'.repeat(500) })),
+      })),
+    };
+
+    const out = shapeOrient({ ...fixture(), me, recovery: { selfRecall: 'resume' } }, 'trimmed') as Record<string, any>;
+    const shapedMe = out.me as Record<string, any>;
+
+    expect(shapedMe.coverage).toBeUndefined();
+    expect(shapedMe.coverage_note).toContain('omitted at trimmed tier');
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    expect(out.recovery).toBeDefined();
+  });
+
+  it('projects standard nested coverage rows to bounded placement fields', () => {
+    const me = {
+      ok: true,
+      summary: { agents: 1 },
+      coverage: Array.from({ length: 37 }, (_, i) => ({
+        plan: `plan-${i}`,
+        item: `P-${i}`,
+        level: 'full',
+        workers: ['su-a', 'su-b'],
+        links: Array.from({ length: 20 }, (_, j) => ({ id: `WI-${i}-${j}`, blob: 'x'.repeat(500) })),
+      })),
+    };
+
+    const out = shapeOrient({ ...fixture(), me }, 'standard') as Record<string, any>;
+    const shapedMe = out.me as Record<string, any>;
+    const first = shapedMe.coverage[0];
+
+    expect(shapedMe.coverage).toHaveLength(24);
+    expect(first).toEqual({ plan: 'plan-0', item: 'P-0', level: 'full', workers: 'su-a,su-b' });
+    expect(first.links).toBeUndefined();
+    expect(shapedMe.coverage_note).toContain('showing 24 of 37');
+  });
+
   it('caps standing facts with a pointer, keeping owner + harness scope first (WI-2859)', () => {
     const facts = out.facts as Array<{ scope: string; body: string }>;
     expect(facts).toHaveLength(8);
