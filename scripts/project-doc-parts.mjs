@@ -150,6 +150,44 @@ export const CLIENTS = [
   { client: 'codex', file: 'AGENTS.md', reader: 'Codex / OpenAI agents' },
 ];
 
+/**
+ * Parse an explicit, compare-and-swap acknowledgement for a generated client file
+ * whose useful hand edit has already been moved into the canonical parts.
+ *
+ * The full live SHA is mandatory: a peer edit after the review changes the bytes and
+ * makes the later overwrite refuse again. Client qualification matters too — accepting
+ * CLAUDE.md drift must never weaken AGENTS.md's independent guard.
+ */
+export function parseAcceptedCanonicalizedDrift(argv) {
+  const knownClients = new Set(CLIENTS.map((entry) => entry.client));
+  const accepted = new Map();
+  for (const arg of argv) {
+    if (!arg.startsWith("--accept-canonicalized-drift=")) continue;
+    const value = arg.slice("--accept-canonicalized-drift=".length);
+    const separator = value.indexOf(":");
+    const client = separator === -1 ? "" : value.slice(0, separator);
+    const sha =
+      separator === -1 ? "" : value.slice(separator + 1).toLowerCase();
+    if (!knownClients.has(client)) {
+      throw new Error(
+        `--accept-canonicalized-drift requires a known client (${[...knownClients].join(", ")}); got ${JSON.stringify(client)}`,
+      );
+    }
+    if (!/^[0-9a-f]{64}$/.test(sha)) {
+      throw new Error(
+        `--accept-canonicalized-drift=${client}:… requires the full 64-character SHA-256 of the reviewed on-disk file`,
+      );
+    }
+    if (accepted.has(client)) {
+      throw new Error(
+        `--accept-canonicalized-drift was supplied more than once for ${client}`,
+      );
+    }
+    accepted.set(client, sha);
+  }
+  return accepted;
+}
+
 // ---------------------------------------------------------------------------
 // The budget
 // ---------------------------------------------------------------------------
@@ -479,14 +517,26 @@ export function overwriteVerdict({
   contentHash,
   lastProjectionSha = null,
   nextText = null,
+  acceptedCanonicalizedDriftSha = null,
 }) {
-  if (onDisk === null) return { ok: true, reason: 'absent' };
+  if (onDisk === null) return { ok: true, reason: "absent" };
   const live = sha256(onDisk);
-  if (nextText !== null && live === sha256(nextText)) return { ok: true, reason: 'already-current', live };
-  if (lastProjectionSha && live === lastProjectionSha) return { ok: true, reason: 'matches-last-projection', live };
-  if (generatedFromSha && live === generatedFromSha) return { ok: true, reason: 'matches-loaded-source', live };
-  if (contentHash && live === contentHash) return { ok: true, reason: 'matches-cached-composition', live };
-  return { ok: false, reason: 'drifted', live };
+  if (nextText !== null && live === sha256(nextText))
+    return { ok: true, reason: "already-current", live };
+  if (lastProjectionSha && live === lastProjectionSha)
+    return { ok: true, reason: "matches-last-projection", live };
+  if (generatedFromSha && live === generatedFromSha)
+    return { ok: true, reason: "matches-loaded-source", live };
+  if (contentHash && live === contentHash)
+    return { ok: true, reason: "matches-cached-composition", live };
+  if (
+    typeof acceptedCanonicalizedDriftSha === "string" &&
+    /^[0-9a-f]{64}$/i.test(acceptedCanonicalizedDriftSha) &&
+    live === acceptedCanonicalizedDriftSha.toLowerCase()
+  ) {
+    return { ok: true, reason: "accepted-canonicalized-drift", live };
+  }
+  return { ok: false, reason: "drifted", live };
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +698,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const argv = process.argv.slice(2);
   const write = argv.includes('--write');
   const writeCorpus = argv.includes('--write-corpus');
+  let acceptedCanonicalizedDrift;
+  try {
+    acceptedCanonicalizedDrift = parseAcceptedCanonicalizedDrift(argv);
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  if (acceptedCanonicalizedDrift.size > 0 && !write) {
+    console.error(
+      "✗ --accept-canonicalized-drift is meaningful only with --write.",
+    );
+    process.exit(2);
+  }
   const docId = (argv.find((a) => a.startsWith('--doc-id='))?.split('=')[1]) ?? 'claude-md';
   const contextTokens = Number(argv.find((a) => a.startsWith('--context-tokens='))?.split('=')[1] ?? 400_000);
   const charsPerToken = Number(
@@ -780,13 +843,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       // client was refused forever.
       const isPrimary = spec.client === CLIENTS[0].client;
       const verdict = isSymlink
-        ? { ok: true, reason: 'symlink' }
+        ? { ok: true, reason: "symlink" }
         : overwriteVerdict({
             onDisk,
             generatedFromSha: doc.generated_from_sha,
             contentHash: isPrimary ? doc.content_hash : null,
             lastProjectionSha: lastProjectionShaFor(doc, spec.client),
             nextText: out.text,
+            acceptedCanonicalizedDriftSha:
+              acceptedCanonicalizedDrift.get(spec.client) ?? null,
           });
       if (!verdict.ok) {
         const expected = [
@@ -801,6 +866,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             `      Writing would erase that edit, so this refusal is correct — RESOLVE IT BY HAND:\n` +
             `      diff the file against the parts, move anything worth keeping INTO the parts\n` +
             `      (harness_shared.harness_doc_parts), then re-run this projector.\n` +
+            `      If canonicalization changes the projected budget/cut set, explicitly bind the\n` +
+            `      reviewed bytes with --accept-canonicalized-drift=${spec.client}:${verdict.live}\n` +
+            `      on the --write retry. The full SHA is a compare-and-swap guard: any later peer edit\n` +
+            `      changes it and makes the overwrite refuse again.\n` +
             `      ⛔ Do NOT "fix" this by re-running the loader over the file. Post-cutover this\n` +
             `         file is our OUTPUT and carries only the projected subset, so re-ingesting it\n` +
             `         TOMBSTONES every unprojected prose part — the whole corpus. The loader now\n` +

@@ -482,6 +482,31 @@ describe('overwriteVerdict — the projector reads PG, so the FILE is what it ca
     const v = overwriteVerdict({ onDisk: 'anything at all', generatedFromSha: '', contentHash: '' });
     expect(v.ok).toBe(false);
   });
+
+  it('accepts ONLY the exact reviewed drift SHA after its useful delta was canonicalized', () => {
+    const drifted = `${projected}reviewed hand edit\n`;
+    const v = overwriteVerdict({
+      onDisk: drifted,
+      generatedFromSha: sha(source),
+      contentHash: sha(projected),
+      acceptedCanonicalizedDriftSha: sha(drifted),
+    });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('accepted-canonicalized-drift');
+  });
+
+  it('CONTROL — a later peer edit invalidates the reviewed drift SHA', () => {
+    const reviewed = `${projected}reviewed hand edit\n`;
+    const later = `${reviewed}later peer edit\n`;
+    expect(
+      overwriteVerdict({
+        onDisk: later,
+        generatedFromSha: sha(source),
+        contentHash: sha(projected),
+        acceptedCanonicalizedDriftSha: sha(reviewed),
+      }).ok,
+    ).toBe(false);
+  });
 });
 
 describe('corpusDriftVerdict — canonical rows are the corpus subject', () => {

@@ -71,11 +71,13 @@ describe('captureWakeHandleForOwner', () => {
     expect(h.latestAdvSessionByCoordOwner).not.toHaveBeenCalled();
   });
 
-  it('no tracked session for the coord id → null handle + the inbox-degrade note', async () => {
+  it('no tracked session for the coord id → null handle + an honest psu-socket-first fallback note', async () => {
     h.latestAdvSessionByCoordOwner.mockResolvedValueOnce(null);
     const r = await captureWakeHandleForOwner('su-nobody');
     expect(r.handle).toBeNull();
     expect(r.note).toContain('no tracked session');
+    expect(r.note).toContain('live psu-host socket');
+    expect(r.note).toContain('if no injectable socket');
     expect(r.note).toContain('inbox');
   });
 

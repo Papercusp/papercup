@@ -34,7 +34,7 @@ export async function captureWakeHandleForOwner(
   if (!session) {
     return {
       handle: null,
-      note: 'no tracked session for your coord id — the wake degrades to an inbox notification (delivered mid-turn if you are active, on your next turn otherwise)',
+      note: 'no tracked session for your coord id — a live psu-host socket will still inject the wake in place; if no injectable socket is available when the event fires, delivery falls back to an inbox notification',
     };
   }
   const sessionId =

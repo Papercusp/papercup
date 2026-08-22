@@ -118,6 +118,11 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',
   },
+  'triage_snapshots.taken_by': {
+    status: 'exempt',
+    reason:
+      'historical author provenance on an immutable stamped census (migration 892) — no executable reader/reaper treats it as current ownership, and rebinding would falsify who took the snapshot.',
+  },
   // Migration 745 (EI-19411045952024591). Deliberately the EXEMPT twin of the COVERED
   // 'routines.target_owner_id' above: that column is the live claim (rebound so the loop
   // keeps waking the right agent); THIS one is its append-only HISTORY. Rebinding here
