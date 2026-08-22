@@ -98,7 +98,11 @@ import { listEscalations } from '../../agent-tools/coordination/escalations';
 // reader + reconcile sweep already agree on) and (b) the reconcile drain deadline
 // (OPERATIONAL_ESCALATION_TTL_MS — the single source of truth in reconcile-escalations.ts).
 import { isOperationalEscalation } from '../../attention/adapters';
-import { OPERATIONAL_ESCALATION_TTL_MS, reconcileStaleEscalationsOnce } from '../../attention/reconcile-escalations';
+import {
+  isEmitterOwnedRow,
+  OPERATIONAL_ESCALATION_TTL_MS,
+  reconcileStaleEscalationsOnce,
+} from '../../attention/reconcile-escalations';
 
 /**
  * EI-7087: grace window added ON TOP of OPERATIONAL_ESCALATION_TTL_MS before the
@@ -601,6 +605,9 @@ export interface OpenEscalationLite {
   ts: string;
   from: string | null;
   hasOptions: boolean;
+  /** WI-206095: preserve the reconcile sweep's explicit emitter-owned guards. */
+  livenessSignature?: unknown;
+  selfReconciling?: unknown;
 }
 
 /** One pg_stat_statements row touching `coord_event_log` — raw, NOT yet
@@ -712,6 +719,9 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
   // expected/human-owned state.
   const undrainedOperationalEsc = snap.openEscalations.filter((e) => {
     if (!isOperationalEscalation(e.from, e.hasOptions)) return false;
+    // Match reconcile-escalations.ts: these rows are the emitter's own
+    // suppressor and are intentionally exempt from TTL reconciliation.
+    if (isEmitterOwnedRow(e)) return false;
     const openedMs = Date.parse(e.ts);
     // EI-7087: TTL + a grace window, not the bare TTL — see ESCALATION_RECONCILE_GRACE_MS
     // doc comment for why (absorbs the normal reconcile-tick-vs-invariant-check cadence
@@ -997,6 +1007,10 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
       ts: e.ts,
       from: e.from ?? null,
       hasOptions: Array.isArray(e.options) && e.options.length > 0,
+      // Escalation metadata is flattened onto the record by openEscalation;
+      // carry the explicit emitter-owned markers into the invariant snapshot.
+      livenessSignature: (e as Record<string, unknown>).livenessSignature,
+      selfReconciling: (e as Record<string, unknown>).selfReconciling,
     }));
   } catch {
     /* check degraded */

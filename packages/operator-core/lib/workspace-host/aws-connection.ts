@@ -273,7 +273,7 @@ function validateRoleSessionName(value: string | undefined): void {
 /** Produce a non-secret SDK v3 resolver plan; this function never resolves credentials. */
 export function planAwsSdkCredentialProvider(source: AwsWorkspaceHostCredentialSource): AwsSdkCredentialProviderPlan {
   assertWorkspaceHostSecretIsolation(source, 'aws.credentialSource');
-  validateRoleSessionName(source.roleSessionName);
+  validateRoleSessionName('roleSessionName' in source ? source.roleSessionName : undefined);
 
   if (source.environment === 'local' && source.method === 'default-chain') {
     return { sdk: 'aws-sdk-js-v3', factory: 'defaultProvider', source: 'default-chain' };

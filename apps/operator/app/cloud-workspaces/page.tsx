@@ -174,7 +174,7 @@ function formatMoney(value?: number): string {
 function stateTone(state: LifecycleState | ConnectionStatus | OperationEvent['status']): string {
   if (state === 'running' || state === 'connected' || state === 'succeeded') return styles.good;
   if (state === 'degraded' || state === 'invalid' || state === 'failed') return styles.bad;
-  if (state === 'provisioning' || state === 'repairing' || state === 'destroying' || state === 'running') {
+  if (state === 'provisioning' || state === 'repairing' || state === 'destroying') {
     return styles.warn;
   }
   return styles.neutral;

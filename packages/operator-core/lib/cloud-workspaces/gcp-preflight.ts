@@ -323,10 +323,14 @@ async function defaultAcquireAuth(): Promise<GcpResolvedAuth> {
     auth.getCredentials().catch(() => ({})),
   ]);
   if (!token) throw new Error('gcp_preflight_access_token_empty');
+  const identity =
+    'client_email' in credentials && typeof credentials.client_email === 'string'
+      ? credentials.client_email
+      : undefined;
   return {
     accessToken: token,
     projectId: projectId || undefined,
-    identity: typeof credentials.client_email === 'string' ? credentials.client_email : undefined,
+    identity,
   };
 }
 
@@ -463,7 +467,7 @@ export async function runGcpWorkspaceHostPreflight(
   const fetchImpl = deps.fetch ?? fetch;
   const token = auth.accessToken;
   const encodedProject = encodeURIComponent(projectId);
-  const enabledServices: string[] = [];
+  let enabledServices: string[] = [];
   let missingPermissions: string[] = [];
   let regions: string[] = [];
   let machineTypeCount = 0;
@@ -509,7 +513,7 @@ export async function runGcpWorkspaceHostPreflight(
     );
   }
 
-  const requiredServices = [...GCP_WORKSPACE_HOST_REQUIRED_SERVICES];
+  const requiredServices: string[] = [...GCP_WORKSPACE_HOST_REQUIRED_SERVICES];
   if (credential.credentialType === 'impersonated_service_account' || input.impersonateServiceAccount) {
     requiredServices.push('iamcredentials.googleapis.com');
   }

@@ -21,6 +21,7 @@ import {
   findUniqueIndexShapeSwap,
   duplicateNumberGroups,
   unreservedNumbers,
+  reservationFilenameMismatches,
   ENFORCED_FROM,
   INDEX_SWAP_ENFORCED_FROM,
   // eslint-disable-next-line import/no-relative-packages
@@ -90,10 +91,8 @@ describe('per-call-site dollar-quote masking', () => {
 
 describe('findRawTxControl', () => {
   it('flags top-level transaction control', () => {
-    expect(findRawTxControl('BEGIN;\nCREATE TABLE t (a int);\nCOMMIT;\n'))
-      .toEqual(['BEGIN;', 'COMMIT']);
-    expect(findRawTxControl('START TRANSACTION;\nROLLBACK;\n'))
-      .toEqual(['START TRANSACTION', 'ROLLBACK']);
+    expect(findRawTxControl('BEGIN;\nCREATE TABLE t (a int);\nCOMMIT;\n')).toEqual(['BEGIN;', 'COMMIT']);
+    expect(findRawTxControl('START TRANSACTION;\nROLLBACK;\n')).toEqual(['START TRANSACTION', 'ROLLBACK']);
   });
 
   it('ignores plpgsql bodies and comments', () => {
@@ -125,9 +124,7 @@ describe('findRawTxControl', () => {
 describe('findUnguardedConstraintRename', () => {
   it('flags a bare RENAME CONSTRAINT — including the deceptive ALTER TABLE IF EXISTS form', () => {
     expect(
-      findUnguardedConstraintRename(
-        'ALTER TABLE harness_shared.t RENAME CONSTRAINT old_pkey TO new_pkey;\n',
-      ),
+      findUnguardedConstraintRename('ALTER TABLE harness_shared.t RENAME CONSTRAINT old_pkey TO new_pkey;\n'),
     ).toEqual(['old_pkey']);
     // The exact shape that shipped in 592 and failed everywhere: the IF EXISTS
     // makes it read as safe, so this MUST still be caught.
@@ -155,11 +152,9 @@ describe('findUnguardedConstraintRename', () => {
   it('does not flag a genuinely-guarded ALTER INDEX IF EXISTS … RENAME TO', () => {
     // Here IF EXISTS binds to the INDEX itself, so it really is guarded — a
     // false positive would push authors toward pointless DO-block ceremony.
-    expect(
-      findUnguardedConstraintRename(
-        'ALTER INDEX IF EXISTS harness_shared.old_idx RENAME TO new_idx;\n',
-      ),
-    ).toEqual([]);
+    expect(findUnguardedConstraintRename('ALTER INDEX IF EXISTS harness_shared.old_idx RENAME TO new_idx;\n')).toEqual(
+      [],
+    );
   });
 
   it('ignores RENAME CONSTRAINT mentioned in a comment', () => {
@@ -173,9 +168,7 @@ describe('duplicateNumberGroups', () => {
       ['131-engineer-issues.sql', '131-other-thing.sql', '132-fine.sql', 'README.md'],
       0,
     );
-    expect(groups).toEqual([
-      { num: 131, files: ['131-engineer-issues.sql', '131-other-thing.sql'] },
-    ]);
+    expect(groups).toEqual([{ num: 131, files: ['131-engineer-issues.sql', '131-other-thing.sql'] }]);
   });
 
   it('grandfathers a duplicate below the enforced boundary (the default) — already-applied ledgered history', () => {
@@ -192,6 +185,52 @@ describe('unreservedNumbers', () => {
 
   it('grandfathers pre-epoch numbers', () => {
     expect(unreservedNumbers([100, 150, ENFORCED_FROM - 1], new Set())).toEqual([]);
+  });
+});
+
+describe('reservationFilenameMismatches', () => {
+  it('rejects an unreserved filename that hijacks a peer reservation number', () => {
+    expect(
+      reservationFilenameMismatches(
+        ['880-session-turn-parts-backfill.sql'],
+        [{ num: 880, filename: '880-oauth-flow-private-context.sql' }],
+      ),
+    ).toEqual([
+      {
+        num: 880,
+        file: '880-session-turn-parts-backfill.sql',
+        reservedFilename: '880-oauth-flow-private-context.sql',
+      },
+    ]);
+  });
+
+  it('accepts an exact filename reservation and grandfathers pre-epoch history', () => {
+    expect(
+      reservationFilenameMismatches(
+        ['493-legacy.sql', '881-goal-usage-attribution.sql'],
+        [
+          { num: 493, filename: '493-other.sql' },
+          { num: 881, filename: '881-goal-usage-attribution.sql' },
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  it('grandfathers TODO placeholders only for the exact already-applied final file', () => {
+    const files = ['518-p2p-fleet-leader-leases.sql'];
+    const reservations = [{ num: 518, filename: '518-TODO-rename.sql' }];
+    expect(
+      reservationFilenameMismatches(files, reservations, {
+        appliedFilenames: new Set(files),
+      }),
+    ).toEqual([]);
+    expect(reservationFilenameMismatches(files, reservations)).toEqual([
+      {
+        num: 518,
+        file: '518-p2p-fleet-leader-leases.sql',
+        reservedFilename: '518-TODO-rename.sql',
+      },
+    ]);
   });
 });
 
@@ -342,9 +381,7 @@ DROP INDEX IF EXISTS harness_shared.agent_facts_identity;`;
   });
 
   it('does NOT flag the later phase that only DROPS the old index', () => {
-    expect(
-      findUniqueIndexShapeSwap('DROP INDEX IF EXISTS harness_shared.agent_facts_identity;'),
-    ).toEqual([]);
+    expect(findUniqueIndexShapeSwap('DROP INDEX IF EXISTS harness_shared.agent_facts_identity;')).toEqual([]);
   });
 
   it('honours the allow-index-swap pragma when it carries a reason', () => {
@@ -474,9 +511,7 @@ describe('findUnguardedReslug (the migration-631 crash-loop class)', () => {
   });
 
   it('an unrelated NOT EXISTS statement must NOT disarm a top-level unguarded reslug', () => {
-    const sql =
-      `${RESLUG}\n` +
-      'SELECT 1 WHERE NOT EXISTS (SELECT 1);';
+    const sql = `${RESLUG}\n` + 'SELECT 1 WHERE NOT EXISTS (SELECT 1);';
     expect(findUnguardedReslug(sql)).toHaveLength(1);
   });
 

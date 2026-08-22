@@ -105,10 +105,14 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const ctxAny = ctx as {
+      metadata?: (d: Record<string, unknown>) => void;
+      workspaceId?: string;
+    };
+    const workspaceId = args.workspaceId ?? (ctxAny.workspaceId !== '*' ? ctxAny.workspaceId : undefined);
     // Validate the harness is registered (throws if not) + resolve its workspace.
     const dirs = await resolveHarnessPlansDir(args.harnessSlug, {
-      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
     });
     const scopes: Scope[] = (args.scope as Scope[] | undefined) ?? [...SCOPES];
     const limit = args.limit ?? 20;

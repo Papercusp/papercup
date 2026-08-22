@@ -303,6 +303,32 @@ describe('evaluateInvariants', () => {
     expect(v[0].severity).toBe('minor');
   });
 
+  it('WI-206095: excludes emitter-owned operational rows from drain-failure alarms', () => {
+    const v = evaluateInvariants(
+      {
+        ...cleanSnap,
+        openEscalations: [
+          {
+            ...opEsc(EFFECTIVE_H + 5, 'system:infra-liveness-alarm'),
+            livenessSignature: 'stale-paused-routines',
+          },
+          {
+            ...opEsc(EFFECTIVE_H + 4, 'system:escalation-aging-alarm'),
+            selfReconciling: true,
+          },
+          // Calibration control: the ordinary mass-emitter row remains a real
+          // signal if it survives past the sweep deadline.
+          opEsc(EFFECTIVE_H + 3, 'system:pot-placement-watchdog'),
+        ],
+      },
+      DEFAULT_THRESHOLDS,
+      NOW,
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].title).toBe('coord invariant: operational escalations undrained past reconcile TTL');
+    expect(v[0].detail).toContain('1 operational escalation(s)');
+  });
+
   it('wake-queue fires on AGE only past the auto-expiry deadline + grace (a genuine sweep failure)', () => {
     // pendingWakeStaleHours (24h) + WAKE_QUEUE_STALE_GRACE_MS (1h) = 25h. A wake surviving
     // past that means sweepStalePendingWakes (which runs in-pass just before the check and

@@ -47,14 +47,17 @@
  * violation.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolveScriptPgUrl } from './lib/pg-url.mjs';
-import { stripSqlComments, stripSqlCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveScriptPgUrl } from "./lib/pg-url.mjs";
+import {
+  stripSqlComments,
+  stripSqlCommentsAndStrings,
+} from "./lib/strip-comments-and-strings.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SQL_DIR = join(ROOT, "libs/papercusp/libs/db/sql");
 
 /**
  * Reservation discipline starts here. Originally 215 (2026-06 dispatch), but
@@ -140,17 +143,19 @@ const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);
  * every `ON CONFLICT` written against the old shape. Sealing it is a FALSE NEGATIVE on a
  * safety lint.
  */
-const maskLiveBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText, { dollarBodies: 'code' });
+const maskLiveBodies = (sqlText) =>
+  stripSqlCommentsAndStrings(sqlText, { dollarBodies: "code" });
 
 /** Top-level transaction-control statements found in a migration file. */
 export function findRawTxControl(sqlText) {
   // SEALED: a `COMMIT` inside a PL/pgSQL body is not top-level transaction control.
   const stripped = maskSealingBodies(sqlText);
   const hits = [];
-  const re = /^\s*(BEGIN\s*;|BEGIN\s+(?:TRANSACTION|WORK)\b|COMMIT\b|ROLLBACK\b|START\s+TRANSACTION\b)/gim;
+  const re =
+    /^\s*(BEGIN\s*;|BEGIN\s+(?:TRANSACTION|WORK)\b|COMMIT\b|ROLLBACK\b|START\s+TRANSACTION\b)/gim;
   let m;
   while ((m = re.exec(stripped)) !== null) {
-    hits.push(m[1].trim().replace(/\s+/g, ' '));
+    hits.push(m[1].trim().replace(/\s+/g, " "));
   }
   return hits;
 }
@@ -237,16 +242,19 @@ export function findUnguardedReslug(sqlText) {
     // accepted only when it is the immediately preceding top-level statement, which matches
     // the migration-630/631 shape without letting an unrelated DELETE elsewhere in the file
     // exempt this UPDATE.
-    const previousStatement = stripped
-      .slice(0, m.index)
-      .split(';')
-      .map((statement) => statement.trim())
-      .reverse()
-      .find(Boolean) ?? '';
-    const hasDedupDelete = /DELETE\s+FROM\s+[\w".]*\bwork_items\b/i.test(previousStatement);
+    const previousStatement =
+      stripped
+        .slice(0, m.index)
+        .split(";")
+        .map((statement) => statement.trim())
+        .reverse()
+        .find(Boolean) ?? "";
+    const hasDedupDelete = /DELETE\s+FROM\s+[\w".]*\bwork_items\b/i.test(
+      previousStatement,
+    );
     const guardedUpdate = /\bNOT\s+EXISTS\b/i.test(m[0]);
     if (!hasDedupDelete && !guardedUpdate) {
-      reslugs.push(m[0].replace(/\s+/g, ' ').slice(0, 70));
+      reslugs.push(m[0].replace(/\s+/g, " ").slice(0, 70));
     }
   }
   return reslugs;
@@ -306,7 +314,8 @@ export function findLiteralTenantDefault(sqlText) {
   const re =
     /ALTER\s+(?:VIEW|TABLE)\s+[^\n;]*?\bALTER\s+(?:COLUMN\s+)?["']?(workspace_id|hive_slug|tenant_id)["']?\s+SET\s+DEFAULT\s+('(?:[^']|'')*'|%L)/gi;
   let m;
-  while ((m = re.exec(sqlText)) !== null) hits.push({ column: m[1], value: m[2] });
+  while ((m = re.exec(sqlText)) !== null)
+    hits.push({ column: m[1], value: m[2] });
   return hits;
 }
 
@@ -356,8 +365,8 @@ export const INDEX_SWAP_ENFORCED_FROM = 691;
 
 /** Bare relation/index name: drop quotes and any schema qualifier. */
 function bareName(ident) {
-  const s = String(ident).replace(/"/g, '');
-  const dot = s.lastIndexOf('.');
+  const s = String(ident).replace(/"/g, "");
+  const dot = s.lastIndexOf(".");
   return (dot === -1 ? s : s.slice(dot + 1)).toLowerCase();
 }
 
@@ -447,7 +456,8 @@ export function findUniqueIndexShapeSwap(sqlText) {
   // newline satisfy it and the next statement stand in as the "reason", so a bare
   // unexplained pragma would silently opt out — the exact hole this check exists
   // to close.
-  if (/--[ \t]*lint-migrations:[ \t]*allow-index-swap[ \t]+\S+/i.test(raw)) return [];
+  if (/--[ \t]*lint-migrations:[ \t]*allow-index-swap[ \t]+\S+/i.test(raw))
+    return [];
 
   // BODIES LIVE: migration 377's in-`DO` DROP+re-ADD of a unique constraint is real DDL that
   // really executes. It was detected before only because the old private tag regex failed to
@@ -462,23 +472,24 @@ export function findUniqueIndexShapeSwap(sqlText) {
   const dropped = [];
   const dropRe = new RegExp(
     `\\bDROP\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+EXISTS\\s+)?(${IDENT})`,
-    'gi',
+    "gi",
   );
   let d;
-  while ((d = dropRe.exec(stripped)) !== null) dropped.push({ name: bareName(d[1]), table: null });
+  while ((d = dropRe.exec(stripped)) !== null)
+    dropped.push({ name: bareName(d[1]), table: null });
 
   // Creates, each as { index, table, partial }.
   const created = [];
   const createRe = new RegExp(
     `\\bCREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENT})\\s+ON\\s+(${IDENT})([^;]*)`,
-    'gi',
+    "gi",
   );
   let c;
   while ((c = createRe.exec(stripped)) !== null) {
     created.push({
       index: bareName(c[1]),
       table: bareName(c[2]),
-      partial: /\bWHERE\b/i.test(c[3] ?? ''),
+      partial: /\bWHERE\b/i.test(c[3] ?? ""),
     });
   }
 
@@ -486,13 +497,19 @@ export function findUniqueIndexShapeSwap(sqlText) {
   // several comma-separated actions (`ADD CONSTRAINT a UNIQUE (x), DROP
   // CONSTRAINT b`), so scan each statement's action list rather than assuming one
   // action per statement.
-  const alterRe = new RegExp(`\\bALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})([^;]*)`, 'gi');
+  const alterRe = new RegExp(
+    `\\bALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})([^;]*)`,
+    "gi",
+  );
   let a;
   while ((a = alterRe.exec(stripped)) !== null) {
     const table = bareName(a[1]);
-    const actions = a[2] ?? '';
+    const actions = a[2] ?? "";
 
-    const dropConRe = new RegExp(`\\bDROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})`, 'gi');
+    const dropConRe = new RegExp(
+      `\\bDROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})`,
+      "gi",
+    );
     let dc;
     while ((dc = dropConRe.exec(actions)) !== null) {
       dropped.push({ name: bareName(dc[1]), table });
@@ -502,7 +519,10 @@ export function findUniqueIndexShapeSwap(sqlText) {
     // text UNIQUE` (which creates no new inference target for existing writers)
     // is not mistaken for a table-level unique constraint. The constraint name is
     // optional: `ADD UNIQUE (cols)` is legal and PG names it for you.
-    const addConRe = new RegExp(`\\bADD\\s+(?:CONSTRAINT\\s+(${IDENT})\\s+)?UNIQUE\\s*\\(`, 'gi');
+    const addConRe = new RegExp(
+      `\\bADD\\s+(?:CONSTRAINT\\s+(${IDENT})\\s+)?UNIQUE\\s*\\(`,
+      "gi",
+    );
     let ac;
     while ((ac = addConRe.exec(actions)) !== null) {
       created.push({
@@ -539,63 +559,116 @@ export function findUniqueIndexShapeSwap(sqlText) {
 }
 
 /** NNN ≥ enforcedFrom present on disk but absent from the reservations set. */
-export function unreservedNumbers(fileNums, reservedNums, enforcedFrom = ENFORCED_FROM) {
-  return fileNums.filter((n) => n >= enforcedFrom && !reservedNums.has(n)).sort((a, b) => a - b);
+export function unreservedNumbers(
+  fileNums,
+  reservedNums,
+  enforcedFrom = ENFORCED_FROM,
+) {
+  return fileNums
+    .filter((n) => n >= enforcedFrom && !reservedNums.has(n))
+    .sort((a, b) => a - b);
 }
 
-async function fetchReservedNums() {
+/** Files whose numeric reservation exists but names a DIFFERENT migration. */
+export function reservationFilenameMismatches(
+  files,
+  reservations,
+  { appliedFilenames = new Set(), enforcedFrom = ENFORCED_FROM } = {},
+) {
+  const byNumber = new Map(
+    reservations.map((row) => [Number(row.num), row.filename ?? null]),
+  );
+  const mismatches = [];
+  for (const file of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(file)?.[1] ?? "0", 10);
+    if (num < enforcedFrom || !byNumber.has(num)) continue;
+    const reservedFilename = byNumber.get(num);
+    if (
+      reservedFilename === `${String(num).padStart(3, "0")}-TODO-rename.sql` &&
+      appliedFilenames.has(file)
+    )
+      continue;
+    if (reservedFilename !== file)
+      mismatches.push({ num, file, reservedFilename });
+  }
+  return mismatches.sort(
+    (a, b) => a.num - b.num || a.file.localeCompare(b.file),
+  );
+}
+
+async function fetchReservationState() {
   // env → .env.local → embedded-pg discovery file → native :5432 dev fallback.
   const url = resolveScriptPgUrl().url;
 
-  const postgres = (await import('postgres')).default;
-  const sql = postgres(url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const postgres = (await import("postgres")).default;
+  const sql = postgres(url, {
+    max: 1,
+    connect_timeout: 5,
+    idle_timeout: 1,
+    onnotice: () => {},
+  });
   try {
-    const rows = await sql`SELECT num FROM harness_shared.migration_reservations`;
-    return new Set(rows.map((r) => Number(r.num)));
+    const reservations =
+      await sql`SELECT num, filename FROM harness_shared.migration_reservations`;
+    const applied =
+      await sql`SELECT filename FROM harness_shared.schema_migrations`;
+    return {
+      reservations,
+      appliedFilenames: new Set(applied.map((row) => String(row.filename))),
+    };
   } finally {
     await sql.end({ timeout: 2 }).catch(() => {});
   }
 }
 
 async function main() {
-  const files = readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql'));
+  const files = readdirSync(SQL_DIR).filter((f) => f.endsWith(".sql"));
   let failed = false;
 
   // 1. duplicate numeric prefixes
   const dups = duplicateNumberGroups(files);
   if (dups.length) {
     failed = true;
-    console.error('✗ duplicate migration numbers (renumber via db:next-migration):');
-    for (const { num, files: group } of dups) console.error(`   ${num}: ${group.join(' · ')}`);
+    console.error(
+      "✗ duplicate migration numbers (renumber via db:next-migration):",
+    );
+    for (const { num, files: group } of dups)
+      console.error(`   ${num}: ${group.join(" · ")}`);
   }
 
   // 2. raw top-level transaction control (enforced ≥ ENFORCED_FROM;
   //    pre-contract applied files are grandfathered, reported as a count)
   let grandfathered = 0;
   for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
-    const hits = findRawTxControl(readFileSync(join(SQL_DIR, f), 'utf8'));
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
+    const hits = findRawTxControl(readFileSync(join(SQL_DIR, f), "utf8"));
     if (!hits.length) continue;
     if (num >= ENFORCED_FROM) {
       failed = true;
-      console.error(`✗ ${f}: top-level transaction control (${hits.join(', ')}) — the runner provides the transaction; remove it`);
+      console.error(
+        `✗ ${f}: top-level transaction control (${hits.join(", ")}) — the runner provides the transaction; remove it`,
+      );
     } else {
       grandfathered++;
     }
   }
   if (grandfathered) {
-    console.log(`· ${grandfathered} pre-${ENFORCED_FROM} applied file(s) carry legacy BEGIN/COMMIT — grandfathered (ledgered history, do not edit)`);
+    console.log(
+      `· ${grandfathered} pre-${ENFORCED_FROM} applied file(s) carry legacy BEGIN/COMMIT — grandfathered (ledgered history, do not edit)`,
+    );
   }
 
   // 3. unguarded RENAME CONSTRAINT (the 42704 footgun — WI-4547)
   for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
     if (num < ENFORCED_FROM) continue; // applied history: immutable, and it already survived
-    const hits = findUnguardedConstraintRename(readFileSync(join(SQL_DIR, f), 'utf8'));
+    const hits = findUnguardedConstraintRename(
+      readFileSync(join(SQL_DIR, f), "utf8"),
+    );
     if (!hits.length) continue;
     failed = true;
     console.error(
-      `✗ ${f}: bare RENAME CONSTRAINT (${hits.join(', ')}) — \`ALTER TABLE IF EXISTS\` guards the TABLE, not the CONSTRAINT, so this throws 42704 and aborts the migration when the constraint is absent (e.g. an earlier migration dropped its column). Wrap it in a DO block that renames only if the old name exists and the new one does not — see 592-knowledge-packs-rename.sql.`,
+      `✗ ${f}: bare RENAME CONSTRAINT (${hits.join(", ")}) — \`ALTER TABLE IF EXISTS\` guards the TABLE, not the CONSTRAINT, so this throws 42704 and aborts the migration when the constraint is absent (e.g. an earlier migration dropped its column). Wrap it in a DO block that renames only if the old name exists and the new one does not — see 592-knowledge-packs-rename.sql.`,
     );
   }
 
@@ -608,27 +681,31 @@ async function main() {
   // databases (drops the literals, attaches the derive-trigger); this lint stops a
   // NEW migration from re-introducing the trap.
   for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
     if (num < ENFORCED_FROM) continue;
-    const hits = findLiteralTenantDefault(readFileSync(join(SQL_DIR, f), 'utf8'));
+    const hits = findLiteralTenantDefault(
+      readFileSync(join(SQL_DIR, f), "utf8"),
+    );
     if (!hits.length) continue;
     failed = true;
     console.error(
       `✗ ${f}: literal DEFAULT on a tenant-scoping column (${hits
         .map((h) => `${h.column} SET DEFAULT ${h.value}`)
-        .join(', ')}) — the active workspace is only knowable IN-PROCESS (request header → ALS, or the process pin), so a literal here is a GUESS that silently files rows under the WRONG tenant while the INSERT still reports success. This shipped 181 mis-tenanted agent_chats rows and surfaced as a chat panel spinning forever (WI-5125). Drop the default and stamp the column explicitly in the writer (activeWorkspaceId()); a derive-net belongs in a BEFORE INSERT trigger (harness_shared.fill_workspace_id_from_projects) — see 616-workspace-stamp-consolidated-views.sql and /internal/docs/agent-insights/consolidated-view-literal-workspace-default.`,
+        .join(
+          ", ",
+        )}) — the active workspace is only knowable IN-PROCESS (request header → ALS, or the process pin), so a literal here is a GUESS that silently files rows under the WRONG tenant while the INSERT still reports success. This shipped 181 mis-tenanted agent_chats rows and surfaced as a chat panel spinning forever (WI-5125). Drop the default and stamp the column explicitly in the writer (activeWorkspaceId()); a derive-net belongs in a BEFORE INSERT trigger (harness_shared.fill_workspace_id_from_projects) — see 616-workspace-stamp-consolidated-views.sql and /internal/docs/agent-insights/consolidated-view-literal-workspace-default.`,
     );
   }
 
   // 5. unguarded work_items harness_slug re-slug (the migration-631 crash-loop class)
   for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
     if (num < ENFORCED_FROM) continue; // applied history: immutable, already ran
-    const hits = findUnguardedReslug(readFileSync(join(SQL_DIR, f), 'utf8'));
+    const hits = findUnguardedReslug(readFileSync(join(SQL_DIR, f), "utf8"));
     if (!hits.length) continue;
     failed = true;
     console.error(
-      `✗ ${f}: work_items.harness_slug re-slug UPDATE with no collision guard (${hits.join(' · ')}) — on a shipped seed that already has a row at the target slug for the same feature_id this dupes work_items_pkey and CRASH-LOOPS the packaged operator on first boot (the v0.0.12 migration-631 bug, caught only after a ~45-min build). De-dup colliders first with a DELETE FROM harness_shared.work_items (mirror 630/631), or guard the UPDATE with "AND NOT EXISTS (SELECT 1 … row already at the target slug …)".`,
+      `✗ ${f}: work_items.harness_slug re-slug UPDATE with no collision guard (${hits.join(" · ")}) — on a shipped seed that already has a row at the target slug for the same feature_id this dupes work_items_pkey and CRASH-LOOPS the packaged operator on first boot (the v0.0.12 migration-631 bug, caught only after a ~45-min build). De-dup colliders first with a DELETE FROM harness_shared.work_items (mirror 630/631), or guard the UPDATE with "AND NOT EXISTS (SELECT 1 … row already at the target slug …)".`,
     );
   }
 
@@ -638,15 +715,22 @@ async function main() {
   // already carry this pattern above 494 and are applied+ledgered, so they are
   // grandfathered exactly like the other checks' legacy files.
   for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
     if (num < INDEX_SWAP_ENFORCED_FROM) continue;
-    const hits = findUniqueIndexShapeSwap(readFileSync(join(SQL_DIR, f), 'utf8'));
+    const hits = findUniqueIndexShapeSwap(
+      readFileSync(join(SQL_DIR, f), "utf8"),
+    );
     if (!hits.length) continue;
     failed = true;
     console.error(
-      `✗ ${f}: drops a ${hits.map((h) => h.table).join('/')} index in the SAME migration that creates its unique replacement (${hits
-        .map((h) => `${h.index}${h.partial ? ' [partial]' : ''} ← drops ${h.dropped.join(', ')}`)
-        .join(' · ')}) — PostgreSQL infers an ON CONFLICT target by MATCHING a unique index, so changing that index's shape (partial predicate, column set, expression) makes every ON CONFLICT spec written against the old shape match NO index and fail AT PLAN TIME: every write, not just conflicting ones. On a SHARED database the migration lands the instant ANY operator boots while the matching code lands only per-deploy, so this is a breaking change to every not-yet-deployed reader even when the code fix is in the same commit. It has already caused this outage three times on these tables (461 → zero fact writes until 2026-07-03; 564 repeated it on memory_canonical; 689 took facts:assert down fleet-wide for an hour). Make it TWO-PHASE: migration N creates the new index and LEAVES the old one, then migration N+k drops the old one once the code is deployed everywhere. If the swap is genuinely safe, say why with "-- lint-migrations: allow-index-swap <reason>".`,
+      `✗ ${f}: drops a ${hits.map((h) => h.table).join("/")} index in the SAME migration that creates its unique replacement (${hits
+        .map(
+          (h) =>
+            `${h.index}${h.partial ? " [partial]" : ""} ← drops ${h.dropped.join(", ")}`,
+        )
+        .join(
+          " · ",
+        )}) — PostgreSQL infers an ON CONFLICT target by MATCHING a unique index, so changing that index's shape (partial predicate, column set, expression) makes every ON CONFLICT spec written against the old shape match NO index and fail AT PLAN TIME: every write, not just conflicting ones. On a SHARED database the migration lands the instant ANY operator boots while the matching code lands only per-deploy, so this is a breaking change to every not-yet-deployed reader even when the code fix is in the same commit. It has already caused this outage three times on these tables (461 → zero fact writes until 2026-07-03; 564 repeated it on memory_canonical; 689 took facts:assert down fleet-wide for an hour). Make it TWO-PHASE: migration N creates the new index and LEAVES the old one, then migration N+k drops the old one once the code is deployed everywhere. If the swap is genuinely safe, say why with "-- lint-migrations: allow-index-swap <reason>".`,
     );
   }
 
@@ -656,20 +740,42 @@ async function main() {
     .filter(Boolean)
     .map((n) => Number.parseInt(n, 10));
   try {
-    const reserved = await fetchReservedNums();
+    const { reservations, appliedFilenames } = await fetchReservationState();
+    const reserved = new Set(reservations.map((row) => Number(row.num)));
     const unreserved = unreservedNumbers(fileNums, reserved);
     if (unreserved.length) {
       failed = true;
-      console.error(`✗ migration number(s) ≥${ENFORCED_FROM} on disk without a reservation row (use db:next-migration): ${unreserved.join(', ')}`);
+      console.error(
+        `✗ migration number(s) ≥${ENFORCED_FROM} on disk without a reservation row (use db:next-migration): ${unreserved.join(", ")}`,
+      );
+    }
+    const mismatches = reservationFilenameMismatches(files, reservations, {
+      appliedFilenames,
+    });
+    if (mismatches.length) {
+      failed = true;
+      console.error("✗ migration reservation filename mismatch(es):");
+      for (const mismatch of mismatches) {
+        console.error(
+          `   ${mismatch.file}: number ${mismatch.num} is reserved for ${mismatch.reservedFilename ?? "<null>"}`,
+        );
+      }
     }
   } catch (e) {
-    console.log(`· reservation check skipped (PG unreachable: ${e?.code ?? e?.message ?? e})`);
+    console.log(
+      `· reservation check skipped (PG unreachable: ${e?.code ?? e?.message ?? e})`,
+    );
   }
 
   if (failed) process.exit(1);
-  console.log(`✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, reservations≥${ENFORCED_FROM})`);
+  console.log(
+    `✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, reservation number+filename≥${ENFORCED_FROM})`,
+  );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
   await main();
 }

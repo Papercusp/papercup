@@ -4,23 +4,25 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Seat-donation traps found during the pot-seat-pools live drill
+title: "Seat-donation traps found during the pot-seat-pools live drill"
 description: "Seven concrete bugs (including the diagnosed P-011 blocker, WI-5446, likely a manifestation of the known WI-953 federation gap) + design nuances surfaced while driving the pot-seat-pools-prose-ux-2026-07-18 live two-machine (tower↔iMac) verify drill. Read before touching resource:delegate/resource:offers' pot-scoped forms, fleet:request_remote_spawn spend authority, coord:send's federated liveness/hive-scope handling, or the always-armed inbox-wake."
+type: Insight
 discovered: 2026-07-19
 status: active
 documents:
-  - packages/operator-core/lib/agent-tools/resource/delegate.ts
-  - packages/operator-core/lib/agent-tools/resource/offers.ts
-  - packages/operator-core/lib/agent-tools/fleet_registry/request-remote-spawn.ts
-  - packages/operator-core/lib/agent-tools/coordination/tools/send.ts
-  - packages/operator-core/lib/agent-tools/coordination/federated-presence.ts
+  - "packages/operator-core/lib/agent-tools/resource/delegate.ts"
+  - "packages/operator-core/lib/agent-tools/resource/offers.ts"
+  - "packages/operator-core/lib/agent-tools/fleet_registry/request-remote-spawn.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/tools/send.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/federated-presence.ts"
 plans:
-  - pot-seat-pools-prose-ux-2026-07-18
-type: Insight
+  - "pot-seat-pools-prose-ux-2026-07-18"
 generated:
   by: agent
   at: 2026-07-18
 ---
+
+Seven concrete bugs (including the diagnosed P-011 blocker, WI-5446, likely a manifestation of the known WI-953 federation gap) + design nuances surfaced while driving the pot-seat-pools-prose-ux-2026-07-18 live two-machine (tower↔iMac) verify drill. Read before touching resource:delegate/resource:offers' pot-scoped forms, fleet:request_remote_spawn spend authority, coord:send's federated liveness/hive-scope handling, or the always-armed inbox-wake.
 
 ## One paragraph
 
@@ -40,15 +42,15 @@ multi-hive/multi-machine workspace.
 
 ## Bugs filed (repro + evidence in each)
 
-| id | Summary | Where it bites |
-|---|---|---|
-| **WI-5446** | **Cross-machine seat-offers do not federate at all** between tower and iMac — donor delegate succeeds locally (`hive` correctly passed), the offer never reaches the spender; zero P2P receipts on BOTH machines. Linked caused-by **WI-953** (same publish-succeeds/receiver-hears-nothing shape, one layer down) | the actual blocker behind P-011 — no cross-machine spend is currently verifiable live |
-| **WI-5445** | **Umbrella:** four surfaces on the cross-machine path handle hive-disambiguation four different, inconsistent ways — `coord:send` has no way to comply at all | the reusable framing for EI-16667/EI-16673 below, plus a `coord:send` gap neither of them covers |
-| **WI-5447** | `resource:delegate { remove:true }` deletes the local allotment but leaves the published seat-offer `'open'`, so a revoked delegation still shadows the fleet's offer picker | contradicts P-001's own "revoke works exactly like the fleet-scoped form" requirement |
-| EI-16667 | `resource:delegate` (potSlug+agent_slot) silently skips its P2P seat-offer publish on a multi-hive workspace when `hive` is omitted | write side of pot-scoped delegation |
-| EI-16673 | `resource:offers` has no `potSlug`/`hive` disambiguation arg, so pot-wide `potShared` visibility can never resolve on a multi-hive workspace | read side of pot-scoped delegation |
-| EI-16693 | `coord:send{wake:'required'}`'s liveness check disagreed with `coord:presence` for a federated recipient — reported `sessionState:'ended'`/`recipient_absent:true` for a peer that was, in fact, alive and working | any cross-machine wake/dispatch decision, not just seat-pools |
-| EI-16685 | the always-armed inbox-wake repeatedly redelivered a backlog of stale/already-read messages with expired nonces across ~5 consecutive turns | general session hygiene, surfaced during this drill |
+| id          | Summary                                                                                                                                                                                                                                                                                                            | Where it bites                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| **WI-5446** | **Cross-machine seat-offers do not federate at all** between tower and iMac — donor delegate succeeds locally (`hive` correctly passed), the offer never reaches the spender; zero P2P receipts on BOTH machines. Linked caused-by **WI-953** (same publish-succeeds/receiver-hears-nothing shape, one layer down) | the actual blocker behind P-011 — no cross-machine spend is currently verifiable live            |
+| **WI-5445** | **Umbrella:** four surfaces on the cross-machine path handle hive-disambiguation four different, inconsistent ways — `coord:send` has no way to comply at all                                                                                                                                                      | the reusable framing for EI-16667/EI-16673 below, plus a `coord:send` gap neither of them covers |
+| **WI-5447** | `resource:delegate { remove:true }` deletes the local allotment but leaves the published seat-offer `'open'`, so a revoked delegation still shadows the fleet's offer picker                                                                                                                                       | contradicts P-001's own "revoke works exactly like the fleet-scoped form" requirement            |
+| EI-16667    | `resource:delegate` (potSlug+agent\_slot) silently skips its P2P seat-offer publish on a multi-hive workspace when `hive` is omitted                                                                                                                                                                               | write side of pot-scoped delegation                                                              |
+| EI-16673    | `resource:offers` has no `potSlug`/`hive` disambiguation arg, so pot-wide `potShared` visibility can never resolve on a multi-hive workspace                                                                                                                                                                       | read side of pot-scoped delegation                                                               |
+| EI-16693    | `coord:send{wake:'required'}`'s liveness check disagreed with `coord:presence` for a federated recipient — reported `sessionState:'ended'`/`recipient_absent:true` for a peer that was, in fact, alive and working                                                                                                 | any cross-machine wake/dispatch decision, not just seat-pools                                    |
+| EI-16685    | the always-armed inbox-wake repeatedly redelivered a backlog of stale/already-read messages with expired nonces across \~5 consecutive turns                                                                                                                                                                       | general session hygiene, surfaced during this drill                                              |
 
 ### WI-5446 — cross-machine seat-offers do not federate (likely = WI-953)
 
@@ -58,7 +60,7 @@ MCP door), naming `hive:'papercusp'` explicitly (so EI-16667's
 silent-skip-on-ambiguous-hive does not apply here) — it succeeded,
 returning an active `allotment`. `fleet:request_remote_spawn` (fleet:
 pot-seat-pools, hive: papercusp) fired from the **tower** repeatedly over
-~7 minutes, every attempt refusing with *"seat-offer
+\~7 minutes, every attempt refusing with *"seat-offer
 seat-ec799e00fa1c9725 is this machine's OWN delegation"* — i.e. the tower
 could see exactly **one** open seat-offer for the fleet: its own.
 (`request-remote-spawn.ts` only auto-selects when
@@ -80,12 +82,12 @@ DIRECTORY ANNOUNCE never reaches the joiner", major, open since
 2026-06-29) — stated as a strong hypothesis with reasoning, not
 established fact:
 
-| | WI-953 | WI-5446 (this) |
-|---|---|---|
-| publisher side | owner creates + publishes hive, `announced` reported | donor `resource:delegate` returns ok, allotment active |
-| wire | peers connect on the topic, but ZERO slug-filter/announce lines processed | zero P2P receipts AND zero refused-op counters, both machines |
-| joiner side | `/api/discovery/hives` stays `count=0`; never admits the owner's home core | tower never sees the offer; auto-select-of-one proves absence |
-| net | 0 content federates | 0 offers federate |
+|                | WI-953                                                                     | WI-5446 (this)                                                |
+| -------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| publisher side | owner creates + publishes hive, `announced` reported                       | donor `resource:delegate` returns ok, allotment active        |
+| wire           | peers connect on the topic, but ZERO slug-filter/announce lines processed  | zero P2P receipts AND zero refused-op counters, both machines |
+| joiner side    | `/api/discovery/hives` stays `count=0`; never admits the owner's home core | tower never sees the offer; auto-select-of-one proves absence |
+| net            | 0 content federates                                                        | 0 offers federate                                             |
 
 In both cases the local publish reports success and the remote side
 receives **nothing at all** — not a rejection, not a refusal receipt,
@@ -116,7 +118,7 @@ different ways — worst to best:
    while trying to reach the only agent on the other machine, and the
    workaround (relaying through a peer whose session happened to be
    hive-scoped) was luck, not design.
-2. `resource:delegate` (potSlug + agent_slot) — **silently skips** its
+2. `resource:delegate` (potSlug + agent\_slot) — **silently skips** its
    P2P publish when `hive` is omitted (EI-16667). The most dangerous of
    the four: silence is indistinguishable from success.
 3. `resource:offers` — no pot/fleet disambiguation at all, so
@@ -139,7 +141,7 @@ to stage correctly in the first place.
 
 ### WI-5447 — revoke is not symmetric with donate
 
-The tower held an agent_slot delegation to fleet `pot-seat-pools`
+The tower held an agent\_slot delegation to fleet `pot-seat-pools`
 (offer `seat-ec799e00fa1c9725`). Revoking it
 (`resource:delegate { fleetSlug, kind:'agent_slot', model, effort,
 remove:true }` → `{ ok:true, action:'remove', removed:1 }`) removed the
@@ -149,7 +151,7 @@ self-target guard in `p2p/spawn-request-publish.ts`. That guard sits
 *after* the `target.status !== 'open'` check in the same function (which
 would have said "the delegation was paused or revoked") — meaning the
 offer record was still `status: 'open'` in the offer store despite the
-revoke. **Revoke is not symmetric with set:** setting an agent_slot
+revoke. **Revoke is not symmetric with set:** setting an agent\_slot
 delegation auto-publishes a seat-offer; removing it does not retract or
 close that offer, so the stale offer keeps shadowing the fleet's picker
 (one stale self-offer + one legitimate remote offer means the picker
@@ -161,7 +163,7 @@ the seat is withdrawn; it is not, from the spend path's point of view.
 ### EI-16667 — delegate silently skips its P2P publish
 
 `resource:delegate` (potSlug: papercusp, audience: trusted-members,
-kind: agent_slot, model: sonnet, effort: medium, count: 1) — **no
+kind: agent\_slot, model: sonnet, effort: medium, count: 1) — **no
 `hive` param** — on a workspace with 17 registered hives (`pot:list`)
 returned `{ ok:true, action, allotment }`: a clean-looking success. A
 follow-up `resource:offers` on the same machine came back
@@ -200,7 +202,7 @@ the ambiguous pot-wide hive lookup).
 
 `coord:send { to:[<federated peer>], wake:'required' }` reported
 `sessionState:'ended'`, `recipient_absent:true` for a cross-machine
-(iMac) recipient. ~60 seconds later `coord:presence` for the **same**
+(iMac) recipient. \~60 seconds later `coord:presence` for the **same**
 ownerId returned a fresh (12s-old) `active` row, and a direct `ssh` +
 `ps aux` on that host confirmed the underlying process had been running
 continuously for days and never died. An agent following the standard
@@ -213,12 +215,11 @@ bee visibility.
 
 ### EI-16685 — inbox-wake redelivers a stale backlog
 
-The always-armed inbox-wake fired repeatedly across ~4 consecutive turns,
+The always-armed inbox-wake fired repeatedly across \~4 consecutive turns,
 each time surfacing a **different old, already-actioned** message (one
-from ~30 minutes earlier), each carrying a `⟦turn-provenance⟧ UNVERIFIED
+from \~30 minutes earlier), each carrying a `⟦turn-provenance⟧ UNVERIFIED
 ORIGIN CLAIM` warning ("the envelope's nonce exists in the ledger but is
-EXPIRED, age >600s ttl"). Each time, a fresh `coord:inbox { since_ts }`
-came back with **zero** new entries — confirming these were stale replays
+EXPIRED, age >600s ttl"). Each time, the internal delivery fold reported **zero** new entries while a repeatable `coord:inbox` VIEW still showed the current window — confirming these were stale replays
 of a backlog rather than genuine new mail. Costs a wasted
 "is this actually new?" re-verification turn every time it fires, and the
 expired-nonce warning itself reads like a possible spoofed/injected turn
@@ -226,13 +227,13 @@ until checked.
 
 ## Design nuances worth documenting (not bugs — working as intended, but non-obvious)
 
-- **Fleet-leader-only spend is a third authority axis.** Both
+* **Fleet-leader-only spend is a third authority axis.** Both
   `fleet:request_remote_spawn` and `fleet:launch-on-plan (placement:'remote')` enforce that only the spending fleet's **leader**
   may spend a delegated seat — beyond D-002's audience
   (`trusted-members`/`whole-pot`) and the host-local
   `ACCEPT_DELEGATED_SEATS` gate. Being a trusted (or whole-pot) member is
   necessary but not sufficient.
-- **Self-donor exclusion — and why it makes a same-machine "drill"
+* **Self-donor exclusion — and why it makes a same-machine "drill"
   worthless.** A machine that delegates a seat to a fleet cannot
   remote-spend its **own** delegation — correctly refused with "spawn
   locally instead". For a genuine cross-machine drill, the donor and the
@@ -243,7 +244,7 @@ until checked.
   the spend attempt on the same machine (tower) and hit a
   correct-but-initially-confusing refusal before this was caught. Anyone
   testing seat pooling will fall into this exact trap.
-- **The spend path is the model to fix the delegate path to.** The
+* **The spend path is the model to fix the delegate path to.** The
   spend side (`fleet:request_remote_spawn`) refuses an ambiguous hive
   **loudly** — the correct behavior. The delegate-side publish
   (EI-16667) skips the same ambiguity **silently** — the opposite failure

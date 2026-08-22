@@ -137,3 +137,25 @@ export {
   registeredWorkspaceHostProviderTargets,
   _resetWorkspaceHostProvidersForTests,
 } from './workspace-host-registry';
+export type {
+  WorkspaceHostBootstrapPhase,
+  WorkspaceHostBootstrapCheckName,
+  WorkspaceHostBootstrapRelease,
+  WorkspaceHostBootstrapEntrypoints,
+  WorkspaceHostBootstrapService,
+  WorkspaceHostBootstrapInput,
+  WorkspaceHostBootstrapAttestationCheck,
+  WorkspaceHostBootstrapAttestation,
+  WorkspaceHostBootstrapAttestationValidation,
+} from './workspace-host-bootstrap';
+export {
+  WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+  WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
+  WORKSPACE_HOST_BOOTSTRAP_PHASES,
+  WORKSPACE_HOST_BOOTSTRAP_CHECKS,
+  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
+  buildWorkspaceHostBootstrap,
+  parseWorkspaceHostBootstrapAttestation,
+  validateWorkspaceHostBootstrapAttestation,
+} from './workspace-host-bootstrap';

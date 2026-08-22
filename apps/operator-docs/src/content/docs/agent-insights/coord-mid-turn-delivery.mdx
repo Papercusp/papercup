@@ -4,23 +4,25 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Mid-turn coord delivery (Claude / Codex / OMP)
-description: How new coord:inbox messages reach a RUNNING agent between tool calls — not just at session/turn start — per client, why it's prompt-cache-safe, and the holder-intent enrichment on lock blocks.
+title: "Mid-turn coord delivery (Claude / Codex / OMP)"
+description: "How new coord:inbox messages reach a RUNNING agent between tool calls — not just at session/turn start — per client, why it's prompt-cache-safe, and the holder-intent enrichment on lock blocks."
+type: Insight
 discovered: 2026-06-01
-tags: [coord, hooks, posttooluse, omp, codex, prompt-cache, mid-turn, inbox, locks]
+tags: ["coord", "hooks", "posttooluse", "omp", "codex", "prompt-cache", "mid-turn", "inbox", "locks"]
 status: active
 documents:
-  - apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh
-  - apps/operator/scripts/psu-pty-host.mjs
-  - packages/operator-core/lib/agent-tools/locks/acquire.ts
+  - "apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh"
+  - "apps/operator/scripts/psu-pty-host.mjs"
+  - "packages/operator-core/lib/agent-tools/locks/acquire.ts"
 plans:
-  - fleet-coordination-painpoints-2026-06-02
-  - file-locking-improvements-2026-05-20
-type: Insight
+  - "fleet-coordination-painpoints-2026-06-02"
+  - "file-locking-improvements-2026-05-20"
 generated:
   by: agent
   at: 2026-06-01
 ---
+
+How new coord:inbox messages reach a RUNNING agent between tool calls — not just at session/turn start — per client, why it's prompt-cache-safe, and the holder-intent enrichment on lock blocks.
 
 ## What it is
 
@@ -30,16 +32,18 @@ prompt tells SU agents to call `coord:inbox` once) or, for OMP, at
 minutes — many tool calls — blind to "stop, I'm refactoring that file."
 
 Mid-turn delivery closes that: after **each tool call**, the agent's own
-tool cadence is used to poll `coord:inbox` for messages newer than a cursor
-and inject any new ones. No model discipline (an LLM can't keep a wall-clock
-timer); the **system** rides the tool stream.
+tool cadence triggers a server-owned delivery fold. The fold reads the
+repeatable `coord:inbox` VIEW, applies the private delivery cursor, and injects
+new arrivals without asking the model to manage a timestamp. No model discipline
+(an LLM can't keep a wall-clock timer) is required; the **system** rides the tool
+stream. Direct callers do not supply that cursor to `coord:inbox`.
 
 ## Per client — three mechanisms, one behavior
 
 **EI-11405 (coordination-hook-rpc-fanout-collapse-2026-07-16):** the Claude/Codex
 mechanism used to be a SEPARATE `posttooluse-coord-inbox.sh` PostToolUse hook —
 its own unconditional `coord:inbox` round trip on EVERY tool call, alongside the
-detached-fire-and-forget `posttooluse-activity-report.sh`. That was ~2 automatic
+detached-fire-and-forget `posttooluse-activity-report.sh`. That was \~2 automatic
 round trips per manual tool call. The two are now MERGED: `posttooluse-activity-
 report.sh` sends a delta-aware `hook_bundle` cursor (`{generation, since_ts}`) on
 its `activity:report` call, and the server folds a fresh `coord:inbox` snapshot
@@ -48,11 +52,11 @@ into the SAME response ONLY when the coordination generation actually advanced
 trip, and an O(1) (no extra query) response whenever nothing changed. The old
 standalone script is deleted.
 
-| Client | Where | Mechanism |
-| --- | --- | --- |
-| **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*` | `apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`). Always coord-folding (the fold gate `PAPERCUSP_COORD_FOLD` defaults ON). |
-| **Codex** | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` | same script, written by `role-codex-home.ts`. `writeSuCodexHome` bakes a `PAPERCUSP_SID` and leaves the coord fold ON (SU sessions); `writeRoleCodexHome` also bakes a `PAPERCUSP_SID` but sets `PAPERCUSP_COORD_FOLD=0` — a role session still reports activity, just without the coord fold (roles coordinate via `messages:feature_*`, not the SU coord bus) and keeps the original detached, zero-added-latency report path. Current Codex fires PostToolUse for **Bash / apply_patch / MCP** (not WebSearch), and the same hooks file also carries PreToolUse lock/resource gates for `apply_patch`/shell. |
-| **OMP** | `coord-hook.ts` `tool_result` handler | `reportActivityResult()` sends the SAME `hook_bundle` cursor on its own `activity:report` call (OMP had this shape since before the merge — the CC port brings Claude/Codex to parity) → `consumeActivityHookBundle()` → `pi.sendMessage(…, { deliverAs: 'followUp' })`. |
+| Client     | Where                                                          | Mechanism                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude** | `~/.claude/settings.json` PostToolUse, matcher `*`             | `apps/operator/scripts/hooks/cc/posttooluse-activity-report.sh` → `hookSpecificOutput.additionalContext` (exit 0, **no** `decision`). Always coord-folding (the fold gate `PAPERCUSP_COORD_FOLD` defaults ON).                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Codex**  | per-session `$CODEX_HOME/hooks.json` PostToolUse, matcher `.*` | same script, written by `role-codex-home.ts`. `writeSuCodexHome` bakes a `PAPERCUSP_SID` and leaves the coord fold ON (SU sessions); `writeRoleCodexHome` also bakes a `PAPERCUSP_SID` but sets `PAPERCUSP_COORD_FOLD=0` — a role session still reports activity, just without the coord fold (roles coordinate via `messages:feature_*`, not the SU coord bus) and keeps the original detached, zero-added-latency report path. Current Codex fires PostToolUse for **Bash / apply\_patch / MCP** (not WebSearch), and the same hooks file also carries PreToolUse lock/resource gates for `apply_patch`/shell. |
+| **OMP**    | `coord-hook.ts` `tool_result` handler                          | `reportActivityResult()` sends the SAME `hook_bundle` cursor on its own `activity:report` call (OMP had this shape since before the merge — the CC port brings Claude/Codex to parity) → `consumeActivityHookBundle()` → `pi.sendMessage(…, { deliverAs: 'followUp' })`.                                                                                                                                                                                                                                                                                                                                         |
 
 The shell hook **gates on `PAPERCUSP_SID`** (psu sessions only) + the su-token,
 so a plain `claude`/`codex` on the box no-ops. `owner == PAPERCUSP_SID`, which is
@@ -60,7 +64,8 @@ the same id baked into the agent's MCP `&client=`, so the hook reads the *right*
 inbox/watermark.
 
 Current hook shape (2026-07-16): the shell hook is a dumb pipe for the FOLDED
-surface. It sends `hook_bundle{generation, since_ts}`, advances the local cursor
+surface. The `since_ts` field shown below is an internal hook-bundle cursor only;
+it is not an agent-facing `coord:inbox` argument. It sends `hook_bundle{generation, since_ts}`, advances the local cursor
 to the server's `generation` (only on a COMPLETE fold) + the inbox fold's
 `summary.newest_ts`, and injects the server-rendered `injection` block verbatim.
 Formatting, capping, and the `[coord+N]` layout live on the server side rather
@@ -88,32 +93,32 @@ only nudge the primitive a backend actually has (plan decision D-001: these
 nudges are an *optimization*; the wake + escalation-ladder legs are the
 *correctness* backstop for backends without one):
 
-| Backend | Native background primitive | Semantics | Nudge |
-| --- | --- | --- | --- |
-| **Claude Code** | `Bash { run_in_background: true }` | **Same session** — the command detaches, the agent keeps taking turns, and the harness re-invokes the SAME session when it exits. No delegation, no context loss. ⚠️ "same session" here means the same *live OS process*, taking its own next turn — see the Gotchas entry below, this does **not** cover a loop/carry process-respawn boundary. | `pretooluse-bash-resource-gate.sh` emits a **soft advisory** (`permissionDecision:'allow'` + `additionalContext`) when a foreground `Bash` explicitly requests `timeout > 120s`. Never a deny. |
-| **OMP** | its `job` primitive | detached job, same session observes completion | OMP's own hook surface (`coord-hook.ts`), **not** the shell gate — do not add a CC-shaped nudge for it there. |
-| **Codex** | **none** in our integration | — | **No nudge.** The gate deliberately skips `exec_command`/`local_shell`/`shell`; advising a primitive the backend lacks is worse than silence. Covered by the wake + ladder legs. |
-| any backend, last resort | `capability:bash { run_in_background } → capability:bash_output` | server-side detach — backend-agnostic but dies on operator restart (`stranded_by_operator_restart`) and adds operator load | fallback only, never the default (plan decision D-002). |
+| Backend                  | Native background primitive                                      | Semantics                                                                                                                                                                                                                                                                                                                                         | Nudge                                                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude Code**          | `Bash { run_in_background: true }`                               | **Same session** — the command detaches, the agent keeps taking turns, and the harness re-invokes the SAME session when it exits. No delegation, no context loss. ⚠️ "same session" here means the same *live OS process*, taking its own next turn — see the Gotchas entry below, this does **not** cover a loop/carry process-respawn boundary. | `pretooluse-bash-resource-gate.sh` emits a **soft advisory** (`permissionDecision:'allow'` + `additionalContext`) when a foreground `Bash` explicitly requests `timeout > 120s`. Never a deny. |
+| **OMP**                  | its `job` primitive                                              | detached job, same session observes completion                                                                                                                                                                                                                                                                                                    | OMP's own hook surface (`coord-hook.ts`), **not** the shell gate — do not add a CC-shaped nudge for it there.                                                                                  |
+| **Codex**                | **none** in our integration                                      | —                                                                                                                                                                                                                                                                                                                                                 | **No nudge.** The gate deliberately skips `exec_command`/`local_shell`/`shell`; advising a primitive the backend lacks is worse than silence. Covered by the wake + ladder legs.               |
+| any backend, last resort | `capability:bash { run_in_background } → capability:bash_output` | server-side detach — backend-agnostic but dies on operator restart (`stranded_by_operator_restart`) and adds operator load                                                                                                                                                                                                                        | fallback only, never the default (plan decision D-002).                                                                                                                                        |
 
 ## The cursor / dedup protocol
 
-- **Per-owner cursor.** Claude/Codex: a local file
+* **Per-owner delivery cursor (internal).** Claude/Codex: a local file
   `activity-hook-bundle-<owner>.json` in `~/.papercusp/locks-cache/`, holding
-  `{generation, since_ts}` (EI-11405 — was `coord-cursor-<owner>.json` with just
+  `{generation, since_ts}` (the private hook-bundle cursor, not a public inbox argument) (EI-11405 — was `coord-cursor-<owner>.json` with just
   `since_ts`, back when this was the standalone coord-inbox hook). OMP: a
   module var (`_hookBundleGeneration` + `_midTurnCursor`) seeded at `turn_start`
   to the newest ts surfaced, advanced on each `tool_result`, persisted to the
   watermark at `turn_end`.
-- **First run seeds to "now"** and injects nothing — the session-start
+* **First run seeds to "now"** and injects nothing — the session-start
   `coord:inbox` already showed the backlog; only *new* arrivals inject.
-- **Generation only advances on a COMPLETE fold.** A partial hydrate (e.g. the
+* **Generation only advances on a COMPLETE fold.** A partial hydrate (e.g. the
   server's glance query failed but inbox succeeded) resets the persisted
   generation to null so the NEXT call retries a FULL hydrate instead of wrongly
   believing it is caught up (mirrors `consumeActivityHookBundle`'s
   `bundle.complete ? bundle.generation : null`).
-- Each message injects **exactly once** (cursor advances past it); newest are
+* Each message injects **exactly once** (cursor advances past it); newest are
   shown when capping (8), older summarized as a count.
-- **Fail-open + best-effort:** operator unreachable / no baseline → no-op, never
+* **Fail-open + best-effort:** operator unreachable / no baseline → no-op, never
   blocks the tool, never crashes the turn.
 
 ## Why it does NOT bust the prompt cache
@@ -135,8 +140,7 @@ sees the holder's **declared** `coord:declare-intent` one-liner (and a flag when
 the contended path is in their `current_files`). **Declare a real intent** so
 your locks explain themselves.
 
-**Role access (2026-06-25):** `locks:acquire` changed from `agentRoles:
-[...SU_ROLES, 'cup']` to `agentRoles: [...AGENT_ROLES]`. Every built-in role
+**Role access (2026-06-25):** `locks:acquire` changed from `agentRoles: [...SU_ROLES, 'cup']` to `agentRoles: [...AGENT_ROLES]`. Every built-in role
 can now acquire file locks (and therefore appear as lock holders with intent
 enrichment). Blocked peers from any role now see holder intent; conversely, any
 role's auto-acquire hook stamps the generic `'PreToolUse:Edit'` intent — all the
@@ -144,7 +148,7 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
 
 ## Gotchas
 
-- **A native `run_in_background` task does NOT survive a loop/carry process
+* **A native `run_in_background` task does NOT survive a loop/carry process
   respawn**, even though the row above says backgrounding is "same session."
   That claim covers the ordinary continuous-turn case only. A **cold**-carry
   loop wake, a **warm** loop wake that lands on the "process exited →
@@ -157,10 +161,10 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
   writeup:
   [cold-loop-wake kills native background Bash tasks](/internal/docs/agent-insights/cold-loop-wake-kills-native-background-bash-tasks)
   (EI-16611).
-- **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove
+* **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove
   a verb) leaves *running* agent sessions with a **stale cached catalog** until
   they relaunch. New sessions are correct.
-- **Codex coord fold is SU-only** — pipeline-role sessions do **not** ride the SU
+* **Codex coord fold is SU-only** — pipeline-role sessions do **not** ride the SU
   coord bus. Expressed since EI-11405 as `PAPERCUSP_COORD_FOLD=0` baked into a
   role session's activity-report hook command, not a separate hook's absence —
   and activates server-side on the next operator restart (the `:3070` host has
@@ -169,7 +173,7 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
   `role-codex-home.ts` installs so its edits are coordinated. It does **not** use
   the work-item mail surface — `messages:send`/`inbox` were retired 2026-07-26
   (WI-6097); that half of this note was stale and is corrected here.
-- **Codex managed-PTY turn injection needs a longer submit settle than Claude,
+* **Codex managed-PTY turn injection needs a longer submit settle than Claude,
   plus a redundant submit.**
   The injected text can land in Codex's compose box while the submit CR is still
   treated as paste/input, leaving the message visible but unsubmitted until a
@@ -181,7 +185,7 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
   raw interrupt bytes still write once immediately, while turn injections write
   text first and submit CR(s) as later ordered steps. Do not collapse this back
   to one global delay without a live Codex coord-injection check.
-- **A submit-VERIFIER backstops every injected turn (WI-2930 / WI-2975), all
+* **A submit-VERIFIER backstops every injected turn (WI-2930 / WI-2975), all
   agents.** The fixed CR plan above is best-effort; a `makeSubmitVerifier`
   (`psu-pty-host.mjs`) then confirms the submit *actually started a turn*. After
   injecting, it polls the pty's `lastOutputAt` for a bounded window
@@ -194,6 +198,6 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
   keystroke after verification starts aborts the remaining polls (never fight a
   human editing the staged line). This is the general "text visible but
   unsubmitted" guard the Codex two-CR plan only partially covered.
-- **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the
+* **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the
   fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a
   real OMP turn to observe.

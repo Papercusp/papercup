@@ -73,10 +73,14 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const ctxAny = ctx as {
+      metadata?: (d: Record<string, unknown>) => void;
+      workspaceId?: string;
+    };
+    const workspaceId = args.workspaceId ?? (ctxAny.workspaceId !== '*' ? ctxAny.workspaceId : undefined);
     // Validate the harness is registered (throws if not) + resolve its workspace.
     const resolved = await resolveHarnessPlansDir(args.harnessSlug, {
-      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
     });
     const opts = { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId };
     const includeArchived = args.includeArchived === true;

@@ -3268,6 +3268,53 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     });
   });
 
+  /**
+   * EI-20511008504632401 — an unconfigured whole-file check against the
+   * legacy release helpers reports pre-existing drift and invites broad
+   * `--write` churn during a focused repair. Keep the guard scoped to that
+   * subtree, while allowing an explicit formatter config and unrelated checks.
+   */
+  describe('Prettier checks on release helpers (EI-20511008504632401)', () => {
+    const TARGETS = [
+      'apps/operator/lib/release/gitignored-asset-coverage.ts',
+      'apps/operator/lib/release/gitignored-asset-coverage.test.ts',
+      'apps/operator/lib/release/setup-release-checkout-workspace-builds.test.ts',
+    ];
+    const targetList = TARGETS.join(' ');
+
+    it('denies the filed unconfigured release-helper check before execution', () => {
+      const reason = denyReason(
+        runGate(bashCmd(`npx prettier --check ${targetList}`, { cwd: CANON }), CANON_ENV),
+      );
+      expect(reason).toContain('EI-20511008504632401');
+      expect(reason).toContain(TARGETS[0]);
+      expect(reason).toContain('git diff --check');
+      expect(reason).toContain('hunk-scoped formatter check');
+      expect(reason).toContain('NOTHING in this Bash call ran');
+    });
+
+    it('allows a release-helper check with an explicit formatter config', () => {
+      expectAllow(
+        runGate(
+          bashCmd(
+            `npx prettier --check --config packages/operator-core/.prettierrc.json ${TARGETS[0]}`,
+            { cwd: CANON },
+          ),
+          CANON_ENV,
+        ),
+      );
+    });
+
+    it('allows checks outside the release-helper subtree', () => {
+      expectAllow(
+        runGate(
+          bashCmd('npx prettier --check apps/operator/lib/psu-launcher.test.ts', { cwd: CANON }),
+          CANON_ENV,
+        ),
+      );
+    });
+  });
+
   it('fires WITH NO agent marker at all — unconditional, like the exit-guard', () => {
     expectShellWriteDeny(runGate(bashCmd('echo hi >> apps/operator/foo.txt', { cwd: CANON }), CANON_ENV));
   });

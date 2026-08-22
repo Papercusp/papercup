@@ -19,12 +19,14 @@ import type postgres from 'postgres';
 import {
   setupPlanPgFixture,
   cleanupPlans,
+  registerHarnessProject,
   seedPlan,
   type PlanPgFixture,
 } from '../../plans/__tests__/_pg-tool-fixture';
 
 // A throwaway harness slug, registered via the mock + seeded in PG.
 const HARNESS = `zzz-xh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const CALLER_WORKSPACE = `zzz-xh-workspace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const PLAN_SLUG = 'zzz-sheets-feature-x-2026-05-24';
 
 const PLAN_BODY = `---
@@ -69,13 +71,15 @@ function parsePayload(result: unknown): Record<string, unknown> {
 }
 
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
-  vi.doMock('../../../harness-registry', () => ({
+  vi.doMock('../../../harness-registry', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../harness-registry')>()),
     loadHarnessRegistry: vi.fn(async () => ({ projects })),
   }));
 }
 
 function mockPapercupDetection(detected: string | null) {
-  vi.doMock('../../../harness/register-papercusp', () => ({
+  vi.doMock('../../../harness/register-papercusp', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../harness/register-papercusp')>()),
     LEGACY_STANDALONE_HARNESS_SLUG: 'papercup',
     detectPapercupRoot: vi.fn(() => detected),
   }));
@@ -97,6 +101,7 @@ afterEach(async () => {
   vi.doUnmock('../../../harness-registry');
   vi.doUnmock('../../../harness/register-papercusp');
   await cleanupPlans(admin, wsId, HARNESS);
+  await cleanupPlans(admin, CALLER_WORKSPACE, HARNESS);
 });
 
 afterAll(async () => {
@@ -128,11 +133,27 @@ describe('cross_harness:plans_list', () => {
 
   it('forwards workspaceId to loadHarnessRegistry', async () => {
     const reg = vi.fn(async () => ({ projects: [{ slug: HARNESS, path: '/tmp/whatever' }] }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: reg }));
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../../harness-registry')>()),
+      loadHarnessRegistry: reg,
+    }));
     mockPapercupDetection(null);
     const tool = (await import('../plans_list')).default;
     await tool.handler({ harnessSlug: HARNESS, workspaceId: 'default' }, MAKE_CTX());
     expect(reg).toHaveBeenCalledWith('default');
+  });
+
+  it('uses the caller workspace when workspaceId is omitted', async () => {
+    await registerHarnessProject(admin, CALLER_WORKSPACE, HARNESS);
+    const reg = vi.fn(async () => ({ projects: [{ slug: HARNESS, path: '/tmp/whatever' }] }));
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../../harness-registry')>()),
+      loadHarnessRegistry: reg,
+    }));
+    mockPapercupDetection(null);
+    const tool = (await import('../plans_list')).default;
+    await tool.handler({ harnessSlug: HARNESS }, MAKE_CTX({ workspaceId: CALLER_WORKSPACE }));
+    expect(reg).toHaveBeenCalledWith(CALLER_WORKSPACE);
   });
 });
 
