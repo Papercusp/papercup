@@ -3499,7 +3499,7 @@
       ],
       "guidance": {
         "when": "You need a whole subsystem in one document for a human reviewer or another model to reason over — a review request, an audit, a refactor brief. op:\"diff\" when only what CHANGED matters.",
-        "notWhen": "You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ripgrep (text) first, and pack only once you know what a reader needs to see.",
+        "notWhen": "You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. first, and pack only once you know what a reader needs to see.",
         "chaining": "gitnexus.query for the impact radius → code:pack include:<that radius>, so the pack is scoped by a measured answer rather than a guess. Quote provenance.commit + dirty whenever you cite a pack as evidence."
       }
     },
@@ -3647,7 +3647,7 @@
       ],
       "guidance": {
         "when": "The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.",
-        "notWhen": "The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is ripgrep.",
+        "notWhen": "The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`..",
         "chaining": "code:structural to find candidate sites by shape → lsp:query op:\"symbol\" on one to confirm it resolves where you think. A structural match set is a SUPERSET of the type-correct one."
       }
     },
@@ -15162,7 +15162,7 @@
       ],
       "guidance": {
         "when": "You need the truth about TS/Rust code rather than a text match: where a symbol is really declared (across package boundaries and re-exports), every reference, implementations of an interface, a file's diagnostics, or the exact sites a rename would hit.",
-        "notWhen": "Exhaustive text/regex search (ripgrep) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.",
+        "notWhen": "Exhaustive text/regex search (ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.",
         "chaining": "op:\"workspace_symbols\" { name } to find a position → op:\"symbol\"/\"references\" { file, line1, character }. On a degraded answer, op:\"health\" reports each server + the taskId processes:kill takes."
       }
     },
