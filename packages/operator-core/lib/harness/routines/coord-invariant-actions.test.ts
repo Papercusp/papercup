@@ -17,6 +17,8 @@ import {
   isBackupOrMaintenanceStatement,
   planStaleHandoffAccepts,
   planSharedHiveCapture,
+  filterSharedHiveScopes,
+  type RawSharedHiveScope,
   planClaimIntegrityAlarms,
   planOrphanSweepNotices,
   drainOperationalEscalationsBeforeMeasure,
@@ -904,6 +906,61 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
     const b = planSharedHiveCapture({ kind: 'monitor-scope-empty', title: 'x', detail }, 'hello-world-3-pot');
     expect(a.watchdogKey).toBe(b.watchdogKey);
     expect(a.title).toBe(b.title);
+  });
+});
+
+// ── EI-21051034011804969 regression guard ───────────────────────────────────
+// The bug this pins: shared-hive scope DISCOVERY (the three-table UNION query in
+// `runSharedHiveLeg`) can surface `harness_slug = 'operator:<workspaceId>'` — the
+// workspace-global pseudo-harness label an OPERATOR-SCOPE work-item claim
+// legitimately carries (get-next.ts's `operatorScopeSlug`), never a real bootable
+// Pot/harness. Left unfiltered, every per-harness shared-hive invariant (outbox
+// health, double-completion, presence ghosts, orphan sweep) gets computed against
+// that phantom scope and re-files a perpetual false positive — exactly what was
+// observed live: "shared-hive invariant: substrate outbox depth/age breach in
+// operator:default" filed against an outbox that was already fully drained
+// (depth 0) by the time it was investigated, because the SCOPE was bogus, not
+// the SLO reading.
+describe('filterSharedHiveScopes (EI-21051034011804969 regression guard)', () => {
+  const scope = (harness_slug: string, pot_slug: string | null = null): RawSharedHiveScope => ({ harness_slug, pot_slug });
+
+  it('excludes the workspace-global operator-scope pseudo-harness label', () => {
+    const raw = [scope('operator:default'), scope('papercusp'), scope('oddsmith-hive', 'oddsmith-hive')];
+    const filtered = filterSharedHiveScopes(raw, 'default');
+    expect(filtered.map((s) => s.harness_slug)).toEqual(['papercusp', 'oddsmith-hive']);
+  });
+
+  it('excludes every workspace-global label isWorkspaceGlobalLabel recognizes, not just operator:', () => {
+    const raw = [
+      scope('operator:ws1'),
+      scope('*'),
+      scope('@singleton'),
+      scope('all'),
+      scope('hive-canary'),
+      scope('ws1'), // the bare workspace id itself is a partition, not a Pot
+      scope('real-pot'),
+    ];
+    const filtered = filterSharedHiveScopes(raw, 'ws1');
+    expect(filtered.map((s) => s.harness_slug)).toEqual(['real-pot']);
+  });
+
+  it('keeps real Pot scopes untouched (no over-filtering)', () => {
+    const raw = [scope('papercusp', 'papercusp'), scope('oddsmith-hive', 'oddsmith-hive')];
+    expect(filterSharedHiveScopes(raw, 'ws1')).toEqual(raw);
+  });
+
+  // FALSIFIABILITY CONTROL (tier 1 — a deliberately-wrong pre-fix implementation
+  // kept permanently in the test file, per the repo's mutation-probe discipline:
+  // proving this guard CAN fail must never mutate the shared tree). This is
+  // exactly `runSharedHiveLeg`'s shape BEFORE the EI-21051034011804969 fix — no
+  // filter at all, `rawScopes` used as-is.
+  it('the exclusion property actually rejects the pre-fix (unfiltered) implementation', () => {
+    const raw = [scope('operator:default'), scope('papercusp')];
+    const legacyUnfiltered = (rawScopes: RawSharedHiveScope[], _workspaceId: string): RawSharedHiveScope[] => rawScopes;
+    // The control keeps the phantom scope — reproducing the live false positive.
+    expect(legacyUnfiltered(raw, 'default').some((s) => s.harness_slug === 'operator:default')).toBe(true);
+    // The real function excludes it (calibration: the property is not vacuous).
+    expect(filterSharedHiveScopes(raw, 'default').some((s) => s.harness_slug === 'operator:default')).toBe(false);
   });
 });
 

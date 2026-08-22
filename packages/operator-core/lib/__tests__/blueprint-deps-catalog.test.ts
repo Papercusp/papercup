@@ -27,6 +27,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import {
@@ -106,6 +107,18 @@ const ABSTRACT_PARENTS = new Set(['base', 'single-agent']);
 // ─── assertions ──────────────────────────────────────────────────────────────
 
 describe('blueprint dependencies vs the static tool catalog', () => {
+  it('derivation includes the universal base prompt for a child blueprint', () => {
+    const script = join(REPO, 'scripts/derive-blueprint-deps.mjs');
+    const report = JSON.parse(execFileSync(process.execPath, [script], { encoding: 'utf8' })) as {
+      blueprints: Record<string, { personaFiles: string[]; candidates: { tools: string[] } }>;
+    };
+    const implement = report.blueprints.implement;
+    expect(implement.personaFiles).toContain(
+      'libs/papercusp/packages/harness/blueprints/base/prompts/worker.md',
+    );
+    expect(implement.candidates.tools).toContain('session:request-compaction');
+  });
+
   it('static catalog sanity — tool scan + unit scan found the real surface', () => {
     // ~300 defineTool files across the scanned dirs; >20 in-repo plugin manifests.
     expect(BUILTIN_TOOLS.size).toBeGreaterThan(100);
