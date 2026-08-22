@@ -6494,6 +6494,53 @@ export async function runGreenCheckpoint(
       return localQueue;
     }
   };
+  // EI-21149610271281506: frozen-repair dispatch can resolve a terminal RED before the
+  // ordinary red-path emitter below. Keep that short-circuit terminal path equivalent to
+  // the normal verdict: wake both red subscribers, retire the mutually-exclusive green
+  // waits, and clear the in-flight marker before the caller releases the run lock.
+  const emitTerminalRed = async (result: CheckpointResult): Promise<void> => {
+    const pipeline = pipelineName(cfg.integrationRoot);
+    const redSummary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+    const payload = {
+      sha: result.candidate,
+      from: result.from ?? null,
+      pipeline,
+      summary: result.summary ?? null,
+      failingTests: result.failingTests ?? [],
+      logPath: result.logPath ?? null,
+      runId: result.runId ?? deps.runId ?? null,
+      lineage: result.lineage ?? null,
+    };
+    const cancelSiblingKeysFor = [
+      "release:green",
+      `release:green:${pipeline}`,
+    ];
+    try {
+      await deps.emitEvent?.({
+        key: "green-checkpoint:red",
+        summary: redSummary,
+        payload,
+        cancelSiblingKeysFor,
+      });
+      await deps.emitEvent?.({
+        key: `green-checkpoint:red:${pipeline}`,
+        summary: redSummary,
+        payload,
+        cancelSiblingKeysFor,
+      });
+    } catch (error) {
+      deps.log(
+        `warn: green-checkpoint:red terminal emit failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    try {
+      await deps.clearInFlightCandidate?.();
+    } catch (error) {
+      deps.log(
+        `warn: terminal red in-flight marker clear failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  };
   if (deps.readFrozenRepairQueue) {
     try {
       repairQueue = await deps.readFrozenRepairQueue();
@@ -7354,7 +7401,7 @@ export async function runGreenCheckpoint(
             : `frozen repair queue ${repairQueue.candidate.slice(0, 8)} could not reserve its dispatch window; no fixer launch was attempted`;
           const redSummary = `${summary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
           stampPromotion(false, "not-green");
-          return {
+          const terminalResult: CheckpointResult = {
             advanced: false,
             candidate,
             from: lastReady,
@@ -7371,6 +7418,8 @@ export async function runGreenCheckpoint(
             ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
             ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
           };
+          await emitTerminalRed(terminalResult);
+          return terminalResult;
         }
         repairQueue = dispatch.queue ?? repairQueue;
         fired = dispatch.fired;
@@ -7386,7 +7435,7 @@ export async function runGreenCheckpoint(
         `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
         `from head ${repairQueue.repairHead.slice(0, 8)}. Moving-tip refire and backward prefix salvage were suppressed.`;
       stampPromotion(false, "not-green");
-      return {
+      const terminalResult: CheckpointResult = {
         advanced: false,
         candidate,
         from: lastReady,
@@ -7403,6 +7452,8 @@ export async function runGreenCheckpoint(
         ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
+      await emitTerminalRed(terminalResult);
+      return terminalResult;
     }
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
     // changed since the candidate" AND the one-line LINEAGE the owner flagged as the

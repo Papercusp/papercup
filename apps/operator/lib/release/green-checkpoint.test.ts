@@ -387,6 +387,62 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).not.toContain("runGreen");
   });
 
+  it("emits and cleans up a terminal red when frozen-repair reservation is blocked", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    const events: Record<
+      string,
+      { payload: unknown; cancelSiblingKeysFor?: string[] }
+    > = {};
+    deps.runId = "reservation-blocked-run";
+    deps.readFrozenRepairQueue = async () => null;
+    deps.writeFrozenRepairQueue = async () => {};
+    deps.reserveFrozenRepairFixer = async () => null;
+    deps.finalizeFrozenRepairFixer = async () => null;
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error("worktree must not be prepared without the reservation");
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error("fixer must not launch without the reservation");
+    };
+    deps.emitEvent = async ({ key, payload, cancelSiblingKeysFor }) => {
+      await Promise.resolve();
+      calls.push(`emit:${key}`);
+      events[key] = { payload, cancelSiblingKeysFor };
+    };
+    deps.clearInFlightCandidate = async () => {
+      calls.push("clearInFlightCandidate");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate: frozen,
+      noPush: true,
+    });
+
+    const pipeline = pipelineName(repo);
+    expect(result).toMatchObject({
+      advanced: false,
+      green: false,
+      reason: "not-green",
+      candidate: frozen,
+    });
+    expect((events["green-checkpoint:red"].payload as { sha: string }).sha).toBe(
+      frozen,
+    );
+    expect(
+      events[`green-checkpoint:red:${pipeline}`].cancelSiblingKeysFor,
+    ).toEqual(["release:green", `release:green:${pipeline}`]);
+    expect(calls).toEqual([
+      `setup:${frozen.slice(0, 7)}`,
+      "runGreen",
+      "emit:green-checkpoint:red",
+      `emit:green-checkpoint:red:${pipeline}`,
+      "clearInFlightCandidate",
+    ]);
+  });
+
   it("CAS-reserves the first-red queue so concurrent checkpoints launch exactly one fixer", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
