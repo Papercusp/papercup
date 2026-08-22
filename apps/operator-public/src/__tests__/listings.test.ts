@@ -110,6 +110,38 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect(await bk(none)).toBe(null);
   });
 
+  it('migration 015: a plan stores each rubric requirement once without shifting later columns', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 8, private: false, permissions: { admin: true } } });
+    const requiresRubrics = [
+      { rubricRef: 'quality-bar' },
+      { rubricRef: 'advisory', optional: true },
+    ];
+    const res = await publish(api, env, {
+      ...BLUEPRINT_BASE,
+      github_repository_id: 8,
+      listing_kind: 'plan',
+      listing_ref: 'quality-plan',
+      title: 'Quality Plan',
+      requires_rubrics: requiresRubrics,
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      review_status: string;
+      listing: Record<string, unknown>;
+    };
+    expect(JSON.parse(body.listing.requires_rubrics as string)).toEqual(requiresRubrics);
+    expect(body.review_status).toBe('pending');
+    expect(body.listing).toMatchObject({
+      hive_pubkey: null,
+      blueprint_kind: null,
+      review_status: 'pending',
+      delivery_type: null,
+    });
+    expect(store.tables.harnesses[0]).toMatchObject(body.listing);
+  });
+
   it('a project hosts N blueprints (1:N): two listing_refs on one repo both publish', async () => {
     const { env, store } = makeEnv();
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false } });
