@@ -1,6 +1,6 @@
 /**
  * harness-docs-e2e.integration.test.ts — the whole server-side harness-docs flow
- * end-to-end against REAL Postgres (migs 172 + 386) + a REAL fixture git repo, per
+ * end-to-end against REAL Postgres (migs 172 + 386 + 781) + a REAL fixture git repo, per
  * harness-docs-integration-2026-06-05 (P-011 server half; validates P-004/5/6/7).
  *
  * generated provenance → merged read → git-sync drift sweep (stale/review +
@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,22 +26,35 @@ const readMigration = (f: string) =>
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repo: '' }));
 
-vi.mock('@papercusp/db-org', async (orig) => {
-  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
+// Keep this fixture independent of db-org's generated-schema barrel. The docs flow only
+// needs getOrgPg; the bootstrap imported by operator-core also touches generated tables,
+// so provide inert table handles without materializing the unrelated schema namespace.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  const generated = new Proxy({}, { get: () => ({}) });
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    generated,
+    schemaOf: () => ({ select: {} }),
+  };
 });
-vi.mock('../../harness-registry', () => ({
-  loadHarnessRegistry: async () => ({ projects: [{ slug: 'demo', path: h.repo }] }),
-  // resolveHarnessRepoRoot (harness-repo.ts) resolves the content path through this since the
-  // repo-less-hive change (2026-06-19); a normal repo harness ⇒ its own path.
-  resolveHarnessContentPath: (
-    reg: { projects: Array<{ slug: string; path: string }> },
-    slug: string,
-  ) => reg.projects.find((p) => p.slug === slug)?.path,
-}));
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: async () => ({ projects: [{ slug: 'demo', path: h.repo }] }),
+    // resolveHarnessRepoRoot (harness-repo.ts) resolves the content path through this since the
+    // repo-less-hive change (2026-06-19); a normal repo harness ⇒ its own path.
+    resolveHarnessContentPath: (
+      reg: { projects: Array<{ slug: string; path: string }> },
+      slug: string,
+    ) => reg.projects.find((p) => p.slug === slug)?.path,
+  };
+});
 // The docs helpers now DERIVE the workspace from the harness (P-002/D-003); this fixture PG
-// has only mig 172 (no projects/registry table to resolve 'demo'), and the test asserts on
-// harness 'demo' regardless of workspace — pin the derive to one constant workspace so every
+// has no projects/registry table to resolve 'demo'), and the test asserts on harness 'demo'
+// regardless of workspace — pin the derive to one constant workspace so every
 // (workspace_id, harness_slug) read/write stays self-consistent.
 vi.mock('../workspace-for-harness', () => ({
   resolveWorkspaceForHarness: async (_h: string, ws?: string) => ws ?? 'default',
@@ -55,7 +68,7 @@ const { anchorManualDoc, verifyManualDoc } = await import('./manual-anchor');
 const { requestRegeneration } = await import('./regenerate');
 const { setDocOverlay, getDocRecord, deleteDocRecord } = await import('./doc-record');
 const { ingestHarnessDocs } = await import('./migrate-fs-docs');
-const { reconcileAllDocAnchors } = await import('./sweep-after-sync');
+const { reconcileAllDocAnchors, runDocFreshnessSweepAfterSync } = await import('./sweep-after-sync');
 const { runGit } = await import('./git-runner');
 
 let db: FreshPgDb;
@@ -75,6 +88,12 @@ beforeAll(async () => {
   // 386 adds the doc-steward retry counters (regen_attempts/reverify_attempts) the
   // sweep's mark/verify/setStatus helpers now write.
   await db.sql.unsafe(readMigration('386-harness-docs-steward-retry-attempts.sql')).simple();
+  // The throwaway fixture does not run the framework bootstrap that installs pgvector,
+  // while migration 781 declares harness_docs.embedding as vector(768).
+  await db.sql`CREATE EXTENSION IF NOT EXISTS vector`;
+  // 781 adds the canonical content/frontmatter columns that upsertDocRecord now writes
+  // (the metadata-only fixture previously failed with "column content does not exist").
+  await db.sql.unsafe(readMigration('781-doc-content-canonical.sql')).simple();
   h.sql = db.sql;
 
   repo = mkdtempSync(join(tmpdir(), 'docs-e2e-'));
@@ -271,5 +290,33 @@ describe('harness-docs full flow', () => {
     const r2 = await reconcileAllDocAnchors('demo');
     expect(r2.reconciled).toBe(0);
     expect(r2.failed).toBe(0);
+  });
+
+  it('retires the old tracking row when a doc is moved into an archive directory', async () => {
+    mkdirSync(join(repo, 'docs/archive'), { recursive: true });
+    writeFileSync(
+      join(repo, 'docs/guides/movable.md'),
+      '---\ntitle: Movable\ndocuments: src/setup.ts\n---\n# Movable\n',
+    );
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'add movable doc']);
+    await anchorManualDoc({ harnessSlug: 'demo', docId: 'guides/movable.md', verify: true });
+    const before = git(['rev-parse', 'HEAD']);
+
+    renameSync(join(repo, 'docs/guides/movable.md'), join(repo, 'docs/archive/movable.md'));
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'archive movable doc']);
+    const after = git(['rev-parse', 'HEAD']);
+
+    const sweep = await runDocFreshnessSweepAfterSync({
+      harnessSlug: 'demo',
+      workspaceId: 'default',
+      repoRoot: repo,
+      prevSha: before,
+      headSha: after,
+    });
+    expect(sweep).not.toBeNull();
+    expect(await getDocRecord('demo', 'guides/movable.md')).toBeNull();
+    expect((await getDocRecord('demo', 'archive/movable.md'))?.status).toBe('fresh');
   });
 });
