@@ -46,7 +46,16 @@ export interface DispatchArgs {
 export interface DispatchAssigned {
   planSlug: string;
   items: string[];
+  /** True only when every requested item was assigned successfully. */
   ok: boolean;
+  /** Number of items sent to the assignment leg. */
+  requested: number;
+  /** Number of per-item assignment results that succeeded. */
+  assigned: number;
+  /** Number of per-item assignment results that were refused or errored. */
+  failed: number;
+  /** A real partial assignment: at least one item landed and at least one did not. */
+  partial: boolean;
   /** Per-item assign results (assignment | refused | error) when the call ran. */
   results?: unknown[];
   /** Set when the whole assign leg threw (the lane was NOT assigned). */
@@ -221,17 +230,49 @@ export async function composeDispatch(
         itemIds: itemsToAssign,
         assignee: args.to,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as { ok?: boolean; results?: unknown[] } | undefined;
+      })) as {
+        ok?: boolean;
+        results?: unknown[];
+        counts?: { ok?: number; failed?: number };
+      } | undefined;
+      const requested = itemsToAssign.length;
+      const results = Array.isArray(env?.results) ? env.results : [];
+      const resultAssigned = results.filter(
+        (result) =>
+          typeof result === 'object' &&
+          result !== null &&
+          (result as { ok?: unknown }).ok === true,
+      ).length;
+      const resultFailed = results.length - resultAssigned;
+      // plan_items:assign uses the shared bulk contract: its top-level ok means
+      // only that the batch ran. The per-item counts are the assignment truth.
+      // Keep a result-derived fallback for older/partial envelopes so dispatch
+      // never reconstructs success from the execution-level `ok` alone.
+      const assignedCount =
+        typeof env?.counts?.ok === 'number' ? env.counts.ok : resultAssigned;
+      const failedCount =
+        typeof env?.counts?.failed === 'number'
+          ? env.counts.failed
+          : resultFailed + Math.max(requested - results.length, 0);
+      const allAssigned = assignedCount === requested && failedCount === 0;
       assigned = {
         planSlug: args.planSlug,
         items: itemsToAssign,
-        ok: env?.ok === true,
-        ...(Array.isArray(env?.results) ? { results: env!.results } : {}),
+        ok: env?.ok === true && allAssigned,
+        requested,
+        assigned: assignedCount,
+        failed: failedCount,
+        partial: assignedCount > 0 && failedCount > 0,
+        ...(results.length > 0 ? { results } : {}),
       };
     } catch (e) {
       assigned = {
         planSlug: args.planSlug,
         items: itemsToAssign,
+        requested: itemsToAssign.length,
+        assigned: 0,
+        failed: itemsToAssign.length,
+        partial: false,
         ok: false,
         error: e instanceof Error ? e.message : String(e),
       };
@@ -320,8 +361,19 @@ export async function composeDispatch(
   // EI-5957: a wake STAGES (never delivers) when the target is in MANUAL wake-mode.
   const staged = typeof wake.staged === 'number' ? wake.staged : 0;
 
+  // `plan_items:assign` is a bulk endpoint whose execution envelope is `ok:true`
+  // even when every per-item assignment was refused. A dispatch that delivered a
+  // note and woke the target still needs to report that no lane landed: the wake
+  // evidence remains authoritative, but the dispatch disposition must not read as
+  // a successful assignment.
+  const allRequestedAssignmentsFailed =
+    assigned !== null &&
+    assigned.requested > 0 &&
+    assigned.assigned === 0 &&
+    assigned.failed === assigned.requested;
+
   const result: DispatchResult = {
-    ok: r0.ok !== false,
+    ok: r0.ok !== false && !allRequestedAssignmentsFailed,
     to: resolvedTo,
     sessionState,
     wakeable,
@@ -346,6 +398,13 @@ export async function composeDispatch(
     result.warning =
       `coord:dispatch skipped ${skippedItems.length} of ${args.items?.length ?? 0} requested item(s) ` +
       `(not added to ${resolvedTo}'s lane): ${skippedItems.map((s) => `${s.item} (${s.reason})`).join('; ')}`;
+  }
+
+  if (allRequestedAssignmentsFailed && !result.warning) {
+    result.warning =
+      `coord:dispatch assigned 0 of ${assigned?.requested ?? 0} requested item(s) to ${resolvedTo}` +
+      ` (${assigned?.failed ?? 0} refused or errored); the note and wake still landed, but ` +
+      'the target has no durable lane from this dispatch.';
   }
 
   // 4. The loud miss (D-002 / the #1 confusion this plan fixes): a dispatch to a
@@ -384,12 +443,12 @@ export async function composeDispatch(
 export default defineTool({
   name: 'coord:dispatch',
   description:
-    'Hand a lane to a peer in ONE call: assign the plan items to `to` (durable lane) + deliver the `note` to its inbox (each assigned item\'s body inlined — WI-4165, so the receiver needn\'t re-fetch the plan) + WAKE it now, then report pickup ({ woken, delivered, sessionState, itemsHydrated }). Replaces hand-composing plan_items:assign + coord:send + events:emit + the coord:inbox-wake:<id> key. FLAGS a non-wakeable target: an `ended` sessionState (or recipient_dead) means the lane was assigned but no live process will pick it up until a relaunch — a loud miss, never a silent woken:0. `planSlug`+`items` are optional (omit for a pure directed wake).',
+    'One call assigns plan items to `to`, inlines their bodies, delivers `note`, wakes the target, and reports ({ assigned: { requested, assigned, failed, partial }, woken, delivered, sessionState, itemsHydrated }). All-refused assignment is `ok:false` with wake evidence preserved. Omit `planSlug`+`items` for a directed wake; ended/dead targets are loud misses requiring relaunch.',
   guidance: {
     when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + wakes + confirms. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
     notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
     chaining:
-      'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `woken`/`warning`. The woken target then orients, claims the lane, and works it.',
+      'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `assigned` counts plus `woken`/`warning`. An all-refused lane is `ok:false` even when the note/wake succeeded; the woken target then orients, claims any durable lane, and works it.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
