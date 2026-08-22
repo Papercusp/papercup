@@ -84,8 +84,10 @@ describe("/admin/triggers client", () => {
     expect(await screen.findByText("ext:gmail:message.*")).toBeTruthy();
     expect(screen.getByText("→ papercusp/triage-mail")).toBeTruthy();
     expect(
-      screen.getByRole("switch", { name: "Arm ext:gmail:message.*" }),
-    ).toHaveAttribute("aria-checked", "false");
+      screen
+        .getByRole("switch", { name: "Arm ext:gmail:message.*" })
+        .getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
   it("requires a human confirm and sends the server confirmation sentinel", async () => {
@@ -110,7 +112,8 @@ describe("/admin/triggers client", () => {
 
   it("deep-links to the sources view through nuqs state", async () => {
     renderClient("?view=sources");
-    expect(await screen.findByText("google-oauth:fixture")).toBeTruthy();
+    expect(await screen.findByText(/credential:\s*configured/)).toBeTruthy();
+    expect(screen.queryByText("google-oauth:fixture")).toBeNull();
     expect(screen.getByText("1 binding · 0 armed")).toBeTruthy();
   });
 
