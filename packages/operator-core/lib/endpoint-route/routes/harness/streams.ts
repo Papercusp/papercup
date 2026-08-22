@@ -74,6 +74,54 @@ export function capEntryText(e: AgentTimelineEntry): AgentTimelineEntry {
 }
 
 /**
+ * Split a byte snapshot of an append-only JSONL file at record boundaries.
+ *
+ * The writer can be in the middle of appending the final record when the
+ * reader stats and reads the file.  Parsing that trailing fragment is safe
+ * only as a best-effort display operation; advancing the follow cursor past
+ * it is not safe because the parser drops the fragment and the next poll
+ * would start after the completed record.  Keep the fragment out of the
+ * parsed prefix and return the absolute cursor just after the last newline.
+ *
+ * When a bounded tail starts in the middle of a record, discard that first
+ * partial record from the parsed prefix just as the caller did previously.
+ * The cursor still uses the absolute byte offset, so a later follow begins
+ * at the exact boundary represented by the snapshot.
+ * Pure — exported for regression tests.
+ */
+export function splitCompleteJsonlSnapshot(
+  snapshot: Uint8Array,
+  startOffset = 0,
+): {
+  complete: Buffer;
+  trailing: Buffer;
+  cursor: number;
+  snapshotEnd: number;
+} {
+  const bytes = Buffer.from(snapshot);
+  const snapshotEnd = startOffset + bytes.length;
+  const lastNewline = bytes.lastIndexOf(0x0a);
+  if (lastNewline < 0) {
+    return {
+      complete: Buffer.alloc(0),
+      trailing: bytes,
+      cursor: startOffset,
+      snapshotEnd,
+    };
+  }
+
+  const firstNewline = startOffset > 0 ? bytes.indexOf(0x0a) : -1;
+  const completeStart = firstNewline >= 0 ? firstNewline + 1 : 0;
+  const completeEnd = lastNewline + 1;
+  return {
+    complete: bytes.subarray(completeStart, completeEnd),
+    trailing: bytes.subarray(completeEnd),
+    cursor: startOffset + completeEnd,
+    snapshotEnd,
+  };
+}
+
+/**
  * The harness Run-view stream crosses the desktop IPC boundary as individual
  * SSE frames. Keep raw-log frames small enough that a large tail or a burst of
  * log-bus lines cannot make the webview/parser retain one enormous message.
@@ -1307,12 +1355,10 @@ const sessionThinkingStream = defineTool({
             const len = stat.size - start;
             const buf = Buffer.alloc(len);
             const fd = openSync(p, 'r');
-            try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
-            let chunk = buf.toString('utf8');
-            if (start > 0) {
-              const firstNl = chunk.indexOf('\n');
-              if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
-            }
+            let bytesRead = 0;
+            try { bytesRead = readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+            const snapshot = splitCompleteJsonlSnapshot(buf.subarray(0, bytesRead), start);
+            const chunk = snapshot.complete.toString('utf8');
             const parser = source.newParser();
             const entries: AgentTimelineEntry[] = [];
             for (const rawLine of chunk.split('\n')) {
@@ -1323,7 +1369,10 @@ const sessionThinkingStream = defineTool({
             entries.push(...parser.flush());
             const capped = (entries.length > 200 ? entries.slice(-200) : entries).map(capEntryText);
             sink.event('backfill', capped);
-            pos = stat.size;
+            // Do not advance past a record whose newline was not in the
+            // snapshot. The live follow will reread that record and combine
+            // it with the bytes appended by the writer on a later poll.
+            pos = snapshot.cursor;
             return Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
           } catch {
             sink.event('backfill', []);
@@ -1350,6 +1399,7 @@ const sessionThinkingStream = defineTool({
             const chunk = Buffer.alloc(1024 * 1024);
             let lineRest = '';
             let offset = 0;
+            let lastCompleteOffset = 0;
             // WI-6512: this loop used to use the SYNCHRONOUS fs (openSync/readSync),
             // which blocks Node's single event loop thread for the ENTIRE scan — and a
             // deep-link anchor search streams the WHOLE transcript up to (and a bit past)
@@ -1365,10 +1415,16 @@ const sessionThinkingStream = defineTool({
             const fh = await openFileAsync(p, 'r');
             try {
               while (offset < stat.size && !collector.done) {
+                const chunkStart = offset;
                 const { bytesRead: n } = await fh.read(chunk, 0, chunk.length, offset);
                 if (n <= 0) break;
                 offset += n;
-                lineRest += decoder.write(chunk.subarray(0, n));
+                const rawChunk = chunk.subarray(0, n);
+                lastCompleteOffset = Math.max(
+                  lastCompleteOffset,
+                  splitCompleteJsonlSnapshot(rawChunk, chunkStart).cursor,
+                );
+                lineRest += decoder.write(rawChunk);
                 let nl: number;
                 while ((nl = lineRest.indexOf('\n')) !== -1 && !collector.done) {
                   const line = lineRest.slice(0, nl).trim();
@@ -1378,9 +1434,19 @@ const sessionThinkingStream = defineTool({
                 }
               }
               if (!collector.done) {
-                const last = (lineRest + decoder.end()).trim();
-                if (last) for (const e of parser.parseLine(last)) collector.push(e);
+                // The decoder remainder is a live, incomplete record. Keep it
+                // out of the parser; the follow tick will read it again from
+                // lastCompleteOffset after the writer appends its newline.
+                lineRest += decoder.end();
                 for (const e of parser.flush()) collector.push(e);
+              } else {
+                // Anchored views intentionally skip the records after the
+                // selected window. Preserve only an incomplete record from the
+                // bytes already read so its eventual completion is not lost,
+                // while keeping the cursor at the read high-water mark.
+                lineRest += decoder.end();
+                const lastNewline = lineRest.lastIndexOf('\n');
+                lineBuf = lastNewline >= 0 ? lineRest.slice(lastNewline + 1) : lineRest;
               }
             } finally {
               await fh.close();
@@ -1397,7 +1463,7 @@ const sessionThinkingStream = defineTool({
             sink.event('anchor', { found: true, index: res.anchorIndex });
             // Live-follow continues from EOF: entries between the window and
             // the file end are elided from the pane (it is a jumped-to view).
-            pos = stat.size;
+            pos = collector.done ? offset : lastCompleteOffset;
             return Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
           } catch {
             sink.event('backfill', []);
@@ -1465,11 +1531,19 @@ const sessionThinkingStream = defineTool({
         if (path) {
           const served = await backfillFromDb({ fileAvailable: true });
           if (served) {
-            // Seed the follow cursor at EOF so the live tail resumes cleanly
-            // from wherever the DB history ended (D-003).
+            // Seed the follow cursor at the last complete JSONL boundary, not
+            // blindly at EOF. The DB history is complete, but the live file
+            // can still end in a record that is being appended right now.
             try {
               const st = statSync(path);
-              pos = st.size;
+              const tailBytes = 1024 * 1024;
+              const start = Math.max(0, st.size - tailBytes);
+              const len = st.size - start;
+              const buf = Buffer.alloc(len);
+              const fd = openSync(path, 'r');
+              let bytesRead = 0;
+              try { bytesRead = readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+              pos = splitCompleteJsonlSnapshot(buf.subarray(0, bytesRead), start).cursor;
               emitThinking(Date.now() - st.mtimeMs < SESSION_THINKING_ACTIVE_MS);
             } catch {
               emitThinking(false);

@@ -16,6 +16,7 @@ import {
   slimFeaturesForStream,
   featureStateForStream,
   featuresForStreamEvent,
+  splitCompleteJsonlSnapshot,
   HARNESS_STREAM_LOG_BATCH_BYTES,
   HARNESS_STREAM_LOG_BATCH_LINES,
   HARNESS_STREAM_FEATURE_TEXT_CAP,
@@ -99,6 +100,34 @@ describe('harness Run-view stream framing', () => {
     expect(JSON.stringify(slimFeaturesForStream(features)).length)
       .toBeGreaterThan(HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES);
     expect(featuresForStreamEvent(features)).toEqual(featureStateForStream(features));
+  });
+});
+
+describe('live JSONL snapshot framing', () => {
+  it('excludes an incomplete tail and seeds follow at the last complete byte', () => {
+    const complete = `${JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'ready' } })}\n`;
+    const incomplete = '{"type":"event_msg","payload":{"type":"agent_message","message":"still writing';
+    const snapshot = splitCompleteJsonlSnapshot(Buffer.from(complete + incomplete));
+
+    expect(snapshot.complete.toString('utf8')).toBe(complete);
+    expect(snapshot.trailing.toString('utf8')).toBe(incomplete);
+    expect(snapshot.cursor).toBe(Buffer.byteLength(complete));
+    expect(snapshot.snapshotEnd).toBe(Buffer.byteLength(complete + incomplete));
+  });
+
+  it('keeps the cursor absolute when a bounded tail starts mid-record', () => {
+    const prefix = '{"discarded":true}\n';
+    const complete = `${JSON.stringify({ type: 'compacted', payload: {} })}\n`;
+    const incomplete = '{"type":"compacted"';
+    const start = prefix.length - 4;
+    const snapshot = splitCompleteJsonlSnapshot(
+      Buffer.from(`${prefix.slice(start)}${complete}${incomplete}`),
+      start,
+    );
+
+    expect(snapshot.complete.toString('utf8')).toBe(complete);
+    expect(snapshot.trailing.toString('utf8')).toBe(incomplete);
+    expect(snapshot.cursor).toBe(start + Buffer.byteLength(prefix.slice(start) + complete));
   });
 });
 
