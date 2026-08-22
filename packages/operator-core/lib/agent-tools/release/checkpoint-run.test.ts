@@ -1069,6 +1069,62 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(String(b.note)).toMatch(/force:true does not bypass/);
   });
 
+  it('EI-211596: preserves the ordinary frozen-repair source on the transported receipt', async () => {
+    vi.doMock('../../release/checkpoint-required-ancestor', async (orig) => ({
+      ...(await orig()),
+      assessFrozenRepairQueuePreflight: vi.fn(async () => ({
+        proceed: true,
+        reason: 'clear' as const,
+        candidate: QUEUE_HEAD,
+        candidateSource: 'frozen-repair-queue' as const,
+        repairQueue: null,
+        queueDecision: 'verify-repair' as const,
+        nextAttempt: null,
+        fixerSpawnId: null,
+        fixerAlive: false,
+      })),
+    }));
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/x.log',
+      willJudge: {
+        candidate: CURRENT,
+        tip: CURRENT,
+        quietCutApplied: false,
+        quietCutSec: 240,
+        excludedCommits: [],
+        excludedPaths: [],
+        excludedEligibility: [],
+        soonestEligibleInSec: null,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(launchSpy).toHaveBeenCalledWith({ candidate: QUEUE_HEAD });
+    expect(b).toMatchObject({
+      ok: true,
+      willJudge: {
+        candidate: QUEUE_HEAD,
+        candidateSource: 'frozen-repair-queue',
+      },
+      candidateBinding: {
+        status: 'exact-transported',
+        transportedCandidate: QUEUE_HEAD,
+        actualCandidate: QUEUE_HEAD,
+      },
+    });
+  });
+
   it('fails closed with the live fixer identity when the queue is waiting for a fixer', async () => {
     mockQueue(awaitingFixerQueue({ fixerSpawnId: 's-live' }), true);
     const launchSpy = vi.fn();

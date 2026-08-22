@@ -1045,7 +1045,10 @@ export default defineTool({
       ? {
           ...result.willJudge,
           candidate: transportedCandidateSha,
-          candidateSource: requiredAncestorPreflight?.candidateSource ?? 'current-quiet-cut',
+          candidateSource:
+            requiredAncestorPreflight?.candidateSource ??
+            frozenRepairQueuePreflight?.candidateSource ??
+            'current-quiet-cut',
         }
       : null;
     const containment = result.launched
