@@ -49,7 +49,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   });
 
   it('honestly documents the default (shared-DB) mode', () => {
-    expect(src).toMatch(/\*\*NOT\*\* ISOLATED: the DATABASE, the WORKSPACE/);
+    expect(src).toMatch(/\*\*NOT\*\* ISOLATED: the DATABASE, the WORKSPACE, and the WebView profile/);
     expect(src).toContain('EVERY WRITE YOU MAKE IN THIS WINDOW IS A REAL WRITE TO LIVE STATE');
   });
 
