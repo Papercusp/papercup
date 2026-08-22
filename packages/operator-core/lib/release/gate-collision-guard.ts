@@ -53,7 +53,8 @@ import { promisify } from 'node:util';
 import type { StoredInFlightRetriage } from './in-flight-retriage';
 import { RESTART_TARGET_UNITS } from '../agent-tools/dev/restart-target-units';
 
-const execFileAsync = promisify(execFile);
+let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
+const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) as any)(...args);
 
 /**
  * The restart targets whose blast radius overlaps a green-checkpoint run's dependencies.
@@ -189,7 +190,7 @@ function defaultReadProcessCgroup(pid: number): string | null {
 }
 
 async function defaultReadTargetCgroup(target: GateSensitiveTarget): Promise<string | null> {
-  const { stdout } = await execFileAsync(
+  const { stdout } = await runExecFile(
     'systemctl',
     ['--user', 'show', RESTART_TARGET_UNITS[target], '-p', 'ControlGroup', '--value'],
     { timeout: 3_000 },

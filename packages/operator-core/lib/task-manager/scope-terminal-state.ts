@@ -25,7 +25,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
+let execFileAsyncImpl: ((...args: any[]) => Promise<any>) | undefined;
+const execFileAsync = (...args: any[]) => (execFileAsyncImpl ??= promisify(execFile) as any)(...args);
 
 /** Injectable for tests — same shape `node:util`'s promisified `execFile` returns. */
 export type ExecFileFn = (

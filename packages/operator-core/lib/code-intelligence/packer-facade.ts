@@ -65,7 +65,8 @@ import {
   type SymbolSite,
 } from './contracts.ts';
 
-const execFileAsync = promisify(execFile);
+let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
+const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) as any)(...args);
 
 // ───────────────────────── pinned engines ─────────────────────────
 
@@ -527,7 +528,7 @@ export interface ExecOpts {
 export type ExecFn = (bin: string, argv: readonly string[], opts?: ExecOpts) => Promise<{ stdout: string }>;
 
 const defaultExec: ExecFn = async (bin, argv, opts) => {
-  const { stdout } = await execFileAsync(bin, [...argv], {
+  const { stdout } = await runExecFile(bin, [...argv], {
     cwd: opts?.cwd,
     timeout: opts?.timeoutMs ?? 180_000,
     maxBuffer: opts?.maxBuffer ?? MAX_PACK_BYTES,

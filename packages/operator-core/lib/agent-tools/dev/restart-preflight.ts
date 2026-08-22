@@ -27,13 +27,14 @@ import { promisify } from 'node:util';
 import { preflightTreeAt, type TreeIntegrityResult } from '../../boot-integrity-preflight';
 import { RESTART_TARGET_UNITS, type RestartTargetName } from './restart-target-units';
 
-const run = promisify(execFile);
+let run: ((...args: any[]) => Promise<any>) | undefined;
+const execFileP = (...args: any[]) => (run ??= promisify(execFile) as any)(...args);
 
 /** Reads one systemd unit property. Injectable so tests never shell out. */
 export type UnitPropertyReader = (unit: string, property: string) => Promise<string>;
 
 const defaultReadUnitProperty: UnitPropertyReader = async (unit, property) => {
-  const { stdout } = await run('systemctl', ['--user', 'show', unit, '-p', property, '--value'], { timeout: 3000 });
+  const { stdout } = await execFileP('systemctl', ['--user', 'show', unit, '-p', property, '--value'], { timeout: 3000 });
   return stdout.trim();
 };
 

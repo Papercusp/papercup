@@ -16,7 +16,8 @@ import { basename, extname } from 'node:path';
 import { promisify } from 'node:util';
 import { createTextCollector } from '../child-output.js';
 
-const execFileP = promisify(execFile);
+let execFilePImpl: ((...args: any[]) => Promise<any>) | undefined;
+const execFileP = (...args: any[]) => (execFilePImpl ??= promisify(execFile) as any)(...args);
 
 const COMMAND_TIMEOUT_MS = 15_000;
 const TREE_TIMEOUT_MS = 20_000;

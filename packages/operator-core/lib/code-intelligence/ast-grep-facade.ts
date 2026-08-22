@@ -73,7 +73,8 @@ import {
   type SymbolSite,
 } from './contracts.ts';
 
-const execFileAsync = promisify(execFile);
+let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
+const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) as any)(...args);
 
 /** The pinned vendor root. Provisioned by P-014, never installed at runtime. */
 export const AST_GREP_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'ast-grep');
@@ -135,7 +136,7 @@ export async function astGrepIdentity(): Promise<
     };
   }
   try {
-    const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 10_000 });
+    const { stdout } = await runExecFile(bin, ['--version'], { timeout: 10_000 });
     const verdict = assertIsAstGrep(stdout);
     return verdict.ok ? { ok: true, identity: { bin, version: verdict.version } } : verdict;
   } catch (err) {
@@ -315,7 +316,7 @@ export async function astGrepFacade(op: AstGrepOp, args: AstGrepArgs): Promise<C
   if (!id.ok) return refusal(intent, query, id.reason, started);
 
   try {
-    const { stdout } = await execFileAsync(id.identity.bin, buildAstGrepArgs(args, op), {
+    const { stdout } = await runExecFile(id.identity.bin, buildAstGrepArgs(args, op), {
       cwd: args.rootPath,
       timeout: 60_000,
       maxBuffer: 32 * 1024 * 1024,

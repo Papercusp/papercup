@@ -15,12 +15,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const pexec = promisify(execFile);
+let pexec: ((...args: any[]) => Promise<any>) | undefined;
+const runExecFile = (...args: any[]) => (pexec ??= promisify(execFile) as any)(...args);
 
 /** Best-effort current checkout HEAD resolver shared by boot and refresh reads. */
 export async function resolveCurrentHeadCommit(): Promise<string | null> {
   try {
-    const { stdout } = await pexec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 });
+    const { stdout } = await runExecFile('git', ['rev-parse', 'HEAD'], { timeout: 5_000 });
     const sha = stdout.trim();
     return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
   } catch {

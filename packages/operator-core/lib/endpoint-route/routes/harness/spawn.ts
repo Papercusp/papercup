@@ -710,7 +710,7 @@ const invoke = defineTool({
               // pid, so boot/reclaim liveness remains truthful across the
               // handoff (EI-20981156698708733).
               onChildPid: (pid: number) => {
-                void import('../../../fleet/spawn-reclaim')
+                void trackDetached(import('../../../fleet/spawn-reclaim'))
                   .then(({ recordSpawnPid }) => recordSpawnPid(getOrgPg().sql, spawnRecordId, pid, { handoff: true }))
                   .catch((error) => {
                     console.warn(
