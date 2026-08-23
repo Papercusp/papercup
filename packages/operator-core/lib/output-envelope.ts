@@ -43,7 +43,7 @@ export type OutputEvidenceClass = (typeof OUTPUT_EVIDENCE_CLASSES)[number];
 /** A directly addressable view into one payload that the result door stored
  * once. Several evidence references may share a URI; `evidenceClass` selects
  * the relevant JSON values through capability:read without duplicating bytes. */
-export interface OutputEvidenceReferenceContentItem extends OutputReferenceContentItem {
+export interface OutputEvidenceReferenceContentItem extends Omit<OutputReferenceContentItem, 'kind'> {
   kind: 'evidence-reference';
   evidenceClass: OutputEvidenceClass;
 }
