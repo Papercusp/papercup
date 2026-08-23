@@ -14,6 +14,12 @@
  *     enter `scheduler:get_next`; `actionable` feeds boards, warnings and a
  *     report-only watchdog, and a human or parent-goal decision does the rest.
  *
+ * A goal may also be blocked by a PLAN (work-on-everything-goal-2026-08-23 D-004,
+ * P-019): refs are written `plan:<slug>` / `plan:<harness>/<slug>`, and the same
+ * satisfying/invalidating split applies — shipped satisfies, superseded invalidates
+ * the premise. The `plan:` prefix is required because a bare plan slug is
+ * shape-indistinguishable from a goal id.
+ *
  * ONE HOME FOR BOTH PACKAGES. The helpers take a `GoalSqlTag` (the structural
  * tagged-template type `insertGoalRow` already uses), so the agent-mcp tools
  * pass `ctx.tx` (transactional with the goal row write) and operator-core
@@ -98,7 +104,7 @@ export function classifyGoalBlockerRef(ref: string): GoalBlockerEndpoint {
 
 /**
  * All goal blocked-by edges in a workspace: blocked goal id → its blocker
- * endpoints (goal AND issue kinds). One query — goal cardinality is tiny, and
+ * endpoints (goal, issue AND plan kinds). One query — goal cardinality is tiny, and
  * cycle checks need the whole goal graph anyway (D-006: derived on read, no
  * maintained readiness column).
  */
@@ -134,8 +140,10 @@ export async function readGoalBlockedByEdges(
 }
 
 /** The goal→goal projection of the edge map — the graph the acyclicity guard runs over.
- *  Issue blockers cannot participate in a goal cycle (nothing blocks an issue on a goal in v1),
- *  so they are excluded rather than fed to the cycle check as phantom nodes. */
+ *  Issue and PLAN blockers cannot participate in a goal cycle (nothing blocks an issue or a
+ *  plan on a goal in v1), so they are excluded rather than fed to the cycle check as phantom
+ *  nodes. The filter is by GOAL_DEP_KIND, so a new blocker kind is excluded by default — it
+ *  must be added deliberately, never joining the cycle graph by omission. */
 export function goalToGoalGraph(
   edges: ReadonlyMap<string, readonly GoalBlockerEndpoint[]>,
 ): Map<string, string[]> {
@@ -275,13 +283,13 @@ export function goalReadiness(
  * beats satisfied (0). Derived from `goalBlockerVerdict` rather than restated, so
  * the ordering cannot drift from the policy it ranks.
  */
-function planStatusSeverity(status: string): number {
+export function planStatusSeverity(status: string): number {
   const verdict = goalBlockerVerdict(PLAN_DEP_KIND, status);
   return verdict === 'invalidating' ? 2 : verdict === 'pending' ? 1 : 0;
 }
 
 /** Split a plan ref into its optional harness qualifier and slug (D-004). */
-function parsePlanRef(ref: string): { ref: string; harness: string | null; slug: string } {
+export function parsePlanRef(ref: string): { ref: string; harness: string | null; slug: string } {
   const i = ref.indexOf('/');
   return i < 0
     ? { ref, harness: null, slug: ref }
@@ -361,7 +369,10 @@ export async function applyGoalBlockedBy(
   opts: {
     workspaceId: string;
     goalId: string;
-    /** Caller-supplied refs — goal ids and/or bare WI-/EI- issue ids. */
+    /**
+     * Caller-supplied refs — goal ids, bare `WI-`/`EI-` issue ids, and/or
+     * `plan:<slug>` / `plan:<harness>/<slug>` plan refs (P-019/D-004).
+     */
     refs: readonly string[];
     createdBy?: string | null;
   },
@@ -374,8 +385,11 @@ export async function applyGoalBlockedBy(
       ok: false,
       problem:
         `blockedBy refs do not resolve: ${unresolved.map((b) => b.ref).join(', ')} — a goal id must ` +
-        'match harness_shared.goals in this workspace and an issue ref must be a bare existing ' +
-        'WI-/EI- id. An unresolvable blocker would read as permanently satisfied (silently inert), ' +
+        'match harness_shared.goals in this workspace, an issue ref must be a bare existing ' +
+        'WI-/EI- id, and a plan ref must be written `plan:<slug>` (or `plan:<harness>/<slug>`) ' +
+        'and match harness_shared.harness_plans in this workspace. Note a plan slug written ' +
+        'WITHOUT the `plan:` prefix is classified as a goal id — that is the usual cause of this ' +
+        'message. An unresolvable blocker would read as permanently satisfied (silently inert), ' +
         'so it is refused rather than recorded.',
     };
   }

@@ -69,6 +69,7 @@ import {
   blockerStatusKey,
   readGoalBlockedByEdges,
   resolveBlockerStatuses,
+  type GoalBlockerEndpoint,
   type GoalBlockerView,
   type GoalReadiness,
 } from '@papercusp/agent-mcp/goal-deps';
@@ -426,7 +427,10 @@ function makeReadReadiness(sql: Sql): GoalLivenessSweepDeps['readReadiness'] {
         const withEdges = wsGoals.filter((g) => (edges.get(g.goalId) ?? []).length > 0);
         if (withEdges.length === 0) continue;
         // One status resolve over the union — goal cardinality is tiny (D-006).
-        const union = new Map<string, { kind: 'goal' | 'issue'; ref: string }>();
+        // Use the shared endpoint type, never a hand-narrowed copy of its `kind`
+        // union: restating it here is what stranded this call site when the plan
+        // kind was added (P-019), and the next kind would strand it again.
+        const union = new Map<string, GoalBlockerEndpoint>();
         for (const g of withEdges) {
           for (const b of edges.get(g.goalId) ?? []) union.set(blockerStatusKey(b), b);
         }
