@@ -13,13 +13,16 @@ import {
   CAPABILITY_SANDBOX_TMPDIR,
   BASH_TEST_MEMORY_MAX_BYTES,
   BASH_TEST_TASKS_MAX,
+  capturePreflightAttributionSnapshot,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
+  detectPreflightFailureMarker,
   INLINE_OUTPUT_CAP,
   JOB_LOG_END_MARKER_PREFIX,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
+  PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX,
   STREAM_LINE_OUTPUT_CAP,
   STREAM_LINE_TRUNCATION_MARKER,
   __resetBashJobs,
@@ -28,6 +31,7 @@ import {
   detectBufferingLastStage,
   detectMissingCommandDiagnostic,
   formatBufferingPipelineAdvice,
+  formatPreflightAttributionSnapshot,
   formatJobLogEndMarker,
   getJob,
   isBackgroundTestCommand,
@@ -567,6 +571,75 @@ describe('terminal log marker (EI-18764990059061608)', () => {
     const logContent = readFileSync(r.logPath, 'utf8');
     expect(logContent).toContain(JOB_LOG_END_MARKER_PREFIX);
     expect(logContent).toContain('status=completed');
+  });
+});
+
+describe('preflight attribution snapshot (EI-21257218038249358)', () => {
+  it('detects only the generic uppercase preflight-failure marker', () => {
+    expect(detectPreflightFailureMarker('WI40905_PREFLIGHT_FAIL load1=93.20')).toBe('WI40905_PREFLIGHT_FAIL');
+    expect(detectPreflightFailureMarker('preflight failed: load1=93.20')).toBeNull();
+  });
+
+  it('formats bounded current proc/cgroup evidence and redacts command arguments', () => {
+    const cgroupPath = '/user.slice/papercusp.slice/pc-test.scope';
+    const cgroupDir = `/sys/fs/cgroup${cgroupPath}`;
+    const files: Record<string, string> = {
+      '/proc/loadavg': '93.20 81.00 70.00 12/3000 42\n',
+      '/proc/pressure/cpu': 'some avg10=12.34 avg60=9.87 avg300=4.56 total=123\n',
+      [`${cgroupDir}/cgroup.procs`]: '42\n43\n',
+      [`${cgroupDir}/memory.current`]: '4096\n',
+      [`${cgroupDir}/memory.peak`]: '8192\n',
+      [`${cgroupDir}/cpu.stat`]: 'usage_usec 123456\n',
+      [`${cgroupDir}/pids.current`]: '2\n',
+      '/proc/42/cmdline': '/usr/bin/node\0--token=do-not-persist\0',
+      '/proc/42/stat': '42 (node) S 1 0 0 0 0 0 0 0 0 0 20 5\n',
+      '/proc/42/cgroup': `0::${cgroupPath}\n`,
+      '/proc/43/cmdline': '/bin/bash\0-w\0',
+      '/proc/43/stat': '43 (bash) S 1 0 0 0 0 0 0 0 0 0 3 1\n',
+      '/proc/43/cgroup': `0::${cgroupPath}\n`,
+    };
+    const snapshot = capturePreflightAttributionSnapshot({
+      marker: 'WI40905_PREFLIGHT_FAIL',
+      pid: 42,
+      jobCgroupPath: cgroupPath,
+      now: () => Date.UTC(2026, 7, 23, 19, 6, 40),
+      readText: (path) => files[path] ?? null,
+      readDir: (path) => (path === '/proc' ? ['42', '43', '44'] : []),
+      redactValues: ['do-not-persist'],
+    });
+    const rendered = formatPreflightAttributionSnapshot(snapshot);
+
+    expect(rendered).toContain(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX);
+    expect(rendered).toContain('basis=current-best-effort');
+    expect(rendered).toContain('NOT historical attribution');
+    expect(rendered).toContain('loadavg=93.20 81.00 70.00 12/3000 42');
+    expect(rendered).toContain('memory.current=4096');
+    expect(rendered).toContain('cpu.usage_usec=123456');
+    expect(rendered).toContain('pid=42');
+    expect(rendered).toContain('[REDACTED]');
+    expect(rendered).not.toContain('do-not-persist');
+  });
+
+  it('writes the snapshot before JOB END without changing returned command output', async () => {
+    const job = startBackground(
+      {
+        command: "printf '%s\\n' 'WI40905_PREFLIGHT_FAIL load1=93.20 exceeds 77'",
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      10_000,
+    );
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+    const output = readJobOutput(final);
+    const logContent = readFileSync(final.logPath, 'utf8');
+    const snapshotAt = logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX);
+    const endAt = logContent.indexOf(JOB_LOG_END_MARKER_PREFIX);
+
+    expect(output).toContain('WI40905_PREFLIGHT_FAIL load1=93.20 exceeds 77');
+    expect(snapshotAt).toBeGreaterThanOrEqual(0);
+    expect(endAt).toBeGreaterThan(snapshotAt);
+    expect(logContent.slice(snapshotAt, endAt)).toContain('current-best-effort');
   });
 });
 

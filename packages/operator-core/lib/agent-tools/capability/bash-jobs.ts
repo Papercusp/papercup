@@ -21,12 +21,21 @@
  */
 
 import { execFile, spawn as childSpawn, type ChildProcess } from 'node:child_process';
-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, readdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { buildCapabilitySandboxCommand, scrubExecEnv } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
+import {
+  absCgroupDir,
+  CGROUP_ROOT,
+  parseCgroupInt,
+  parseCgroupProcs,
+  parseCpuStatUsageUsec,
+  parseProcCgroup,
+  parseProcCmdline,
+} from '../../task-manager/cgroup-read';
 import {
   beginSyncEnrolment,
   completeSyncEnrolment,
@@ -154,6 +163,247 @@ const MAX_RETAINED_JOBS = 64;
  * `queued-while-killed` deadline test.
  */
 export const PC_HEAVY_SLOT_ACQUIRED_MARKER = '[pc-heavy] slot acquired — starting real work';
+
+/**
+ * A generic preflight failure marker. Managed witness commands are often inline
+ * capability:bash payloads rather than checked-in repository scripts, so the
+ * shared background seam cannot know their marker names ahead of time. Keep the
+ * match deliberately narrow: an uppercase marker ending in `_PREFLIGHT_FAIL`,
+ * such as `WI40905_PREFLIGHT_FAIL`, is an authenticated-enough signal to add
+ * diagnostic context; ordinary prose containing "preflight failed" is not.
+ */
+const PREFLIGHT_FAILURE_MARKER_RE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_PREFLIGHT_FAIL\b/;
+const PREFLIGHT_FAILURE_SCAN_TAIL = 128;
+
+export const PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX = '[capability:bash] PREFLIGHT ATTRIBUTION SNAPSHOT';
+const PREFLIGHT_SNAPSHOT_MAX_PROCESSES = 16;
+const PREFLIGHT_SNAPSHOT_MAX_PROCESS_SCAN = 128;
+const PREFLIGHT_SNAPSHOT_MAX_CMDLINE = 240;
+const PREFLIGHT_SNAPSHOT_MAX_FIELD = 600;
+
+/** Find the marker that should trigger a live attribution snapshot. */
+export function detectPreflightFailureMarker(output: string): string | null {
+  return PREFLIGHT_FAILURE_MARKER_RE.exec(output)?.[0] ?? null;
+}
+
+/**
+ * Chunk-boundary-safe detector for generic preflight markers. The detector keeps
+ * only a small suffix, so a pathological command cannot make the registry retain
+ * its entire output a second time merely to recognize one marker.
+ */
+function createPreflightFailureMarkerDetector(): {
+  push: (chunk: string) => string | null;
+  seen: () => string | null;
+} {
+  let suffix = '';
+  let marker: string | null = null;
+  return {
+    push(chunk: string): string | null {
+      if (marker || !chunk) return marker;
+      const candidate = suffix + chunk;
+      marker = detectPreflightFailureMarker(candidate);
+      suffix = candidate.slice(-PREFLIGHT_FAILURE_SCAN_TAIL);
+      return marker;
+    },
+    seen: () => marker,
+  };
+}
+
+export interface PreflightAttributionProcess {
+  pid: number;
+  /** Lifetime CPU ticks from `/proc/<pid>/stat`; not an instantaneous rate. */
+  cpuTicks: number | null;
+  cgroupPath: string | null;
+  command: string;
+}
+
+export interface PreflightAttributionSnapshot {
+  marker: string;
+  capturedAt: string;
+  /** Host-wide, because `/proc/loadavg` is not cgroup-scoped. */
+  loadavg: string | null;
+  cpuPressure: string | null;
+  jobCgroupPath: string | null;
+  jobCgroup: {
+    memoryCurrent: number | null;
+    memoryPeak: number | null;
+    cpuUsageUsec: number | null;
+    pidsCurrent: number | null;
+    pids: number[];
+  } | null;
+  /** A bounded sample, sorted by lifetime CPU ticks when available. */
+  processes: PreflightAttributionProcess[];
+  scannedProcessCount: number;
+  omittedProcessCount: number;
+}
+
+export interface PreflightAttributionCaptureOptions {
+  marker: string;
+  pid?: number | null;
+  /** Prefer the task-manager path: the child may exit before the close handler. */
+  jobCgroupPath?: string | null;
+  now?: () => number;
+  procRoot?: string;
+  cgroupRoot?: string;
+  readText?: (path: string) => string | null;
+  readDir?: (path: string) => string[];
+  redactValues?: readonly string[];
+}
+
+function defaultReadText(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function defaultReadDir(path: string): string[] {
+  try {
+    return readdirSync(path);
+  } catch {
+    return [];
+  }
+}
+
+function finiteNonNegativeNumber(raw: string | null): number | null {
+  if (raw == null || raw.trim() === '') return null;
+  const value = Number(raw.trim());
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** `/proc/<pid>/stat` CPU fields, without pretending they are a current rate. */
+function parseProcessCpuTicks(stat: string | null): number | null {
+  if (!stat) return null;
+  const closeParen = stat.lastIndexOf(')');
+  if (closeParen < 0) return null;
+  const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
+  const user = finiteNonNegativeNumber(fields[11] ?? null);
+  const system = finiteNonNegativeNumber(fields[12] ?? null);
+  return user == null || system == null ? null : user + system;
+}
+
+function boundedSnapshotText(value: string | null, maxLength: number): string | null {
+  if (value == null) return null;
+  const normalized = value.replace(/\0/g, ' ').replace(/[\r\n]+/g, ' ').trim();
+  if (!normalized) return null;
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
+}
+
+function redactSnapshotText(value: string | null, redactValues: readonly string[] | undefined): string | null {
+  if (value == null || !redactValues?.length) return value;
+  let safe = value;
+  for (const secret of redactValues) {
+    if (secret) safe = safe.split(secret).join('[REDACTED]');
+  }
+  return safe;
+}
+
+/**
+ * Capture the live evidence available at the instant a preflight marker is
+ * observed. This is intentionally synchronous and bounded: it runs on a child
+ * output callback, must never hold the operator open, and must fail soft when a
+ * process or cgroup disappears during the read. The result is explicitly
+ * current evidence; it cannot explain an earlier load spike retroactively.
+ */
+export function capturePreflightAttributionSnapshot(
+  options: PreflightAttributionCaptureOptions,
+): PreflightAttributionSnapshot {
+  const procRoot = options.procRoot ?? '/proc';
+  const cgroupRoot = options.cgroupRoot ?? CGROUP_ROOT;
+  const readText = options.readText ?? defaultReadText;
+  const readDir = options.readDir ?? defaultReadDir;
+  const now = options.now ?? Date.now;
+  const pid = options.pid != null && Number.isInteger(options.pid) && options.pid > 0 ? options.pid : null;
+  const jobCgroupPath =
+    options.jobCgroupPath ?? (pid == null ? null : parseProcCgroup(readText(`${procRoot}/${pid}/cgroup`) ?? ''));
+  const jobCgroupDir = jobCgroupPath == null ? null : absCgroupDir(jobCgroupPath, cgroupRoot);
+  const jobPids = jobCgroupDir == null ? [] : parseCgroupProcs(readText(`${jobCgroupDir}/cgroup.procs`) ?? '');
+  const jobCgroup =
+    jobCgroupDir == null
+      ? null
+      : {
+          memoryCurrent: parseCgroupInt(readText(`${jobCgroupDir}/memory.current`)),
+          memoryPeak: parseCgroupInt(readText(`${jobCgroupDir}/memory.peak`)),
+          cpuUsageUsec: parseCpuStatUsageUsec(readText(`${jobCgroupDir}/cpu.stat`)),
+          pidsCurrent: parseCgroupInt(readText(`${jobCgroupDir}/pids.current`)),
+          pids: jobPids.slice(0, PREFLIGHT_SNAPSHOT_MAX_PROCESSES),
+        };
+
+  // Always include the managed job's own members, even when the bounded host
+  // sample does not reach their PIDs. The remaining sample gives a next failure
+  // a small, cgroup-labelled view of the host pressure sources without dumping
+  // an unbounded /proc tree into a durable job log.
+  const candidateNames = readDir(procRoot)
+    .filter((name) => /^\d+$/.test(name))
+    .sort((a, b) => Number(a) - Number(b));
+  const candidatePids = new Set<number>(jobPids.slice(0, PREFLIGHT_SNAPSHOT_MAX_PROCESSES));
+  for (const name of candidateNames.slice(0, PREFLIGHT_SNAPSHOT_MAX_PROCESS_SCAN)) {
+    const candidate = Number(name);
+    if (Number.isInteger(candidate) && candidate > 0) candidatePids.add(candidate);
+  }
+
+  const processes: PreflightAttributionProcess[] = [];
+  for (const candidate of candidatePids) {
+    const command =
+      redactSnapshotText(
+        boundedSnapshotText(parseProcCmdline(readText(`${procRoot}/${candidate}/cmdline`)), PREFLIGHT_SNAPSHOT_MAX_CMDLINE),
+        options.redactValues,
+      ) ?? '[unreadable cmdline]';
+    const stat = readText(`${procRoot}/${candidate}/stat`);
+    const cgroupPath = parseProcCgroup(readText(`${procRoot}/${candidate}/cgroup`) ?? '');
+    processes.push({
+      pid: candidate,
+      cpuTicks: parseProcessCpuTicks(stat),
+      cgroupPath,
+      command,
+    });
+  }
+  processes.sort((a, b) => (b.cpuTicks ?? -1) - (a.cpuTicks ?? -1) || a.pid - b.pid);
+
+  return {
+    marker: options.marker,
+    capturedAt: new Date(now()).toISOString(),
+    loadavg: boundedSnapshotText(readText(`${procRoot}/loadavg`), PREFLIGHT_SNAPSHOT_MAX_FIELD),
+    cpuPressure: boundedSnapshotText(readText(`${procRoot}/pressure/cpu`), PREFLIGHT_SNAPSHOT_MAX_FIELD),
+    jobCgroupPath,
+    jobCgroup,
+    processes: processes.slice(0, PREFLIGHT_SNAPSHOT_MAX_PROCESSES),
+    scannedProcessCount: candidatePids.size,
+    omittedProcessCount: Math.max(0, candidatePids.size - PREFLIGHT_SNAPSHOT_MAX_PROCESSES),
+  };
+}
+
+function snapshotValue(value: string | number | null | undefined): string {
+  return value == null ? 'unknown' : String(value);
+}
+
+/** Render the bounded live evidence as a log-only diagnostic block. */
+export function formatPreflightAttributionSnapshot(snapshot: PreflightAttributionSnapshot): string {
+  const lines = [
+    `\n${PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX}: marker=${snapshot.marker} captured=${snapshot.capturedAt} basis=current-best-effort; this snapshot is NOT historical attribution`,
+    `loadavg=${snapshotValue(snapshot.loadavg)}`,
+    `cpu_pressure=${snapshotValue(snapshot.cpuPressure)}`,
+    `job_cgroup=${snapshotValue(snapshot.jobCgroupPath)}`,
+  ];
+  if (snapshot.jobCgroup) {
+    lines.push(
+      `job_cgroup_metrics memory.current=${snapshotValue(snapshot.jobCgroup.memoryCurrent)} memory.peak=${snapshotValue(snapshot.jobCgroup.memoryPeak)} cpu.usage_usec=${snapshotValue(snapshot.jobCgroup.cpuUsageUsec)} pids.current=${snapshotValue(snapshot.jobCgroup.pidsCurrent)} members=${snapshot.jobCgroup.pids.join('|') || 'none'}`,
+    );
+  } else {
+    lines.push('job_cgroup_metrics unavailable');
+  }
+  lines.push(
+    `process_sample scanned=${snapshot.scannedProcessCount} returned=${snapshot.processes.length} omitted=${snapshot.omittedProcessCount} (cpu_ticks are lifetime counters, not instantaneous rates)`,
+  );
+  for (const process of snapshot.processes) {
+    lines.push(
+      `process pid=${process.pid} cpu_ticks=${snapshotValue(process.cpuTicks)} cgroup=${snapshotValue(process.cgroupPath)} cmd=${process.command}`,
+    );
+  }
+  lines.push('end_preflight_attribution_snapshot\n');
+  return lines.join('\n');
+}
 
 /**
  * A temp dir given to every capability-exec'd child, overriding whatever ephemeral
@@ -1043,11 +1293,17 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
 
   const redactor = createStreamingSecretRedactor(opts.redactValues);
   const missingCommandDetector = createMissingCommandMarkerDetector(id);
+  const preflightFailureDetector = createPreflightFailureMarkerDetector();
   let redactorFlushed = false;
+  let preflightSnapshotWritten = false;
   const appendSafeOutput = (chunk: string): void => {
     if (!chunk) return;
     missingCommandDetector.push(chunk);
     appendOutput(job, chunk);
+    // The snapshot is deliberately log-only. Existing callers rely on the
+    // in-memory output containing only the command's own bytes; attribution is
+    // durable context for a later reader, not a second command result.
+    if (preflightFailureDetector.push(chunk)) appendPreflightSnapshot();
   };
   const appendRawOutput = (chunk: string): void => appendSafeOutput(redactor?.push(chunk) ?? chunk);
   const flushRedactor = (): void => {
@@ -1055,6 +1311,33 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     redactorFlushed = true;
     const tail = redactor?.flush() ?? '';
     appendSafeOutput(tail);
+  };
+
+  const appendPreflightSnapshot = (): void => {
+    if (preflightSnapshotWritten) return;
+    const marker = preflightFailureDetector.seen();
+    if (!marker) return;
+    preflightSnapshotWritten = true;
+    try {
+      const snapshot = capturePreflightAttributionSnapshot({
+        marker,
+        pid: child.pid ?? null,
+        jobCgroupPath: scopeCgroupPath,
+        redactValues: opts.redactValues,
+      });
+      // Do not route this through appendOutput: the snapshot is diagnostic
+      // garnish and must not alter totalBytes/readCursor or returned output.
+      job.logStream?.write(formatPreflightAttributionSnapshot(snapshot));
+    } catch {
+      // A diagnostic failure must never change the command's terminal result.
+      try {
+        job.logStream?.write(
+          `\n${PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX}: marker=${marker} unavailable (best-effort capture failed; not historical attribution)\n`,
+        );
+      } catch {
+        /* the spill stream itself may already be closed */
+      }
+    }
   };
 
   // Attach before recording/enrolling the job. A transient service can execute
@@ -1143,11 +1426,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.status = 'failed';
     job.endedAt = Date.now();
     clearTimeout(timer);
+    flushRedactor();
+    appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
     // tell "finished" from "nothing written yet" without a second call.
     appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
-    flushRedactor();
     try {
       job.logStream?.end();
     } catch {
@@ -1172,9 +1456,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     const normalized = normalizeMissingCommandResult(job.status, job.exitCode, missingCommandDetector.seen());
     job.status = normalized.status;
     job.exitCode = normalized.exitCode;
+    // Flush any redactor suffix before the attribution block so the snapshot
+    // is guaranteed to precede the normal terminal marker in the durable log.
+    flushRedactor();
+    appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
     appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
-    flushRedactor();
     try {
       job.logStream?.end();
     } catch {
