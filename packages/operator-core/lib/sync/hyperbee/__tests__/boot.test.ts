@@ -2295,6 +2295,11 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       off: () => {},
       connections: [],
     };
+    const announceIdentity = makeAnnounceIdentityOverride(
+      'repair-rejoin',
+      13_317,
+      'repair-rejoin-13317',
+    );
 
     const handle = await bootHarnessSubstrate({
       workspaceRoot: tmpWorkspaceRoot(),
@@ -2306,6 +2311,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       swarmBinding: { kind: 'topic', topic_hex: 'cd'.repeat(32) },
       swarmOverride: swarm,
       ...joinUnitIsolation,
+      announceIdentityOverride: announceIdentity.override,
     });
     cleanups.push(() => handle.close());
 
@@ -2399,6 +2405,11 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       off: () => {},
       connections: [],
     };
+    const announceIdentity = makeAnnounceIdentityOverride(
+      'repair-chronic',
+      5_332,
+      'repair-chronic-5332',
+    );
 
     // Simulate "a prior process instance already escalated for this exact
     // (harness, log, kind) and got restarted before it could recover" —
@@ -2421,6 +2432,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       swarmBinding: { kind: 'topic', topic_hex: 'de'.repeat(32) },
       swarmOverride: swarm,
       ...joinUnitIsolation,
+      announceIdentityOverride: announceIdentity.override,
     });
     cleanups.push(() => handle.close());
 
@@ -2509,6 +2521,11 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       off: () => {},
       connections: [],
     };
+    const announceIdentity = makeAnnounceIdentityOverride(
+      'repair-prompt',
+      5_481,
+      'repair-prompt-5481',
+    );
 
     const handle = await bootHarnessSubstrate({
       workspaceRoot: tmpWorkspaceRoot(),
@@ -2520,6 +2537,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       swarmBinding: { kind: 'topic', topic_hex: 'fa'.repeat(32) },
       swarmOverride: swarm,
       ...joinUnitIsolation,
+      announceIdentityOverride: announceIdentity.override,
     });
     cleanups.push(() => handle.close());
 
