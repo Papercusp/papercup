@@ -104,9 +104,7 @@ async function findRecipes(hint: FailureLoopHint): Promise<SimilarRecipe[]> {
 
 function compact(value: string): string {
   const oneLine = value.replace(/\s+/g, ' ').trim();
-  return oneLine.length <= MAX_LABEL_CHARS
-    ? oneLine
-    : `${oneLine.slice(0, MAX_LABEL_CHARS - 1).trimEnd()}…`;
+  return oneLine.length <= MAX_LABEL_CHARS ? oneLine : `${oneLine.slice(0, MAX_LABEL_CHARS - 1).trimEnd()}…`;
 }
 
 function clampHint(text: string): string {
@@ -120,10 +118,7 @@ function clampHint(text: string): string {
  * Build one bounded, actionable advisory. Each retrieval leg fails soft and the
  * base intervention survives even when both knowledge sources are unavailable.
  */
-export async function buildFailureLoopHintText(
-  hint: FailureLoopHint,
-  deps: FailureLoopHintDeps = {},
-): Promise<string> {
+export async function buildFailureLoopHintText(hint: FailureLoopHint, deps: FailureLoopHintDeps = {}): Promise<string> {
   const [insights, recipes] = await Promise.all([
     (deps.readInsights ?? readInsights)().catch(() => []),
     (deps.searchRecipes ?? findRecipes)(hint).catch(() => []),
@@ -139,8 +134,7 @@ export async function buildFailureLoopHintText(
     lines.push('Matching agent insights:');
     for (const insight of rankedInsights) {
       lines.push(
-        `- \`${insight.slug}\` — ${compact(insight.title)} (` +
-          `\`docs:get { slugs: ['${insight.slug}'] }\`)`,
+        `- \`${insight.slug}\` — ${compact(insight.title)} (` + `\`docs:get { slugs: ['${insight.slug}'] }\`)`,
       );
     }
   }
@@ -157,4 +151,3 @@ export async function buildFailureLoopHintText(
   lines.push('Inspect a reference or change the call shape before retrying the same failure.');
   return clampHint(lines.join('\n'));
 }
-

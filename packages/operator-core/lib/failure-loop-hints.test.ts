@@ -31,19 +31,16 @@ describe('failure-loop hints', () => {
       ],
       hint,
     );
-    expect(ranked.map((entry) => entry.slug)).toEqual([
-      'harness-scoped-docs',
-      'docs-search',
-    ]);
+    expect(ranked.map((entry) => entry.slug)).toEqual(['harness-scoped-docs', 'docs-search']);
   });
 
   it('composes bounded insight and recipe references from both reused sources', async () => {
-    const readInsights = vi.fn().mockResolvedValue([
-      insight('harness-scoped-docs', 'Docs calls require an explicit harness'),
-    ]);
-    const searchRecipes = vi.fn().mockResolvedValue([
-      { id: 'recipe-1', title: 'Resolve harness-scoped tool calls' } as SimilarRecipe,
-    ]);
+    const readInsights = vi
+      .fn()
+      .mockResolvedValue([insight('harness-scoped-docs', 'Docs calls require an explicit harness')]);
+    const searchRecipes = vi
+      .fn()
+      .mockResolvedValue([{ id: 'recipe-1', title: 'Resolve harness-scoped tool calls' } as SimilarRecipe]);
 
     const text = await buildFailureLoopHintText(hint, { readInsights, searchRecipes });
 
