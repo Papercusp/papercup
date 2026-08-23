@@ -42,6 +42,14 @@ is set by what you ask to see at each step, not by how many steps it takes.
 - **The one-line result IS your action ledger** (`#7 left_click (412,388) ok · tree`).
   It accumulates in your transcript, one line per step — you do not need to re-read
   or re-summarise your own trajectory.
+- **When a HUMAN will need to see what happened, record it — it costs you nothing.**
+  `computer:record { op: 'start', workItem }` before the sequence, `{ op: 'stop' }` then
+  `{ op: 'export' }` after. It captures one frame per action to DISK — never into your
+  results — so the whole recording adds zero tokens to your context, and the export
+  parks a pointer on the work-item. Reach for it when you are reproducing a bug someone
+  else will read, or leaving evidence on a work-item; do NOT reach for it to see the
+  screen yourself (that is `computer:observe` / a screenshot — the recording is written
+  for someone else, and is never returned to you).
 
 ### Read context before changing it
 
