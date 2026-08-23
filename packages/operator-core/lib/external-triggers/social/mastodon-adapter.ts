@@ -433,7 +433,8 @@ export class MastodonAdapter implements SocialAdapter {
     // there is nothing newer — never when a page happens to look short.
     for (;;) {
       if (ctx.signal?.aborted) break;
-      const page: MastodonPage = await this.client.fetchNewer(marker, ctx.signal);
+      const at = marker;
+      const page: MastodonPage = await this.withRetry(() => this.client.fetchNewer(at, ctx.signal));
       collected.push(...page.statuses);
       pages += 1;
       // Advance on real progress, INDEPENDENTLY of whether we keep walking —
