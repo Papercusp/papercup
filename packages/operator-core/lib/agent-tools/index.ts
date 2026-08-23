@@ -274,6 +274,7 @@ import './mail/send';
 import './calendar/propose';
 import './calendar/update';
 import './chat/reply';
+import './social/reply';
 import './chat/post';
 import './memory/remember';
 import './memory/search';
