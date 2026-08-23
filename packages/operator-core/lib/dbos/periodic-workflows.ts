@@ -47,6 +47,7 @@ import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import {
   reconcileStaleEscalationsOnce,
   reconcileUnanswerableEscalationsOnce,
+  rerouteUnackedEscalationsOnce,
 } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
@@ -596,6 +597,16 @@ async function replyDeadlineSweepTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (shouldShedHeavyTick('reply-deadline-sweep')) return;
     await runReplyDeadlineSweepOnce();
+    // EI-7024: a human escalation may still need a live agent to drive its
+    // operational next step. Keep this leg fail-soft so a liveness/marker read
+    // failure never turns the established reply-deadline backstop red.
+    try {
+      await rerouteUnackedEscalationsOnce();
+    } catch (e) {
+      console.warn(
+        `[escalation-sla-reroute] pass failed: ${e instanceof Error ? e.message : e}`,
+      );
+    }
   }, { name: 'reply-deadline-sweep' });
 }
 const replyDeadlineSweepWorkflow = idempotentRegisterWorkflow('replyDeadlineSweep', () =>

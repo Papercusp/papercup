@@ -28,7 +28,14 @@
 import { isOperationalEscalation } from './adapters';
 import { listEscalations, resolveEscalationsBatch } from '../agent-tools/coordination/escalations';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
-import { getPresence } from '../agent-tools/coordination/presence';
+import { getPresence, listPresence } from '../agent-tools/coordination/presence';
+import { fetchPresenceFleet } from '../agent-tools/coordination/presence-fleet';
+import { sendMessage } from '../agent-tools/coordination/messages';
+import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
+import { coordLog, coordSql, coordWorkspaceId } from '../agent-tools/coordination/log';
+import { AGENT_SESSION_SENDER_PATTERN } from '../agent-tools/coordination/machine-authored';
+import { getFleet } from '../agent-fleets-store';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 
 /** Resolver identity stamped on auto-reconciled escalations (audit trail). */
 export const RECONCILE_OWNER = 'system:attention-reconcile';
@@ -409,5 +416,337 @@ export async function reconcileUnanswerableEscalationsOnce(
     resolved,
     truncated: stale.length > batch.length,
     outcome: 'swept',
+  };
+}
+
+// ─── EI-7024: escalation SLA reroute to a live driver ────────────────────────
+
+/** A genuine escalation may need a live operator even while the original row
+ * remains a human decision. After this SLA, route a one-shot action message to
+ * the closest live su. Environment override exists for operators/tests. */
+export const ESCALATION_REROUTE_SLA_MS = (() => {
+  const env = Number(process.env.PAPERCUSP_ESCALATION_REROUTE_SLA_MS);
+  return Number.isFinite(env) && env > 0 ? env : 30 * 60 * 1000;
+})();
+
+/** Safety bound per five-minute tick. */
+export const ESCALATION_REROUTE_BATCH_LIMIT = 200;
+
+const AGENT_ESCALATION_AUTHOR_RE = new RegExp(AGENT_SESSION_SENDER_PATTERN, 'i');
+export const ESCALATION_REROUTE_OWNER = 'system:escalation-sla-reroute';
+
+const ESCALATION_REROUTE_IDENTITY: AgentIdentity = {
+  ownerId: ESCALATION_REROUTE_OWNER,
+  ownerLabel: 'system · escalation-sla-reroute',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+export interface EscalationRerouteInput extends StaleEscalationInput {
+  summary?: string;
+  body?: string;
+  plan_slug?: string;
+  harness_slug?: string;
+  /** Legacy/meta-flattened harness context. */
+  harnessSlug?: string;
+}
+
+export interface EscalationRerouteDriver {
+  ownerId: string;
+  sessionState: string | null;
+  agentRole: string | null;
+  currentPlanSlug: string | null;
+  potSlug: string | null;
+  fleetSlug: string | null;
+}
+
+export type EscalationRerouteReason =
+  | 'author-fleet-leader'
+  | 'author-fleet-member'
+  | 'same-plan'
+  | 'same-harness';
+
+export interface EscalationRerouteSelection {
+  escalation: EscalationRerouteInput;
+  targetOwnerId: string;
+  reason: EscalationRerouteReason;
+  overdueMinutes: number;
+}
+
+function concrete(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function isRerouteEligible(
+  e: EscalationRerouteInput,
+  nowMs: number,
+  slaMs: number,
+  responseMarkers: ReadonlySet<string>,
+): boolean {
+  const from = concrete(e.from);
+  if (!from || !AGENT_ESCALATION_AUTHOR_RE.test(from)) return false;
+  if (isOperationalEscalation(from, (e.options?.length ?? 0) > 0)) return false;
+  if (responseMarkers.has(e.msg_id)) return false;
+  const openedMs = Date.parse(e.ts);
+  return Number.isFinite(openedMs) && nowMs - openedMs >= slaMs;
+}
+
+/**
+ * PURE: choose one DIFFERENT live su for each past-SLA, still-open escalation.
+ * Contextless agents are never selected. Ties are owner-id sorted so retries and
+ * tests make the same choice from the same snapshot.
+ */
+export function selectEscalationSlaReroutes(
+  opens: readonly EscalationRerouteInput[],
+  roster: readonly EscalationRerouteDriver[],
+  ctx: {
+    nowMs: number;
+    slaMs?: number;
+    responseMarkers?: ReadonlySet<string>;
+    leaderByFleet?: ReadonlyMap<string, string | null>;
+  },
+): EscalationRerouteSelection[] {
+  const slaMs = ctx.slaMs ?? ESCALATION_REROUTE_SLA_MS;
+  const responseMarkers = ctx.responseMarkers ?? new Set<string>();
+  const leaderByFleet = ctx.leaderByFleet ?? new Map<string, string | null>();
+  const byOwner = new Map(roster.map((r) => [r.ownerId, r]));
+  const out: EscalationRerouteSelection[] = [];
+
+  for (const escalation of opens) {
+    if (!isRerouteEligible(escalation, ctx.nowMs, slaMs, responseMarkers)) continue;
+    const from = concrete(escalation.from)!;
+    const author = byOwner.get(from);
+    const authorFleet = author?.fleetSlug ?? null;
+    const planSlug = concrete(escalation.plan_slug) ?? author?.currentPlanSlug ?? null;
+    const harnessSlug =
+      concrete(escalation.harness_slug) ??
+      concrete(escalation.harnessSlug) ??
+      author?.potSlug ??
+      null;
+
+    const ranked = roster
+      .filter(
+        (candidate) =>
+          candidate.ownerId !== from &&
+          candidate.sessionState === 'live' &&
+          candidate.agentRole === 'su',
+      )
+      .map((candidate): { candidate: EscalationRerouteDriver; rank: number; reason: EscalationRerouteReason } | null => {
+        if (authorFleet && leaderByFleet.get(authorFleet) === candidate.ownerId) {
+          return { candidate, rank: 0, reason: 'author-fleet-leader' };
+        }
+        if (authorFleet && candidate.fleetSlug === authorFleet) {
+          return { candidate, rank: 1, reason: 'author-fleet-member' };
+        }
+        if (planSlug && candidate.currentPlanSlug === planSlug) {
+          return { candidate, rank: 2, reason: 'same-plan' };
+        }
+        if (harnessSlug && candidate.potSlug === harnessSlug) {
+          return { candidate, rank: 3, reason: 'same-harness' };
+        }
+        return null;
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      .sort((a, b) => a.rank - b.rank || a.candidate.ownerId.localeCompare(b.candidate.ownerId));
+
+    const selected = ranked[0];
+    if (!selected) continue;
+    const openedMs = Date.parse(escalation.ts);
+    out.push({
+      escalation,
+      targetOwnerId: selected.candidate.ownerId,
+      reason: selected.reason,
+      overdueMinutes: (ctx.nowMs - openedMs) / 60_000,
+    });
+  }
+
+  return out.sort(
+    (a, b) =>
+      Date.parse(a.escalation.ts) - Date.parse(b.escalation.ts) ||
+      a.escalation.msg_id.localeCompare(b.escalation.msg_id),
+  );
+}
+
+/** Any messages-surface sibling carrying related_msg_id retires rerouting for
+ * the escalation. The explicit key-presence predicate is required by the live
+ * partial index; keep it even though the equality looks sufficient. */
+async function readEscalationResponseMarkers(msgIds: readonly string[]): Promise<Set<string>> {
+  const ids = [...new Set(msgIds.filter(Boolean))];
+  if (ids.length === 0) return new Set();
+  try {
+    const sql = coordSql();
+    const rows = await sql<{ related_msg_id: string | null }[]>`
+      SELECT DISTINCT body->>'related_msg_id' AS related_msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND body ? 'related_msg_id'
+         AND body->>'related_msg_id' = ANY(${ids})
+    `;
+    return new Set(
+      rows
+        .map((row) => row.related_msg_id)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+  } catch {
+    const idSet = new Set(ids);
+    const lines = await coordLog.readLines('messages');
+    return new Set(
+      lines
+        .map((line) => line.related_msg_id)
+        .filter((id): id is string => typeof id === 'string' && idSet.has(id)),
+    );
+  }
+}
+
+export interface EscalationRerouteResult {
+  scanned: number;
+  selected: number;
+  rerouted: number;
+  failed: number;
+  truncated: boolean;
+}
+
+export interface EscalationRerouteDeps {
+  listEscalationsFn?: typeof listEscalations;
+  listPresenceFn?: typeof listPresence;
+  resolveSessionStatesFn?: typeof resolveSessionStates;
+  fetchPresenceFleetFn?: typeof fetchPresenceFleet;
+  getFleetFn?: typeof getFleet;
+  readResponseMarkersFn?: (msgIds: readonly string[]) => Promise<Set<string>>;
+  sendMessageFn?: typeof sendMessage;
+  wakeRecipientsFn?: typeof wakeRecipients;
+}
+
+/** One injectable, fail-closed pass. The original escalation is NEVER resolved:
+ * this only appends one action message + attempts one targeted wake. */
+export async function rerouteUnackedEscalationsOnce(
+  opts: {
+    nowMs?: number;
+    slaMs?: number;
+    limit?: number;
+    workspaceId?: string;
+  } & EscalationRerouteDeps = {},
+): Promise<EscalationRerouteResult> {
+  const listEscalationsFn = opts.listEscalationsFn ?? listEscalations;
+  const listPresenceFn = opts.listPresenceFn ?? listPresence;
+  const resolveFn = opts.resolveSessionStatesFn ?? resolveSessionStates;
+  const fetchFleetFn = opts.fetchPresenceFleetFn ?? fetchPresenceFleet;
+  const getFleetFn = opts.getFleetFn ?? getFleet;
+  const readMarkersFn = opts.readResponseMarkersFn ?? readEscalationResponseMarkers;
+  const sendFn = opts.sendMessageFn ?? sendMessage;
+  const wakeFn = opts.wakeRecipientsFn ?? wakeRecipients;
+  const nowMs = opts.nowMs ?? Date.now();
+  const slaMs = opts.slaMs ?? ESCALATION_REROUTE_SLA_MS;
+  const limit = opts.limit ?? ESCALATION_REROUTE_BATCH_LIMIT;
+  const workspaceId = opts.workspaceId ?? coordWorkspaceId();
+
+  const opens = (await listEscalationsFn({ status: 'open' })) as unknown as EscalationRerouteInput[];
+  const pastSlaAgentRows = opens.filter((e) => isRerouteEligible(e, nowMs, slaMs, new Set()));
+  const markers = await readMarkersFn(pastSlaAgentRows.map((e) => e.msg_id));
+  const unmarked = pastSlaAgentRows.filter((e) => !markers.has(e.msg_id));
+  if (unmarked.length === 0) {
+    return { scanned: opens.length, selected: 0, rerouted: 0, failed: 0, truncated: false };
+  }
+
+  const presence = await listPresenceFn({ workspaceId });
+  const ownerIds = presence.map((p) => p.ownerId);
+  const [verdicts, membership] = await Promise.all([
+    resolveFn(
+      presence.map((p) => ({
+        ownerId: p.ownerId,
+        heartbeatAt: p.heartbeatAt,
+        stale: p.stale,
+        host: p.host,
+        pid: p.pid,
+        source: p.source,
+      })),
+    ),
+    fetchFleetFn(ownerIds),
+  ]);
+  const roster: EscalationRerouteDriver[] = presence.map((p) => ({
+    ownerId: p.ownerId,
+    sessionState: verdicts.get(p.ownerId)?.sessionState ?? null,
+    agentRole: p.agentRole,
+    currentPlanSlug: p.currentPlanSlug,
+    potSlug: p.potSlug,
+    fleetSlug: membership.get(p.ownerId)?.fleetSlug ?? null,
+  }));
+  const authorIds = new Set(unmarked.map((e) => concrete(e.from)).filter((id): id is string => id !== null));
+  const authorFleets = [...new Set(
+    roster
+      .filter((r) => authorIds.has(r.ownerId))
+      .map((r) => r.fleetSlug)
+      .filter((slug): slug is string => slug !== null),
+  )];
+  const fleetRows = await Promise.all(
+    authorFleets.map(async (slug) => [slug, await getFleetFn(workspaceId, slug).catch(() => null)] as const),
+  );
+  const leaderByFleet = new Map(fleetRows.map(([slug, fleet]) => [slug, fleet?.leaderOwnerId ?? null]));
+
+  const selected = selectEscalationSlaReroutes(unmarked, roster, {
+    nowMs,
+    slaMs,
+    responseMarkers: markers,
+    leaderByFleet,
+  });
+  const batch = selected.slice(0, limit);
+  let rerouted = 0;
+  let failed = 0;
+  for (const route of batch) {
+    const { escalation } = route;
+    try {
+      const notice = await sendFn(ESCALATION_REROUTE_IDENTITY, {
+        to: [route.targetOwnerId],
+        msgId: `escalation-sla-reroute:${escalation.msg_id}`,
+        summary:
+          `⏰ escalation needs a live driver (${route.reason}, ~${Math.round(route.overdueMinutes)}m): ` +
+          `${escalation.summary ?? escalation.msg_id}`,
+        body:
+          `Escalation ${escalation.msg_id} from ${escalation.from ?? 'an agent'} has remained open without ` +
+          `any related coord acknowledgement for ~${Math.round(route.overdueMinutes)} minutes. You were selected ` +
+          `as the closest live su (${route.reason}). Inspect it and drive the next action. Keep the original ` +
+          'escalation open: only the human resolution path is authoritative.',
+        plan_slug: concrete(escalation.plan_slug) ?? undefined,
+        related_msg_id: escalation.msg_id,
+        harnessSlug:
+          concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
+        extra: {
+          auto: true,
+          lifecycle: 'escalation-sla-reroute',
+          expects: 'action',
+          escalationRerouteReason: route.reason,
+        },
+      });
+      rerouted += 1;
+      try {
+        await wakeFn([route.targetOwnerId], {
+          summary: `take over unacknowledged escalation ${escalation.msg_id}`,
+          payload: { escalationMsgId: escalation.msg_id, noticeMsgId: notice.msg_id },
+          source: ESCALATION_REROUTE_OWNER,
+          workspaceId,
+        });
+      } catch (error) {
+        console.warn(
+          `[escalation-sla-reroute] wake ${route.targetOwnerId} for ${escalation.msg_id} failed: ` +
+            `${error instanceof Error ? error.message : error}`,
+        );
+      }
+    } catch (error) {
+      failed += 1;
+      console.warn(
+        `[escalation-sla-reroute] send for ${escalation.msg_id} failed: ` +
+          `${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  return {
+    scanned: opens.length,
+    selected: selected.length,
+    rerouted,
+    failed,
+    truncated: selected.length > batch.length,
   };
 }

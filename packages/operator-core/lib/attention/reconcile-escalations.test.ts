@@ -14,6 +14,7 @@ vi.mock('../agent-tools/coordination/liveness-oracle', () => ({
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   getPresence: (...a: unknown[]) => getPresenceMock(...a),
+  listPresence: vi.fn(),
   probeProcessLiveness: vi.fn(),
 }));
 
@@ -23,7 +24,11 @@ import {
   selectUnanswerableEscalations,
   unanswerableCandidateAuthors,
   reconcileUnanswerableEscalationsOnce,
+  selectEscalationSlaReroutes,
+  rerouteUnackedEscalationsOnce,
   type StaleEscalationInput,
+  type EscalationRerouteDriver,
+  type EscalationRerouteInput,
 } from './reconcile-escalations';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -426,5 +431,145 @@ describe('reconcileUnanswerableEscalationsOnce (EI-19411323991062966)', () => {
     expect(healthy.outcome).toBe('no-candidates');
     expect(degraded.outcome).toBe('aborted');
     expect(healthy.outcome).not.toBe(degraded.outcome);
+  });
+});
+
+// ─── EI-7024: past-SLA escalation reroute ─────────────────────────────────────
+
+function rerouteRow(over: Partial<EscalationRerouteInput>): EscalationRerouteInput {
+  return {
+    msg_id: 'e-1',
+    from: 'su-author',
+    options: [],
+    ts: iso(60 * 60 * 1000),
+    summary: 'human decision is waiting',
+    plan_slug: 'plan-a',
+    harness_slug: 'pot-a',
+    ...over,
+  };
+}
+
+function driver(ownerId: string, over: Partial<EscalationRerouteDriver> = {}): EscalationRerouteDriver {
+  return {
+    ownerId,
+    sessionState: 'live',
+    agentRole: 'su',
+    currentPlanSlug: null,
+    potSlug: null,
+    fleetSlug: null,
+    ...over,
+  };
+}
+
+describe('selectEscalationSlaReroutes (EI-7024)', () => {
+  it('ranks a different live su by author fleet leader, same fleet, plan, then harness', () => {
+    const roster = [
+      driver('su-author', { fleetSlug: 'alpha', currentPlanSlug: 'plan-a', potSlug: 'pot-a' }),
+      driver('su-harness', { potSlug: 'pot-a' }),
+      driver('su-plan', { currentPlanSlug: 'plan-a' }),
+      driver('su-member', { fleetSlug: 'alpha' }),
+      driver('su-leader', { fleetSlug: 'alpha' }),
+    ];
+    const selected = selectEscalationSlaReroutes([rerouteRow({})], roster, {
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      leaderByFleet: new Map([['alpha', 'su-leader']]),
+    });
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({ targetOwnerId: 'su-leader', reason: 'author-fleet-leader' });
+  });
+
+  it('falls through deterministically and never chooses the author or a non-su/non-live/contextless agent', () => {
+    const roster = [
+      driver('su-author', { currentPlanSlug: 'plan-a' }),
+      driver('su-contextless'),
+      driver('cup-plan', { agentRole: 'cup', currentPlanSlug: 'plan-a' }),
+      driver('su-parked-plan', { sessionState: 'parked', currentPlanSlug: 'plan-a' }),
+      driver('su-z-plan', { currentPlanSlug: 'plan-a' }),
+      driver('su-a-plan', { currentPlanSlug: 'plan-a' }),
+    ];
+    const selected = selectEscalationSlaReroutes([rerouteRow({})], roster, {
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+    });
+    expect(selected[0]).toMatchObject({ targetOwnerId: 'su-a-plan', reason: 'same-plan' });
+  });
+
+  it('rejects young, operational, non-agent, acknowledged, and contextless rows', () => {
+    const rows = [
+      rerouteRow({ msg_id: 'young', ts: iso(5 * 60 * 1000) }),
+      rerouteRow({ msg_id: 'system', from: 'system:watchdog' }),
+      rerouteRow({ msg_id: 'human', from: 'human' }),
+      rerouteRow({ msg_id: 'acked' }),
+      rerouteRow({ msg_id: 'contextless', plan_slug: undefined, harness_slug: undefined }),
+    ];
+    const selected = selectEscalationSlaReroutes(rows, [driver('su-plan', { currentPlanSlug: 'plan-a' })], {
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      responseMarkers: new Set(['acked']),
+    });
+    expect(selected).toEqual([]);
+  });
+});
+
+describe('rerouteUnackedEscalationsOnce (EI-7024)', () => {
+  it('sends one deterministic action marker, wakes the target, and never resolves the escalation', async () => {
+    const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+    const wake = vi.fn(async () => ({ woken: 1 }));
+    const result = await rerouteUnackedEscalationsOnce({
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      workspaceId: 'ws-a',
+      listEscalationsFn: vi.fn(async () => [rerouteRow({})]) as typeof listMock,
+      readResponseMarkersFn: vi.fn(async () => new Set()),
+      listPresenceFn: vi.fn(async () => [
+        {
+          ownerId: 'su-author', agentRole: 'su', currentPlanSlug: 'plan-a', potSlug: 'pot-a',
+          heartbeatAt: iso(0), stale: false, host: '', pid: null, source: 'omp-hook-session',
+        },
+        {
+          ownerId: 'su-driver', agentRole: 'su', currentPlanSlug: 'plan-a', potSlug: 'pot-a',
+          heartbeatAt: iso(0), stale: false, host: '', pid: null, source: 'omp-hook-session',
+        },
+      ]) as never,
+      resolveSessionStatesFn: vi.fn(async () => new Map([
+        ['su-author', { sessionState: 'parked' }],
+        ['su-driver', { sessionState: 'live' }],
+      ])) as never,
+      fetchPresenceFleetFn: vi.fn(async () => new Map()) as never,
+      getFleetFn: vi.fn(async () => null) as never,
+      sendMessageFn: send as never,
+      wakeRecipientsFn: wake as never,
+    });
+
+    expect(result).toMatchObject({ scanned: 1, selected: 1, rerouted: 1, failed: 0 });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][1]).toMatchObject({
+      to: ['su-driver'],
+      msgId: 'escalation-sla-reroute:e-1',
+      related_msg_id: 'e-1',
+      extra: { expects: 'action', lifecycle: 'escalation-sla-reroute' },
+    });
+    expect(batchMock).not.toHaveBeenCalled();
+    expect(wake).toHaveBeenCalledWith(
+      ['su-driver'],
+      expect.objectContaining({ source: 'system:escalation-sla-reroute', workspaceId: 'ws-a' }),
+    );
+  });
+
+  it('does no roster/liveness/send work after an existing related-message marker', async () => {
+    const listPresenceFn = vi.fn();
+    const send = vi.fn();
+    const result = await rerouteUnackedEscalationsOnce({
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      listEscalationsFn: vi.fn(async () => [rerouteRow({})]) as typeof listMock,
+      readResponseMarkersFn: vi.fn(async () => new Set(['e-1'])),
+      listPresenceFn: listPresenceFn as never,
+      sendMessageFn: send as never,
+    });
+    expect(result).toMatchObject({ selected: 0, rerouted: 0, failed: 0 });
+    expect(listPresenceFn).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });

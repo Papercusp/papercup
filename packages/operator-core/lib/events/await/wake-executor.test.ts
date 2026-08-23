@@ -1568,6 +1568,33 @@ describe('executeWake — the liveness ladder', () => {
     expect(o.env.PAPERCUSP_WORKSPACE).toBe('ws');
   });
 
+  it('exited omp rematerializes an archived thread before resuming when its transcript is missing', async () => {
+    const spawnDetached = vi.fn(() => 2468);
+    const collectSessionFiles = vi.fn(async () => []);
+    const rematerializeSession = vi.fn(async () => ({ ok: true, written: 1 }));
+    const threadId = 'th-archived';
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: threadId }) }),
+      deps({
+        getSession: vi.fn(async () =>
+          session({ agent: 'omp', sessionId: null, ompThreadId: threadId }),
+        ) as never,
+        alive: vi.fn(() => false),
+        collectSessionFiles: collectSessionFiles as never,
+        rematerializeSession: rematerializeSession as never,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(collectSessionFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceKind: 'omp', sessionId: threadId }),
+    );
+    expect(rematerializeSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceKind: 'omp', sessionId: threadId }),
+    );
+  });
+
   it('exited omp PTY fallback → readiness-gated prompt injection into the new pty', async () => {
     const prev = process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
     process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = '1';

@@ -450,6 +450,58 @@ describe('the kickoff brief', () => {
     expect(brief).not.toContain('Report actuals anyway');
   });
 
+  /**
+   * A STANDING goal's absent criterion means something DIFFERENT
+   * (work-on-everything-goal-2026-08-23 P-001).
+   *
+   * ⚠ Not to be confused with the "standing drain fleet" P-001 above — a
+   * different plan's item that happens to share the word.
+   *
+   * Both briefs are generated from the same NULL column, so the only thing
+   * separating them is the flag. The ordinary wording invites the agent to
+   * "propose a stopping condition", which for a stewardship goal is an
+   * instruction to invent the checkable outcome the goal is DEFINED as not
+   * having — and an agent that adopts one will eventually report the standing
+   * duty complete and stop. That is the failure this pins.
+   */
+  describe('a STANDING goal states its polarity instead (work-on-everything P-001)', () => {
+    it('replaces the propose-a-stopping-condition invitation with the standing polarity', () => {
+      const brief = buildGoalKickoffBrief({ goalId: 'g-1', title: 't', standing: true });
+      expect(brief).toContain('KILL THIS IF — ');
+      expect(brief).toContain('STANDING');
+      expect(brief).toContain('owner stops it or a tripwire fires');
+      expect(brief).toContain('Do not invent a completion condition');
+      // The exact wording that would send it looking for an outcome.
+      expect(brief).not.toContain('Propose a stopping condition');
+    });
+
+    it('is the ONLY difference — a standing goal still gets the ceiling and spend rails', () => {
+      const standing = buildGoalKickoffBrief({ goalId: 'g-1', title: 't', standing: true });
+      expect(standing).toContain('CEILING — none declared. Flag before any large spend.');
+      expect(standing).toContain('SPEND VISIBILITY');
+      expect(standing).toContain('OUTCOME — t');
+    });
+
+    it('a WRITTEN criterion still wins — standing does not suppress one the owner actually gave', () => {
+      const brief = buildGoalKickoffBrief({
+        goalId: 'g-1',
+        title: 't',
+        standing: true,
+        killCriterion: 'the pot is archived',
+      });
+      expect(brief).toContain('KILL THIS IF — the pot is archived');
+      expect(brief).not.toContain('Do not invent a completion condition');
+    });
+
+    it('the ordinary absent-criterion wording is unchanged when NOT standing — the control', () => {
+      const ordinary = buildGoalKickoffBrief({ goalId: 'g-1', title: 't' });
+      expect(ordinary).toContain('Propose a stopping condition in your kickoff question.');
+      expect(ordinary).not.toContain('STANDING');
+      // standing:false must behave exactly like omitting it.
+      expect(buildGoalKickoffBrief({ goalId: 'g-1', title: 't', standing: false })).toBe(ordinary);
+    });
+  });
+
   it('does not restate the mode contract (which arrives with the mode)', () => {
     const brief = buildGoalKickoffBrief({
       goalId: 'g-1',
