@@ -1,21 +1,415 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="8" failures="0" errors="0" time="0.028969935">
-    <testsuite name="src/wasm/transpile.test.ts" timestamp="2026-06-11T23:33:21.645Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.028969935">
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; first call invokes the transpiler + writes cache + marker" time="0.008673548">
+<testsuites name="vitest tests" tests="186" failures="0" errors="0" time="4.636148462">
+    <testsuite name="src/actions.test.ts" timestamp="2026-08-23T17:00:22.856Z" hostname="main-server-Precision-7865-Tower" tests="17" failures="0" errors="0" skipped="0" time="0.02430403">
+        <testcase classname="src/actions.test.ts" name="ServerActionRegistry construction &gt; accepts an action whose caps are subset of plugin caps" time="0.002783388">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; second call hits cache, does NOT re-invoke transpiler" time="0.002929894">
+        <testcase classname="src/actions.test.ts" name="ServerActionRegistry construction &gt; rejects an action whose caps escalate beyond plugin caps" time="0.001087876">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; different wasm contents → different cache directories" time="0.004184996">
+        <testcase classname="src/actions.test.ts" name="ServerActionRegistry construction &gt; honors wildcard plugin caps when validating actions" time="0.001697727">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; corrupt cache (marker exists but entry missing) → re-transpiles" time="0.002927329">
+        <testcase classname="src/actions.test.ts" name="ServerActionRegistry construction &gt; rejects duplicate action declarations" time="0.000663695">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; transpiler error propagates AND cleans up partial cache" time="0.002727183">
+        <testcase classname="src/actions.test.ts" name="ServerActionRegistry construction &gt; accepts an empty/missing actions array" time="0.000776012">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; transpiler returning a non-existent entryRelPath is rejected" time="0.001479174">
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; register requires a declared action name" time="0.000817954">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; marker contains the entry&apos;s relative path" time="0.002186159">
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; register fails for non-function handler" time="0.00047025">
         </testcase>
-        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; concurrent calls with same wasm both succeed (one wins the rename)" time="0.002297895">
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; register rejects duplicates" time="0.000539645">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; register fails after seal" time="0.001003723">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; invoke dispatches handler and returns its envelope" time="0.001382817">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; invoke wraps a thrown error" time="0.000844234">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; invoke fails on unknown action name" time="0.000431174">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; invoke times out via AbortSignal" time="0.003960096">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; audits each invoke" time="0.001375232">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; passes params to handler" time="0.000433128">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; normalizes raw value into {ok:true,result:&lt;value&gt;}" time="0.000425283">
+        </testcase>
+        <testcase classname="src/actions.test.ts" name="register / seal / invoke &gt; handles synchronous handler return" time="0.000329087">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/api-factory.test.ts" timestamp="2026-08-23T17:00:22.863Z" hostname="main-server-Precision-7865-Tower" tests="11" failures="0" errors="0" skipped="0" time="0.05153618">
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — capability gating &gt; allows tasks.list when tasks:read is present" time="0.004259787">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — capability gating &gt; blocks tasks.list when tasks:read is missing" time="0.001247896">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — capability gating &gt; blocks tasks.create when tasks:write is missing (read alone is not enough)" time="0.000549214">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — capability gating &gt; allows tasks.create when tasks:write is present" time="0.000458066">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — capability gating &gt; blocks unknown method access on a wrapped service" time="0.00050109">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — secrets per-name capability &gt; allows secrets.read for the specifically-named secret" time="0.00043912">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — secrets per-name capability &gt; blocks secrets.read for an undeclared secret name" time="0.00054215">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — fetch domain allowlist &gt; allows fetch to a declared host" time="0.034994446">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — fetch domain allowlist &gt; blocks fetch to an undeclared host" time="0.000582598">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — service breadth &gt; exposes all 9 service slots" time="0.000529305">
+        </testcase>
+        <testcase classname="src/api-factory.test.ts" name="createPapercuspApi — service breadth &gt; capabilities() returns the plugin&apos;s declared list" time="0.000517832">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/capabilities.test.ts" timestamp="2026-08-23T17:00:22.868Z" hostname="main-server-Precision-7865-Tower" tests="20" failures="0" errors="0" skipped="0" time="0.054717448">
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; returns true for declared cap" time="0.002093232">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; returns false for undeclared cap" time="0.000651982">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; requireCapability throws MissingCapabilityError for undeclared cap" time="0.001332129">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; subdomain wildcard `http:fetch:*.foo.com` matches `http:fetch:api.foo.com`" time="0.000341141">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; subdomain wildcard does NOT match the bare suffix `foo.com`" time="0.000396317">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; subdomain wildcard does NOT cross prefixes" time="0.000313116">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; prefix wildcard `secrets:read:YT_*` matches `secrets:read:YT_API_KEY`" time="0.000321833">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; degenerate `secrets:read:*` (empty head) is rejected" time="0.000275353">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; two-tier (Batch B) &gt; manifest-declared cap with no granted set is allowed (legacy path)" time="0.000317935">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; two-tier (Batch B) &gt; manifest-declared cap NOT in granted set is denied" time="0.000619329">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; two-tier (Batch B) &gt; manifest + granted both declare the cap → allowed" time="0.000391047">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; two-tier (Batch B) &gt; granted set with the cap but manifest does NOT → denied (Tier 1 still required)" time="0.000218974">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="hasCapability / requireCapability &gt; two-tier (Batch B) &gt; granted wildcard authorizes anything in its match set the manifest also declared" time="0.000250846">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="wrapServiceWithCaps &gt; passes through method calls when cap is held" time="0.001446711">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="wrapServiceWithCaps &gt; throws MissingCapabilityError when cap is missing" time="0.000350799">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="wrapServiceWithCaps &gt; throws UnknownMethodError for non-existent method" time="0.000334858">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="makeFetchProxy &gt; allows a hostname when http:fetch:&lt;host&gt; is declared" time="0.035200445">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="makeFetchProxy &gt; blocks a hostname not in the allowlist" time="0.000559343">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="makeSecretsProxy &gt; reads when secrets:read:&lt;NAME&gt; is declared" time="0.00033017">
+        </testcase>
+        <testcase classname="src/capabilities.test.ts" name="makeSecretsProxy &gt; throws on unscoped secret read" time="0.000558983">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/fork-install-consent.test.ts" timestamp="2026-08-23T17:00:22.882Z" hostname="main-server-Precision-7865-Tower" tests="6" failures="0" errors="0" skipped="0" time="0.057029724">
+        <testcase classname="src/fork-install-consent.test.ts" name="E5 fork→install supply-chain consent gate (D-007/D-009) &gt; a forked plugin gets ONLY the capabilities the user consented to" time="0.003017732">
+        </testcase>
+        <testcase classname="src/fork-install-consent.test.ts" name="E5 fork→install supply-chain consent gate (D-007/D-009) &gt; install-consent of nothing denies every manifest capability" time="0.000621222">
+        </testcase>
+        <testcase classname="src/fork-install-consent.test.ts" name="E5 fork→install supply-chain consent gate (D-007/D-009) &gt; a forked plugin cannot escalate beyond its manifest, even if a grant names the cap" time="0.000343455">
+        </testcase>
+        <testcase classname="src/fork-install-consent.test.ts" name="E5 fork→install supply-chain consent gate (D-007/D-009) &gt; the dangerous fork surfaces — outbound fetch + secret reads — are gated by consent" time="0.045640857">
+        </testcase>
+        <testcase classname="src/fork-install-consent.test.ts" name="E5 fork→install supply-chain consent gate (D-007/D-009) &gt; a granted wildcard only authorizes hosts the manifest already declared (no blanket grant)" time="0.000493556">
+        </testcase>
+        <testcase classname="src/fork-install-consent.test.ts" name="E5 fork→install supply-chain consent gate (D-007/D-009) &gt; requireCapability throws on an unconsented capability (the runtime enforcement point)" time="0.000484738">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/hot-reload.test.ts" timestamp="2026-08-23T17:00:22.888Z" hostname="main-server-Precision-7865-Tower" tests="4" failures="0" errors="0" skipped="0" time="2.79972515">
+        <testcase classname="src/hot-reload.test.ts" name="HotReloader &gt; emits &quot;changed&quot; then &quot;reloaded&quot; when a valid papercusp.json is written" time="0.067810807">
+        </testcase>
+        <testcase classname="src/hot-reload.test.ts" name="HotReloader &gt; emits &quot;error&quot; when the manifest is missing required fields after a change" time="0.057954623">
+        </testcase>
+        <testcase classname="src/hot-reload.test.ts" name="HotReloader &gt; debounces a burst of changes into a single reload" time="2.460239846">
+        </testcase>
+        <testcase classname="src/hot-reload.test.ts" name="HotReloader &gt; stop() closes the watcher so no further events fire" time="0.204853065">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/loader.test.ts" timestamp="2026-08-23T17:00:22.891Z" hostname="main-server-Precision-7865-Tower" tests="14" failures="0" errors="0" skipped="0" time="0.324427684">
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; loads a valid plugin" time="0.186605533">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; rejects when manifest is missing" time="0.003705394">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; rejects when entry point is missing but the manifest declares tools" time="0.002322366">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; rejects a pack with no entry point (a pack exists to provide tool handlers)" time="0.00181802">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; loads a manifest-only plugin (no entry, no tools — provision/roles/config only)" time="0.003566875">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; loads a manifest-only trigger pack and preserves its discovery descriptor" time="0.006176017">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; rejects a trigger pack whose OAuth field is not snapshot-safe" time="0.005945861">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; rejects when manifest.version != plugin.version" time="0.007849747">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPluginFromDir &gt; rejects when papercusp range excludes the runtime version" time="0.007344699">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPlugins &gt; honors PAPERCUSP_WORKSPACES_ROOT when HOME is remapped" time="0.012978697">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPlugins &gt; walks projectDir/plugins/" time="0.029934583">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPlugins &gt; skips dirs with neither manifest nor entry (not-a-plugin)" time="0.001034673">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPlugins &gt; recurses into @scope/ dirs as plugin candidates" time="0.012597539">
+        </testcase>
+        <testcase classname="src/loader.test.ts" name="loadPlugins &gt; dedupes by plugin name across sources" time="0.01676159">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/manifest-lint.test.ts" timestamp="2026-08-23T17:00:22.895Z" hostname="main-server-Precision-7865-Tower" tests="12" failures="0" errors="0" skipped="0" time="0.015908096">
+        <testcase classname="src/manifest-lint.test.ts" name="lintBareWildcardCaps &gt; warns on bare-* leaf cap" time="0.00381734">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintBareWildcardCaps &gt; accepts subdomain wildcard" time="0.000592998">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintBareWildcardCaps &gt; accepts prefix wildcard" time="0.000397439">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintBareWildcardCaps &gt; checks action-scoped capabilities too" time="0.000800119">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintWasmActionsAgainstWit &gt; returns no findings when runtime is not wasm" time="0.000519786">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintWasmActionsAgainstWit &gt; warns when .d.ts is not findable" time="0.000496701">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintWasmActionsAgainstWit &gt; warns when declared action is not in the .d.ts surface" time="0.000453659">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintIframeSameOrigin &gt; returns no findings for non-iframe ui entries" time="0.000515108">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintIframeSameOrigin &gt; errors when iframe entry HTML cannot be read" time="0.000323246">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintIframeSameOrigin &gt; warns on external scripts without a covering http:fetch: cap" time="0.00066644">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintIframeSameOrigin &gt; accepts external scripts when host is in declared http:fetch: caps" time="0.000453638">
+        </testcase>
+        <testcase classname="src/manifest-lint.test.ts" name="lintManifest (compound) &gt; aggregates findings from all 3 linters" time="0.000734161">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/manifest-validate.test.ts" timestamp="2026-08-23T17:00:22.899Z" hostname="main-server-Precision-7865-Tower" tests="22" failures="0" errors="0" skipped="0" time="0.14948862">
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; accepts a minimal valid manifest" time="0.130160222">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; rejects unknown top-level fields" time="0.001215964">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; rejects an invalid plugin id" time="0.000600132">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; rejects an id that is too short" time="0.000435223">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; accepts scoped ids" time="0.000394374">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; rejects bad semver" time="0.000474899">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="validateManifest &gt; accepts known optional fields" time="0.00034115">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="$schema meta-keyword &gt; allows $schema field for editor LSP autocomplete" time="0.000445302">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="plugin dependency + config fields &gt; accepts requires + recommends arrays" time="0.000490259">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="plugin dependency + config fields &gt; accepts defaultConfig object" time="0.000586525">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="plugin dependency + config fields &gt; rejects requires as non-array" time="0.000391508">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="triggerPack manifest shape (external-triggers P-012) &gt; accepts the strict pure-data declaration" time="0.000710455">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="triggerPack manifest shape (external-triggers P-012) &gt; refuses an inline armed bit — install and arm stay separate" time="0.000602717">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="triggerPack manifest shape (external-triggers P-012) &gt; refuses unknown nested fields and invalid storm limits" time="0.000633186">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="triggerPack manifest shape (external-triggers P-012) &gt; requires recipe args declarations and an explicit dead-letter retry disposition" time="0.000910703">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; accepts a provides.events family declaration" time="0.000710776">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; accepts a no-param (literal-key) provided family" time="0.000795369">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; accepts dependencies.events with an optional flag" time="0.000315711">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; rejects a provided event missing keyTemplate" time="0.00028371">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; rejects an unknown subfield on a provided event (additionalProperties:false)" time="0.000272007">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; rejects an unknown key under provides (additionalProperties:false)" time="0.00025331">
+        </testcase>
+        <testcase classname="src/manifest-validate.test.ts" name="provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005) &gt; rejects a dependencies.events entry missing family" time="0.000284952">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/pack-validate.test.ts" timestamp="2026-08-23T17:00:22.907Z" hostname="main-server-Precision-7865-Tower" tests="11" failures="0" errors="0" skipped="0" time="0.18868677">
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; loads the shipped reference pack (example-tool-pack) cleanly" time="0.140451869">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; accepts a synthetic tools-only pack" time="0.004213688">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack declaring a ui contribution" time="0.003147924">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack with roles / routines / actions / hooks" time="0.006140157">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack with a non-js runtime" time="0.001890169">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack implementing getDynamicTools" time="0.002150753">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack with zero tools" time="0.002183167">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; accepts a pack declaring provides.events + dependencies.events (pure data, no runtime)" time="0.002884424">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack declaring reactions (event REACTIONS are plugin runtime)" time="0.002233805">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; rejects a pack whose provides.events keyTemplate placeholder has no matching param" time="0.003533671">
+        </testcase>
+        <testcase classname="src/pack-validate.test.ts" name="pack manifest validation (kind=pack) &gt; a plain plugin (kind omitted) with the same runtime surfaces still loads" time="0.003094601">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/plugin-events-integration.test.ts" timestamp="2026-08-23T17:00:22.911Z" hostname="main-server-Precision-7865-Tower" tests="7" failures="0" errors="0" skipped="0" time="0.019818185">
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; registers a plugin tool with declared events; wire kinds computed correctly" time="0.005939999">
+        </testcase>
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; surfaces plugin events in MCP tools/list discoverability" time="0.001402485">
+        </testcase>
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; rejects unsupported JSON-Schema keywords with a clear error" time="0.002395518">
+        </testcase>
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; rejects reserved event names (chunk/done/heartbeat/result)" time="0.00185453">
+        </testcase>
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; accepts non-reserved progress + error (D2/D3 carve-out)" time="0.000789769">
+        </testcase>
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; one bad tool does not block sibling tools in the same plugin" time="0.000907266">
+        </testcase>
+        <testcase classname="src/plugin-events-integration.test.ts" name="plugin events from JSON manifests (T3.2) &gt; plugin tools without events still register cleanly (back-compat)" time="0.000537831">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/tools.test.ts" timestamp="2026-08-23T17:00:22.914Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.393569385">
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; registers a single-tool plugin with explicit expose into the projection registry" time="0.225812951">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; derives default expose paths when manifest omits them" time="0.003356528">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; strips @scope/ prefix from default exposure" time="0.001516887">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; records error when handler missing for a manifest tool" time="0.002281226">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; honors a per-plugin discoveryTimeoutMs override (short budget → times out)" time="0.102357192">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; does not time out a fast getDynamicTools (default budget)" time="0.013333624">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; clamps an over-large discoveryTimeoutMs and still completes fast work" time="0.011241283">
+        </testcase>
+        <testcase classname="src/tools.test.ts" name="registerPluginTools &gt; handles multiple plugins without collision when names differ" time="0.005854965">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/trigger-pack-validate.test.ts" timestamp="2026-08-23T17:00:22.917Z" hostname="main-server-Precision-7865-Tower" tests="3" failures="0" errors="0" skipped="0" time="0.148916877">
+        <testcase classname="src/trigger-pack-validate.test.ts" name="&apos;email-draft-responder&apos; shipped trigger pack &gt; loads as manifest-only, declares a canonical plan input, and stays disarmed" time="0.137142272">
+        </testcase>
+        <testcase classname="src/trigger-pack-validate.test.ts" name="&apos;slack-thread-responder&apos; shipped trigger pack &gt; loads as manifest-only, declares a canonical plan input, and stays disarmed" time="0.002271878">
+        </testcase>
+        <testcase classname="src/trigger-pack-validate.test.ts" name="&apos;meeting-prep-brief&apos; shipped trigger pack &gt; loads as manifest-only, declares a canonical plan input, and stays disarmed" time="0.001810836">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/tui-pane-validate.test.ts" timestamp="2026-08-23T17:00:22.918Z" hostname="main-server-Precision-7865-Tower" tests="6" failures="0" errors="0" skipped="0" time="0.175753349">
+        <testcase classname="src/tui-pane-validate.test.ts" name="tui-pane manifest validation &gt; loads the shipped reference plugin (example-tui-pane) cleanly" time="0.150854326">
+        </testcase>
+        <testcase classname="src/tui-pane-validate.test.ts" name="tui-pane manifest validation &gt; accepts a synthetic tui-pane plugin with the right caps" time="0.003924608">
+        </testcase>
+        <testcase classname="src/tui-pane-validate.test.ts" name="tui-pane manifest validation &gt; rejects a tui-pane plugin lacking ui:tui-pane" time="0.002653277">
+        </testcase>
+        <testcase classname="src/tui-pane-validate.test.ts" name="tui-pane manifest validation &gt; rejects a tui-pane entry without a command" time="0.002165612">
+        </testcase>
+        <testcase classname="src/tui-pane-validate.test.ts" name="tui-pane manifest validation &gt; still requires ui:harness-route for a react/iframe surface" time="0.002309471">
+        </testcase>
+        <testcase classname="src/tui-pane-validate.test.ts" name="tui-pane manifest validation &gt; does NOT force ui:harness-route on a tui-pane-only plugin" time="0.002001906">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/daemon/bwrap-args.test.ts" timestamp="2026-08-23T17:00:22.921Z" hostname="main-server-Precision-7865-Tower" tests="6" failures="0" errors="0" skipped="0" time="0.014742198">
+        <testcase classname="src/daemon/bwrap-args.test.ts" name="buildBwrapArgs &gt; defaults the binary to &quot;bwrap&quot; and honors an override" time="0.002613128">
+        </testcase>
+        <testcase classname="src/daemon/bwrap-args.test.ts" name="buildBwrapArgs &gt; emits the fixed hardening flags" time="0.002332275">
+        </testcase>
+        <testcase classname="src/daemon/bwrap-args.test.ts" name="buildBwrapArgs &gt; binds the workDir to /work and chdirs there" time="0.001093217">
+        </testcase>
+        <testcase classname="src/daemon/bwrap-args.test.ts" name="buildBwrapArgs &gt; adds read-only binds for readPaths and rw binds for writePaths" time="0.000730113">
+        </testcase>
+        <testcase classname="src/daemon/bwrap-args.test.ts" name="buildBwrapArgs &gt; appends the command after a &quot;--&quot; separator, last" time="0.000734733">
+        </testcase>
+        <testcase classname="src/daemon/bwrap-args.test.ts" name="buildBwrapArgs &gt; omits net/user namespace flags by default (v1 caveat)" time="0.000528383">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/daemon/jsonrpc-bridge.test.ts" timestamp="2026-08-23T17:00:22.925Z" hostname="main-server-Precision-7865-Tower" tests="11" failures="0" errors="0" skipped="0" time="0.046296757">
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="call &gt; writes a tagged request and resolves with the matching reply result" time="0.008143065">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="call &gt; rejects with the error code + message on an error reply" time="0.001707385">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="call &gt; assigns monotonic ids and routes each reply to its own caller" time="0.000913008">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="call &gt; times out a call with no reply" time="0.021278704">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="onData framing &gt; ignores garbage lines without crashing the bridge" time="0.00098151">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="onData framing &gt; ignores a stale reply for an unknown id" time="0.000494668">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="onData framing &gt; dispatches two messages delivered in one chunk" time="0.000746765">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="onData framing &gt; reassembles a reply split across two chunks" time="0.000831209">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="notifications &gt; fires every registered handler for an id-less message" time="0.000803154">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="shutdown &gt; rejects in-flight calls and refuses new ones" time="0.000734402">
+        </testcase>
+        <testcase classname="src/daemon/jsonrpc-bridge.test.ts" name="shutdown &gt; notify after shutdown is a silent no-op" time="0.000403622">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/wasm/host-impls.test.ts" timestamp="2026-08-23T17:00:22.929Z" hostname="main-server-Precision-7865-Tower" tests="4" failures="0" errors="0" skipped="0" time="0.014884635">
+        <testcase classname="src/wasm/host-impls.test.ts" name="TokenBucket &gt; exposes its capacity and refill rate" time="0.005672311">
+        </testcase>
+        <testcase classname="src/wasm/host-impls.test.ts" name="TokenBucket &gt; starts full and drains to empty" time="0.001192328">
+        </testcase>
+        <testcase classname="src/wasm/host-impls.test.ts" name="TokenBucket &gt; refills proportionally to elapsed time" time="0.001240702">
+        </testcase>
+        <testcase classname="src/wasm/host-impls.test.ts" name="TokenBucket &gt; caps the refill at capacity (no unbounded accrual)" time="0.00080031">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/wasm/jco-transpiler-uninstalled.test.ts" timestamp="2026-08-23T17:00:22.931Z" hostname="main-server-Precision-7865-Tower" tests="1" failures="0" errors="0" skipped="0" time="0.013453443">
+        <testcase classname="src/wasm/jco-transpiler-uninstalled.test.ts" name="realJcoTranspiler — jco not installed &gt; throws an install-guidance error with the underlying cause appended" time="0.00615711">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/wasm/jco-transpiler.test.ts" timestamp="2026-08-23T17:00:22.931Z" hostname="main-server-Precision-7865-Tower" tests="6" failures="0" errors="0" skipped="0" time="0.0227448">
+        <testcase classname="src/wasm/jco-transpiler.test.ts" name="realJcoTranspiler — failure surfaces &gt; throws when the jco module has no `transpile` export (API shape changed)" time="0.006097444">
+        </testcase>
+        <testcase classname="src/wasm/jco-transpiler.test.ts" name="realJcoTranspiler — failure surfaces &gt; throws when jco produces files but none is the expected entry" time="0.001443625">
+        </testcase>
+        <testcase classname="src/wasm/jco-transpiler.test.ts" name="realJcoTranspiler — success path &gt; calls jco.transpile with the wasm bytes and the async/instantiation opts" time="0.003409661">
+        </testcase>
+        <testcase classname="src/wasm/jco-transpiler.test.ts" name="realJcoTranspiler — success path &gt; writes every produced file under the output dir and returns the entry rel path" time="0.000919069">
+        </testcase>
+        <testcase classname="src/wasm/jco-transpiler.test.ts" name="realJcoTranspiler — success path &gt; mkdirs nested subdirs (interfaces/) before writing files inside them" time="0.001861143">
+        </testcase>
+        <testcase classname="src/wasm/jco-transpiler.test.ts" name="realJcoTranspiler — success path &gt; does NOT mkdir for a top-level file (dir === outputDir)" time="0.001097134">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/wasm/transpile.test.ts" timestamp="2026-08-23T17:00:22.933Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.105619302">
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; first call invokes the transpiler + writes cache + marker" time="0.014048857">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; second call hits cache, does NOT re-invoke transpiler" time="0.007718422">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; different wasm contents → different cache directories" time="0.00871927">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; corrupt cache (marker exists but entry missing) → re-transpiles" time="0.018654154">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; transpiler error propagates AND cleans up partial cache" time="0.008744729">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; transpiler returning a non-existent entryRelPath is rejected" time="0.005504746">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; marker contains the entry&apos;s relative path" time="0.014878624">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; concurrent calls with same wasm both succeed (one wins the rename)" time="0.018057328">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/wasm/wasm-plugin-host.test.ts" timestamp="2026-08-23T17:00:22.935Z" hostname="main-server-Precision-7865-Tower" tests="9" failures="0" errors="0" skipped="0" time="0.014525829">
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; throws on input that is not a wasm binary (bad magic)" time="0.003678261">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; throws on input shorter than the 8-byte header" time="0.000672912">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; reads min and max when the limits flag declares a max (flag=1)" time="0.001262854">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; returns max=null when the limits flag has no max (flag=0)" time="0.000369916">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; decodes multi-byte LEB128 page counts (&gt;127)" time="0.000389083">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; treats an empty memory section (count=0) as 0 pages" time="0.000349627">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; returns {0,0} when there is no memory section at all" time="0.000539044">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; skips a preceding non-memory section and finds the memory section after it" time="0.000478667">
+        </testcase>
+        <testcase classname="src/wasm/wasm-plugin-host.test.ts" name="inspectWasmMemoryMax &gt; throws on an over-long varuint32 (&gt;5 continuation bytes)" time="0.000526158">
         </testcase>
     </testsuite>
 </testsuites>

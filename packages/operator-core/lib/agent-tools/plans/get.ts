@@ -20,7 +20,8 @@ import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
 import { withWorkspace } from "@papercusp/db-org";
 import { readPlanBySlug } from "./source";
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from "./_ctx-opts";
-import { harnessArg, harnessScopedCtx } from "../_harness-scope";
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from "../_harness-scope";
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from "./slug-scope";
 import { resolveEffectiveStatus } from "./effective-status";
 import { hashPlanContent } from "./content-hash";
 import { DEFAULT_WORKSPACE_ID } from "../../workspace-registry";
@@ -413,9 +414,28 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const sctx = harnessScopedCtx(args.harness, ctx);
-    const opts = await ctxToPlanSourceOpts(sctx);
     const slugs = mergeIds(args.slug, args.slugs);
+    // EI-21194994217912029: exact-slug scope recovery. A recovery call often
+    // carries an exact plan slug but NO resolvable harness; instead of failing
+    // bare `harness_required`, resolve the owning harness from the slug itself
+    // (PG-canonical index, caller's workspace). Explicit-harness calls and
+    // harness-scoped sessions take the unchanged fast path below.
+    const scope = resolveHarnessScope(args.harness, ctx);
+    let sctx: typeof ctx & { harnessSlug: string };
+    if (scope.kind === "none") {
+      const decision = await recoverHarnessFromSlugs(ctx, slugs);
+      if (decision.status !== "resolved") return slugScopeErrorResult("plans:get", decision);
+      sctx = { ...ctx, harnessSlug: decision.harnessSlug };
+      ctxAny.metadata?.({
+        harnessAutoResolved: decision.bySlug,
+        ...(Object.keys(decision.ambiguous).length > 0
+          ? { harnessAmbiguous: decision.ambiguous }
+          : {}),
+      });
+    } else {
+      sctx = harnessScopedCtx(args.harness, ctx);
+    }
+    const opts = await ctxToPlanSourceOpts(sctx);
     const requestedItemIds = args.items
       ? [...new Set(args.items)]
       : null;
