@@ -46,28 +46,23 @@ export default defineTool({
       .filter((row) => row.category === 'typed-blocker-stale-hint')
       .map((row) => row.slug);
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            ok: true,
-            manual: true,
-            scheduled: false,
-            readOnlyLifecycle: true,
-            generatedAt: manifest.generatedAt,
-            workspace: workspaceId,
-            classifierRevision: manifest.scope.classifierRevision,
-            rows: manifest.rows.length,
-            bands: manifest.bands,
-            blockerEvidence: manifest.blockerEvidence,
-            documentedSupersession,
-            staleBlockers,
-            artifacts: result.artifacts,
-            next:
-              'Read the JSON artifact for per-plan evidence. Before any separate mutation batch, re-read live ownership; this tool intentionally performs no cleanup writes.',
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        manual: true,
+        scheduled: false,
+        readOnlyLifecycle: true,
+        generatedAt: manifest.generatedAt,
+        workspace: workspaceId,
+        classifierRevision: manifest.scope.classifierRevision,
+        rows: manifest.rows.length,
+        bands: manifest.bands,
+        blockerEvidence: manifest.blockerEvidence,
+        documentedSupersession,
+        staleBlockers,
+        artifacts: result.artifacts,
+        next:
+          'Read the JSON artifact for per-plan evidence. Before any separate mutation batch, re-read live ownership; this tool intentionally performs no cleanup writes.',
+      },
     };
   },
 });

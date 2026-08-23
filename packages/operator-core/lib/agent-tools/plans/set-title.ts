@@ -50,7 +50,7 @@ type SetTitleValue =
   | { ok: false; code: 'legacy_plan'; reason?: LegacyReason };
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  data: payload,
   ...(isError ? { isError: true as const } : {}),
 });
 

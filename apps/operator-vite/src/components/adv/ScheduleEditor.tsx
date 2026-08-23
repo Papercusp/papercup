@@ -214,7 +214,7 @@ export interface RunScheduleToolResult {
  * refused by the start gate. Keep the shared browser writer honest for every
  * ScheduleEditor/Automations caller.
  */
-export function parseRunScheduleToolPayload(payload: unknown): RunScheduleToolResult {
+function parseRunScheduleToolPayload(payload: unknown): RunScheduleToolResult {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: true };
   const value = payload as {
     ok?: boolean;

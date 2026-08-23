@@ -4,13 +4,13 @@
  * buildSchedulePayload is the RRULE/payload construction the plans:set-schedule
  * write path depends on; assert it tz-independently (structure + RRULE string).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSchedulePayload,
   describeForm,
   deriveInitialForm,
   parseRrule,
-  parseRunScheduleToolPayload,
+  runScheduleTool,
   type RecurrenceForm,
   type RawSchedule,
 } from './ScheduleEditor';
@@ -143,24 +143,61 @@ describe('deriveInitialForm (D-020 pre-fill)', () => {
   });
 });
 
-describe('parseRunScheduleToolPayload', () => {
-  it('rejects a bulk envelope whose request succeeded but whose item was refused', () => {
-    expect(parseRunScheduleToolPayload({
+function stubRunToolPayload(payload: unknown) {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: vi.fn().mockResolvedValue({
+      ok: true,
+      result: { content: [{ text: JSON.stringify(payload) }] },
+    }),
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('runScheduleTool payload handling', () => {
+  it('rejects a bulk envelope whose request succeeded but whose item was refused', async () => {
+    const fetchMock = stubRunToolPayload({
       ok: true,
       results: [{ ok: false, slug: 'blocked-plan', error: 'plan_inputs_not_ready', detail: 'Set required inputs first' }],
       counts: { ok: 0, failed: 1 },
-    })).toEqual({ ok: false, message: 'Set required inputs first' });
+    });
+
+    await expect(runScheduleTool('plans:arm-schedule', { slug: 'blocked-plan' }))
+      .resolves.toEqual({ ok: false, message: 'Set required inputs first' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/agent-mcp/run-tool', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'plans:arm-schedule',
+        args: { slug: 'blocked-plan' },
+        confirmed: true,
+      }),
+    }));
   });
 
-  it('rejects failed counts even when a legacy envelope omits item rows', () => {
-    expect(parseRunScheduleToolPayload({ ok: true, counts: { ok: 0, failed: 2 } }))
-      .toEqual({ ok: false, message: '2 tool items failed' });
+  it('rejects failed counts even when a legacy envelope omits item rows', async () => {
+    stubRunToolPayload({ ok: true, counts: { ok: 0, failed: 2 } });
+
+    await expect(runScheduleTool('plans:arm-schedule', { slug: 'blocked-plan' }))
+      .resolves.toEqual({ ok: false, message: '2 tool items failed' });
   });
 
-  it('preserves direct errors and accepts a genuinely green bulk result', () => {
-    expect(parseRunScheduleToolPayload({ ok: false, error: 'not_found', detail: 'Plan not found' }))
-      .toEqual({ ok: false, message: 'Plan not found' });
-    expect(parseRunScheduleToolPayload({ ok: true, results: [{ ok: true, slug: 'ready-plan' }], counts: { ok: 1, failed: 0 } }))
-      .toEqual({ ok: true });
+  it('preserves direct errors and accepts a genuinely green bulk result', async () => {
+    stubRunToolPayload({ ok: false, error: 'not_found', detail: 'Plan not found' });
+    await expect(runScheduleTool('plans:arm-schedule', { slug: 'missing-plan' }))
+      .resolves.toEqual({ ok: false, message: 'Plan not found' });
+
+    stubRunToolPayload({
+      ok: true,
+      results: [{ ok: true, slug: 'ready-plan' }],
+      counts: { ok: 1, failed: 0 },
+    });
+    await expect(runScheduleTool('plans:arm-schedule', { slug: 'ready-plan' }))
+      .resolves.toEqual({ ok: true });
   });
 });

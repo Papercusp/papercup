@@ -31,8 +31,11 @@ const withdraw = (await import('./withdraw_release_request')).default;
 
 const parse = (x: unknown) => (withdraw.args as { parse: (x: unknown) => unknown }).parse(x);
 const call = async (x: unknown, ctx: unknown = {}) => {
-  const res = (await withdraw.handler(parse(x) as never, ctx as never)) as { content: Array<{ text: string }> };
-  return JSON.parse(res.content[0].text);
+  const res = (await withdraw.handler(parse(x) as never, ctx as never)) as {
+    data?: unknown;
+    content?: Array<{ text: string }>;
+  };
+  return res.data ?? JSON.parse(res.content![0].text);
 };
 
 const pendingPayload = (by = 'me', holder = 'holder-1') => ({

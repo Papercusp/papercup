@@ -41,7 +41,7 @@ const argsSchema = z.object({
 });
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  data: payload,
   ...(isError ? { isError: true as const } : {}),
 });
 

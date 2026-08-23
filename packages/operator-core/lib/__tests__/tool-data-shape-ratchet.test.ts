@@ -223,7 +223,11 @@ for (const file of TOOL_FILES) {
 //
 // If you are here because the gate is red again: migrate a batch and lower this
 // further — do NOT just bump it.
-const BASELINE = 438;
+// 2026-08-23 affected-gate repair: migrated five real inline-JSON handlers
+// (plans:{publish-outputs,set-output-schema,set-title,audit-unshipped} and
+// work_items:withdraw_release_request). Real count 440 → 435; ceiling 438 → 437,
+// leaving two slots without rewarding the preceding net growth with a bump.
+const BASELINE = 437;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

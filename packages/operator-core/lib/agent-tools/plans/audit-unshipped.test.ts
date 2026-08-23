@@ -53,8 +53,8 @@ function result() {
   };
 }
 
-function parse(output: { content: Array<{ text: string }> }) {
-  return JSON.parse(output.content[0]!.text) as Record<string, unknown>;
+function parse(output: { data?: Record<string, unknown>; content?: Array<{ text: string }> }) {
+  return output.data ?? JSON.parse(output.content![0]!.text) as Record<string, unknown>;
 }
 
 beforeEach(() => {
