@@ -49,7 +49,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
-import { planItemLaneBlockReason } from './plan-item-lane-guard';
+import { planItemLaneBlockReason, planItemNeedsHumanContradiction } from './plan-item-lane-guard';
 
 function planItem(overrides: Partial<{ id: string; storedStatus: string; blockedBy: string[]; text: string }> = {}) {
   return {
@@ -853,5 +853,52 @@ describe('planItemLaneBlockReason', () => {
       });
       expect(got).toBeNull();
     });
+  });
+});
+
+describe('planItemNeedsHumanContradiction (EI-13766)', () => {
+  beforeEach(() => {
+    getPlanRowMock.mockReset();
+    planItemsForRowMock.mockReset();
+    planItemsForRowMock.mockImplementation((row: unknown) => (row as { items: unknown[] }).items);
+    fakeSourcePlanRow = null;
+    fakeSqlError = null;
+    fakeSql.mockClear();
+  });
+
+  it('rejects a payload-linked owner park when plan truth explicitly remains agent-actionable', async () => {
+    getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-001', storedStatus: 'todo' })] });
+    const got = await planItemNeedsHumanContradiction({
+      payload: { plan_item: { plan_slug: 'agent-plan', item_id: 'P-001' } },
+      harness: 'papercusp',
+    });
+    expect(got).toMatchObject({ planSlug: 'agent-plan', itemIds: ['P-001'] });
+    expect(got?.reason).toContain('needsHuman=false');
+  });
+
+  it('uses the feature column linkage and requires every referenced item to resolve actionable', async () => {
+    fakeSourcePlanRow = { source_plan_slug: 'column-plan', source_plan_item_ids: ['P-001', 'P-002'] };
+    getPlanRowMock.mockResolvedValue({
+      items: [planItem({ id: 'P-001', storedStatus: 'todo' }), planItem({ id: 'P-002', storedStatus: 'todo' })],
+    });
+    await expect(
+      planItemNeedsHumanContradiction({ payload: {}, harness: 'papercusp', id: 'F-1', family: 'feature' }),
+    ).resolves.toMatchObject({ planSlug: 'column-plan', itemIds: ['P-001', 'P-002'] });
+
+    getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-001', storedStatus: 'todo' })] });
+    await expect(
+      planItemNeedsHumanContradiction({ payload: {}, harness: 'papercusp', id: 'F-1', family: 'feature' }),
+    ).resolves.toBeNull();
+  });
+
+  it('allows a real needs-human plan lane and fails open on an unreadable plan', async () => {
+    getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-001', storedStatus: 'needs-human' })] });
+    const input = {
+      payload: { plan_item: { plan_slug: 'owner-plan', item_id: 'P-001' } },
+      harness: 'papercusp',
+    };
+    await expect(planItemNeedsHumanContradiction(input)).resolves.toBeNull();
+    getPlanRowMock.mockRejectedValue(new Error('plan unavailable'));
+    await expect(planItemNeedsHumanContradiction(input)).resolves.toBeNull();
   });
 });

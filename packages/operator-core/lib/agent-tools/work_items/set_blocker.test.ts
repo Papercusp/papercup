@@ -5,6 +5,7 @@ const mergeWorkItemPayload = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
+const planItemNeedsHumanContradiction = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
   mergeWorkItemPayload: (...args: unknown[]) => mergeWorkItemPayload(...args),
@@ -13,6 +14,9 @@ vi.mock('../../work-items', () => ({
 }));
 vi.mock('../../modes/store', () => ({
   getModes: (...args: unknown[]) => getModes(...args),
+}));
+vi.mock('../../scheduler/plan-item-lane-guard', () => ({
+  planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradiction(...args),
 }));
 
 import tool from './set_blocker';
@@ -34,6 +38,7 @@ beforeEach(() => {
   });
   setWorkItemClaimHold.mockResolvedValue({ applicable: true, held: false });
   getModes.mockResolvedValue([]);
+  planItemNeedsHumanContradiction.mockResolvedValue(null);
 });
 
 describe('work_items:set_blocker', () => {
@@ -107,6 +112,29 @@ describe('work_items:set_blocker', () => {
     const out = await one({ id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:prod-db' });
     expect(out).toMatchObject({ ok: false, id: 'WI-1' });
     expect(out.error).toMatch(/structured ask requires both.*summary.*nextVerb/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('rejects a plan contradiction before writing any blocker payload', async () => {
+    const item = {
+      id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup',
+      payload: { plan_item: { plan_slug: 'agent-plan', item_id: 'P-001' } },
+    };
+    getWorkItem.mockResolvedValue(item);
+    planItemNeedsHumanContradiction.mockResolvedValue({
+      reason: 'linked plan item agent-plan#P-001 explicitly remains agent-actionable (needsHuman=false)',
+      planSlug: 'agent-plan',
+      itemIds: ['P-001'],
+    });
+
+    const out = await one({
+      id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.', nextVerb: 'setup:save_key',
+    });
+
+    expect(out).toMatchObject({ ok: false, id: 'WI-1' });
+    expect(out.error).toMatch(/agent-actionable.*no blocker was written/);
     expect(mergeWorkItemPayload).not.toHaveBeenCalled();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });

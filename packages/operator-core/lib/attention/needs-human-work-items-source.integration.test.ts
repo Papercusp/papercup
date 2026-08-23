@@ -45,14 +45,21 @@ let db: FreshPgDb;
 /** An issue-family row (bug/change/task) carrying the payload.needsHuman dialect. */
 async function seedIssue(
   id: string,
-  opts: { status?: string; kind?: string; needsHuman?: boolean; updatedTs?: number } = {},
+  opts: {
+    status?: string;
+    kind?: string;
+    needsHuman?: boolean;
+    updatedTs?: number;
+    stateChangedAt?: string | null;
+  } = {},
 ) {
   const payload = opts.needsHuman === false ? null : { needsHuman: true };
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id,
+       created_ts, updated_ts, state_changed_at, payload)
     VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${`title ${id}`}, ${opts.status ?? 'open'}, ${null},
-       ${WS}, 0, ${opts.updatedTs ?? 0}, ${payload ? db.sql.json(payload) : null})`;
+       ${WS}, 0, ${opts.updatedTs ?? 0}, ${opts.stateChangedAt ?? null}, ${payload ? db.sql.json(payload) : null})`;
 }
 
 /** A feature-family row using the OTHER dialect: status = 'needs-human'. */
@@ -69,6 +76,10 @@ beforeAll(async () => {
   db = await createFreshPgDb('needs-human-attention');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // Migration 896 is newer than the shared minimal work-items fixture. Add the
+  // lifecycle clock explicitly so this source test proves the production read
+  // contract without widening every unrelated fixture consumer.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.work_items ADD COLUMN state_changed_at timestamptz`);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
 }, 180_000);
 
@@ -146,5 +157,38 @@ describe('readNeedsHumanWorkItems — terminal rows never reach the owner (WI-59
     const rows = await readNeedsHumanWorkItems({ workspaceId: WS, harness: H, limit: 2 });
 
     expect(rows.map((r) => r.feature_id)).toEqual(['WI-NEW', 'WI-MID']);
+  });
+
+  it('uses state_changed_at for stale reads and excludes legacy rows whose lifecycle age is unknown', async () => {
+    await seedIssue('WI-OLD', { stateChangedAt: '2026-07-01T00:00:00.000Z', updatedTs: 9_000 });
+    await seedIssue('WI-RECENT', { stateChangedAt: '2026-07-20T00:00:00.000Z', updatedTs: 1_000 });
+    await seedIssue('WI-LEGACY-NULL', { stateChangedAt: null, updatedTs: 500 });
+
+    const rows = await readNeedsHumanWorkItems({
+      workspaceId: WS,
+      harness: H,
+      stateChangedBefore: '2026-07-10T00:00:00.000Z',
+    });
+
+    expect(idsOf(rows)).toEqual(['WI-OLD']);
+    expect(rows[0]).toMatchObject({
+      state_changed_at: expect.anything(),
+      payload: { needsHuman: true },
+    });
+  });
+
+  it('orders stale reminder candidates by oldest state episode, independent of updated_ts churn', async () => {
+    await seedIssue('WI-OLDEST', { stateChangedAt: '2026-06-01T00:00:00.000Z', updatedTs: 9_000 });
+    await seedIssue('WI-MIDDLE', { stateChangedAt: '2026-06-10T00:00:00.000Z', updatedTs: 1_000 });
+    await seedIssue('WI-NEWEST-STALE', { stateChangedAt: '2026-06-20T00:00:00.000Z', updatedTs: 500 });
+
+    const rows = await readNeedsHumanWorkItems({
+      workspaceId: WS,
+      harness: H,
+      stateChangedBefore: '2026-07-01T00:00:00.000Z',
+      oldestFirst: true,
+    });
+
+    expect(rows.map((row) => row.feature_id)).toEqual(['WI-OLDEST', 'WI-MIDDLE', 'WI-NEWEST-STALE']);
   });
 });

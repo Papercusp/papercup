@@ -143,6 +143,29 @@ describe('decideLaneGate — UN-GATE (plan lane actionable again) [EI-14699]', (
     });
   });
 
+  it('repairs a direct needs-human state or legacy owner-action flag that contradicts actionable plan truth', () => {
+    expect(decideLaneGate(wi({ state: 'needs-human' }), 'actionable', REF)).toEqual({ op: 'repair-needs-human' });
+    expect(
+      decideLaneGate(wi({ state: 'open', payload: { needsOwnerAction: true } }), 'actionable', REF),
+    ).toEqual({ op: 'repair-needs-human' });
+  });
+
+  it('repairs the human portion even when an independent nonhuman blocker must remain parked', () => {
+    const human = updateExternalBlockerHistory(
+      {},
+      { kind: 'human', capability: 'credential', ref: 'credential:prod', summary: 'credential needed' },
+      'su-a',
+    );
+    const both = updateExternalBlockerHistory(
+      { externalBlockers: human.blockers },
+      { kind: 'runtime', capability: 'live-dependency', ref: 'db:ready', summary: 'database unavailable' },
+      'su-b',
+    );
+    expect(
+      decideLaneGate(wi({ state: 'needs-human', payload: { externalBlockers: both.blockers } }), 'actionable', REF),
+    ).toEqual({ op: 'repair-needs-human' });
+  });
+
   it('a DIFFERENT plan item\'s lane blocker does not match this item id', () => {
     const otherRef = planLaneBlockerRef('some-other-plan', 'P-999');
     const d = decideLaneGate(wi({ state: 'blocked', payload: parkedPayload(otherRef) }), 'actionable', REF);

@@ -1,8 +1,94 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({
+  sendMessage: vi.fn(),
+  getMessageById: vi.fn(),
+  readImprovementItems: vi.fn(),
+  buildDigest: vi.fn(),
+  readOwnerFullAutonomyGrant: vi.fn(),
+  applyHumanQueueRanking: vi.fn(),
+  readNeedsHumanWorkItems: vi.fn(),
+  notifyAttentionOnce: vi.fn(),
+  notifyAttention: vi.fn(),
+}));
+
+vi.mock('../../agent-tools/coordination/messages', () => ({
+  sendMessage: h.sendMessage,
+  getMessageById: h.getMessageById,
+}));
+vi.mock('../improvements/read-items', () => ({ readImprovementItems: h.readImprovementItems }));
+vi.mock('../improvements/digest', () => ({ buildDigest: h.buildDigest }));
+vi.mock('../improvements/full-autonomy-grant', () => ({
+  readOwnerFullAutonomyGrant: h.readOwnerFullAutonomyGrant,
+}));
+vi.mock('../../queue-ranker/human-queue', () => ({ applyHumanQueueRanking: h.applyHumanQueueRanking }));
+vi.mock('../../attention/needs-human-work-items-source', () => ({
+  readNeedsHumanWorkItems: h.readNeedsHumanWorkItems,
+}));
+vi.mock('../../attention-notify', () => ({
+  notifyAttentionOnce: h.notifyAttentionOnce,
+  notifyAttention: h.notifyAttention,
+}));
+
 import { getSystemAction } from './system-actions';
-import './human-queue-digest-action';
-import { composeHumanQueueDigest } from './human-queue-digest-action';
+import {
+  composeHumanQueueDigest,
+  composeStaleNeedsHumanReminder,
+  staleNeedsHumanDeliveryKey,
+} from './human-queue-digest-action';
 import type { ImpactRankedItem } from '../improvements/blocking-impact';
+import type { NeedsHumanWorkItemRow } from '../../attention/needs-human-work-items-source';
+
+const ctx = {
+  installSlug: 'papercusp',
+  workspaceId: 'ws-test',
+  triggerConfig: {},
+  payloadTemplate: null,
+};
+
+function needsHumanRow(over: Partial<NeedsHumanWorkItemRow> = {}): NeedsHumanWorkItemRow {
+  return {
+    feature_id: 'EI-13766',
+    title: 'Owner action is still needed',
+    summary: 'Fallback question',
+    harness_slug: 'papercusp',
+    item_kind: 'change',
+    taken_by: 'su-fallback',
+    payload: {
+      externalBlockers: [
+        {
+          kind: 'human',
+          capability: 'credential',
+          capabilitySource: 'explicit',
+          ref: 'credential:production',
+          summary: 'Provide the production credential.',
+          status: 'active',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          createdBy: 'su-asker',
+          updatedAt: '2026-07-01T00:00:00.000Z',
+          nextVerb: 'setup:save_key',
+        },
+      ],
+    },
+    updated_ts: '2026-08-20T00:00:00.000Z',
+    state_changed_at: '2026-07-01T00:00:00.000Z',
+    status: 'needs-human',
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.readImprovementItems.mockResolvedValue([]);
+  h.readOwnerFullAutonomyGrant.mockResolvedValue(false);
+  h.buildDigest.mockReturnValue({ humanQueue: [] });
+  h.applyHumanQueueRanking.mockResolvedValue({ humanQueue: [] });
+  h.readNeedsHumanWorkItems.mockResolvedValue([]);
+  h.getMessageById.mockResolvedValue(null);
+  h.sendMessage.mockResolvedValue({ msg_id: 'm' });
+  h.notifyAttentionOnce.mockResolvedValue({ recordId: 1, deduped: false });
+  h.notifyAttention.mockResolvedValue(undefined);
+});
 
 function ranked(p: Partial<ImpactRankedItem> & { id: string }): ImpactRankedItem {
   return {
@@ -68,5 +154,83 @@ describe('composeHumanQueueDigest', () => {
     const composed = composeHumanQueueDigest([ranked({ id: 'EI-8', title: 'x'.repeat(300) })]);
     expect(composed!.body).toContain('…');
     expect(composed!.body).not.toContain('x'.repeat(150));
+  });
+});
+
+describe('stale needs-human reminders (EI-13766)', () => {
+  it('keys one delivery to the work-item state episode and renders the structured asker', () => {
+    const row = needsHumanRow();
+    expect(staleNeedsHumanDeliveryKey(row)).toBe(
+      'needs-human-stale:EI-13766:2026-07-01T00:00:00.000Z',
+    );
+    const reminder = composeStaleNeedsHumanReminder(row, Date.parse('2026-07-10T00:00:00.000Z'));
+    expect(reminder.summary).toContain('waited 9d');
+    expect(reminder.body).toContain('Question: Provide the production credential.');
+    expect(reminder.body).toContain('Asked by: su-asker');
+    expect(reminder.body).toContain('Unblocked by: setup:save_key');
+  });
+
+  it('falls back to taken_by when a legacy row lacks a structured ask', () => {
+    const reminder = composeStaleNeedsHumanReminder(needsHumanRow({ payload: {} }));
+    expect(reminder.askedBy).toBe('su-fallback');
+    expect(reminder.body).toContain('Question: Fallback question');
+  });
+
+  it('runs even when the improvement queue is empty and uses both replay-safe delivery rails', async () => {
+    const row = needsHumanRow();
+    h.readNeedsHumanWorkItems.mockResolvedValue([row]);
+    const run = getSystemAction('improvement-human-digest')!;
+
+    await run(ctx);
+
+    expect(h.readNeedsHumanWorkItems).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-test', oldestFirst: true, stateChangedBefore: expect.any(Date) }),
+    );
+    expect(h.sendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        to: ['human'],
+        msgId: expect.stringMatching(/^ntfy-0-[a-f0-9]{32}$/),
+        body: expect.stringContaining('Asked by: su-asker'),
+      }),
+    );
+    expect(h.notifyAttentionOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dedupeKey: 'needs-human-stale:EI-13766:2026-07-01T00:00:00.000Z',
+        data: expect.objectContaining({ askedBy: 'su-asker' }),
+      }),
+    );
+  });
+
+  it('reuses the same episode keys on replay and skips an already-present inbox message', async () => {
+    const row = needsHumanRow();
+    h.readNeedsHumanWorkItems.mockResolvedValue([row]);
+    h.getMessageById.mockResolvedValueOnce(null).mockResolvedValue({ msg_id: 'existing' });
+    const run = getSystemAction('improvement-human-digest')!;
+
+    await run(ctx);
+    await run(ctx);
+
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    const attentionKeys = h.notifyAttentionOnce.mock.calls.map((call) => call[0].dedupeKey);
+    expect(attentionKeys).toEqual([
+      'needs-human-stale:EI-13766:2026-07-01T00:00:00.000Z',
+      'needs-human-stale:EI-13766:2026-07-01T00:00:00.000Z',
+    ]);
+  });
+
+  it('keeps the attention rail alive when one inbox delivery fails', async () => {
+    h.readNeedsHumanWorkItems.mockResolvedValue([needsHumanRow()]);
+    h.sendMessage.mockRejectedValueOnce(new Error('coord unavailable'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await getSystemAction('improvement-human-digest')!(ctx);
+
+    expect(h.notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('EI-13766 stale-needs-human inbox send failed'),
+      'coord unavailable',
+    );
+    warn.mockRestore();
   });
 });

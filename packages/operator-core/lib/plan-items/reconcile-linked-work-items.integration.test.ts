@@ -60,9 +60,17 @@ const setWorkItemStateWithAliasInfo = h2.setWorkItemStateWithAliasInfo;
 // stub so a subsequent activeExternalBlockers/readWorkItemHeldOpenBy read (the
 // REAL pure functions, imported actual below) sees the mutation.
 const h4 = vi.hoisted(() => ({
-  mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+  mergeWorkItemPayload: vi.fn(async (
+    id: string,
+    patch: Record<string, unknown>,
+    opts?: { unset?: string[] },
+  ) => {
     const wi = h2.items.get(id);
-    if (wi) wi.payload = { ...(wi.payload ?? {}), ...patch };
+    if (wi) {
+      const payload = { ...(wi.payload ?? {}), ...patch };
+      for (const key of opts?.unset ?? []) delete payload[key];
+      wi.payload = payload;
+    }
     return wi ?? null;
   }),
   setWorkItemClaimHold: vi.fn(async (id: string, hold: boolean) => {
@@ -220,6 +228,7 @@ async function insertWorkItemRow(o: {
   planSlug: string;
   itemId: string;
   harness?: string;
+  linkage?: 'payload' | 'columns';
 }) {
   // jsonb_build_object (NOT `${jsonString}::jsonb`) — postgres.js binds a JS string
   // under a ::jsonb cast as a jsonb STRING-SCALAR, not an object, which then trips
@@ -227,9 +236,14 @@ async function insertWorkItemRow(o: {
   // Production payloads are object-shaped (verified live), so build an object here.
   await rootSql`
     INSERT INTO harness_shared.work_items
-      (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
+      (workspace_id, harness_slug, feature_id, item_kind, status, payload,
+       source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
     VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status},
-            jsonb_build_object('plan_item', jsonb_build_object('plan_slug', ${o.planSlug}::text, 'item_id', ${o.itemId}::text)),
+            ${o.linkage === 'columns'
+              ? rootSql.json({})
+              : rootSql`jsonb_build_object('plan_item', jsonb_build_object('plan_slug', ${o.planSlug}::text, 'item_id', ${o.itemId}::text))`},
+            ${o.linkage === 'columns' ? o.planSlug : null},
+            ${o.linkage === 'columns' ? [o.itemId] : []},
             0, 0)`;
 }
 
@@ -840,6 +854,19 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale plan-lane hold cleared b
 });
 
 describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)', () => {
+  it('enumerates the live feature-column linkage even when payload.plan_item is absent', async () => {
+    await insertWorkItemRow({
+      id: 'F-column-link', kind: 'feature', status: 'todo', planSlug: 'pcolumns', itemId: 'P-100',
+      linkage: 'columns',
+    });
+    stub({ id: 'F-column-link', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-100', status: 'done' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.candidatePlanItems).toBe(1);
+    expect(result.reconciled).toEqual(['F-column-link']);
+  });
   it('heals BOTH a feature and an issue orphan of an already-`done` plan item', async () => {
     // Real base-table rows carrying the stamp (the candidate + stamp-backstop source)
     // + matching stub entries (getWorkItem/setWorkItemState are mocked).
@@ -1017,6 +1044,36 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       false,
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
     );
+  });
+
+  it('repairs a false owner park while preserving an independent runtime blocker', async () => {
+    await edge({ plan: 'pactionable', item: 'P-001', srcRef: 'WI-false-human' });
+    const human = updateExternalBlockerHistory(
+      {},
+      { kind: 'human', capability: 'credential', ref: 'credential:prod', summary: 'credential needed' },
+      'su-a',
+    );
+    const both = updateExternalBlockerHistory(
+      { externalBlockers: human.blockers },
+      { kind: 'runtime', capability: 'live-dependency', ref: 'db:ready', summary: 'database unavailable' },
+      'su-b',
+    );
+    const row = stub({
+      id: 'WI-false-human', state: 'needs-human', family: 'issue',
+      payload: { externalBlockers: both.blockers, needsOwnerAction: true, needsHuman: true },
+    });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-001', status: 'todo', blockedBy: [] }] });
+
+    const result = await resyncPlanItemLaneNow('pactionable', 'P-001', null);
+
+    expect(result?.gated).toEqual(['WI-false-human']);
+    expect(row.state).toBe('blocked');
+    expect(row.payload).not.toHaveProperty('needsOwnerAction');
+    expect(row.payload).not.toHaveProperty('needsHuman');
+    const active = (row.payload?.externalBlockers as Array<{ kind: string; status: string }>).filter(
+      (blocker) => blocker.status === 'active',
+    );
+    expect(active.map((blocker) => blocker.kind)).toEqual(['runtime']);
   });
 
   it('a terminal dependency edge opens only dependents whose full blocker set is resolved', async () => {
