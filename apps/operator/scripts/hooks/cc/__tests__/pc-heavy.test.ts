@@ -981,6 +981,52 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     expect(results.filter((r) => r.stderr.includes('coalesced:')).length).toBe(n - 1);
   }, 60_000);
 
+  it('WI-40946: capture tees cannot retain a heavy slot after the real result is terminal', () => {
+    // A command descendant can legitimately keep stdout/stderr open after the
+    // command leader exits. That keeps pc-heavy's process-substitution tees
+    // alive, but it must NOT keep the heavy slot alive through a descriptor the
+    // passive capture process inherited. The descendant below closes its own
+    // slot descriptor first, then deliberately holds only the output pipes.
+    // Pre-fix, the wrapper returned and the surviving tee alone kept slot.0
+    // flocked for the full sleep; the live incident left such tees behind for
+    // 32–45 minutes after their final .exit artifacts were written.
+    const lingerPidFile = join(dir, 'pipe-keeper.pid');
+    const command = [
+      '(',
+      '  for fd_path in /proc/self/fd/*; do',
+      '    target=$(readlink "$fd_path" 2>/dev/null || true)',
+      '    case "$target" in',
+      '      "$PC_HEAVY_DIR"/slot.*)',
+      '        fd_num=${fd_path##*/}',
+      '        eval "exec ${fd_num}>&-"',
+      '        ;;',
+      '    esac',
+      '  done',
+      `  printf '%s\\n' "$BASHPID" > "${lingerPidFile}"`,
+      '  exec sleep 20',
+      ') &',
+      'exit 0',
+    ].join('\n');
+
+    let lingerPid = 0;
+    try {
+      const result = runSync(['bash', '-c', command], {
+        PC_HEAVY_SLOTS: '1',
+        PC_HEAVY_COALESCE_SEC: '30',
+      });
+      expect(result.status).toBe(0);
+      expect(existsSync(lingerPidFile)).toBe(true);
+      lingerPid = Number(readFileSync(lingerPidFile, 'utf8').trim());
+      expect(Number.isSafeInteger(lingerPid) && lingerPid > 1).toBe(true);
+      expect(() => process.kill(lingerPid, 0)).not.toThrow(); // positive control: the pipe keeper is still live
+      expect(heldSlotCount(dir, 1)).toBe(0);
+    } finally {
+      if (lingerPid > 1) {
+        try { process.kill(lingerPid, 'SIGKILL'); } catch { /* already exited */ }
+      }
+    }
+  });
+
   it('reclaims a lock whose leader DIED even though the stamped pid was recycled by a live process (EI-19343301596011451)', () => {
     // Leader liveness is observed via pid, and PID wrap is ~daily on this box
     // under fleet load — so pid alone would let an unrelated live process

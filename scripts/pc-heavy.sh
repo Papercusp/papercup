@@ -1387,7 +1387,24 @@ if [ "$_do_cache_write" = 1 ]; then
   # it must already have its output in place.
   _c_out_tmp="$_c_out.$$.part"
   _c_err_tmp="$_c_err.$$.part"
-  "${_runner[@]}" "$@" > >(tee "$_c_out_tmp") 2> >(tee "$_c_err_tmp" >&2)
+  # WI-40946 — process-substitution children inherit every open descriptor in
+  # this shell, including the flock-backed heavy-slot fd. A real command can
+  # finish while one of its descendants still has stdout/stderr open; Bash then
+  # lets the capture `tee` outlive this wrapper. Before this guard, that orphaned
+  # tee kept the slot flock alive even after the result and exit artifact were
+  # terminal, so an exclusive release materializer could wait forever on work
+  # that no longer existed. The real command tree MUST inherit `_fd` (the slot
+  # covers all of its work), but the two passive capture helpers must not.
+  _pc_heavy_capture_without_slot_fd() {
+    case "${_fd:-}" in
+      ''|*[!0-9]*) ;;
+      *) eval "exec ${_fd}>&-" 2>/dev/null || true ;;
+    esac
+    exec tee "$1"
+  }
+  "${_runner[@]}" "$@" \
+    > >(_pc_heavy_capture_without_slot_fd "$_c_out_tmp") \
+    2> >(_pc_heavy_capture_without_slot_fd "$_c_err_tmp" >&2)
   _rc=$?
   wait 2>/dev/null || true   # let both tee subshells flush before we publish the result
   mv -f "$_c_out_tmp" "$_c_out" 2>/dev/null
