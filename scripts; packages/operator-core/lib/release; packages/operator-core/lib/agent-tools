@@ -1,0 +1,3 @@
+{
+  "script": "const qControl = await tools.dev.pgQuery({ allowUnscoped: true, maxRows: 1, sql: \"SELECT count(*) AS n FROM papercusp_shared.message_comments mc JOIN papercusp_shared.messages m ON m.id = mc.message_id WHERE m.ref_id = 'WI-40086'\" });\nconst qThread = await tools.dev.pgQuery({ allowUnscoped: true, maxRows: 10, sql: \"SELECT to_timestamp(mc.ts/1000.0) AS at, left(mc.author,22) AS author, left(mc.body,500) AS body FROM papercusp_shared.message_comments mc JOIN papercusp_shared.messages m ON m.id = mc.message_id WHERE m.ref_id = 'WI-40086' ORDER BY mc.ts DESC LIMIT 10\" });\nreturn { thread_comment_total: qControl.rows, recent: qThread.rows };"
+}
