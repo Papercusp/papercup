@@ -946,8 +946,10 @@ function useSyncResource<T, K extends string>(
   enabled = true,
 ): AsyncResult<Record<K, T[]>> {
   const r = useSyncQuery<T>({ queryName, args, enabled });
-  const rows: T[] = enabled ? (r.data ?? []) : [];
-  const data = useMemo(() => ({ [key]: rows }) as Record<K, T[]>, [key, rows]);
+  const data = useMemo(() => {
+    const rows: T[] = enabled ? (r.data ?? []) : [];
+    return { [key]: rows } as Record<K, T[]>;
+  }, [enabled, key, r.data]);
   return {
     data,
     loading: r.loading,
@@ -2423,7 +2425,6 @@ export function usePlanLint(slug: string | null, tick: number): AsyncResult<Plan
       cancelled = true;
       window.removeEventListener('focus', onFocus);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, tick, localTick]);
 
   return { data, loading, error, refresh };
