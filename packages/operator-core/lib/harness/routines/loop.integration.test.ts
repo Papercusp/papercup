@@ -484,7 +484,11 @@ describe('loop surface round-trip (real PG)', () => {
     let interceptedRepairRead = false;
     const repairSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const queryText = strings.join(' ');
-      const result = sql(strings, ...values);
+      const taggedSql = sql as unknown as (
+        template: TemplateStringsArray,
+        ...parameters: readonly unknown[]
+      ) => PromiseLike<unknown[]>;
+      const result = taggedSql(strings, ...values);
       if (!interceptedRepairRead && queryText.includes('harness_shared.routines') && queryText.includes('FOR UPDATE')) {
         interceptedRepairRead = true;
         return result.then(async (rows) => {
