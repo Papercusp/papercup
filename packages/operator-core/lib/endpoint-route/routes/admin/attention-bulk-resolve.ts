@@ -41,6 +41,7 @@ import { FLAGS } from '@papercusp/flags';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { gateApiRoute } from '../../../require-flag';
 import {
+  BulkRunAlreadyActiveError,
   createRun,
   markItemAccepted,
   setRunPhase,
@@ -332,6 +333,24 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
       ...(launched.ok ? {} : { launchError: launched.error }),
     });
   } catch (e) {
+    // WI-41012 — a run is already pending/running. This is the ONE start-path
+    // failure that is not an error in the caller: the owner (or a double-click)
+    // asked for a second run while an agent is mid-flight over overlapping
+    // items. Answer 409 naming the run already in flight so the strip can point
+    // at it, rather than a 500 that reads like the feature broke.
+    if (e instanceof BulkRunAlreadyActiveError) {
+      return Response.json(
+        {
+          error: {
+            code: e.code,
+            message: e.message,
+            runId: e.activeRunId,
+            phase: e.activePhase,
+          },
+        },
+        { status: 409 },
+      );
+    }
     return Response.json(
       {
         error: {
