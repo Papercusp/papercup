@@ -2749,13 +2749,16 @@ export default defineTool({
         /* keep the lost slot — the window self-heals */
       }
     }
-    if (!slot.won && priorLaunchTransaction?.state === 'partial') {
+    if (priorLaunchTransaction?.state === 'partial') {
       // EI-20497372063255974: a canary may miss the bounded verifier and then take its
       // first real turn seconds later. The launch transaction already proves that ONLY
       // its first wave opened; its recovery set holds the exact pre-pinned identities
       // that were never opened. Once every opened identity is now LIVE, continuing that
-      // same transaction cannot double-spawn the prior wave. Reclaim the slot and resume
-      // only when the unopened identity count exactly equals the current live deficit.
+      // same transaction cannot double-spawn the prior wave. Reclaim a still-held slot
+      // when necessary and resume only when the unopened identity count exactly equals
+      // the current live deficit. This must run for BOTH slot outcomes: after the
+      // 300-second suppression window expires, claimFleetLaunchSlot returns won=true,
+      // and skipping this branch would mint a new identity set and transaction ledger.
       const opened = new Set(priorLaunchTransaction.openedMemberIds);
       const live = new Set(liveMemberOwnerIds);
       const unopenedRetryOwnerIds = priorLaunchTransaction.recovery.retryOwnerIds.filter(
@@ -2763,18 +2766,20 @@ export default defineTool({
       );
       const openedWaveRecovered = opened.size > 0 && [...opened].every((memberOwnerId) => live.has(memberOwnerId));
       if (openedWaveRecovered && unopenedRetryOwnerIds.length === requestedOpenCount) {
-        try {
-          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.priorAt });
-          slot = await claimFleetLaunchSlot({
-            workspaceId,
-            fleetSlug,
-            count: openCount,
-            windowMs: RELAUNCH_SUPPRESS_MS,
-          });
-          if (slot.won) resumeOwnerIds = unopenedRetryOwnerIds;
-        } catch {
-          /* keep the lost slot — the window self-heals */
+        if (!slot.won) {
+          try {
+            await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.priorAt });
+            slot = await claimFleetLaunchSlot({
+              workspaceId,
+              fleetSlug,
+              count: openCount,
+              windowMs: RELAUNCH_SUPPRESS_MS,
+            });
+          } catch {
+            /* keep the lost slot — the window self-heals */
+          }
         }
+        if (slot.won) resumeOwnerIds = unopenedRetryOwnerIds;
       }
     }
     if (!slot.won) {
@@ -3161,6 +3166,12 @@ export default defineTool({
     const resolvedMemberConfig = (i: number): FleetMemberDefaults => foldMemberSpec(fleetDefaults, memberSpecs[i]);
     const launchRequestedAt = Date.now();
     const requestedMemberIds = resumeOwnerIds ?? Array.from({ length: openCount }, () => `su-${randomUUID()}`);
+    // A partial replay opens only the unresolved identities in `requestedMemberIds`, but
+    // its durable transaction must retain the original cohort/history. Replacing the
+    // transaction here would make fleet:status lose the only recovery ledger and cause
+    // the next retry to mint another set of owner IDs.
+    const resumedLaunchTransaction = resumeOwnerIds && priorLaunchTransaction ? priorLaunchTransaction : null;
+    const transactionRequestedMemberIds = resumedLaunchTransaction?.requestedMemberIds ?? requestedMemberIds;
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(memberSpecIndex(i));
       return memberLaunchCommand({
@@ -3227,36 +3238,57 @@ export default defineTool({
     }> = [];
     const failed: Array<{ ownerId?: string; error: string; code: number }> = [];
     const launchTransaction: FleetLaunchTransaction = {
-      version: 1,
-      transactionId: randomUUID(),
-      state: 'launching',
-      requestedAt: launchRequestedAt,
-      updatedAt: launchRequestedAt,
-      requestedMemberIds,
-      openedMemberIds: [],
-      verifiedMemberIds: [],
-      failed: [],
-      waves: [],
-      recovery: {
-        retryOwnerIds: requestedMemberIds.slice(),
-        nextAction: 'resume from the first unresolved pre-pinned member identity; never relaunch verified members',
-      },
-      requestedMembers: Array.from({ length: openCount }, (_v, i) => {
-        const folded = resolvedMemberConfig(i);
-        return {
-          index: i,
-          ownerId: requestedMemberIds[i],
-          agent: folded.agent,
-          model: composeModelSpec(folded.model, folded.effort) ?? null,
-          account: folded.account ?? 'default',
-          carry: memberSpecs[i]?.carry ?? args.carry ?? 'warm',
-          headless: !!args.headless,
-        };
-      }),
+      ...(resumedLaunchTransaction
+        ? {
+            ...resumedLaunchTransaction,
+            state: 'launching' as const,
+            updatedAt: launchRequestedAt,
+            openedMemberIds: resumedLaunchTransaction.openedMemberIds.slice(),
+            verifiedMemberIds: resumedLaunchTransaction.verifiedMemberIds.slice(),
+            failed: resumedLaunchTransaction.failed.map((failure) => ({ ...failure })),
+            waves: resumedLaunchTransaction.waves.map((wave) => ({
+              ...wave,
+              ownerIds: wave.ownerIds.slice(),
+              ...(wave.openedOwnerIds ? { openedOwnerIds: wave.openedOwnerIds.slice() } : {}),
+              ...(wave.verifiedOwnerIds ? { verifiedOwnerIds: wave.verifiedOwnerIds.slice() } : {}),
+            })),
+            recovery: { ...resumedLaunchTransaction.recovery },
+            ...(resumedLaunchTransaction.unconfirmedMemberIds
+              ? { unconfirmedMemberIds: resumedLaunchTransaction.unconfirmedMemberIds.slice() }
+              : {}),
+          }
+        : {
+            version: 1 as const,
+            transactionId: randomUUID(),
+            state: 'launching' as const,
+            requestedAt: launchRequestedAt,
+            updatedAt: launchRequestedAt,
+            requestedMemberIds: transactionRequestedMemberIds,
+            openedMemberIds: [],
+            verifiedMemberIds: [],
+            failed: [],
+            waves: [],
+            recovery: {
+              retryOwnerIds: requestedMemberIds.slice(),
+              nextAction: 'resume from the first unresolved pre-pinned member identity; never relaunch verified members',
+            },
+            requestedMembers: Array.from({ length: openCount }, (_v, i) => {
+              const folded = resolvedMemberConfig(i);
+              return {
+                index: i,
+                ownerId: requestedMemberIds[i],
+                agent: folded.agent,
+                model: composeModelSpec(folded.model, folded.effort) ?? null,
+                account: folded.account ?? 'default',
+                carry: memberSpecs[i]?.carry ?? args.carry ?? 'warm',
+                headless: !!args.headless,
+              };
+            }),
+          }),
     };
     const refreshLaunchRecovery = (): void => {
       const verified = new Set(launchTransaction.verifiedMemberIds);
-      launchTransaction.recovery.retryOwnerIds = requestedMemberIds.filter((id) => !verified.has(id));
+      launchTransaction.recovery.retryOwnerIds = transactionRequestedMemberIds.filter((id) => !verified.has(id));
       launchTransaction.updatedAt = Date.now();
     };
     const persistLaunchTransaction = async (): Promise<void> => {
@@ -3563,7 +3595,7 @@ export default defineTool({
         await persistLaunchTransaction();
       },
     );
-    if (launchTransaction.verifiedMemberIds.length === requestedMemberIds.length) {
+    if (launchTransaction.verifiedMemberIds.length === transactionRequestedMemberIds.length) {
       launchTransaction.state = 'verified';
     } else {
       launchTransaction.state = 'partial';

@@ -2244,6 +2244,75 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     expect(payload.relaunchSuppressed).toBeUndefined();
   });
 
+  it('resumes the same transaction and exact identities after the suppression window expires', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['su-late-canary']);
+    const { claimFleetLaunchSlot, releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    const claimSlot = claimFleetLaunchSlot as ReturnType<typeof vi.fn>;
+    const releaseSlot = releaseFleetLaunchSlot as ReturnType<typeof vi.fn>;
+    claimSlot.mockReset();
+    // The prior 300-second claim has expired, so the replay wins directly.
+    claimSlot.mockResolvedValue({ won: true, at: 302_000 });
+    releaseSlot.mockClear();
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        leaderOwnerId: 'owner-1',
+        colorScheme: { name: 'Ocean' },
+        lastLaunchTransaction: {
+          version: 1,
+          transactionId: 'partial-tx',
+          state: 'partial',
+          requestedAt: 500,
+          updatedAt: 900,
+          requestedMemberIds: ['su-late-canary', 'su-retry-1', 'su-retry-2'],
+          openedMemberIds: ['su-late-canary'],
+          verifiedMemberIds: [],
+          failed: [{ ownerId: 'su-late-canary', phase: 'verification', reason: 'bounded timeout' }],
+          waves: [
+            {
+              index: 0,
+              ownerIds: ['su-late-canary'],
+              state: 'partial',
+              openedOwnerIds: ['su-late-canary'],
+            },
+          ],
+          recovery: {
+            retryOwnerIds: ['su-late-canary', 'su-retry-1', 'su-retry-2'],
+            nextAction: 'resume unresolved pre-pinned identities',
+          },
+        },
+      },
+      created: false,
+    });
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term', pid: 123 });
+
+    const res = await tool.handler(
+      { name: 'Resume Expired Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    const commands = spawnConsoleMock.mock.calls.map(
+      (call) => (call[0].envelope as { greetingCmd: string }).greetingCmd,
+    );
+    const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
+      transaction: { transactionId: string; requestedMemberIds: string[]; openedMemberIds: string[]; waves: unknown[] };
+    };
+
+    expect(claimSlot).toHaveBeenCalledTimes(1);
+    expect(releaseSlot).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(commands).toEqual([
+      expect.stringContaining('--owner-id=su-retry-1'),
+      expect.stringContaining('--owner-id=su-retry-2'),
+    ]);
+    expect(payload.opened.map((member: { ownerId: string }) => member.ownerId)).toEqual(['su-retry-1', 'su-retry-2']);
+    expect(payload.launchTransaction.transactionId).toBe('partial-tx');
+    expect(persisted.transaction.transactionId).toBe('partial-tx');
+    expect(persisted.transaction.requestedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);
+    expect(persisted.transaction.openedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);
+    expect(persisted.transaction.waves).toHaveLength(3);
+  });
+
   it('the notice names the fleet, the prior member count/age, and tells the leader not to re-call', async () => {
     const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
     (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
