@@ -338,6 +338,146 @@ export async function resolveSocialOutboundContext(
   return { row, context };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Write adapters                                                             */
+/* -------------------------------------------------------------------------- */
+
+export interface SocialReplyRequest {
+  target: SocialReplyTarget;
+  text: string;
+  visibility: SocialVisibility;
+  /**
+   * Stable key for the logical write, so an adapter on a platform with an
+   * idempotency mechanism (Mastodon's Idempotency-Key) can pass it through and
+   * one without (Reddit) can carry its own dedupe guard. Derived, never caller-
+   * supplied — a caller-chosen key would let a retry be forced into a NEW post.
+   */
+  idempotencyKey: string;
+}
+
+export interface SocialReplyOutcome {
+  /** Platform id of the created post. */
+  externalId: string;
+  /** Canonical ref for the created post, so the caller can address it later. */
+  ref: string;
+  url?: string;
+}
+
+export interface SocialWriteAdapter {
+  platform: SocialPlatformId;
+  reply(request: SocialReplyRequest, context: OutboundContext): Promise<SocialReplyOutcome>;
+}
+
+const WRITE_ADAPTERS = new Map<SocialPlatformId, SocialWriteAdapter>();
+
+/** Register a platform's write adapter (P-011..P-019 land these). */
+export function registerSocialWriteAdapter(adapter: SocialWriteAdapter): void {
+  WRITE_ADAPTERS.set(adapter.platform, adapter);
+}
+
+/** Test seam: drop a registration so a suite cannot leak into the next. */
+export function unregisterSocialWriteAdapter(platform: SocialPlatformId): void {
+  WRITE_ADAPTERS.delete(platform);
+}
+
+export function getSocialWriteAdapter(platform: SocialPlatformId): SocialWriteAdapter | undefined {
+  return WRITE_ADAPTERS.get(platform);
+}
+
+/**
+ * Derive the idempotency key for a reply.
+ *
+ * Deliberately a function of (parent, text) and NOT of wall-clock time: the
+ * whole point is that a retry of the same logical reply produces the same key.
+ * A timestamp would make every retry unique, which is precisely the double-post
+ * the key exists to prevent — and Reddit documents no idempotency mechanism at
+ * all, so its adapter has nothing else to dedupe on.
+ */
+export function socialReplyIdempotencyKey(ref: SocialPostRef, text: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of `${formatSocialPostRef(ref)}${text.trim()}`) {
+    hash ^= char.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `pc-social-${hash.toString(16).padStart(8, '0')}`;
+}
+
+export interface SocialReplyResult extends SocialReplyOutcome {
+  platform: SocialPlatformId;
+  /** Echoed so the caller reports WHERE it went — it never chose. */
+  inReplyTo: string;
+  label: string;
+  visibility: SocialVisibility;
+}
+
+/**
+ * `social:reply` — D-020 rail 1 for social-post.
+ *
+ * The caller supplies TEXT ONLY plus an opaque post ref. Destination, account,
+ * credential and audience are all resolved server-side from the stored
+ * document. Executes rather than drafts, per D-004: the blast radius is the
+ * existing thread, it is visible, and a follow-up can correct it.
+ *
+ * Order of the gates matters and is not arbitrary. The registry write gate runs
+ * BEFORE the adapter lookup, so an unverified write path (Bluesky) is refused
+ * even once its adapter exists — the gate is about whether we know how to call
+ * the API correctly, which having written an adapter does not establish.
+ */
+export async function replyToCanonicalSocialPost(
+  sql: postgres.Sql,
+  params: {
+    workspaceId: string;
+    userId: string;
+    ref: string | SocialPostRef;
+    text: string;
+    visibility?: SocialVisibility | null;
+  },
+): Promise<SocialReplyResult> {
+  const text = params.text.trim();
+  if (!text) throw new Error('social_reply_text_required');
+  if (text.length > 10_000) throw new Error('social_reply_text_too_long');
+
+  const { ref, doc } = await resolveSocialPost(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    ref: params.ref,
+  });
+  const coordinates = resolveSocialReplyCoordinates(doc);
+  const visibility = resolveReplyVisibility(coordinates.parentVisibility, params.visibility);
+
+  const { context } = await resolveSocialOutboundContext(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    platform: ref.platform,
+    verb: 'reply',
+  });
+
+  const adapter = getSocialWriteAdapter(ref.platform);
+  if (!adapter) {
+    throw new Error(
+      `social_reply_adapter_missing:${ref.platform} — the platform's write path is verified but no adapter is registered yet`,
+    );
+  }
+
+  const outcome = await adapter.reply(
+    {
+      target: coordinates.target,
+      text,
+      visibility,
+      idempotencyKey: socialReplyIdempotencyKey(ref, text),
+    },
+    context,
+  );
+
+  return {
+    ...outcome,
+    platform: ref.platform,
+    inReplyTo: formatSocialPostRef(ref),
+    label: coordinates.label,
+    visibility,
+  };
+}
+
 /**
  * Rail 2 for social: a create-shaped destination the CALLER named.
  *
