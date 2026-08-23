@@ -1,843 +1,135 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="125" failures="0" errors="0" time="4.31202798">
-    <testsuite name="lib/drop-database-force-guard.test.ts" timestamp="2026-08-23T16:27:09.771Z" hostname="main-server-Precision-7865-Tower" tests="14" failures="0" errors="0" skipped="0" time="1.179152386">
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; FLAGS a bare DROP DATABASE with no WITH (FORCE)" time="0.00281664">
+<testsuites name="vitest tests" tests="64" failures="0" errors="0" time="0.047280829">
+    <testsuite name="lib/agent-facts/assumptions.test.ts" timestamp="2026-08-23T16:47:43.067Z" hostname="main-server-Precision-7865-Tower" tests="56" failures="0" errors="0" skipped="0" time="0.030684108">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; treats a plain slug as a bare key" time="0.003385632">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; FLAGS the exact pre-fix shape from WI-4311 (terminate-then-plain-drop)" time="0.000648133">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; parses a workspace-scoped absolute ref (no scopeRef segment)" time="0.001386531">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; FLAGS a lowercase / whitespace-variant drop  database" time="0.000369729">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; parses a scoped absolute ref with a version pin" time="0.000480155">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; FLAGS the unforced one in a file that also gets it RIGHT elsewhere" time="0.000454943">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; keeps colons inside a scopeRef, splitting the KEY off the last colon" time="0.00039449">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; does NOT flag the forced form" time="0.000344971">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; rejects a malformed absolute ref: fact: (no scope at all)" time="0.000397746">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; does NOT flag a prettier-wrapped call whose FORCE lands on the next line" time="0.000384407">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; rejects a malformed absolute ref: fact:nonsense:k (unknown scope)" time="0.000262486">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; does NOT flag prose mentions in line or block comments" time="0.000526399">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; rejects a malformed absolute ref: fact:owner:onlyref (scoped ref with no key segment)" time="0.000245313">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; tolerates WITH(FORCE) spacing variants" time="0.00031329">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; rejects a malformed absolute ref: fact:owner:su-1:k@v0 (non-positive version)" time="0.000226998">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; stripComments removes block and line comments" time="0.000277271">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; rejects a malformed absolute ref: fact:owner:su-1:k@vabc (non-numeric version)" time="0.000384781">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; real source is clean: libs/test-config/src/pg-migrate.ts" time="0.001094929">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="parseAssumptionRef &gt; does not mistake a bare key that merely CONTAINS &quot;fact&quot; for a ref" time="0.000528839">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; real source is clean: libs/test-config/src/pg-migrate.integration.test.ts" time="0.000309804">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="assumptionSelectorsFor &gt; orders selectors most-specific-first and always ends at workspace" time="0.000388468">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; real source is clean: packages/operator-core/lib/release-preflight-migration-boot-smoke.integration.test.ts" time="0.000310886">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="assumptionSelectorsFor &gt; skips dimensions with no ref rather than emitting an unresolvable selector" time="0.000242708">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; real makeDrop() source still carries WITH (FORCE) (the canonical fix)" time="0.000261442">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="assumptionSelectorsFor &gt; always includes workspace even with no context at all" time="0.000236977">
         </testcase>
-        <testcase classname="lib/drop-database-force-guard.test.ts" name="drop-database-force guard predicate (WI-4311) &gt; the tree is currently clean: no unforced DROP DATABASE anywhere" time="1.165311432">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="D-079 R3 — what refuses &gt; refuses ONLY total non-existence" time="0.000251725">
         </testcase>
-    </testsuite>
-    <testsuite name="lib/code-intelligence/code-intel-bench.test.ts" timestamp="2026-08-23T16:27:09.777Z" hostname="main-server-Precision-7865-Tower" tests="43" failures="0" errors="0" skipped="0" time="0.025527429">
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="bench probes point at real code &gt; every probe names a gradeable ground-truth corpus case" time="0.003520279">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="D-079 R3 — what refuses &gt; does NOT refuse when the ledger could not be read" time="0.001012661">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="bench probes point at real code &gt; resolves each probe against the working tree, cursor inside the symbol" time="0.001796213">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="D-079 R3 — what refuses &gt; fails OPEN to unresolved when the fact read throws" time="0.0015523">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="bench probes point at real code &gt; THROWS on probe drift rather than scoring the backend wrong" time="0.001297467">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="D-079 R3 — what refuses &gt; still refuses a MALFORMED absolute ref, which needs no ledger read at all" time="0.000411232">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="grading can fail (falsifiability controls) &gt; passes the true site set" time="0.000408033">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="D-079 R3 — what refuses &gt; resolves lapsed / superseded / retracted rather than refusing them" time="0.000329455">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="grading can fail (falsifiability controls) &gt; fails an empty answer" time="0.000270429">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage &gt; names the offending entries and the scopes actually searched" time="0.000502839">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="grading can fail (falsifiability controls) &gt; fails an off-by-one line — the whole point of the one-indexing guard" time="0.000255279">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage &gt; tells the caller that an expired key is NOT what was refused" time="0.000360545">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="grading can fail (falsifiability controls) &gt; fails a right-line/wrong-file answer" time="0.000212718">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage &gt; pluralizes so the refusal reads correctly for one and for many" time="0.000250182">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="grading can fail (falsifiability controls) &gt; must-contain TOLERATES an extra site; exact-set REJECTS it" time="0.000310045">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry &gt; a real assumption (kind:&quot;assumption&quot;) resolves isAssumption:true" time="0.000891297">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="grading can fail (falsifiability controls) &gt; refuses to grade a property case rather than reporting a misleading pass" time="0.000339731">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry &gt; the LEGACY form (no kind, confidence:&quot;suspected&quot;) still resolves isAssumption:true" time="0.000333863">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="project rooting — the false-empty class (P-010 defect 1) &gt; roots a Rust file at its own crate, NOT the repo root" time="0.000703108">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry &gt; a VERIFIED CONCLUSION resolves isAssumption:false — the exact defect this closes" time="0.000317712">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="project rooting — the false-empty class (P-010 defect 1) &gt; REFUSES rather than returning a false-empty when no crate root exists" time="0.000444542">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry &gt; a plain fact with no kind and no suspected confidence resolves isAssumption:false, not null" time="0.000335466">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="project rooting — the false-empty class (P-010 defect 1) &gt; leaves TypeScript rooted at the monorepo root, which is correct for it" time="0.00022958">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry &gt; a DANGLING entry (no row at all) carries isAssumption:null — nothing to judge, not &quot;false&quot;" time="0.000390281">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="project rooting — the false-empty class (P-010 defect 1) &gt; every Rust bench probe resolves to a real crate root" time="0.00032904">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry &gt; an unrecognized kind/confidence value on the row parses to null rather than passing through raw" time="0.000344183">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="read-plane audit of the mcp-language-server comparator &gt; finds the two tools that write to disk" time="0.000676517">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="nonAssumptionKindAdvisory — WARN-ONLY, never a refusal &gt; fires for a cited key that resolved but was not an assumption" time="0.000511967">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="read-plane audit of the mcp-language-server comparator &gt; REGRESSION: our name guard flags every one of them" time="0.000420566">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="nonAssumptionKindAdvisory — WARN-ONLY, never a refusal &gt; does NOT fire for a real assumption" time="0.00021285">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="read-plane audit of the mcp-language-server comparator &gt; CONTROL: the pre-fix pattern set really did miss both" time="0.000746141">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="nonAssumptionKindAdvisory — WARN-ONLY, never a refusal &gt; does NOT fire for a dangling/unresolved entry — isAssumption:null is &quot;nothing to judge&quot;, not a hit" time="0.000277935">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="read-plane audit of the mcp-language-server comparator &gt; keeps the read-only tools — and our own facade ops — unflagged" time="0.000659655">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="nonAssumptionKindAdvisory — WARN-ONLY, never a refusal &gt; only names the offending keys when the declaration mixes assumption and non-assumption citations" time="0.000274238">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="read-plane audit of the mcp-language-server comparator &gt; cannot express the implementations intent the Rust case needs" time="0.001068829">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="nonAssumptionKindAdvisory — WARN-ONLY, never a refusal &gt; returns undefined for an empty resolution list" time="0.000132896">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="read-plane audit of the mcp-language-server comparator &gt; records the disk-write mechanism, not merely the name" time="0.00025039">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; reports unchanged when the pinned version is still the newest and live" time="0.000205876">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="warm-query statistic (P-010: one sample is not a steady state) &gt; reduces to the median, not the mean — one stall must not BE the number" time="0.000280187">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; reports superseded when a newer version of the same identity exists" time="0.000206428">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="warm-query statistic (P-010: one sample is not a steady state) &gt; does NOT flatter the backend by reporting its best case" time="0.000231013">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; reports lapsed when the pinned version is still newest but has aged out" time="0.000141803">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="warm-query statistic (P-010: one sample is not a steady state) &gt; averages the middle pair on an even sample count" time="0.000146241">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; reports vanished when the identity is gone from the ledger entirely" time="0.000191789">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="warm-query statistic (P-010: one sample is not a steady state) &gt; returns null for no samples rather than a fabricated zero" time="0.000150829">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; prefers retracted over superseded — a withdrawn claim dominates a revised one" time="0.000233239">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; accounts the barrel wildcard re-export, which names no symbol" time="0.000493857">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; prefers superseded over lapsed — revised content outranks mere ageing" time="0.000182712">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; REFUSES to account a case that is missing some OTHER site" time="0.000255089">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; prefers vanished over every other verdict" time="0.000204584">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; REFUSES to account a case whose OWN property has broken" time="0.000227797">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; reports undeterminable for an unpinned declaration rather than guessing unchanged" time="0.000164907">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; REFUSES to account a set that stops at the declaring package" time="0.000211145">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; still reports retracted/vanished for an unpinned declaration" time="0.000218631">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; REFUSES to account a backend error" time="0.000221865">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="classifyBasisMovement &gt; never returns a movement outside the declared vocabulary" time="0.000657246">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; REFUSES to account an unsanctioned extra site" time="0.000227877">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="basisHasMoved excludes undeterminable BY CONSTRUCTION &gt; counts every real movement as moved" time="0.00027996">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; accounts NOTHING for a case with no accounting entry" time="0.000191828">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="basisHasMoved excludes undeterminable BY CONSTRUCTION &gt; counts neither unchanged NOR undeterminable" time="0.000225465">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; never labels a CORRECT measurement a divergence" time="0.000144738">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="the close-time question is separate from the movement question (D-102) &gt; counts a basis that was already not-current when it was cited" time="0.000277996">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; the barrel property is satisfied by a same-package sibling consumer" time="0.000238848">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="the close-time question is separate from the movement question (D-102) &gt; does not count a live citation, nor one the ledger could not check" time="0.000204504">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted corpus divergences (P-010: frozen corpus vs LSP semantics) &gt; every accounting entry names a real corpus case and real expected sites" time="0.000390057">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="the close-time question is separate from the movement question (D-102) &gt; excludes the unreadable conditions from the denominator too" time="0.000280239">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted RSS exceedances (P-010: a real breach, bounded not silenced) &gt; does NOT raise the frozen budget to make a breach pass" time="0.000158664">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="the close-time question is separate from the movement question (D-102) &gt; never counts a stale-at-close row that the denominator excluded" time="0.000248669">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted RSS exceedances (P-010: a real breach, bounded not silenced) &gt; every accounted exceedance actually EXCEEDS the budget it excepts" time="0.000173122">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage exposes its components (EI-21194879039423312) &gt; spells out the accepted citation forms, including the @v pin and the workspace special case" time="0.000305028">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted RSS exceedances (P-010: a real breach, bounded not silenced) &gt; bounds every accounted exceedance above its observed size" time="0.000275067">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage exposes its components (EI-21194879039423312) &gt; names the workspace partition that was searched" time="0.00025993">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="accounted RSS exceedances (P-010: a real breach, bounded not silenced) &gt; names rust-analyzer specifically, with its measured size" time="0.000205334">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage exposes its components (EI-21194879039423312) &gt; a malformed fact:-prefixed entry is told its SHAPE is wrong, not sent to assert a phantom key" time="0.000276322">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="cold-start budget grading (P-018: coldStartMsMax was a dead field) &gt; resolves a probe to the language that actually answered it" time="0.000376211">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="danglingAssumptionsMessage exposes its components (EI-21194879039423312) &gt; a near-miss NAMES where the key actually lives" time="0.000258067">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="cold-start budget grading (P-018: coldStartMsMax was a dead field) &gt; grades the measured rust cold start as over budget but ACCOUNTED" time="0.000421488">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps search context + near-misses on dangles (EI-21194879039423312) &gt; the follow-up probe surfaces a same-key fact living outside the searched scopes" time="0.000601359">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="cold-start budget grading (P-018: coldStartMsMax was a dead field) &gt; FAILS an over-budget language with no accounting entry" time="0.000242816">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps search context + near-misses on dangles (EI-21194879039423312) &gt; every dangle carries the workspace partition the search ran in" time="0.000274599">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="cold-start budget grading (P-018: coldStartMsMax was a dead field) &gt; does not flag a cold start that meets the budget" time="0.000197518">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps search context + near-misses on dangles (EI-21194879039423312) &gt; a total absence gets NO near-miss (the probe found nothing)" time="0.000379731">
         </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="cold-start budget grading (P-018: coldStartMsMax was a dead field) &gt; ignores probes that never paid a cold start or never graded correct" time="0.000300136">
-        </testcase>
-        <testcase classname="lib/code-intelligence/code-intel-bench.test.ts" name="cold-start budget grading (P-018: coldStartMsMax was a dead field) &gt; keeps every accounting entry bounded and explained" time="0.000353187">
+        <testcase classname="lib/agent-facts/assumptions.test.ts" name="resolveAssumptions stamps search context + near-misses on dangles (EI-21194879039423312) &gt; probe failure changes no verdict — hints are best-effort" time="0.000327921">
         </testcase>
     </testsuite>
-    <testsuite name="lib/sync-resolver/fanout-bound-audit.test.ts" timestamp="2026-08-23T16:27:09.785Z" hostname="main-server-Precision-7865-Tower" tests="10" failures="0" errors="0" skipped="0" time="0.019361257">
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the analyzer itself (controls, permanent) &gt; CONTROL: FLAGS an unbounded variable-arity fan-out" time="0.003884637">
+    <testsuite name="lib/agent-tools/work_items/_assumptions.test.ts" timestamp="2026-08-23T16:47:43.082Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.016596721">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — harness scope derivation (EI-18806393166489384) &gt; derives the harness scope from the work-item when the caller did not name it" time="0.005358873">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the analyzer itself (controls, permanent) &gt; CALIBRATION: the SAME read goes quiet once a deadline bounds it" time="0.00145543">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — harness scope derivation (EI-18806393166489384) &gt; prefers an explicitly passed harness and does not re-read the work-item" time="0.000925694">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the analyzer itself (controls, permanent) &gt; CONTROL: a FIXED-arity Promise.all is NOT this predicate (scope is variable arity)" time="0.000536248">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — harness scope derivation (EI-18806393166489384) &gt; fails OPEN when the work-item read throws, rather than blocking the close" time="0.001588791">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the analyzer itself (controls, permanent) &gt; an injected withinBudget counts as bounded (the extracted *-read.ts seam)" time="0.001581221">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — harness scope derivation (EI-18806393166489384) &gt; does not read the work-item at all for a &quot;none&quot; declaration" time="0.000489212">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the analyzer itself (controls, permanent) &gt; every declared seam is one the analyzer actually honours" time="0.001869805">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — the [&quot;none&quot;] container fumble (EI-19339908198998425) &gt; treats [&quot;none&quot;] as the sentinel, not as a fact key named &quot;none&quot;" time="0.000502729">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the live sync-resolver tree &gt; the audited population is NON-TRIVIAL (a zero here would be a broken instrument)" time="0.001035215">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — the [&quot;none&quot;] container fumble (EI-19339908198998425) &gt; tolerates surrounding whitespace, since the fumble is a hand-built payload" time="0.000343953">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the live sync-resolver tree &gt; NO variable-arity fan-out is unbounded" time="0.00067272">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — the [&quot;none&quot;] container fumble (EI-19339908198998425) &gt; CONTROL: an ordinary key array still resolves through the ledger" time="0.000579867">
         </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the live sync-resolver tree &gt; every exemption names a site that actually exists (it cannot drift ahead of the tree)" time="0.000497253">
-        </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the live sync-resolver tree &gt; no exemption is file-wide — each names one function or resolver" time="0.000843277">
-        </testcase>
-        <testcase classname="lib/sync-resolver/fanout-bound-audit.test.ts" name="fanout-bound-audit — the live sync-resolver tree &gt; every exemption is load-bearing — removing it re-exposes a real finding" time="0.000590412">
-        </testcase>
-    </testsuite>
-    <testsuite name="lib/agent-tools/capability/bash-code-mode-shape.test.ts" timestamp="2026-08-23T16:27:09.789Z" hostname="main-server-Precision-7865-Tower" tests="7" failures="0" errors="0" skipped="0" time="0.085358663">
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; rejects sub-second public timeouts with explicit millisecond guidance" time="0.0059773">
-        </testcase>
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; routes operator database reads away from psql because shell credentials are scrubbed" time="0.000581635">
-        </testcase>
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; gives a code-mode caller an OBJECT whose output field carries the real output" time="0.013444857">
-        </testcase>
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; leaves a DIRECT caller byte-identical — no duplicated output on the wire" time="0.008791736">
-        </testcase>
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; reports a FAILING command as ok:false with the real exit code, not a bare empty" time="0.008442266">
-        </testcase>
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; does not name the combined buffer `stdout` — the name would read true and be false" time="0.010050459">
-        </testcase>
-        <testcase classname="lib/agent-tools/capability/bash-code-mode-shape.test.ts" name="capability:bash — result shape for a code:run script (EI-20066912585022608) &gt; agrees with its own background branch: both shapes are objects" time="0.021526441">
-        </testcase>
-    </testsuite>
-    <testsuite name="lib/desktop-install/__tests__/papercusp-files.test.ts" timestamp="2026-08-23T16:27:09.790Z" hostname="main-server-Precision-7865-Tower" tests="51" failures="0" errors="0" skipped="0" time="3.002628245">
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; first install: mints token + agent_id, copies playbook + extension" time="0.101765696">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-WrTORb/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-WrTORb/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-WrTORb/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-WrTORb/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; re-run: reuses existing token + agent_id, refreshes playbook + extension" time="0.114726695">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-B3BZZu/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-B3BZZu/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/inject [tmp-root]
-
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-B3BZZu/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-B3BZZu/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-B3BZZu/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; token file written with mode 0600" time="0.051688488">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-PGebwT/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-PGebwT/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-PGebwT/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-PGebwT/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; writes executable psu + ptool shims pointing at the resolved launchers (A2)" time="0.052624614">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-KCIZsS/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-KCIZsS/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-KCIZsS/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-KCIZsS/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; resolves the integration launcher at runtime and falls back to the release launcher" time="0.150948885">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-bO6I9G/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-bO6I9G/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-bO6I9G/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-bO6I9G/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; writes an executable psu-sentinel shim that execs the resolved psu shim (WI-4244)" time="0.046917462">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-ju4LGg/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-ju4LGg/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-ju4LGg/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-ju4LGg/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; writes an executable psu-sentinel-deep shim for the deep-brain pane (voice-release P-014)" time="0.049592721">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-pFTTzK/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-pFTTzK/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-pFTTzK/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-pFTTzK/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; writes the `papercusp` dispatcher shim when the onboard concierge resolves (P-014)" time="0.222754573">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/inject [tmp-root]
-
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/inject [tmp-root]
-
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9pbLts/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9pbLts/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; routes an unbundled dev install through the canonical source CLI" time="0.006540881">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; resolves the operator app root from the module layout, independent of cwd (EI-19445483716744925)" time="0.00498101">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; resolves the source CLI from the BUNDLED app root and the deployed cwd (WI-39140/P-006)" time="0.007498457">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; CONTROL: the retired fixed-hop resolution misses both production anchors" time="0.004260909">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; writes a macOS &quot;Papercusp Tutorial &amp; Setup.app&quot; wrapper on darwin once the dispatcher resolves (WI-2197)" time="0.107499572">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/inject [tmp-root]
-
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Bk7JHI/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; does not write the macOS Tutorial.app wrapper on non-darwin platforms" time="0.074971097">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TZZ8C3/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; prefers the bundled psu.mjs over the dev psu-launcher.mjs (A2)" time="0.052421244">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-TfjWlH/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TfjWlH/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TfjWlH/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TfjWlH/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; shim runs the BUNDLED sidecar node (absolute path) when PAPERCUSP_SIDECAR_BIN points at it (A2)" time="0.059574428">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-cUASDa/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-cUASDa/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-cUASDa/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-cUASDa/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; expectLauncherInterpreter rejects an unresolved interpreter and a shim it cannot read" time="0.006580857">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; missing psu launcher: psuShimWritten=false, no throw, other artifacts land (A2)" time="0.055793129">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-TbuKUz/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TbuKUz/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TbuKUz/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TbuKUz/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; missing playbook source: playbookWritten=false, no throw" time="0.042335497">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-3Zd80p/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-3Zd80p/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-3Zd80p/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-3Zd80p/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; missing extension source: extensionWritten=false, no throw" time="0.038801371">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-LZHbNa/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-LZHbNa/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-LZHbNa/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-LZHbNa/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; splices the OMP overlay into a marker-model base playbook" time="0.054142654">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-sKL51H/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-sKL51H/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-sKL51H/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-sKL51H/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; marker base with NO overlay file: marker is removed, not shipped literally" time="0.05368067">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-FkuEZp/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-FkuEZp/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-FkuEZp/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-FkuEZp/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; projects the canonical deploy-pipeline note into the ENGINEER playbook at the project-guide anchor" time="0.05091149">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-kryJDt/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-kryJDt/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-kryJDt/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-kryJDt/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; projects the canonical wait-loop note into the ENGINEER playbook at the project-guide anchor" time="0.051130891">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-TozJls/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TozJls/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-TozJls/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-TozJls/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; projects the canonical peer-wake note into the ENGINEER playbook at the project-guide anchor" time="0.052712904">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-1GZZfV/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-1GZZfV/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-1GZZfV/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-1GZZfV/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; splices the GENERATED workspace map at its marker (staging-branch-pipeline-2026-06-06)" time="0.073155237">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-gxrjSx/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-gxrjSx/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-gxrjSx/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-gxrjSx/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; removes the PROJECT-GUIDE marker on the install path even when no guide resolves (P-001)" time="0.078553357">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-MdEpzs/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-MdEpzs/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-MdEpzs/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MdEpzs/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; resolveInstallPaths returns expected layout" time="0.003304786">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; auto-discover mode: when operatorAppRoot is absent, falls back to process.cwd()-rooted candidates" time="0.316071009">
-            <system-out>
-[desktop-install] hooks/cc &lt;- /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/hooks/cc (unit=hono-host:3070, sha=89504f01c7cbaeff612d0c6b4a9d32f62aee891c)
-
-[desktop-install] injection hooks: installed 9 file(s) into /tmp/pcv/pcusp-install-home-8gLQyG/.papercusp/hooks/inject + /tmp/pcv/pcusp-install-home-8gLQyG/.papercusp/hooks/omp from /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/hooks/inject @ 7b340367a52b — inject/core.mjs, inject/index.mjs, inject/ports.mjs, inject/adapters/claude.mjs, inject/adapters/codex.mjs, inject/adapters/omp.mjs, omp/coord-hook.ts, omp/inject-hook.ts, omp/non-preempting-delivery.ts
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; boot-smoke: resolveOperatorAppRoot does not crash on ESM __dirname access (WI-110)" time="0.060673136">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-T61ypF/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-T61ypF/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-T61ypF/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-T61ypF/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; reuses token already present from a prior install with no trailing newline" time="0.064364954">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-Yc7s9H/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; dist-host layout: auto-discovery finds hooks + extension when cwd IS the operator app root" time="0.461107777">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/prompts/papercusp-su-engineer.tools.md [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/prompts/papercusp-su-engineer.tools.md [tmp-root], /tmp/pcv/apps/operator/prompts/papercusp-su-engineer.tools.md [tmp-root], /tmp/apps/operator/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/scripts/hooks/omp/coord-hook.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/scripts/psu-launcher.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/ptool.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/scripts/onboard-launcher.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/project-history.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/project-history.mjs [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/libs/papercusp/packages/cli/bin/papercusp [tmp-root], /tmp/pcv/libs/papercusp/packages/cli/bin/papercusp [tmp-root], /tmp/libs/papercusp/packages/cli/bin/papercusp [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/hooks/cc [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/hooks/cc [tmp-root]
-
-[desktop-install] hooks/cc &lt;- /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/hooks/cc (unit=hono-host:3070, sha=89504f01c7cbaeff612d0c6b4a9d32f62aee891c)
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-dpkkfT/scripts/hooks/inject [tmp-root], /tmp/pcv/pcusp-install-app-dpkkfT/apps/operator/scripts/hooks/inject [tmp-root]
-
-[desktop-install] injection hooks: installed 9 file(s) into /tmp/pcv/pcusp-install-home-Bed97q/.papercusp/hooks/inject + /tmp/pcv/pcusp-install-home-Bed97q/.papercusp/hooks/omp from /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/hooks/inject @ 7b340367a52b — inject/core.mjs, inject/index.mjs, inject/ports.mjs, inject/adapters/claude.mjs, inject/adapters/codex.mjs, inject/adapters/omp.mjs, omp/coord-hook.ts, omp/inject-hook.ts, omp/non-preempting-delivery.ts
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; EI-18755593630003816: hook install writes atomically — no leftover temp file, full content lands" time="0.072859602">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-MyfXeW/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-MyfXeW/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-MyfXeW/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/hooks/cc [tmp-root]
-
-[desktop-install] hooks/cc &lt;- /tmp/pcv/pcusp-install-app-MyfXeW/scripts/hooks/cc (unit=hono-host:3070, sha=unknown)
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-MyfXeW/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; EI-18755593630003816: the sibling OMP hook path (coord-hook extension) also writes atomically" time="0.055705673">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-9PdPF8/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9PdPF8/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-9PdPF8/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-9PdPF8/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="installPapercuspFiles &gt; EI-20228871846415832: renamed coord entry installs its relative OMP companions" time="0.063942205">
-            <system-out>
-[desktop-install] su playbook: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/prompts/papercusp-su-engineer.tools.md [tmp-root]
-
-[desktop-install] coord extension: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/hooks/omp/coord-hook.ts [tmp-root], /tmp/pcv/pcusp-install-app-n3zuBU/scripts/hooks/omp/coord-hook.mjs [tmp-root]
-
-[desktop-install] psu launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/psu.mjs [tmp-root], /tmp/pcv/pcusp-install-app-n3zuBU/scripts/psu-launcher.mjs [tmp-root]
-
-[desktop-install] ptool launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/ptool.mjs [tmp-root]
-
-[desktop-install] onboard launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/onboard.mjs [tmp-root], /tmp/pcv/pcusp-install-app-n3zuBU/scripts/onboard-launcher.mjs [tmp-root]
-
-[desktop-install] project-history launcher: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/project-history.mjs [tmp-root]
-
-[desktop-install] cc hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/hooks/cc [tmp-root]
-
-[desktop-install] injection hooks: dest is itself a scratch tree — ALLOWING scratch source(s): /tmp/pcv/pcusp-install-app-n3zuBU/scripts/hooks/inject [tmp-root]
-
-            </system-out>
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; splices the per-agent overlay (claude ≠ omp) into the base, marker never shipped" time="0.022987774">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; profile selects the base file (power → papercusp-su-power.tools.md)" time="0.013536514">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; splices the Codex discovery fallback into the rendered playbook" time="0.016163009">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; keeps the canonical Claude overlay explicit that trimmed tools are an initial seed" time="0.004856571">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; keeps the Codex ptool fallback from passing an empty harness scope" time="0.004928469">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; keeps Codex ptool JSON replay on a shell-safe stdin/file path" time="0.006004813">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; throws when the base profile file is missing" time="0.006683765">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; P-025: generic profile falls back to the engineer base (does not throw)" time="0.016127881">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; splices the canonical operating-modes clause (AUTO + IDEATE) at the AUTO-MODE marker (engineer + power)" time="0.024820147">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook (psu-only-launch-unification P-011) &gt; AUTO-MODE marker absent → clause omitted, no literal marker (opt-out base)" time="0.013917985">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002) &gt; splices an explicit project guide at the marker; marker never shipped" time="0.015199181">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002) &gt; explicit empty source (&quot;&quot;) → no guide spliced, marker removed" time="0.018142184">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002) &gt; auto-resolves the repo CLAUDE.md by walking up from the prompts dir (engineer default)" time="0.018725963">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002) &gt; base WITHOUT the marker: the (large) guide is neither read nor spliced" time="0.015685073">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="shared base notes reach the LIVE blueprint base (recurrence guard) &gt; renders all five shared notes, and leaks no marker" time="0.018375651">
-        </testcase>
-        <testcase classname="lib/desktop-install/__tests__/papercusp-files.test.ts" name="shared base notes reach the LIVE blueprint base (recurrence guard) &gt; a base carrying NEITHER anchor is still returned untouched" time="0.013472751">
+        <testcase classname="lib/agent-tools/work_items/_assumptions.test.ts" name="resolveDeclaredAssumptions — the [&quot;none&quot;] container fumble (EI-19339908198998425) &gt; REFUSES the sentinel mixed with real keys — that is a contradiction, not a fumble" time="0.001543624">
         </testcase>
     </testsuite>
 </testsuites>

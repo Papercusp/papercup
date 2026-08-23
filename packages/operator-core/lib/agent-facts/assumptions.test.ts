@@ -452,3 +452,113 @@ describe('the close-time question is separate from the movement question (D-102)
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EI-21194879039423312 — the refusal must expose the grammar it accepts, WHERE
+// it searched, and where a same-key fact actually lives. On 2026-08-22 a closer
+// cited an existing fact's displayed form, was told to "cite an absolute ref",
+// and had nothing left to try — the grammar was never spelled out.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const danglingEntry = (over: Partial<ResolvedAssumption> = {}): ResolvedAssumption => ({
+  declared: 'ghost-key',
+  ref: null,
+  key: 'ghost-key',
+  scope: null,
+  scopeRef: null,
+  versionId: null,
+  condition: 'dangling',
+  kind: null,
+  confidence: null,
+  isAssumption: null,
+  ...over,
+});
+
+describe('danglingAssumptionsMessage exposes its components (EI-21194879039423312)', () => {
+  const selectors = assumptionSelectorsFor({ workItemId: 'WI-1', ownerId: 'su-1' });
+
+  it('spells out the accepted citation forms, including the @v pin and the workspace special case', () => {
+    const msg = danglingAssumptionsMessage([danglingEntry()], selectors);
+    expect(msg).toContain('Accepted citation forms');
+    expect(msg).toContain('fact:<scope>:[<ref>:]<key>[@v<factRowId>]');
+    expect(msg).toContain('`fact:workspace:<key>`');
+  });
+
+  it('names the workspace partition that was searched', () => {
+    const msg = danglingAssumptionsMessage(
+      [danglingEntry({ searchedWorkspace: 'papercusp-workspace' })],
+      selectors,
+    );
+    expect(msg).toContain('workspace partition: papercusp-workspace');
+    expect(msg).toContain('has no row at all in workspace papercusp-workspace');
+  });
+
+  it('a malformed fact:-prefixed entry is told its SHAPE is wrong, not sent to assert a phantom key', () => {
+    const msg = danglingAssumptionsMessage(
+      [danglingEntry({ malformed: true, declared: 'fact:workspce:k', key: 'k' })],
+      selectors,
+    );
+    expect(msg).toContain('"fact:workspce:k" opens with fact: but is not a well-formed ref');
+    expect(msg).not.toContain('"fact:workspce:k" has no row');
+  });
+
+  it('a near-miss NAMES where the key actually lives', () => {
+    const msg = danglingAssumptionsMessage(
+      [danglingEntry({ nearMisses: ['fact:owner:su-other:ghost-key@v42'] })],
+      selectors,
+    );
+    expect(msg).toContain('EXISTS at `fact:owner:su-other:ghost-key@v42`');
+    expect(msg).toContain('Cite one of those refs verbatim');
+  });
+});
+
+describe('resolveAssumptions stamps search context + near-misses on dangles (EI-21194879039423312)', () => {
+  it('the follow-up probe surfaces a same-key fact living outside the searched scopes', async () => {
+    // Main read and probe share the fake: resolveOne drops this row because
+    // scope_ref su-other matches no selector — then the probe reports it.
+    const sql = fakeSql([factRow({ id: 42, key: 'ghost-key', scope: 'owner', scope_ref: 'su-other' })]);
+    const out = await resolveAssumptions(['ghost-key'], assumptionSelectorsFor({ ownerId: 'su-1' }), {}, sql);
+    expect(out[0].condition).toBe('dangling');
+    expect(out[0].nearMisses).toEqual(['fact:owner:su-other:ghost-key@v42']);
+  });
+
+  it('every dangle carries the workspace partition the search ran in', async () => {
+    const out = await resolveAssumptions(
+      ['never-existed-key'],
+      assumptionSelectorsFor({ ownerId: 'su-1' }),
+      { workspaceId: 'ws-probe' },
+      fakeSql([]),
+    );
+    expect(out[0].condition).toBe('dangling');
+    expect(out[0].searchedWorkspace).toBe('ws-probe');
+  });
+
+  it('a total absence gets NO near-miss (the probe found nothing)', async () => {
+    const out = await resolveAssumptions(
+      ['never-existed-key'],
+      assumptionSelectorsFor({ ownerId: 'su-1' }),
+      {},
+      fakeSql([]),
+    );
+    expect(out[0].condition).toBe('dangling');
+    expect(out[0].nearMisses).toBeUndefined();
+  });
+
+  it('probe failure changes no verdict — hints are best-effort', async () => {
+    let calls = 0;
+    const flaky = (async (..._args: unknown[]) => {
+      calls += 1;
+      if (calls > 1) throw new Error('pg down mid-probe');
+      return [] as unknown[];
+    }) as unknown as Parameters<typeof resolveAssumptions>[3];
+    const out = await resolveAssumptions(
+      ['never-existed-key'],
+      assumptionSelectorsFor({ ownerId: 'su-1' }),
+      { workspaceId: 'ws-flaky' },
+      flaky,
+    );
+    expect(out[0].condition).toBe('dangling');
+    expect(out[0].searchedWorkspace).toBe('ws-flaky');
+    expect(out[0].nearMisses).toBeUndefined();
+  });
+});

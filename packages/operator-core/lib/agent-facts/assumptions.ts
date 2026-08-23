@@ -394,7 +394,7 @@ export async function resolveAssumptions(
       for (const d of dangles) d.searchedWorkspace = ws;
       const missKeys = Array.from(new Set(dangles.filter((d) => !d.malformed).map((d) => d.key)));
       if (missKeys.length > 0) {
-        const near = await probeSql<{ id: string | number; scope: FactScope; scope_ref: string | null; key: string }>`
+        const near = await probeSql<Array<{ id: string | number; scope: FactScope; scope_ref: string | null; key: string }>>`
           SELECT id, scope, scope_ref, key
             FROM harness_shared.agent_facts
            WHERE workspace_id = ${ws}
