@@ -65,6 +65,18 @@ export function resolveContextTier({ contextTier, env }?: {
  */
 export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
 /**
+ * Escape literal JSON control characters that occur inside quoted strings.
+ * JSON requires those characters to be represented as escapes, but a heredoc
+ * is a natural way to author a multiline tool argument and users should not
+ * have to hand-escape every line break. Formatting whitespace outside strings
+ * is left untouched, as are already-escaped sequences. Pure.
+ * @param {string} text
+ * @returns {string}
+ */
+export function escapeJsonStringControls(text: string): string;
+/** Parse a ptool JSON payload after normalizing heredoc-friendly string controls. Pure. */
+export function parseJsonInput(text: any): any;
+/**
  * Decide where a direct `code:run` script comes from. The file/stdin forms
  * carry JavaScript as data, so the caller's shell never has to quote nested
  * commands or apostrophes (EI-20235746813390458). `--script-file` takes
