@@ -450,6 +450,16 @@ describe('wakeClaimableAwaitersForSubscribers — EI-20079462322478221', () => {
 });
 
 describe('emitAwaitedEvent — EI-13705: unconditional per-key fire latch', () => {
+  it('records the fire latch before claiming await rows so late registration can observe it', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+
+    await emitAwaitedEvent({ key: 'git-sync:egressed:abc123', source: 'git-sync' });
+
+    const latchOrder = h.store.recordKeyFire.mock.invocationCallOrder[0];
+    const claimOrder = h.store.fireAwaitsForKey.mock.invocationCallOrder[0];
+    expect(latchOrder).toBeLessThan(claimOrder);
+  });
+
   it('records the fire latch even when NOTHING was fired and no to[] (waiters:0, the case that previously left zero trace)', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
     const r = await emitAwaitedEvent({ key: 'p2p-git:phase3-open', source: 'su-63834d42', payload: { sha: 'abc' } });
