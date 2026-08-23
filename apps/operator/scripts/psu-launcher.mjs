@@ -516,6 +516,36 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw)
 const STALE_DISCOVERY_MS = 10 * 60_000;
 const STALE_FAST_FAIL_BUDGET_MS = 5_000;
 
+// The MCP proxy marks admission shedding with HTTP 429 + Retry-After. Treat that
+// response as a bounded, safe-to-replay front-door condition: the proxy sheds
+// before forwarding, so no operator-side work has run yet. Keep this separate
+// from connection retry (which rides an operator recycle) and timeout retry
+// (which is intentionally tiny because the request may have reached the host).
+export const MCP_PROXY_OVERLOAD_MAX_ATTEMPTS = 5;
+export const MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS = 20_000;
+export const MCP_PROXY_OVERLOAD_DEFAULT_RETRY_MS = 1_000;
+export const MCP_PROXY_OVERLOAD_MAX_RETRY_MS = 5_000;
+
+/** Parse a Retry-After delta-seconds value into a bounded delay for psu's
+ * front-door overload retry. Invalid/missing values use the supplied fallback. */
+export function proxyOverloadRetryDelayMs(
+  value,
+  fallbackMs = MCP_PROXY_OVERLOAD_DEFAULT_RETRY_MS,
+  maxMs = MCP_PROXY_OVERLOAD_MAX_RETRY_MS,
+) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const seconds = typeof raw === "string" || typeof raw === "number" ? Number(raw) : NaN;
+  if (!Number.isFinite(seconds) || seconds < 0) return fallbackMs;
+  return Math.min(maxMs, seconds * 1_000);
+}
+
+/** Only the proxy's explicitly retryable admission response is absorbed. A
+ * bare application 429 without Retry-After is returned to the caller unchanged. */
+export function isRetryableMcpProxyOverload(response) {
+  if (response?.status !== 429) return false;
+  return typeof response?.headers?.get === "function" && response.headers.get("retry-after") != null;
+}
+
 /** Coarse human age ("3m" / "2h" / "5d") for the stale-operator message. */
 function fmtAgo(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "an unknown time";
@@ -5017,14 +5047,42 @@ export async function fetchWithResilience(
   let timeoutRetriesLeft = timeoutRetries;
   let announcedConnRetry = false;
   let failoverAttempted = false;
+  let overloadAttempts = 1;
+  let announcedOverloadRetry = false;
+  const overloadDeadline = now() + MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS;
   let lastErr;
   for (;;) {
     try {
-      return await fetchImpl(url, {
+      const response = await fetchImpl(url, {
         ...init,
         // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
         signal: callerSignal ?? AbortSignal.timeout(timeoutMs),
       });
+      if (retryable && isRetryableMcpProxyOverload(response)) {
+        const remaining = overloadDeadline - now();
+        const retryAfter = response.headers.get("retry-after");
+        const delayMs = proxyOverloadRetryDelayMs(retryAfter);
+        if (overloadAttempts < MCP_PROXY_OVERLOAD_MAX_ATTEMPTS && remaining >= delayMs) {
+          if (!announcedOverloadRetry) {
+            onNotice(
+              `psu: the MCP proxy is overloaded; retrying in ${Math.ceil(delayMs / 1_000)}s ` +
+                `(attempt ${overloadAttempts + 1}/${MCP_PROXY_OVERLOAD_MAX_ATTEMPTS})…\n`,
+            );
+            announcedOverloadRetry = true;
+          }
+          overloadAttempts += 1;
+          // Release the shed response before waiting so undici can reuse the
+          // connection while the proxy drains an in-flight slot.
+          try {
+            await response.body?.cancel?.();
+          } catch {
+            /* best-effort; the response was already a rejected admission */
+          }
+          await sleep(delayMs);
+          continue;
+        }
+      }
+      return response;
     } catch (e) {
       lastErr = e;
       if (!retryable) break;
@@ -5134,6 +5192,31 @@ export async function fetchWithResilience(
   );
 }
 
+/** Turn a structured operator/proxy failure into an actionable launcher error.
+ * Keep the stable error code, but retain the server's detail and retry hint so
+ * a final exhausted overload is distinguishable from a programming failure. */
+export function formatApiFailureMessage(json, status, path) {
+  const err = json?.error;
+  const msg =
+    typeof err === "string"
+      ? err
+      : err?.message ||
+        (err ? JSON.stringify(err) : `HTTP ${status} from ${path}`);
+  const detail = typeof json?.detail === "string" ? json.detail.trim() : "";
+  const rawRetryAfter = json?.retryAfterSec;
+  const retryAfterSec =
+    typeof rawRetryAfter === "number" || typeof rawRetryAfter === "string"
+      ? Number(rawRetryAfter)
+      : NaN;
+  const retryHint =
+    Number.isFinite(retryAfterSec) && retryAfterSec >= 0
+      ? `retry in ${retryAfterSec}s`
+      : "";
+  return [msg, detail && detail !== msg ? detail : "", retryHint]
+    .filter(Boolean)
+    .join(" — ");
+}
+
 async function api(path, opts = {}) {
   const token = readToken();
   const res = await fetchWithResilience(
@@ -5156,15 +5239,7 @@ async function api(path, opts = {}) {
     json = { status: "error", error: text.slice(0, 200) };
   }
   if (!res.ok || json.status === "error") {
-    // json.error may be a string OR a structured object ({code, message}) — coerce
-    // to a real message so we never surface "[object Object]".
-    const err = json.error;
-    const msg =
-      typeof err === "string"
-        ? err
-        : err?.message ||
-          (err ? JSON.stringify(err) : `HTTP ${res.status} from ${path}`);
-    const failure = new Error(msg);
+    const failure = new Error(formatApiFailureMessage(json, res.status, path));
     failure.status = res.status;
     failure.path = path;
     throw failure;
