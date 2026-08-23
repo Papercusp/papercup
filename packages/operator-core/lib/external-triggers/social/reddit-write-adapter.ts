@@ -45,7 +45,7 @@ import type {
   SocialPostRequest,
   SocialReplyOutcome,
   SocialReplyRequest,
-  SocialWriteAdapter,
+  SocialReplyCapableAdapter,
 } from '../../capability-verbs/social';
 // `OutboundContext` is declared in resolve.ts and only IMPORTED by social.ts, so
 // it must be taken from its origin rather than re-exported through the verb
@@ -192,7 +192,7 @@ function redditPermalinkUrl(permalink: string | undefined): string | undefined {
  * reason Bluesky's is: the credential lives on the connected SOURCE, so there is
  * nothing to register until an owner has connected an account.
  */
-export function createRedditWriteAdapter(deps: RedditWriteAdapterDeps): SocialWriteAdapter {
+export function createRedditWriteAdapter(deps: RedditWriteAdapterDeps): SocialReplyCapableAdapter {
   /**
    * THE DOUBLE-POST GUARD.
    *
