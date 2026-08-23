@@ -9,6 +9,7 @@ import {
   parseSystemctlShowProperties,
   isUnitDown,
   isEpisodicRunInFlight,
+  isSystemdTransitioning,
   isAdministrativelyPaused,
   decideReconcile,
   initialFlapState,
@@ -693,7 +694,38 @@ describe('decideReconcile', () => {
   it('activating is treated as NOT down (never restart a unit mid-start)', () => {
     const activating: SystemctlUnitStatus = { unit: 'papercup-mcp-proxy.service', load: 'loaded', active: 'activating', sub: 'start', description: '' };
     const { action } = decideReconcile({ entry: AUTORESTART_ENTRY, status: activating, show: undefined, state: initialFlapState('papercup-mcp-proxy.service'), autoRestartFlagOn: true, now: 1000 });
-    expect(action.kind).toBe('healthy');
+    expect(action).toEqual({ kind: 'waiting-transition', unit: 'mcp-proxy' });
+  });
+
+  it('holds a persistent unit down across activating until a terminal healthy state proves recovery', () => {
+    const downState = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: down('papercup-mcp-proxy.service'),
+      show: { result: 'exit-code' },
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    }).nextState;
+    const transitioning = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: { unit: 'papercup-mcp-proxy.service', load: 'loaded', active: 'activating', sub: 'start', description: '' },
+      show: { result: 'exit-code' },
+      state: downState,
+      autoRestartFlagOn: true,
+      now: 2000,
+    });
+    expect(transitioning.action).toEqual({ kind: 'waiting-transition', unit: 'mcp-proxy' });
+    expect(transitioning.nextState.wasDown).toBe(true);
+
+    const recovered = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: up('papercup-mcp-proxy.service'),
+      show: undefined,
+      state: transitioning.nextState,
+      autoRestartFlagOn: true,
+      now: 3000,
+    });
+    expect(recovered.action).toEqual({ kind: 'recovered', unit: 'mcp-proxy' });
   });
 });
 
@@ -1669,13 +1701,16 @@ describe('EI-20474047462811254: an episodic run IN FLIGHT carries no verdict', (
   it('isEpisodicRunInFlight covers the TRANSITIONAL states only — never a terminal verdict', () => {
     for (const s of ['activating', 'reloading', 'deactivating']) {
       expect(isEpisodicRunInFlight(s), `state=${s}`).toBe(true);
+      expect(isSystemdTransitioning(s), `state=${s}`).toBe(true);
     }
     // `active` is deliberately excluded: for a oneshot with RemainAfterExit=yes it is the
     // terminal SUCCESS state, so calling it in-flight would suppress a REAL recovery.
     for (const s of ['active', 'inactive', 'failed']) {
       expect(isEpisodicRunInFlight(s), `state=${s}`).toBe(false);
+      expect(isSystemdTransitioning(s), `state=${s}`).toBe(false);
     }
     expect(isEpisodicRunInFlight(undefined)).toBe(false);
+    expect(isSystemdTransitioning(undefined)).toBe(false);
   });
 
   it('THE FLAP: failed -> activating -> failed emits no recovery and no duplicate down', () => {
@@ -1714,12 +1749,11 @@ describe('EI-20474047462811254: an episodic run IN FLIGHT carries no verdict', (
     expect(actions[1]).toEqual({ kind: 'recovered', unit: 'live-federation-gate' });
   });
 
-  it('CALIBRATION: a PERSISTENT unit is untouched — activating is still a healthy mid-restart', () => {
-    // Guards the over-application direction: for a continuously-running service `activating` is
-    // a restart blip, and the pre-existing semantics are correct there. REPORT_ONLY_ENTRY is the
-    // same unit WITHOUT `episodic`.
+  it('CALIBRATION: a PERSISTENT unit also holds activating until the restart settles', () => {
+    // A continuously-running service's `activating` state is a restart blip, not proof of a
+    // recovered process. REPORT_ONLY_ENTRY is the same unit WITHOUT `episodic`.
     const { actions } = run(REPORT_ONLY_ENTRY, ['failed', 'activating']);
-    expect(actions[1]).toEqual({ kind: 'recovered', unit: 'live-federation-gate' });
+    expect(actions[1]).toEqual({ kind: 'waiting-transition', unit: 'live-federation-gate' });
   });
 
   it('END-TO-END: a full tick sequence over the live journal broadcasts nothing after the first down', async () => {
