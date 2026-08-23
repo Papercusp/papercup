@@ -151,6 +151,10 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
 
   // ─── Engine-backed, floor inherited ──────────────────────────────────────
   { id: 'recipes:search', entry: 'agent-tools/recipes/search.ts', engine: 'hybrid' },
+  // orchestrate:search is a typed facade over recipes:search. Point at the
+  // mechanism module, as the HTTP entries below do, so the declaration proves
+  // that the delegated search keeps the canonical hybrid engine + floor.
+  { id: 'orchestrate:search', entry: 'agent-tools/recipes/search.ts', engine: 'hybrid' },
 
   // ─── Deliberately NOT on the engine ──────────────────────────────────────
   {

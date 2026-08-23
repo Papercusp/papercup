@@ -19,9 +19,7 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
-const textResult = (payload: unknown): ToolResult => ({
-  content: [{ type: 'text', text: JSON.stringify(payload) }],
-}) as ToolResult;
+const dataResult = (payload: unknown): ToolResult => ({ data: payload }) as unknown as ToolResult;
 
 export async function inspectOrchestration(
   args: OrchestrationSourceArgs,
@@ -32,7 +30,7 @@ export async function inspectOrchestration(
   } = {},
 ): Promise<ToolResult> {
   const policyFailure = orchestrationPolicyFailure(args);
-  if (policyFailure) return textResult(policyFailure);
+  if (policyFailure) return dataResult(policyFailure);
   const adapter = deps.recipes ?? savedRecipeAdapterFor(ctx);
   const inspectScript = deps.inspectScript ?? inspectScriptContract;
 
@@ -43,11 +41,11 @@ export async function inspectOrchestration(
 
   if (args.recipe) {
     const inspected = await adapter.inspect(args.recipe as SavedRecipeSelector);
-    if (!inspected.ok) return textResult(inspected);
+    if (!inspected.ok) return dataResult(inspected);
     const recipe = inspected.recipe;
     const recipeSource = recipe.script;
     if (typeof recipeSource !== 'string' || recipeSource.length === 0) {
-      return textResult({
+      return dataResult({
         ok: false,
         phase: 'preflight',
         executed: false,
@@ -72,9 +70,9 @@ export async function inspectOrchestration(
     ...(manifest ? { manifest } : {}),
     ctx,
   });
-  if (!checked.ok) return textResult(checked);
+  if (!checked.ok) return dataResult(checked);
 
-  return textResult({
+  return dataResult({
     ok: true,
     source,
     normalized: {

@@ -6,6 +6,10 @@ import { inspectOrchestration } from './inspect';
 import type { SavedRecipeAdapter } from './saved-recipe-adapter';
 
 function payload(result: ToolResult): Record<string, unknown> {
+  const data = (result as ToolResult & { data?: unknown }).data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return data as Record<string, unknown>;
+  }
   const text = result.content.find((item) => item.type === 'text');
   if (!text || !('text' in text)) throw new Error('missing text result');
   return JSON.parse(text.text) as Record<string, unknown>;

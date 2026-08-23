@@ -77,7 +77,7 @@ export async function searchOrchestrations(
 ): Promise<ToolResult> {
   const raw = await adapter.search(args);
   const payload = { ok: true, query: args.query, matches: searchMatches(raw) };
-  return { content: [{ type: 'text', text: JSON.stringify(payload) }] } as ToolResult;
+  return { data: payload } as unknown as ToolResult;
 }
 
 const orchestrateSearchTool = defineTool({
@@ -102,4 +102,3 @@ const orchestrateSearchTool = defineTool({
 });
 
 export default orchestrateSearchTool;
-
