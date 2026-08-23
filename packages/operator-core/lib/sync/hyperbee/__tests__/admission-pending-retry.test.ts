@@ -9,10 +9,14 @@
  * Uses a real bootHarnessSubstrate with:
  *   - `verifyBindingOverride` that starts 'pending' then flips to 'verified'.
  *   - `mergePollMs: 0` (no background merge timer).
- *   - A small `pendingRetryMs` (e.g. 20ms) so the retry fires quickly.
+ *   - `pendingRetrySetTimeout`/`pendingRetryClearTimeout` captured, so the retry
+ *     pass is DRIVEN explicitly instead of being waited for.
  *
- * The test polls the admitted-set (bounded) to assert that the peer eventually
- * lands there without requiring timers/sleeps longer than a few hundred ms.
+ * No case here waits on wall-clock time: every assertion follows an awaited
+ * `retryTimer.run()`, so a case fails only when the behaviour is wrong, never
+ * because a loaded host outran a sleep. Earlier revisions armed a real 20ms
+ * timer and then slept/polled against a fixed deadline; under fleet load those
+ * runs dilated ~100x (0.4s file → 41s) and timed out — EI-21245999997944088.
  */
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -60,20 +64,6 @@ async function validAnnounce(
     log_core_key: logCoreKey,
   };
   return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
-}
-
-/** Poll fn() until truthy or timeoutMs elapses. */
-async function pollUntil<T>(
-  fn: () => T | Promise<T>,
-  opts: { timeoutMs: number; intervalMs: number },
-): Promise<T | undefined> {
-  const deadline = Date.now() + opts.timeoutMs;
-  for (;;) {
-    const v = await fn();
-    if (v) return v;
-    if (Date.now() >= deadline) return undefined;
-    await new Promise((r) => setTimeout(r, opts.intervalMs));
-  }
 }
 
 describe('boot pending-retry loop (D-006)', () => {
