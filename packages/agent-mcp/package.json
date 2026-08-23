@@ -14,7 +14,8 @@
     "./validation-context": "./src/validation-context.ts",
     "./_bulk": "./src/_bulk.ts",
     "./goals": "./src/tools/goals/_core.ts",
-    "./goal-deps": "./src/tools/goals/goal-deps.ts"
+    "./goal-deps": "./src/tools/goals/goal-deps.ts",
+    "./goal-pause": "./src/tools/goals/pause-record.ts"
   },
   "scripts": {
     "test": "vitest",

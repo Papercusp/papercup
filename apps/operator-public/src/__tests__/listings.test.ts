@@ -142,6 +142,31 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect(store.tables.harnesses[0]).toMatchObject(body.listing);
   });
 
+  it('migration 016: a goal publishes as a reviewed kind with its rubric requirements intact', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 88, private: false, permissions: { admin: true } } });
+    const requiresRubrics = [{ rubricRef: 'goal-mode-e2e' }];
+    const res = await publish(api, env, {
+      ...BLUEPRINT_BASE,
+      github_repository_id: 88,
+      listing_kind: 'goal',
+      listing_ref: 'keep-green',
+      title: 'Keep Green',
+      requires_rubrics: requiresRubrics,
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      review_status: string;
+      listing: Record<string, unknown>;
+    };
+    expect(JSON.parse(body.listing.requires_rubrics as string)).toEqual(requiresRubrics);
+    // 'goal' is a REVIEW_POLICY_KIND (fail-closed like plan): it lands PENDING.
+    expect(body.review_status).toBe('pending');
+    expect(body.listing).toMatchObject({ review_status: 'pending' });
+    expect(store.tables.harnesses[0]).toMatchObject(body.listing);
+  });
+
   it('a project hosts N blueprints (1:N): two listing_refs on one repo both publish', async () => {
     const { env, store } = makeEnv();
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false } });

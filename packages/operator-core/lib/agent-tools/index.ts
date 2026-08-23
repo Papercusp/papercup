@@ -1372,6 +1372,12 @@ import './cupboard/install-plan';
 // laundering it; install-recipe is no-clobber over what is otherwise an UPSERT.
 import './cupboard/publish-recipe';
 import './cupboard/install-recipe';
+// work-on-everything-goal-2026-08-23 P-006 — the goal kind. publish-goal SERIALIZES
+// the row's reusable shape (live state stripped: status/inputs/metadata/tripwire
+// currents); install-goal gates on harness + requires_rubrics BEFORE downloading,
+// then seeds an INACTIVE status:'paused' stub — install ≠ start (D-002).
+import './cupboard/publish-goal';
+import './cupboard/install-goal';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
