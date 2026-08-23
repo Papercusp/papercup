@@ -28389,7 +28389,7 @@
           "POST"
         ]
       },
-      "description": "Complete one or many work-items with structured evidence; the system renders and broadcasts it. For successful work pass `state:\"done\"` (legacy `resolved`/`passed` also maps to done); `closed` means discard/wontfix and maps to `dropped`. Pass terminal `state` plus `assumptions` (`\"none\"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.",
+      "description": "Complete one or many work-items with structured evidence; the system renders and broadcasts it. For a terminal close, prefer feature/chunk `state:\"passed\"` or `\"deprecated\"`, and issue `state:\"resolved\"` or `\"closed\"`; unified `\"done\"`/`\"dropped\"` aliases are also accepted. `closed`/`deprecated` mean discard/wontfix, not successful work. Pass terminal `state` plus `assumptions` (`\"none\"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -28412,7 +28412,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After verification, pass `completion`, successful terminal `state:\"done\"` (or legacy `resolved`/`passed`), and `assumptions` (`\"none\"` or fact keys). Reserve `state:\"dropped\"` and legacy `closed`/`deprecated` for discard/wontfix. Put structured evidence in `completion.verification` using only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; do not put descriptive `tests`, `typecheck`, or `diff` keys there — use `testsRun`/`testResult` (or top-level `tests`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.",
+        "when": "After verification, pass `completion`, a family-appropriate terminal state (`passed`/`deprecated` for feature/chunk, `resolved`/`closed` for issue; unified `done`/`dropped` aliases are accepted), and `assumptions` (`\"none\"` or fact keys). Reserve `dropped` and legacy `closed`/`deprecated` for discard/wontfix. For universal-verification claims, put the complete verbatim population partition in `completion.verification.coverage`: every population entry appears exactly once in checked/notChecked/notApplicable, and residue is non-empty (`[\"none\"]` means zero). Put structured evidence in `completion.verification` using only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; do not put descriptive `tests`, `typecheck`, or `diff` keys there — use `testsRun`/`testResult` (or top-level `tests`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.",
         "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }
