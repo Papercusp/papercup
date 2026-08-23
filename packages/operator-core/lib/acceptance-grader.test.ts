@@ -151,6 +151,30 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(launch).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces zero-eligible escalation while preserving the fresh-judge fallback', async () => {
+    const launch = freshLaunch();
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => ({
+        verdict: 'fresh' as const,
+        excluded: ['su-implementer'],
+        eligibility: { eligibleCount: 0, qualifiedCount: 0, measured: true, reason: 'zero_eligible' as const },
+        escalation: { code: 'zero_eligible' as const },
+        freshReason: 'no_qualified_non_excluded' as const,
+      })),
+    });
+    expect(result.state).toBe('launched');
+    expect(result.freshReason).toBe('no_qualified_non_excluded');
+    expect(result.eligibility).toEqual({
+      eligibleCount: 0,
+      qualifiedCount: 0,
+      measured: true,
+      reason: 'zero_eligible',
+    });
+    expect(result.escalation).toEqual({ code: 'zero_eligible' });
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
   it('discovery FAULT → still launches (discovery is a service, never a new failure mode)', async () => {
     const launch = freshLaunch();
     const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {

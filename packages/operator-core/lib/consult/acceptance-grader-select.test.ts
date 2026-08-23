@@ -44,6 +44,11 @@ function routed(cands: RoutingCandidate[], degraded = false): RouteResult {
   };
 }
 
+function unqualified(cands: RoutingCandidate[]): RouteResult {
+  const result = routed([]);
+  return { ...result, snapshot: { ...result.snapshot, candidates: cands } };
+}
+
 /** Tagged-template stub: every sql`...` call resolves to `rows`. */
 function fakeSql(rows: Array<{ owner: string }>): Sql {
   return (async () => rows) as unknown as Sql;
@@ -65,6 +70,8 @@ describe('selectAcceptanceGrader (D-009)', () => {
     );
     expect(out.verdict).toBe('assigned');
     expect(out.grader?.ownerId).toBe('su-expert');
+    expect(out.eligibility).toEqual({ eligibleCount: 1, qualifiedCount: 1, measured: true });
+    expect(out.escalation).toBeUndefined();
     // The router received the FULL exclusion set: computed + extras, no nulls.
     const call = route.mock.calls[0][0];
     expect(call.excludeOwners).toEqual(
@@ -81,7 +88,26 @@ describe('selectAcceptanceGrader (D-009)', () => {
       getSql: () => fakeSql([]),
       route: async () => routed([]),
     });
-    expect(out).toMatchObject({ verdict: 'fresh', freshReason: 'no_qualified_non_excluded' });
+    expect(out).toMatchObject({
+      verdict: 'fresh',
+      freshReason: 'no_qualified_non_excluded',
+      eligibility: { eligibleCount: 0, qualifiedCount: 0, measured: true, reason: 'zero_eligible' },
+      escalation: { code: 'zero_eligible' },
+    });
+  });
+
+  it('keeps a populated but below-floor pool distinct from zero eligible actors', async () => {
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      route: async () => unqualified([candidate('su-below-floor', 'live')]),
+    });
+    expect(out).toMatchObject({
+      verdict: 'fresh',
+      freshReason: 'no_qualified_non_excluded',
+      eligibility: { eligibleCount: 1, qualifiedCount: 0, measured: true },
+    });
+    expect(out.eligibility.reason).toBeUndefined();
+    expect(out.escalation).toBeUndefined();
   });
 
   it('skips a dead top candidate toward the next reachable one', async () => {
