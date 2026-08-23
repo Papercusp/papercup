@@ -21,7 +21,7 @@
  *      real tree (mostly unrelated reads far from the nearest JSON.parse
  *      call); this locks that the locality narrowing actually holds.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -29,10 +29,18 @@ import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its analyzer only.
-import { analyzeForExplicitPresence, applyAllowlist, decideRatchet, readBaseline } from '../../../../scripts/check-explicit-presence.mjs';
+import {
+  analyzeForExplicitPresence,
+  applyAllowlist,
+  decideRatchet,
+  readBaseline,
+} from '../../../../scripts/check-explicit-presence.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS meta-guard, no .d.ts; imported for its registration parser + allowlist. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { ACKNOWLEDGED_UNREACHABLE, parseRepoWideRegistrationPairs } from '../../../../scripts/check-lint-guard-reachability.mjs';
+import {
+  ACKNOWLEDGED_UNREACHABLE,
+  parseRepoWideRegistrationPairs,
+} from '../../../../scripts/check-lint-guard-reachability.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -84,7 +92,7 @@ describe('analyzeForExplicitPresence (WI-6004)', () => {
   it('does NOT flag a bare untracked local variable default — far too generic to be a boundary read', () => {
     const hits = analyzeForExplicitPresence({
       path: 'packages/operator-core/lib/x/f.ts',
-      text: "const debugEnabled = config.debug ?? false;\n",
+      text: 'const debugEnabled = config.debug ?? false;\n',
     });
     expect(hits).toHaveLength(0);
   });
@@ -116,7 +124,7 @@ describe('analyzeForExplicitPresence (WI-6004)', () => {
   it('does NOT flag a commented-out example of the risky shape', () => {
     const hits = analyzeForExplicitPresence({
       path: 'packages/operator-core/lib/x/j.ts',
-      text: "const rows = await sql`select 1`;\n// const active = rows[0].active ?? false; (old approach)\n",
+      text: 'const rows = await sql`select 1`;\n// const active = rows[0].active ?? false; (old approach)\n',
     });
     expect(hits).toHaveLength(0);
   });
@@ -124,13 +132,19 @@ describe('analyzeForExplicitPresence (WI-6004)', () => {
   it('a tracked boundary variable decays OUTSIDE the lookback window (the locality narrowing that replaced the 1264-hit whole-file gate)', () => {
     const near = analyzeForExplicitPresence({
       path: 'packages/operator-core/lib/x/k-near.ts',
-      text: 'const row = await sql`select status from t`;\n' + '// pad\n'.repeat(10) + 'const status = row.status ?? false;\n',
+      text:
+        'const row = await sql`select status from t`;\n' +
+        '// pad\n'.repeat(10) +
+        'const status = row.status ?? false;\n',
     });
     expect(near).toHaveLength(1);
 
     const far = analyzeForExplicitPresence({
       path: 'packages/operator-core/lib/x/k-far.ts',
-      text: 'const row = await sql`select status from t`;\n' + '// pad\n'.repeat(60) + 'const status = row.status ?? false;\n',
+      text:
+        'const row = await sql`select status from t`;\n' +
+        '// pad\n'.repeat(60) +
+        'const status = row.status ?? false;\n',
     });
     expect(far).toHaveLength(0);
   });
@@ -174,6 +188,29 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
     expect(out).toMatch(/self-test: analyzer correct on all fixtures/);
   });
 
+  it('runs an end-to-end positive control that forces the real ratchet red even when the corpus has zero candidates', () => {
+    const run = spawnSync(
+      'node',
+      [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--ratchet', '--positive-control'],
+      { cwd: REPO_ROOT, encoding: 'utf8' },
+    );
+    const output = `${run.stdout}\n${run.stderr}`;
+    expect(run.status, output).toBe(1);
+    expect(output).toMatch(/POSITIVE CONTROL: evaluating \d+ analyzer-produced known violation/);
+    expect(output).toMatch(/count ROSE above baseline/);
+    expect(output).toMatch(/\(\+1\)/);
+  });
+
+  it('refuses to combine the synthetic positive control with --update', () => {
+    const run = spawnSync(
+      'node',
+      [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--ratchet', '--positive-control', '--update'],
+      { cwd: REPO_ROOT, encoding: 'utf8' },
+    );
+    expect(run.status).toBe(2);
+    expect(run.stderr).toMatch(/synthetic violation must never rewrite the baseline/);
+  });
+
   it('operator-core DECLARES lint:explicit-presence, and it runs the whole-tree ratchet', () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'));
     const script = pkg.scripts?.['lint:explicit-presence'];
@@ -206,7 +243,7 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
     const dir = mkdtempSync(join(tmpdir(), 'explicit-presence-baseline-'));
     const corrupt = join(dir, 'baseline.json');
     writeFileSync(corrupt, JSON.stringify({ _comment: 'no count field' }));
-    expect(() => readBaseline(corrupt)).toThrow(/no numeric `count`/);
+    expect(() => readBaseline(corrupt)).toThrow(/no non-negative integer `count`/);
     expect(() => readBaseline(join(dir, 'does-not-exist.json'))).toThrow();
   });
 
@@ -297,7 +334,9 @@ describe('applyAllowlist: drift is advisory, and content-keying does not over-su
 
   it('the suppressed TOTAL is min(entries, matches), so which duplicate is picked cannot change the verdict', () => {
     const twoHits = () => new Map([[FILE, [hit(200, DEL), hit(1527, DEL)]]]);
-    expect(applyAllowlist({ allow: [{ at: `${FILE}:1470`, code: DEL }], hitsByFile: twoHits() }).candidates).toHaveLength(1);
+    expect(
+      applyAllowlist({ allow: [{ at: `${FILE}:1470`, code: DEL }], hitsByFile: twoHits() }).candidates,
+    ).toHaveLength(1);
     expect(
       applyAllowlist({
         allow: [
@@ -360,12 +399,16 @@ describe('applyAllowlist: drift is advisory, and content-keying does not over-su
   it('every shipped ALLOW entry carries both halves — an entry with no `code` cannot survive drift', () => {
     const src = readFileSync(join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), 'utf8');
     const block = src.slice(src.indexOf('const ALLOW = ['), src.indexOf('\n];', src.indexOf('const ALLOW = [')));
-    const entries = [...block.matchAll(/\{\s*at:\s*'([^']+)',\s*code:\s*(['"])((?:(?!\2).)*)\2\s*\}/g)];
+    const entries = [
+      ...block.matchAll(
+        /\{\s*at:\s*(["'])((?:\\[\s\S]|(?!\1)[\s\S])*)\1,\s*code:\s*(["'])((?:\\[\s\S]|(?!\3)[\s\S])*)\3,?\s*\}/g,
+      ),
+    ];
     expect(entries.length).toBeGreaterThanOrEqual(20);
     // Count the `at:` keys independently: a hand-added entry that omits `code` (or spells it
     // differently) is invisible to the pair regex above, and this is what catches that.
-    expect(entries.length).toBe([...block.matchAll(/\bat:\s*'/g)].length);
-    for (const [, at, , code] of entries) {
+    expect(entries.length).toBe([...block.matchAll(/\bat:\s*["']/g)].length);
+    for (const [, , at, , code] of entries) {
       expect(at).toMatch(/^[\w./-]+\.ts:\d+$/);
       expect(code.trim().length).toBeGreaterThan(0);
     }
