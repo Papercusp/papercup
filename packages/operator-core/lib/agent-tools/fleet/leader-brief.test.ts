@@ -17,11 +17,13 @@ import {
   computeDeclaredPlanSpecDivergenceAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
+  compactLeaderBriefBenchSuggestions,
   compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
   projectMember,
+  prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
@@ -339,6 +341,28 @@ describe('compactLeaderBriefMemberVerdicts (EI-20226510994156306)', () => {
     expect(index[0]).toEqual({ agentId: 'su-0', verdict: 'monitoring', idleCause: 'genuinely-idle' });
     expect(index[49]).toEqual({ agentId: 'su-49', verdict: 'speaking', idleCause: 'working' });
     expect(new Set(index.map((row) => row.agentId)).size).toBe(50);
+  });
+});
+
+describe('bench target identity index (EI-21242929839064139)', () => {
+  it('keeps every suggested member and puts suggested rows first in bounded detail', () => {
+    const members = [
+      { agentId: 'ordinary-a' },
+      { agentId: 'bench-a', benchSuggestion: { kind: 'laneless-idle' as const } },
+      { agentId: 'ordinary-b' },
+      { agentId: 'bench-b', benchSuggestion: { kind: 'stalled-no-mcp' as const } },
+    ];
+
+    expect(compactLeaderBriefBenchSuggestions(members)).toEqual([
+      { agentId: 'bench-a', kind: 'laneless-idle' },
+      { agentId: 'bench-b', kind: 'stalled-no-mcp' },
+    ]);
+    expect(prioritizeBenchSuggestedMembers(members).map((member) => member.agentId)).toEqual([
+      'bench-a',
+      'bench-b',
+      'ordinary-a',
+      'ordinary-b',
+    ]);
   });
 });
 
