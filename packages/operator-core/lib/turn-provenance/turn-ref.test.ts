@@ -246,6 +246,18 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
     expect(v.found).toBe(true);
   });
 
+  it('matches equivalent local-offset and UTC timestamp representations', async () => {
+    await writeFile(file, `${userLine('stored local timestamp', '2026-07-14 06:00:00.123-04')}\n`, { flag: 'a' });
+
+    const localRef = parseTurnRefs('[turn:bf1881bc@2026-07-14T06:00:00.123-04:00]');
+    const [localVerdict] = await verifyTurnRefs('owner-x', localRef, { filePath: file, sessionId: SID });
+    expect(localVerdict.found).toBe(true);
+
+    const utcRef = parseTurnRefs('[turn:bf1881bc@2026-07-14T10:00:00.123Z]');
+    const [utcVerdict] = await verifyTurnRefs('owner-x', utcRef, { filePath: file, sessionId: SID });
+    expect(utcVerdict.found).toBe(true);
+  });
+
   it('a ref into a DIFFERENT session never matches this transcript', async () => {
     const refs = parseTurnRefs('[turn:deadbeef@2026-07-14T10:00:00.000Z]');
     const [v] = await verifyTurnRefs('owner-x', refs, { filePath: file, sessionId: SID });

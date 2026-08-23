@@ -300,7 +300,16 @@ const SNIPPET_CHARS = 160;
  *  prefix of the other down to seconds (refs may carry truncated timestamps). */
 function tsMatches(refTs: string, turnTs: string): boolean {
   if (!refTs || !turnTs) return false;
-  return refTs === turnTs || turnTs.startsWith(refTs) || refTs.startsWith(turnTs.slice(0, 19));
+  if (refTs === turnTs || turnTs.startsWith(refTs) || refTs.startsWith(turnTs.slice(0, 19))) return true;
+
+  // Transcript readers can emit a Postgres-style local timestamp
+  // (`2026-08-23 10:58:57.808-04`) while refs use ISO-8601 (`T` plus a
+  // colonized offset) or UTC. Compare parsed instants at second precision so
+  // equivalent representations still resolve, while preserving the existing
+  // seconds-truncated ref behavior.
+  const refMs = Date.parse(refTs);
+  const turnMs = Date.parse(turnTs);
+  return Number.isFinite(refMs) && Number.isFinite(turnMs) && Math.floor(refMs / 1000) === Math.floor(turnMs / 1000);
 }
 
 /**
