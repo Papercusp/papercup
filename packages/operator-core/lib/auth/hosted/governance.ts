@@ -118,7 +118,11 @@ export interface CreateSupportAccessGrantInput {
 
 export function validateSupportAccessGrant(
   input: CreateSupportAccessGrantInput,
-): CreateSupportAccessGrantInput & { startsAt: Date; scopes: string[] } {
+): Omit<CreateSupportAccessGrantInput, 'workspaceId' | 'startsAt' | 'scopes'> & {
+  workspaceId: string | null;
+  startsAt: Date;
+  scopes: string[];
+} {
   const startsAt = input.startsAt ?? new Date();
   if (!(startsAt instanceof Date) || Number.isNaN(startsAt.valueOf())) {
     throw new Error('hosted-governance: startsAt must be a valid date');
