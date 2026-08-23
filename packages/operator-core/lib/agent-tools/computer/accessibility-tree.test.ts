@@ -126,6 +126,48 @@ describe('buildA11yTree', () => {
     expect(roots).toHaveLength(2);
     expect(roots[1]!.name).toBe('Orphan');
   });
+
+  // WI-40906 — the walker is a separate gjs process driving a C library through
+  // introspection, so every field's type is a CLAIM. Measured on GTK 4.14: a label's
+  // text interface returns an OBJECT, which serialises as {} and passes `?? ''`
+  // untouched, then throws `node.value.trim is not a function` three call-frames away
+  // in compression. These pin the boundary against exactly what was measured, plus the
+  // neighbouring types it could equally well return.
+  describe('coerces walker fields whose type the toolkit did not honour', () => {
+    it('turns a non-string value into the empty string rather than passing it through', () => {
+      const roots = buildA11yTree([{ p: '0', r: 'label', n: 'Username', v: {} } as never]);
+      expect(roots[0]!.value).toBe('');
+      // The property that actually matters: everything downstream may call string
+      // methods on it without a guard of its own.
+      expect(() => roots[0]!.value.trim()).not.toThrow();
+    });
+
+    it('coerces a non-string role and name to their documented fallbacks', () => {
+      const roots = buildA11yTree([{ p: '0', r: 42, n: {}, v: 'x' } as never]);
+      expect(roots[0]!.role).toBe('?');
+      expect(roots[0]!.name).toBe('');
+    });
+
+    it('drops a node whose path is not a string, since nothing could address it', () => {
+      // The ref indexes the parent map and is what `findByRef` resolves; a non-string
+      // one would sit in the tree permanently unreachable.
+      const roots = buildA11yTree([node('0', 'application', 'a', { s: [], e: null }), { p: 7, r: 'label' } as never]);
+      expect(roots).toHaveLength(1);
+    });
+
+    it('keeps only the string members of states and actions', () => {
+      const roots = buildA11yTree([{ p: '0', r: 'push button', n: 'OK', s: ['SENSITIVE', 3, null], a: ['click', {}] } as never]);
+      expect(roots[0]!.states).toEqual(['SENSITIVE']);
+      expect(roots[0]!.actions).toEqual(['click']);
+    });
+
+    it('still passes real strings through untouched', () => {
+      // The calibration case: a coercion that "fixed" everything by emptying it would
+      // pass all four assertions above.
+      const roots = buildA11yTree([{ p: '0', r: 'entry', n: 'Username', v: 'typed text', s: ['FOCUSED'] } as never]);
+      expect(roots[0]!).toMatchObject({ role: 'entry', name: 'Username', value: 'typed text', states: ['FOCUSED'] });
+    });
+  });
 });
 
 describe('isInteractive', () => {

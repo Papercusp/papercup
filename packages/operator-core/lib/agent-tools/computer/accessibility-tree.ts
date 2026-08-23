@@ -114,7 +114,13 @@ function value(n) {
     if (!t) return '';
     const len = t.get_character_count();
     if (!len) return '';
-    return t.get_text(0, Math.min(len, 200)) || '';
+    var s = t.get_text(0, Math.min(len, 200));
+    // MEASURED (WI-40906): on a GTK label this returns an OBJECT, not a string, and it
+    // serialises as an empty JSON object -- which reaches the consumer as a value that
+    // is not null and explodes on .trim(). Coerce at the source; the parse boundary
+    // guards the same class again for whatever the next toolkit returns.
+    // (No backticks in this comment: the whole program is a template literal.)
+    return typeof s === 'string' ? s : '';
   } catch (e) { return ''; }
 }
 function walk(n, path, depth) {
@@ -291,7 +297,12 @@ export interface A11yNode {
  * outcome from an empty tree: it means the walker never ran (no gjs, no a11y bus,
  * a crash) and the caller must not report "nothing on screen".
  */
-export function parseWalkerOutput(stdout: string): A11yWalkResult | null {
+/**
+ * Find and parse the sentinel line both programs print. Shape validation is the
+ * CALLER's, because the two programs emit different payloads on the same sentinel
+ * and only the caller knows which one it asked for.
+ */
+function parseSentinelPayload(stdout: string): Record<string, unknown> | null {
   const lines = (stdout ?? '').split('\n');
   // Scan from the END: the sentinel line is the last thing printed, and a GTK app
   // can emit warnings AFTER it that happen to contain the sentinel in a quoted
@@ -301,14 +312,56 @@ export function parseWalkerOutput(stdout: string): A11yWalkResult | null {
     if (at < 0) continue;
     const json = lines[i]!.slice(at + ATSPI_SENTINEL.length).trim();
     try {
-      const parsed = JSON.parse(json) as A11yWalkResult;
-      if (!Array.isArray(parsed.nodes)) return null;
-      return parsed;
+      const parsed: unknown = JSON.parse(json);
+      return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
     } catch {
       return null;
     }
   }
   return null;
+}
+
+export function parseWalkerOutput(stdout: string): A11yWalkResult | null {
+  const parsed = parseSentinelPayload(stdout);
+  if (!parsed || !Array.isArray(parsed.nodes)) return null;
+  return parsed as unknown as A11yWalkResult;
+}
+
+/**
+ * Parse the ACTIVATION program's sentinel line.
+ *
+ * This exists because its absence was a live bug (WI-40906): the two programs share a
+ * sentinel, so reaching for `parseWalkerOutput` here type-checks behind a cast and is
+ * always wrong — that function REQUIRES a `nodes` array, which an action payload never
+ * has, so it returned null for every successful activation and `computer:click_element`
+ * reported failure unconditionally. The cast is what hid it, which is why this returns a
+ * real type and no caller needs one.
+ *
+ * The two shapes are validated on disjoint required fields, so neither payload can be
+ * mistaken for the other in either direction.
+ */
+export function parseA11yActionOutput(stdout: string): A11yActionResult | null {
+  const parsed = parseSentinelPayload(stdout);
+  if (!parsed || typeof parsed.ok !== 'boolean') return null;
+  return parsed as unknown as A11yActionResult;
+}
+
+/**
+ * Coerce a walker field to the string the type says it is.
+ *
+ * This is a PARSE BOUNDARY: the input is JSON from a separate gjs process driving a
+ * C library through introspection, so a field's type is a claim, not a guarantee.
+ * `?? ''` guards only null and undefined and cheerfully admits anything else —
+ * which is how an empty object reached `A11yNode.value` and every later `.trim()`
+ * (WI-40906). Measured: a GTK label's text interface returns an object here.
+ *
+ * The fix belongs at the boundary as well as at the walker, because the walker is
+ * the one part of this file that runs under a toolkit we do not control and cannot
+ * typecheck — the next surprising return type should be absorbed here, not crash a
+ * consumer three call-frames away.
+ */
+function str(v: unknown, fallback: string): string {
+  return typeof v === 'string' ? v : fallback;
 }
 
 /**
@@ -323,15 +376,18 @@ export function buildA11yTree(nodes: readonly RawA11yNode[]): A11yNode[] {
   const byPath = new Map<string, A11yNode>();
   const roots: A11yNode[] = [];
   for (const raw of nodes) {
+    // A path that is not a string cannot be a ref: the parent lookup below indexes by
+    // it, so admitting one would put a node in the tree that nothing can address.
+    if (typeof raw.p !== 'string') continue;
     const node: A11yNode = {
       ref: raw.p,
-      role: raw.r ?? '?',
-      name: raw.n ?? '',
-      states: Array.isArray(raw.s) ? raw.s : [],
+      role: str(raw.r, '?'),
+      name: str(raw.n, ''),
+      states: Array.isArray(raw.s) ? raw.s.filter((s: unknown) => typeof s === 'string') : [],
       bounds: raw.e ?? null,
       windowBounds: raw.w ?? null,
-      actions: Array.isArray(raw.a) ? raw.a : [],
-      value: raw.v ?? '',
+      actions: Array.isArray(raw.a) ? raw.a.filter((a: unknown) => typeof a === 'string') : [],
+      value: str(raw.v, ''),
       children: [],
     };
     byPath.set(node.ref, node);
