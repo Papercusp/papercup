@@ -776,14 +776,13 @@ describe('getAgentSignals', () => {
     getLoopStatus.mockResolvedValue(null);
     readHeldWorkItems.mockResolvedValue([]);
     getPresence.mockResolvedValue(null);
-    resolveSessionStates.mockImplementation(
-      async (subjects: Array<{ ownerId: string }>) =>
-        new Map(
-          subjects.map((subject) => [
-            subject.ownerId,
-            { ownerId: subject.ownerId, sessionState: 'parked', liveTurn: false },
-          ]),
-        ),
+    resolveSessionStates.mockImplementation(async (subjects: Array<{ ownerId: string }>) =>
+      new Map(
+        subjects.map((subject) => [
+          subject.ownerId,
+          { ownerId: subject.ownerId, sessionState: 'parked', liveTurn: false },
+        ]),
+      ),
     );
     fetchUnansweredDirected.mockResolvedValue(new Map());
     lastToolCallAtByOwner.mockResolvedValue(new Map());

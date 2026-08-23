@@ -870,30 +870,17 @@ export default function AgentDossier({
         <div className="pc-dossier__head-main">
           {entry ? <LivenessDot liveness={entry.liveness} /> : null}
           <span className="pc-roster__badge" data-client={client}>
-            {client || "—"}
+            {client || '—'}
           </span>
-          {entry?.role ? (
-            <span className="pc-roster__chip">
-              {agentRoleLabel(entry.role, lex)}
-            </span>
-          ) : null}
+          {entry?.role ? <span className="pc-roster__chip">{agentRoleLabel(entry.role, lex)}</span> : null}
           {entry?.feature ? (
-            <span className="pc-roster__chip pc-roster__chip--feature">
-              {entry.feature}
-            </span>
+            <span className="pc-roster__chip pc-roster__chip--feature">{entry.feature}</span>
           ) : null}
           {entry?.revoked ? (
-            <span className="pc-roster__chip pc-roster__chip--warn">
-              revoked
-            </span>
+            <span className="pc-roster__chip pc-roster__chip--warn">revoked</span>
           ) : null}
         </div>
-        <button
-          type="button"
-          className="pc-dossier__close"
-          onClick={onClose}
-          aria-label="Close detail"
-        >
+        <button type="button" className="pc-dossier__close" onClick={onClose} aria-label="Close detail">
           ✕
         </button>
       </header>
@@ -904,7 +891,7 @@ export default function AgentDossier({
 
       {entry ? (
         <div className="pc-dossier__intent">
-          {entry.intent || "(no declared intent)"}
+          {entry.intent || '(no declared intent)'}
           {/* P-009. The AGE of the declaration, not of the session. An intent
               is a present-tense sentence ("implementing X") that keeps reading
               present-tense forever — EI-9696 is the recorded case of a reader
@@ -919,38 +906,27 @@ export default function AgentDossier({
               data-testid="dossier-intent-age"
               title="How long ago this intent was declared — not how long the session has been alive, and not a claim that the work is still moving."
             >
-              {" "}
+              {' '}
               · {formatElapsedSince(entry.intentDeclaredAt)}
             </span>
           ) : null}
         </div>
       ) : launchFailed ? (
-        <div className="pc-dossier__note">
-          This session's launch failed — it never came online.
-        </div>
+        <div className="pc-dossier__note">This session's launch failed — it never came online.</div>
       ) : launchBlocked ? (
-        <div className="pc-dossier__note">
-          This session is blocked before its first turn.
-        </div>
+        <div className="pc-dossier__note">This session is blocked before its first turn.</div>
       ) : startingUp ? (
-        <div className="pc-dossier__note">
-          Starting up — this agent hasn't registered yet.
-        </div>
+        <div className="pc-dossier__note">Starting up — this agent hasn't registered yet.</div>
       ) : sessionEnded ? (
         <div className="pc-dossier__note" data-testid="dossier-session-ended">
-          This session ended
-          {sessionEndedAt ? ` at ${formatAbsoluteUpdated(sessionEndedAt)}` : ""}
-          . Resume or relaunch is available below.
+          This session ended{sessionEndedAt ? ` at ${formatAbsoluteUpdated(sessionEndedAt)}` : ''}. Resume or relaunch is available below.
         </div>
       ) : unknownSession ? (
         <div className="pc-dossier__note" data-testid="dossier-unknown-session">
-          No agent with this id was found in the current roster or session
-          history.
+          No agent with this id was found in the current roster or session history.
         </div>
       ) : (
-        <div className="pc-dossier__note">
-          This agent is no longer in the live roster.
-        </div>
+        <div className="pc-dossier__note">This agent is no longer in the live roster.</div>
       )}
 
       {/* ── Fleet wind-down banner (R1+ P-009 leg d) ──────────────────────────
@@ -963,24 +939,16 @@ export default function AgentDossier({
           null otherwise), so its mere presence is the news — there is no
           "fleet: active" row to learn to ignore. */}
       {signals?.fleetControl ? (
-        <div
-          className="pc-dossier__windown"
-          data-testid="dossier-fleet-control"
-          role="status"
-        >
+        <div className="pc-dossier__windown" data-testid="dossier-fleet-control" role="status">
           <span className="pc-dossier__windown-state">
             {signals.fleetControl.fleet} · {signals.fleetControl.state}
           </span>
           {signals.fleetControl.reason ? (
-            <span className="pc-dossier__windown-reason">
-              {signals.fleetControl.reason}
-            </span>
+            <span className="pc-dossier__windown-reason">{signals.fleetControl.reason}</span>
           ) : null}
           <span className="pc-dossier__h-note">
             {signals.fleetControl.by ? `by ${signals.fleetControl.by}` : null}
-            {signals.fleetControl.by && signals.fleetControl.since != null
-              ? " · "
-              : null}
+            {signals.fleetControl.by && signals.fleetControl.since != null ? ' · ' : null}
             {signals.fleetControl.since != null
               ? formatRelativeUpdated(signals.fleetControl.since)
               : null}
@@ -1014,18 +982,16 @@ export default function AgentDossier({
         <section
           className="pc-dossier__section"
           id="pc-dossier-signals"
-          data-collapsed={rail.closed("a-signals") ? "true" : "false"}
+          data-collapsed={rail.closed('a-signals') ? 'true' : 'false'}
         >
           <RailSectionHead
             sectionId="a-signals"
             label="Health"
             className="pc-dossier__h"
-            closed={rail.closed("a-signals")}
-            onToggle={() => rail.toggle("a-signals")}
+            closed={rail.closed('a-signals')}
+            onToggle={() => rail.toggle('a-signals')}
           >
-            {loading && !detail ? (
-              <span className="pc-dossier__h-note"> · loading…</span>
-            ) : null}
+            {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
           </RailSectionHead>
           <MetaRow
             label="loop"
@@ -1033,26 +999,24 @@ export default function AgentDossier({
               signals?.loop
                 ? signals.loop.active
                   ? [
-                      "armed",
-                      signals.loop.intervalSec != null
-                        ? `every ${signals.loop.intervalSec}s`
-                        : null,
+                      'armed',
+                      signals.loop.intervalSec != null ? `every ${signals.loop.intervalSec}s` : null,
                       signals.loop.stalled
-                        ? "⚠ stalled"
+                        ? '⚠ stalled'
                         : signals.loop.nextFireAt
                           ? `next ${formatTimeLeft(signals.loop.nextFireAt)}`
                           : null,
                     ]
                       .filter(Boolean)
-                      .join(" · ")
-                  : "not armed"
+                      .join(' · ')
+                  : 'not armed'
                 : // EI-18694403367371331: a THROWN read must read distinctly from a
                   // genuine "never armed" — "no loop" invites a leader to (wrongly)
                   // treat this agent as idle instead of re-checking.
-                  signals?.unavailableSignals.includes("loop")
-                  ? "⚠ unavailable (read failed)"
+                  signals?.unavailableSignals.includes('loop')
+                  ? '⚠ unavailable (read failed)'
                   : detail
-                    ? "no loop"
+                    ? 'no loop'
                     : null
             }
           />
@@ -1071,18 +1035,18 @@ export default function AgentDossier({
                     return (
                       <span data-testid="dossier-claim-row">
                         {c.id}
-                        {c.title ? ` — ${c.title}` : ""}
+                        {c.title ? ` — ${c.title}` : ''}
                         <span
                           className="pc-dossier__claim-health"
                           data-progress={c.progress}
                           data-testid="dossier-claim-progress"
                         >
-                          {" · "}
-                          {c.progress === "stalled" && c.idleSec != null
+                          {' · '}
+                          {c.progress === 'stalled' && c.idleSec != null
                             ? `stalled ${formatIdleAge(c.idleSec)}`
-                            : c.progress === "unknown"
+                            : c.progress === 'unknown'
                               ? // Not an accusation the data supports — say so.
-                                "activity unknown"
+                                'activity unknown'
                               : c.progress}
                         </span>
                       </span>
@@ -1091,10 +1055,10 @@ export default function AgentDossier({
                 : // EI-18694403367371331: the bug this fixed — a live agent holding a
                   // real work-item rendered "none held" because the read threw, not
                   // because it genuinely held nothing.
-                  signals?.unavailableSignals.includes("currentClaim")
-                  ? "⚠ unavailable (read failed)"
+                  signals?.unavailableSignals.includes('currentClaim')
+                  ? '⚠ unavailable (read failed)'
                   : detail
-                    ? "none held"
+                    ? 'none held'
                     : null
             }
           />
@@ -1102,11 +1066,11 @@ export default function AgentDossier({
             label="state"
             value={
               signals?.liveness
-                ? `${signals.liveness.sessionState} · ${signals.liveness.liveTurn ? "speaking" : "silent"}`
-                : signals?.unavailableSignals.includes("liveness")
-                  ? "⚠ unavailable (read failed)"
+                ? `${signals.liveness.sessionState} · ${signals.liveness.liveTurn ? 'speaking' : 'silent'}`
+                : signals?.unavailableSignals.includes('liveness')
+                  ? '⚠ unavailable (read failed)'
                   : detail
-                    ? "state unknown"
+                    ? 'state unknown'
                     : null
             }
           />
@@ -1122,8 +1086,8 @@ export default function AgentDossier({
                   />
                 </span>
                 <span className="pc-dossier__ctxbar-pct">
-                  {signals?.contextTokens?.toLocaleString()} /{" "}
-                  {signals?.compactionLimit?.toLocaleString()} · {ctxPct}%
+                  {signals?.contextTokens?.toLocaleString()} / {signals?.compactionLimit?.toLocaleString()} ·{' '}
+                  {ctxPct}%
                 </span>
               </span>
             </div>
@@ -1132,9 +1096,7 @@ export default function AgentDossier({
             <div className="pc-dossier__meta-row">
               <span className="pc-dossier__meta-key">checkpoint</span>
               <span className="pc-dossier__meta-val">
-                <div className="pc-dossier__checkpoint">
-                  {truncateCheckpoint(signals.lastCheckpoint.text)}
-                </div>
+                <div className="pc-dossier__checkpoint">{truncateCheckpoint(signals.lastCheckpoint.text)}</div>
                 {signals.lastCheckpoint.updatedAtMs != null ? (
                   <span className="pc-dossier__ctxbar-pct">
                     {formatRelativeUpdated(signals.lastCheckpoint.updatedAtMs)}
@@ -1147,17 +1109,13 @@ export default function AgentDossier({
             label="unanswered"
             value={
               signals && signals.unansweredDirectedCount > 0
-                ? `${signals.unansweredDirectedCount} peer${signals.unansweredDirectedCount === 1 ? "" : "s"} waiting on a reply`
+                ? `${signals.unansweredDirectedCount} peer${signals.unansweredDirectedCount === 1 ? '' : 's'} waiting on a reply`
                 : null
             }
           />
           <MetaRow
             label="last tool call"
-            value={
-              signals?.lastToolCallAt
-                ? formatRelativeUpdated(signals.lastToolCallAt)
-                : null
-            }
+            value={signals?.lastToolCallAt ? formatRelativeUpdated(signals.lastToolCallAt) : null}
           />
         </section>
       ) : null}
@@ -1187,7 +1145,7 @@ export default function AgentDossier({
         <section
           className="pc-dossier__section"
           id="pc-dossier-lane"
-          data-collapsed={rail.closed("a-lane") ? "true" : "false"}
+          data-collapsed={rail.closed('a-lane') ? 'true' : 'false'}
         >
           {/* "Plan", not "Lane": the owner's own word for the thing they came
               here to find, and the row this section leads with. `sectionId`
@@ -1197,21 +1155,21 @@ export default function AgentDossier({
             sectionId="a-lane"
             label="Plan"
             className="pc-dossier__h"
-            closed={rail.closed("a-lane")}
-            onToggle={() => rail.toggle("a-lane")}
+            closed={rail.closed('a-lane')}
+            onToggle={() => rail.toggle('a-lane')}
           >
             {/* Say WHICH leg answered when it is the weaker one. A launch-record
                 plan is fixed at spawn, so it can be stale if the agent has since
                 moved on — showing it unlabelled would assert more than we know. */}
-            {signals?.lane?.source === "launch" ? (
+            {signals?.lane?.source === 'launch' ? (
               <span className="pc-dossier__h-note"> · from launch record</span>
             ) : null}
           </RailSectionHead>
           {signals?.lane ? (
             <>
               {metaRows([
-                ["plan", signals.lane.planSlug],
-                ["now", signals.lane.nowState],
+                ['plan', signals.lane.planSlug],
+                ['now', signals.lane.nowState],
                 // P-014: `nowNext` is the plan AUTHOR'S OWN prose for what comes
                 // next; `next up` below is the mechanically-computed next
                 // actionable item. They are different claims and can disagree —
@@ -1220,9 +1178,9 @@ export default function AgentDossier({
                 // being collapsed into the item. It has been produced
                 // (adv-agent-detail.ts) and mirrored since the lane shipped, and
                 // simply never rendered.
-                ["now next", signals.lane.nowNext],
+                ['now next', signals.lane.nowNext],
                 [
-                  "next up",
+                  'next up',
                   signals.lane.nextActionable
                     ? `${signals.lane.nextActionable.id} — ${signals.lane.nextActionable.title}`
                     : null,
@@ -1232,24 +1190,22 @@ export default function AgentDossier({
                 label="claimable"
                 value={
                   signals.lane.claimableCount > 0
-                    ? `${signals.lane.claimableCount} item${signals.lane.claimableCount === 1 ? "" : "s"} in this lane`
-                    : "nothing pickable"
+                    ? `${signals.lane.claimableCount} item${signals.lane.claimableCount === 1 ? '' : 's'} in this lane`
+                    : 'nothing pickable'
                 }
               />
             </>
-          ) : signals?.unavailableSignals.includes("lane") ? (
+          ) : signals?.unavailableSignals.includes('lane') ? (
             // Same tri-state contract as every other signal: a read that THREW
             // must never look like an agent that simply declared no plan.
-            <div className="pc-dossier__empty-line">
-              ⚠ unavailable (read failed)
-            </div>
+            <div className="pc-dossier__empty-line">⚠ unavailable (read failed)</div>
           ) : (
             // The third state, and the one this section used to express by
             // vanishing: no plan declared and none on the launch record. Said
             // out loud, the reader learns both that the agent is not on a plan
             // AND that this is where a plan would appear.
             <div className="pc-dossier__empty-line">
-              {signals ? "Not working on a plan." : "—"}
+              {signals ? 'Not working on a plan.' : '—'}
             </div>
           )}
           {/* ── declared-but-unclaimed (P-013) ────────────────────────────────
@@ -1273,13 +1229,12 @@ export default function AgentDossier({
           {entry.declaredUnclaimed === true ? (
             <div
               className="pc-dossier__note"
-              style={{ color: "var(--warn, #fbbf24)" }}
+              style={{ color: 'var(--warn, #fbbf24)' }}
               data-testid="dossier-declared-unclaimed"
             >
-              ⚠ Declares this plan but holds no claim on it — nothing in the
-              lane is assigned to this agent, and it has no armed loop that
-              would pull work. Its own orient reports this as “you do NOT hold
-              this lane”.
+              ⚠ Declares this plan but holds no claim on it — nothing in the lane is assigned to
+              this agent, and it has no armed loop that would pull work. Its own orient reports
+              this as “you do NOT hold this lane”.
             </div>
           ) : null}
           {/* ── release pipeline (P-014) ──────────────────────────────────────
@@ -1296,12 +1251,7 @@ export default function AgentDossier({
             return (
               <div
                 className="pc-dossier__note"
-                style={{
-                  color:
-                    note.severity === "bad"
-                      ? "var(--bad, #f87171)"
-                      : "var(--warn, #fbbf24)",
-                }}
+                style={{ color: note.severity === 'bad' ? 'var(--bad, #f87171)' : 'var(--warn, #fbbf24)' }}
                 data-testid="dossier-pipeline"
                 data-severity={note.severity}
               >
@@ -1336,203 +1286,149 @@ export default function AgentDossier({
           framing "Not waiting on any event." BOTH lists have to be empty — an
           available-but-unawaited gate is a finding, not a calm state. An `error`
           keeps the card: "couldn't read it" must never be quieter than "none". */}
-      {zoneTitle &&
-      detail &&
-      !subs?.error &&
-      subRows.length === 0 &&
-      availableGates.length === 0 ? (
-        <RailQuiet
-          label="Waiting on"
-          none="no event"
-          testId="rail-quiet-events"
-        />
+      {zoneTitle && detail && !subs?.error && subRows.length === 0 && availableGates.length === 0 ? (
+        <RailQuiet label="Waiting on" none="no event" testId="rail-quiet-events" />
       ) : (
-        <section
-          className="pc-dossier__section"
-          id="pc-dossier-events"
-          data-collapsed={rail.closed("a-events") ? "true" : "false"}
+      <section
+        className="pc-dossier__section"
+        id="pc-dossier-events"
+        data-collapsed={rail.closed('a-events') ? 'true' : 'false'}
+      >
+        <RailSectionHead
+          sectionId="a-events"
+          label="Waiting on"
+          className="pc-dossier__h"
+          closed={rail.closed('a-events')}
+          onToggle={() => rail.toggle('a-events')}
         >
-          <RailSectionHead
-            sectionId="a-events"
-            label="Waiting on"
-            className="pc-dossier__h"
-            closed={rail.closed("a-events")}
-            onToggle={() => rail.toggle("a-events")}
-          >
-            {loading && !detail ? (
-              <span className="pc-dossier__h-note"> · loading…</span>
-            ) : null}
-            {subs?.error ? (
-              <span className="pc-dossier__h-note pc-dossier__h-note--err">
-                {" "}
-                · {subs.error}
-              </span>
-            ) : null}
-            {subs && subs.count > 0 ? (
-              <span className="pc-dossier__badge-count">
-                {subs.count} subscribed
-              </span>
-            ) : null}
-          </RailSectionHead>
-          {subRows.length > 0 ? (
-            <CappedRows
-              noun="events"
-              open={railOpen.has("events")}
-              onToggle={() => toggleRail("events")}
-              testId="dossier-events-list"
-              rows={subRows.map((s) => (
-                <div
-                  key={`${s.eventKey}:${s.createdAt}`}
-                  className="pc-dossier__coord-line"
-                  data-testid="dossier-events-row"
-                >
-                  {/* A standing watch keeps waking the agent; a one-shot fires
+          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
+          {subs?.error ? (
+            <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {subs.error}</span>
+          ) : null}
+          {subs && subs.count > 0 ? (
+            <span className="pc-dossier__badge-count">{subs.count} subscribed</span>
+          ) : null}
+        </RailSectionHead>
+        {subRows.length > 0 ? (
+          <CappedRows
+            noun="events"
+            open={railOpen.has('events')}
+            onToggle={() => toggleRail('events')}
+            testId="dossier-events-list"
+            rows={subRows.map((s) => (
+              <div
+                key={`${s.eventKey}:${s.createdAt}`}
+                className="pc-dossier__coord-line"
+                data-testid="dossier-events-row"
+              >
+                {/* A standing watch keeps waking the agent; a one-shot fires
                     once and is consumed. Opposite implications for "will this
                     agent wake again", so the distinction is shown, not implied. */}
-                  <span
-                    className="pc-dossier__dir"
-                    title={s.once ? "one-shot await" : "standing watch"}
-                  >
-                    {s.once ? "◉" : "↻"}
-                  </span>
-                  {/* WI-7310: the event KEY is machine text and the note is human
+                <span className="pc-dossier__dir" title={s.once ? 'one-shot await' : 'standing watch'}>
+                  {s.once ? '◉' : '↻'}
+                </span>
+                {/* WI-7310: the event KEY is machine text and the note is human
                     text; they were rendered in the same face, so the line read as
                     one undifferentiated string. `__id` / `__note` are the rail's
                     two text roles — see the TEXT ROLES block in
                     SessionsRosterView.css. `__h-note` is deliberately NOT reused
                     here: it styles notes riding on a HEADING, and borrowing it
                     for body prose is what left prose with no role of its own. */}
-                  <span className="pc-dossier__coord-text">
-                    <span className="pc-dossier__id">{s.eventKey}</span>
-                    {s.note ? (
-                      <>
-                        <span className="pc-dossier__sep" aria-hidden="true">
-                          {" "}
-                          ·{" "}
-                        </span>
-                        <span className="pc-dossier__note">{s.note}</span>
-                      </>
-                    ) : null}
-                    {!s.wakes ? (
-                      <>
-                        <span className="pc-dossier__sep" aria-hidden="true">
-                          {" "}
-                          ·{" "}
-                        </span>
-                        <span className="pc-dossier__note">no wake</span>
-                      </>
-                    ) : null}
-                    {s.urgent ? (
-                      <>
-                        <span className="pc-dossier__sep" aria-hidden="true">
-                          {" "}
-                          ·{" "}
-                        </span>
-                        <span className="pc-dossier__note">urgent</span>
-                      </>
-                    ) : null}
-                    {/* P-009. The wait's DEADLINE, beside the wait itself. An
+                <span className="pc-dossier__coord-text">
+                  <span className="pc-dossier__id">{s.eventKey}</span>
+                  {s.note ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note">{s.note}</span>
+                    </>
+                  ) : null}
+                  {!s.wakes ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note">no wake</span>
+                    </>
+                  ) : null}
+                  {s.urgent ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note">urgent</span>
+                    </>
+                  ) : null}
+                  {/* P-009. The wait's DEADLINE, beside the wait itself. An
                       await with a timeout will end on its own; one without
                       ends only when the event fires — opposite answers to "is
                       this agent stuck", and until now this list could not tell
                       them apart. Absent ⇒ render nothing: a subscription with
                       no recorded expiry is not an expired one. */}
-                    {formatTimeLeft(s.expiresTs) ? (
-                      <>
-                        <span className="pc-dossier__sep" aria-hidden="true">
-                          {" "}
-                          ·{" "}
-                        </span>
-                        <span
-                          className="pc-dossier__note"
-                          data-testid="dossier-event-expiry"
-                        >
-                          {formatTimeLeft(s.expiresTs)}
-                        </span>
-                      </>
-                    ) : null}
-                  </span>
-                  {/* P-009. HOW LONG this agent has been waiting — an ELAPSED
+                  {formatTimeLeft(s.expiresTs) ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note" data-testid="dossier-event-expiry">
+                        {formatTimeLeft(s.expiresTs)}
+                      </span>
+                    </>
+                  ) : null}
+                </span>
+                {/* P-009. HOW LONG this agent has been waiting — an ELAPSED
                     duration, not `formatRelativeUpdated`, which is what this
                     rendered before and which collapses everything inside 24h
                     to the single word "today". A wait opened 2 minutes ago and
                     one opened 23 hours ago read identically here, and the
                     second is the whole diagnosis. */}
-                  <span
-                    className="pc-dossier__coord-ts"
-                    data-testid="dossier-event-age"
-                  >
-                    {formatElapsedSince(s.createdAt)}
-                  </span>
-                </div>
-              ))}
-            />
-          ) : (
-            <div className="pc-dossier__empty-line">
-              {subs?.error
-                ? `Couldn’t load subscriptions: ${subs.error}`
-                : "Not waiting on any event."}
-            </div>
-          )}
+                <span className="pc-dossier__coord-ts" data-testid="dossier-event-age">
+                  {formatElapsedSince(s.createdAt)}
+                </span>
+              </div>
+            ))}
+          />
+        ) : (
+          <div className="pc-dossier__empty-line">
+            {subs?.error ? `Couldn’t load subscriptions: ${subs.error}` : 'Not waiting on any event.'}
+          </div>
+        )}
 
-          {/* R1+ P-009 leg (b) — the second half of this section, and the reason
+        {/* R1+ P-009 leg (b) — the second half of this section, and the reason
             it is a HALF rather than its own section: neither list is diagnostic
             alone. An await on a key nobody ever declared looks perfectly healthy
             in the list above — it is simply a wait that will never end. A gate
             declared for this agent that it is not listening for looks like
             nothing at all. Only side by side does either failure become
             obvious, so they must not be separated by other sections. */}
-          {availableGates.length > 0 ? (
-            <>
-              <div
-                className="pc-dossier__subhead"
-                data-testid="dossier-gates-subhead"
-              >
-                available, not awaited
-              </div>
-              <CappedRows
-                noun="gates"
-                open={railOpen.has("gates")}
-                onToggle={() => toggleRail("gates")}
-                testId="dossier-available-gates"
-                rows={availableGates.map((g) => (
-                  <div
-                    key={`gate:${g.event}`}
-                    className="pc-dossier__coord-line"
-                    data-testid="dossier-gate-row"
-                  >
-                    {/* Hollow, against the filled ◉/↻ above: this one is NOT armed. */}
-                    <span
-                      className="pc-dossier__dir"
-                      title="declared, but this agent holds no await on it"
-                    >
-                      ○
-                    </span>
-                    {/* WI-7310: same two roles as the subscriptions list above —
+        {availableGates.length > 0 ? (
+          <>
+            <div className="pc-dossier__subhead" data-testid="dossier-gates-subhead">
+              available, not awaited
+            </div>
+            <CappedRows
+              noun="gates"
+              open={railOpen.has('gates')}
+              onToggle={() => toggleRail('gates')}
+              testId="dossier-available-gates"
+              rows={availableGates.map((g) => (
+                <div key={`gate:${g.event}`} className="pc-dossier__coord-line" data-testid="dossier-gate-row">
+                  {/* Hollow, against the filled ◉/↻ above: this one is NOT armed. */}
+                  <span className="pc-dossier__dir" title="declared, but this agent holds no await on it">
+                    ○
+                  </span>
+                  {/* WI-7310: same two roles as the subscriptions list above —
                       the gate KEY is machine text, its note and scope are not. */}
-                    <span className="pc-dossier__coord-text">
-                      <span className="pc-dossier__id">{g.event}</span>
-                      {g.note ? (
-                        <>
-                          <span className="pc-dossier__sep" aria-hidden="true">
-                            {" "}
-                            ·{" "}
-                          </span>
-                          <span className="pc-dossier__note">{g.note}</span>
-                        </>
-                      ) : null}
-                      <span className="pc-dossier__sep" aria-hidden="true">
-                        {" "}
-                        ·{" "}
-                      </span>
-                      <span className="pc-dossier__note">{g.scope}</span>
-                    </span>
-                  </div>
-                ))}
-              />
-            </>
-          ) : null}
-        </section>
+                  <span className="pc-dossier__coord-text">
+                    <span className="pc-dossier__id">{g.event}</span>
+                    {g.note ? (
+                      <>
+                        <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                        <span className="pc-dossier__note">{g.note}</span>
+                      </>
+                    ) : null}
+                    <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                    <span className="pc-dossier__note">{g.scope}</span>
+                  </span>
+                </div>
+              ))}
+            />
+          </>
+        ) : null}
+      </section>
       )}
 
       {/* Rail R1 P-008 — Native Session + Codex Runtime moved to the BOTTOM, below
@@ -1543,53 +1439,39 @@ export default function AgentDossier({
       {/* hud-first-nav-and-dossier-2026-07-26 P-004: id is the scroll target
           for the footer's "⚠ N locks / M unread" summary chip (D-002's one
           deliberate duplicate) — clicking it opens this rail + scrolls here. */}
-      {zoneTitle &&
-      detail &&
-      locks &&
-      !locks.error &&
-      locks.held.length === 0 &&
-      locks.waiting.length === 0 ? (
+      {zoneTitle && detail && locks && !locks.error && locks.held.length === 0 && locks.waiting.length === 0 ? (
         <RailQuiet label="Locks" none="none held" testId="rail-quiet-locks" />
       ) : (
-        <section
-          className="pc-dossier__section"
-          id="pc-dossier-locks"
-          data-collapsed={rail.closed("a-locks") ? "true" : "false"}
+      <section
+        className="pc-dossier__section"
+        id="pc-dossier-locks"
+        data-collapsed={rail.closed('a-locks') ? 'true' : 'false'}
+      >
+        <RailSectionHead
+          sectionId="a-locks"
+          label="Locks"
+          className="pc-dossier__h"
+          closed={rail.closed('a-locks')}
+          onToggle={() => rail.toggle('a-locks')}
         >
-          <RailSectionHead
-            sectionId="a-locks"
-            label="Locks"
-            className="pc-dossier__h"
-            closed={rail.closed("a-locks")}
-            onToggle={() => rail.toggle("a-locks")}
-          >
-            {loading && !detail ? (
-              <span className="pc-dossier__h-note"> · loading…</span>
-            ) : null}
-            {locks?.error ? (
-              <span className="pc-dossier__h-note pc-dossier__h-note--err">
-                {" "}
-                · {locks.error}
-              </span>
-            ) : null}
-            {locks && locks.held.length + locks.waiting.length > 0 ? (
-              <span className="pc-dossier__badge-count">
-                {locks.held.length + locks.waiting.length}
-              </span>
-            ) : null}
-          </RailSectionHead>
-          {locks && (locks.held.length > 0 || locks.waiting.length > 0) ? (
-            <CappedRows
-              noun="locks"
-              open={railOpen.has("locks")}
-              onToggle={() => toggleRail("locks")}
-              testId="dossier-locks-list"
-              rows={[
-                // Waiting rows lead: a lock you are BLOCKED on is the one that
-                // explains a stalled agent, and with a 3-row cap whichever kind
-                // comes first is the kind you see. Held locks are the calm case.
-                ...locks.waiting.map((w) => {
-                  /* P-009. `queuedAt` and `waitUntil` have been on this DTO since
+          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
+          {locks?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {locks.error}</span> : null}
+          {locks && locks.held.length + locks.waiting.length > 0 ? (
+            <span className="pc-dossier__badge-count">{locks.held.length + locks.waiting.length}</span>
+          ) : null}
+        </RailSectionHead>
+        {locks && (locks.held.length > 0 || locks.waiting.length > 0) ? (
+          <CappedRows
+            noun="locks"
+            open={railOpen.has('locks')}
+            onToggle={() => toggleRail('locks')}
+            testId="dossier-locks-list"
+            rows={[
+              // Waiting rows lead: a lock you are BLOCKED on is the one that
+              // explains a stalled agent, and with a 3-row cap whichever kind
+              // comes first is the kind you see. Held locks are the calm case.
+              ...locks.waiting.map((w) => {
+                /* P-009. `queuedAt` and `waitUntil` have been on this DTO since
                    it was written and neither has ever reached the screen — so
                    the one row that explains a stalled agent said WHERE it is in
                    the queue and never HOW LONG it has been there. "3 ahead" is
@@ -1601,72 +1483,50 @@ export default function AgentDossier({
                    render "queued 0s", which is a number a reader would act on.
                    `waitUntil` is when this TICKET gives up, which is why it can
                    read "expired" while the agent is still queued. */
-                  const queuedFor = formatElapsedSince(w.queuedAt);
-                  const givesUp = formatTimeLeft(w.waitUntil);
-                  const position =
-                    w.aheadCount === 0 ? "next" : `${w.aheadCount} ahead`;
-                  return (
-                    <div key={w.ticketId} className="pc-dossier__lock">
-                      <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">
-                        W
-                      </span>
-                      <span className="pc-dossier__file-path">
-                        {w.paths.join(", ")}
-                      </span>
-                      <span
-                        className="pc-dossier__lock-exp"
-                        data-testid="dossier-lock-wait-exp"
-                        title={[
-                          `Queue position: ${position}`,
-                          queuedFor
-                            ? `Waiting ${queuedFor}`
-                            : "No queued-at time on record for this ticket",
-                          givesUp === "expired"
-                            ? "This ticket’s wait window has already elapsed"
-                            : givesUp
-                              ? `Gives up in ${givesUp.replace(/ left$/, "")}`
-                              : "No wait-until time on record for this ticket",
-                        ].join("\n")}
-                      >
-                        {[position, queuedFor, givesUp]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                      {w.blockedBy.length > 0 ? (
-                        <span className="pc-dossier__lock-intent">
-                          blocked by{" "}
-                          {w.blockedBy
-                            .map((b) => b.holderLabel || b.holder)
-                            .join(", ")}
-                        </span>
-                      ) : null}
-                    </div>
-                  );
-                }),
-                ...locks.held.map((l) => (
-                  <div key={l.path} className="pc-dossier__lock">
-                    <span className="pc-dossier__lockmark pc-dossier__lockmark--held">
-                      L
+                const queuedFor = formatElapsedSince(w.queuedAt);
+                const givesUp = formatTimeLeft(w.waitUntil);
+                const position = w.aheadCount === 0 ? 'next' : `${w.aheadCount} ahead`;
+                return (
+                  <div key={w.ticketId} className="pc-dossier__lock">
+                    <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
+                    <span className="pc-dossier__file-path">{w.paths.join(', ')}</span>
+                    <span
+                      className="pc-dossier__lock-exp"
+                      data-testid="dossier-lock-wait-exp"
+                      title={[
+                        `Queue position: ${position}`,
+                        queuedFor ? `Waiting ${queuedFor}` : 'No queued-at time on record for this ticket',
+                        givesUp === 'expired'
+                          ? 'This ticket’s wait window has already elapsed'
+                          : givesUp
+                            ? `Gives up in ${givesUp.replace(/ left$/, '')}`
+                            : 'No wait-until time on record for this ticket',
+                      ].join('\n')}
+                    >
+                      {[position, queuedFor, givesUp].filter(Boolean).join(' · ')}
                     </span>
-                    <span className="pc-dossier__file-path">{l.path}</span>
-                    <span className="pc-dossier__lock-exp">
-                      {formatTimeLeft(l.expiresAt)}
-                    </span>
-                    {l.intent ? (
+                    {w.blockedBy.length > 0 ? (
                       <span className="pc-dossier__lock-intent">
-                        {l.intent}
+                        blocked by {w.blockedBy.map((b) => b.holderLabel || b.holder).join(', ')}
                       </span>
                     ) : null}
                   </div>
-                )),
-              ]}
-            />
-          ) : (
-            <div className="pc-dossier__empty-line">
-              {detail ? "No locks held or waiting." : "—"}
-            </div>
-          )}
-        </section>
+                );
+              }),
+              ...locks.held.map((l) => (
+                <div key={l.path} className="pc-dossier__lock">
+                  <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span>
+                  <span className="pc-dossier__file-path">{l.path}</span>
+                  <span className="pc-dossier__lock-exp">{formatTimeLeft(l.expiresAt)}</span>
+                  {l.intent ? <span className="pc-dossier__lock-intent">{l.intent}</span> : null}
+                </div>
+              )),
+            ]}
+          />
+        ) : (
+          <div className="pc-dossier__empty-line">{detail ? 'No locks held or waiting.' : '—'}</div>
+        )}
+      </section>
       )}
 
       {zoneTitle ? <RailCluster label="Inbound" /> : null}
@@ -1679,48 +1539,33 @@ export default function AgentDossier({
           total, so a nonzero count with an empty slice means messages exist that
           this rail cannot show — the one case where an apparently-empty section
           must keep its frame. */}
-      {zoneTitle &&
-      coord &&
-      !coord.error &&
-      coordRows.length === 0 &&
-      coord.unreadCount === 0 ? (
-        <RailQuiet
-          label="Coord"
-          none="no recent messages"
-          testId="rail-quiet-coord"
-        />
+      {zoneTitle && coord && !coord.error && coordRows.length === 0 && coord.unreadCount === 0 ? (
+        <RailQuiet label="Coord" none="no recent messages" testId="rail-quiet-coord" />
       ) : (
-        <section
-          className="pc-dossier__section"
-          id="pc-dossier-coord"
-          data-collapsed={rail.closed("a-coord") ? "true" : "false"}
-          /* THE section the whole redesign started from [owner 2026-08-01: "the
+      <section
+        className="pc-dossier__section"
+        id="pc-dossier-coord"
+        data-collapsed={rail.closed('a-coord') ? 'true' : 'false'}
+        /* THE section the whole redesign started from [owner 2026-08-01: "the
            coord section and others take up huge vertical space if its a long
            list, thats bad"] — unread traffic is what makes this rail tall. */
-          data-attn={coord && coord.unreadCount > 0 ? "true" : undefined}
+        data-attn={coord && coord.unreadCount > 0 ? 'true' : undefined}
+      >
+        <RailSectionHead
+          sectionId="a-coord"
+          label="Coord"
+          className="pc-dossier__h"
+          closed={rail.closed('a-coord')}
+          onToggle={() => rail.toggle('a-coord')}
         >
-          <RailSectionHead
-            sectionId="a-coord"
-            label="Coord"
-            className="pc-dossier__h"
-            closed={rail.closed("a-coord")}
-            onToggle={() => rail.toggle("a-coord")}
-          >
-            {coord?.error ? (
-              <span className="pc-dossier__h-note pc-dossier__h-note--err">
-                {" "}
-                · {coord.error}
-              </span>
-            ) : null}
-            {coord && coord.unreadCount > 0 ? (
-              <span className="pc-dossier__badge-count">
-                {coord.unreadCount} unread
-              </span>
-            ) : null}
-          </RailSectionHead>
-          {coord ? (
-            coordRows.length > 0 ? (
-              /* Rail R1 P-008: ONE capped list rather than four stacked ones, in
+          {coord?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {coord.error}</span> : null}
+          {coord && coord.unreadCount > 0 ? (
+            <span className="pc-dossier__badge-count">{coord.unreadCount} unread</span>
+          ) : null}
+        </RailSectionHead>
+        {coord ? (
+          coordRows.length > 0 ? (
+            /* Rail R1 P-008: ONE capped list rather than four stacked ones, in
                urgency order — escalations, open handoffs, the latest message,
                then the unread backlog. With a 3-row preview the ORDER decides
                what you see, so the rows that mean "someone needs something from
@@ -1743,23 +1588,21 @@ export default function AgentDossier({
                off it threw "undefined is not an object" and took down the WHOLE
                hud tab — an error boundary away from the entire surface, over one
                optional list.) */
-              <CappedRows
-                noun="messages"
-                open={railOpen.has("coord")}
-                onToggle={() => toggleRail("coord")}
-                testId="dossier-coord-list"
-                totalCount={coordRows.length + coordUnsentCount}
-                rows={coordRows}
-              />
-            ) : (
-              <div className="pc-dossier__empty-line">No recent messages.</div>
-            )
+            <CappedRows
+              noun="messages"
+              open={railOpen.has('coord')}
+              onToggle={() => toggleRail('coord')}
+              testId="dossier-coord-list"
+              totalCount={coordRows.length + coordUnsentCount}
+              rows={coordRows}
+            />
           ) : (
-            <div className="pc-dossier__empty-line">
-              {error ? `Couldn’t load coord: ${error}` : "—"}
-            </div>
-          )}
-        </section>
+            <div className="pc-dossier__empty-line">No recent messages.</div>
+          )
+        ) : (
+          <div className="pc-dossier__empty-line">{error ? `Couldn’t load coord: ${error}` : '—'}</div>
+        )}
+      </section>
       )}
 
       {/* ── Dynamically pushed context ──
@@ -1776,43 +1619,34 @@ export default function AgentDossier({
           glyphs — `?` (not recorded) must never render as `✗` (recorded, did not
           run), because the first is our blind spot and the second is a finding. */}
       {pushed && !pushed.error && pushed.count === 0 ? (
-        <RailQuiet
-          label="Dynamically pushed context"
-          none="nothing pushed in 24h"
-          testId="rail-quiet-pushed"
-        />
+        <RailQuiet label="Dynamically pushed context" none="nothing pushed in 24h" testId="rail-quiet-pushed" />
       ) : pushed ? (
         <section
           className="pc-dossier__section"
           id="pc-dossier-pushed"
-          data-collapsed={rail.closed("a-pushed") ? "true" : "false"}
+          data-collapsed={rail.closed('a-pushed') ? 'true' : 'false'}
         >
           <RailSectionHead
             sectionId="a-pushed"
             label="Dynamically pushed context"
             className="pc-dossier__h"
-            closed={rail.closed("a-pushed")}
-            onToggle={() => rail.toggle("a-pushed")}
+            closed={rail.closed('a-pushed')}
+            onToggle={() => rail.toggle('a-pushed')}
           >
             {pushed.error ? (
-              <span className="pc-dossier__h-note pc-dossier__h-note--err">
-                {" "}
-                · {pushed.error}
-              </span>
+              <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {pushed.error}</span>
             ) : (
               <span className="pc-dossier__badge-count">{pushed.count}</span>
             )}
           </RailSectionHead>
           {pushed.error ? (
-            <div className="pc-dossier__empty-line">
-              Couldn’t load pushed context: {pushed.error}
-            </div>
+            <div className="pc-dossier__empty-line">Couldn’t load pushed context: {pushed.error}</div>
           ) : (
             <>
               {/* Split by KIND, never merged into one list: both ledgers use the
                   same port labels, so `mid-turn 30` from each would render as
                   one indistinguishable row (all 6 corpus ports collide). */}
-              {(["memory", "corpus"] as const).map((kind) => {
+              {(['memory', 'corpus'] as const).map((kind) => {
                 const rows = pushed.refsByPort.filter((r) => r.kind === kind);
                 if (rows.length === 0) return null;
                 return (
@@ -1821,20 +1655,16 @@ export default function AgentDossier({
                     className="pc-dossier__empty-line"
                     data-testid={`dossier-pushed-refs-${kind}`}
                   >
-                    {kind === "memory" ? "memories" : "pointers"}{" "}
-                    {rows.map((r) => `${r.port} ${r.refs}`).join(" · ")}{" "}
-                    surfaced
+                    {kind === 'memory' ? 'memories' : 'pointers'}{' '}
+                    {rows.map((r) => `${r.port} ${r.refs}`).join(' · ')} surfaced
                   </div>
                 );
               })}
               {pushed.unavailable && pushed.unavailable.length > 0 ? (
                 /* An unreadable ledger is NOT a ledger that surfaced zero —
                    say so rather than letting it read as an absence. */
-                <div
-                  className="pc-dossier__empty-line"
-                  data-testid="dossier-pushed-unavailable"
-                >
-                  couldn’t read: {pushed.unavailable.join(" · ")}
+                <div className="pc-dossier__empty-line" data-testid="dossier-pushed-unavailable">
+                  couldn’t read: {pushed.unavailable.join(' · ')}
                 </div>
               ) : null}
               {/* P-013's "what was pushed": one row per HANDLE, not a per-port
@@ -1847,8 +1677,8 @@ export default function AgentDossier({
                   the injection rows, where they are actually measured. */}
               <CappedRows
                 noun="refs"
-                open={railOpen.has("pushedRefs")}
-                onToggle={() => toggleRail("pushedRefs")}
+                open={railOpen.has('pushedRefs')}
+                onToggle={() => toggleRail('pushedRefs')}
                 testId="dossier-pushed-refs-list"
                 /* True 24h ledger total, not the carried slice. */
                 totalCount={pushed.refsTotal ?? 0}
@@ -1868,26 +1698,24 @@ export default function AgentDossier({
                           on purpose: it carried more ids, could not be selected,
                           and would now race this panel to paint. */}
                       <HoverDetail
-                        ariaLabel={`Detail for pushed ${r.kind === "memory" ? "memory" : "pointer"} ${r.ref}`}
+                        ariaLabel={`Detail for pushed ${r.kind === 'memory' ? 'memory' : 'pointer'} ${r.ref}`}
                         testId="dossier-pushed-ref-detail"
                         side="left"
                         align="start"
-                        header={`${r.kind === "memory" ? "memory" : "pointer"} · ${r.ref} · ${r.port} · epoch ${r.epoch}`}
+                        header={`${r.kind === 'memory' ? 'memory' : 'pointer'} · ${r.ref} · ${r.port} · epoch ${r.epoch}`}
                         detail={pushedRefDetail(r)}
                       >
                         {pushedRefLabel(r)}
                       </HoverDetail>
                     </span>
-                    <span className="pc-dossier__coord-ts">
-                      {formatRelativeUpdated(r.at)}
-                    </span>
+                    <span className="pc-dossier__coord-ts">{formatRelativeUpdated(r.at)}</span>
                   </div>
                 ))}
               />
               <CappedRows
                 noun="injections"
-                open={railOpen.has("pushed")}
-                onToggle={() => toggleRail("pushed")}
+                open={railOpen.has('pushed')}
+                onToggle={() => toggleRail('pushed')}
                 testId="dossier-pushed-list"
                 /* The true 24h total, not the carried slice — same honesty rule
                    the Coord cap above exists to keep. */
@@ -1916,15 +1744,12 @@ export default function AgentDossier({
                         detail={pushedEventDetail(e)}
                       >
                         {e.admitted} of {e.returned} admitted
-                        {e.truncated ? " · truncated" : ""}
-                        {" · "}
-                        {legMark("sem", e.semanticRan)}{" "}
-                        {legMark("lex", e.lexicalRan)}
+                        {e.truncated ? ' · truncated' : ''}
+                        {' · '}
+                        {legMark('sem', e.semanticRan)} {legMark('lex', e.lexicalRan)}
                       </HoverDetail>
                     </span>
-                    <span className="pc-dossier__coord-ts">
-                      {formatRelativeUpdated(e.at)}
-                    </span>
+                    <span className="pc-dossier__coord-ts">{formatRelativeUpdated(e.at)}</span>
                   </div>
                 ))}
               />
@@ -1938,23 +1763,21 @@ export default function AgentDossier({
         <section
           className="pc-dossier__section"
           id="pc-dossier-files"
-          data-collapsed={rail.closed("a-files") ? "true" : "false"}
+          data-collapsed={rail.closed('a-files') ? 'true' : 'false'}
         >
           <RailSectionHead
             sectionId="a-files"
             label="Files"
             className="pc-dossier__h"
-            closed={rail.closed("a-files")}
-            onToggle={() => rail.toggle("a-files")}
+            closed={rail.closed('a-files')}
+            onToggle={() => rail.toggle('a-files')}
           >
-            <span className="pc-dossier__badge-count">
-              {entry.currentFiles.length}
-            </span>
+            <span className="pc-dossier__badge-count">{entry.currentFiles.length}</span>
           </RailSectionHead>
           <CappedRows
             noun="files"
-            open={railOpen.has("files")}
-            onToggle={() => toggleRail("files")}
+            open={railOpen.has('files')}
+            onToggle={() => toggleRail('files')}
             testId="dossier-files-list"
             rows={entry.currentFiles
               // Contended files first: with a 3-row preview, "which file is this
@@ -1966,15 +1789,11 @@ export default function AgentDossier({
                 return (
                   <div key={f} className="pc-dossier__file" title={f}>
                     <span className="pc-dossier__file-path">{f}</span>
-                    {mark === "held" ? (
-                      <span className="pc-dossier__lockmark pc-dossier__lockmark--held">
-                        L
-                      </span>
+                    {mark === 'held' ? (
+                      <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span>
                     ) : null}
-                    {mark === "waiting" ? (
-                      <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">
-                        W
-                      </span>
+                    {mark === 'waiting' ? (
+                      <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
                     ) : null}
                   </div>
                 );
@@ -1991,44 +1810,36 @@ export default function AgentDossier({
         <section
           className="pc-dossier__section"
           id="pc-dossier-reference"
-          data-collapsed={rail.closed("a-reference") ? "true" : "false"}
+          data-collapsed={rail.closed('a-reference') ? 'true' : 'false'}
         >
           <RailSectionHead
             sectionId="a-reference"
             label="Reference"
             className="pc-dossier__h"
-            closed={rail.closed("a-reference")}
-            onToggle={() => rail.toggle("a-reference")}
+            closed={rail.closed('a-reference')}
+            onToggle={() => rail.toggle('a-reference')}
           />
           <CappedRows
             noun="detail rows"
-            open={railOpen.has("reference")}
-            onToggle={() => toggleRail("reference")}
+            open={railOpen.has('reference')}
+            onToggle={() => toggleRail('reference')}
             testId="dossier-reference-rows"
             rows={metaRows([
               // The three the deck previews, in its order — the operational
               // subset of the reference set.
-              ["plan", entry.currentPlanSlug],
-              ["started", formatRelativeUpdated(entry.startedAt)],
-              [
-                "host · pid",
-                [entry.host, entry.pid != null ? String(entry.pid) : null]
-                  .filter(Boolean)
-                  .join(" · "),
-              ],
+              ['plan', entry.currentPlanSlug],
+              ['started', formatRelativeUpdated(entry.startedAt)],
+              ['host · pid', [entry.host, entry.pid != null ? String(entry.pid) : null].filter(Boolean).join(' · ')],
               // …and the rest, one click away. `machine` leads them because it
               // QUALIFIES the previewed `host · pid` directly above it: a
               // federated peer's pid lives on another box (P-012).
-              ["machine", machineRowValue(entry)],
-              [
-                "liveness",
-                `${entry.liveness} · active ${formatRelativeUpdated(entry.heartbeatAt)}`,
-              ],
-              ["mode", entry.mode],
-              ["cwd", entry.cwd],
-              ["window", entry.windowId],
-              ["omp thread", entry.ompThreadId],
-              ["user", entry.userId],
+              ['machine', machineRowValue(entry)],
+              ['liveness', `${entry.liveness} · active ${formatRelativeUpdated(entry.heartbeatAt)}`],
+              ['mode', entry.mode],
+              ['cwd', entry.cwd],
+              ['window', entry.windowId],
+              ['omp thread', entry.ompThreadId],
+              ['user', entry.userId],
             ])}
           />
         </section>
@@ -2037,17 +1848,13 @@ export default function AgentDossier({
       {nativeSession ? (
         <NativeSessionSection
           nativeSession={nativeSession}
-          open={railOpen.has("native")}
-          onToggle={() => toggleRail("native")}
+          open={railOpen.has('native')}
+          onToggle={() => toggleRail('native')}
         />
       ) : null}
 
       {codex ? (
-        <CodexSection
-          codex={codex}
-          open={railOpen.has("codex")}
-          onToggle={() => toggleRail("codex")}
-        />
+        <CodexSection codex={codex} open={railOpen.has('codex')} onToggle={() => toggleRail('codex')} />
       ) : null}
     </aside>
   );

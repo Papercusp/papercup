@@ -58,7 +58,10 @@ import { getPresence } from './agent-tools/coordination/presence';
 // re-derived — a second local rule is how two surfaces end up disagreeing about
 // whether the same agent is stalled.
 import { computeIntentStale } from './agent-tools/coordination/presence-tier1';
-import { resolveSessionStates, type LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
+import {
+  resolveSessionStates,
+  type LivenessVerdict,
+} from './agent-tools/coordination/liveness-oracle';
 import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
 import {
   fetchOrientPipeline,
@@ -1532,7 +1535,9 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
       contextTokens: presence?.contextTokens ?? null,
       compactionLimit: presence?.compactionLimit ?? null,
       lastCheckpoint:
-        top?.checkpoint != null ? { text: top.checkpoint, updatedAtMs: top.checkpointUpdatedAtMs ?? null } : null,
+        top?.checkpoint != null
+          ? { text: top.checkpoint, updatedAtMs: top.checkpointUpdatedAtMs ?? null }
+          : null,
       unansweredDirectedCount: unanswered.get(owner)?.count ?? 0,
       lastToolCallAt: lastToolCall.get(owner) ?? null,
       unavailableSignals: unavailable,

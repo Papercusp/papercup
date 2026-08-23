@@ -99,12 +99,12 @@ function entry(over: Partial<RosterEntry> = {}): RosterEntry {
 }
 
 const DETAIL: AgentDetail = {
-  ownerId: "su-1",
+  ownerId: 'su-1',
   locks: {
     held: [
       {
-        path: "apps/operator/lib/orchestrator/attempt-claim.ts",
-        intent: "editing attempt-claim",
+        path: 'apps/operator/lib/orchestrator/attempt-claim.ts',
+        intent: 'editing attempt-claim',
         acquiredAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 19 * 60_000).toISOString(),
       },
@@ -114,13 +114,13 @@ const DETAIL: AgentDetail = {
   },
   coord: {
     lastMessage: {
-      msgId: "m-1",
-      from: "su-1",
-      to: ["su-2"],
-      kind: "message",
-      summary: "pushed the fix",
+      msgId: 'm-1',
+      from: 'su-1',
+      to: ['su-2'],
+      kind: 'message',
+      summary: 'pushed the fix',
       ts: new Date().toISOString(),
-      direction: "outbound",
+      direction: 'outbound',
     },
     unreadCount: 2,
     // `unread` is a REQUIRED field on the coord detail (use-agent-detail.ts) — the list the
@@ -131,34 +131,34 @@ const DETAIL: AgentDetail = {
     // where they disagree would quietly stop testing that.
     unread: [
       {
-        msgId: "u-1",
-        from: "su-2",
-        to: ["su-1"],
-        kind: "message",
-        summary: "can you take WI-1",
+        msgId: 'u-1',
+        from: 'su-2',
+        to: ['su-1'],
+        kind: 'message',
+        summary: 'can you take WI-1',
         ts: new Date().toISOString(),
-        direction: "inbound" as const,
+        direction: 'inbound' as const,
       },
       {
-        msgId: "u-2",
-        from: "su-3",
-        to: ["su-1"],
-        kind: "message",
-        summary: "gate is red",
+        msgId: 'u-2',
+        from: 'su-3',
+        to: ['su-1'],
+        kind: 'message',
+        summary: 'gate is red',
         ts: new Date().toISOString(),
-        direction: "inbound" as const,
+        direction: 'inbound' as const,
       },
     ],
     openHandoffs: [
       {
-        msgId: "h-1",
-        from: "su-1",
-        to: ["codex"],
-        summary: "over to codex",
+        msgId: 'h-1',
+        from: 'su-1',
+        to: ['codex'],
+        summary: 'over to codex',
         ts: new Date().toISOString(),
-        planSlug: "dbos-retire",
+        planSlug: 'dbos-retire',
         nextAction: null,
-        direction: "outbound",
+        direction: 'outbound',
         accepted: false,
       },
     ],
@@ -168,40 +168,27 @@ const DETAIL: AgentDetail = {
   nativeSession: null,
   codex: null,
   signals: {
-    loop: {
-      active: true,
-      intervalSec: 60,
-      nextFireAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-      parked: true,
-      stalled: false,
-    },
-    liveness: { sessionState: "live", liveTurn: true },
+    loop: { active: true, intervalSec: 60, nextFireAt: new Date(Date.now() + 5 * 60_000).toISOString(), parked: true, stalled: false },
+    liveness: { sessionState: 'live', liveTurn: true },
     currentClaim: {
-      id: "WI-9001",
-      title: "Fix the thing",
-      harness: "papercusp",
-      progress: "progressing",
+      id: 'WI-9001',
+      title: 'Fix the thing',
+      harness: 'papercusp',
+      progress: 'progressing',
       idleSec: 45,
     },
     contextTokens: 40_000,
     compactionLimit: 200_000,
-    lastCheckpoint: {
-      text: "did the thing, left the other thing",
-      updatedAtMs: Date.now() - 2 * 86_400_000,
-    },
+    lastCheckpoint: { text: 'did the thing, left the other thing', updatedAtMs: Date.now() - 2 * 86_400_000 },
     unansweredDirectedCount: 2,
     lastToolCallAt: new Date(Date.now() - 30_000).toISOString(),
     // P-009 defaults: a lane, no gates, an active fleet (⇒ no wind-down banner).
     lane: {
-      planSlug: "hud-redesign-2026-08-01",
-      source: "declared",
-      nowState: "Rail density + control legibility",
-      nowNext: "merge B/C into one band",
-      nextActionable: {
-        id: "P-004",
-        title: "merge B/C into one band",
-        phase: "Phase 2",
-      },
+      planSlug: 'hud-redesign-2026-08-01',
+      source: 'declared',
+      nowState: 'Rail density + control legibility',
+      nowNext: 'merge B/C into one band',
+      nextActionable: { id: 'P-004', title: 'merge B/C into one band', phase: 'Phase 2' },
       claimableCount: 3,
     },
     announcedGates: [],
@@ -499,54 +486,52 @@ describe('AgentDossier', () => {
     expect(getByText('not required')).toBeTruthy();
   });
 
-  it("P-005/WI-6747: renders the Health signals including the shared-oracle state row", async () => {
+  it('P-005/WI-6747: renders the Health signals including the shared-oracle state row', async () => {
     const { findByText, container } = render(
       <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
     );
-    expect(await findByText("Health")).toBeTruthy();
+    expect(await findByText('Health')).toBeTruthy();
     // Scoped to the Health section: "today" also appears in the Coord trail's
     // own timestamp (both are freshly-timestamped in the fixture), so an
     // unscoped getByText('today') would ambiguously match both.
-    const health = within(container.querySelector("#pc-dossier-signals")!);
-    expect(health.getByText("armed · every 60s · next 5m left")).toBeTruthy();
-    expect(health.getByText("WI-9001 — Fix the thing")).toBeTruthy();
-    expect(health.getByText("live · speaking")).toBeTruthy();
-    expect(health.getByText("40,000 / 200,000 · 20%")).toBeTruthy();
-    expect(
-      health.getByText("did the thing, left the other thing"),
-    ).toBeTruthy();
-    expect(health.getByText("2d ago")).toBeTruthy(); // checkpoint write time
-    expect(health.getByText("2 peers waiting on a reply")).toBeTruthy();
-    expect(health.getByText("today")).toBeTruthy(); // last tool call, ~30s ago
+    const health = within(container.querySelector('#pc-dossier-signals')!);
+    expect(health.getByText('armed · every 60s · next 5m left')).toBeTruthy();
+    expect(health.getByText('WI-9001 — Fix the thing')).toBeTruthy();
+    expect(health.getByText('live · speaking')).toBeTruthy();
+    expect(health.getByText('40,000 / 200,000 · 20%')).toBeTruthy();
+    expect(health.getByText('did the thing, left the other thing')).toBeTruthy();
+    expect(health.getByText('2d ago')).toBeTruthy(); // checkpoint write time
+    expect(health.getByText('2 peers waiting on a reply')).toBeTruthy();
+    expect(health.getByText('today')).toBeTruthy(); // last tool call, ~30s ago
   });
 
-  it("WI-6747: maps a non-live turn to silent without changing the session lifecycle verdict", async () => {
+  it('WI-6747: maps a non-live turn to silent without changing the session lifecycle verdict', async () => {
     syncState.detail = {
       ...DETAIL,
       signals: {
         ...DETAIL.signals!,
-        liveness: { sessionState: "parked", liveTurn: false },
+        liveness: { sessionState: 'parked', liveTurn: false },
       },
     } satisfies AgentDetail;
     const { findByText } = render(
       <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
     );
-    expect(await findByText("parked · silent")).toBeTruthy();
+    expect(await findByText('parked · silent')).toBeTruthy();
   });
 
-  it("WI-6747: a degraded liveness read renders unavailable instead of a heartbeat-derived guess", async () => {
+  it('WI-6747: a degraded liveness read renders unavailable instead of a heartbeat-derived guess', async () => {
     syncState.detail = {
       ...DETAIL,
       signals: {
         ...DETAIL.signals!,
         liveness: null,
-        unavailableSignals: ["liveness"],
+        unavailableSignals: ['liveness'],
       },
     } satisfies AgentDetail;
     const { findByText, queryByText } = render(
       <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
     );
-    expect(await findByText("⚠ unavailable (read failed)")).toBeTruthy();
+    expect(await findByText('⚠ unavailable (read failed)')).toBeTruthy();
     expect(queryByText(/live · (speaking|silent)/)).toBeNull();
   });
 

@@ -147,16 +147,16 @@ export interface AgentDossierCheckpoint {
 // than returning genuinely empty data — see the server-side AgentSignals
 // docstring (adv-agent-detail.ts) for the full rationale.
 export type AgentSignalKey =
-  | "loop"
-  | "liveness"
-  | "currentClaim"
-  | "context"
-  | "unanswered"
-  | "lastToolCall"
-  | "lane"
-  | "announcedGates"
-  | "fleetControl"
-  | "pipeline";
+  | 'loop'
+  | 'liveness'
+  | 'currentClaim'
+  | 'context'
+  | 'unanswered'
+  | 'lastToolCall'
+  | 'lane'
+  | 'announcedGates'
+  | 'fleetControl'
+  | 'pipeline';
 
 /** Mirrors the server-side `OrientPipeline` — the release-pipeline block THIS
  *  agent is handed at its own wake. Every field but `gate`/`deploy` is optional
