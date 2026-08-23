@@ -623,6 +623,22 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
         label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
       };
 
+    case 'linkedin':
+      // NOT a missing derivation, which is what the default branch below would
+      // wrongly imply. LinkedIn is verified and usable — it simply cannot reply
+      // at any grant tier we hold, because its self-serve permission covers
+      // posting while the Comments API requires `w_member_social_feed`.
+      //
+      // Cased explicitly because this seam runs BEFORE the write gate, so
+      // without it the accurate refusal is masked by a message reading "no
+      // coordinate derivation for it YET" — which would send a reader off to
+      // implement coordinates that no scope would ever let them use.
+      throw new SocialPlatformUnusableError(
+        'linkedin',
+        'write-verb-unsupported',
+        "LinkedIn's self-serve grant (w_member_social) posts but does not comment; the Comments API requires w_member_social_feed, which is not an open permission",
+      );
+
     default:
       // Wave B/C platforms are refused by assertSocialPlatformUsable above
       // (unverified or owner-blocked), so reaching here means a row was
