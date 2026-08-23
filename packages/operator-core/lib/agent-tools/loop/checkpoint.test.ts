@@ -324,6 +324,33 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.imperativeLint).toBeUndefined();
   });
 
+  it('checksLint accepts matching stable row ids as coverage anchors', async () => {
+    const prose =
+      'Stable-C generation stable-c-false-0517 MUST remain false; ' +
+      'c58 re-arm generation c58-rearm-pending MUST remain pending.';
+    const b = body(
+      await call({
+        note: prose,
+        checks: [
+          {
+            id: 'stable-c-false-0517',
+            claim: 'Stable-C is false',
+            recheck: 'read current Stable-C result',
+            verified: 'current value confirmed',
+          },
+          {
+            id: 'c58-rearm-pending',
+            claim: 'c58 re-arm is pending',
+            recheck: 'read current c58 await status',
+            verified: 'current value confirmed',
+          },
+        ],
+      }),
+    );
+    expect(b.ok).toBe(true);
+    expect(b.checksLint).toBeUndefined();
+  });
+
   // outage-must-not-be-silent-2026-08-02 P-009 — the absence-claim leg.
   //
   // The pre-existing checksLint keys on a distinctive token (hash / WI-EI id / ISO instant)
