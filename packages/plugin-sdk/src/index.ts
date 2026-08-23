@@ -713,41 +713,97 @@ export interface ManifestDependencies {
  * autonomy-governed action.
  * ───────────────────────────────────────────────────────────────────── */
 
-export interface PluginTriggerPackSource {
-  /** Canonical trigger-source kind (`gmail`, `slack`, `gcal`, ...). */
-  kind: string;
-  /**
-   * Optional configSchema property that acquires the source credential through
-   * OAuth. When present, {@link validateTriggerPackDeclaration} requires the
-   * field to be secret + non-shareable + snapshot-stripped and requires matching
-   * inline/top-level OAuth provider + scopes declarations.
-   */
-  oauthField?: string;
-}
-
-export interface PluginTriggerPackPlan {
+export interface PluginTriggerPackPlanTarget {
+  id: string;
+  kind: 'plan';
   /** Relative path to the bundled structured plan template. */
   path: string;
   /** Plan-authored JSON Schema delivered with every instantiated template. */
   inputSchema: Record<string, unknown>;
 }
 
+export interface PluginTriggerPackRecipeTarget {
+  id: string;
+  kind: 'recipe';
+  /** Stable recipe ref; a one-step recipe is how the UI stores "call a tool". */
+  ref: string;
+  /** Optional pinned recipe revision. */
+  revision?: number;
+  /** Declared deterministic args used to check complete field mapping. */
+  argsSchema?: Record<string, unknown>;
+}
+
+export type PluginTriggerPackTarget = PluginTriggerPackPlanTarget | PluginTriggerPackRecipeTarget;
+
+export type PluginTriggerPackSource =
+  | {
+      kind: 'external';
+      /** Canonical trigger-source kind (`gmail`, `slack`, `gcal`, ...). */
+      sourceKind: string;
+      /**
+       * Optional configSchema property that acquires the source credential
+       * through OAuth. Cross-validation requires explicit secret/share/snapshot
+       * semantics plus matching inline/top-level provider + scopes.
+       */
+      oauthField?: string;
+    }
+  | { kind: 'internal'; event: 'binding-run-completed' | 'plan-completed' }
+  | { kind: 'schedule'; scheduleRef: string }
+  | { kind: 'manual' };
+
+export interface PluginTriggerPackMapping {
+  /** D-015's rigor ladder. payload-context is valid for plan targets only. */
+  mode: 'type-match' | 'fields' | 'payload-context';
+  /** target arg → source field path, required for explicit field mapping. */
+  fields?: Record<string, string>;
+}
+
 export interface PluginTriggerPackBinding {
-  /** Canonical `ext:<source-kind>:<event>` key or anchored pattern. */
-  eventPattern: string;
+  id: string;
+  source: PluginTriggerPackSource;
+  /** One target per binding; chains are event-stitched through `edges`. */
+  target: string;
+  /** Required for external sources; optional derived key/pattern for internal sources. */
+  eventPattern?: string;
   /** Payload matcher passed to the existing external-trigger binding engine. */
   filter?: Record<string, unknown>;
-  /** Existing v1 storm-policy vocabulary. Empty/omitted means unbounded. */
+  mapping?: PluginTriggerPackMapping;
+  /** Per-binding override of the pack default. */
   stormPolicy?: {
     maxRuns?: number;
     windowSeconds?: number;
   };
+  /** Deterministic-target failure policy (plan targets self-recover through the agent). */
+  retry?: {
+    maxAttempts: number;
+    backoffSeconds?: number;
+  };
+}
+
+export interface PluginTriggerPackEdge {
+  /** Upstream binding id. */
+  from: string;
+  /** Downstream binding id; it must declare an internal source. */
+  to: string;
+  event: 'binding-run-completed' | 'plan-completed';
+  /** Correlation is inherited so Runs reconstructs the chain as one workflow. */
+  correlation: 'inherit';
 }
 
 export interface PluginTriggerPack {
-  source: PluginTriggerPackSource;
-  plan: PluginTriggerPackPlan;
-  binding: PluginTriggerPackBinding;
+  /** Workflow-level install/runtime inputs (JSON Schema). */
+  inputs: Record<string, unknown>;
+  /** Pack-wide default; a binding may override it. */
+  defaultStormPolicy?: {
+    maxRuns?: number;
+    windowSeconds?: number;
+  };
+  /** Graph nodes. v1 examples have one, but the schema is N-target from day one. */
+  targets: PluginTriggerPackTarget[];
+  /** Each binding invokes exactly one target. */
+  bindings: PluginTriggerPackBinding[];
+  /** Event-stitched graph edges. A one-node v1 pack declares `[]`. */
+  edges: PluginTriggerPackEdge[];
 }
 
 function triggerPackObject(value: unknown): Record<string, unknown> {
@@ -782,65 +838,119 @@ export function validateTriggerPackDeclaration(manifest: {
     issues.push('triggerPack must ride kind "plugin" — kind "pack" is reserved for executable code-tool packs');
   }
 
-  const sourceKind = typeof pack.source?.kind === 'string' ? pack.source.kind.trim() : '';
-  const eventPattern = typeof pack.binding?.eventPattern === 'string'
-    ? pack.binding.eventPattern.trim()
-    : '';
-  if (sourceKind && eventPattern && !eventPattern.startsWith(`ext:${sourceKind}:`)) {
-    issues.push(`triggerPack.binding.eventPattern must start with "ext:${sourceKind}:"`);
+  const targetById = new Map<string, PluginTriggerPackTarget>();
+  for (const target of pack.targets ?? []) {
+    if (targetById.has(target.id)) issues.push(`triggerPack.targets declares duplicate id "${target.id}"`);
+    targetById.set(target.id, target);
+    if (target.kind !== 'plan') continue;
+    const pathSegments = target.path.split('/');
+    if (
+      !target.path ||
+      target.path.startsWith('/') ||
+      target.path.includes('\\') ||
+      pathSegments.some((segment) => segment === '' || segment === '.' || segment === '..') ||
+      !target.path.endsWith('.md')
+    ) {
+      issues.push(`triggerPack target "${target.id}" path must be a safe relative .md path`);
+    }
   }
 
-  const planPath = typeof pack.plan?.path === 'string' ? pack.plan.path : '';
-  const pathSegments = planPath.split('/');
-  if (
-    !planPath ||
-    planPath.startsWith('/') ||
-    planPath.includes('\\') ||
-    pathSegments.some((segment) => segment === '' || segment === '.' || segment === '..') ||
-    !planPath.endsWith('.md')
-  ) {
-    issues.push('triggerPack.plan.path must be a safe relative .md path');
+  const bindingById = new Map<string, PluginTriggerPackBinding>();
+  const checkedOauthFields = new Set<string>();
+  for (const binding of pack.bindings ?? []) {
+    if (bindingById.has(binding.id)) issues.push(`triggerPack.bindings declares duplicate id "${binding.id}"`);
+    bindingById.set(binding.id, binding);
+    const target = targetById.get(binding.target);
+    if (!target) {
+      issues.push(`triggerPack binding "${binding.id}" references unknown target "${binding.target}"`);
+    } else if (target.kind === 'recipe') {
+      if (!binding.mapping || binding.mapping.mode === 'payload-context') {
+        issues.push(`triggerPack recipe binding "${binding.id}" requires deterministic type-match or fields mapping`);
+      }
+    }
+
+    if (binding.mapping?.mode === 'fields' && Object.keys(binding.mapping.fields ?? {}).length === 0) {
+      issues.push(`triggerPack binding "${binding.id}" fields mapping must declare at least one field`);
+    }
+    if (binding.source.kind !== 'external') continue;
+    const sourceKind = binding.source.sourceKind.trim();
+    const eventPattern = binding.eventPattern?.trim() ?? '';
+    if (!eventPattern.startsWith(`ext:${sourceKind}:`)) {
+      issues.push(`triggerPack binding "${binding.id}" eventPattern must start with "ext:${sourceKind}:"`);
+    }
+
+    const oauthField = binding.source.oauthField?.trim() ?? '';
+    if (!oauthField || checkedOauthFields.has(oauthField)) continue;
+    checkedOauthFields.add(oauthField);
+    const properties = triggerPackObject(triggerPackObject(manifest.configSchema).properties);
+    const field = triggerPackObject(properties[oauthField]);
+    if (Object.keys(field).length === 0) {
+      issues.push(`triggerPack oauthField "${oauthField}" is absent from configSchema.properties`);
+      continue;
+    }
+    if (field.secret !== true) issues.push(`configSchema.properties.${oauthField}.secret must be true`);
+    if (field.snapshotPolicy !== 'strip') {
+      issues.push(`configSchema.properties.${oauthField}.snapshotPolicy must be "strip"`);
+    }
+    if (field.shareable !== false) issues.push(`configSchema.properties.${oauthField}.shareable must be false`);
+
+    const inlineOauth = triggerPackObject(field.oauth);
+    const requirement = (manifest.oauth ?? []).find((candidate) => candidate.fieldName === oauthField);
+    if (!requirement) {
+      issues.push(`oauth[] must declare fieldName "${oauthField}"`);
+      continue;
+    }
+    if (typeof inlineOauth.provider !== 'string' || inlineOauth.provider !== requirement.provider) {
+      issues.push(`configSchema.properties.${oauthField}.oauth.provider must match oauth[].provider`);
+    }
+    const inlineScopes = triggerPackScopes(inlineOauth.scopes).sort();
+    const declaredScopes = triggerPackScopes(requirement.scopes).sort();
+    if (declaredScopes.length === 0) {
+      issues.push(`oauth[] entry for "${oauthField}" must declare at least one scope`);
+    } else if (
+      inlineScopes.length !== declaredScopes.length ||
+      inlineScopes.some((scope, index) => scope !== declaredScopes[index])
+    ) {
+      issues.push(`configSchema.properties.${oauthField}.oauth.scopes must match oauth[].scopes`);
+    }
   }
 
-  const oauthField = typeof pack.source?.oauthField === 'string'
-    ? pack.source.oauthField.trim()
-    : '';
-  if (!oauthField) return issues;
+  const incomingInternal = new Set<string>();
+  const adjacency = new Map<string, string[]>();
+  for (const edge of pack.edges ?? []) {
+    const from = bindingById.get(edge.from);
+    const to = bindingById.get(edge.to);
+    if (!from) issues.push(`triggerPack edge references unknown from binding "${edge.from}"`);
+    if (!to) issues.push(`triggerPack edge references unknown to binding "${edge.to}"`);
+    if (edge.from === edge.to) issues.push(`triggerPack edge "${edge.from}" → "${edge.to}" is a self-cycle`);
+    if (to && to.source.kind !== 'internal') {
+      issues.push(`triggerPack edge destination "${edge.to}" must declare source.kind "internal"`);
+    }
+    if (to && to.source.kind === 'internal' && to.source.event !== edge.event) {
+      issues.push(`triggerPack edge event must match internal source event on binding "${edge.to}"`);
+    }
+    incomingInternal.add(edge.to);
+    adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge.to]);
+  }
+  for (const binding of pack.bindings ?? []) {
+    if (binding.source.kind === 'internal' && !incomingInternal.has(binding.id)) {
+      issues.push(`triggerPack internal binding "${binding.id}" requires an incoming edge`);
+    }
+  }
 
-  const properties = triggerPackObject(triggerPackObject(manifest.configSchema).properties);
-  const field = triggerPackObject(properties[oauthField]);
-  if (Object.keys(field).length === 0) {
-    issues.push(`triggerPack.source.oauthField "${oauthField}" is absent from configSchema.properties`);
-    return issues;
-  }
-  if (field.secret !== true) {
-    issues.push(`configSchema.properties.${oauthField}.secret must be true`);
-  }
-  if (field.snapshotPolicy !== 'strip') {
-    issues.push(`configSchema.properties.${oauthField}.snapshotPolicy must be "strip"`);
-  }
-  if (field.shareable !== false) {
-    issues.push(`configSchema.properties.${oauthField}.shareable must be false`);
-  }
-
-  const inlineOauth = triggerPackObject(field.oauth);
-  const requirement = (manifest.oauth ?? []).find((candidate) => candidate.fieldName === oauthField);
-  if (!requirement) {
-    issues.push(`oauth[] must declare fieldName "${oauthField}"`);
-    return issues;
-  }
-  if (typeof inlineOauth.provider !== 'string' || inlineOauth.provider !== requirement.provider) {
-    issues.push(`configSchema.properties.${oauthField}.oauth.provider must match oauth[].provider`);
-  }
-  const inlineScopes = triggerPackScopes(inlineOauth.scopes).sort();
-  const declaredScopes = triggerPackScopes(requirement.scopes).sort();
-  if (declaredScopes.length === 0) {
-    issues.push(`oauth[] entry for "${oauthField}" must declare at least one scope`);
-  } else if (
-    inlineScopes.length !== declaredScopes.length ||
-    inlineScopes.some((scope, index) => scope !== declaredScopes[index])
-  ) {
-    issues.push(`configSchema.properties.${oauthField}.oauth.scopes must match oauth[].scopes`);
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (visiting.has(id)) return true;
+    if (visited.has(id)) return false;
+    visiting.add(id);
+    for (const next of adjacency.get(id) ?? []) if (visit(next)) return true;
+    visiting.delete(id);
+    visited.add(id);
+    return false;
+  };
+  if ([...bindingById.keys()].some((id) => visit(id))) {
+    issues.push('triggerPack.edges must form an acyclic event-stitched graph');
   }
   return issues;
 }

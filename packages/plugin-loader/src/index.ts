@@ -236,11 +236,14 @@ async function readManifest(dir: string): Promise<ManifestShape | { __error: str
       return { __error: `manifest invalid: ${triggerPackIssues.join('; ')}` };
     }
     if (parsed.triggerPack) {
-      const planPath = resolve(dir, parsed.triggerPack.plan.path);
-      if (!planPath.startsWith(resolve(dir) + sep) || !existsSync(planPath)) {
-        return {
-          __error: `manifest invalid: triggerPack.plan.path does not resolve to a bundled file (${parsed.triggerPack.plan.path})`,
-        };
+      for (const target of parsed.triggerPack.targets) {
+        if (target.kind !== 'plan') continue;
+        const planPath = resolve(dir, target.path);
+        if (!planPath.startsWith(resolve(dir) + sep) || !existsSync(planPath)) {
+          return {
+            __error: `manifest invalid: triggerPack plan target "${target.id}" does not resolve to a bundled file (${target.path})`,
+          };
+        }
       }
     }
     return parsed;

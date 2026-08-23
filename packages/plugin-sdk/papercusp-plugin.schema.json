@@ -110,64 +110,149 @@
     "triggerPack": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Pure-data external source -> plan-template package (external-triggers P-012). It rides kind:'plugin' / the manifest-only loader, not kind:'pack' (which is executable tools only). Installing exposes the descriptor but never arms its binding.",
-      "required": ["source", "plan", "binding"],
+      "description": "Pure-data workflow graph (external-triggers D-014/D-015/P-012): N plan|recipe targets, single-target bindings, and event-stitched internal edges. It rides kind:'plugin', never executable-tool kind:'pack'. Installation exposes the graph but never arms it.",
+      "required": ["inputs", "targets", "bindings", "edges"],
       "properties": {
-        "source": {
+        "inputs": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "pattern": "^[a-z][a-z0-9._-]*$",
-              "description": "Canonical trigger-source kind (gmail, slack, gcal, ...)."
-            },
-            "oauthField": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Optional configSchema property holding the OAuth credential. Loader cross-validation requires secret:true, shareable:false, snapshotPolicy:'strip', and matching inline/top-level OAuth declarations."
-            }
-          }
+          "description": "Workflow-level declared input JSON Schema. Credential/channel install fields retain their per-field share semantics in configSchema."
         },
-        "plan": {
+        "defaultStormPolicy": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path", "inputSchema"],
           "properties": {
-            "path": {
-              "type": "string",
-              "minLength": 4,
-              "description": "Safe relative path to the bundled structured plan markdown. Cross-validation rejects absolute, backslash, dot, and dot-dot segments."
-            },
-            "inputSchema": {
-              "type": "object",
-              "description": "Plan-authored JSON Schema supplied when the template is instantiated."
-            }
-          }
+            "maxRuns": { "type": "integer", "minimum": 1 },
+            "windowSeconds": { "type": "integer", "minimum": 1 }
+          },
+          "description": "Pack-wide storm-policy default; a binding may override it."
         },
-        "binding": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["eventPattern"],
-          "properties": {
-            "eventPattern": {
-              "type": "string",
-              "minLength": 5,
-              "description": "Canonical ext:<source-kind>:<event> key or anchored pattern. Cross-validation enforces the source-kind prefix."
-            },
-            "filter": {
-              "type": "object",
-              "description": "Payload matcher passed to the existing external-trigger binding engine."
-            },
-            "stormPolicy": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "maxRuns": { "type": "integer", "minimum": 1 },
-                "windowSeconds": { "type": "integer", "minimum": 1 }
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Graph target nodes. Stored kinds are plan|recipe; a UI tool call is a one-step recipe.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "kind", "path", "inputSchema"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "kind": { "const": "plan" },
+                  "path": { "type": "string", "minLength": 4 },
+                  "inputSchema": { "type": "object" }
+                }
               },
-              "description": "Existing v1 storm-policy vocabulary. Omitted means unbounded."
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "kind", "ref"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "kind": { "const": "recipe" },
+                  "ref": { "type": "string", "minLength": 1 },
+                  "revision": { "type": "integer", "minimum": 1 },
+                  "argsSchema": { "type": "object" }
+                }
+              }
+            ]
+          }
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Each binding invokes exactly one target. Chains use internal-source bindings plus edges, never a steps orchestrator.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "source", "target"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "source": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["kind", "sourceKind"],
+                    "properties": {
+                      "kind": { "const": "external" },
+                      "sourceKind": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+                      "oauthField": { "type": "string", "minLength": 1 }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["kind", "event"],
+                    "properties": {
+                      "kind": { "const": "internal" },
+                      "event": { "type": "string", "enum": ["binding-run-completed", "plan-completed"] }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["kind", "scheduleRef"],
+                    "properties": {
+                      "kind": { "const": "schedule" },
+                      "scheduleRef": { "type": "string", "minLength": 1 }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["kind"],
+                    "properties": { "kind": { "const": "manual" } }
+                  }
+                ]
+              },
+              "target": { "type": "string", "minLength": 1 },
+              "eventPattern": { "type": "string", "minLength": 1 },
+              "filter": { "type": "object" },
+              "mapping": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mode"],
+                "properties": {
+                  "mode": { "type": "string", "enum": ["type-match", "fields", "payload-context"] },
+                  "fields": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                  }
+                }
+              },
+              "stormPolicy": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "maxRuns": { "type": "integer", "minimum": 1 },
+                  "windowSeconds": { "type": "integer", "minimum": 1 }
+                }
+              },
+              "retry": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["maxAttempts"],
+                "properties": {
+                  "maxAttempts": { "type": "integer", "minimum": 1 },
+                  "backoffSeconds": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "description": "Internal event edges between bindings. One-node v1 packs declare an empty array.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to", "event", "correlation"],
+            "properties": {
+              "from": { "type": "string", "minLength": 1 },
+              "to": { "type": "string", "minLength": 1 },
+              "event": { "type": "string", "enum": ["binding-run-completed", "plan-completed"] },
+              "correlation": { "const": "inherit" }
             }
           }
         }

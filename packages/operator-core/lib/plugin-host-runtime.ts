@@ -199,9 +199,10 @@ export interface PluginHostStatus {
    */
   triggerPacks: Array<{
     plugin: string;
-    sourceKind: string;
-    eventPattern: string;
-    planPath: string;
+    targetCount: number;
+    bindingCount: number;
+    edgeCount: number;
+    sourceKinds: string[];
     armed: false;
   }>;
 }
@@ -1234,9 +1235,11 @@ export async function pluginHostStatus(): Promise<PluginHostStatus & {
     triggerPacks: state.loaded.flatMap((lp) => lp.triggerPack
       ? [{
           plugin: lp.plugin.name,
-          sourceKind: lp.triggerPack.source.kind,
-          eventPattern: lp.triggerPack.binding.eventPattern,
-          planPath: lp.triggerPack.plan.path,
+          targetCount: lp.triggerPack.targets.length,
+          bindingCount: lp.triggerPack.bindings.length,
+          edgeCount: lp.triggerPack.edges.length,
+          sourceKinds: [...new Set(lp.triggerPack.bindings.flatMap((binding) =>
+            binding.source.kind === 'external' ? [binding.source.sourceKind] : []))].sort(),
           armed: false as const,
         }]
       : []),

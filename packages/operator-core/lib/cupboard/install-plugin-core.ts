@@ -45,10 +45,11 @@ export interface InstalledPluginManifest {
 }
 
 export interface InstalledTriggerPackReceipt {
-  sourceKind: string;
-  eventPattern: string;
-  planPath: string;
-  planSlug: string;
+  targetCount: number;
+  bindingCount: number;
+  edgeCount: number;
+  sourceKinds: string[];
+  planTargets: Array<{ id: string; path: string; slug: string }>;
   /** Installation never crosses the autonomy-gated trigger arm boundary. */
   armed: false;
 }
@@ -211,38 +212,57 @@ async function inspectTriggerPackForInstall(
   if (semanticIssues.length > 0) {
     throw new InstallPluginError(`trigger-pack manifest invalid: ${semanticIssues.join('; ')}`, 422);
   }
-  if (!isCompilableSchema(manifest.triggerPack.plan.inputSchema)) {
-    throw new InstallPluginError('trigger-pack manifest invalid: plan.inputSchema is not compilable JSON Schema', 422);
+  if (!isCompilableSchema(manifest.triggerPack.inputs)) {
+    throw new InstallPluginError('trigger-pack manifest invalid: inputs is not compilable JSON Schema', 422);
   }
 
-  const planPath = resolve(pluginDir, manifest.triggerPack.plan.path);
-  assertInside(pluginDir, planPath, 'triggerPack.plan.path');
-  let realPlanPath: string;
-  let markdown: string;
-  try {
-    realPlanPath = await fs.realpath(planPath);
-    assertInside(pluginDir, realPlanPath, 'triggerPack.plan.path symlink target');
-    markdown = await fs.readFile(realPlanPath, 'utf8');
-  } catch (error) {
-    if (error instanceof InstallPluginError) throw error;
-    throw new InstallPluginError(
-      `trigger-pack plan not readable at ${manifest.triggerPack.plan.path}`,
-      422,
-    );
-  }
-  const parsed = parsePlan(markdown);
-  if (parsed.isLegacy || !parsed.frontmatter.slug) {
-    throw new InstallPluginError(
-      `trigger-pack plan at ${manifest.triggerPack.plan.path} is not a structured plan template`,
-      422,
-    );
+  const planTargets: InstalledTriggerPackReceipt['planTargets'] = [];
+  for (const target of manifest.triggerPack.targets) {
+    if (target.kind === 'recipe') {
+      if (target.argsSchema && !isCompilableSchema(target.argsSchema)) {
+        throw new InstallPluginError(
+          `trigger-pack manifest invalid: recipe target "${target.id}" argsSchema is not compilable JSON Schema`,
+          422,
+        );
+      }
+      continue;
+    }
+    if (!isCompilableSchema(target.inputSchema)) {
+      throw new InstallPluginError(
+        `trigger-pack manifest invalid: plan target "${target.id}" inputSchema is not compilable JSON Schema`,
+        422,
+      );
+    }
+
+    const planPath = resolve(pluginDir, target.path);
+    assertInside(pluginDir, planPath, `triggerPack target "${target.id}" path`);
+    let realPlanPath: string;
+    let markdown: string;
+    try {
+      realPlanPath = await fs.realpath(planPath);
+      assertInside(pluginDir, realPlanPath, `triggerPack target "${target.id}" symlink target`);
+      markdown = await fs.readFile(realPlanPath, 'utf8');
+    } catch (error) {
+      if (error instanceof InstallPluginError) throw error;
+      throw new InstallPluginError(`trigger-pack plan not readable at ${target.path}`, 422);
+    }
+    const parsed = parsePlan(markdown);
+    if (parsed.isLegacy || !parsed.frontmatter.slug) {
+      throw new InstallPluginError(
+        `trigger-pack plan at ${target.path} is not a structured plan template`,
+        422,
+      );
+    }
+    planTargets.push({ id: target.id, path: target.path, slug: parsed.frontmatter.slug });
   }
 
   return {
-    sourceKind: manifest.triggerPack.source.kind,
-    eventPattern: manifest.triggerPack.binding.eventPattern,
-    planPath: manifest.triggerPack.plan.path,
-    planSlug: parsed.frontmatter.slug,
+    targetCount: manifest.triggerPack.targets.length,
+    bindingCount: manifest.triggerPack.bindings.length,
+    edgeCount: manifest.triggerPack.edges.length,
+    sourceKinds: [...new Set(manifest.triggerPack.bindings.flatMap((binding) =>
+      binding.source.kind === 'external' ? [binding.source.sourceKind] : []))].sort(),
+    planTargets,
     armed: false,
   };
 }
