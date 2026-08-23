@@ -798,11 +798,12 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
             <PlansPane />
           </Suspense>
         ) : inboxOpen ? (
-          /* owner-inbox-single-pane D-009/P-012: the canonical Resolution
-             Inbox is a built-in face in this same pane. The pane owns its
-             list/detail URL state; Discuss seeds Papercup and returns here. */
+          /* owner-inbox-single-pane D-009/P-012/P-018: the canonical
+             Resolution Inbox is a built-in face in this same pane. The pane
+             owns its list/detail URL state; Discuss stays inline in the
+             expanded item and never switches or seeds the global transcript. */
           <Suspense fallback={<div className="op-chat-view-loading">Loading inbox…</div>}>
-            <InboxPane onDiscussInChat={() => void setView('chat')} />
+            <InboxPane />
           </Suspense>
         ) : (
           /* WI-4789 (owner ask 2026-07-14): the ambient Mug/Kettle status

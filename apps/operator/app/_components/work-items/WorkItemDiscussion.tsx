@@ -1,0 +1,217 @@
+'use client';
+
+/**
+ * WorkItemDiscussion — the reusable inline Papercup host for one durable
+ * work-item conversation (owner-inbox-single-pane P-018 / D-014).
+ *
+ * This deliberately reuses the full operator conversation stack. The only new
+ * responsibility here is resolving the work-item → conversation identity:
+ * read the focused sync projection first, then cross the explicit idempotent
+ * POST mutation boundary when no cached binding exists. Once an id resolves,
+ * a nested OperatorConversationProvider owns the scoped runtime and
+ * OperatorChat supplies the same transcript, cards, reports, tools, choices,
+ * cancel/skip controls, history paging, and composer as the global pane.
+ */
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { MessageCircle, RefreshCw, X } from 'lucide-react';
+import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
+import {
+  OperatorConversationProvider,
+  useOperatorConversation,
+} from '../OperatorConversationProvider';
+import { OperatorChat } from '../OperatorChat';
+import './work-item-discussion.css';
+
+/** URL state shared by InboxPane and WorkItemDetail. The value uses the
+ * existing encodeScopedRef/decodeScopedRef grammar: `<harness>::<work-item>`. */
+export const WORK_ITEM_DISCUSSION_PARAM = 'opcid';
+
+type ConversationIdentity = { id: string };
+type LocalResolution = {
+  key: string;
+  id: string | null;
+  error: string | null;
+};
+
+export interface WorkItemDiscussionProps {
+  harnessSlug: string;
+  workItemId: string;
+  title?: string | null;
+  onClose?: () => void;
+}
+
+function WorkItemConversationChat({
+  harnessSlug,
+  workItemId,
+  conversationId,
+}: {
+  harnessSlug: string;
+  workItemId: string;
+  conversationId: string;
+}) {
+  const conv = useOperatorConversation();
+  const workspaceId = useWorkspaceId();
+
+  return (
+    <div className="wi-discussion__chat" data-testid="work-item-discussion-chat">
+      <OperatorChat
+        messages={conv.messages}
+        busy={conv.busy}
+        peerBusy={conv.peerBusy}
+        passive={conv.mode === 'passive'}
+        onSend={conv.sendUserMessage}
+        onGenerateIdeas={conv.generateIdeas}
+        banner={
+          <div className="wi-discussion__context" data-testid="work-item-discussion-context">
+            <span>{workItemId}</span>
+            {conv.bannerText ? <span>{conv.bannerText}</span> : null}
+          </div>
+        }
+        error={conv.error}
+        onLoadEarlier={conv.loadEarlier}
+        hasMoreEarlier={conv.hasMoreEarlier}
+        loadingEarlier={conv.loadingEarlier}
+        onAnswerChoice={conv.answerChoice}
+        conversationId={conv.conversationId ?? conversationId}
+        workspaceId={workspaceId}
+        harnessSlug={harnessSlug}
+      />
+    </div>
+  );
+}
+
+export default function WorkItemDiscussion({
+  harnessSlug,
+  workItemId,
+  title,
+  onClose,
+}: WorkItemDiscussionProps) {
+  const workspaceId = useWorkspaceId();
+  const targetKey = `${workspaceId}::${harnessSlug}::${workItemId}`;
+  const identity = useSyncQuery<ConversationIdentity>({
+    queryName: 'operatorConversations.byWorkItem',
+    args: { workspaceId, harness: harnessSlug, workItemId },
+    enabled: Boolean(harnessSlug && workItemId),
+    staleTime: 30_000,
+  });
+  const syncedId = identity.data?.[0]?.id?.trim() || null;
+  const invalidateRef = useRef(identity.invalidate);
+  invalidateRef.current = identity.invalidate;
+  const [resolution, setResolution] = useState<LocalResolution | null>(null);
+  const [retry, setRetry] = useState(0);
+  const localId = resolution?.key === targetKey ? resolution.id : null;
+  const error = resolution?.key === targetKey ? resolution.error : null;
+  const conversationId = syncedId ?? localId;
+
+  // Opening Discuss is the explicit mutation boundary. POST is idempotent, so
+  // a reload/collapse race can safely repeat it and still reopen the same row.
+  // The focused sync read above usually avoids the mutation on subsequent
+  // mounts; POST also keeps the component functional outside a live SyncProvider.
+  useEffect(() => {
+    if (!harnessSlug || !workItemId || syncedId) return;
+    const controller = new AbortController();
+    let current = true;
+    setResolution({ key: targetKey, id: null, error: null });
+
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/operator/conversations/work-items/${encodeURIComponent(workItemId)}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ harness: harnessSlug }),
+            signal: controller.signal,
+          },
+        );
+        const body = (await response.json().catch(() => null)) as
+          | { conversation?: { id?: unknown }; error?: unknown }
+          | null;
+        if (!response.ok) {
+          throw new Error(
+            typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`,
+          );
+        }
+        const id =
+          typeof body?.conversation?.id === 'string'
+            ? body.conversation.id.trim()
+            : '';
+        if (!id) throw new Error('The conversation endpoint returned no id.');
+        if (!current) return;
+        setResolution({ key: targetKey, id, error: null });
+        invalidateRef.current?.();
+      } catch (cause) {
+        if (!current || controller.signal.aborted) return;
+        setResolution({
+          key: targetKey,
+          id: null,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    })();
+
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [harnessSlug, workItemId, syncedId, targetKey, retry]);
+
+  const heading = useMemo(
+    () => (title?.trim() ? `Discuss ${title.trim()}` : `Discuss ${workItemId}`),
+    [title, workItemId],
+  );
+
+  return (
+    <section
+      className="wi-discussion"
+      aria-label={`Papercup discussion for ${workItemId}`}
+      data-testid={`work-item-discussion-${workItemId}`}
+    >
+      <header className="wi-discussion__header">
+        <span className="wi-discussion__mark" aria-hidden="true">
+          <MessageCircle size={15} />
+        </span>
+        <span className="wi-discussion__heading">
+          <strong>{heading}</strong>
+          <span>Persisted Papercup thread · {harnessSlug}</span>
+        </span>
+        {onClose ? (
+          <button
+            type="button"
+            className="wi-discussion__close"
+            aria-label={`Close discussion for ${workItemId}`}
+            onClick={onClose}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        ) : null}
+      </header>
+
+      {conversationId ? (
+        <OperatorConversationProvider
+          key={targetKey}
+          target={{ kind: 'work-item', conversationId }}
+        >
+          <WorkItemConversationChat
+            harnessSlug={harnessSlug}
+            workItemId={workItemId}
+            conversationId={conversationId}
+          />
+        </OperatorConversationProvider>
+      ) : error ? (
+        <div className="wi-discussion__state wi-discussion__state--error" role="alert">
+          <span>Could not open this discussion: {error}</span>
+          <button type="button" onClick={() => setRetry((value) => value + 1)}>
+            <RefreshCw size={13} aria-hidden="true" /> Retry
+          </button>
+        </div>
+      ) : (
+        <div className="wi-discussion__state" role="status">
+          Opening the persisted discussion…
+        </div>
+      )}
+    </section>
+  );
+}

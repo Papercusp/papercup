@@ -25,6 +25,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItemClaimAuthority } from './work-item-claim-authority';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 export interface WorkItemClaim {
   workspaceId: string;
@@ -511,6 +512,17 @@ export async function listActiveClaimFreshnessForOwner(
      WHERE c.owner = ${owner}
        AND ${workspaceId != null ? sql`c.workspace_id = ${workspaceId}` : sql`TRUE`}
        AND c.expires_ts > clock_timestamp()
+       -- A terminal work-item may retain a claim row briefly after completion or
+       -- release. It is no longer in-flight state and must not be presented as a
+       -- flush obligation. Keep missing work-item rows (e.g. during a physical
+       -- twin/host-version skew) fail-open rather than hiding a real claim.
+       AND NOT EXISTS (
+             SELECT 1
+               FROM harness_shared.work_items wi
+              WHERE wi.workspace_id = c.workspace_id
+                AND wi.harness_slug = c.harness_slug
+                AND wi.feature_id = c.work_item_id
+                AND wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
      ORDER BY c.last_activity_ts DESC
   `;
   return rows.map((r) => ({

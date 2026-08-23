@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 784,
+  "count": 785,
   "tools": [
     {
       "name": "ablation:report",
@@ -19099,6 +19099,80 @@
         "when": "A plan is ready to enter the harness — you and the human have settled the feature list and acceptance criteria.",
         "notWhen": "Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled. ANTI-OVER-SPAWN (D-001, promote-spawn-child-harness): a `spawn_child` wave is justified ONLY when the work crosses a repo/worktree boundary or needs its own lifecycle/done-definition — same-repo sub-work stays as plain features in the current harness (a child harness buys no extra parallelism, only overhead). When in doubt, do NOT spawn.",
         "chaining": "spawn_child waves: re-run with apply:false first — the preview lists slug/seed/count, no side effects. A partially-failed spawn (`spawned_children[].warnings`) is retried by re-promoting (idempotent). Apply rewrites the plan doc (stale-CAS for any queued set-content) — reload plans:get first."
+      }
+    },
+    {
+      "name": "plans:publish-outputs",
+      "http": {
+        "path": "/api/agent-tools/plans/publish-outputs",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Publish a completing plan run's declared OUTPUTS to plan_runs.outputs, validated against the plan's output_schema. Refuses loudly — never partially — when a declared output is unfilled (`missing_outputs`), when the values do not satisfy the schema (`invalid_outputs`), or when a field bound to a canonical datatype does not match that shape (`datatype_mismatch`). A plan that declared no outputs refuses with `no_outputs_declared`.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Finishing a plan run whose plan declares an output schema — fill every required output and publish before the run settles, so a chained downstream step can consume typed values.",
+        "notWhen": "Declaring what a plan produces — plans:set-output-schema. Checking what it promised — plans:get-output-schema. A plan with no declared outputs needs no publication at all.",
+        "chaining": "plans:get-output-schema { slug } (what must be filled) → plans:publish-outputs { runId, slug, outputs } → the run may then settle."
       }
     },
     {

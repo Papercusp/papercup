@@ -56,6 +56,13 @@ const CARRY_NOTES_DDL = `
     updated_ts bigint NOT NULL,
     deps jsonb,
     PRIMARY KEY (workspace_id, scope))`;
+const WORK_ITEMS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.work_items (
+    workspace_id text NOT NULL,
+    harness_slug text NOT NULL,
+    feature_id text NOT NULL,
+    status text,
+    PRIMARY KEY (workspace_id, harness_slug, feature_id))`;
 
 const WS = 'default';
 const HARNESS = 'h1';
@@ -75,6 +82,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await db.sql.unsafe(CARRY_NOTES_DDL);
+  await db.sql.unsafe(WORK_ITEMS_DDL);
 });
 
 afterAll(async () => {
@@ -85,6 +93,7 @@ beforeEach(async () => {
   resetWorkItemClaimAuthority();
   await db.sql`DELETE FROM harness_shared.work_item_claims`;
   await db.sql`DELETE FROM harness_shared.carry_notes WHERE scope LIKE 'workitem:%:F-%'`;
+  await db.sql`DELETE FROM harness_shared.work_items`;
 });
 
 describe('work-item claim lease store (real PG)', () => {
@@ -171,6 +180,27 @@ describe('work-item claim lease store (real PG)', () => {
     expect(freshness).toEqual([
       expect.objectContaining({ workItemId: 'F-012', checkpointUpdatedMs: checkpointMs }),
     ]);
+  });
+
+  it('excludes a terminal released claim from flush freshness while retaining a live claim', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, status)
+      VALUES (${WS}, ${HARNESS}, 'F-terminal', 'done'),
+             (${WS}, ${HARNESS}, 'F-live', 'open')`;
+    await acquireClaim(base({ workItemId: 'F-terminal', owner: 'su-flush' }));
+    await acquireClaim(base({ workItemId: 'F-live', owner: 'su-flush' }));
+
+    const freshness = await listActiveClaimFreshnessForOwner(WS, 'su-flush');
+
+    expect(freshness.map((claim) => claim.workItemId)).toEqual(['F-live']);
+  });
+
+  it('keeps a claim when its work-item row is temporarily missing', async () => {
+    await acquireClaim(base({ workItemId: 'F-missing', owner: 'su-skew' }));
+
+    const freshness = await listActiveClaimFreshnessForOwner(WS, 'su-skew');
+
+    expect(freshness.map((claim) => claim.workItemId)).toEqual(['F-missing']);
   });
 
   it('releaseAllClaimsForOwner clears a session; sweepLapsedClaims GCs expired rows', async () => {

@@ -28,10 +28,10 @@
  *     the sidebar IS acting in the Queue;
  *   - tier semantics: effectiveTier (mirrors AdvOverviewTab's fallback).
  *
- * "Discuss" here opens a chat with PAPERCUP about the item (owner ask
- * 2026-07-16): the card's discuss pick is intercepted (OtherDetail's
- * onDiscuss), a drafted message is staged via seedOperatorChatDraft, and the
- * pane flips back to the chat view.
+ * "Discuss" here opens the item's durable Papercup thread INLINE (P-018 /
+ * D-014): the card's discuss pick writes the scoped `?opcid` target and mounts
+ * WorkItemDiscussion directly beneath the expanded item. The workspace-global
+ * Papercup transcript is never seeded or selected by this path.
  *
  * Filter + selection + search live in the URL (nuqs `?opci` / `?opcis` /
  * `?opcq` / `?opck` / `?opcf`) so the pane is deep-linkable and agent-driveable
@@ -64,12 +64,15 @@ import {
   type AttentionTier,
 } from '@/app/admin/plans/plans-api';
 import { effectiveTier, scopeInboxItems, useInboxAttention } from './use-inbox-pending';
-import { seedOperatorChatDraft } from './chat-seed';
 import SessionChatModal from '../chat/SessionChatModal';
 import {
   CHAT_WORK_ITEM_POPUP_PARAM,
+  decodeScopedRef,
   encodeScopedRef,
 } from '../chat/chat-ref-popup-params';
+import WorkItemDiscussion, {
+  WORK_ITEM_DISCUSSION_PARAM,
+} from '../work-items/WorkItemDiscussion';
 // The Queue detail card's styles (pc-items__*, pc-tier/pc-kind badges). Global
 // (non-module) CSS — importing it here makes the pane self-sufficient on
 // every route.
@@ -113,33 +116,6 @@ function formatAbsoluteDate(iso: string | null | undefined): string | null {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return null;
   return new Date(t).toLocaleString();
-}
-
-/** The drafted "Papercup, look at this" message for an inbox item. */
-export function buildDiscussDraft(i: AttentionItem): string {
-  const kindLabel = KIND_LABEL[i.kind] ?? i.kind;
-  const where = [i.planSlug && `plan ${i.planSlug}`, i.harnessSlug && `harness ${i.harnessSlug}`]
-    .filter(Boolean)
-    .join(' · ');
-  // i.report is a STRUCTURED ReportBlock (title + plan rows), not a string —
-  // flatten it to a one-liner-per-plan digest for the drafted chat message.
-  const reportText = i.report
-    ? [
-        i.report.title,
-        ...i.report.plans.map((p) =>
-          [p.title, p.status && `[${p.status}]`, p.summary].filter(Boolean).join(' '),
-        ),
-      ]
-        .filter((s): s is string => Boolean(s && s.trim()))
-        .join('\n')
-    : '';
-  const report = reportText.trim() ? `\n\n${reportText.trim().slice(0, 600)}` : '';
-  return (
-    // i.id already carries the kind prefix (e.g. "coord-message:m1") — don't re-prepend it.
-    `About this inbox item (${kindLabel}${where ? ` — ${where}` : ''}, ref ${i.id}):\n` +
-    `"${i.title}"${report}\n\n` +
-    `Can you explain what this needs from me and help me resolve it?`
-  );
 }
 
 /** Lowercase haystack for the text search (title + body + owner + plan/harness). */
@@ -186,10 +162,7 @@ function InboxRowIcon({ kind }: { kind: AttentionItem['kind'] }) {
   return <InboxIcon size={17} aria-hidden="true" />;
 }
 
-export default function InboxPane({ onDiscussInChat }: {
-  /** Flip the sidebar back to the chat view (the seed is already staged). */
-  onDiscussInChat: () => void;
-}) {
+export default function InboxPane() {
   const { items, loading, error, refresh } = useInboxAttention();
   const [filter, setFilter] = useQueryState(
     'opci',
@@ -208,6 +181,14 @@ export default function InboxPane({ onDiscussInChat }: {
   // to show, keyed by ownerAgentId.
   const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
   const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
+  const [discussionRef, setDiscussionRef] = useQueryState(
+    WORK_ITEM_DISCUSSION_PARAM,
+    parseAsString,
+  );
+  const discussionTarget = useMemo(
+    () => decodeScopedRef(discussionRef),
+    [discussionRef],
+  );
   // The Queue lives on /adv (?tab=plans&view=queue) — MERGE-write the params
   // when already there; hard-navigate otherwise (this sidebar is global).
   const [, setQueueParams] = useQueryStates({
@@ -224,11 +205,12 @@ export default function InboxPane({ onDiscussInChat }: {
 
   const onDiscuss = useCallback(
     (i: AttentionItem) => {
-      seedOperatorChatDraft(buildDiscussDraft(i));
-      onDiscussInChat();
-      return true; // handled — suppress the Queue's inline DiscussPanel
+      const workItemId = attentionWorkItemId(i);
+      if (!workItemId || !i.harnessSlug) return false;
+      void setDiscussionRef(encodeScopedRef(i.harnessSlug, workItemId));
+      return true; // handled — suppress the Queue's legacy DiscussPanel
     },
-    [onDiscussInChat],
+    [setDiscussionRef],
   );
 
   const onResolved = useCallback(() => {
@@ -618,6 +600,27 @@ export default function InboxPane({ onDiscussInChat }: {
                     onDiscuss={onDiscuss}
                     onNavigate={onNavigate}
                   />
+                  {(() => {
+                    const workItemId = attentionWorkItemId(i);
+                    const harnessMatches =
+                      !discussionTarget.harness || discussionTarget.harness === i.harnessSlug;
+                    if (
+                      !workItemId ||
+                      !i.harnessSlug ||
+                      discussionTarget.id !== workItemId ||
+                      !harnessMatches
+                    ) {
+                      return null;
+                    }
+                    return (
+                      <WorkItemDiscussion
+                        harnessSlug={i.harnessSlug}
+                        workItemId={workItemId}
+                        title={i.title}
+                        onClose={() => void setDiscussionRef(null)}
+                      />
+                    );
+                  })()}
                 </div>
               ) : null}
                 </div>
