@@ -1,12 +1,36 @@
-"""Shared parser for the JSON-RPC/SSE envelope returned by the local MCP endpoint.
+"""Shared runtime helpers for the Claude/Codex shell hooks.
 
-The endpoint can return an HTTP 200 response whose JSON-RPC ``result`` carries
-``isError: true``.  That is still a rejected tool call, not a usable inner
-payload.  Keeping this distinction here prevents each CC hook from silently
-reimplementing the fail-open bug.
+Hook JSON can contain arbitrary tool input and the local MCP bearer is a live
+credential.  Neither belongs in a child process's argv, where same-user process
+inspection can read it.  Shell wrappers pass the hook payload on fd 3 and only
+the permission-restricted token *path* in argv; the helpers below keep that
+transport consistent across the hook family.
+
+This module also parses the local MCP endpoint's JSON-RPC/SSE envelope.  The
+endpoint can return HTTP 200 while ``result.isError`` is true; that is still a
+rejected tool call, not a usable inner payload.
 """
 
 import json
+import os
+
+
+def read_hook_payload(fd=3):
+    """Read a hook event from a non-argv file descriptor."""
+    try:
+        with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as stream:
+            return stream.read()
+    except OSError:
+        return ''
+
+
+def read_token_file(path):
+    """Read the local bearer without ever copying its value into process argv."""
+    try:
+        with open(path, 'r', encoding='utf-8') as stream:
+            return stream.read().strip()
+    except OSError:
+        return ''
 
 
 def parse_mcp_response(raw_resp):

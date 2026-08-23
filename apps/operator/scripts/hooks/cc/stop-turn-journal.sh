@@ -35,16 +35,19 @@ if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
 
 report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" <<'PYEOF'
-import json, sys, urllib.request, urllib.parse
+  python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
+import json, os, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy
 
-raw, operator_url, token, owner, agent = sys.argv[1:6]
+operator_url, token_path, owner, agent, hook_dir = sys.argv[1:6]
+sys.path.insert(0, hook_dir)
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 HTTP_TIMEOUT = 5
 
 try:

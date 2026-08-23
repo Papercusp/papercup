@@ -33,20 +33,21 @@ if [ ! -s "$TOKEN_PATH" ] || [ ! -s "$AGENT_ID_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
 # Fail-open backstop: release is best-effort (TTL covers a missed one), so
 # never let a Python error exit non-zero from this hook.
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" <<'PYEOF' || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
 import json, os, re, sys, time, urllib.request, urllib.parse
 from pathlib import Path
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, agent_id, cache_dir, hook_dir = sys.argv[1:7]
+operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
 sys.path.insert(0, hook_dir)
-from mcp_response import parse_mcp_response  # noqa: E402
+from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 
 
 def write_marker(name, value):

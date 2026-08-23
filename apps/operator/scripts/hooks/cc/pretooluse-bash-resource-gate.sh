@@ -38,11 +38,10 @@ if [ ! -s "$TOKEN_PATH" ] || [ ! -s "$AGENT_ID_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
 import hashlib, json, os, re, sys, tempfile, time
 
 # ── urllib is imported LAZILY: it is ~34ms of a ~140ms invocation, on a path most
@@ -90,7 +89,11 @@ class _UrllibNamespace:
 
 urllib = _UrllibNamespace()
 
-raw, operator_url, token, agent_id = sys.argv[1:5]
+operator_url, token_path, agent_id, hook_dir = sys.argv[1:5]
+sys.path.insert(0, hook_dir)
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 
 # Soft advisory attached to an ALLOW verdict (coord-delivery-residual-gaps
 # P-003). None = plain silent allow; a string rides out as additionalContext

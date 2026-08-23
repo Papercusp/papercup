@@ -58,7 +58,6 @@ fi
 mkdir -p "$CACHE_DIR"
 chmod 700 "$CACHE_DIR" 2>/dev/null || true
 
-TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
@@ -67,13 +66,15 @@ INPUT=$(cat)
 # path), ALLOW the edit rather than risk blocking it. The deny path emits
 # its JSON then exits 0, so this guard only fires on an actual crash —
 # never on a legitimate refusal.
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
 import hashlib, json, os, re, sys, time, urllib.request, urllib.parse
 from datetime import datetime
 
-raw, operator_url, token, agent_id, cache_dir, hook_dir = sys.argv[1:7]
+operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
 sys.path.insert(0, hook_dir)
-from mcp_response import parse_mcp_response  # noqa: E402
+from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 
 
 def write_marker(name, value):

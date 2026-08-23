@@ -76,7 +76,6 @@ fi
 mkdir -p "$CACHE_DIR"
 chmod 700 "$CACHE_DIR" 2>/dev/null || true
 
-TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
 
@@ -87,13 +86,15 @@ AGENT="${PAPERCUSP_AGENT:-}"
 # inside fails open (the `|| true` at the call sites) — a reporting/coord blip
 # must never affect a tool.
 report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, owner, agent, cache_dir, coord_fold_flag, harness_slug, hook_dir = sys.argv[1:10]
+operator_url, token_path, owner, agent, cache_dir, coord_fold_flag, harness_slug, hook_dir = sys.argv[1:9]
 sys.path.insert(0, hook_dir)
-from mcp_response import parse_mcp_response  # noqa: E402
+from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 coord_fold = coord_fold_flag != '0'
 HTTP_TIMEOUT = 4
 STR_CAP = 500

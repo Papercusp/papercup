@@ -21,20 +21,23 @@ if [ ! -s "$TOKEN_PATH" ] || [ ! -s "$AGENT_ID_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
 # Release is best-effort and the acquire TTL is the safety net.  A Python
 # failure must never turn PostToolBatch into a non-zero hook that stops Claude.
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
 import json, os, re, sys, time, urllib.request, urllib.parse
 
 urllib.request.install_opener(
     urllib.request.build_opener(urllib.request.ProxyHandler({}))
 )
 
-raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
+operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
+sys.path.insert(0, hook_dir)
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 
 
 def write_marker(name, value):
