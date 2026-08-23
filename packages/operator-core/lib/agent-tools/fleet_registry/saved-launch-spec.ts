@@ -174,7 +174,7 @@ export function savedFleetLaunchSpecFromConfig(config: FleetHeadcountConfig): Sa
   };
 }
 
-type LegacyLaunchParseResult =
+export type LegacyLaunchParseResult =
   | { ok: true; config: FleetHeadcountConfig; saved: SavedFleetLaunchSpec }
   | { ok: false; message: string };
 
@@ -428,6 +428,10 @@ function reconstructionConflicts(
  */
 export function resolveLoadedSavedFleetLaunchSpec(opts: {
   target: FleetHeadcountTarget | null;
+  saved?: SavedFleetLaunchSpec | null;
+  config?: FleetHeadcountConfig | null;
+  source?: SavedFleetLaunchSpecSource;
+  syntheticTarget?: number;
   workspaceId: string;
   fleetSlug: string;
   requested?: SavedFleetLaunchSpecRequest;
@@ -436,14 +440,14 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
   requireSaved?: boolean;
 }): SavedFleetLaunchSpecResolution {
   const { target, workspaceId, fleetSlug, reusePath } = opts;
-  const provenance = provenanceFor(workspaceId, fleetSlug, target?.target ?? null);
-  if (!target) {
+  const provenance = provenanceFor(workspaceId, fleetSlug, target?.target ?? null, opts.source);
+  if (!target && !opts.saved) {
     if (opts.requireSaved) {
       return {
         ok: false,
         found: false,
         error: 'saved_launch_spec_missing',
-        message: `No canonical saved launch spec exists for fleet \`${fleetSlug}\`; refusing recovery through ${reusePath}.`,
+        message: `No saved launch spec exists for fleet \`${fleetSlug}\`; refusing recovery through ${reusePath}.`,
         conflicts: [],
         provenance,
         reusePath,
@@ -453,7 +457,19 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
   }
 
   const requested = opts.requested ?? {};
-  const saved = savedFleetLaunchSpecFromConfig(target.config);
+  const saved = opts.saved ?? savedFleetLaunchSpecFromConfig(target!.config);
+  const config = target?.config ?? opts.config;
+  if (!config) {
+    return {
+      ok: false,
+      found: true,
+      error: 'saved_launch_spec_invalid',
+      message: `Saved launch spec for fleet \`${fleetSlug}\` has no reconstructible config; refusing recovery through ${reusePath}.`,
+      conflicts: [],
+      provenance,
+      reusePath,
+    };
+  }
   let effective: SavedFleetLaunchSpec;
   try {
     // Validate both the stored model/effort pair and the requested merge before
@@ -466,7 +482,7 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
       ok: false,
       found: true,
       error: 'saved_launch_spec_invalid',
-      message: `Invalid canonical saved launch spec for fleet \`${fleetSlug}\`: ${error instanceof Error ? error.message : String(error)}. Refusing recovery through ${reusePath}.`,
+      message: `Invalid ${provenance.source} launch spec for fleet \`${fleetSlug}\`: ${error instanceof Error ? error.message : String(error)}. Refusing recovery through ${reusePath}.`,
       conflicts: [],
       provenance,
       reusePath,
@@ -504,8 +520,8 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
   return {
     ok: true,
     found: true,
-    target: target.target,
-    config: target.config,
+    target: target?.target ?? opts.syntheticTarget ?? 1,
+    config,
     saved,
     effective,
     preservedFields,
@@ -524,6 +540,8 @@ export async function resolveSavedFleetLaunchSpec(opts: {
   reusePath: string;
   requireSaved?: boolean;
   readTarget?: typeof getFleetHeadcountTarget;
+  memberOwnerId?: string;
+  readLegacy?: typeof readAdvSessionLaunchRecordByOwner;
 }): Promise<SavedFleetLaunchSpecResolution> {
   const readTarget = opts.readTarget ?? getFleetHeadcountTarget;
   let target: FleetHeadcountTarget | null;
@@ -540,6 +558,46 @@ export async function resolveSavedFleetLaunchSpec(opts: {
       provenance,
       reusePath: opts.reusePath,
     };
+  }
+  if (!target && opts.memberOwnerId) {
+    let legacy: AdvSessionLaunchRecord | null;
+    try {
+      legacy = await (opts.readLegacy ?? readAdvSessionLaunchRecordByOwner)(opts.memberOwnerId, opts.workspaceId);
+    } catch (error) {
+      const provenance = provenanceFor(opts.workspaceId, opts.fleetSlug, null, LEGACY_FLEET_LAUNCH_SPEC_SOURCE);
+      return {
+        ok: false,
+        found: false,
+        error: 'saved_launch_spec_read_failed',
+        message: `Could not read the legacy saved launch spec for fleet \`${opts.fleetSlug}\`: ${error instanceof Error ? error.message : String(error)}. Refusing reconstruction through ${opts.reusePath}.`,
+        conflicts: [],
+        provenance,
+        reusePath: opts.reusePath,
+      };
+    }
+    if (legacy) {
+      const parsed = savedFleetLaunchSpecFromLegacyRecord(legacy, opts.workspaceId, opts.fleetSlug);
+      if (!parsed.ok) {
+        const provenance = provenanceFor(opts.workspaceId, opts.fleetSlug, null, LEGACY_FLEET_LAUNCH_SPEC_SOURCE);
+        return {
+          ok: false,
+          found: true,
+          error: 'saved_launch_spec_invalid',
+          message: `${parsed.message} Refusing recovery through ${opts.reusePath}.`,
+          conflicts: [],
+          provenance,
+          reusePath: opts.reusePath,
+        };
+      }
+      return resolveLoadedSavedFleetLaunchSpec({
+        ...opts,
+        target: null,
+        saved: parsed.saved,
+        config: parsed.config,
+        source: LEGACY_FLEET_LAUNCH_SPEC_SOURCE,
+        syntheticTarget: 1,
+      });
+    }
   }
   return resolveLoadedSavedFleetLaunchSpec({ ...opts, target });
 }

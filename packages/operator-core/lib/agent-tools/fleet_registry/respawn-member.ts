@@ -230,6 +230,7 @@ export default defineTool({
       allowDeltas: ['model', 'account', 'contextSize', 'agent', 'compactionLimit', 'headless', 'brief'],
       reusePath: 'fleet:respawn-member -> capability:launch-agent',
       requireSaved: true,
+      memberOwnerId,
     });
     if (!savedLaunchSpec.ok) {
       return json(
