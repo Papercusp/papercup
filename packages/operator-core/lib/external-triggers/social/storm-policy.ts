@@ -349,7 +349,7 @@ function dynamicQuotaPolicy(
   const basis = (extra: { windowWidened?: true }): SocialStormCapBasis => ({
     kind: 'dynamic-quota',
     formula: dq.formula,
-    usageHeader: dq.usageHeader,
+    usageHeader: dq.usageHeader ?? null,
     assumedDailyFloor: dq.assumedDailyFloor,
     spendPerRun,
     observedPeakUsagePct: observed,

@@ -466,6 +466,46 @@ export function resolveInstagramReplyTarget(
 }
 
 /**
+ * Threads reply coordinates.
+ *
+ * ⚠ READ THIS BESIDE `resolveInstagramReplyTarget` — THEY LOOK ALIKE AND DO THE
+ * OPPOSITE THING, which is exactly the trap two Meta platforms under one app
+ * identity set for an author working from the previous adapter. Instagram
+ * normalises the target UP to the top-level comment because the platform
+ * silently re-parents anything else. Threads addresses the EXACT id, because it
+ * honours nested targets: "Use the reply_to_id parameter to reply to a specific
+ * reply under the root post." So here the stored document's OWN external id is
+ * the answer, and reaching for its `replyToId` — the shape that is correct one
+ * file away — would land every nested reply one level too high (D-035).
+ *
+ * The ownership fields are carried but NOT enforced here: this function is pure
+ * and derives coordinates, while the refusal belongs at the call site where the
+ * credential is in hand (`assertThreadsMayReply`). Deriving without enforcing is
+ * deliberate — a resolver that threw on an unowned root would make the same
+ * decision without the credential that actually determines it.
+ */
+export function resolveThreadsReplyTarget(
+  payload: Record<string, unknown>,
+  externalId: string,
+): Extract<SocialReplyTarget, { platform: 'threads' }> {
+  const replyToId = externalId || string(payload.id);
+  if (!replyToId) {
+    throw new Error(
+      'social_reply_coordinates_missing:threads — the container needs a reply_to_id and the stored document carries no external id',
+    );
+  }
+  const target: Extract<SocialReplyTarget, { platform: 'threads' }> = { platform: 'threads', replyToId };
+  const rootPostId = string(payload.subjectId);
+  if (rootPostId) target.rootPostId = rootPostId;
+  // Written by the conversation adapter at ingestion, where root ownership is
+  // established by construction. Absent for a document stored by any other
+  // path, and absent is refused rather than assumed at the call site.
+  const rootPostOwnerId = string(payload.subjectOwnerId);
+  if (rootPostOwnerId) target.rootPostOwnerId = rootPostOwnerId;
+  return target;
+}
+
+/**
  * Derive every reply coordinate from the STORED document.
  *
  * Pure, and exported for the same reason `resolveMailReplyCoordinates` is: the
@@ -547,6 +587,14 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
       return {
         ref,
         target: resolveInstagramReplyTarget(payload, doc.externalId),
+        parentVisibility,
+        label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
+      };
+
+    case 'threads':
+      return {
+        ref,
+        target: resolveThreadsReplyTarget(payload, doc.externalId),
         parentVisibility,
         label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
       };
