@@ -993,6 +993,50 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
       expect(merged.overflowChecks).toEqual([]);
     });
 
+    it('evicts a ? PREDICTED carried row before a ✓ VERIFIED one, whatever their positions', () => {
+      // The deliberate rule above is "supplied beat carried". It says nothing about WHICH
+      // carried row yields, and positionally that was the TAIL — so a ✓ VERIFIED row carrying
+      // an observation a successor cannot cheaply reproduce could be evicted while an
+      // evidence-less ? PREDICTED hypothesis survived purely by sitting earlier in the note
+      // (EI-21229591144264047). A prediction's own `recheck` tells the successor to re-run it
+      // anyway; the evidence is the expensive half, so the prediction is what must yield.
+      const predictedFirst = { claim: 'claim 1', recheck: 'probe 1' }; // no `verified` ⇒ PREDICTED
+      const verifiedRest = Array.from({ length: CARRY_NOTE_MAX_CHECKS - 1 }, (_, i) => check(i + 2));
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([predictedFirst, ...verifiedRest]),
+        baseNote: 'body',
+        checks: [{ claim: 'one row past the cap' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+
+      expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+      expect(merged.checks.map((c) => c.claim)).toContain('one row past the cap');
+      // The PREDICTED row is the one that yields — NOT the positional tail...
+      expect(merged.droppedChecks).toEqual(['claim 1']);
+      // ...so the verified tail positional eviction would have taken survives WITH its evidence.
+      const tail = merged.checks.find((c) => c.claim === `claim ${CARRY_NOTE_MAX_CHECKS}`);
+      expect(tail?.verified).toContain(`ok ${CARRY_NOTE_MAX_CHECKS}`);
+    });
+
+    it('treats ⚠ CONTESTED as evidence too — a contradicted claim outranks a bare prediction', () => {
+      // CONTESTED means evidence was supplied and it FIGHTS the claim. That is a live warning,
+      // worth more to a successor than a hypothesis, so it must not be evicted ahead of one.
+      const contested = { claim: 'claim 1', recheck: 'probe 1', contested: 'STILL RUNNING' };
+      const predictedTail = { claim: 'claim 2', recheck: 'probe 2' };
+      const rest = Array.from({ length: CARRY_NOTE_MAX_CHECKS - 2 }, (_, i) => check(i + 3));
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([contested, predictedTail, ...rest]),
+        baseNote: 'body',
+        checks: [{ claim: 'one row past the cap' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+
+      expect(merged.droppedChecks).toEqual(['claim 2']);
+      expect(merged.checks.map((c) => c.claim)).toContain('claim 1');
+    });
+
     it('keeps a supplied WALL and evicts the carried tail', () => {
       const merged = mergeCarryRows({
         priorNote: priorNoteWith([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => wall(i + 1))),

@@ -979,6 +979,13 @@ export function mergeCarryRows(opts: {
    * carried rows the caller did not mention SURVIVE. Turns "add one row" from a
    * destructive write into an additive one. Under merge a `[]` list is a NO-OP, not
    * a clear: clearing requires `'replace'`, so a clear is always deliberate.
+   *
+   * That survival holds UP TO THE ROW CAP, and not past it (EI-21229591144264047). If
+   * the union overflows, supplied rows win and the carried rows that yield are reported
+   * in `droppedWalls`/`droppedChecks` — merge is non-destructive while it fits, not
+   * unconditionally, and any doc that says otherwise is describing the fitting case only.
+   * See {@link upsertOntoPrior} for which carried row yields: evidence-bearing rows sink
+   * last, so a ? PREDICTED row is evicted before a ✓ VERIFIED one.
    */
   mode?: 'replace' | 'merge';
   nowMs?: number;

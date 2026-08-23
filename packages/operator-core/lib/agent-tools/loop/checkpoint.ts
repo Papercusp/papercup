@@ -159,7 +159,8 @@ export default defineTool({
   description:
     "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass " +
     '{ did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. ' +
-    "{ walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive); " +
+    "{ walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, " +
+    'then supplied win and ? PREDICTED yields before ✓ VERIFIED); ' +
     "rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns " +
     "{ ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. " +
     "PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
@@ -325,7 +326,9 @@ export default defineTool({
             'the writer downgrades it to `contested` and reports the repair; contested rows render ⚠ and require a re-check. ' +
             'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
-            "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows; " +
+            "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows " +
+            'up to the row cap — on overflow supplied rows win, the evicted carried rows are named in ' +
+            '`checksDropped`, and ? PREDICTED rows are evicted before ✓ VERIFIED ones; ' +
             "pass rowsMode:'replace' to retire them; [] clears under replace.",
         ),
       rowsMode: z
@@ -334,7 +337,11 @@ export default defineTool({
         .describe(
           "How a supplied walls/checks list combines with the carried set. 'merge' (default) — rows UPSERT by `id` " +
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
-            "row. 'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
+            'row — but only UP TO THE ROW CAP. If the union overflows the cap, supplied rows win and the carried ' +
+            'rows that yield are named in `checksDropped`: merge is non-destructive while it fits, not ' +
+            'unconditionally. Within that yielding remainder, ? PREDICTED rows are evicted BEFORE ✓ VERIFIED ones, ' +
+            'so a hard-won observation is never dropped in favour of a hypothesis that sat earlier in the note. ' +
+            "'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
             'no-op, never a clear.',
         ),
       ownerId: z
