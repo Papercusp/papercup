@@ -22,10 +22,17 @@
  *
  * Config (routine `trigger_config`, optional):
  *   - `top_n` — how many items the digest leads with (default 5).
+ *   - `needs_human_stale_days` — state-age before a per-item reminder
+ *     (default 7). Reminders dedupe by work-item + state_changed_at, so a DBOS
+ *     replay is silent while a genuinely new needs-human episode can notify.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { sendMessage } from '../../agent-tools/coordination/messages';
+import { getMessageById, sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { ownerNotificationMessageId } from '../../agent-tools/operator/notify_owner';
+import { readNeedsHumanWorkItems, type NeedsHumanWorkItemRow } from '../../attention/needs-human-work-items-source';
+import { notifyAttentionOnce } from '../../attention-notify';
+import { readStructuredOwnerAsk } from '../improvements/agent-review-policy';
 import { readImprovementItems } from '../improvements/read-items';
 import { buildDigest } from '../improvements/digest';
 import { readOwnerFullAutonomyGrant } from '../improvements/full-autonomy-grant';
@@ -42,6 +49,8 @@ const HUMAN_DIGEST_IDENTITY: AgentIdentity = {
 };
 
 const DEFAULT_TOP_N = 5;
+const DEFAULT_NEEDS_HUMAN_STALE_DAYS = 7;
+const DAY_MS = 86_400_000;
 const TITLE_MAX = 110;
 
 function truncate(s: string, max: number): string {
@@ -80,10 +89,101 @@ export function composeHumanQueueDigest(
   return { summary, body };
 }
 
+export function staleNeedsHumanDeliveryKey(row: Pick<NeedsHumanWorkItemRow, 'feature_id' | 'state_changed_at'>): string {
+  if (!row.state_changed_at || !Number.isFinite(Date.parse(row.state_changed_at))) {
+    throw new Error(`work_item '${row.feature_id}' has no usable state_changed_at`);
+  }
+  return `needs-human-stale:${row.feature_id}:${new Date(row.state_changed_at).toISOString()}`;
+}
+
+/** Render the durable ask, not a generic "something is stale" nag. */
+export function composeStaleNeedsHumanReminder(
+  row: NeedsHumanWorkItemRow,
+  nowMs = Date.now(),
+): { title: string; summary: string; body: string; askedBy: string; deliveryKey: string } {
+  const deliveryKey = staleNeedsHumanDeliveryKey(row);
+  const ask = readStructuredOwnerAsk(row.payload);
+  const askedBy = ask?.askedBy ?? row.taken_by?.trim() ?? 'unknown agent';
+  const question = ask?.question ?? row.summary?.trim() ?? row.title?.trim() ?? row.feature_id;
+  const changedAt = new Date(row.state_changed_at!).toISOString();
+  const ageDays = Math.max(0, Math.floor((nowMs - Date.parse(changedAt)) / DAY_MS));
+  const title = `Needs-human reminder: ${row.feature_id}`;
+  const summary = `${row.feature_id} has waited ${ageDays}d in needs-human — asked by ${askedBy}.`;
+  const body = [
+    `**${row.feature_id}** — ${row.title?.trim() || 'Untitled work item'}`,
+    `Question: ${question}`,
+    `Asked by: ${askedBy}`,
+    `Waiting since: ${changedAt}`,
+    ...(ask ? [`Unblocked by: ${ask.unblockedBy}`, `Owner capability: ${ask.askedOf}`] : []),
+    row.harness_slug ? `Harness: ${row.harness_slug}` : null,
+  ].filter((line): line is string => Boolean(line));
+  return { title, summary, body: body.join('\n'), askedBy, deliveryKey };
+}
+
+async function deliverStaleNeedsHumanReminder(ctx: SystemActionCtx, row: NeedsHumanWorkItemRow): Promise<void> {
+  const reminder = composeStaleNeedsHumanReminder(row);
+  const msgId = ownerNotificationMessageId(ctx.workspaceId, reminder.deliveryKey);
+
+  // Persistent human inbox. The deterministic msg id is the replay guard on
+  // this rail; pre-reading avoids turning an expected replay into a warning.
+  try {
+    if (!(await getMessageById(msgId))) {
+      await sendMessage(HUMAN_DIGEST_IDENTITY, {
+        to: ['human'],
+        msgId,
+        summary: reminder.summary,
+        body: reminder.body,
+        expectsReply: false,
+        harnessSlug: row.harness_slug ?? undefined,
+        extra: {
+          ownerNotification: true,
+          deliveryKey: reminder.deliveryKey,
+          workItemId: row.feature_id,
+          stateChangedAt: row.state_changed_at,
+          askedBy: reminder.askedBy,
+        },
+      });
+    }
+  } catch (e) {
+    console.warn(
+      `[human-queue-digest] ${row.feature_id} stale-needs-human inbox send failed:`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+
+  // Mobile/desktop attention rail has its own durable per-channel claims. A
+  // failure above must never suppress this independent delivery attempt.
+  try {
+    await notifyAttentionOnce({
+      workspaceId: ctx.workspaceId,
+      harnessSlug: row.harness_slug ?? undefined,
+      kind: 'needs-human',
+      title: reminder.title,
+      body: reminder.summary,
+      importance: 'high',
+      dedupeKey: reminder.deliveryKey,
+      data: {
+        workItemId: row.feature_id,
+        stateChangedAt: row.state_changed_at,
+        askedBy: reminder.askedBy,
+      },
+    });
+  } catch (e) {
+    console.warn(
+      `[human-queue-digest] ${row.feature_id} stale-needs-human attention notify failed:`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
 registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const topN =
     Number.isFinite(Number(cfg.top_n)) && Number(cfg.top_n) > 0 ? Number(cfg.top_n) : DEFAULT_TOP_N;
+  const staleDays =
+    Number.isFinite(Number(cfg.needs_human_stale_days)) && Number(cfg.needs_human_stale_days) > 0
+      ? Number(cfg.needs_human_stale_days)
+      : DEFAULT_NEEDS_HUMAN_STALE_DAYS;
 
   const items = await readImprovementItems({ state: 'open' });
   // The OWNER FULL-AUTONOMY grant (Phase 2): the weekly human-queue digest must not list a
@@ -92,31 +192,53 @@ registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) =>
   const digest = await applyHumanQueueRanking(buildDigest(items, { ownerFullAutonomy }), { candidates: items });
   const composed = composeHumanQueueDigest(digest.humanQueue, { topN });
   if (!composed) {
-    console.log('[human-queue-digest] human queue empty — nothing to send');
-    return;
+    console.log('[human-queue-digest] improvement human queue empty');
+  } else {
+    // Persistent inbox rail — the digest the owner can read later.
+    try {
+      await sendMessage(HUMAN_DIGEST_IDENTITY, { to: ['human'], summary: composed.summary, body: composed.body });
+    } catch (e) {
+      console.warn('[human-queue-digest] inbox send failed:', e instanceof Error ? e.message : e);
+    }
+
+    // Attention rail — desktop-native + mobile push, so the weekly ritual is seen.
+    try {
+      const { notifyAttention } = await import('../../attention-notify');
+      await notifyAttention({
+        kind: 'needs-human',
+        title: 'Weekly review-queue digest',
+        body: composed.summary,
+        importance: 'normal',
+        workspaceId: ctx.workspaceId,
+        data: { queue: digest.humanQueue.length, top: digest.humanQueue[0]?.id ?? null },
+      });
+    } catch (e) {
+      console.warn('[human-queue-digest] attention notify failed:', e instanceof Error ? e.message : e);
+    }
+
+    console.log(`[human-queue-digest] ${composed.summary}`);
   }
 
-  // Persistent inbox rail — the digest the owner can read later.
-  try {
-    await sendMessage(HUMAN_DIGEST_IDENTITY, { to: ['human'], summary: composed.summary, body: composed.body });
-  } catch (e) {
-    console.warn('[human-queue-digest] inbox send failed:', e instanceof Error ? e.message : e);
+  // EI-13766 requirement 3: this leg is deliberately independent of whether
+  // the improvement review queue above was empty. Metadata writes cannot make
+  // an old owner ask look young because the source ages on state_changed_at.
+  const stateChangedBefore = new Date(Date.now() - staleDays * DAY_MS);
+  const stale = await readNeedsHumanWorkItems({
+    workspaceId: ctx.workspaceId,
+    stateChangedBefore,
+    oldestFirst: true,
+  });
+  for (const row of stale) {
+    try {
+      await deliverStaleNeedsHumanReminder(ctx, row);
+    } catch (e) {
+      // One malformed federated/legacy row never suppresses reminders for the
+      // rest of the weekly batch.
+      console.warn(
+        `[human-queue-digest] ${row.feature_id} stale-needs-human reminder skipped:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
   }
-
-  // Attention rail — desktop-native + mobile push, so the weekly ritual is seen.
-  try {
-    const { notifyAttention } = await import('../../attention-notify');
-    await notifyAttention({
-      kind: 'needs-human',
-      title: 'Weekly review-queue digest',
-      body: composed.summary,
-      importance: 'normal',
-      workspaceId: ctx.workspaceId,
-      data: { queue: digest.humanQueue.length, top: digest.humanQueue[0]?.id ?? null },
-    });
-  } catch (e) {
-    console.warn('[human-queue-digest] attention notify failed:', e instanceof Error ? e.message : e);
-  }
-
-  console.log(`[human-queue-digest] ${composed.summary}`);
+  console.log(`[human-queue-digest] stale needs-human reminders considered: ${stale.length}`);
 });
