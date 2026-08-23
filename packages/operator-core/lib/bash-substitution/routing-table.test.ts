@@ -26,6 +26,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BEGIN_MARKER,
+  deriveSubstitutionPrefilterHeads,
+  renderShellPrefilterHeads,
+  renderTsPrefilterHeads,
+  SHELL_PREFILTER_BEGIN_MARKER,
+  SHELL_PREFILTER_END_MARKER,
+  spliceGeneratedRegion,
+  TS_PREFILTER_BEGIN_MARKER,
+  TS_PREFILTER_END_MARKER,
   // WI-38337 (D-010): the third routing surface — the hand-written table.
   parseStoragePolicyRoutingTable,
   STORAGE_POLICY_HEADING,
@@ -35,9 +43,10 @@ import {
   routingCell,
   spliceRoutingBlock,
 } from './routing-table';
-import { ALL_PAIRS } from './pairs';
+import { loadPairFixtures } from './corpus';
+import { ALL_PAIRS, BASH_GATE_PAIRS } from './pairs';
 import { isSqlPair } from './types';
-import type { SqlSubstitutionPair, SubstitutionPair } from './types';
+import type { BashSubstitutionPair, SampledCommand, SqlSubstitutionPair, SubstitutionPair } from './types';
 import { TOOL_ROUTING_BY_TABLE } from '../pg-read-query';
 
 // lib/bash-substitution → lib → operator-core → packages → repo root (four).
@@ -57,6 +66,89 @@ const pair = (over: Partial<SubstitutionPair> = {}): SubstitutionPair =>
     cover: () => ({ covered: true }),
     ...over,
   }) as SubstitutionPair;
+
+const sample = (atom: string): SampledCommand => ({
+  sid: 'su-test',
+  ts: '2026-01-01T00:00:00.000Z',
+  atom,
+});
+
+describe('substitution prefilter projection', () => {
+  it('derives both wrapper and bare heads when one pair accepts both spellings', () => {
+    const optionalWrapper = pair({
+      id: 'test.optional-wrapper',
+      bashPattern: /^(?:npx\s+)?vitest\b/,
+    }) as BashSubstitutionPair;
+
+    expect(
+      deriveSubstitutionPrefilterHeads([
+        { pair: optionalWrapper, fixture: { sample: [sample('npx vitest run one.test.ts')] } },
+      ]),
+    ).toEqual(['npx', 'vitest']);
+  });
+
+  it('keeps phrase-routed npm pairs out of the broad head set', () => {
+    const phraseRouted = pair({
+      id: 'tests.router-files',
+      bashPattern: /^npm\s+run\s+test:file\b/,
+    }) as BashSubstitutionPair;
+
+    expect(
+      deriveSubstitutionPrefilterHeads([
+        { pair: phraseRouted, fixture: { sample: [sample('npm run test:file -- one.test.ts')] } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('derives the current audited fixtures without broad npm and with bare optional binaries', () => {
+    const heads = deriveSubstitutionPrefilterHeads(loadPairFixtures(BASH_GATE_PAIRS));
+    expect(heads).toEqual([...heads].sort());
+    expect(heads).toEqual(expect.arrayContaining(['npx', 'vitest', 'tsc']));
+    expect(heads).not.toContain('npm');
+  });
+
+  it('throws when an actionable pair has no matching fixture evidence', () => {
+    const unmatched = pair({
+      id: 'test.unmatched',
+      bashPattern: /^never-matches\b/,
+    }) as BashSubstitutionPair;
+
+    expect(() =>
+      deriveSubstitutionPrefilterHeads([
+        { pair: unmatched, fixture: { sample: [sample('git status')] } },
+      ]),
+    ).toThrow(/produced no prefilter head/);
+  });
+
+  it('renders deterministic hook-native blocks', () => {
+    expect(renderTsPrefilterHeads(['vitest', 'npx'])).toBe(
+      `${TS_PREFILTER_BEGIN_MARKER}\n  'npx',\n  'vitest',\n${TS_PREFILTER_END_MARKER}`,
+    );
+    expect(renderShellPrefilterHeads(['vitest', 'npx'])).toBe(
+      `${SHELL_PREFILTER_BEGIN_MARKER}\n    'npx',\n    'vitest',\n${SHELL_PREFILTER_END_MARKER}`,
+    );
+  });
+
+  it('splices only a marked hook region and refuses missing or inverted markers', () => {
+    const doc = `before\n${TS_PREFILTER_BEGIN_MARKER}\nold\n${TS_PREFILTER_END_MARKER}\nafter`;
+    const block = renderTsPrefilterHeads(['git']);
+    expect(
+      spliceGeneratedRegion(
+        doc,
+        TS_PREFILTER_BEGIN_MARKER,
+        TS_PREFILTER_END_MARKER,
+        block,
+        'test hook',
+      ),
+    ).toBe(`before\n${block}\nafter`);
+    expect(() =>
+      spliceGeneratedRegion('no markers', 'BEGIN', 'END', 'replacement', 'test hook'),
+    ).toThrow(/markers not found/);
+    expect(() =>
+      spliceGeneratedRegion('END\nBEGIN', 'BEGIN', 'END', 'replacement', 'test hook'),
+    ).toThrow(/precedes/);
+  });
+});
 
 describe('routingCell', () => {
   it('escapes a pipe so it cannot break the column', () => {
