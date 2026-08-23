@@ -1096,6 +1096,22 @@ const UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR = "scripts/lib/tracked-files.mjs";
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-21219848570251446 — a plain Vitest config bypasses the shared
+    // admin-test-runs reporter, making testing:runs return a clean-looking
+    // empty for an unmeasured workspace. This guard scans every declared
+    // workspace config, so any config/package/lockfile change can regrow the
+    // blind spot even when operator-core itself is not the changed workspace.
+    workspace: "@papercusp/operator-core",
+    script: "lint:vitest-config-enrollment",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "package-lock.json" ||
+      f === "scripts/check-vitest-config-enrollment.mjs" ||
+      f === "packages/operator-core/lib/vitest-config-enrollment-guard.test.ts" ||
+      /(^|\/)package\.json$/.test(f) ||
+      /(^|\/)vitest\.config\.[^/]+$/.test(f),
+  },
+  {
     // EI-20822558150340173 / D-046 — the substitution registry's DB projection had no
     // automatic caller of ANY kind. `seedSubstitutionRegistry()` is reachable only from
     // the manual `npm run seed:substitutions`, so editing a pair changed nothing about
