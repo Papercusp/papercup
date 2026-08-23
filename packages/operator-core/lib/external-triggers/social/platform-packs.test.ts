@@ -174,8 +174,25 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
   },
 };
 
+/**
+ * Packs are derived from the platforms that are verified AND READABLE.
+ *
+ * The readability half arrived with LinkedIn (P-021), the first verified row
+ * that cannot be read at any grant tier we hold. A trigger pack exists to turn
+ * INBOUND platform events into plan runs, and both shipped workflows —
+ * mention-triage and comment-digest — are built on reading. A write-only
+ * platform emits nothing, so its pack could only be an empty shell.
+ *
+ * Shipping that shell is precisely what D-002 already refused for X/Twitter, in
+ * its own words: a free-tier write-only adapter "cannot serve the mention-triage
+ * or comment-digest workflows, so it would ship a hollow row that reads as
+ * support". The same reasoning binds here rather than being re-litigated — the
+ * only new thing is that LinkedIn reaches the condition by a restricted read
+ * scope instead of by price.
+ */
 const verifiedRows = listSocialPlatforms().filter(isSocialPlatformVerified);
-const verifiedIds = verifiedRows.map((row) => row.id);
+const packRows = verifiedRows.filter((row) => row.read !== null);
+const verifiedIds = packRows.map((row) => row.id);
 
 describe('P-025 per-platform social trigger packs', () => {
   it('the platform set is non-trivial, so the per-platform assertions below are not vacuous', () => {
