@@ -52,8 +52,16 @@ describe('withPlanLock — slug guard', () => {
     expect(VALID_PLAN_SLUG.test('__p5-ui-edit__')).toBe(true);
   });
 
+  it('the guard regex accepts generated per-run instance slugs', () => {
+    expect(VALID_PLAN_SLUG.test('meeting-prep-brief-2026-08-22@run-353457600772108178')).toBe(true);
+    expect(VALID_PLAN_SLUG.test('meeting-prep-brief@run-')).toBe(false);
+    expect(VALID_PLAN_SLUG.test('meeting-prep-brief@run-token')).toBe(false);
+    expect(VALID_PLAN_SLUG.test('@run-353457600772108178')).toBe(false);
+  });
+
   it('the guard regex rejects any slug containing a slash', () => {
     expect(VALID_PLAN_SLUG.test('foo/bar')).toBe(false);
     expect(VALID_PLAN_SLUG.test('../x')).toBe(false);
+    expect(VALID_PLAN_SLUG.test('meeting-prep-brief@run-1/../../x')).toBe(false);
   });
 });

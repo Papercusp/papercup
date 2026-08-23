@@ -599,9 +599,11 @@ export async function resolveHarnessPlansDir(
  * Whitelist of characters legal in a plan slug. Rejecting `/` is what stops a
  * `../../../etc/passwd`-style traversal in the synthetic lock path; the read
  * path no longer touches the filesystem, but the slug is still the PG key and
- * the lock key, so the guard stays.
+ * the lock key, so the guard stays. Per-run instance plans are minted as
+ * `<template>@run-<decimal token>` and must be addressable by the same
+ * read/write surfaces as authored plans.
  */
-export const VALID_PLAN_SLUG = /^[A-Za-z0-9._-]+$/;
+export const VALID_PLAN_SLUG = /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/;
 
 export interface ListEntry {
   slug: string;
