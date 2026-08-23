@@ -1,6 +1,7 @@
 import {
   checkScript,
   ensureParseCheckReady,
+  extractPayloadTier,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 
@@ -109,7 +110,11 @@ export async function validateRecipeScriptAgainstCatalog(
     const name = call.tool.includes(':') ? call.tool : [...byName.keys()].find((candidate) => candidate?.replace(':', '.') === call.tool);
     const tool = name ? byName.get(name) : undefined;
     if (!name || !tool) continue;
-    for (const message of validateValue(call.args, tool.inputSchema as JsonSchema, 'args')) {
+    // `payloadTier` is a framework-reserved control. The real projected-tool
+    // dispatcher extracts it before validating the tool's published schema, so
+    // recipe preflight must validate the same schema-visible argument shape.
+    const { input: schemaArgs } = extractPayloadTier(call.args);
+    for (const message of validateValue(schemaArgs, tool.inputSchema as JsonSchema, 'args')) {
       issues.push({ tool: name, path: 'args', message });
     }
   }

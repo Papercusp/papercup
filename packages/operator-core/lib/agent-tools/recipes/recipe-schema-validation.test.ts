@@ -38,6 +38,18 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:deploy'] });
   });
 
+  it('accepts framework-reserved payloadTier even though it is absent from the published schema', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.rubrics.get({ rubricRef: "goal-mode-e2e", payloadTier: "full" });',
+      [tool('rubrics:get', {
+        type: 'object',
+        properties: { rubricRef: { type: 'string' } },
+        additionalProperties: false,
+      })],
+    );
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['rubrics:get'] });
+  });
+
   it('does not reject dynamic arguments that cannot be proven statically', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'const op = getOp(); return await tools.release.deploy({ op });',
