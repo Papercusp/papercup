@@ -76,23 +76,23 @@ if [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH" 2>/dev/null || true)
 HARNESS="${PAPERCUSP_HARNESS_SLUG:-}"
 INPUT=$(cat)
 
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$HARNESS" "$AGENT_ID" "$(dirname "$0")" <<'PYEOF' || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$HARNESS" "$AGENT_ID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
 import json, os, re, shlex, sys
 import urllib.error, urllib.parse, urllib.request
 
-raw = sys.argv[1]
-operator_url = sys.argv[2] if len(sys.argv) > 2 else ''
-token = sys.argv[3] if len(sys.argv) > 3 else ''
-harness = sys.argv[4] if len(sys.argv) > 4 else ''
-client_id = sys.argv[5] if len(sys.argv) > 5 else ''
-hook_dir = sys.argv[6] if len(sys.argv) > 6 else os.path.dirname(os.path.abspath(__file__))
+operator_url = sys.argv[1] if len(sys.argv) > 1 else ''
+token_path = sys.argv[2] if len(sys.argv) > 2 else ''
+harness = sys.argv[3] if len(sys.argv) > 3 else ''
+client_id = sys.argv[4] if len(sys.argv) > 4 else ''
+hook_dir = sys.argv[5] if len(sys.argv) > 5 else os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, hook_dir)
-from mcp_response import parse_mcp_response  # noqa: E402
+from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 
 
 def allow():

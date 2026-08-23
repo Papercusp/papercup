@@ -38,13 +38,14 @@ fi
 INPUT=$(cat)
 
 # Fail-open backstop: any uncaught crash classifies nothing and allows the turn.
-python3 - "$PAPERCUSP_SID" "$INPUT" "$(dirname "$0")" <<'PYEOF' || exit 0
+python3 - "$PAPERCUSP_SID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
 import hashlib, json, os, re, sys, time
 
-sid, raw = sys.argv[1], sys.argv[2]
-hook_dir = sys.argv[3] if len(sys.argv) > 3 else os.path.dirname(os.path.abspath(__file__))
+sid = sys.argv[1]
+hook_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, hook_dir)
-from mcp_response import parse_mcp_response  # noqa: E402
+from mcp_response import parse_mcp_response, read_hook_payload  # noqa: E402
+raw = read_hook_payload()
 try:
     data = json.loads(raw)
 except Exception:

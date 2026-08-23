@@ -56,23 +56,22 @@ if [ -z "${PAPERCUSP_STATUSLINE_FIXTURE:-}" ]; then
   if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
     exit 0
   fi
-  TOKEN=$(cat "$TOKEN_PATH")
-else
-  TOKEN=""
 fi
 
-python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$INPUT" "$(dirname "$0")" <<'PYEOF' 2>/dev/null || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' 2>/dev/null || exit 0
 import hashlib, json, os, sys, tempfile, textwrap, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-operator_url, token, me, fixture = sys.argv[1:5]
-stdin_raw = sys.argv[5] if len(sys.argv) > 5 else ''  # Claude's piped session JSON (model / cwd / …); '' in fixture/test mode
+operator_url, token_path, me, fixture = sys.argv[1:5]
 # pc_tty lives beside this script in BOTH locations it runs from: the repo
 # (apps/operator/scripts/hooks/cc, used by the parity tests) and the installed
 # runtime dir (~/.papercusp/hooks/cc, copied together by install-standalone-mcp.sh).
 # Resolving it off $0's dirname is what makes one copy serve both.
-sys.path.insert(0, sys.argv[6] if len(sys.argv) > 6 else os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, sys.argv[5] if len(sys.argv) > 5 else os.path.dirname(os.path.abspath(__file__)))
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
 from pc_tty import coordination_owner_id, write_osc_title  # noqa: E402  (path must be primed first)
+stdin_raw = read_hook_payload()  # Claude's piped session JSON; '' in fixture/test mode
+token = read_token_file(token_path)
 HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
 GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')

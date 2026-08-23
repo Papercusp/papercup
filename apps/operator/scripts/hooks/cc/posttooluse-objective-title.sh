@@ -45,9 +45,6 @@ if [ -z "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" ]; then
   if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
     exit 0
   fi
-  TOKEN=$(cat "$TOKEN_PATH")
-else
-  TOKEN=""
 fi
 
 # Drain stdin (the PostToolUse event JSON) so the pipe closes cleanly; we key off
@@ -69,17 +66,19 @@ NATIVE_SESSION_ID="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; p=json.
 # substitution. Kept in a function so the SYNC + DETACHED paths share one body; the
 # `|| true` at the call sites keeps any crash fail-open.
 set_title() {
-  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$NATIVE_SESSION_ID" "$(dirname "$0")" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN_PATH" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$NATIVE_SESSION_ID" "$(dirname "$0")" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-operator_url, token, me, fixture, title_tty = sys.argv[1:6]
+operator_url, token_path, me, fixture, title_tty = sys.argv[1:6]
 model_spec = sys.argv[6] if len(sys.argv) > 6 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
 stdin_raw = sys.argv[7] if len(sys.argv) > 7 else ''  # bounded native session_id extracted from PostToolUse
 # Shared tty resolution (WI-3665) — see pc_tty.py. Sits beside this script in both the
 # repo and the installed runtime dir, so $0's dirname resolves it either way.
 sys.path.insert(0, sys.argv[8] if len(sys.argv) > 8 else os.path.dirname(os.path.abspath(__file__)))
+from mcp_response import read_token_file  # noqa: E402
 from pc_tty import coordination_owner_id, write_osc_title  # noqa: E402  (path must be primed first)
+token = read_token_file(token_path)
 me = coordination_owner_id(stdin_raw, os.environ)
 HTTP_TIMEOUT = 1.5
 

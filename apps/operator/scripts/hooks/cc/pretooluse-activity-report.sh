@@ -43,7 +43,6 @@ if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
 
@@ -53,11 +52,14 @@ AGENT="${PAPERCUSP_AGENT:-}"
 # already-mangled ids, and malformed inputs must continue through untouched.
 # This hook is global, so PAPERCUSP_SID above is the session-scope guard.
 rewrite_tool_search_exact_select() {
-  python3 - "$INPUT" <<'PYEOF'
-import json, re, sys
+  python3 - "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
+import json, os, re, sys
+
+sys.path.insert(0, sys.argv[1])
+from mcp_response import read_hook_payload  # noqa: E402
 
 try:
-    ev = json.loads(sys.argv[1])
+    ev = json.loads(read_hook_payload())
 except Exception:
     sys.exit(0)
 if not isinstance(ev, dict):
@@ -97,11 +99,15 @@ if [ -n "$REWRITE_OUTPUT" ]; then
 fi
 
 report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" <<'PYEOF'
-import json, sys, urllib.request, urllib.parse
+  python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
+import json, os, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, owner, agent, harness_slug = sys.argv[1:7]
+operator_url, token_path, owner, agent, harness_slug, hook_dir = sys.argv[1:7]
+sys.path.insert(0, hook_dir)
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 HTTP_TIMEOUT = 3
 STR_CAP = 500
 

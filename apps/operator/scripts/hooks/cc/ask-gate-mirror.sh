@@ -84,14 +84,17 @@ if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
 
-TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 
 PY_STATUS=0
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "${PAPERCUSP_HARNESS_SLUG:-}" <<'PYEOF' || PY_STATUS=$?
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || PY_STATUS=$?
 import datetime, json, os, re, sys, time, urllib.request, urllib.parse
 
-raw, operator_url, token, owner, harness = sys.argv[1:6]
+operator_url, token_path, owner, harness, hook_dir = sys.argv[1:6]
+sys.path.insert(0, hook_dir)
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy
 HTTP_TIMEOUT = 4
 # Bound how much of a (possibly huge, long-running-session) transcript we

@@ -55,7 +55,6 @@ FLAG_KEY="papercusp-workitem-verify-nudge"
 if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
-TOKEN=$(cat "$TOKEN_PATH")
 AGENT="${PAPERCUSP_AGENT:-}"
 # Drain stdin (the hook event JSON) so the pipe closes cleanly.
 INPUT="$(cat 2>/dev/null || true)"
@@ -63,11 +62,15 @@ INPUT="$(cat 2>/dev/null || true)"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 
 run() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$CACHE_DIR" "$WORKSPACE_ROOT" "$FLAG_KEY" "$AGENT" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$CACHE_DIR" "$WORKSPACE_ROOT" "$FLAG_KEY" "$AGENT" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
 import json, os, sys, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, sid, cache_dir, workspace_root, flag_key, agent = sys.argv[1:9]
+operator_url, token_path, sid, cache_dir, workspace_root, flag_key, agent, hook_dir = sys.argv[1:9]
+sys.path.insert(0, hook_dir)
+from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+raw = read_hook_payload()
+token = read_token_file(token_path)
 HTTP_TIMEOUT = 3
 EDIT_TOOLS = {'Edit', 'Write', 'MultiEdit', 'apply_patch', 'write_file', 'edit_file'}
 
