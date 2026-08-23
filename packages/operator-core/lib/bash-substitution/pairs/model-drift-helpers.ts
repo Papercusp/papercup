@@ -16,8 +16,26 @@ import { expect } from 'vitest';
 
 /** The tool's declared argument names, sorted. */
 export function argKeys(tool: unknown): string[] {
-  const shape = (tool as { args?: { shape?: Record<string, unknown> } }).args?.shape;
-  return Object.keys(shape ?? {}).sort();
+  type SchemaLike = {
+    shape?: Record<string, unknown>;
+    _def?: { options?: readonly SchemaLike[] };
+    options?: readonly SchemaLike[];
+  };
+
+  // Most tools expose a Zod object, but tools with mutually exclusive input
+  // forms (for example dev:pg_query's `sql` vs `describe`) expose a Zod union.
+  // Read every object branch so the drift guard compares the complete public
+  // argument surface instead of treating a union as an empty object.
+  const keys = new Set<string>();
+  const visit = (schema: SchemaLike | undefined): void => {
+    if (!schema || typeof schema !== 'object') return;
+    for (const key of Object.keys(schema.shape ?? {})) keys.add(key);
+    const options = schema._def?.options ?? schema.options ?? [];
+    for (const option of options) visit(option);
+  };
+
+  visit((tool as { args?: SchemaLike }).args);
+  return [...keys].sort();
 }
 
 /**
