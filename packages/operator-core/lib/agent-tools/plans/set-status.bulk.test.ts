@@ -60,12 +60,19 @@ beforeEach(() => vi.clearAllMocks());
 
 /** Drive the lock: run the mutator against a fake body, then return its ok-value as a
  *  successful lock outcome (or a not_found mutator-value for an unknown item). */
-function lockReturnsMutatorValue(knownItems: Set<string>) {
+function lockReturnsMutatorValue(
+  knownItems: Set<string>,
+  options: { importanceByItem?: Record<string, string>; statusByItem?: Record<string, string> } = {},
+) {
   lockM.mockImplementation(async (_ctx: unknown, opts: unknown, mutate: unknown) => {
     // `intent` carries the item id we're flipping: "plans:set-status P-NNN → status".
     const intent = (opts as { intent: string }).intent;
     const itemId = /P-\d{3,}/.exec(intent)?.[0] ?? '';
-    const fakeBody = knownItems.has(itemId) ? `- **${itemId}** \`todo\` x` : '';
+    const status = options.statusByItem?.[itemId] ?? 'todo';
+    const importance = options.importanceByItem?.[itemId];
+    const fakeBody = knownItems.has(itemId)
+      ? `- **${itemId}** \`${status}\` x${importance ? ` importance: ${importance}` : ''}`
+      : '';
     const { value } = await (mutate as (b: string | null) => Promise<{ value: unknown }>)(fakeBody);
     return { kind: 'ok', value, filePath: 'plan.md' } as never;
   });
@@ -85,6 +92,26 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     });
     expect(laneSync.item).toHaveBeenCalledWith('plan-a', 'P-001', null);
     expect(laneSync.dependents).not.toHaveBeenCalled();
+  });
+
+  it('returns each item\'s stored importance for ordinary and terminal same-status flips', async () => {
+    lockReturnsMutatorValue(new Set(['P-020', 'P-019']), {
+      importanceByItem: { 'P-020': 'high', 'P-019': 'high' },
+      statusByItem: { 'P-019': 'done' },
+    });
+    const b = await body({
+      items: [
+        { slug: 'plan-a', item: 'P-020', status: 'todo' },
+        { slug: 'plan-a', item: 'P-019', status: 'done' },
+      ],
+    });
+
+    expect(b.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ itemId: 'P-020', oldStatus: 'todo', newStatus: 'todo', importance: 'high' }),
+        expect.objectContaining({ itemId: 'P-019', oldStatus: 'done', newStatus: 'done', importance: 'high' }),
+      ]),
+    );
   });
 
   it('itemIds:[…] flips many of one plan to the same status', async () => {

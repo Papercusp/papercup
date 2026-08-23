@@ -201,8 +201,9 @@ type SetStatusValue =
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,
  * the same way the parser does (the `importance:` keyword on the item line,
- * default `normal`). Used only on the needs-human transition to decide the
- * push gate, so the cost is bounded to that rare flip.
+ * default `normal`). The response exposes this value on every successful
+ * status flip, and the needs-human transition also uses it to decide the
+ * push gate.
  */
 export function itemImportance(body: string, itemId: string): Importance {
   const re = new RegExp(
@@ -889,12 +890,10 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       ) {
         return { newBody: null, value: { ok: false, code: 'completed_guard', currentStatus: oldStatus } };
       }
-      // Read importance only on a transition INTO needs-human — the sole
-      // case the push gate cares about — so routine flips skip the parse.
-      const importance: Importance =
-        it.status === 'needs-human' && oldStatus !== 'needs-human'
-          ? itemImportance(current, it.itemId)
-          : 'normal';
+      // Return the item's actual importance on every successful flip. The
+      // needs-human push gate uses the same value, but callers also rely on
+      // this response field for routine and terminal status updates.
+      const importance = itemImportance(current, it.itemId);
       const finalBody = bumpUpdatedDate(newBody);
       // WI-1830: on a real →done edge, does this flip leave the plan with zero open
       // (non-terminal) items? Computed here, INSIDE the lock, off the just-written body so
