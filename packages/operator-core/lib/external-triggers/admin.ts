@@ -8,6 +8,7 @@
  */
 import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
+import { defaultSocialStormPolicyForSourceKind } from './social/storm-policy';
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
 import { redactSensitiveValue } from '../sensitive-text';
@@ -656,7 +657,17 @@ export async function createExternalTriggerBinding(
 
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
   const action = JSON.stringify({ type: 'launch-plan' });
-  const stormPolicy = normalizedStormPolicy(input.stormPolicy);
+  // A binding with no explicit storm policy is UNBOUNDED under the landed
+  // default (parseStormPolicy yields maxRuns:null). That is tolerable for mail,
+  // where volume is bounded by how fast humans write, and unsafe for social,
+  // where one viral post can produce thousands of genuinely-distinct inbound
+  // comments. So a social source falls back to its per-platform coalesce-with-cap
+  // default (P-023) instead of to unbounded. An explicit caller-supplied policy
+  // still wins, and non-social sources are untouched.
+  const socialDefault = input.stormPolicy
+    ? null
+    : defaultSocialStormPolicyForSourceKind(sources[0].kind);
+  const stormPolicy = socialDefault ?? normalizedStormPolicy(input.stormPolicy);
   const stormPolicyJson = JSON.stringify(stormPolicy);
   const rows = await sql<
     Array<
