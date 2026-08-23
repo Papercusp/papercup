@@ -46,9 +46,9 @@ beforeEach(async () => {
             '{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}'::jsonb)`;
   await sql`
     INSERT INTO harness_shared.routines
-      (workspace_id, install_slug, name, trigger_kind, trigger_config, target_role,
+      (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role,
        payload_template, active, last_fired_at, next_fire_at)
-    VALUES (${WS}, ${HARNESS}, ${`plan-schedule-${PLAN}`}, 'cron', '{}'::jsonb,
+    VALUES (${`fixture-${PLAN}`}, ${WS}, ${HARNESS}, ${`plan-schedule-${PLAN}`}, 'cron', '{}'::jsonb,
             'system:plan-run', '{}'::jsonb, FALSE,
             '2026-08-22T12:00:00.000Z'::timestamptz,
             '2026-08-23T13:00:00.000Z'::timestamptz)`;
