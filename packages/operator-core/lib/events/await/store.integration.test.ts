@@ -563,6 +563,29 @@ describe('await-event store (PG)', () => {
     expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
   });
 
+  it('excludes defensive work-item claim-release auto-arms but keeps genuine lifecycle waits', async () => {
+    await registerAwait({
+      subscriberId: 'sub-a',
+      eventKey: 'claim:released:WI-1',
+      note: 'claim-holder auto-arm for WI-1',
+      boundTo: { kind: 'work-item-claim', ref: 'WI-1' },
+    });
+    await registerAwait({
+      subscriberId: 'sub-a',
+      eventKey: 'work-item:done:WI-2',
+      note: 'blocked-item-holder auto-arm for WI-2',
+      boundTo: { kind: 'work-item-blocked', ref: 'WI-2' },
+    });
+
+    const parked = await listParkedAwaitsForSubscribers(['sub-a']);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({
+      subscriberId: 'sub-a',
+      eventKey: 'work-item:done:WI-2',
+      note: 'blocked-item-holder auto-arm for WI-2',
+    });
+  });
+
   it('lists only recent stalled/absent verified waits with owner-aware takeover remedies', async () => {
     const stalled = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:papercusp' });
     const progressing = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:other' });

@@ -569,10 +569,11 @@ export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
  * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active NON-inbox-wake
  * awaits for MANY subscribers in ONE round-trip — the "parked-on-event" read that
  * fleet:assignments and the claim-discipline watch derive a member's deliberate
- * bench state from. An agent holding an active await on a real event key is
- * PARKED (benched awaiting a pushed event), not abandoned. Excludes the
- * always-armed `coord:inbox-wake:%` self-await (see INBOX_WAKE_KEY_PREFIX) and
- * rows already past their deadline (the sweeper may not have fired them yet).
+ * bench state from. An agent holding an active, caller-owned await on a real event
+ * key is PARKED (benched awaiting a pushed event), not abandoned. Excludes the
+ * always-armed `coord:inbox-wake:%` self-await (see INBOX_WAKE_KEY_PREFIX), the
+ * defensive work-item claim-release auto-arm (which does not block its holder),
+ * and rows already past their deadline (the sweeper may not have fired them yet).
  */
 export async function listParkedAwaitsForSubscribers(
   subscriberIds: readonly string[],
@@ -589,6 +590,12 @@ export async function listParkedAwaitsForSubscribers(
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
        AND policy <> 'announce'
+       -- A holder's claim-release interest is defensive: it wakes if the claim
+       -- disappears, but it never means the holder is waiting for a capability.
+       -- Keep other lifecycle-bound interests visible (for example, a blocked
+       -- work-item or a hard-blocked consultation); this predicate is intentionally
+       -- narrow so an unknown binding still fails open toward visibility.
+       AND COALESCE(bound_to->>'kind', '') <> 'work-item-claim'
        AND (expires_ts IS NULL OR expires_ts > now())
      ORDER BY created_at DESC
      LIMIT 500
