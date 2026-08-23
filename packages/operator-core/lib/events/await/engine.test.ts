@@ -122,6 +122,7 @@ function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
     firedAt: new Date().toISOString(),
     firedReason: 'event',
     cancelledAt: null,
+    cancelReason: null,
     once: true,
     minSleepSec: null,
     urgency: false,

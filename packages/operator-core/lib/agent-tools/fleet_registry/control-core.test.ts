@@ -127,6 +127,7 @@ beforeEach(() => {
       cap: 16,
       capped: false,
       omitted: [],
+      suppressed: [],
       wakeReachable: true,
       handleNote: null,
       cancel: null,
