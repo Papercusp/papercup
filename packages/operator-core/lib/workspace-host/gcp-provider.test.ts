@@ -642,7 +642,6 @@ describe('GCP workspace-host provider planning', () => {
           providerId: 'pc-host-gcp-1-data',
           parentProviderId: 'papercusp-dev-123',
           zone: 'us-central1-a',
-          maxApplyAttempts: 3,
         },
       ],
     };
