@@ -60,12 +60,21 @@ function repoRoot(): string {
 
 const ROOT = repoRoot();
 const GATE_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
+const SERVICE_PATH = join(
+  ROOT,
+  'apps',
+  'operator',
+  'scripts',
+  'systemd',
+  'papercup-live-federation-gate.service',
+);
 const gate = readFileSync(GATE_PATH, 'utf8');
+const service = readFileSync(SERVICE_PATH, 'utf8');
 
 /** The whole §1 admission chain, from the PSI helper to the closing `fi` of the decision. */
 function extractAdmissionChain(): string {
   const m = gate.match(
-    /^gate_cpu_pressure_some\(\) \{\n[\s\S]*?\n  echo "ADMISSION: PROCEED [^\n]*\nfi$/m,
+    /^gate_memory_pressure_full\(\) \{\n[\s\S]*?\n  echo "ADMISSION: PROCEED [^\n]*\nfi$/m,
   );
   expect(
     m?.[0],
@@ -101,6 +110,9 @@ function runAdmission(opts: {
   pressure?: { avg10?: number; avg60?: number; avg300?: number };
   loadavg: number;
   pressureGate?: number;
+  /** null simulates unavailable memory PSI; omitted defaults to a healthy 0 */
+  memoryFullAvg10?: number | null;
+  memoryPressureGate?: number;
   loadGate?: number;
   force?: boolean;
 }) {
@@ -109,12 +121,23 @@ function runAdmission(opts: {
   writeFileSync(loadFile, `${opts.loadavg} ${opts.loadavg} ${opts.loadavg} 28/44793 139814\n`);
   const pressureFile = join(dir, 'cpu.pressure');
   if (opts.pressure) writeFileSync(pressureFile, PRESSURE_LINES(opts.pressure));
+  const memoryPressureFile = join(dir, 'memory.pressure');
+  if (opts.memoryFullAvg10 !== null) {
+    writeFileSync(
+      memoryPressureFile,
+      `some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=${(
+        opts.memoryFullAvg10 ?? 0
+      ).toFixed(2)} avg60=0.00 avg300=0.00 total=0\n`,
+    );
+  }
 
   const script = [
     'set -uo pipefail',
     `LOADAVG_FILE=${JSON.stringify(loadFile)}`,
     `CPU_PRESSURE_FILE=${JSON.stringify(pressureFile)}`,
     `PRESSURE_GATE=${opts.pressureGate ?? 30}`,
+    `MEMORY_PRESSURE_FILE=${JSON.stringify(memoryPressureFile)}`,
+    `MEMORY_PRESSURE_GATE=${opts.memoryPressureGate ?? 5}`,
     `LOAD_GATE=${opts.loadGate ?? 108}`,
     `GATE_FORCE=${opts.force ? 1 : 0}`,
     'log() { echo "LOG: $*" >&2; }', // stderr, exactly like the real log()
@@ -190,6 +213,37 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       expect(r.stderr).toContain('CALLED: skip_cleanup');
     });
 
+    it('SKIPS at critical memory-full PSI even when CPU pressure is calm', () => {
+      const r = runAdmission({
+        loadavg: 40,
+        pressure: { avg60: 1.5 },
+        memoryFullAvg10: 5,
+      });
+      expect(r.admitted).toBe(false);
+      expect(r.code).toBe(0);
+      expect(r.skipLine).toContain('memory-pressure-full-avg10 5.00 >= 5');
+      expect(r.skipLine).toContain('not a federation verdict');
+    });
+
+    it('fails safe when memory PSI is unavailable and lets an attended force override it', () => {
+      const skipped = runAdmission({
+        loadavg: 40,
+        pressure: { avg60: 1.5 },
+        memoryFullAvg10: null,
+      });
+      expect(skipped.admitted).toBe(false);
+      expect(skipped.skipLine).toContain('memory-pressure-full-avg10 unavailable');
+
+      const forced = runAdmission({
+        loadavg: 40,
+        pressure: { avg60: 1.5 },
+        memoryFullAvg10: 9,
+        force: true,
+      });
+      expect(forced.admitted).toBe(true);
+      expect(forced.stderr).toContain('systemd envelope armed');
+    });
+
     it('falls back to LOAD_GATE — and only then — when the kernel exposes no PSI', () => {
       const high = runAdmission({ loadavg: 149.81 }); // no pressure file at all
       expect(high.admitted).toBe(false);
@@ -205,6 +259,11 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       const dir = mkdtempSync(join(tmpdir(), 'fedgate-admission-bad-'));
       const bad = join(dir, 'cpu.pressure');
       writeFileSync(bad, 'this is not psi output\n');
+      const memoryPressureFile = join(dir, 'memory.pressure');
+      writeFileSync(
+        memoryPressureFile,
+        'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
+      );
       const loadFile = join(dir, 'loadavg');
       writeFileSync(loadFile, '149.81 1 1 1/1 1\n');
       // Make an omitted shell stub fail immediately and deterministically instead of depending
@@ -219,6 +278,8 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
         'set -uo pipefail',
         `LOADAVG_FILE=${JSON.stringify(loadFile)}`,
         `CPU_PRESSURE_FILE=${JSON.stringify(bad)}`,
+        `MEMORY_PRESSURE_FILE=${JSON.stringify(memoryPressureFile)}`,
+        'MEMORY_PRESSURE_GATE=5',
         'PRESSURE_GATE=30',
         'LOAD_GATE=108',
         'GATE_FORCE=0',
@@ -276,12 +337,26 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       expect(gate).toContain('PRESSURE_GATE="${PRESSURE_GATE:-30}"');
       expect(gate).toContain('${CPU_PRESSURE_FILE:-/sys/fs/cgroup/cpu.pressure}');
       expect(gate).toContain('${LOADAVG_FILE:-/proc/loadavg}');
+      expect(gate).toContain('MEMORY_PRESSURE_GATE="${MEMORY_PRESSURE_GATE:-5}"');
+      expect(gate).toContain('${MEMORY_PRESSURE_FILE:-/sys/fs/cgroup/memory.pressure}');
     });
 
     it('reads `some`, not `full` (full is structurally 0 on a many-core host)', () => {
-      const chain = extractAdmissionChain();
-      expect(chain).toContain("grep -m1 '^some '");
-      expect(chain).not.toMatch(/grep -m1 '\^full '/);
+      const helper = gate.match(/^gate_cpu_pressure_some\(\) \{\n[\s\S]*?^\}$/m)?.[0] ?? '';
+      expect(helper).toContain("grep -m1 '^some '");
+      expect(helper).not.toMatch(/grep -m1 '\^full '/);
+    });
+
+    it('guards each expensive phase and enrolls the service in the canonical heavy slot', () => {
+      expect(gate).toContain('memory_phase_guard "start"');
+      expect(gate).toContain('memory_phase_guard "post-build/pre-repack"');
+      expect(gate).toContain('memory_phase_guard "post-repack/pre-smokes"');
+      expect(gate).toContain('scripts/pc-heavy.sh');
+      expect(service).toContain('scripts/pc-heavy.sh -- /usr/bin/env bash bin/live-federation-gate.sh');
+      expect(service).toContain('MemoryAccounting=yes');
+      expect(service).toContain('MemoryHigh=24G');
+      expect(service).toContain('MemoryMax=32G');
+      expect(service).toContain('MemorySwapMax=0');
     });
   });
 });

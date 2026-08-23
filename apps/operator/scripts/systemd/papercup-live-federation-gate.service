@@ -23,7 +23,9 @@ WorkingDirectory=%h/papercupai-workspace/papercusp/papercusp-desktop
 # (D-015). This restores real coverage. If the leg reds, that is a genuine finding — triage
 # it; do NOT re-set this to 1 to quiet it without recording why on the plan.
 Environment=SKIP_FROMREPO=0
-ExecStart=/usr/bin/env bash bin/live-federation-gate.sh
+# Join the same heavy-slot domain as agent verification. The script also
+# self-enrols direct invocations; PC_HEAVY_BYPASS makes this wrapper one-shot.
+ExecStart=%h/papercupai-workspace/papercusp/scripts/pc-heavy.sh -- /usr/bin/env bash bin/live-federation-gate.sh
 # rebuild + repack + content-matrix (≈15-30 min) PLUS the local-matrix leg. Budget
 # history: 2700s killed every local-matrix-day run at exactly 45 min (2026-07-17 00:30);
 # raised to 7200s — which then killed runs 122147/142153/162155 (2026-07-18) at exactly
@@ -35,3 +37,11 @@ ExecStart=/usr/bin/env bash bin/live-federation-gate.sh
 TimeoutStartSec=14400
 Nice=10
 IOSchedulingClass=idle
+# Measured runs peaked at 27.1-27.3G. Begin reclaim below that observed peak,
+# retain bounded headroom for a healthy build, and add no swap to the host's
+# already swap-heavy baseline. A cgroup kill is a nonzero service result, never
+# a green gate verdict.
+MemoryAccounting=yes
+MemoryHigh=24G
+MemoryMax=32G
+MemorySwapMax=0
