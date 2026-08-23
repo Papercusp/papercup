@@ -2,7 +2,8 @@
 //
 // PlansPane render (owner-plans-single-pane-2026-07-17 P-002/P-007): rows
 // render with their needs-you / live / progress badges, the finished toggle
-// flips ?plf, and clicking a row opens the plan popup (?pplan). The data hooks
+// flips ?plf, and clicking a row opens the plan DASHBOARD app-pane takeover
+// (?pdash — plan-visibility-revamp-2026-08-23 P-005/D-002). The data hooks
 // (usePlanList / useInboxAttention / useSyncQuery roster / useWorkspaceId) and
 // the heavy PlanPopupModal (→ PlanDetail) are mocked; nuqs is a seeded store.
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -59,6 +60,11 @@ vi.mock('nuqs', () => ({
 }));
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
+  // PlansPane → PlanDashboardHost (the ?pdash param constant, P-005) →
+  // operator-core lazy-with-retry, which RE-EXPORTS from @papercusp/sync — so
+  // this mock must supply it or module evaluation throws "lazyWithRetry is not
+  // a function" at collection. The lazy dashboard is never rendered here.
+  lazyWithRetry: () => () => null,
   // Branched by queryName: the pane now runs TWO sync queries (advRoster.list
   // + planWorkActivity.list, P-002) — a queryName-blind mock would feed the
   // roster payload to the work-activity join and silently render no ⚒ times.
@@ -276,18 +282,19 @@ describe('PlansPane', () => {
     expect(screen.getByRole('button', { name: 'triggered' }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('opens the plan popup (sets ?pplan) when a row is clicked', () => {
+  it('opens the plan DASHBOARD (sets scoped ?pdash) when a row is clicked — the popup path is retired (P-005/D-002)', () => {
     planListData.value = { plans: [plan({ slug: 'p-open', title: 'Open me' })] };
     render(<PlansPane />);
     fireEvent.click(screen.getByRole("button", { name: "Open plan Open me" }));
-    expect(setters.pplan).toHaveBeenCalledWith('p-open');
-  });
-
-  it('starts the plan-popup-open interaction timing on a row click (P-001 wiring)', () => {
-    planListData.value = { plans: [plan({ slug: 'p-open', title: 'Open me' })] };
-    render(<PlansPane />);
-    fireEvent.click(screen.getByTestId('plans-pane-row-p-open'));
-    expect(beginInteractionSpy).toHaveBeenCalledWith('plan-popup-open');
+    // Scoped ref (wpop/wppop grammar): the sidebar is a cross-harness mount,
+    // so the ref carries the plan row's own harness.
+    expect(setters.pdash).toHaveBeenCalledWith('papercusp::p-open');
+    // The popup param is NOT written from a row click any more (the setter
+    // still exists — PlansPane keeps the ?pplan popup mounted for deep links).
+    expect(setters.pplan).not.toHaveBeenCalled();
+    // And the WI-5547 popup-open perf mark no longer starts here — nothing
+    // would ever close it (the dashboard renders no Vditor parse).
+    expect(beginInteractionSpy).not.toHaveBeenCalled();
   });
 
   it('finished toggle flips ?plf', () => {

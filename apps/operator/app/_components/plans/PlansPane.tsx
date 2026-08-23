@@ -16,8 +16,11 @@
  *     badge (decision-tier attention count), a live-agents count, item
  *     progress (done/total), and last-activity recency.
  *   - Sorted needs-you first, then most recently active.
- *   - Clicking a row opens the plan in a POPUP (PlanPopupModal → the same
- *     PlanDetail the Create tab renders, read-first) — never a navigation.
+ *   - Clicking a row opens the plan DASHBOARD — the option-C app-pane takeover
+ *     (plan-visibility-revamp-2026-08-23 P-005 / D-002: `?pdash`, rendered by
+ *     PlanDashboardHost full-width in the app pane, back-affordanced and
+ *     deep-linkable). The POPUP path is retired for this click; PlanPopupModal
+ *     stays mounted for its other writers (`?pplan` deep links).
  *
  * REUSE, not re-derivation:
  *   - plan rows: the SAME `plans.list` sync feed (usePlanList) the Create
@@ -60,7 +63,6 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { preloadVditor } from '@/app/_components/MarkdownEditor';
-import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import {
   bucketOf,
   setPlanArchived,
@@ -77,6 +79,8 @@ import { comparePlans, type PlanSort } from '@/app/admin/plans/plan-sorting';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import PlanPopupModal from './PlanPopupModal';
+import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
+import { encodeScopedRef } from '../chat/chat-ref-popup-params';
 import './plans-pane.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 
@@ -334,6 +338,10 @@ export default function PlansPane() {
     parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
   );
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
+  // P-005 (D-002): a row click opens the app-pane dashboard takeover — the
+  // param PlanDashboardHost renders. `pplan` (the popup) remains for its other
+  // writers; this pane no longer writes it from rows.
+  const [, setDashPlan] = useQueryState(PLAN_DASHBOARD_PARAM, parseAsString);
 
   // Warm the Vditor stack shortly after the Plans face mounts, so the first
   // plan popup opens WARM (~430ms) instead of paying the ~600ms cold Lute/WASM
@@ -665,11 +673,15 @@ export default function PlansPane() {
                     className={`plans-pane__row${accent}`}
                     aria-label={`Open plan ${plan.title ?? plan.slug}`}
                     onClick={() => {
-                      // Time the real "open a plan" interaction (WI-5547): this
-                      // start mark is consumed when the plan body renders in
-                      // Vditor (PlanEditor.handleParsed → endInteraction).
-                      beginInteraction(PERF_INTERACTIONS.planPopupOpen);
-                      void setPopupPlan(plan.slug);
+                      // P-005 (D-002): the row opens the option-C DASHBOARD
+                      // app-pane takeover, not the popup. The ref carries its
+                      // own harness (wpop/wppop grammar) — this sidebar is a
+                      // cross-harness mount. No beginInteraction here: the
+                      // WI-5547 planPopupOpen mark is closed by the Vditor
+                      // parse, which the dashboard does not render (the popup
+                      // path — now the dashboard's "Open full plan" — still
+                      // times itself end-to-end via the ?wppop host).
+                      void setDashPlan(encodeScopedRef(plan.harness, plan.slug));
                     }}
                     data-testid={`plans-pane-row-${plan.slug}`}
                   >
