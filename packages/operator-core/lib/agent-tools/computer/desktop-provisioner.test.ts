@@ -48,7 +48,7 @@ describe('releaseDesktopProcesses — managed teardown', () => {
       { kill: vi.fn((signal: NodeJS.Signals) => { events.push(`client-1:${signal}`); return true; }) },
       { kill: vi.fn((signal: NodeJS.Signals) => { events.push(`client-2:${signal}`); return true; }) },
     ];
-    const killTask = vi.fn(async (_taskId: string, options: { includeSubtree?: boolean }) => {
+    const killTask = vi.fn(async (_taskId: string, options: { includeSubtree?: boolean } = {}) => {
       events.push(`task:${options.includeSubtree === true ? 'subtree' : 'root'}`);
       return { ok: true as const, taskId: 'task-root', action: 'kill' };
     });
