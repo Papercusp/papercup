@@ -40,11 +40,13 @@ describe('toSpawn — vitest runner (EI-8902 --config resolution)', () => {
     expect(r.args).toContain('apps/operator-vite/src/components/adv/LearningTab.test.tsx');
   });
 
-  it('omits --config for a path with no vitest.config anywhere up to the workspace root', () => {
+  it('uses the workspace-root config when no nearer vitest.config exists', () => {
     const r = toSpawn({ kind: 'vitest', filePath: 'this/path/does/not/exist.test.ts' });
     if ('error' in r) throw new Error(r.error);
-    expect(r.args).not.toContain('--config');
-    expect(r.args).toEqual(['vitest', 'run', 'this/path/does/not/exist.test.ts']);
+    expect(r.args).toContain('--config');
+    const configIdx = r.args.indexOf('--config');
+    expect(r.args[configIdx + 1]).toMatch(/[/\\]vitest\.config\.(ts|mts|js|mjs|cjs)$/);
+    expect(r.args[r.args.length - 1]).toBe('this/path/does/not/exist.test.ts');
   });
 });
 

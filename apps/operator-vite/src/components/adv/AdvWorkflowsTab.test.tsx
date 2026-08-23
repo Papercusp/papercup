@@ -143,7 +143,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('<AdvWorkflowsTab>', () => {
   it('lands on the Workflows landing Blend rather than the flow rows (D-018)', async () => {
     renderTab();
-    expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeTruthy();
     // The Blend's regions: composer hero + the all-workflows ledger.
     expect(screen.getByRole('region', { name: 'Describe a workflow' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'All workflows' })).toBeTruthy();
@@ -156,7 +156,7 @@ describe('<AdvWorkflowsTab>', () => {
 
   it('keeps the causal trigger-flow view reachable and non-triggered routines in Catalog', async () => {
     renderTabOnFlows();
-    expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeTruthy();
     expect(H.queries.some(({ queryName, args }) => queryName === 'plans.list' && JSON.stringify(args) === '{}')).toBe(true);
     expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
     expect(screen.getAllByText('Outcome / next').length).toBeGreaterThanOrEqual(2);
@@ -187,7 +187,7 @@ describe('<AdvWorkflowsTab>', () => {
   it('renders truthful empty states instead of synthesizing automations when every producer is empty', async () => {
     H.emptyData = true;
     renderTabOnFlows();
-    expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Flows/ }).textContent).toContain('0');
     expect(screen.getByText(/No triggered plans match this view/)).toBeTruthy();
     expect(screen.queryByText('Customer feedback digest')).toBeNull();

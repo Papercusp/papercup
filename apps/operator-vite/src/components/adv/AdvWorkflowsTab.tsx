@@ -521,7 +521,7 @@ export default function AdvWorkflowsTab() {
   }
 
   return (
-    <section className="pc-workflows" aria-label="Automations">
+    <section className="pc-workflows" aria-label="Workflows">
       {confirmElement}
       {createOpen ? (
         <CreateAutomationModal
@@ -540,7 +540,7 @@ export default function AdvWorkflowsTab() {
       <header className="pc-workflows__tab-masthead">
         <div>
           <div className="pc-workflows__eyebrow">Workspace control plane</div>
-          <h1>Automations</h1>
+          <h1>Workflows</h1>
           <p>Everything that can run in the background—what starts it, whether it is running, what it can spend, and how to stop it.</p>
         </div>
         <div className="pc-workflows__mast-actions">

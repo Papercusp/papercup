@@ -18,7 +18,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { maskFences } from './parser';
+import { maskFences, parsePlan } from './parser';
+import { detectNowItemContradictions, type NowItemContradiction } from './now-item-contradictions';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -56,7 +57,10 @@ const argsSchema = z.object({
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
  *  argument, not inferred from a union-returning mutator. */
-type SetNowValue = { ok: true } | { ok: false; code: 'not_found' };
+type SetNowValue =
+  | { ok: true }
+  | { ok: false; code: 'not_found' }
+  | { ok: false; code: 'now_item_status_contradiction'; contradictions: NowItemContradiction[] };
 
 export function replaceNowBlock(body: string, state: string, next: string): string {
   const block = `## Now\n\n**State:** ${state.trim()}\n\n**Next:** ${next.trim()}\n`;
@@ -91,6 +95,33 @@ export function replaceNowBlock(body: string, state: string, next: string): stri
     }
   }
   return block + '\n' + body;
+}
+
+/**
+ * Pure decision core for plans:set-now. Keeping the contradiction check in
+ * the same evaluator used by the handler makes the structured write guard
+ * unit-testable without the SU lock side-database.
+ */
+export function evaluateNowUpdate(
+  current: string | null,
+  state: string,
+  next: string,
+  slug: string,
+): { newBody: string | null; value: SetNowValue } {
+  if (current === null) {
+    return { newBody: null, value: { ok: false, code: 'not_found' } };
+  }
+
+  const replaced = replaceNowBlock(current, state, next);
+  const final = bumpUpdatedDate(replaced);
+  const contradictions = detectNowItemContradictions(parsePlan(final, { filePath: `${slug}.md` }));
+  if (contradictions.length > 0) {
+    return {
+      newBody: null,
+      value: { ok: false, code: 'now_item_status_contradiction', contradictions },
+    };
+  }
+  return { newBody: final, value: { ok: true } };
 }
 
 export default defineTool({
@@ -137,14 +168,8 @@ export default defineTool({
             ...(harnessSlug ? { harnessSlug } : {}),
             afterWrite: rev.afterWrite,
           },
-          async (current): Promise<{ newBody: string | null; value: SetNowValue }> => {
-            if (current === null) {
-              return { newBody: null, value: { ok: false, code: 'not_found' } };
-            }
-            const replaced = replaceNowBlock(current, args.state, next);
-            const final = bumpUpdatedDate(replaced);
-            return { newBody: final, value: { ok: true } };
-          },
+          async (current): Promise<{ newBody: string | null; value: SetNowValue }> =>
+            evaluateNowUpdate(current, args.state, next, slug),
         );
 
         if (result.kind === 'busy') {
@@ -162,7 +187,14 @@ export default defineTool({
         }
 
         if (!result.value.ok) {
-          return { ok: false as const, slug, error: result.value.code };
+          return {
+            ok: false as const,
+            slug,
+            error: result.value.code,
+            ...(result.value.code === 'now_item_status_contradiction'
+              ? { contradictions: result.value.contradictions }
+              : {}),
+          };
         }
 
         // EI-20268156880922192: a Now block is durable, but it may still point

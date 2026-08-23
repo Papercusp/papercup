@@ -32,7 +32,7 @@
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { blueprintRetirement, type BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint';
-import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { registerSystemAction } from './system-actions';
 import { checkFireGate, recordFire } from '../../autoloop';
 import { listAutoloopsForWorkspace, setAutoloop } from '../../gym/control-plane';
 import { resolveProject } from '../../harness-core';
@@ -48,6 +48,10 @@ import { readImprovementItems } from '../improvements/read-items';
 import { finalizePendingChampionOutcomes } from '../../gym/post-acceptance-outcomes';
 import { recordGymTickToGovernor } from '../../learning-governor/registrants';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import {
+  launchDetachedGymCycle,
+  type LaunchGymCycleResult,
+} from '../../gym/gym-cycle-launch';
 
 /** The autoloop_state role the gym tick's fire-gate/backoff is keyed under. */
 export const GYM_CYCLE_FIRE_ROLE = 'gym-cycle';
@@ -123,18 +127,19 @@ export function gymBudgetFloorUsd(): number {
   return n;
 }
 
-registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
+/** The original in-process action body, also used by the detached CLI fallback. */
+export async function runGymCycleInline(workspaceId: string): Promise<void> {
   const { sql } = getOrgPg();
   // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate gym
   // spend OFF for the home hive from the 👑 tab. Fail-soft → runs (default ON).
   const { idleActivityAllowed } = await import('../../owner-steering');
-  if (!(await idleActivityAllowed(ctx.workspaceId, 'gym'))) {
+  if (!(await idleActivityAllowed(workspaceId, 'gym'))) {
     console.log('[gym-cycle] skipped — owner idle-activity toggle (gym) is OFF');
     return;
   }
   const outcome = await runGymAutoloopTick(
     {
-      listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId: ctx.workspaceId }),
+      listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId }),
       checkFireGate: (slug) => checkFireGate(slug, GYM_CYCLE_FIRE_ROLE),
       recordFire: (slug, status, oc) => recordFire(slug, GYM_CYCLE_FIRE_ROLE, status, oc),
       setAutoloop: (input) => setAutoloop(sql, input),
@@ -149,15 +154,15 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
       // (authority / not-in-hive), so the standalone gym path is unchanged.
       isHiveRunner: async (slug) => {
         const { checkHiveSingleRunner } = await import('../../hive-single-runner');
-        return (await checkHiveSingleRunner(ctx.workspaceId, slug)).run;
+        return (await checkHiveSingleRunner(workspaceId, slug)).run;
       },
       // WI-5645: refuse to fire a gym cycle against a harness whose effective
       // blueprint (or an ancestor) is retired — the hard cost guard for the exact
       // scenario EI-18177667809538623 hit (spend via a retired ancestor blueprint).
-      isBlueprintRetired: (slug) => isHarnessBlueprintRetired(ctx.workspaceId, slug),
+      isBlueprintRetired: (slug) => isHarnessBlueprintRetired(workspaceId, slug),
       // P-030 (B-09): settle elapsed post-acceptance champion-outcome windows each tick.
       finalizeOutcomes: () =>
-        finalizePendingChampionOutcomes(sql, { workspaceId: ctx.workspaceId, log: (m) => console.log(`[gym-cycle] ${m}`) }),
+        finalizePendingChampionOutcomes(sql, { workspaceId, log: (m) => console.log(`[gym-cycle] ${m}`) }),
       log: (m) => console.log(`[gym-cycle] ${m}`),
     },
     { budgetFloorUsd: gymBudgetFloorUsd() },
@@ -169,9 +174,9 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
   // by contract — recordGymTickToGovernor never throws, so governor
   // bookkeeping can never fail (or durably replay) the gym tick.
   await recordGymTickToGovernor({
-    workspaceId: ctx.workspaceId,
+    workspaceId,
     sql,
-    listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId: ctx.workspaceId }),
+    listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId }),
     ran:
       outcome.action === 'ran' && outcome.result
         ? {
@@ -203,4 +208,51 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
     // a thrown step would invite a durable replay (= a second paid cycle).
     console.error(`[gym-cycle] cycle FAILED for ${outcome.harnessSlug}: ${outcome.error} (status settled back to idle)`);
   }
-});
+}
+
+export interface GymCycleSystemActionDeps {
+  launch?: (workspaceId: string) => Promise<LaunchGymCycleResult>;
+  runInline?: (workspaceId: string) => Promise<void>;
+}
+
+/**
+ * Detach on systemd hosts. Only a proved-unavailable service manager falls back
+ * inline; an ambiguous launch failure never retries paid work in-process.
+ */
+export async function runGymCycleSystemAction(
+  workspaceId: string,
+  deps: GymCycleSystemActionDeps = {},
+): Promise<void> {
+  const launch = deps.launch ?? ((id: string) => launchDetachedGymCycle({ workspaceId: id }));
+  const runInline = deps.runInline ?? runGymCycleInline;
+  let result: LaunchGymCycleResult;
+  try {
+    result = await launch(workspaceId);
+  } catch (error) {
+    console.error(
+      `[gym-cycle] detached launch threw; refusing inline retry to avoid duplicate spend: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return;
+  }
+
+  if (result.status === 'unavailable') {
+    console.warn(`[gym-cycle] detached services unavailable (${result.reason ?? 'unknown'}); running inline`);
+    await runInline(workspaceId);
+    return;
+  }
+  if (result.status === 'launched') {
+    console.log(`[gym-cycle] launched detached unit ${result.unit} for workspace ${workspaceId}`);
+    return;
+  }
+  if (result.status === 'already_running') {
+    console.log(`[gym-cycle] ${result.unit} already running; duplicate routine fire skipped`);
+    return;
+  }
+  console.error(
+    `[gym-cycle] detached launch refused (${result.reason ?? 'unknown'}); refusing inline retry to avoid duplicate spend`,
+  );
+}
+
+registerSystemAction('gym-cycle', async (ctx) => runGymCycleSystemAction(ctx.workspaceId));

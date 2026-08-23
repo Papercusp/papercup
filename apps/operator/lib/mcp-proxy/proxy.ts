@@ -170,8 +170,14 @@ export interface McpProxyOptions {
    */
   maxInFlight?: number;
   /** Slots kept available for scheduler control-plane pulls when ordinary tool traffic fills
-   * the proxy. The hard `maxInFlight` ceiling still applies to every request. */
+   * the proxy. Reserved traffic also gets a separate upstream socket pool so an admitted
+   * recovery probe cannot sit behind the ordinary pool it is trying to diagnose. The hard
+   * `maxInFlight` ceiling still applies to every request. */
   controlPlaneReserve?: number;
+  /** Injectable ordinary upstream agent for deterministic queue-saturation tests/embedders. */
+  upstreamAgent?: http.Agent;
+  /** Injectable reserved-control-plane agent. Caller owns an injected agent's lifecycle. */
+  controlPlaneAgent?: http.Agent;
   /**
    * EI-19305299022434394 — the absolute ceiling (ms) on how long a NON-idempotent forward
    * (a real tools/call: 'keyed' or 'opaque') may hold its upstream socket waiting for response
@@ -488,6 +494,7 @@ function forwardOnce(
   reqUrl: string,
   headers: http.IncomingHttpHeaders,
   body: Buffer,
+  agent: http.Agent,
   timeoutMs?: number,
   signal?: AbortSignal,
 ): Promise<ForwardOutcome> {
@@ -517,7 +524,7 @@ function forwardOnce(
         headers: { ...headers, host: `${target.host}:${target.port}` },
         // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070
         // cluster may be closing (the ~13% spurious-400 root cause). See UPSTREAM_AGENT above.
-        agent: UPSTREAM_AGENT,
+        agent,
         // WI-35737: abandon this attempt if the client disconnects (idempotent class only —
         // see the doc comment above). Node destroys the request and emits 'error' with
         // code ABORT_ERR, which the existing handler below turns into a normal outcome.
@@ -690,6 +697,13 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'work_items:release',
 ].map(normalizeMcpName));
 
+// EI-21266423740643882 — the watchdog's session-plane probe is a plain JSON-RPC
+// `tools/list`, not a tools/call named by RESERVED_CONTROL_PLANE_TOOLS. The admission reserve
+// is useless to the probe that diagnoses a saturated proxy unless the MCP handshake itself is
+// recognized. Keep this deliberately narrow: only the stateless, write-free calls required to
+// establish/prove a session, not every idempotent resources/prompts request.
+const RESERVED_CONTROL_PLANE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
+
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
  * deferred tool discovery, bounded diagnostics, loop arming, incident capture, file-lock inspection,
  * file-lock cancellation/release, and continuation checkpoint writes are liveness/control-plane traffic:
@@ -714,6 +728,8 @@ export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
     return messages.some((message) => {
       if (!message || typeof message !== 'object') return false;
       const call = message as { method?: unknown; params?: { name?: unknown } };
+      if (typeof call.method !== 'string') return false;
+      if (RESERVED_CONTROL_PLANE_METHODS.has(call.method)) return true;
       return call.method === 'tools/call'
         && typeof call.params?.name === 'string'
         && RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(call.params.name));
@@ -753,6 +769,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     0,
     opts.controlPlaneReserve ?? (opts.maxInFlight === undefined ? DEFAULT_CONTROL_PLANE_RESERVE : 0),
   );
+  const upstreamAgent = opts.upstreamAgent ?? UPSTREAM_AGENT;
+  // Admission-only reservation is not end-to-end reservation: during the measured incident all
+  // 64 ordinary sockets were occupied and even an admitted watchdog tools/list would have queued
+  // behind them. A distinct pool gives the reserved slots real upstream capacity. Keep the pool
+  // instance-local so its maxSockets follows an injected/env reserve; destroy only agents we own.
+  const ownsControlPlaneAgent = opts.controlPlaneAgent === undefined;
+  const controlPlaneAgent = opts.controlPlaneAgent ?? new http.Agent({
+    keepAlive: false,
+    maxSockets: Math.max(1, controlPlaneReserve),
+  });
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const inFlightStarts = new Map<number, number>();
   let nextInFlightId = 0;
@@ -933,6 +959,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 req.url ?? '/',
                 fwd.headers,
                 fwd.body,
+                reservedControlPlane && controlPlaneReserve > 0
+                  ? controlPlaneAgent
+                  : upstreamAgent,
                 fwd.klass === 'idempotent'
                   ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
                   : maxHoldMs > 0
@@ -1080,6 +1109,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   server.on('close', () => {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
+    if (ownsControlPlaneAgent) controlPlaneAgent.destroy();
   });
   return server;
 }

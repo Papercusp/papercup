@@ -43,6 +43,8 @@ import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { detectUnparsedItemLines } from './item-parse-feedback';
 import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 import { analyzePlanDagParallelism } from './plan-dag-parallelism';
+import { detectNowItemContradictions, type NowItemContradiction } from './now-item-contradictions';
+export { detectNowItemContradictions } from './now-item-contradictions';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -78,6 +80,7 @@ export interface PlanLintReport {
   errors: LintFinding[];
   warnings: LintFinding[];
 }
+
 
 /** Count features in harness_features_consolidated whose metadata
  *  records this plan slug as their source. Returns 0 when PG is
@@ -196,6 +199,18 @@ export async function lintParsed(
       level: 'error',
       code: 'missing_now_section',
       message: 'No `## Now` section — every plan needs one (the cold-resume anchor); add it with plans:set-now.',
+    });
+  }
+  const nowItemContradictions = detectNowItemContradictions(parsed);
+  for (const contradiction of nowItemContradictions) {
+    report.errors.push({
+      level: 'error',
+      code: 'now_item_status_contradiction',
+      itemId: contradiction.id,
+      message:
+        `Item ${contradiction.id} is stored as '${contradiction.status}', but the ` +
+        `\`## Now\` block presents it as current or future work ("${contradiction.mention}"). ` +
+        'Rewrite Now from the current item statuses; a terminal item must be described as done/closed, not assigned another pass.',
     });
   }
   if (parsed.decisions.length === 0 && parsed.items.length > 0) {

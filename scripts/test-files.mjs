@@ -226,7 +226,11 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
     const integration = configs.find((name) => INTEGRATION_CONFIG_RE.test(name));
     const unit = configs.find((name) => UNIT_CONFIG_RE.test(name));
     if (wantsIntegration && integration) return { cwd: dir, config: integration, absolute, requested: relative(dir, absolute) };
-    if (!wantsIntegration && unit) return { cwd: dir, config: unit, absolute, requested: relative(dir, absolute) };
+    // Keep walking after an already-discovered config-less package so an ancestor's
+    // fallback unit config cannot preempt that nearer package route.
+    if (!wantsIntegration && unit && !packageFallback) {
+      return { cwd: dir, config: unit, absolute, requested: relative(dir, absolute) };
+    }
     if (unit && !unitFallback) unitFallback = { cwd: dir, config: unit, absolute, requested: relative(dir, absolute) };
     // Nearest config-less Vitest package (`libs/generic/*` shape): its own `npm test` is a plain
     // config-less `vitest run`, so route there (config: null) when no config file owns the file.

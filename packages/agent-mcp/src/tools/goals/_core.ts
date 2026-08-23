@@ -123,6 +123,17 @@ export interface GoalRowInput {
    * document is validated by the caller's schema before it reaches this row.
    */
   launchSettings?: Record<string, unknown> | null;
+  /**
+   * TRUE for a STANDING (stewardship) goal — one pursuing an ongoing duty
+   * rather than a checkable outcome (work-on-everything-goal-2026-08-23 P-001,
+   * migration 913).
+   *
+   * Omitted ⇒ the column default (`false`), which is an ORDINARY
+   * outcome-shaped goal. Never write `false` here to mean "unknown": there is
+   * no third state, and the default already covers every caller that has no
+   * opinion — which is all of them except the goal-package start door.
+   */
+  standing?: boolean;
 }
 
 /**
@@ -140,10 +151,11 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
   await tx`
     INSERT INTO harness_shared.goals
       (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status,
-       kill_criterion, tripwires, metadata, launch_settings)
+       standing, kill_criterion, tripwires, metadata, launch_settings)
     VALUES
       (${row.id}, ${row.installSlug}, ${row.workspaceId}, ${row.title}, ${row.body ?? null},
        ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.status ?? 'active'},
+       ${row.standing ?? false},
        ${row.killCriterion ?? null},
        ${row.tripwires?.length ? JSON.stringify(row.tripwires) : null}::jsonb,
        ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb,

@@ -902,8 +902,11 @@ describe('WI-35737: a departed client stops the retry loop', () => {
  *      32-89 minutes.
  */
 describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
-  it('recognizes fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, loop arming, incident capture, event-wait cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic', () => {
+  it('recognizes the MCP session handshake plus fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, loop arming, incident capture, event-wait cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic', () => {
     const call = (name: string) => Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } }));
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'initialize', params: {} })))).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'ping', params: {} })))).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/list', params: {} })))).toBe(true);
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:send'))).toBe(true);
@@ -979,15 +982,15 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
 
   it('recognizes a JSON-RPC batch when any member is a reserved control-plane call', () => {
     expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify([
-      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'work_items:get' } },
-      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'mcp__papercusp_su__scheduler_get_next' } },
+      { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'test://ordinary' } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ])))).toBe(true);
   });
 
   it('does not reserve a JSON-RPC batch with no control-plane calls', () => {
     expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify([
       { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'work_items:list' } },
-      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'resources/read', params: { uri: 'test://ordinary' } },
     ])))).toBe(false);
   });
 
@@ -1039,6 +1042,60 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     releaseUpstream();
     const results = await Promise.all([...heldOrdinary, ...heldControlPlane]);
     expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
+  it('EI-21266423740643882: tools/list bypasses a saturated ordinary upstream socket queue', async () => {
+    let releaseFirstUpstream: () => void = () => {};
+    const firstUpstreamGate = new Promise<void>((resolve) => { releaseFirstUpstream = resolve; });
+    let upstreamHits = 0;
+    const upstream = track(http.createServer((_req, res) => {
+      upstreamHits++;
+      if (upstreamHits === 1) {
+        void firstUpstreamGate.then(() => res.end('{"result":"ordinary-released"}'));
+        return;
+      }
+      res.end('{"result":{"tools":[{"name":"coord:orient"}]}}');
+    }));
+    await listen(upstream);
+
+    // One ordinary socket is deliberately held. The second ordinary forward is admitted but
+    // queues inside that one-socket agent — the scaled-down shape of 192 admitted / 64 sockets.
+    const ordinaryAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 800,
+      retryBackoffMs: 20,
+      handshakeTimeoutMs: 80,
+      maxInFlight: 3,
+      controlPlaneReserve: 1,
+      upstreamAgent: ordinaryAgent,
+      controlPlaneAgent,
+      log: () => {},
+    }));
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({ method: 'tools/call', params: { name: 'work_items:list', arguments: {} } });
+    const heldOrdinary = [request(port(proxy), ordinaryBody), request(port(proxy), ordinaryBody)];
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    // Without the dedicated pool, this probe sits behind the held ordinary socket, burns its
+    // handshake timeouts, and returns 502. With end-to-end reservation it reaches upstream now.
+    const probe = await request(
+      port(proxy),
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    );
+
+    releaseFirstUpstream();
+    const ordinaryResults = await Promise.all(heldOrdinary);
+    ordinaryAgent.destroy();
+    controlPlaneAgent.destroy();
+
+    expect(probe.status).toBe(200);
+    expect(JSON.parse(probe.body).result.tools).toHaveLength(1);
+    expect(ordinaryResults.every((result) => result.status === 200)).toBe(true);
   });
 
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {

@@ -14,6 +14,10 @@ import {
   countsTowardBurnDown,
   type CompletionAuthorityFrom,
 } from '../../work-item-completion-authority';
+import {
+  CompletionVerificationEvidenceSchema,
+  type CompletionVerificationEvidence,
+} from '../../coord-lifecycle/records';
 
 export const FLEET_CAMPAIGN_RECENT_ROW_CAP = 12;
 
@@ -62,6 +66,33 @@ type TerminalGroup = {
   count: string | number;
 };
 
+type FleetTerminalRow = {
+  feature_id: unknown;
+  item_kind: unknown;
+  title: unknown;
+  status: unknown;
+  terminal_owner: unknown;
+  terminal_completion_ref: unknown;
+  completion_evidence: unknown;
+  authority: unknown;
+  closed_ts: unknown;
+};
+
+export interface FleetTerminalCompletion {
+  id: string;
+  kind: string | null;
+  title: string | null;
+  status: string | null;
+  terminalOwner: string;
+  terminalCompletionRef: string | null;
+  completionEvidence: CompletionVerificationEvidence | null;
+  verifiedHow: CompletionVerificationEvidence['verifiedHow'] | null;
+  addedTests: boolean | null;
+  completionAuthority: CompletionAuthorityFrom;
+  countsTowardBurnDown: boolean;
+  terminalizedAt: string;
+}
+
 const cap = () => ({ aggregates: 'none' as const, recentRows: FLEET_CAMPAIGN_RECENT_ROW_CAP });
 
 function unavailable<T>(
@@ -84,6 +115,35 @@ const number = (value: unknown): number => {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const nullableString = (value: unknown): string | null =>
+  typeof value === 'string' && value.length > 0 ? value : null;
+
+/**
+ * Project the completion writer's canonical columns into the leader-facing
+ * audit row. Postgres JSON is untrusted at this boundary: malformed legacy
+ * evidence is reported as absent rather than leaking an arbitrary payload or
+ * failing the whole fleet brief.
+ */
+export function projectFleetTerminalCompletion(row: FleetTerminalRow): FleetTerminalCompletion {
+  const evidence = CompletionVerificationEvidenceSchema.safeParse(row.completion_evidence);
+  const completionEvidence = evidence.success ? evidence.data : null;
+  const authority = (row.authority ?? null) as CompletionAuthorityFrom;
+  return {
+    id: String(row.feature_id),
+    kind: nullableString(row.item_kind),
+    title: nullableString(row.title),
+    status: nullableString(row.status),
+    terminalOwner: String(row.terminal_owner),
+    terminalCompletionRef: nullableString(row.terminal_completion_ref),
+    completionEvidence,
+    verifiedHow: completionEvidence?.verifiedHow ?? null,
+    addedTests: completionEvidence?.addedTests ?? null,
+    completionAuthority: authority,
+    countsTowardBurnDown: countsTowardBurnDown(authority, true),
+    terminalizedAt: new Date(number(row.closed_ts)).toISOString(),
+  };
+}
 
 export function recentEvidence<T>(rows: readonly T[], total: number): RecentEvidence<T> {
   const kept = rows.slice(0, FLEET_CAMPAIGN_RECENT_ROW_CAP);
@@ -332,9 +392,29 @@ export async function readFleetCampaign(
          ORDER BY closed_ts DESC
          LIMIT ${FLEET_CAMPAIGN_RECENT_ROW_CAP}
       `;
+      // EI-6803: the CONTENT counterpart to the aggregate terminal axis. Keep
+      // this on the existing fleet:leader-brief campaign surface instead of
+      // adding a parallel fleet:audit-feed tool. `terminal_owner` is the
+      // completion writer's durable attribution after `taken_by` is cleared;
+      // filtering it in SQL prevents a busy harness's non-fleet completions
+      // from crowding fleet-member rows out of the bounded feed.
+      const auditRows = await sql<FleetTerminalRow[]>`
+        SELECT feature_id, item_kind, title, status, terminal_owner,
+               terminal_completion_ref,
+               payload -> '_completionEvidence' AS completion_evidence,
+               authority, closed_ts
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${input.workspaceId}
+           AND closed_ts >= ${boundaryMs}
+           AND terminal_owner = ANY(${sql.array(memberIds)}::text[])
+           ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
+         ORDER BY closed_ts DESC, feature_id ASC
+         LIMIT ${FLEET_CAMPAIGN_RECENT_ROW_CAP}
+      `;
       terminals = available(terminalWriter, {
         closes: 'work-item rows whose epoch-ms closed_ts entered terminal state in boundary',
         counted: 'rows accepted by countsTowardBurnDown(authority, terminal=true)',
+        auditFeed: 'recent terminal rows attributed to fleet ever-members, with canonical completion evidence',
       }, {
         ...partition,
         recent: recentEvidence(recent.map((row) => {
@@ -347,6 +427,10 @@ export async function readFleetCampaign(
             closedAt: new Date(number(row.closed_ts)).toISOString(),
           };
         }), partition.total),
+        auditFeed: recentEvidence(
+          auditRows.map(projectFleetTerminalCompletion),
+          partition.byFleetMembership.member,
+        ),
       });
     } catch {
       terminals = unavailable(terminalWriter, { closes: 'terminal rows' }, 'terminal-read-failed');

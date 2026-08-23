@@ -352,7 +352,22 @@ describe('named result views — seeded registry integrity', () => {
     expect(orientView.ok && itemView.ok).toBe(true);
     if (!orientView.ok || !itemView.ok) return;
 
-    const orient = JSON.parse(applyNamedView(SAMPLE_COORD_ORIENT, orientView).text) as Record<
+    const noisyOrient = {
+      ...SAMPLE_COORD_ORIENT,
+      me: {
+        ...SAMPLE_COORD_ORIENT.me,
+        agents: SAMPLE_COORD_ORIENT.me.agents.map((agent) => ({
+          ...agent,
+          intent: 'unbounded live intent '.repeat(600),
+          queued: Array.from({ length: 100 }, (_, index) => `WI-${index}`),
+        })),
+      },
+    };
+    const orientApplied = applyNamedView(noisyOrient, orientView);
+    expect(orientApplied.receipt.budgetEnforced).toBeUndefined();
+    expect(orientApplied.receipt.returnedChars).toBeLessThanOrEqual(orientApplied.receipt.budgetChars);
+
+    const orient = JSON.parse(orientApplied.text) as Record<
       string,
       unknown
     >;
@@ -362,6 +377,10 @@ describe('named result views — seeded registry integrity', () => {
     >;
     expect(orient).toHaveProperty('me.summary.claims', 1);
     expect(orient).toHaveProperty('me.agents.0.sessionState', 'live');
+    expect(orient).toHaveProperty('inbox.summary.total', 478);
+    expect(orient).toHaveProperty('codexLocks.lockMode', 'manual');
+    expect(orient).not.toHaveProperty('me.agents.0.intent');
+    expect(orient).not.toHaveProperty('me.agents.0.queued');
     expect(orient).not.toHaveProperty('recovery.checkpoints');
     expect(item).toHaveProperty('results.0.holder.stale', false);
     expect(item).toHaveProperty('results.0.checkpointAgeMs', 106_146);

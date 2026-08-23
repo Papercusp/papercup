@@ -304,6 +304,36 @@ export type SocialReplyTarget =
        * reply.
        */
       canComment?: boolean;
+    }
+  | {
+      platform: 'instagram';
+      /**
+       * The TOP-LEVEL comment the reply attaches to — never a reply's own id.
+       *
+       * ⚠ THE PLATFORM SILENTLY RE-PARENTS RATHER THAN REFUSING, which is why
+       * this is derived here instead of being left to the adapter to pass
+       * through. Verbatim from the `/replies` edge reference: "You can only
+       * reply to top-level comments; replies to a reply will be added to the
+       * top-level comment." So addressing a reply does not fail — it SUCCEEDS,
+       * returns a real id, and lands the comment somewhere other than where it
+       * was aimed. A silent redirect is worse than an error precisely because
+       * nothing in the response says it happened, so the correction has to be
+       * made before the call rather than detected after it.
+       *
+       * This is YouTube's two-level shape reached independently (a reply's
+       * stored `replyToId` IS the top-level parent), and the same field name is
+       * used by the Instagram comments adapter for the same vendor concept.
+       */
+      topLevelCommentId: string;
+      /** Only for the label; a reply works without it. */
+      mediaId?: string;
+      /**
+       * `hidden`. A definite `true` is refused locally — "You cannot reply to
+       * hidden comments." An ABSENT value still attempts, matching the YouTube
+       * `canReply` / Pages `canComment` posture: a missing optional field is a
+       * gap in the response, not a denial.
+       */
+      hidden?: boolean;
     };
 
 export interface SocialReplyCoordinates {
@@ -354,6 +384,43 @@ export function resolveYouTubeReplyTarget(
   // every document stored before the field existed, and defaulting to true would
   // manufacture a permission the provider never granted.
   if (typeof payload.canReply === 'boolean') target.canReply = payload.canReply;
+  return target;
+}
+
+/**
+ * Instagram's reply target, split out for the same reason YouTube's is: the
+ * registry row carries `blockedOn` (Meta app review), so this branch is
+ * unreachable through the public function today and would otherwise ship
+ * untested until the wall lifts — which is the first day anyone replies, and so
+ * the worst day to discover it wrong.
+ *
+ * ⚠ THE DERIVATION IS LOAD-BEARING, NOT A CONVENIENCE. Instagram does not refuse
+ * a reply aimed at a reply; it re-parents it to the top-level comment and
+ * returns a normal success. So the choice of id made here is the ONLY point at
+ * which the intended target and the actual target can still be made to agree.
+ * A stored reply carries `replyToId` (the vendor's `parent_id`), which IS the
+ * top-level comment; a document without one already IS top-level, so its own
+ * external id is the parent.
+ */
+export function resolveInstagramReplyTarget(
+  payload: Record<string, unknown>,
+  externalId: string,
+): Extract<SocialReplyTarget, { platform: 'instagram' }> {
+  const topLevelCommentId = string(payload.replyToId) || externalId;
+  if (!topLevelCommentId) {
+    throw new Error(
+      'social_reply_coordinates_missing:instagram — POST /{ig-comment-id}/replies needs a comment id and the stored document carries neither a replyToId nor an external id',
+    );
+  }
+  const target: Extract<SocialReplyTarget, { platform: 'instagram' }> = { platform: 'instagram', topLevelCommentId };
+  const mediaId = string(payload.subjectId);
+  if (mediaId) target.mediaId = mediaId;
+  // Only a definite boolean is carried, for the reason given on the field: the
+  // comments adapter writes `hidden` ONLY when it is true, so an absent value
+  // means "not reported", and defaulting it either way would either drop every
+  // reply to a document stored before the field existed or manufacture a
+  // permission the provider never gave.
+  if (typeof payload.hidden === 'boolean') target.hidden = payload.hidden;
   return target;
 }
 
@@ -433,6 +500,14 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
         target: resolveYouTubeReplyTarget(payload, doc.externalId),
         parentVisibility,
         label: `${row.label} · ${string(payload.videoId) || string(payload.threadId) || doc.externalId}`,
+      };
+
+    case 'instagram':
+      return {
+        ref,
+        target: resolveInstagramReplyTarget(payload, doc.externalId),
+        parentVisibility,
+        label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
       };
 
     default:
@@ -526,6 +601,19 @@ export interface SocialReplyOutcome {
   url?: string;
 }
 
+/**
+ * One piece of media attached to a create-shaped post.
+ *
+ * `url` is a PUBLICLY FETCHABLE address, not a local path or an upload handle:
+ * the platforms that take media this way (Instagram's `image_url`/`video_url`)
+ * fetch it themselves, server-side, rather than accepting bytes on the create
+ * call.
+ */
+export interface SocialPostMedia {
+  url: string;
+  type: 'image' | 'video';
+}
+
 /** A create-shaped write: new content, at a destination the caller named. */
 export interface SocialPostRequest {
   destination: string;
@@ -533,6 +621,25 @@ export interface SocialPostRequest {
   visibility: SocialVisibility;
   /** Derived, never caller-supplied — see `socialPostIdempotencyKey`. */
   idempotencyKey: string;
+  /**
+   * Media to attach. OPTIONAL HERE AND REQUIRED BY SOME PLATFORMS — which is a
+   * real asymmetry rather than a loose contract, and worth stating because the
+   * shape of `post` quietly assumed otherwise.
+   *
+   * Every Wave A platform plus Facebook Pages is TEXT-PRIMARY: a post is some
+   * text, and media is a decoration you may omit. Instagram is MEDIA-PRIMARY —
+   * `POST /{ig-id}/media` takes `image_url` or `video_url`, and the caption is
+   * the optional half. There is no text-only Instagram feed post to create, so
+   * an Instagram adapter handed a text-only request cannot degrade gracefully;
+   * it can only refuse.
+   *
+   * Optional rather than required for the same reason `lossRisk` is optional on
+   * the reconcile result: a required field would strand every existing caller
+   * and every text-primary adapter to encode a fact about ONE platform. The
+   * asymmetry is therefore carried where it belongs — the platform that needs
+   * media asserts it, and says so in its own error rather than in this type.
+   */
+  media?: readonly SocialPostMedia[];
 }
 
 export type SocialPostOutcome = SocialReplyOutcome;

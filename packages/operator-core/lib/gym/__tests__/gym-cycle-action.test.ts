@@ -9,7 +9,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 // Side-effect import registers system:gym-cycle (and exercises the import path the
 // routines engine takes at boot).
-import { GYM_CYCLE_FIRE_ROLE, gymBudgetFloorUsd } from '../../harness/routines/gym-actions';
+import {
+  GYM_CYCLE_FIRE_ROLE,
+  gymBudgetFloorUsd,
+  runGymCycleSystemAction,
+} from '../../harness/routines/gym-actions';
+import type { GymCycleLaunchStatus, LaunchGymCycleResult } from '../gym-cycle-launch';
 import { getSystemAction, listSystemActions } from '../../harness/routines/system-actions';
 import { GYM_AUTOLOOP_BUDGET_FLOOR_USD } from '../autoloop-tick';
 
@@ -53,4 +58,54 @@ describe('gymBudgetFloorUsd — env override parsing', () => {
     expect(warn).toHaveBeenCalledTimes(2);
   });
 
+});
+
+function launchResult(status: GymCycleLaunchStatus): LaunchGymCycleResult {
+  return {
+    status,
+    workspaceId: 'ws-test',
+    unit: 'papercup-gym-cycle-test',
+    argv: [],
+    ...(status === 'unavailable' || status === 'refused' ? { reason: status } : {}),
+  };
+}
+
+describe('runGymCycleSystemAction — detached fallback safety', () => {
+  it('preserves inline behavior when systemd is proved unavailable', async () => {
+    const runInline = vi.fn(async () => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await runGymCycleSystemAction('ws-test', {
+      launch: async () => launchResult('unavailable'),
+      runInline,
+    });
+    expect(runInline).toHaveBeenCalledOnce();
+    expect(runInline).toHaveBeenCalledWith('ws-test');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('running inline'));
+  });
+
+  it.each(['launched', 'already_running', 'refused'] as const)(
+    'does not inline-retry after %s',
+    async (status) => {
+      const runInline = vi.fn(async () => undefined);
+      vi.spyOn(console, status === 'refused' ? 'error' : 'log').mockImplementation(() => {});
+      await runGymCycleSystemAction('ws-test', {
+        launch: async () => launchResult(status),
+        runInline,
+      });
+      expect(runInline).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails safe when the launcher itself throws', async () => {
+    const runInline = vi.fn(async () => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await runGymCycleSystemAction('ws-test', {
+      launch: async () => {
+        throw new Error('unknown launch failure');
+      },
+      runInline,
+    });
+    expect(runInline).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('refusing inline retry'));
+  });
 });

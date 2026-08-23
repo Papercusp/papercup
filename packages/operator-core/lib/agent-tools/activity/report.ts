@@ -43,6 +43,7 @@ import { releaseAllOwnedLocks } from '../locks/release-all-owned';
 import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends exactly SESSION_START_MARKER (SessionStart) or SESSION_END_MARKER
@@ -159,14 +160,9 @@ export default defineTool({
     // carries the concrete harness. Persist that context fallback so an exact
     // activity:recent harness filter cannot hide otherwise valid owner rows.
     // Neither the explicit nor contextual '*' sentinel is a real harness.
-    const explicitHarness = args.harness_slug?.trim();
-    const contextualHarness = ctx.harnessSlug?.trim();
     const harnessSlug =
-      explicitHarness && explicitHarness !== '*'
-        ? explicitHarness
-        : contextualHarness && contextualHarness !== '*'
-          ? contextualHarness
-          : null;
+      resolveConcreteHarnessSlug(args.harness_slug, ctx) ??
+      resolveConcreteHarnessSlug(undefined, ctx);
 
     // Normalize the raw cross-CLI report + append it through the PG-backed
     // TelemetryStore seam (@papercusp/activity-bridge). The host-domain `scope`

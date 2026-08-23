@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FLEET_CAMPAIGN_RECENT_ROW_CAP,
   partitionTerminalGroups,
+  projectFleetTerminalCompletion,
   recentEvidence,
   resolveFleetCampaignBoundary,
 } from './fleet-campaign';
@@ -43,6 +44,67 @@ describe('fleet campaign pure contracts', () => {
       byOwnerClass: { agent: 5, system: 1, unattributed: 4 },
       byFleetMembership: { member: 3, nonMember: 3, unattributed: 4 },
       byAuthority: { committed: 3, proposed: 2, validated: 1, 'legacy-null': 4 },
+    });
+  });
+
+  it('projects the fleet audit row from durable terminal attribution and structured evidence', () => {
+    expect(projectFleetTerminalCompletion({
+      feature_id: 'WI-42',
+      item_kind: 'change',
+      title: 'Add the fleet completion feed',
+      status: 'done',
+      terminal_owner: 'su-member',
+      terminal_completion_ref: 'verified implementation',
+      completion_evidence: {
+        verifiedHow: 'unit',
+        testsRun: 'npm run test:file -- fleet-campaign.test.ts',
+        testResult: 'green',
+        addedTests: true,
+        filesChanged: ['fleet-campaign.ts'],
+      },
+      authority: 'committed',
+      closed_ts: Date.UTC(2026, 7, 23),
+    })).toEqual({
+      id: 'WI-42',
+      kind: 'change',
+      title: 'Add the fleet completion feed',
+      status: 'done',
+      terminalOwner: 'su-member',
+      terminalCompletionRef: 'verified implementation',
+      completionEvidence: {
+        verifiedHow: 'unit',
+        testsRun: 'npm run test:file -- fleet-campaign.test.ts',
+        testResult: 'green',
+        addedTests: true,
+        filesChanged: ['fleet-campaign.ts'],
+      },
+      verifiedHow: 'unit',
+      addedTests: true,
+      completionAuthority: 'committed',
+      countsTowardBurnDown: true,
+      terminalizedAt: '2026-08-23T00:00:00.000Z',
+    });
+  });
+
+  it('drops malformed legacy completion evidence without losing attribution', () => {
+    expect(projectFleetTerminalCompletion({
+      feature_id: 'EI-legacy',
+      item_kind: 'bug',
+      title: null,
+      status: 'resolved',
+      terminal_owner: 'su-member',
+      terminal_completion_ref: null,
+      completion_evidence: { filesChanged: 'not-an-array' },
+      authority: null,
+      closed_ts: 0,
+    })).toMatchObject({
+      id: 'EI-legacy',
+      terminalOwner: 'su-member',
+      completionEvidence: null,
+      verifiedHow: null,
+      addedTests: null,
+      completionAuthority: null,
+      countsTowardBurnDown: true,
     });
   });
 });
