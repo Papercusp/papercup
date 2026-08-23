@@ -101,9 +101,22 @@ interface EpochEncryptRefreshState {
  * same-realm split class, and a second wire-outbox module record must not make a
  * live drain invisible to the re-key hook that needs to refresh it.
  */
-const { epochEncryptByHandle } = pinModuleState('@papercusp/operator-core.hyperbeeWireOutbox', () => ({
-  epochEncryptByHandle: new WeakMap<BootedHarnessHandle, EpochEncryptRefreshState>(),
-}));
+const { epochEncryptByHandle, epochEncryptByScope } = pinModuleState(
+  '@papercusp/operator-core.hyperbeeWireOutbox',
+  () => ({
+    epochEncryptByHandle: new WeakMap<BootedHarnessHandle, EpochEncryptRefreshState>(),
+    // WI-40905 exact witness: production re-key can re-enter through an
+    // equivalent BootedHarnessHandle facade for the same live sidecar store.
+    // Object identity is therefore not a durable lookup key for the drain's
+    // controller. Keep the handle WeakMap for the common path, plus the same
+    // process-global scope key boot-all/send-side idempotence already uses.
+    epochEncryptByScope: new Map<string, EpochEncryptRefreshState>(),
+  }),
+);
+
+function epochEncryptScope(handle: BootedHarnessHandle): string {
+  return `${handle.workspaceId}::${handle.harnessSlug}`;
+}
 
 /**
  * Refresh the epoch-encrypt capability owned by an already-running outbox
@@ -117,10 +130,12 @@ const { epochEncryptByHandle } = pinModuleState('@papercusp/operator-core.hyperb
  * would violate the read cut. Initial private-harness null still stays absent.
  */
 export async function refreshOutboxEpochEncryptForHarness(handle: BootedHarnessHandle): Promise<boolean> {
-  const state = epochEncryptByHandle.get(handle);
+  const state = epochEncryptByHandle.get(handle) ?? epochEncryptByScope.get(epochEncryptScope(handle));
   if (!state) return false;
-  await state.refresh();
-  return true;
+  // Return encryption READINESS, not merely "a controller object existed".
+  // Callers can now distinguish a successful refresh from the dangerous
+  // PRE-Hive/null state instead of silently treating both as refreshed.
+  return state.refresh();
 }
 
 function createEpochEncryptRefreshState(
@@ -188,6 +203,8 @@ export async function wireOutboxForHarness(
   // started once.
   const rekeyState = createEpochEncryptRefreshState(handle, deps.buildHiveRekeyBootDeps ?? buildHiveRekeyBootDeps);
   epochEncryptByHandle.set(handle, rekeyState);
+  const scope = epochEncryptScope(handle);
+  epochEncryptByScope.set(scope, rekeyState);
   await rekeyState.refresh();
 
   const start = deps.startOutboxDrain ?? realStartOutboxDrain;
@@ -260,7 +277,10 @@ export async function wireOutboxForHarness(
 
   // (3) Register the stopper as a close-hook so shutdown releases the LISTEN
   // connection + poll timer exactly once (the handle drains its hook set once).
-  handle.registerCloseHook(() => drain.stop());
+  handle.registerCloseHook(() => {
+    if (epochEncryptByScope.get(scope) === rekeyState) epochEncryptByScope.delete(scope);
+    return drain.stop();
+  });
 
   return drain;
 }

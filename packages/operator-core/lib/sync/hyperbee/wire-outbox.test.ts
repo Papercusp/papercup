@@ -165,6 +165,38 @@ describe('wireOutboxForHarness (Stage 5)', () => {
     expect(startOpts?.resolveEpochEncrypt?.()).toBe(epochEncrypt);
   });
 
+  it('refreshes through an equivalent handle facade for the same live scope', async () => {
+    const stop = vi.fn(async () => {});
+    let startOpts: StartDrainOptions | undefined;
+    const epochEncrypt: EpochEncryptCapability = {
+      encryptOp: vi.fn(async () => ({ epoch: 1, value: { __rekey: 'scope-refreshed' } })),
+    };
+    const buildRekeyDeps = vi
+      .fn<() => Promise<HiveRekeyBootDeps | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ epochEncrypt } as HiveRekeyBootDeps);
+
+    const wired = makeHandle();
+    await wireOutboxForHarness(wired.handle, fakePg, {
+      backfillLocalState: async () => ({ skipped: true, enqueued: 0, dropped: 0 }),
+      startOutboxDrain: (_handle, _pg, opts) => {
+        startOpts = opts;
+        return { stop };
+      },
+      buildHiveRekeyBootDeps: buildRekeyDeps,
+    });
+
+    // Production sidecar/routing seams may reconstruct a facade while the
+    // original drain remains live. The scope is stable even when identity is not.
+    const equivalent = makeHandle().handle;
+    expect(equivalent).not.toBe(wired.handle);
+    expect(await refreshOutboxEpochEncryptForHarness(equivalent)).toBe(true);
+    expect(startOpts?.resolveEpochEncrypt?.()).toBe(epochEncrypt);
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(2);
+
+    await wired.runCloseHooks();
+  });
+
   describe('WI-1942: bounded retry on a BAILED backfill', () => {
     // TIMER SEAM — the constraint here is two-sided, and both sides are load-bearing.
     //
