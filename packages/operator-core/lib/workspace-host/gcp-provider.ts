@@ -999,9 +999,7 @@ function stepInput(step: WorkspaceHostPlanStep): GcpStepInput {
 }
 
 function hostIdFor(request: WorkspaceHostPlanRequest): string {
-  return request.action === 'provision' || request.action === 'restore'
-    ? request.desired.hostId
-    : request.host.hostId;
+  return request.action === 'provision' || request.action === 'restore' ? request.desired.hostId : request.host.hostId;
 }
 
 function refName(value: string): string {
@@ -1094,10 +1092,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       if (request.desired.hostId === request.host.hostId) {
         throw new Error('GCP restore must create a distinct target host');
       }
-      if (
-        request.snapshot.target !== GCP_WORKSPACE_HOST_TARGET ||
-        request.snapshot.hostId !== request.host.hostId
-      ) {
+      if (request.snapshot.target !== GCP_WORKSPACE_HOST_TARGET || request.snapshot.hostId !== request.host.hostId) {
         throw new Error('GCP restore snapshot must belong to the exact source host');
       }
       const sourceProject = request.host.resources.find(

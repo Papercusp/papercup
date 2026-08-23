@@ -17,13 +17,15 @@ export type WorkspaceHostScopeKind = string;
 export type WorkspaceHostResourceKind = string;
 
 /** A typed reference into a host-owned resolver. `ref` is never a secret value. */
-export interface WorkspaceHostCredentialReference<Kind extends 'cloud' | 'git' | 'agent'> {
+export interface WorkspaceHostCredentialReference<
+  Kind extends "cloud" | "git" | "agent",
+> {
   readonly kind: Kind;
   readonly ref: string;
 }
-export type CloudCredentialRef = WorkspaceHostCredentialReference<'cloud'>;
-export type GitCredentialRef = WorkspaceHostCredentialReference<'git'>;
-export type AgentCredentialRef = WorkspaceHostCredentialReference<'agent'>;
+export type CloudCredentialRef = WorkspaceHostCredentialReference<"cloud">;
+export type GitCredentialRef = WorkspaceHostCredentialReference<"git">;
+export type AgentCredentialRef = WorkspaceHostCredentialReference<"agent">;
 
 /** Cloud, Git, and agent authorization remain separate channels. */
 export interface WorkspaceHostCredentialRefs {
@@ -87,7 +89,7 @@ export interface WorkspaceHostPriceEstimate {
   hourlyAmount: number;
   monthlyAmount?: number;
   observedAt: string;
-  confidence: 'exact' | 'estimated' | 'unknown';
+  confidence: "exact" | "estimated" | "unknown";
   lineItems?: readonly WorkspaceHostPriceLineItem[];
 }
 export interface WorkspaceHostConnectionValidation {
@@ -99,17 +101,18 @@ export interface WorkspaceHostConnectionValidation {
 }
 
 export const WORKSPACE_HOST_LIFECYCLE_ACTIONS = [
-  'provision',
-  'start',
-  'stop',
-  'restart',
-  'snapshot',
-  'restore',
-  'upgrade',
-  'repair',
-  'destroy',
+  "provision",
+  "start",
+  "stop",
+  "restart",
+  "snapshot",
+  "restore",
+  "upgrade",
+  "repair",
+  "destroy",
 ] as const;
-export type WorkspaceHostLifecycleAction = (typeof WORKSPACE_HOST_LIFECYCLE_ACTIONS)[number];
+export type WorkspaceHostLifecycleAction =
+  (typeof WORKSPACE_HOST_LIFECYCLE_ACTIONS)[number];
 
 export interface WorkspaceHostDiscoveryCapabilities {
   scopes: boolean;
@@ -143,15 +146,22 @@ export interface WorkspaceHostTransportFeatureSet {
   fileTransfer: boolean;
   clipboard?: boolean;
 }
-export type WorkspaceHostTransportFeature = keyof WorkspaceHostTransportFeatureSet;
-export type WorkspaceHostTransportTrafficClass = 'interactive' | 'bulk-transfer';
-export type WorkspaceHostTransportSuitability = 'recommended' | 'supported' | 'discouraged' | 'unsupported';
+export type WorkspaceHostTransportFeature =
+  keyof WorkspaceHostTransportFeatureSet;
+export type WorkspaceHostTransportTrafficClass =
+  | "interactive"
+  | "bulk-transfer";
+export type WorkspaceHostTransportSuitability =
+  | "recommended"
+  | "supported"
+  | "discouraged"
+  | "unsupported";
 export type WorkspaceHostTransportRequirementKind =
-  | 'client-tool'
-  | 'client-plugin'
-  | 'remote-agent'
-  | 'provider-permission'
-  | 'network';
+  | "client-tool"
+  | "client-plugin"
+  | "remote-agent"
+  | "provider-permission"
+  | "network";
 export interface WorkspaceHostTransportRequirement {
   /** Stable key used to join provider requirements with preflight observations. */
   id: string;
@@ -161,7 +171,11 @@ export interface WorkspaceHostTransportRequirement {
   platforms?: readonly string[];
   requiredFor: readonly WorkspaceHostTransportFeature[];
 }
-export type WorkspaceHostTransportLimitKind = 'session-duration' | 'idle-timeout' | 'concurrency' | 'throughput';
+export type WorkspaceHostTransportLimitKind =
+  | "session-duration"
+  | "idle-timeout"
+  | "concurrency"
+  | "throughput";
 export interface WorkspaceHostTransportLimits {
   sessionDurationMinutes?: number;
   idleTimeoutMinutes?: number;
@@ -172,12 +186,16 @@ export interface WorkspaceHostTransportLimits {
   notes: readonly string[];
 }
 export interface WorkspaceHostTransportProxyPolicy {
-  mode: 'supported' | 'allowlist-required' | 'provider-dependent' | 'unsupported';
+  mode:
+    | "supported"
+    | "allowlist-required"
+    | "provider-dependent"
+    | "unsupported";
   requiredDomains?: readonly string[];
   notes: readonly string[];
 }
 export interface WorkspaceHostTransportCostPolicy {
-  model: 'included' | 'network-metered' | 'provider-metered' | 'third-party';
+  model: "included" | "network-metered" | "provider-metered" | "third-party";
   requiredSkus?: readonly string[];
   meters: readonly string[];
   notes: readonly string[];
@@ -190,20 +208,28 @@ export interface WorkspaceHostTransportAuditPolicy {
   notes: readonly string[];
 }
 export interface WorkspaceHostTransportHostKeyPolicy {
-  initialEnrollment: 'verify-before-connect' | 'provider-managed' | 'not-applicable';
-  replacement: 'block-and-reverify' | 'provider-managed' | 'not-applicable';
+  initialEnrollment:
+    | "verify-before-connect"
+    | "provider-managed"
+    | "not-applicable";
+  replacement: "block-and-reverify" | "provider-managed" | "not-applicable";
   notes: readonly string[];
 }
 export interface WorkspaceHostTransportFallback {
   feature: WorkspaceHostTransportFeature;
   trafficClass?: WorkspaceHostTransportTrafficClass;
-  strategy: 'alternate-transport' | 'provider-object-storage' | 'unsupported';
+  strategy: "alternate-transport" | "provider-object-storage" | "unsupported";
   transportKind?: string;
   description: string;
 }
 export interface WorkspaceHostTransportCompatibilityContract {
   requirements: readonly WorkspaceHostTransportRequirement[];
-  traffic: Readonly<Record<WorkspaceHostTransportTrafficClass, WorkspaceHostTransportSuitability>>;
+  traffic: Readonly<
+    Record<
+      WorkspaceHostTransportTrafficClass,
+      WorkspaceHostTransportSuitability
+    >
+  >;
   limits: WorkspaceHostTransportLimits;
   proxy: WorkspaceHostTransportProxyPolicy;
   cost: WorkspaceHostTransportCostPolicy;
@@ -219,7 +245,7 @@ export interface WorkspaceHostTransportProfile {
   features: WorkspaceHostTransportFeatureSet;
   prerequisites: readonly string[];
   constraints: readonly string[];
-  reconnect: 'resume' | 'recreate' | 'unsupported';
+  reconnect: "resume" | "recreate" | "unsupported";
   sessionLimit?: number;
   throughputMbps?: number;
   audited: boolean;
@@ -282,11 +308,21 @@ interface WorkspaceHostOperationBase {
   idempotencyKey: string;
 }
 export type WorkspaceHostPlanRequest =
-  | (WorkspaceHostOperationBase & { action: 'provision'; desired: WorkspaceHostDesiredSpec })
-  | (WorkspaceHostOperationBase & { action: 'start' | 'stop' | 'restart' | 'repair'; host: WorkspaceHostRef })
-  | (WorkspaceHostOperationBase & { action: 'snapshot'; host: WorkspaceHostRef; name?: string })
   | (WorkspaceHostOperationBase & {
-      action: 'restore';
+      action: "provision";
+      desired: WorkspaceHostDesiredSpec;
+    })
+  | (WorkspaceHostOperationBase & {
+      action: "start" | "stop" | "restart" | "repair";
+      host: WorkspaceHostRef;
+    })
+  | (WorkspaceHostOperationBase & {
+      action: "snapshot";
+      host: WorkspaceHostRef;
+      name?: string;
+    })
+  | (WorkspaceHostOperationBase & {
+      action: "restore";
       /** Source host remains intact until the recovered host is independently verified. */
       host: WorkspaceHostRef;
       snapshot: WorkspaceHostSnapshotRef;
@@ -294,16 +330,20 @@ export type WorkspaceHostPlanRequest =
       desired: WorkspaceHostDesiredSpec;
     })
   | (WorkspaceHostOperationBase & {
-      action: 'upgrade';
+      action: "upgrade";
       host: WorkspaceHostRef;
       image: WorkspaceHostImageRef;
       rollbackImage?: WorkspaceHostImageRef;
     })
   | (WorkspaceHostOperationBase & {
-      action: 'destroy';
+      action: "destroy";
       host: WorkspaceHostRef;
-      disposition: 'snapshot' | 'backup' | 'discard';
-      confirmation: { expectedHostId: string; confirmedBy: string; confirmedAt: string };
+      disposition: "snapshot" | "backup" | "discard";
+      confirmation: {
+        expectedHostId: string;
+        confirmedBy: string;
+        confirmedAt: string;
+      };
     });
 
 /**
@@ -343,37 +383,40 @@ interface WorkspaceHostApplyResultBase {
 }
 export type WorkspaceHostApplyResult =
   | (WorkspaceHostApplyResultBase & {
-      state: 'applied' | 'unchanged';
+      state: "applied" | "unchanged";
       /** Newly created/observed identity to persist before dependent work. */
       resource?: WorkspaceHostResourceRef;
       snapshot?: WorkspaceHostSnapshotRef;
     })
-  | (WorkspaceHostApplyResultBase & { state: 'in-progress'; retryAfterMs?: number })
   | (WorkspaceHostApplyResultBase & {
-      state: 'destroyed';
+      state: "in-progress";
+      retryAfterMs?: number;
+    })
+  | (WorkspaceHostApplyResultBase & {
+      state: "destroyed";
       /** Valid only after a fresh provider read observes absence. */
       confirmation: WorkspaceHostDestroyConfirmation;
     });
 export interface WorkspaceHostReconcileRequest extends WorkspaceHostApplyRequest {
-  reason: 'ambiguous-timeout' | 'resume' | 'drift';
+  reason: "ambiguous-timeout" | "resume" | "drift";
   previousProviderRequestId?: string;
 }
 export interface WorkspaceHostDestroyConfirmation {
   hostId: string;
   providerResourceId: string;
   confirmedAbsentAt: string;
-  source: 'provider-read';
+  source: "provider-read";
   providerRequestId?: string;
 }
 
 export type WorkspaceHostLifecycleState =
-  | 'provisioning'
-  | 'running'
-  | 'stopped'
-  | 'degraded'
-  | 'repairing'
-  | 'destroying'
-  | 'absent';
+  | "provisioning"
+  | "running"
+  | "stopped"
+  | "degraded"
+  | "repairing"
+  | "destroying"
+  | "absent";
 export interface WorkspaceHostObservation {
   host: WorkspaceHostRef;
   state: WorkspaceHostLifecycleState;
@@ -390,21 +433,25 @@ export interface WorkspaceHostHealthCheck {
 export interface WorkspaceHostHealthAttestation {
   hostId: string;
   observedAt: string;
-  status: 'healthy' | 'degraded' | 'unreachable';
+  status: "healthy" | "degraded" | "unreachable";
   image?: WorkspaceHostImageRef;
   bootstrapVersion?: string;
   checks: readonly WorkspaceHostHealthCheck[];
   attestation?: string;
 }
 
-export type WorkspaceHostLogLevel = 'info' | 'warn' | 'error';
+export type WorkspaceHostLogLevel = "info" | "warn" | "error";
 export interface WorkspaceHostProviderContext {
   workspaceId: string;
   requestId: string;
   connection: WorkspaceHostProviderConnection;
   actorId?: string;
   signal?: AbortSignal;
-  log?: (level: WorkspaceHostLogLevel, message: string, extra?: Record<string, unknown>) => void;
+  log?: (
+    level: WorkspaceHostLogLevel,
+    message: string,
+    extra?: Record<string, unknown>,
+  ) => void;
 }
 export interface WorkspaceHostCatalogQuery {
   scope: WorkspaceHostScopeRef;
@@ -421,17 +468,51 @@ export interface WorkspaceHostProvider {
   readonly target: WorkspaceHostProviderTarget;
   readonly capabilities: WorkspaceHostProviderCapabilities;
 
-  validateConnection(ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostConnectionValidation>;
-  listScopes(ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostScope[]>;
-  listRegions(query: WorkspaceHostCatalogQuery, ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostRegion[]>;
-  listSizes(query: WorkspaceHostCatalogQuery, ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostSize[]>;
-  listImages(query: WorkspaceHostCatalogQuery, ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostImage[]>;
-  estimatePrice(desired: WorkspaceHostDesiredSpec, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPriceEstimate>;
+  validateConnection(
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostConnectionValidation>;
+  listScopes(
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<readonly WorkspaceHostScope[]>;
+  listRegions(
+    query: WorkspaceHostCatalogQuery,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<readonly WorkspaceHostRegion[]>;
+  listSizes(
+    query: WorkspaceHostCatalogQuery,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<readonly WorkspaceHostSize[]>;
+  listImages(
+    query: WorkspaceHostCatalogQuery,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<readonly WorkspaceHostImage[]>;
+  estimatePrice(
+    desired: WorkspaceHostDesiredSpec,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostPriceEstimate>;
 
-  plan(request: WorkspaceHostPlanRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPlan>;
-  apply(request: WorkspaceHostApplyRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostApplyResult>;
-  observe(host: WorkspaceHostRef, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostObservation>;
-  reconcile(request: WorkspaceHostReconcileRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostApplyResult>;
-  getTransportProfile(host: WorkspaceHostRef, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostTransportProfile>;
-  attestHealth(host: WorkspaceHostRef, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostHealthAttestation>;
+  plan(
+    request: WorkspaceHostPlanRequest,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostPlan>;
+  apply(
+    request: WorkspaceHostApplyRequest,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostApplyResult>;
+  observe(
+    host: WorkspaceHostRef,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostObservation>;
+  reconcile(
+    request: WorkspaceHostReconcileRequest,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostApplyResult>;
+  getTransportProfile(
+    host: WorkspaceHostRef,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostTransportProfile>;
+  attestHealth(
+    host: WorkspaceHostRef,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostHealthAttestation>;
 }

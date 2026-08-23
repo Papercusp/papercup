@@ -625,9 +625,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     const body = {
       ...rest,
       type: resourcePath(type, `zones/${zone}/diskTypes`),
-      ...(sourceSnapshot
-        ? { sourceSnapshot: resourcePath(sourceSnapshot, 'global/snapshots') }
-        : {}),
+      ...(sourceSnapshot ? { sourceSnapshot: resourcePath(sourceSnapshot, 'global/snapshots') } : {}),
     };
     return this.mutate(
       projectId,
