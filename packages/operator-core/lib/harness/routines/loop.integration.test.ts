@@ -427,6 +427,41 @@ describe('loop surface round-trip (real PG)', () => {
     expect(new Date(second!.armedAt!).getTime()).toBe(t1.getTime());
   });
 
+  it('EI-21207093794475760: an inactive-only repair cannot clobber an explicit active 1200-second arm', async () => {
+    const explicitGoal = 'continue the fleet monitor at the widened fallback cadence';
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 1200,
+      kickoff: 'explicit monitor kickoff',
+      goal: explicitGoal,
+      mode: 'monitor',
+      sql,
+    });
+
+    // Model the stale leader-control repair: it still carries the old 60-second
+    // defaults, but its row lock is acquired after the explicit arm committed.
+    const staleRepair = await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'stale leader-control kickoff',
+      mode: 'monitor',
+      onlyIfInactive: true,
+      sql,
+    });
+
+    expect(staleRepair.changed).toBe(false);
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({
+      active: true,
+      intervalSec: 1200,
+      mode: 'monitor',
+      goal: explicitGoal,
+    });
+  });
+
   it('deactivateLoop stops the loop (idempotent on the active guard)', async () => {
     await materializeLoop({
       workspaceId: WS,

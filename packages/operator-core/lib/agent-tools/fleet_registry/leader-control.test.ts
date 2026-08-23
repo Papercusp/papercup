@@ -248,6 +248,7 @@ describe('ensureFleetLeaderControl', () => {
         intervalSec: 300,
         carry: 'cold',
         mode: 'work',
+        onlyIfInactive: true,
       }),
     );
     expect(registerAwait).toHaveBeenCalledTimes(5);
@@ -314,6 +315,7 @@ describe('ensureFleetLeaderControl', () => {
         boundTo: { kind: 'loop', ref: 'loop-1' },
       },
     ]);
+    materializeLoop.mockResolvedValue({ changed: true, intervalSec: 1200 });
 
     const out = await ensureFleetLeaderControl(input);
 
@@ -334,6 +336,7 @@ describe('ensureFleetLeaderControl', () => {
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      onlyIfInactive: true,
       customWakePrompt: true,
     });
     expect(registerAwait).not.toHaveBeenCalled();

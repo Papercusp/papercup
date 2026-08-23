@@ -357,7 +357,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
         continuation,
         mode,
       });
-      await materializeLoop({
+      const materialized = await materializeLoop({
         workspaceId: input.workspaceId,
         harnessSlug: harness,
         ownerId: input.ownerId,
@@ -367,13 +367,16 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
         carry,
         continuation,
         mode,
+        // This is a repair of a stale/inactive loop read. The row-level guard
+        // must yield to an explicit loop:arm that wins the race after our read.
+        onlyIfInactive: true,
         ...(priorLoopFacts?.customWakePrompt === true ? { customWakePrompt: true } : {}),
       });
       loop.healthy = true;
-      loop.changed = true;
-      loop.intervalSec = intervalSec;
+      loop.changed = materialized.changed;
+      loop.intervalSec = materialized.intervalSec ?? intervalSec;
       loop.mode = mode;
-      repaired = true;
+      repaired ||= materialized.changed;
     } catch (error) {
       loop.error = error instanceof Error ? error.message : String(error);
       errors.push(`loop: ${loop.error}`);

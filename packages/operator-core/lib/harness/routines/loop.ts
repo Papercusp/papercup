@@ -322,6 +322,13 @@ export interface MaterializeLoopInput {
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
+   * Recovery-only compare-and-swap guard. When true, an active row that wins the
+   * row lock is returned unchanged instead of being overwritten. This protects
+   * a stale repair read from clobbering an explicit loop:arm that committed
+   * between the repair's read and its materialization.
+   */
+  onlyIfInactive?: boolean;
+  /**
    * Seconds from now to the FIRST fire. Default = intervalSec, so the first wake
    * lands one interval after arming (giving the arming turn time to end first).
    * After the first fire the completion-rebase (B-LOOP-2) owns re-arming off each
@@ -341,7 +348,14 @@ export interface MaterializeLoopInput {
  */
 export async function materializeLoop(
   input: MaterializeLoopInput,
-): Promise<{ id: string; name: string; nextFireAt: Date | null; targetRole: string }> {
+): Promise<{
+  id: string;
+  name: string;
+  nextFireAt: Date | null;
+  targetRole: string;
+  intervalSec: number | null;
+  changed: boolean;
+}> {
   const sql = input.sql ?? getOrgPg().sql;
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const now = input.now ?? new Date();
@@ -385,13 +399,18 @@ export async function materializeLoop(
   const existing = await sql<
     Array<{
       id: string;
+      name: string;
       install_slug: string;
       active: boolean;
       last_fired_at: Date | string | null;
       payload_template: Record<string, unknown> | null;
+      next_fire_at: Date | string | null;
+      target_role: string;
+      reschedule_interval_sec: number | null;
     }>
   >`
-    SELECT id, install_slug, active, last_fired_at, payload_template
+    SELECT id, name, install_slug, active, last_fired_at, payload_template,
+           next_fire_at, target_role, reschedule_interval_sec
       FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId}
        AND name = ${name}
@@ -400,6 +419,17 @@ export async function materializeLoop(
      ORDER BY (install_slug = ${input.harnessSlug}) DESC, active DESC, updated_at DESC
      FOR UPDATE
   `;
+  if (input.onlyIfInactive && existing[0]?.active === true) {
+    const active = existing[0];
+    return {
+      id: active.id,
+      name: active.name,
+      nextFireAt: normalizeNextFireAt(active.next_fire_at),
+      targetRole: active.target_role,
+      intervalSec: active.reschedule_interval_sec == null ? null : Number(active.reschedule_interval_sec),
+      changed: false,
+    };
+  }
   // EI-20194544581627100: a retune/reset may intentionally omit the goal while
   // changing cadence or kickoff. Keep the durable mission instead of replacing
   // payload_template with a row whose goal is silently null. An explicit non-empty
@@ -489,7 +519,14 @@ export async function materializeLoop(
       `[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`,
     );
   }
-  return { id: row.id, name: row.name, nextFireAt: row.nextFireAt, targetRole: row.targetRole };
+  return {
+    id: row.id,
+    name: row.name,
+    nextFireAt: row.nextFireAt,
+    targetRole: row.targetRole,
+    intervalSec: input.intervalSec,
+    changed: true,
+  };
 }
 
 /**
