@@ -96,20 +96,31 @@ export interface RecipeAuthorityMetadata {
   requiresContext: boolean;
   runnable: boolean;
   /**
-   * WI-40896 / D-048: whether `refs` is a MEASUREMENT or merely an empty set.
+   * WI-40896 / D-048: whether `refs` is a COMPLETE measurement or a FLOOR.
    *
-   * When `deriveRecipeAuthority` hits an unprovable construct it returns early
-   * (see `inspectCall`'s dynamic-dispatch branch, which fires BEFORE
-   * `collectArgs`), so that call's identities are never collected. `bound` is
-   * then computed over the uncollected refs and comes out `false`. The result
-   * rendered `refs: {}` + `requiresContext: false` — indistinguishable from a
-   * recipe that genuinely needs no authority, when it actually means the
-   * authority COULD NOT BE MEASURED. On a safety surface a not-measured value
-   * rendered as an absent one is the defect, not the empty set itself.
+   * `inspectCall` returns its cause BEFORE calling `collectArgs` on the
+   * offending call (see the `tools:invoke` dynamic-dispatch branch), so that
+   * one call's identities are never collected. The caller loop deliberately
+   * keeps inspecting every OTHER call, so `refs` is not emptied — it is
+   * under-counted. Two shapes follow, and both used to render as a confident
+   * answer:
+   *   - dynamic call ALONE     -> `refs: {}` + `requiresContext: false`,
+   *     indistinguishable from a recipe that genuinely needs no authority;
+   *   - dynamic + static calls -> non-empty `refs` + `requiresContext: true`,
+   *     which reads as a complete authority set while silently omitting
+   *     whatever the dynamic call would have touched.
    *
    * This is the same boundedness marker the repo already requires beside a
    * count computed over a capped fetch: state the boundedness ON the value, so
    * a floor is never read as a total.
+   *
+   * NOT redundant with `runnable`, which is co-extensive with it TODAY.
+   * `runnable` is a verdict about EXECUTION ("do not run this"); `refsMeasured`
+   * scopes to the `refs`/`requiresContext` fields ("what you are reading
+   * under-reports"). A consumer that uses `refs` for anything other than
+   * run-gating — display, matching, impact analysis — is not guarded by
+   * `runnable` at all, and the second shape above is exactly where it would be
+   * misled.
    *
    * Optional so older stored/round-tripped payloads do not strand — and
    * deliberately so: absent reads as `undefined` → falsy → "not measured",
@@ -123,6 +134,33 @@ export interface RecipeAuthorityMetadata {
    * an unmeasurable script from a context-free one. Null when resolvable.
    */
   unresolvedCause?: RecipeUnresolvedCause | null;
+}
+
+/**
+ * WI-40896 / D-048: the SOLE projection from an analysis descriptor to the
+ * `recipes:get` authority metadata.
+ *
+ * Extracted so the discrimination it encodes — an authority that could not be
+ * MEASURED versus one that is genuinely context-free — is assertable without
+ * the tool's database scaffolding, and so the mapping lives in exactly one
+ * place. Its being inlined at the call site is what let `refsMeasured` and
+ * `unresolvedCause` go unrendered while the descriptor had carried them all
+ * along: a projection nobody can test is a projection nobody notices dropping
+ * a field.
+ */
+export function toRecipeAuthorityMetadata(
+  descriptor: RecipeAuthorityDescriptor,
+  revision: string,
+): RecipeAuthorityMetadata {
+  return {
+    version: 1,
+    revision,
+    refs: descriptor.refs,
+    requiresContext: descriptor.bound,
+    runnable: !descriptor.unresolved,
+    refsMeasured: !descriptor.unresolved,
+    unresolvedCause: descriptor.unresolvedCause ?? null,
+  };
 }
 
 export interface RecipeAuthorityRecommendation {

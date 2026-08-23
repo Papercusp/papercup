@@ -91,20 +91,15 @@ export default defineTool({
             lastRunAt: recipe.lastRunAt,
             status: recipe.status,
             tags: recipe.tags,
-            authority: {
-              version: 1,
-              revision: recipeRevision(recipe.script, updatedAt, recipe),
-              refs: authority.refs,
-              requiresContext: authority.bound,
-              runnable: !authority.unresolved,
-              // WI-40896 / D-048: an unresolved analysis collects NO refs (inspectCall
-              // returns before collectArgs), so `refs: {}` + `requiresContext: false`
-              // used to be indistinguishable from "this recipe needs no authority" when
-              // it actually meant "authority could not be measured". Carry the
-              // boundedness marker and the cause so the caller can tell them apart.
-              refsMeasured: !authority.unresolved,
-              unresolvedCause: authority.unresolvedCause ?? null,
-            },
+            // WI-40896 / D-048: one projection, in recipe-authority.ts, so the
+            // rendering cannot silently drop a field the descriptor carries.
+            // It adds `refsMeasured` + `unresolvedCause`, without which an
+            // authority that could not be MEASURED is indistinguishable from a
+            // recipe that genuinely needs none.
+            authority: toRecipeAuthorityMetadata(
+              authority,
+              recipeRevision(recipe.script, updatedAt, recipe),
+            ),
           },
         };
       },
