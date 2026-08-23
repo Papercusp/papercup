@@ -353,6 +353,48 @@ describe('background jobs', () => {
     expect(readFileSync(final.logPath, 'utf8')).toContain('status=failed');
   });
 
+  it('persists the normalized missing-command exit code for processes:list', async () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'missing-command-ledger-task',
+      confined: false,
+      unconfinedReason: 'caller-veto',
+      unitKind: 'service',
+      scopeUnit: null,
+      enrolled: true,
+      registrationReady: null,
+      wrap: (binary, argv) => ({ binary, argv }),
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation((enrolment) => {
+      enrolment.registrationReady = Promise.resolve();
+    });
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+
+    try {
+      const job = startBackground(
+        {
+          command: `printf '%s\\n' "$(papercusp-ledger-command-that-is-not-installed)" | head -1`,
+          cwd: STATE,
+          stateDir: STATE,
+        },
+        10_000,
+      );
+      await waitForStatus(job.id);
+
+      const final = getJob(job.id)!;
+      expect(final.status).toBe('failed');
+      expect(final.exitCode).toBe(127);
+      expect(finish).toHaveBeenCalledWith(
+        expect.objectContaining({ taskId: 'missing-command-ledger-task' }),
+        expect.objectContaining({ state: 'exited', exitCode: 127 }),
+        expect.any(Object),
+      );
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+      finish.mockRestore();
+    }
+  });
+
   it('kills a running job', async () => {
     const job = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
     expect(job.status).toBe('running');
