@@ -5090,10 +5090,10 @@ export function claimHoldExclusionSql(
   sql: OrgSql,
   // WI-5343: which payload column this predicate reads. The issue-family callers run in a
   // `FROM … work_items wi` context (aliased `wi.payload`, the default); a FEATURE-family
-  // caller (harness_features_consolidated, unaliased) passes 'payload' — same dual-form
-  // shape as {@link crossMachineRigExclusionSql}. A closed literal union, never interpolated
-  // user input, so composing it via sql.unsafe is injection-safe.
-  payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
+  // caller (harness_features_consolidated, unaliased) passes 'payload'; the stranded
+  // checkpoint reader uses the explicit `ei` view alias. A closed literal union, never
+  // interpolated user input, so composing it via sql.unsafe is injection-safe.
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' = 'wi.payload',
 ) {
   // COALESCE the payload so a NULL-payload row (no hold tag) reads as '{}'::jsonb->>'...' =
   // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).

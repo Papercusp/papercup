@@ -29,6 +29,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { checkpointDeclaresTerminal } from './checkpoint-terminal-claim';
 import { detectBgJobCheckpointClaim } from './checkpoint-bg-job-claim';
+import { claimHoldExclusionSql } from './work-items';
 
 /**
  * The auto-appended tool-log section, stripped before the head is cut.
@@ -260,6 +261,10 @@ export async function scanStrandedCheckpoints(args: {
      WHERE cn.workspace_id = ${args.workspaceId}
        AND cn.scope LIKE 'workitem:%'
        AND ei.state = 'open'
+       -- WI-2797: a claim-held row is deliberately parked out of self-select. It is
+       -- still open and directly claimable by id, but it is not stranded work for this
+       -- queue; apply the shared floor before the classifier and its aggregate counts.
+       AND ${claimHoldExclusionSql(sql, 'ei.payload')}
        AND (${harnessScope}::text IS NULL OR ei.scope = ${harnessScope})`;
 
   return classifyStrandedRows(rows, {
