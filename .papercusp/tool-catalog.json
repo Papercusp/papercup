@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 803,
+  "count": 802,
   "tools": [
     {
       "name": "ablation:report",
@@ -23115,7 +23115,7 @@
           "POST"
         ]
       },
-      "description": "Emit a self-verifying federation probe: stamps required federation keys (workspace_id, harness_slug) and REFUSES LOUDLY (never silently) when the target harness cannot federate — fixes 2026-07-10 cause #10, where every prior ad-hoc \"v2t\" marker probe was unstamped and green was unreachable for ~6h with nothing saying so. Tracked durably with a `captured` hop stamped; later hops (drain/replicate/merge/member_guard/project) are DESIGNED to land via probe:record-hop but no pipeline stage calls it yet (WI-3962) — read with probe:get { expectedHops:[\"captured\"] } for a trustworthy verdict today.",
+      "description": "Emit a captured-only federation diagnostic declaration: stamp the required workspace_id and harness_slug and REFUSE LOUDLY (never silently) when the target harness cannot federate. A successful receipt proves local capture of a correctly stamped declaration; it is NOT proof of drain, replication, merge, member-guard, projection, or end-to-end federation health.",
       "capabilities": [
         "coord:write"
       ],
@@ -23134,7 +23134,7 @@
       "guidance": {
         "when": "Proving a federation/replication claim is REAL, not just \"looks green\" — verifying a fresh 2-machine rig federates content, diagnosing a \"rosters but no content\" stall, or replacing an ad-hoc marker write (the v2t convention) with something that cannot be emitted unstamped.",
         "notWhen": "Routine coord messaging or an ordinary content write (features/issues/plans) — a probe is diagnostic, not a deliverable. Not a substitute for events:emit/events:await (in-process wake, not a federation-pipeline check).",
-        "chaining": "probe:emit → probe:get { probeKey } to read the verdict; pipeline-stage code calls probe:record-hop as the op is observed at each stage."
+        "chaining": "probe:emit → probe:get { probeKey } to read the captured/refused receipt; use real outbox/merge/remote-origin evidence for federation health."
       }
     },
     {
@@ -23145,7 +23145,7 @@
           "POST"
         ]
       },
-      "description": "Read a probe:emit-created federation probe: its per-hop receipts (captured/drained/replicated/merged/member_guard/projected) and a derived verdict that NAMES the exact hop it is stalled at, rather than just \"still red\". Auto-marks the probe acked once every expected hop has landed. ⚠ WI-3962: no pipeline stage calls probe:record-hop yet, so a default (unnarrowed) verdict WILL read \"stalled\" past capture for every probe, forever — that reflects a missing observation, not a broken pipeline (response carries an instrumentationCaveat saying so). Pass expectedHops:[\"captured\"] to get the real, trustworthy signal today; check substrate_outbox/merge-cursor state for actual federation health.",
+      "description": "Read a probe:emit-created receipt. An `acked` receipt proves the correctly stamped declaration was captured locally; `refused` names why emit could not create one. This is NOT a federation-health verdict and does not claim drain, replication, merge, member-guard, or projection. Read substrate_outbox, substrate_merge_cursor, and fresh origin=remote rows for those stages.",
       "capabilities": [
         "coord:read"
       ],
@@ -23162,38 +23162,9 @@
         "curator"
       ],
       "guidance": {
-        "when": "Checking whether a probe:emit'd probe has round-tripped the federation pipeline, or diagnosing exactly which hop a stalled one is stuck at.",
+        "when": "Confirming whether probe:emit captured or refused a correctly stamped local diagnostic declaration.",
         "notWhen": "You never called probe:emit for this key — there is nothing to read.",
-        "chaining": "probe:emit → (wait / other work) → probe:get { probeKey }, repeat if verdict is pending/stalled."
-      }
-    },
-    {
-      "name": "probe:record-hop",
-      "http": {
-        "path": "/api/agent-tools/probe/record-hop",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Stamp that a federation probe (from probe:emit) has been OBSERVED at a later pipeline hop (drained/replicated/merged/member_guard/projected). Idempotent — re-stamping an already-landed hop is a no-op, so a retried observation can never move a receipt backwards. A hop can only be recorded while the probe is still `pending` (a refused/acked/timed_out probe is terminal).",
-      "capabilities": [
-        "coord:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "mug",
-        "documenter",
-        "curator"
-      ],
-      "guidance": {
-        "when": "You are pipeline-stage code (or a diagnostic script on a live rig) that just watched a specific federation_probe op pass a named stage — e.g. the outbox drain wrote it, a replicator delivered it, the merge loop admitted it, member-content-guard passed it, or projection applied it.",
-        "notWhen": "You are the emitter (probe:emit already stamps `captured`) or you only SUSPECT a hop happened — this must be a real observation, never a guess."
+        "chaining": "probe:emit → probe:get { probeKey }; use real outbox/merge/remote-origin evidence for federation health."
       }
     },
     {
