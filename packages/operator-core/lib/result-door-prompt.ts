@@ -25,6 +25,7 @@
  */
 
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors, type DoorConstants } from './context-doors';
+import { MAX_PICK_PATHS } from './result-projection/parse';
 
 /**
  * The per-result door, in tokens — read through the same `computeTurnDoors` the
@@ -86,6 +87,9 @@ generic field name:
 Path shape follows the BODY's root: a tool that returns a bare array (work_items:list,
 plans:items, …) is selected with \`[].field\` — a bare \`field\` addresses an object root
 and matches nothing there (the door auto-adjusts the obvious case and tells you).
+
+A single \`pick\` list accepts at most ${MAX_PICK_PATHS} paths; split larger field selections
+across calls instead of sending an over-sized list.
 
 **Choose by the result's SHAPE — this is the part that is easy to get wrong.** An MCP
 tool result is a JSON object serialized on ONE line, so the line operators cannot

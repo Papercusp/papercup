@@ -129,6 +129,8 @@ export interface ProjectionSpec {
    * Paths are dot/bracket notation with `[]` to map over an array:
    *   `results[].id` · `summary.counts` · `items[].payload.title`
    * A path that matches nothing is reported in `notes`, never silently dropped.
+   * A single projection accepts at most 32 paths; split larger selections across
+   * calls rather than sending an over-sized `pick` list.
    */
   pick?: string[];
   /** Line operators, applied in order to the rendered text. */

@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { BAKED_DOOR_CONSTANTS, computeTurnDoors, type DoorConstants } from './context-doors';
 import { RESULT_DOOR_TOKENS } from './result-door';
+import { MAX_PICK_PATHS } from './result-projection/parse';
 import { renderResultDoorSection, resultDoorPromptSlots, resultDoorPromptTokens } from './result-door-prompt';
 
 /** A deliberately non-default constant set: floor doubled, so every door moves. */
@@ -58,6 +59,10 @@ describe('result-door standing-context section', () => {
     expect(text).toMatch(/ONE line/);
     expect(text).toMatch(/`pick`/);
     expect(text).toMatch(/line-oriented text/);
+  });
+
+  it('teaches the parser-enforced maximum pick-list size', () => {
+    expect(renderResultDoorSection()).toContain(`at most ${MAX_PICK_PATHS} paths`);
   });
 
   it('warns that `projection` is a dispatch arg, not a nested tools:invoke arg', () => {

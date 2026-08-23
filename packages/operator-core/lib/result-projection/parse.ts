@@ -45,8 +45,11 @@ const KNOWN_OPS = new Set(['grep', 'head', 'tail', 'sort', 'uniq', 'cut', 'count
 
 /** Max stages in one pipeline — a composition longer than this is a code:run, not a projection. */
 export const MAX_PIPELINE_STAGES = 8;
-/** Max `pick` paths in one spec. */
+/** Max `pick` paths in one spec; larger selections must be split across calls. */
 export const MAX_PICK_PATHS = 32;
+
+/** Compact shape hint reused by parse failures so the caller sees the `pick` ceiling. */
+const PROJECTION_SPEC_HINT = `{ pick?: string[] (max ${MAX_PICK_PATHS} paths), pipe?: [{ op, ... }] }`;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -200,13 +203,13 @@ export function parseProjection(rawInput: unknown): ProjectionParseResult {
         ok: false,
         error:
           'projection was sent as a string that is not valid JSON. Send the object ' +
-          '{ pick?: string[], pipe?: [{ op, ... }] }, or a JSON-encoded string of it.',
+          `${PROJECTION_SPEC_HINT}, or a JSON-encoded string of it.`,
       };
     }
   }
 
   if (!isPlainObject(raw)) {
-    return { ok: false, error: 'projection must be an object: { pick?: string[], pipe?: [{ op, ... }] }' };
+    return { ok: false, error: `projection must be an object: ${PROJECTION_SPEC_HINT}` };
   }
   const spec: ProjectionSpec = {};
 

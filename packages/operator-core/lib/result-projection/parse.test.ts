@@ -130,11 +130,20 @@ describe('parseProjection', () => {
     expect(r.error).toContain('grep');
   });
 
-  it('bounds the pipeline and the pick list', () => {
+  it('bounds the pipeline and the pick list, including the JSON-string form', () => {
     const long = Array.from({ length: MAX_PIPELINE_STAGES + 1 }, () => ({ op: 'head', n: 1 }));
     expect(parseProjection({ pipe: long }).ok).toBe(false);
+    const atLimit = Array.from({ length: MAX_PICK_PATHS }, (_, i) => `a${i}`);
+    expect(parseProjection({ pick: atLimit })).toEqual({ ok: true, spec: { pick: atLimit } });
     const many = Array.from({ length: MAX_PICK_PATHS + 1 }, (_, i) => `a${i}`);
-    expect(parseProjection({ pick: many }).ok).toBe(false);
+    const rejected = parseProjection({ pick: many });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(`projection.pick accepts at most ${MAX_PICK_PATHS} paths`),
+    });
+    // A schema-driven client may send the reserved projection as JSON text;
+    // that form must not bypass the same cap.
+    expect(parseProjection(JSON.stringify({ pick: many }))).toEqual(rejected);
   });
 
   it('pick entries must be non-empty strings and are trimmed', () => {
