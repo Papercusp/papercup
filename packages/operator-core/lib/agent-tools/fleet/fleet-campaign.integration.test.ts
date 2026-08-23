@@ -47,6 +47,19 @@ describe('fleet campaign (real Postgres)', () => {
          '[]'::jsonb, ${MEMBER}, 'exited', '2026-08-13T04:00:00Z'::timestamptz,
          '{"carry":"warm"}'::jsonb)
     `;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, payload,
+         terminal_owner, terminal_completion_ref, authority, closed_ts)
+      VALUES
+        (${WS}, ${HARNESS}, 'campaign-member-close', 'member completion', 'done', 'change',
+         '{"_completionEvidence":{"verifiedHow":"unit","testsRun":"npm run test:file -- fleet-campaign.integration.test.ts","testResult":"green","addedTests":true,"filesChanged":["fleet-campaign.ts"]}}'::jsonb,
+         ${MEMBER}, 'verified member completion', 'committed',
+         (extract(epoch FROM '2026-08-13T05:00:00Z'::timestamptz) * 1000)::bigint),
+        (${WS}, ${HARNESS}, 'campaign-nonmember-close', 'non-member completion', 'done', 'change',
+         '{}'::jsonb, 'su-not-in-fleet', 'newer non-member completion', 'proposed',
+         (extract(epoch FROM '2026-08-13T06:00:00Z'::timestamptz) * 1000)::bigint)
+    `;
   }, 120_000);
 
   afterAll(async () => {
@@ -76,6 +89,32 @@ describe('fleet campaign (real Postgres)', () => {
     expect(campaign.axes.jobs).toMatchObject({
       available: true,
       data: { total: 1, byCarry: { warm: 1 } },
+    });
+    expect(campaign.axes.terminals).toMatchObject({
+      available: true,
+      data: {
+        byFleetMembership: { member: 1, nonMember: 1, unattributed: 0 },
+        auditFeed: {
+          total: 1,
+          shown: 1,
+          truncated: false,
+          rows: [{
+            id: 'campaign-member-close',
+            terminalOwner: MEMBER,
+            terminalCompletionRef: 'verified member completion',
+            completionEvidence: {
+              verifiedHow: 'unit',
+              testsRun: 'npm run test:file -- fleet-campaign.integration.test.ts',
+              testResult: 'green',
+              addedTests: true,
+              filesChanged: ['fleet-campaign.ts'],
+            },
+            completionAuthority: 'committed',
+            countsTowardBurnDown: true,
+            terminalizedAt: '2026-08-13T05:00:00.000Z',
+          }],
+        },
+      },
     });
   });
 
