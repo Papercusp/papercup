@@ -36,7 +36,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
-import { killCriterionProblem } from '../../goals/kill-criterion';
+import { STANDING_GOAL_KILL_POLARITY, killCriterionProblem } from '../../goals/kill-criterion';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -99,6 +99,19 @@ export function buildGoalKickoffBrief(opts: {
   killCriterion?: string | null;
   budgetCents?: number | null;
   body?: string | null;
+  /**
+   * TRUE for a STANDING goal (work-on-everything-goal-2026-08-23 P-001) — one
+   * pursuing an ongoing duty rather than a checkable outcome.
+   *
+   * This changes the KILL THIS IF line and nothing else. The ordinary
+   * absent-criterion wording below tells the agent to "propose a stopping
+   * condition in your kickoff question", which for a standing goal is an
+   * instruction to invent the very thing the goal is defined as not having —
+   * the agent then spends its kickoff negotiating an outcome, or worse, adopts
+   * one and later reports the standing duty COMPLETE. Same absent column, a
+   * different true statement about why it is absent.
+   */
+  standing?: boolean;
   /** Injectable for tests; defaults to the moment the brief is written. */
   writtenAt?: Date;
 }): string {
@@ -125,7 +138,9 @@ export function buildGoalKickoffBrief(opts: {
     opts.body?.trim() ? `\n${opts.body.trim()}\n` : '',
     kill
       ? `KILL THIS IF — ${kill}`
-      : 'KILL THIS IF — none declared. Propose a stopping condition in your kickoff question.',
+      : opts.standing
+        ? `KILL THIS IF — ${STANDING_GOAL_KILL_POLARITY}`
+        : 'KILL THIS IF — none declared. Propose a stopping condition in your kickoff question.',
     ceiling
       ? `CEILING — ${ceiling} declared. Do not quietly exceed it.`
       : 'CEILING — none declared. Flag before any large spend.',
@@ -206,6 +221,16 @@ export default defineTool({
       .optional()
       .describe(
         'OPTIONAL — the declared spend ceiling in cents, the number actuals are reported against. Omitted ⇒ stored NULL (no ceiling declared), NOT 0.',
+      ),
+    /* work-on-everything-goal-2026-08-23 P-001. Default false, and the DEFAULT
+       is the honest one for every caller that has no opinion: a goal is an
+       outcome unless somebody says otherwise. Only the goal-package start door
+       (P-017) passes true. */
+    standing: z
+      .boolean()
+      .optional()
+      .describe(
+        'OPTIONAL, default false — mark this a STANDING goal: an ongoing duty with no checkable outcome, which ends only on owner stop or a tripwire. Changes what the agent is told about stopping; does NOT relax the tripwire or spend rails.',
       ),
     holder: goalHolderPolicySchema
       .optional()
@@ -332,6 +357,7 @@ export default defineTool({
         parentId: args.parentId ?? null,
         budgetCents: args.budgetCents,
         status: 'active',
+        standing: args.standing ?? false,
         killCriterion: args.killCriterion,
         tripwires: args.tripwires ?? null,
         metadata: { startedBy: callerOwnerId ?? 'operator-ui', agentOwnerId: ownerId },
@@ -543,6 +569,7 @@ export default defineTool({
         killCriterion: args.killCriterion,
         budgetCents: args.budgetCents,
         body: args.body ?? null,
+        standing: args.standing ?? false,
       }),
     };
     const label = `goal · ${args.title.slice(0, 40)}`;

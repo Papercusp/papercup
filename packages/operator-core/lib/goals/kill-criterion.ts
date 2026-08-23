@@ -49,6 +49,38 @@ export const KILL_CRITERION_MIN_CHARS = 12;
 const PLACEHOLDER_OPENER = /^(tbd|n\/?a|none|unknown|todo)\b/i;
 
 /**
+ * What a STANDING goal's kill criterion IS
+ * (work-on-everything-goal-2026-08-23 P-001).
+ *
+ * A standing goal pursues an ongoing DUTY, not a checkable outcome, so the
+ * question this module normally answers — "under what condition is this
+ * abandoned?" — has a different shape rather than no answer. P-001 states it:
+ * *kill criterion = tripwires + owner stop*. Both of those are real, countable
+ * rails that already exist (`goals.tripwires`, and the owner's stop door which
+ * writes `status='paused'`/`killed`), so nothing new is invented here — this
+ * constant only NAMES the polarity so every surface says the same thing.
+ *
+ * WHY A CONSTANT AND NOT A LINE AT EACH DOOR. Exactly the reason this whole
+ * module exists, one case further out: the standing polarity has to be stated
+ * by the kickoff brief (so the agent does not go looking for an outcome), by
+ * the auto-start rail (so it does not refuse a goal that legitimately has no
+ * criterion), and by the HUD's "THIS GOAL ENDS WHEN" headline. Three copies of
+ * a sentence is three chances to drift, and the drift would be silent —
+ * a standing goal briefed with the ORDINARY absent-criterion wording reads as
+ * an oversight the agent is invited to correct, which is the precise failure
+ * this names away.
+ *
+ * ⚠ NOT a default written into the `kill_criterion` COLUMN. A standing goal
+ * stores NULL there, like any goal with no criterion — fabricating a row value
+ * would be the "lie about what the owner said" the `goals:start` args schema
+ * refuses. This is presentation of a real absence, not an invented presence.
+ */
+export const STANDING_GOAL_KILL_POLARITY =
+  'this goal is STANDING — an ongoing duty with no checkable outcome, so it ends ' +
+  'only when the owner stops it or a tripwire fires. Do not invent a completion ' +
+  'condition, and do not treat the absence of one as an oversight to correct.';
+
+/**
  * The refusal message, or null when the criterion is acceptable.
  *
  * Returns a MESSAGE rather than a boolean because all three callers surface it
