@@ -9,10 +9,10 @@
  * emits a probe against a KNOWN-FEDERATED harness and confirms `stampProbe`
  * does not refuse and the stamped probe persists cleanly. It does NOT attempt
  * a live cross-machine round trip (that needs a real federated peer and is
- * out of reach of a periodic in-process canary) — a caller that also wants
- * the "did probes actually complete their hops" system signal supplies it
- * separately (e.g. from a probe backlog sweep via `deriveProbeVerdict`) as
- * this canary's `systemGreen` input to `runGateCanary`.
+ * out of reach of a periodic in-process canary) — a caller that also wants a
+ * federation-health system signal supplies real outbox drain, merge-cursor,
+ * and fresh remote-origin evidence separately as this canary's `systemGreen`
+ * input to `runGateCanary`.
  */
 import { stampProbe, type StampedProbe } from '../sync/pot-git/federation-probe';
 import type { GateCanaryDef } from './canary';

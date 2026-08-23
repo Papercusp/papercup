@@ -5,15 +5,14 @@
  * Thin persistence layer over the pure shape/logic in `federation-probe.ts`
  * (mirrors the `results-receipt.ts` shape / `agent-facts/store.ts` persistence
  * split used elsewhere in this package). `insertProbe` is the only write path
- * that can create a row (probe:emit); `recordProbeHop` is the EXTENSION SEAM
- * later pipeline-stage wiring (P-012 named-hop observability, P-011 gate
- * canaries) calls to stamp a later hop as the real op is observed flowing
- * through capture/drain/replicate/merge/member-guard/project.
+ * that can create an accepted row (probe:emit); accepted means only that the
+ * stamped declaration was captured locally. Post-capture federation health is
+ * observed through the outbox, merge cursor, and remote-origin rows instead.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { InvalidInputError } from '@papercusp/tooldef';
-import { PROBE_HOP_COLUMN, type ProbeHop, type ProbeReceipt, type StampedProbe } from './federation-probe';
+import type { ProbeReceipt, StampedProbe } from './federation-probe';
 
 function sqlOf(inject?: Sql): Sql {
   return inject ?? getOrgPg().sql;
@@ -26,12 +25,7 @@ interface FederationProbeRow {
   emitted_by: string;
   emitted_at: string;
   captured_at: string | null;
-  drained_at: string | null;
-  replicated_at: string | null;
-  merged_at: string | null;
-  member_guard_at: string | null;
-  projected_at: string | null;
-  status: ProbeReceipt['status'];
+  status: 'pending' | 'acked' | 'refused' | 'timed_out';
   refusal_reason: string | null;
 }
 
@@ -39,24 +33,18 @@ function rowToReceipt(row: FederationProbeRow): ProbeReceipt {
   const hops: ProbeReceipt['hops'] = {};
   const at = (v: string | null): number | undefined => (v ? new Date(v).getTime() : undefined);
   const captured = at(row.captured_at);
-  const drained = at(row.drained_at);
-  const replicated = at(row.replicated_at);
-  const merged = at(row.merged_at);
-  const memberGuard = at(row.member_guard_at);
-  const projected = at(row.projected_at);
   if (captured !== undefined) hops.captured = captured;
-  if (drained !== undefined) hops.drained = drained;
-  if (replicated !== undefined) hops.replicated = replicated;
-  if (merged !== undefined) hops.merged = merged;
-  if (memberGuard !== undefined) hops.memberGuard = memberGuard;
-  if (projected !== undefined) hops.projected = projected;
   return {
     probeKey: row.probe_key,
     workspaceId: row.workspace_id,
     harnessSlug: row.harness_slug,
     emittedBy: row.emitted_by,
     emittedAtMs: new Date(row.emitted_at).getTime(),
-    status: row.status,
+    // Expand/contract bridge (WI-3962): until the captured-only contract
+    // migration is armed, historical rows can still carry pending/timed_out.
+    // The physical fact is unambiguous: captured_at means accepted local
+    // capture; its absence means a refused pre-capture attempt.
+    status: captured !== undefined ? 'acked' : 'refused',
     ...(row.refusal_reason ? { refusalReason: row.refusal_reason } : {}),
     hops,
   };
@@ -79,10 +67,9 @@ export async function insertProbe(stamped: StampedProbe, inject?: Sql): Promise<
         (workspace_id, harness_slug, probe_key, emitted_by, emitted_at, captured_at, status)
       VALUES
         (${stamped.workspaceId}, ${stamped.harnessSlug}, ${stamped.probeKey}, ${stamped.emittedBy},
-         ${nowIso}, ${nowIso}, 'pending')
+         ${nowIso}, ${nowIso}, 'acked')
       RETURNING probe_key, workspace_id, harness_slug, emitted_by, emitted_at::text,
-                captured_at::text, drained_at::text, replicated_at::text, merged_at::text,
-                member_guard_at::text, projected_at::text, status, refusal_reason`;
+                captured_at::text, status, refusal_reason`;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (/duplicate key value.*federation_probes_probe_key/.test(msg)) {
@@ -114,56 +101,11 @@ export async function insertRefusedProbe(
     ON CONFLICT (probe_key) DO NOTHING`;
 }
 
-/**
- * Stamp a later hop's receipt (the extension seam pipeline stages call). Only
- * ever moves a hop from NULL to a timestamp — re-stamping an already-landed
- * hop is a no-op (COALESCE), so a retried/duplicate observation can never move
- * a receipt backwards or overwrite the FIRST time a hop was actually seen.
- */
-export async function recordProbeHop(
-  probeKey: string,
-  hop: ProbeHop,
-  atMs: number,
-  detail?: string,
-  inject?: Sql,
-): Promise<ProbeReceipt | null> {
-  const sql = sqlOf(inject);
-  // Column name is from the fixed PROBE_HOP_COLUMN map (never caller input),
-  // so interpolating it directly into the query string is safe — the VALUES
-  // are still bound params via sql.unsafe's second arg (never string-built).
-  const column = PROBE_HOP_COLUMN[hop];
-  const nowIso = new Date(atMs).toISOString();
-  const rows = (await sql.unsafe(
-    `UPDATE harness_shared.federation_probes
-        SET ${column} = COALESCE(${column}, $1::timestamptz),
-            detail = COALESCE($2, detail)
-      WHERE probe_key = $3 AND status = 'pending'
-      RETURNING probe_key, workspace_id, harness_slug, emitted_by, emitted_at::text,
-                captured_at::text, drained_at::text, replicated_at::text, merged_at::text,
-                member_guard_at::text, projected_at::text, status, refusal_reason`,
-    [nowIso, detail ?? null, probeKey] as never,
-  )) as unknown as FederationProbeRow[];
-  return rows[0] ? rowToReceipt(rows[0]) : null;
-}
-
-/** Mark a probe 'acked' once every expected hop has landed (probe:get's write-back). */
-export async function markProbeAcked(probeKey: string, inject?: Sql): Promise<void> {
-  const sql = sqlOf(inject);
-  await sql`UPDATE harness_shared.federation_probes SET status = 'acked' WHERE probe_key = ${probeKey} AND status = 'pending'`;
-}
-
-/** Mark a probe 'timed_out' (a caller/sweep gave up waiting on a stalled hop). */
-export async function markProbeTimedOut(probeKey: string, inject?: Sql): Promise<void> {
-  const sql = sqlOf(inject);
-  await sql`UPDATE harness_shared.federation_probes SET status = 'timed_out' WHERE probe_key = ${probeKey} AND status = 'pending'`;
-}
-
 export async function getProbe(probeKey: string, inject?: Sql): Promise<ProbeReceipt | null> {
   const sql = sqlOf(inject);
   const rows = await sql<FederationProbeRow[]>`
     SELECT probe_key, workspace_id, harness_slug, emitted_by, emitted_at::text,
-           captured_at::text, drained_at::text, replicated_at::text, merged_at::text,
-           member_guard_at::text, projected_at::text, status, refusal_reason
+           captured_at::text, status, refusal_reason
       FROM harness_shared.federation_probes
      WHERE probe_key = ${probeKey}`;
   return rows[0] ? rowToReceipt(rows[0]) : null;
@@ -178,8 +120,7 @@ export async function listRecentProbes(
   const sql = sqlOf(inject);
   const rows = await sql<FederationProbeRow[]>`
     SELECT probe_key, workspace_id, harness_slug, emitted_by, emitted_at::text,
-           captured_at::text, drained_at::text, replicated_at::text, merged_at::text,
-           member_guard_at::text, projected_at::text, status, refusal_reason
+           captured_at::text, status, refusal_reason
       FROM harness_shared.federation_probes
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
      ORDER BY emitted_at DESC

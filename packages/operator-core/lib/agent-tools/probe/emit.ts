@@ -21,14 +21,14 @@ import { insertProbe, insertRefusedProbe } from '../../sync/pot-git/federation-p
 export default defineTool({
   name: 'probe:emit',
   description:
-    'Emit a self-verifying federation probe: stamps required federation keys (workspace_id, harness_slug) and REFUSES LOUDLY (never silently) when the target harness cannot federate — fixes 2026-07-10 cause #10, where every prior ad-hoc "v2t" marker probe was unstamped and green was unreachable for ~6h with nothing saying so. Tracked durably with a `captured` hop stamped; later hops (drain/replicate/merge/member_guard/project) are DESIGNED to land via probe:record-hop but no pipeline stage calls it yet (WI-3962) — read with probe:get { expectedHops:["captured"] } for a trustworthy verdict today.',
+    'Emit a captured-only federation diagnostic declaration: stamp the required workspace_id and harness_slug and REFUSE LOUDLY (never silently) when the target harness cannot federate. A successful receipt proves local capture of a correctly stamped declaration; it is NOT proof of drain, replication, merge, member-guard, projection, or end-to-end federation health.',
   guidance: {
     when:
       'Proving a federation/replication claim is REAL, not just "looks green" — verifying a fresh 2-machine rig federates content, diagnosing a "rosters but no content" stall, or replacing an ad-hoc marker write (the v2t convention) with something that cannot be emitted unstamped.',
     notWhen:
       'Routine coord messaging or an ordinary content write (features/issues/plans) — a probe is diagnostic, not a deliverable. Not a substitute for events:emit/events:await (in-process wake, not a federation-pipeline check).',
-    chaining: 'probe:emit → probe:get { probeKey } to read the verdict; pipeline-stage code calls probe:record-hop as the op is observed at each stage.',
-    seeAlso: ['probe:get', 'probe:record-hop'],
+    chaining: 'probe:emit → probe:get { probeKey } to read the captured/refused receipt; use real outbox/merge/remote-origin evidence for federation health.',
+    seeAlso: ['probe:get'],
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -108,14 +108,12 @@ export default defineTool({
             harnessSlug: receipt.harnessSlug,
             workspaceId: receipt.workspaceId,
             emittedAt: new Date(receipt.emittedAtMs).toISOString(),
-            // The full hop set this probe is read against. A probe carries no
-            // per-probe narrowing: there is no expected_hops column and nothing
-            // to write one from (WI-35901 route (b)). Narrowing is a READ-time
-            // concern, applied via probe:get { expectedHops }, which is the only
-            // place it can actually shape a verdict.
+            // Captured-only by design (WI-3962): later federation stages are
+            // observed in different processes/stores and cannot truthfully be
+            // inferred from this emitter-local receipt.
             hopsExpected: PROBE_HOPS,
             hopsCaptured: ['captured'],
-            next: 'poll probe:get { probeKey } for the verdict — pass expectedHops:["captured"] to narrow it, since no pipeline stage records later hops yet (WI-3962)',
+            next: 'probe:get { probeKey } confirms this captured receipt; inspect substrate_outbox, substrate_merge_cursor, and fresh origin=remote rows for federation health',
           }),
         },
       ],

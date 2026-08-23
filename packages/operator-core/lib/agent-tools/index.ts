@@ -293,11 +293,10 @@ import './facts/list';
 import './conventions/governing';
 // fleet-reliability-verification-2026-07-10 P-010 (WI-3812) — self-verifying
 // federation probes: probe:emit stamps required federation keys + refuses
-// loudly when unfederatable; probe:get reads the derived per-hop verdict;
-// probe:record-hop is the extension seam later pipeline stages stamp through.
+// loudly when unfederatable; probe:get reads the captured-only receipt. This
+// surface deliberately makes no post-capture federation-health claim (WI-3962).
 import './probe/emit';
 import './probe/get';
-import './probe/record-hop';
 // fleet-reliability-verification-2026-07-10 P-011 — gates:canary-check: run a
 // self-checking gate canary on demand, bifurcating "still red" into gate-broken
 // (the checker itself can't pass a known-good) vs system-broken (trust the red).

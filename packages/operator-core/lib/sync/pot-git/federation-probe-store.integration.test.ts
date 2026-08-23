@@ -1,36 +1,27 @@
 /**
- * federation-probe-store — REAL-PG regression guard (WI-3812, P-010).
+ * Captured-only federation-probe persistence guards (WI-3962).
  *
- * Applies the real migration 544 and pins:
- *   1. insertProbe writes with `captured` already stamped, status 'pending';
- *   2. a probe_key collision is a loud InvalidInputError, never a silent
- *      overwrite of a DIFFERENT probe's receipts;
- *   3. recordProbeHop is idempotent (COALESCE — never moves a landed hop
- *      backwards) and refuses to stamp a hop on a non-pending (terminal) row;
- *   4. insertRefusedProbe + getProbe/listRecentProbes round-trip correctly.
+ * Applies the historical creation migration plus the contract-repair migration
+ * against real PG. The resulting table may record only accepted local capture
+ * (`acked`) or a loud pre-capture refusal (`refused`).
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../../test/_pg-helpers';
-import {
-  insertProbe,
-  insertRefusedProbe,
-  recordProbeHop,
-  markProbeAcked,
-  markProbeTimedOut,
-  getProbe,
-  listRecentProbes,
-} from './federation-probe-store';
+import { getProbe, insertProbe, insertRefusedProbe, listRecentProbes } from './federation-probe-store';
 import { stampProbe } from './federation-probe';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../libs/papercusp/libs/db/sql');
+const CREATION_MIGRATION = join(SQL_DIR, '544-federation-probes.sql');
+const CAPTURED_ONLY_MIGRATION = join(SQL_DIR, '917-federation-probes-captured-only-contract.sql.DRAFT');
 
 let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('federation-probe-store');
-  await applyMigrationForTest(db.sql, join(SQL_DIR, '544-federation-probes.sql'));
+  await applyMigrationForTest(db.sql, CREATION_MIGRATION);
+  await applyMigrationForTest(db.sql, CAPTURED_ONLY_MIGRATION);
 });
 afterAll(async () => {
   await db?.cleanup();
@@ -52,12 +43,11 @@ function stamp(overrides: Partial<Parameters<typeof stampProbe>[0]> = {}) {
   return result.stamped;
 }
 
-describe('insertProbe against the real 544 schema', () => {
-  it('inserts with captured already stamped and status pending', async () => {
+describe('captured-only probe store', () => {
+  it('inserts an accepted probe already acked with only captured stamped', async () => {
     const receipt = await insertProbe(stamp(), db.sql);
-    expect(receipt.status).toBe('pending');
-    expect(typeof receipt.hops.captured).toBe('number');
-    expect(receipt.hops.drained).toBeUndefined();
+    expect(receipt.status).toBe('acked');
+    expect(receipt.hops).toEqual({ captured: expect.any(Number) });
   });
 
   it('refuses a probe_key collision loudly instead of silently overwriting', async () => {
@@ -66,26 +56,20 @@ describe('insertProbe against the real 544 schema', () => {
     await expect(insertProbe(stamped, db.sql)).rejects.toThrow(/already exists \(collision\)/);
   });
 
-  it('round-trips via getProbe', async () => {
-    const stamped = stamp();
-    await insertProbe(stamped, db.sql);
-    const got = await getProbe(stamped.probeKey, db.sql);
-    expect(got?.probeKey).toBe(stamped.probeKey);
-    expect(got?.harnessSlug).toBe('papercusp');
-  });
-
-  it('listRecentProbes scopes by workspace+harness, newest first', async () => {
+  it('round-trips and lists newest first within workspace+harness', async () => {
     const a = stamp({ nowMs: 1000 });
     const b = stamp({ nowMs: 2000 });
     await insertProbe(a, db.sql);
     await insertProbe(b, db.sql);
-    const list = await listRecentProbes('ws-int', 'papercusp', 10, db.sql);
-    expect(list.map((r) => r.probeKey)).toEqual([b.probeKey, a.probeKey]);
-  });
-});
 
-describe('insertRefusedProbe', () => {
-  it('persists a refused probe with a null captured hop', async () => {
+    const got = await getProbe(a.probeKey, db.sql);
+    expect(got).toMatchObject({ probeKey: a.probeKey, harnessSlug: 'papercusp', status: 'acked' });
+
+    const list = await listRecentProbes('ws-int', 'papercusp', 10, db.sql);
+    expect(list.map((receipt) => receipt.probeKey)).toEqual([b.probeKey, a.probeKey]);
+  });
+
+  it('persists a refused probe with no captured hop', async () => {
     await insertRefusedProbe(
       {
         workspaceId: 'ws-int',
@@ -98,56 +82,76 @@ describe('insertRefusedProbe', () => {
       db.sql,
     );
     const got = await getProbe('papercusp:v2t:refused-1', db.sql);
-    expect(got?.status).toBe('refused');
-    expect(got?.refusalReason).toBe('harness_not_federated');
-    expect(got?.hops.captured).toBeUndefined();
+    expect(got).toMatchObject({
+      status: 'refused',
+      refusalReason: 'harness_not_federated',
+      hops: {},
+    });
   });
 });
 
-describe('recordProbeHop', () => {
-  it('stamps a new hop and returns the updated receipt', async () => {
-    const stamped = stamp();
-    await insertProbe(stamped, db.sql);
-    const updated = await recordProbeHop(stamped.probeKey, 'drained', Date.now(), 'drain observed', db.sql);
-    expect(updated?.hops.drained).toBeTypeOf('number');
+describe('migration 917 captured-only contract schema', () => {
+  it('drops every synthetic post-capture field and the permissive status default', async () => {
+    const columns = await db.sql<Array<{ column_name: string; column_default: string | null }>>`
+      SELECT column_name, column_default
+        FROM information_schema.columns
+       WHERE table_schema = 'harness_shared'
+         AND table_name = 'federation_probes'
+       ORDER BY ordinal_position`;
+    expect(columns.map((column) => column.column_name)).toEqual([
+      'id',
+      'workspace_id',
+      'harness_slug',
+      'probe_key',
+      'emitted_by',
+      'emitted_at',
+      'captured_at',
+      'status',
+      'refusal_reason',
+    ]);
+    expect(columns.find((column) => column.column_name === 'status')?.column_default).toBeNull();
   });
 
-  it('is idempotent — a later call never moves an already-landed hop backwards', async () => {
-    const stamped = stamp();
-    await insertProbe(stamped, db.sql);
-    const first = await recordProbeHop(stamped.probeKey, 'drained', 5_000_000, undefined, db.sql);
-    const second = await recordProbeHop(stamped.probeKey, 'drained', 9_999_999, undefined, db.sql);
-    expect(first?.hops.drained).toBe(second?.hops.drained);
+  it('enforces acked=captured and refused=uncaptured-with-reason', async () => {
+    const baseValues = ['ws-int', 'papercusp', 'su-int-test'] as const;
+    await expect(db.sql`
+      INSERT INTO harness_shared.federation_probes
+        (workspace_id, harness_slug, probe_key, emitted_by, captured_at, status)
+      VALUES (${baseValues[0]}, ${baseValues[1]}, 'bad-pending', ${baseValues[2]}, now(), 'pending')
+    `).rejects.toThrow();
+    await expect(db.sql`
+      INSERT INTO harness_shared.federation_probes
+        (workspace_id, harness_slug, probe_key, emitted_by, status)
+      VALUES (${baseValues[0]}, ${baseValues[1]}, 'bad-acked', ${baseValues[2]}, 'acked')
+    `).rejects.toThrow();
+    await expect(db.sql`
+      INSERT INTO harness_shared.federation_probes
+        (workspace_id, harness_slug, probe_key, emitted_by, captured_at, status, refusal_reason)
+      VALUES (${baseValues[0]}, ${baseValues[1]}, 'bad-refused', ${baseValues[2]}, now(), 'refused', 'no')
+    `).rejects.toThrow();
   });
 
-  it('refuses to stamp a hop on a non-pending (terminal) row', async () => {
-    const stamped = stamp();
-    await insertProbe(stamped, db.sql);
-    await markProbeTimedOut(stamped.probeKey, db.sql);
-    const result = await recordProbeHop(stamped.probeKey, 'drained', Date.now(), undefined, db.sql);
-    expect(result).toBeNull();
-  });
-
-  it('returns null for an unknown probeKey', async () => {
-    const result = await recordProbeHop('no-such-probe', 'drained', Date.now(), undefined, db.sql);
-    expect(result).toBeNull();
-  });
-});
-
-describe('markProbeAcked / markProbeTimedOut', () => {
-  it('flips status from pending to acked', async () => {
-    const stamped = stamp();
-    await insertProbe(stamped, db.sql);
-    await markProbeAcked(stamped.probeKey, db.sql);
-    const got = await getProbe(stamped.probeKey, db.sql);
-    expect(got?.status).toBe('acked');
-  });
-
-  it('flips status from pending to timed_out', async () => {
-    const stamped = stamp();
-    await insertProbe(stamped, db.sql);
-    await markProbeTimedOut(stamped.probeKey, db.sql);
-    const got = await getProbe(stamped.probeKey, db.sql);
-    expect(got?.status).toBe('timed_out');
+  it('converts legacy captured pending/timed_out rows to acked', async () => {
+    const legacyDb = await createFreshPgDb('federation-probe-store-legacy');
+    try {
+      await applyMigrationForTest(legacyDb.sql, CREATION_MIGRATION);
+      await legacyDb.sql`
+        INSERT INTO harness_shared.federation_probes
+          (workspace_id, harness_slug, probe_key, emitted_by, captured_at, status)
+        VALUES
+          ('ws-int', 'papercusp', 'legacy-pending', 'su-int-test', now(), 'pending'),
+          ('ws-int', 'papercusp', 'legacy-timeout', 'su-int-test', now(), 'timed_out')`;
+      await applyMigrationForTest(legacyDb.sql, CAPTURED_ONLY_MIGRATION);
+      const rows = await legacyDb.sql<Array<{ probe_key: string; status: string }>>`
+        SELECT probe_key, status
+          FROM harness_shared.federation_probes
+         ORDER BY probe_key`;
+      expect(rows).toEqual([
+        { probe_key: 'legacy-pending', status: 'acked' },
+        { probe_key: 'legacy-timeout', status: 'acked' },
+      ]);
+    } finally {
+      await legacyDb.cleanup();
+    }
   });
 });
