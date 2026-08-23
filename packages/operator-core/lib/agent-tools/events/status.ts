@@ -97,11 +97,15 @@ export default defineTool({
       throw new Error('events:status — after_generation requires an exact `event` key.');
     }
     const identity = resolveAgentIdentity(ctx);
+    // Exact-key inspection is an authority read for one event.  Do not spend
+    // the result budget rendering this caller's unrelated await tree first —
+    // under a busy fleet that list can hide the only requested evidence.
+    const exactEvent = args.event != null;
     const [awaits, recent, meter, composedRoots, eventHistory] = await Promise.all([
-      listActiveAwaits(identity.ownerId),
-      listRecentDeliveries(identity.ownerId, 10),
+      exactEvent ? Promise.resolve([]) : listActiveAwaits(identity.ownerId),
+      exactEvent ? Promise.resolve([]) : listRecentDeliveries(identity.ownerId, 10),
       args.meter ? wakeMeter() : Promise.resolve(null),
-      listActiveComposedRoots(identity.ownerId),
+      exactEvent ? Promise.resolve([]) : listActiveComposedRoots(identity.ownerId),
       args.event ? inspectEventKey(args.event) : Promise.resolve(null),
     ]);
     // Render each active composed tree: its authored spec + which leaves have fired vs.
@@ -209,30 +213,34 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            // Plain awaits only — a composed tree's leaves + anchor (rootId set) render
-            // under composed_awaits below, not as loose rows here.
-            active_awaits: awaits
-              .filter((a) => a.rootId == null)
-              .map((a) => ({
-                await_id: a.id,
-                event: a.eventKey,
-                policy: a.policy,
-                note: a.note,
-                expires_ts: a.expiresTs,
-                on_timeout: a.timeoutBehavior,
-                created_at: a.createdAt,
-              })),
-            ...(composed.length > 0 ? { composed_awaits: composed } : {}),
-            recent_wakes: recent.map((d) => ({
-              delivery_id: d.id,
-              event: d.eventKey,
-              status: d.status,
-              channel: d.channel,
-              attempts: d.attempts,
-              last_error: d.lastError,
-              created_at: d.createdAt,
-              delivered_at: d.deliveredAt,
-            })),
+            ...(exactEvent
+              ? {}
+              : {
+                  // Plain awaits only — a composed tree's leaves + anchor (rootId set)
+                  // render under composed_awaits below, not as loose rows here.
+                  active_awaits: awaits
+                    .filter((a) => a.rootId == null)
+                    .map((a) => ({
+                      await_id: a.id,
+                      event: a.eventKey,
+                      policy: a.policy,
+                      note: a.note,
+                      expires_ts: a.expiresTs,
+                      on_timeout: a.timeoutBehavior,
+                      created_at: a.createdAt,
+                    })),
+                  ...(composed.length > 0 ? { composed_awaits: composed } : {}),
+                  recent_wakes: recent.map((d) => ({
+                    delivery_id: d.id,
+                    event: d.eventKey,
+                    status: d.status,
+                    channel: d.channel,
+                    attempts: d.attempts,
+                    last_error: d.lastError,
+                    created_at: d.createdAt,
+                    delivered_at: d.deliveredAt,
+                  })),
+                }),
             ...(meter ? { meter } : {}),
             ...(eventInspection ? { event_inspection: eventInspection } : {}),
           }),

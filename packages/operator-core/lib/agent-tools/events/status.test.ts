@@ -167,6 +167,12 @@ describe('events:status projection', () => {
       consumer_generation: 1,
       authoritative_generation: 2,
     });
+    // Exact-key inspection must not be buried behind this caller's unrelated
+    // await tree; callers asking for one event receive the focused authority.
+    expect(out).not.toHaveProperty('active_awaits');
+    expect(out).not.toHaveProperty('recent_wakes');
+    expect(listActiveAwaits).not.toHaveBeenCalled();
+    expect(listRecentDeliveries).not.toHaveBeenCalled();
   });
 
   it('EI-13705: a bare-emitted key with no announcement but a fire latch reports fired_undeclared, not undeclared — with fire_latch + advice surfaced', async () => {
