@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * WorkItemDiscussion — the reusable inline Papercup host for one durable
@@ -13,20 +13,20 @@
  * cancel/skip controls, history paging, and composer as the global pane.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageCircle, RefreshCw, X } from 'lucide-react';
-import { useSyncQuery } from '@papercusp/sync';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { MessageCircle, RefreshCw, X } from "lucide-react";
+import { useSyncQuery } from "@papercusp/sync";
+import { useWorkspaceId } from "@/lib/use-workspace-id";
 import {
   OperatorConversationProvider,
   useOperatorConversation,
-} from '../OperatorConversationProvider';
-import { OperatorChat } from '../OperatorChat';
-import './work-item-discussion.css';
+} from "../OperatorConversationProvider";
+import { OperatorChat } from "../OperatorChat";
+import "./work-item-discussion.css";
 
 /** URL state shared by InboxPane and WorkItemDetail. The value uses the
  * existing encodeScopedRef/decodeScopedRef grammar: `<harness>::<work-item>`. */
-export const WORK_ITEM_DISCUSSION_PARAM = 'opcid';
+export const WORK_ITEM_DISCUSSION_PARAM = "opcid";
 
 type ConversationIdentity = { id: string };
 type LocalResolution = {
@@ -55,16 +55,22 @@ function WorkItemConversationChat({
   const workspaceId = useWorkspaceId();
 
   return (
-    <div className="wi-discussion__chat" data-testid="work-item-discussion-chat">
+    <div
+      className="wi-discussion__chat"
+      data-testid="work-item-discussion-chat"
+    >
       <OperatorChat
         messages={conv.messages}
         busy={conv.busy}
         peerBusy={conv.peerBusy}
-        passive={conv.mode === 'passive'}
+        passive={conv.mode === "passive"}
         onSend={conv.sendUserMessage}
         onGenerateIdeas={conv.generateIdeas}
         banner={
-          <div className="wi-discussion__context" data-testid="work-item-discussion-context">
+          <div
+            className="wi-discussion__context"
+            data-testid="work-item-discussion-context"
+          >
             <span>{workItemId}</span>
             {conv.bannerText ? <span>{conv.bannerText}</span> : null}
           </div>
@@ -91,7 +97,7 @@ export default function WorkItemDiscussion({
   const workspaceId = useWorkspaceId();
   const targetKey = `${workspaceId}::${harnessSlug}::${workItemId}`;
   const identity = useSyncQuery<ConversationIdentity>({
-    queryName: 'operatorConversations.byWorkItem',
+    queryName: "operatorConversations.byWorkItem",
     args: { workspaceId, harness: harnessSlug, workItemId },
     enabled: Boolean(harnessSlug && workItemId),
     staleTime: 30_000,
@@ -120,25 +126,28 @@ export default function WorkItemDiscussion({
         const response = await fetch(
           `/api/operator/conversations/work-items/${encodeURIComponent(workItemId)}`,
           {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            method: "POST",
+            headers: { "content-type": "application/json" },
             body: JSON.stringify({ harness: harnessSlug }),
             signal: controller.signal,
           },
         );
-        const body = (await response.json().catch(() => null)) as
-          | { conversation?: { id?: unknown }; error?: unknown }
-          | null;
+        const body = (await response.json().catch(() => null)) as {
+          conversation?: { id?: unknown };
+          error?: unknown;
+        } | null;
         if (!response.ok) {
           throw new Error(
-            typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`,
+            typeof body?.error === "string"
+              ? body.error
+              : `HTTP ${response.status}`,
           );
         }
         const id =
-          typeof body?.conversation?.id === 'string'
+          typeof body?.conversation?.id === "string"
             ? body.conversation.id.trim()
-            : '';
-        if (!id) throw new Error('The conversation endpoint returned no id.');
+            : "";
+        if (!id) throw new Error("The conversation endpoint returned no id.");
         if (!current) return;
         setResolution({ key: targetKey, id, error: null });
         invalidateRef.current?.();
@@ -165,6 +174,7 @@ export default function WorkItemDiscussion({
 
   return (
     <section
+      id={`work-item-discussion-${workItemId}`}
       className="wi-discussion"
       aria-label={`Papercup discussion for ${workItemId}`}
       data-testid={`work-item-discussion-${workItemId}`}
@@ -192,7 +202,7 @@ export default function WorkItemDiscussion({
       {conversationId ? (
         <OperatorConversationProvider
           key={targetKey}
-          target={{ kind: 'work-item', conversationId }}
+          target={{ kind: "work-item", conversationId }}
         >
           <WorkItemConversationChat
             harnessSlug={harnessSlug}
@@ -201,7 +211,10 @@ export default function WorkItemDiscussion({
           />
         </OperatorConversationProvider>
       ) : error ? (
-        <div className="wi-discussion__state wi-discussion__state--error" role="alert">
+        <div
+          className="wi-discussion__state wi-discussion__state--error"
+          role="alert"
+        >
           <span>Could not open this discussion: {error}</span>
           <button type="button" onClick={() => setRetry((value) => value + 1)}>
             <RefreshCw size={13} aria-hidden="true" /> Retry

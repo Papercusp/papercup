@@ -23,6 +23,13 @@ import type { WorkItemRow } from './WorkItemsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
 import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
+import WorkItemDiscussion, {
+  WORK_ITEM_DISCUSSION_PARAM,
+} from '../../_components/work-items/WorkItemDiscussion';
+import {
+  decodeScopedRef,
+  encodeScopedRef,
+} from '../../_components/chat/chat-ref-popup-params';
 
 // work-item-status-full-unify P-007: the settable feature statuses are the UNIFIED
 // lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`;
@@ -475,9 +482,9 @@ export function AgentDetail({
  * WorkItemDetail — detail for a unified WI-* work item (the rows the
  * WorkItemsPanel grid serves). Issue-family items (bug/change/task) have no
  * legacy I-* row, so this is their only detail view; mutation verbs stay on
- * the agent surface (`work_items:*`) for now — EXCEPT Chat (EI-290): the
- * legacy Features-tab per-item steer surface, same `openFeatureChat` →
- * OPEN_CHAT_EVENT → dock chat panel path the F-* detail uses.
+ * the agent surface (`work_items:*`) for now. The existing Chat action (EI-290)
+ * still opens the legacy worker-steer surface; P-018 adds a distinct inline
+ * Discuss action backed by the durable scoped Papercup conversation.
  *
  * Exported for tests.
  */
@@ -487,6 +494,7 @@ export function WorkItemDetail({
   onSelect,
   onBack,
   showChatAction = true,
+  showDiscussionAction = true,
 }: {
   slug: string;
   workItem: WorkItemRow;
@@ -498,6 +506,9 @@ export function WorkItemDetail({
    * the sole work-item chat entry point there.
    */
   showChatAction?: boolean;
+  /** Detail-only rehosts such as WorkItemPopupModal suppress this: the
+   * Working pane and Resolution Inbox own the real inline Discuss entries. */
+  showDiscussionAction?: boolean;
 }) {
   const [openingChat, setOpeningChat] = useState(false);
   const openChat = async () => {
@@ -596,7 +607,7 @@ export function WorkItemDetail({
         ) : null}
         {showChatAction ? (
           <div className="pc-adv-detail__section">
-            {/* No "Actions" heading — a lone Chat button explains itself. */}
+            {/* Worker Chat remains distinct from the durable Papercup thread. */}
             <div className="pc-adv-detail__actions">
               <button type="button" data-testid="wi-detail-chat" disabled={openingChat} onClick={() => void openChat()}>
                 <MessageCircle size={13} aria-hidden /> Chat
@@ -604,11 +615,62 @@ export function WorkItemDetail({
             </div>
           </div>
         ) : null}
+        {showDiscussionAction ? (
+          <WorkItemDiscussionSection slug={slug} workItem={workItem} />
+        ) : null}
       </div>
       {/* WorkItemDetail historically omitted this — every WI-* detail rendered
           with ZERO panel CSS (run-together label/value spans). */}
       <DetailStyles />
     </div>
+  );
+}
+
+function WorkItemDiscussionSection({
+  slug,
+  workItem,
+}: {
+  slug: string;
+  workItem: WorkItemRow;
+}) {
+  const [discussionRef, setDiscussionRef] = useQueryState(
+    WORK_ITEM_DISCUSSION_PARAM,
+    parseAsString,
+  );
+  const discussionTarget = useMemo(
+    () => decodeScopedRef(discussionRef),
+    [discussionRef],
+  );
+  const open =
+    discussionTarget.id === workItem.id &&
+    (!discussionTarget.harness || discussionTarget.harness === slug);
+
+  return (
+    <>
+      <div className="pc-adv-detail__section">
+        <div className="pc-adv-detail__actions">
+          <button
+            type="button"
+            data-testid="wi-detail-discuss"
+            aria-expanded={open}
+            aria-controls={`work-item-discussion-${workItem.id}`}
+            onClick={() =>
+              void setDiscussionRef(open ? null : encodeScopedRef(slug, workItem.id))
+            }
+          >
+            <MessageCircle size={13} aria-hidden /> Discuss with Papercup
+          </button>
+        </div>
+      </div>
+      {open ? (
+        <WorkItemDiscussion
+          harnessSlug={slug}
+          workItemId={workItem.id}
+          title={workItem.title}
+          onClose={() => void setDiscussionRef(null)}
+        />
+      ) : null}
+    </>
   );
 }
 

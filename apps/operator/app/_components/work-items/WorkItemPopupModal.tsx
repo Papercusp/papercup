@@ -88,6 +88,7 @@ export default function WorkItemPopupModal({
         workItem={row}
         onSelect={onSelect}
         showChatAction={false}
+        showDiscussionAction={false}
       />
     );
   }
