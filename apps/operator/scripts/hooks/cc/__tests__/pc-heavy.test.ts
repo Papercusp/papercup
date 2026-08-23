@@ -981,7 +981,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     expect(results.filter((r) => r.stderr.includes('coalesced:')).length).toBe(n - 1);
   }, 60_000);
 
-  it('WI-40946: capture tees cannot retain a heavy slot after the real result is terminal', () => {
+  it('WI-40946: capture tees cannot retain a heavy slot after the real result is terminal', async () => {
     // A command descendant can legitimately keep stdout/stderr open after the
     // command leader exits. That keeps pc-heavy's process-substitution tees
     // alive, but it must NOT keep the heavy slot alive through a descriptor the
@@ -992,7 +992,6 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     // 32–45 minutes after their final .exit artifacts were written.
     const lingerPidFile = join(dir, 'pipe-keeper.pid');
     const command = [
-      '(',
       '  for fd_path in /proc/self/fd/*; do',
       '    target=$(readlink "$fd_path" 2>/dev/null || true)',
       '    case "$target" in',
@@ -1004,17 +1003,20 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       '  done',
       `  printf '%s\\n' "$BASHPID" > "${lingerPidFile}"`,
       '  exec sleep 20',
-      ') &',
-      'exit 0',
     ].join('\n');
 
     let lingerPid = 0;
     try {
-      const result = runSync(['bash', '-c', command], {
+      // `setsid -f` forces a fork: its launcher returns immediately while the
+      // child keeps the inherited stdout/stderr pipes open in a new session.
+      // A plain `(...) &` under the nested non-interactive Bash waits for the
+      // child before exiting and would make the positive control dead already.
+      const result = runSync(['setsid', '-f', 'bash', '-c', command], {
         PC_HEAVY_SLOTS: '1',
         PC_HEAVY_COALESCE_SEC: '30',
       });
       expect(result.status).toBe(0);
+      await waitFor('the detached pipe keeper starts', () => existsSync(lingerPidFile));
       expect(existsSync(lingerPidFile)).toBe(true);
       lingerPid = Number(readFileSync(lingerPidFile, 'utf8').trim());
       expect(Number.isSafeInteger(lingerPid) && lingerPid > 1).toBe(true);
