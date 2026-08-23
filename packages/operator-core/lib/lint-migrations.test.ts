@@ -22,10 +22,94 @@ import {
   duplicateNumberGroups,
   unreservedNumbers,
   reservationFilenameMismatches,
+  partitionRawTxControl,
+  unappliedFrozenExemptions,
+  FROZEN_TXCTL_EXEMPTIONS,
   ENFORCED_FROM,
   INDEX_SWAP_ENFORCED_FROM,
   // eslint-disable-next-line import/no-relative-packages
 } from '../../../scripts/lint-migrations.mjs';
+
+/*
+ * WI-41119 — the frozen-exemption path.
+ *
+ * Background: check #2 fails a file ≥ ENFORCED_FROM carrying top-level
+ * BEGIN/COMMIT and says "remove it". Once that file is APPLIED, the
+ * migration-immutability guard refuses the edit, and a later migration cannot
+ * change the old file's bytes — so the check went permanently red and, because
+ * lint:migrations is a green-checkpoint gate check, red-pinned the gate.
+ *
+ * The exemption must NOT be "any applied file": the gate applies pending
+ * migrations before judging, so a fresh offender would be applied — and exempt —
+ * exactly when the check should fire. Hence a deliberate list, guarded by the
+ * requirement that a listed file really is applied.
+ */
+const TXCTL_SQL = 'BEGIN;\nALTER TABLE t ADD COLUMN c int;\nCOMMIT;\n';
+const CLEAN_SQL = 'ALTER TABLE t ADD COLUMN c int;\n';
+
+describe('partitionRawTxControl (WI-41119 frozen exemptions)', () => {
+  it('CONTROL: a clean file is neither offender, grandfathered, nor exempt', () => {
+    const r = partitionRawTxControl([{ file: '900-clean.sql', text: CLEAN_SQL }]);
+    expect(r).toEqual({ offenders: [], grandfathered: 0, exempted: [] });
+  });
+
+  it('flags an un-listed offender at or above ENFORCED_FROM', () => {
+    const r = partitionRawTxControl([
+      { file: `${ENFORCED_FROM}-fresh-offender.sql`, text: TXCTL_SQL },
+    ]);
+    expect(r.offenders.map((o) => o.file)).toEqual([`${ENFORCED_FROM}-fresh-offender.sql`]);
+    expect(r.exempted).toEqual([]);
+  });
+
+  it('grandfathers an offender below ENFORCED_FROM by count, not as a failure', () => {
+    const r = partitionRawTxControl([
+      { file: `${ENFORCED_FROM - 1}-legacy.sql`, text: TXCTL_SQL },
+    ]);
+    expect(r.offenders).toEqual([]);
+    expect(r.grandfathered).toBe(1);
+  });
+
+  it('moves a LISTED file out of offenders and into exempted, carrying its reason', () => {
+    const exemptions = new Map([['950-frozen.sql', 'applied; immutability guard refuses the edit']]);
+    const r = partitionRawTxControl([{ file: '950-frozen.sql', text: TXCTL_SQL }], { exemptions });
+    expect(r.offenders).toEqual([]);
+    expect(r.exempted).toHaveLength(1);
+    expect(r.exempted[0]).toMatchObject({ file: '950-frozen.sql' });
+    expect(r.exempted[0].reason).toMatch(/applied/);
+  });
+
+  it('does NOT let an exemption leak to a different file (the check keeps its teeth)', () => {
+    const exemptions = new Map([['950-frozen.sql', 'reason']]);
+    const r = partitionRawTxControl(
+      [
+        { file: '950-frozen.sql', text: TXCTL_SQL },
+        { file: '951-not-listed.sql', text: TXCTL_SQL },
+      ],
+      { exemptions },
+    );
+    expect(r.offenders.map((o) => o.file)).toEqual(['951-not-listed.sql']);
+    expect(r.exempted.map((e) => e.file)).toEqual(['950-frozen.sql']);
+  });
+});
+
+describe('unappliedFrozenExemptions — the list cannot become a bypass', () => {
+  it('hard-errors on a listed file that is NOT applied (still editable ⇒ must be fixed)', () => {
+    const exemptions = new Map([['950-frozen.sql', 'reason']]);
+    expect(unappliedFrozenExemptions(new Set<string>(), exemptions)).toEqual(['950-frozen.sql']);
+  });
+
+  it('CONTROL: a listed file that IS applied is accepted', () => {
+    const exemptions = new Map([['950-frozen.sql', 'reason']]);
+    expect(unappliedFrozenExemptions(new Set(['950-frozen.sql']), exemptions)).toEqual([]);
+  });
+
+  it('every real exemption states a non-empty reason (an entry is an admission, not a shrug)', () => {
+    for (const [file, reason] of FROZEN_TXCTL_EXEMPTIONS) {
+      expect(typeof reason, `${file} must carry a reason`).toBe('string');
+      expect(reason.trim().length, `${file} reason must be substantive`).toBeGreaterThan(40);
+    }
+  });
+});
 
 /*
  * PER-CALL-SITE DOLLAR-QUOTE MASKING (WI-37800).
@@ -253,15 +337,29 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
     expect(duplicateNumberGroups(files)).toEqual([]);
   });
 
+  // WI-41119: this must partition exactly as the CLI does, or the two disagree and
+  // the gate stays red on a file the CLI has already accounted for. It deliberately
+  // uses partitionRawTxControl rather than re-deriving the rule from findRawTxControl,
+  // so a FROZEN file (applied ⇒ the immutability guard refuses the edit the lint
+  // prescribes) is not reported as a fixable violation here either.
   it('has no top-level BEGIN/COMMIT/ROLLBACK in an enforced-era migration', () => {
-    const violations: string[] = [];
-    for (const f of files) {
-      const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
-      if (num < ENFORCED_FROM) continue; // pre-contract files are grandfathered (ledgered history)
-      const hits = findRawTxControl(readFileSync(join(SQL_DIR, f), 'utf8'));
-      if (hits.length) violations.push(`${f}: ${hits.join(', ')}`);
+    const { offenders } = partitionRawTxControl(
+      files.map((f) => ({ file: f, text: readFileSync(join(SQL_DIR, f), 'utf8') })),
+    );
+    expect(offenders.map((o) => `${o.file}: ${o.hits.join(', ')}`)).toEqual([]);
+  });
+
+  // The exemption list is only legitimate for files that are genuinely frozen, and
+  // "frozen" means present on disk. A stale entry for a deleted/renamed file would
+  // silently widen the exemption surface, so it fails here.
+  it('every FROZEN_TXCTL_EXEMPTIONS entry names a file that still exists and still offends', () => {
+    for (const file of FROZEN_TXCTL_EXEMPTIONS.keys()) {
+      expect(files, `${file} is exempted but not present in sql/`).toContain(file);
+      expect(
+        findRawTxControl(readFileSync(join(SQL_DIR, file), 'utf8')).length,
+        `${file} no longer has top-level tx control — remove its exemption`,
+      ).toBeGreaterThan(0);
     }
-    expect(violations).toEqual([]);
   });
 
   // WI-4547. The instance (592) is fixed; this is the recurrence guard, wired into
