@@ -20,6 +20,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-leader', ownerLabel: 'l', source: 'static-client', workspaceId: 'ws-x', userId: null }),
+  deriveAgentRole: () => 'su',
 }));
 vi.mock('../../events/await/engine', () => ({
   emitAwaitedEvent: vi.fn(),
@@ -54,6 +55,7 @@ vi.mock('../../events/await/installed-events', () => ({
   readInstalledUnitEvents: vi.fn(async () => []),
 }));
 vi.mock('../../events/await/store', () => ({
+  FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
   registerAnnouncement: vi.fn(async (input: { eventKey: string; expectedCondition?: unknown }) => ({
     id: 1,
     eventKey: input.eventKey,
@@ -147,7 +149,13 @@ describe('events:emit { announce: true }', () => {
     expect(out.live_awaiters).toBe(3);
     expect(out.generation).toBe(4);
     expect(registerAnnouncement).toHaveBeenCalledWith(
-      expect.objectContaining({ eventKey: 'fleet:p2p-git:phase3-open', scopeKind: 'fleet', scopeRef: 'p2p-git', note: 'opens on verified green' }),
+      expect.objectContaining({
+        eventKey: 'fleet:p2p-git:phase3-open',
+        scopeKind: 'fleet',
+        scopeRef: 'p2p-git',
+        note: 'opens on verified green',
+        boundTo: { kind: 'fleet-leadership', ref: 'p2p-git' },
+      }),
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });

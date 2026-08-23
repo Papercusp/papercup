@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { deriveAgentRole, resolveAgentIdentity } from '../coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { sendMessage } from '../coordination/messages';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
@@ -127,6 +127,12 @@ export default defineTool({
         throw new Error(`events:emit — announceScope '${kind}' needs a slug: pass announceScopeRef (your presence carries no ${kind} to default from).`);
       }
       const key = buildAnnouncedKey(args.event, { kind: kind!, ref: kind === 'global' ? null : ref });
+      const role = ctx.role?.trim() || deriveAgentRole(identity)?.trim() || null;
+      const boundTo = kind === 'fleet' && ref
+        ? { kind: 'fleet-leadership', ref }
+        : role
+          ? { kind: 'role', ref: role }
+          : null;
       const row = await registerAnnouncement({
         subscriberId: identity.ownerId,
         eventKey: key,
@@ -139,6 +145,7 @@ export default defineTool({
             ? { kind: 'predicate', predicate: args.expected_predicate }
             : null,
         expiresSec: args.expiresSec ?? null,
+        boundTo,
       });
       // Best-effort "who is already armed on this key" — the leader's readiness read.
       let liveAwaiters: number | undefined;

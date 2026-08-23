@@ -366,6 +366,22 @@ describe('await-event store (PG)', () => {
     ).toEqual([expect.objectContaining({ fired_at: expect.anything() })]);
   });
 
+  it('persists an announcement lifecycle binding for successor resolution', async () => {
+    const eventKey = 'gate:announcement-bound-owner';
+    const row = await registerAnnouncement({
+      subscriberId: 'ended-leader',
+      eventKey,
+      scopeKind: 'fleet',
+      scopeRef: 'fleet-a',
+      boundTo: { kind: 'fleet-leadership', ref: 'fleet-a' },
+    });
+
+    expect(row.boundTo).toEqual({ kind: 'fleet-leadership', ref: 'fleet-a' });
+    expect((await rootSql`
+      SELECT bound_to FROM harness_shared.event_awaits WHERE id = ${row.id}
+    `).map((r) => r.bound_to)).toEqual([{ kind: 'fleet-leadership', ref: 'fleet-a' }]);
+  });
+
   // ── EI-8998: predicate/payload watches ───────────────────────────────────
   it('a payload_filter gates firing: a non-matching emit leaves the once-row unclaimed, a matching one claims it exactly once', async () => {
     await registerAwait({

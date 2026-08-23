@@ -10,6 +10,9 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { listFleetLeader } from '../coordination/audience-host';
+import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
+import { resolveSessionStates, type LivenessVerdict } from '../coordination/liveness-oracle';
 import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
 import type { KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
@@ -69,6 +72,88 @@ function expectedVerdict(row: AwaitRow): 'not-declared' | 'pending' | 'matched' 
     return payloadMatchesFilter(expected.predicate, row.firedPayload) ? 'matched' : 'mismatched';
   }
   return 'invalid';
+}
+
+type AnnouncementOwnership = {
+  declaredByLiveness: string | null;
+  liveSuccessorIds: string[];
+  staleOwner: boolean;
+};
+
+/**
+ * Resolve announcement ownership from durable selectors rather than the mortal
+ * subscriber id.  The liveness oracle is the final filter for both the durable
+ * fleet leader candidate and role-slot candidates; a missing/degraded verdict
+ * is deliberately not treated as live evidence.
+ */
+async function resolveAnnouncementOwnership(
+  announcements: AwaitRow[],
+  workspaceId: string | null,
+): Promise<Map<number, AnnouncementOwnership>> {
+  const owners = new Set<string>();
+  const bindings = new Map<string, { kind: 'fleet-leadership' | 'role'; ref: string }>();
+  for (const row of announcements) {
+    owners.add(row.subscriberId);
+    const binding = row.boundTo;
+    if (binding?.ref && (binding.kind === 'fleet-leadership' || binding.kind === 'role')) {
+      bindings.set(`${binding.kind}:${binding.ref}`, {
+        kind: binding.kind,
+        ref: binding.ref,
+      });
+    }
+  }
+
+  const successorsByBinding = new Map<string, string[]>();
+  await Promise.all(
+    [...bindings.entries()].map(async ([key, binding]) => {
+      let ids: string[] = [];
+      try {
+        ids = binding.kind === 'fleet-leadership'
+          ? await listFleetLeader(binding.ref)
+          : await resolveLiveRoleHolders(binding.ref, { workspaceId });
+      } catch {
+        ids = [];
+      }
+      successorsByBinding.set(key, [...new Set(ids.filter((id) => id.trim()))]);
+    }),
+  );
+
+  const candidateIds = new Set<string>(owners);
+  for (const ids of successorsByBinding.values()) {
+    for (const id of ids) candidateIds.add(id);
+  }
+  let verdicts = new Map<string, LivenessVerdict>();
+  if (candidateIds.size > 0) {
+    try {
+      verdicts = await resolveSessionStates(
+        [...candidateIds].map((ownerId) => ({ ownerId })),
+        { hydratePerId: true },
+      );
+    } catch {
+      verdicts = new Map();
+    }
+  }
+  const isLive = (ownerId: string) => verdicts.get(ownerId)?.sessionState !== 'ended' && verdicts.has(ownerId);
+  const out = new Map<number, AnnouncementOwnership>();
+  for (const row of announcements) {
+    const binding = row.boundTo;
+    const bindingKey = binding && (binding.kind === 'fleet-leadership' || binding.kind === 'role')
+      ? `${binding.kind}:${binding.ref}`
+      : null;
+    const liveSuccessorIds = bindingKey
+      ? (successorsByBinding.get(bindingKey) ?? []).filter((id) => id !== row.subscriberId && isLive(id))
+      : [];
+    const declaredByLiveness = verdicts.get(row.subscriberId)?.sessionState ?? null;
+    out.set(row.id, {
+      declaredByLiveness,
+      liveSuccessorIds,
+      staleOwner:
+        announcementState(row) === 'declared' &&
+        declaredByLiveness === 'ended' &&
+        liveSuccessorIds.length === 0,
+    });
+  }
+  return out;
 }
 
 export default defineTool({
@@ -139,6 +224,9 @@ export default defineTool({
           : args.after_generation > authoritativeGeneration
             ? 'consumer_ahead'
             : 'in_sync';
+    const announcementOwnership = eventHistory
+      ? await resolveAnnouncementOwnership(eventHistory.announcements, identity.workspaceId)
+      : new Map<number, AnnouncementOwnership>();
     const eventInspection = eventHistory
       ? {
           event: args.event,
@@ -160,6 +248,14 @@ export default defineTool({
               }
             : {}),
           declarations: eventHistory.announcements.map((a) => ({
+            ...(announcementOwnership.has(a.id)
+              ? {
+                  bound_to: a.boundTo ?? null,
+                  declared_by_liveness: announcementOwnership.get(a.id)!.declaredByLiveness,
+                  live_successor_ids: announcementOwnership.get(a.id)!.liveSuccessorIds,
+                  ...(announcementOwnership.get(a.id)!.staleOwner ? { stale_owner: true } : {}),
+                }
+              : {}),
             generation: a.causalGeneration ?? null,
             state: announcementState(a),
             declared_at: a.createdAt,

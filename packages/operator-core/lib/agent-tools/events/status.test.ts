@@ -16,6 +16,15 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-status', ownerLabel: 's', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
+vi.mock('../coordination/audience-host', () => ({
+  listFleetLeader: vi.fn(async () => []),
+}));
+vi.mock('../coordination/role-slot-live-resolve', () => ({
+  resolveLiveRoleHolders: vi.fn(async () => []),
+}));
+vi.mock('../coordination/liveness-oracle', () => ({
+  resolveSessionStates: vi.fn(async () => new Map()),
+}));
 vi.mock('../../events/await/store', () => ({
   inspectEventKey: vi.fn(),
   listActiveAwaits: vi.fn(),
@@ -29,6 +38,9 @@ vi.mock('../../events/await/compose-store', () => ({
 
 import status from './status';
 import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
+import { listFleetLeader } from '../coordination/audience-host';
+import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
+import { resolveSessionStates } from '../coordination/liveness-oracle';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -269,5 +281,75 @@ describe('events:status projection', () => {
     } as never);
     const out = await call({ event: 'deploy:abcdef1', after_generation: 2 });
     expect(out.event_inspection.resync).toMatchObject({ required: false, reason: 'in_sync' });
+  });
+
+  it('projects durable owner binding, ended declarer, and a live role successor', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [{
+        id: 9,
+        causalGeneration: 3,
+        subscriberId: 'su-ended',
+        boundTo: { kind: 'role', ref: 'release-fixer' },
+        createdAt: '2026-07-13T12:00:00.000Z',
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        supersededAt: null,
+        expectedCondition: null,
+        firedPayload: null,
+      }],
+      waiters: [],
+      deliveries: [],
+    } as never);
+    vi.mocked(resolveLiveRoleHolders).mockResolvedValueOnce(['su-successor']);
+    vi.mocked(resolveSessionStates).mockResolvedValueOnce(new Map([
+      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
+      ['su-successor', { ownerId: 'su-successor', sessionState: 'parked' }],
+    ]) as never);
+
+    const out = await call({ event: 'gate:role-owner' });
+    expect(resolveLiveRoleHolders).toHaveBeenCalledWith('release-fixer', { workspaceId: 'ws-x' });
+    expect(resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-ended' }, { ownerId: 'su-successor' }],
+      { hydratePerId: true },
+    );
+    expect(out.event_inspection.declarations[0]).toMatchObject({
+      bound_to: { kind: 'role', ref: 'release-fixer' },
+      declared_by_liveness: 'ended',
+      live_successor_ids: ['su-successor'],
+    });
+    expect(out.event_inspection.declarations[0]).not.toHaveProperty('stale_owner');
+  });
+
+  it('marks an active announcement stale only when its ended owner has no live successor', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [{
+        id: 10,
+        causalGeneration: 4,
+        subscriberId: 'su-ended',
+        boundTo: { kind: 'fleet-leadership', ref: 'fleet-a' },
+        createdAt: '2026-07-13T12:00:00.000Z',
+        firedAt: null,
+        firedReason: null,
+        cancelledAt: null,
+        supersededAt: null,
+        expectedCondition: null,
+        firedPayload: null,
+      }],
+      waiters: [],
+      deliveries: [],
+    } as never);
+    vi.mocked(listFleetLeader).mockResolvedValueOnce(['su-ended']);
+    vi.mocked(resolveSessionStates).mockResolvedValueOnce(new Map([
+      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
+    ]) as never);
+
+    const out = await call({ event: 'gate:fleet-owner' });
+    expect(out.event_inspection.declarations[0]).toMatchObject({
+      bound_to: { kind: 'fleet-leadership', ref: 'fleet-a' },
+      declared_by_liveness: 'ended',
+      live_successor_ids: [],
+      stale_owner: true,
+    });
   });
 });

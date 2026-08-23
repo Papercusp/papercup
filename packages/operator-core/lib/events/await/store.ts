@@ -472,10 +472,22 @@ export async function cancelClaimableAwaits(subscriberId: string): Promise<numbe
 export async function cancelAwaitsForSubscribersOnKeys(
   subscriberIds: readonly string[],
   eventKeys: readonly string[],
+  options: {
+    /** Preserve rows owned by a different coordination surface. */
+    excludeNotePrefix?: string;
+    /** Restrict cancellation to one coordination surface (used by re-stage). */
+    includeNotePrefix?: string;
+  } = {},
 ): Promise<number> {
   if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const noteFilter =
+    options.includeNotePrefix != null
+      ? sql`AND note LIKE ${options.includeNotePrefix + '%'}`
+      : options.excludeNotePrefix != null
+        ? sql`AND (note IS NULL OR note NOT LIKE ${options.excludeNotePrefix + '%'})`
+        : sql``;
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET cancelled_at = now()
@@ -484,6 +496,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
        AND event_key = ANY(${sql.array([...eventKeys])}::text[])
        AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
+       ${noteFilter}
     RETURNING id
   `;
   return rows.length;
@@ -565,6 +578,11 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
 /** The always-armed per-agent self-wake key prefix (turn-lifecycle-control) —
  *  every live agent holds one, so it signals liveness, NOT a deliberate bench. */
 export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
+
+/** Note prefix used by the leader-managed fleet:bench await. A bench belongs to
+ * the leader's staging decision, so a member re-registering its own await on
+ * the same key must not supersede it. */
+export const FLEET_BENCH_NOTE_PREFIX = '[fleet:bench] ';
 
 /**
  * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active NON-inbox-wake
@@ -1669,6 +1687,8 @@ export async function registerAnnouncement(input: {
   scopeRef?: string | null;
   /** Optional declared completion condition, normalized by events:emit. */
   expectedCondition?: unknown | null;
+  /** Durable owner selector used by exact-key status to resolve successors. */
+  boundTo?: LifecycleBinding | null;
   /** Seconds until the DECLARATION lapses (sweeper marks it fired_reason='expired'); null = standing. */
   expiresSec?: number | null;
 }): Promise<AwaitRow> {
@@ -1696,11 +1716,12 @@ export async function registerAnnouncement(input: {
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
          once, min_sleep_sec, urgency, payload_filter, scope_kind, scope_ref, causal_generation,
-         expected_condition)
+         expected_condition, bound_to)
       VALUES
         (${ws}, ${input.subscriberId}, ${input.eventKey}, 'announce', ${input.note ?? null}, NULL,
          'expire', ${expiresTs}, false, NULL, false, NULL, ${input.scopeKind}, ${input.scopeRef ?? null},
-         ${generation}, ${input.expectedCondition != null ? JSON.stringify(input.expectedCondition) : null}::text::jsonb)
+         ${generation}, ${input.expectedCondition != null ? JSON.stringify(input.expectedCondition) : null}::text::jsonb,
+         ${input.boundTo ? JSON.stringify(assertLifecycleBinding(input.boundTo)) : null}::text::jsonb)
       RETURNING *
     `;
     return mapAwait(rows[0]);
