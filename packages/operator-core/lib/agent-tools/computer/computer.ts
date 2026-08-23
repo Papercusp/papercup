@@ -43,6 +43,8 @@ import {
   resolveLocalDesktopByDisplay,
 } from '../../desktop/desktop-session-registry';
 import { scrubExecEnv } from '../capability/exec-sandbox';
+import { snapshotA11yTree } from './a11y-snapshot';
+import { recordAction, renderLedgerLine, type ObservedAs } from './action-ledger';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
 const DEFAULT_W = 1024;
@@ -301,9 +303,76 @@ const computerArgs = z.object({
   scroll_direction: z.enum(['up', 'down', 'left', 'right']).optional().describe('For `scroll`.'),
   scroll_amount: z.number().int().positive().optional().describe('For `scroll` — wheel clicks (default 3).'),
   duration: z.number().positive().optional().describe('For `wait`/`hold_key` — seconds.'),
+  observe: z
+    .enum(['auto', 'image', 'tree', 'none'])
+    .optional()
+    .describe(
+      'How you want to SEE the result of this action. auto (default) = the accessibility tree when this desktop exposes one, else a screenshot. image = always a screenshot (~1049 tokens). tree = the tree or a loud refusal, never a silent screenshot. none = the one-line result only. The `screenshot` action always returns pixels regardless.',
+    ),
 });
 
 export type ComputerArgs = z.infer<typeof computerArgs>;
+
+/** How the caller wants to see an action's effect (P-008, D-012). */
+export type ObserveMode = 'auto' | 'image' | 'tree' | 'none';
+
+interface ObservationResult {
+  observed: ObservedAs;
+  /** Short tag for the ledger line when `auto` had to fall back, e.g. `no-apps`. */
+  note?: string;
+  content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>;
+}
+
+/**
+ * Decide what a post-action observation costs (D-012).
+ *
+ * The whole point of P-008: `capability:computer` used to end EVERY input action
+ * with a full screenshot — 1049 tokens at 1024x768, most of them near-duplicates
+ * of the previous step's. P-007 measured the a11y tree at 89 tokens on the same
+ * screen, 11.79x cheaper, so `auto` prefers it.
+ *
+ * The fallback to pixels is load-bearing, not a nicety: the tree sees only what the
+ * toolkit EXPORTS, so a canvas app, a video, or a plain X11 client like `xterm` is
+ * invisible to it. Degrading to a screenshot is correct; degrading to blindness is
+ * the bug this branch exists to prevent — which is why `snapshotA11yTree` returns a
+ * reason rather than throwing, and why `tree` refuses out loud instead of quietly
+ * handing back an image the caller asked not to receive.
+ */
+async function observeAfterAction(
+  target: DesktopTarget,
+  mode: ObserveMode,
+  signal?: AbortSignal,
+): Promise<ObservationResult> {
+  if (mode === 'none') return { observed: 'none', content: [] };
+  if (mode === 'image') return { observed: 'image', content: [await screenshot(target, signal)] };
+
+  const snap = await snapshotA11yTree(target, computerExec, { ...(signal ? { signal } : {}) });
+  if (snap.ok) {
+    return {
+      observed: 'tree',
+      // A repeated full sentence would cost more over a long task than the warning
+      // is worth, so the untrustworthy-bounds case rides the ledger line as a tag;
+      // `computer:observe` still spells it out in full.
+      ...(snap.boundsTrustworthy ? {} : { note: 'refs-only' }),
+      content: [{ type: 'text' as const, text: snap.tree }],
+    };
+  }
+
+  if (mode === 'tree') {
+    return {
+      observed: 'none',
+      note: snap.reason,
+      content: [
+        {
+          type: 'text' as const,
+          text: `observe:'tree' asked for the accessibility tree and there is none — ${snap.detail} Re-run with observe:'image' if you need pixels.`,
+        },
+      ],
+    };
+  }
+
+  return { observed: 'image', note: snap.reason, content: [await screenshot(target, signal)] };
+}
 
 interface ComputerToolResult {
   content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>;
@@ -338,33 +407,83 @@ export async function runComputerAction(
     return { content: [{ type: 'text', text: rewriteCursorPosition(raw, target) }] };
   }
 
+  const mode: ObserveMode = args.observe ?? 'auto';
+
   if (plan.kind === 'wait') {
     await new Promise((r) => setTimeout(r, plan.ms));
-    return { content: [{ type: 'text', text: `waited ${plan.ms}ms` }, await screenshot(target, signal)] };
+    const obs = await observeAfterAction(target, mode, signal);
+    const entry = recordAction(target.display, {
+      action: `wait ${plan.ms}ms`,
+      ok: true,
+      observed: obs.observed,
+      ...(obs.note ? { note: obs.note } : {}),
+    });
+    return { content: [{ type: 'text', text: renderLedgerLine(entry) }, ...obs.content] };
   }
 
-  // xdotool input action → execute, then auto-screenshot so the bee sees the effect.
+  // xdotool input action → execute, then observe the effect (D-012: the observation
+  // is chosen at EMIT time; nothing already returned is ever rewritten).
   const cmd = xdotoolCommand(plan, target);
   const r = await execImpl(cmd.bin, cmd.args, { env: cmd.env, signal });
+
+  // The ledger records the coordinate the MODEL used (capture space), not the
+  // display-space coordinate the driver translated it to — otherwise a later read
+  // of the ledger disagrees with the screen the model was looking at (D-006).
+  const ledgerInput = {
+    action: input.action,
+    ...(input.coordinate ? { coordinate: [input.coordinate[0], input.coordinate[1]] as const } : {}),
+    // Typed text is recorded by LENGTH only — never echoed (see action-ledger.ts).
+    ...(input.action === 'type' && typeof input.text === 'string'
+      ? { typedChars: input.text.length }
+      : {}),
+    ...((input.action === 'key' || input.action === 'hold_key') && input.text
+      ? { keys: input.text }
+      : {}),
+  };
+
   if (r.status !== 0) {
+    const entry = recordAction(target.display, {
+      ...ledgerInput,
+      ok: false,
+      observed: 'none',
+      note: `exit ${r.status}`,
+    });
     return {
       isError: true,
-      content: [{ type: 'text', text: `capability:computer — ${input.action} failed (exit ${r.status}): ${r.stderr.slice(0, 300)}` }],
+      content: [
+        {
+          type: 'text',
+          text: `${renderLedgerLine(entry)}\ncapability:computer — ${input.action} failed (exit ${r.status}): ${r.stderr.slice(0, 300)}`,
+        },
+      ],
     };
   }
-  return { content: [{ type: 'text', text: `did ${input.action}` }, await screenshot(target, signal)] };
+
+  const obs = await observeAfterAction(target, mode, signal);
+  const entry = recordAction(target.display, {
+    ...ledgerInput,
+    ok: true,
+    observed: obs.observed,
+    ...(obs.note ? { note: obs.note } : {}),
+  });
+  return { content: [{ type: 'text', text: renderLedgerLine(entry) }, ...obs.content] };
 }
 
 export default defineTool({
   name: 'capability:computer',
   description:
-    'Operate a sandboxed desktop (GUI) — screenshot, click, type, key, scroll — using the canonical computer-use action vocabulary. Returns a screenshot image after each action so you can see the result. ONLY for genuinely visual/GUI steps: for anything scriptable (files, CLIs, APIs) prefer capability:bash, and for web pages prefer a browser tool — both are faster and more reliable than pixel-clicking.',
+    'Operate a sandboxed desktop (GUI) — screenshot, click, type, key, scroll — using the canonical computer-use action vocabulary. ONLY for genuinely visual/GUI steps: for anything scriptable (files, CLIs, APIs) prefer capability:bash, and for web pages prefer a browser tool — both are faster and more reliable than pixel-clicking.',
   guidance: {
-    when: 'A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` first to see, then act on what you see.',
+    when: 'A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` (or computer:observe) first to see, then act on what you see.',
     notWhen:
       'Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent\'s leased sandbox desktop.',
-    chaining: 'screenshot → inspect the image → left_click/type/key at the coordinates you see → screenshot to confirm. Repeat.',
+    chaining:
+      'screenshot once to orient → then act, reading the tree that comes back with each action → screenshot again only when the tree cannot answer (a canvas, a video, a plain X11 client like xterm, or anything about pixels/layout/colour). Set `observe` per action: "image" when you must see pixels, "none" when you do not need to check the effect.',
+    returns:
+      'A one-line result (`#7 left_click (412,388) ok · tree`) plus, by default, this desktop\'s compressed accessibility tree. The line is the action ledger: one line per step, never re-emitted, so your transcript accumulates the trajectory for free. `observe` picks what follows it — auto (tree when the desktop exposes one, else a screenshot), image (~1049 tokens at 1024x768), tree (the tree or a loud refusal, never a silent image), none (the line only). The tree costs ~89 tokens on the same screen — 11.79x cheaper, measured — and every observation stays in your context for the rest of the task, so a 40-step job is roughly 4k tokens of trees against 42k of screenshots. The `screenshot` action always returns pixels regardless of `observe`. A trailing `· refs-only` tag means this toolkit reports unusable screen coordinates: activate via computer:click_element by #ref, not by pixel.',
     seeAlso: [
+      'computer:observe (read the tree without acting — same cheap view, on demand)',
+      'computer:click_element (activate by #ref from the tree; no coordinates, no pixels)',
       'capability:bash (anything scriptable — files / CLIs / APIs)',
       'computer:provision_desktop (stand up the sandbox desktop first)',
       'computer:list_desktops (which desktops are leased)',
