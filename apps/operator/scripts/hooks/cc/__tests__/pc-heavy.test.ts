@@ -1005,7 +1005,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       '  exec sleep 20',
     ].join('\n');
 
-    const wrapper = spawn('bash', [PC_HEAVY, 'setsid', '-f', 'bash', '-c', command], {
+    const wrapper = spawn('bash', [PC_HEAVY, 'bash', '-c', command], {
       env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }),
       cwd: dir,
     });
@@ -1038,7 +1038,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
         (text) => text.includes('[pc-heavy] slot acquired — starting real work'),
         'the wrapper acquiring slot.0',
       );
-      await waitFor('the detached pipe keeper starts', () => existsSync(lingerPidFile));
+      await waitFor('the pipe-keeping real child starts', () => existsSync(lingerPidFile));
       lingerPid = Number(readFileSync(lingerPidFile, 'utf8').trim());
       expect(Number.isSafeInteger(lingerPid) && lingerPid > 1).toBe(true);
       expect(() => process.kill(lingerPid, 0)).not.toThrow(); // positive control: the pipe keeper is still live
@@ -1047,8 +1047,9 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       teePids = captureTeePids();
       expect(teePids).toHaveLength(2);
 
-      // Kill the wrapper PID only. The detached pipe keeper keeps both capture
-      // pipes open, so the two recorded tees survive and isolate their own fd set.
+      // Kill the wrapper PID only. Its real child has already closed its slot fd
+      // but keeps both capture pipes open, so the recorded tees survive and
+      // isolate their own inherited fd set.
       wrapper.kill('SIGKILL');
       await waitFor('the wrapper exits', () => wrapper.exitCode !== null || wrapper.signalCode !== null);
       expect(teePids.some((pid) => {
