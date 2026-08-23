@@ -286,7 +286,9 @@ export function evaluateGitSyncStall(
   // commit-only decision, with the top-level value as a backwards-compatible fallback
   // for rows written before EI-20315742298217655.
   const localSyncStatus = s.localSyncStatus ?? s.lastStatus;
-  const commitNotAttemptable = localSyncStatus === 'nothing' || localSyncStatus === 'skipped';
+  const commitNotAttemptable = localSyncStatus === 'nothing'
+    || localSyncStatus === 'skipped'
+    || localSyncStatus === 'skipped-locked';
   // EI-21154752873591799 / WI-40600: the HEAD clock can already be stale when a new, healthy
   // local-sync fire begins. The colliding cron tick then records `skipped-locked` while the
   // real fire holds the writer-backed `git_sync_activity` marker, and the watchdog used to page

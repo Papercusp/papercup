@@ -288,6 +288,20 @@ describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
     expect(v.commitStale).toBe(false);
   });
 
+  it("EI-21197856845340037: 'skipped-locked' is a deferred attempt, not evidence that commits cannot land", () => {
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: 4 * H,
+        lastStatus: 'skipped-locked',
+        localSyncStatus: 'skipped-locked',
+      },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+  });
+
   it("fire-stale / reap stalls still alarm on a 'skipped' routine (status-independent signals)", () => {
     const fireStale = evaluateGitSyncStall(
       { lastFiredMs: NOW - 48 * 3_600_000, headUnchangedMs: 0, lastError: null, lastStatus: 'skipped', watchdogAlerted: false, reapedCount: 0 },
