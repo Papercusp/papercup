@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 793,
+  "count": 796,
   "tools": [
     {
       "name": "ablation:report",
@@ -4154,6 +4154,80 @@
       }
     },
     {
+      "name": "computer:click_element",
+      "http": {
+        "path": "/api/agent-tools/computer/click_element",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Activate an element by the #ref computer:observe gave it — semantically, over the accessibility bus, rather than by clicking pixels. Works on elements that are scrolled out of view or overlapped, and is immune to screenshot scaling.",
+      "capabilities": [
+        "capability:computer"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "To press a button, activate an entry, or toggle a control that computer:observe listed with a #ref.",
+        "notWhen": "Anything the tree cannot see (canvas, video, a plain X11 app) → capability:computer left_click at a coordinate you read off a screenshot. Typing, keys and scrolling are capability:computer too — this tool only activates.",
+        "chaining": "computer:observe → computer:click_element { ref } → computer:observe to confirm the result."
+      }
+    },
+    {
       "name": "computer:list_desktops",
       "http": {
         "path": "/api/agent-tools/computer/list_desktops",
@@ -4183,6 +4257,80 @@
         "when": "Checking which desktops exist — after provisioning, before a VNC view, or auditing for leaks. liveHandleInThisProcess:false means the row is not backed here; it is not proof the desktop is dead.",
         "notWhen": "Driving a desktop (capability:computer) or standing one up (computer:provision_desktop).",
         "chaining": "computer:provision_desktop → computer:list_desktops (verify) → computer:release_desktop."
+      }
+    },
+    {
+      "name": "computer:observe",
+      "http": {
+        "path": "/api/agent-tools/computer/observe",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the sandbox desktop's ACCESSIBILITY TREE — every on-screen element with its role, name, text and state, as compact text. Far cheaper than a screenshot and carries semantics a screenshot cannot (which node is focused, what an entry actually contains). Each interactive element gets a #ref you pass to computer:click_element.",
+      "capabilities": [
+        "capability:computer"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "FIRST, before screenshotting, whenever you need to know what is on a GUI and act on it. It is a fraction of a screenshot's tokens per step, and a computer-use loop pays that cost on every step.",
+        "notWhen": "It only sees what the toolkit exports. A canvas/game/video, a PDF or image viewer's content, or a plain X11 app (xterm) reports little or nothing — if it returns no applications or a tree that clearly does not match the task, take a capability:computer screenshot. Also use the screenshot when you need to judge LAYOUT or appearance rather than structure.",
+        "chaining": "computer:observe → pick an element → computer:click_element { ref } → computer:observe to confirm. Drop to capability:computer for typing, keys, scrolling and anything the tree cannot see."
       }
     },
     {
@@ -25781,6 +25929,39 @@
       "guidance": {
         "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the mug, a UI 'run this on that agent' action, a mug placing a precise command (not prose) onto a cup.",
         "notWhen": "Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue."
+      }
+    },
+    {
+      "name": "social:post",
+      "http": {
+        "path": "/api/agent-tools/social/post",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Publish a NEW post to a social destination the owner named, as \"<platform>:<destination>\" (e.g. \"reddit:r/rust\"). Publishing to the owner's public identity is owner-ratified: until they enable it this returns the resolved account, audience and destination standing WITHOUT sending, which is the answer to show them.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks you to publish something new to a specific community or page they named.",
+        "notWhen": "Answering an existing post — that is social:reply, which resolves the thread and account itself. Not for email (mail:send) or Slack (chat:post).",
+        "chaining": "Report the echoed account, destination and visibility back to the owner. If `withheld` is set nothing was published — say so plainly rather than reporting success."
       }
     },
     {
