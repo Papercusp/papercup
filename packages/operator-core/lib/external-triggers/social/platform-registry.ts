@@ -160,8 +160,30 @@ export interface SocialQuotaBucket {
    * it as unit-capped is exactly the error D-020 corrected.
    */
   unit: 'calls' | 'units';
+  /**
+   * Which verbs draw on this bucket.
+   *
+   * DECLARED rather than inferred from `appliesTo`, which is prose in the
+   * platform's own endpoint vocabulary and exists to be READ BY A HUMAN. A
+   * consumer that matched on it would be parsing free text to make a
+   * rate-limiting decision, and would break the first time a row was reworded.
+   *
+   * Omitted means "not stated for any verb" — a consumer must then treat this
+   * bucket as a candidate only under its own conservative fallback, never as a
+   * match. See `socialStormPolicyFor`.
+   */
+  verbs?: SocialQuotaVerb[];
   notes?: string;
 }
+
+/**
+ * The verbs a quota bucket can be drawn on by.
+ *
+ * `read` covers every polling/list call the read adapters make; the rest mirror
+ * the registry's own `write.verbs` vocabulary so a bucket and a write
+ * declaration cannot drift into two different spellings of the same verb.
+ */
+export type SocialQuotaVerb = 'read' | 'post' | 'reply' | 'delete';
 
 export interface SocialRateBudget {
   /** Requests per minute, where the platform states one. */
@@ -441,17 +463,23 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
           appliesTo: 'all endpoints except search.list and videos.insert (activities.list 1, commentThreads.list 1, comments.list 1, comments.insert 50)',
           perDay: 10000,
           unit: 'units',
+          verbs: ['read', 'reply', 'delete'],
         },
         search: {
           appliesTo: 'search.list',
           perDay: 100,
           unit: 'calls',
+          // No `verbs`: search.list is not reached by any declared social verb —
+          // neither read adapter calls it (activities.list and
+          // commentThreads.list are both general-bucket). Declaring a verb here
+          // would attribute a cap to a bucket nothing actually draws on.
           notes: 'A separate allocation; unused general units cannot buy another search.',
         },
         videoUploads: {
           appliesTo: 'videos.insert',
           perDay: 100,
           unit: 'calls',
+          verbs: ['post'],
           notes:
             'The "Video Uploads quota bucket". Each call costs 1 unit, NOT the widely-repeated 1600 — that figure is stale, and the real constraint is this 100-CALL ceiling, which no amount of unused general quota replenishes (D-020).',
         },

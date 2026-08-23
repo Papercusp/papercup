@@ -265,7 +265,23 @@ export type SocialReplyTarget =
       parentCid: string;
     }
   | { platform: 'mastodon'; inReplyToId: string; instanceHost: string }
-  | { platform: 'reddit'; parentFullname: string; subreddit: string };
+  | { platform: 'reddit'; parentFullname: string; subreddit: string }
+  | {
+      platform: 'youtube';
+      /**
+       * `comments.insert`'s REQUIRED `snippet.parentId` — the TOP-LEVEL comment
+       * of the thread, never the video and never the commentThread id.
+       */
+      parentCommentId: string;
+      /** Only for the permalink; a document stored without one still replies fine. */
+      videoId?: string;
+      /**
+       * `commentThread.snippet.canReply`. A definite `false` is refused locally,
+       * because the vendor page names this flag as the remedy for the
+       * `operationNotSupported` 400 the insert would otherwise return.
+       */
+      canReply?: boolean;
+    };
 
 export interface SocialReplyCoordinates {
   ref: SocialPostRef;
@@ -274,6 +290,48 @@ export interface SocialReplyCoordinates {
   parentVisibility: SocialVisibility;
   /** Human-readable destination, echoed back so the caller reports where it went. */
   label: string;
+}
+
+/**
+ * YouTube's reply target, split out as its own exported function.
+ *
+ * WHY THIS ONE IS SEPARATE WHEN THE OTHER THREE ARE INLINE. YouTube's registry
+ * row carries `blockedOn` (the owner's Google incremental-consent wall), so
+ * `assertSocialPlatformUsable` throws `owner-blocked` at the top of
+ * `resolveSocialReplyCoordinates` and this branch is UNREACHABLE through the
+ * public function today. Leaving the derivation inline would therefore ship it
+ * untested until the day the wall lifts — which is the worst possible day to
+ * discover it wrong, because it is also the first day anyone tries to reply.
+ * Exported, it is directly testable now; the switch calls it, so there is still
+ * exactly one implementation.
+ *
+ * ⚠ THE PARENT IS ALWAYS THE TOP-LEVEL COMMENT. `comments.insert` requires
+ * `snippet.parentId`, and YouTube's comment model is two-level: a thread has one
+ * top-level comment and a flat list of replies. So replying to a REPLY still
+ * addresses that reply's parent, which is why `replyToId` (the stored
+ * `snippet.parentId`, carried verbatim by the comments read adapter) is
+ * preferred over the document's own id. A document with no `replyToId` IS a
+ * top-level comment, so its own external id is the parent.
+ */
+export function resolveYouTubeReplyTarget(
+  payload: Record<string, unknown>,
+  externalId: string,
+): Extract<SocialReplyTarget, { platform: 'youtube' }> {
+  const parentCommentId = string(payload.replyToId) || externalId;
+  if (!parentCommentId) {
+    throw new Error(
+      'social_reply_coordinates_missing:youtube — comments.insert REQUIRES snippet.parentId and the stored document carries neither a replyToId nor an external id',
+    );
+  }
+  const videoId = string(payload.videoId);
+  const target: Extract<SocialReplyTarget, { platform: 'youtube' }> = { platform: 'youtube', parentCommentId };
+  if (videoId) target.videoId = videoId;
+  // Only a definite boolean is carried. An ABSENT flag must stay absent rather
+  // than defaulting either way: defaulting to false would disable replies for
+  // every document stored before the field existed, and defaulting to true would
+  // manufacture a permission the provider never granted.
+  if (typeof payload.canReply === 'boolean') target.canReply = payload.canReply;
+  return target;
 }
 
 /**
@@ -345,6 +403,14 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
         label: `${row.label} · ${subreddit ? `r/${subreddit}` : parentFullname}`,
       };
     }
+
+    case 'youtube':
+      return {
+        ref,
+        target: resolveYouTubeReplyTarget(payload, doc.externalId),
+        parentVisibility,
+        label: `${row.label} · ${string(payload.videoId) || string(payload.threadId) || doc.externalId}`,
+      };
 
     default:
       // Wave B/C platforms are refused by assertSocialPlatformUsable above
