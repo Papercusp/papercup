@@ -120,28 +120,21 @@ export const AGENT_ROLES = [
   // persona reads the file / harness_docs:list, not the SU-gated docs:get. Persona ships
   // at blueprints/base/prompts/doc-steward.md.
   'doc-steward',
-  // The PAPERCUP — the fleet watcher split out of the overloaded "operator"
-  // (was `sentinel`; unify-launch-mechanics-2026-06-09 D-004). "operator" meant both
-  // the Mug (steer: schedule + place + prioritize) AND a watcher; they are now separate.
-  // The Mug STEERS; the papercup WATCHES — fleet health (stuck/orphaned spawns,
-  // crash-loops), misbehaving agents (lock hogs, retry storms, mute cups), and the
-  // coord substrate (presence staleness, undelivered escalations). It is READ-MOSTLY
-  // (its only writes are raising alarms: coord:escalate / coord:send), launched
-  // through the SAME unified primitive as a cup and PLACED BY THE MUG (cup:spawn
-  // or the watcher launch blueprint). No execution/mutation capability.
+  // The PAPERCUP — the fast, always-on front-end of the ONE user-facing
+  // "Papercup" identity (voice-public-release-readiness-2026-07-12 D-001/D-005).
+  // Plans call this half `papercup-fast`; the registered role id stays `papercup`.
+  // It watches the fleet and narrates it while staying responsive; longer
+  // investigations are delegated to the separate internal `papercup-deep` role.
+  // Do not describe this role as the retired fleet-watcher-only/sentinel role:
+  // the fast/deep split is invisible to the user, who sees one Papercup.
   'papercup',
-  // The PAPERCUP-DEEP — the hidden deep-brain half of the ONE user-facing
-  // "Papercup" identity (voice-public-release-readiness-2026-07-12 D-001/D-005/
-  // D-006, owner-ratified). Where `papercup` is the FAST always-on voice
-  // front-end (short spoken summaries, seconds-fast turns), papercup-deep is a
-  // persistent, parked-until-woken heavy reasoner (Opus-tier, long
-  // uninterruptable turns) the fast half delegates real investigation to over
-  // the modern coord/wake channel (NOT the retired voice:delegate_deep lane —
-  // D-003). NEVER user-facing: no voice:say, no conversation:*; its findings
-  // surface only through the fast front-end's voice. Read+think+reply-mostly:
-  // coord (the channel), docs/search/plans/work_items reads; excluded from the
-  // placement/execution tools same as cup/papercup/kettle (the COORD_ROLES
-  // exclusion-filter sites move in lockstep — see coordination/roles.ts).
+  // The PAPERCUP-DEEP — the separate internal, hidden deep-brain half of the
+  // ONE user-facing "Papercup" identity (voice-public-release-readiness-2026-07-12
+  // D-001/D-005/D-006, owner-ratified). It is persistent and parked between
+  // questions, and the fast front-end delegates sustained investigation to it over
+  // the modern coord/wake channel (not the retired voice:delegate_deep lane — D-003).
+  // It is never user-facing; its findings return through the fast front-end so the
+  // user still sees one Papercup.
   'papercup-deep',
   // The KETTLE — the autonomous system-health SUPERVISOR, a sibling to the Mug
   // (was `overwatch`; overwatch-role-2026-06-15 C-2 / B-01). Where the Mug SCHEDULES

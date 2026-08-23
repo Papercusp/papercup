@@ -9,6 +9,7 @@
  */
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { AGENT_ROLES, OPERATOR_CONFIG_WRITE_ROLES, isOperatorConfigWriteRole, SU_ROLES } from './role-config.js';
 
 test('AGENT_ROLES contains the coding pipeline spine in order (scoper → curator)', () => {
@@ -45,9 +46,23 @@ test('AGENT_ROLES includes the built-in cross-cutting roles', () => {
     'auditor',
     'merge-resolver',
     'release-manager',
+    'papercup',
+    'papercup-deep',
+    'kettle',
   ]) {
     assert.ok(AGENT_ROLES.includes(role as (typeof AGENT_ROLES)[number]), `missing cross-cutting role "${role}"`);
   }
+});
+
+test('Papercup role comments preserve the ratified fast/deep identity split', () => {
+  const source = readFileSync(new URL('./role-config.ts', import.meta.url), 'utf8');
+
+  assert.match(source, /The PAPERCUP — the fast, always-on front-end/);
+  assert.match(source, /registered role id stays `papercup`/);
+  assert.match(source, /The PAPERCUP-DEEP — the separate internal, hidden deep-brain half/);
+  assert.match(source, /persistent and parked between/);
+  assert.doesNotMatch(source, /fleet watcher split out of the overloaded/);
+  assert.doesNotMatch(source, /No execution\/mutation capability/);
 });
 
 test('AGENT_ROLES has no duplicate ids', () => {
