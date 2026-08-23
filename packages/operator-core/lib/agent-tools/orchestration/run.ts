@@ -70,6 +70,9 @@ export interface ServerScriptRunDeps {
     ctx: UnifiedToolContext,
     captureMode: CodeRunCaptureMode,
   ) => Promise<CodeRunToolResult>;
+  /** Synthetic-catalog seam for focused composition tests. Production calls
+   * omit this and preflight against the live current-caller registry. */
+  inspectScript?: typeof inspectScriptContract;
 }
 
 const DEFAULT_DEPS: ServerScriptRunDeps = {
@@ -222,7 +225,7 @@ export async function runServerScriptAdapter(
   const policyFailure = orchestrationPolicyFailure(args);
   if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args);
 
-  const checked = await inspectScriptContract({
+  const checked = await (deps.inspectScript ?? inspectScriptContract)({
     script: args.script,
     bindings: args.bindings,
     lifecycle: args.execution?.lifecycle,
@@ -342,6 +345,12 @@ function recipeRunEnvelope(
     recipeReuse: true,
     recipeId: args.recipe?.id ?? String(item.id ?? ''),
     dryRun: args.dryRun ?? false,
+    plannedMutationCount: countArray(result.plannedMutations),
+    writeAttemptCount: countArray(result.writeAttempts),
+    rejectedMutationCount: countArray(result.rejectedMutations),
+    uncertainMutationCount: countArray(result.uncertainMutations),
+    childFailureCount: countArray(result.childFailures),
+    notDispatchedWriteCount: countArray(result.notDispatchedWrites),
   };
 
   let envelope: OutputEnvelope;

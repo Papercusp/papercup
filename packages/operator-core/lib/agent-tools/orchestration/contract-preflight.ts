@@ -134,8 +134,11 @@ export async function inspectScriptContract(input: {
   lifecycle?: 'foreground' | 'background';
   manifest?: unknown;
   ctx: UnifiedToolContext;
+  /** Test/composition seam for a caller-owned projected catalog. Production
+   * calls omit this and always rebuild the live current-caller surface. */
+  surface?: OrchestrationCallerSurface;
 }): Promise<ScriptContractInspection | RecipeContractFailure> {
-  const surface = orchestrationCallerSurface(input.ctx);
+  const surface = input.surface ?? orchestrationCallerSurface(input.ctx);
   await ensureParseCheckReady();
   const catalogAnalysis = checkScript(input.script.source, surface.tools);
   if (!catalogAnalysis.ok) {

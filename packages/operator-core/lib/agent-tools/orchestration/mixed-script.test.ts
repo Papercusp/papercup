@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { runToolOrchestration, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ProjectedTool, ToolResult, WrapDispatch } from '@papercusp/tooldef';
 import { bindCurrentCallerDispatch } from './current-caller-dispatch';
+import { currentCallerRecipeCatalog, inspectScriptContract } from './contract-preflight';
 import { runServerScriptAdapter } from './run';
 
 const json = (value: unknown): ToolResult => ({
@@ -137,6 +138,9 @@ describe('P-012 server-side mixed capability scripts', () => {
       return bindCurrentCallerDispatch(tool, name, args, ctx, next);
     };
     const ctx = testContext();
+    const allowed = new Set(
+      tools.map((tool) => tool.expose.mcp?.name).filter((name): name is string => !!name),
+    );
 
     const result = await runServerScriptAdapter(
       {
@@ -171,16 +175,23 @@ describe('P-012 server-side mixed capability scripts', () => {
             ctx: runCtx,
             deps: {},
             tools,
-            allowed: new Set(tools.map((tool) => tool.expose.mcp?.name).filter((name): name is string => !!name)),
+            allowed,
             wrapDispatch,
           });
           return json(core);
         },
+        inspectScript: (input) => inspectScriptContract({
+          ...input,
+          surface: {
+            tools,
+            allowed,
+            catalog: currentCallerRecipeCatalog(tools, allowed),
+          },
+        }),
       },
     );
 
     const envelope = textEnvelope(result);
-    if (envelope.state !== 'complete') throw new Error(JSON.stringify(envelope));
     expect(envelope).toMatchObject({
       schemaVersion: 'papercusp.output-envelope/v1',
       state: 'complete',

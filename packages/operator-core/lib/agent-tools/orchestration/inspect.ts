@@ -26,10 +26,15 @@ const textResult = (payload: unknown): ToolResult => ({
 export async function inspectOrchestration(
   args: OrchestrationSourceArgs,
   ctx: UnifiedToolContext,
-  adapter: SavedRecipeAdapter = savedRecipeAdapterFor(ctx),
+  deps: {
+    recipes?: SavedRecipeAdapter;
+    inspectScript?: typeof inspectScriptContract;
+  } = {},
 ): Promise<ToolResult> {
   const policyFailure = orchestrationPolicyFailure(args);
   if (policyFailure) return textResult(policyFailure);
+  const adapter = deps.recipes ?? savedRecipeAdapterFor(ctx);
+  const inspectScript = deps.inspectScript ?? inspectScriptContract;
 
   let script = args.script as OrchestrationScriptSource;
   let manifest: CapabilityManifestV1 | undefined;
@@ -60,7 +65,7 @@ export async function inspectOrchestration(
     source = { kind: 'recipe', recipe: inspected.recipe, continuation };
   }
 
-  const checked = await inspectScriptContract({
+  const checked = await inspectScript({
     script,
     bindings: args.bindings,
     lifecycle: args.execution?.lifecycle,
@@ -125,4 +130,3 @@ const orchestrateInspectTool = defineTool({
 });
 
 export default orchestrateInspectTool;
-
