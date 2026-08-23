@@ -141,10 +141,41 @@ describe('unverified rows deny everything', () => {
   // D-005's ruling applied to egress: a row nobody has checked cannot be reached
   // by accident. An empty apiHosts under hostPolicy 'fixed' is a DENY, and the
   // denial says why rather than reading as an ordinary host mismatch.
-  it.each(['linkedin', 'tiktok', 'x-twitter'])('%s cannot reach anything yet', (platform) => {
+  // linkedin LEFT this list in P-021: its row is now verified and declares real
+  // hosts, so it is covered by the verified-row cases instead.
+  it.each(['tiktok', 'x-twitter'])('%s cannot reach anything yet', (platform) => {
     const d = denial(platform, 'https://api.linkedin.com/v2/me');
     expect(d.reason).toBe('host-not-declared');
     expect(d.detail).toContain('declares no API hosts');
+  });
+});
+
+describe('linkedin egress (P-021)', () => {
+  it('allows the API host and the SEPARATE oauth host', () => {
+    // The split is the point: most rows here serve both from one host, and
+    // assuming that for LinkedIn silently breaks token exchange.
+    expect(assertSocialEgressAllowed('linkedin', 'https://api.linkedin.com/rest/posts').hostname).toBe(
+      'api.linkedin.com',
+    );
+    expect(
+      assertSocialEgressAllowed('linkedin', 'https://www.linkedin.com/oauth/v2/accessToken').hostname,
+    ).toBe('www.linkedin.com');
+  });
+
+  it('allows the media-upload URL, which is served from the API host', () => {
+    // registerUpload hands back an absolute URL on api.linkedin.com rather than
+    // a separate upload host — worth pinning, because a separate upload host is
+    // the shape several sibling platforms use.
+    expect(
+      assertSocialEgressAllowed('linkedin', 'https://api.linkedin.com/mediaUpload/C5522AQ/feedshare/0').hostname,
+    ).toBe('api.linkedin.com');
+  });
+
+  it('still denies a plausible neighbour host', () => {
+    // Anti-vacuity for the two allows above: the row is a FIXED allowlist, not
+    // a suffix match on linkedin.com.
+    expect(denial('linkedin', 'https://media.licdn-ei.com/dms/image/x').reason).toBe('host-not-declared');
+    expect(denial('linkedin', 'https://evil-linkedin.com/rest/posts').reason).toBe('host-not-declared');
   });
 });
 

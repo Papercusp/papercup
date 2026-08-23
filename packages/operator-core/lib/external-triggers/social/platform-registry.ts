@@ -1071,10 +1071,14 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
       // document). Assuming one host for both — the shape most platforms here
       // have — breaks token exchange, so both are declared.
       apiHosts: ['api.linkedin.com', 'www.linkedin.com'],
-      // www.linkedin.com is deliberately in BOTH lists: it is genuinely called
-      // (OAuth) and genuinely appears in emitted permalinks. media.licdn-ei.com
-      // shows up only inside a userinfo `picture` value and is never fetched.
-      permalinkHosts: ['www.linkedin.com', 'media.licdn-ei.com'],
+      // ⚠ www.linkedin.com is NOT repeated here even though every emitted post
+      // permalink is on it. `permalinkHosts` means "appears in payload URLs and
+      // is NEVER fetched", and this host IS fetched for OAuth — so listing it
+      // in both would make the separation meaningless (a reader would take it
+      // as a real restriction while the host stayed callable anyway).
+      // media.licdn-ei.com is the genuine case: it appears only inside a
+      // userinfo `picture` value and nothing here ever retrieves it.
+      permalinkHosts: ['media.licdn-ei.com'],
       notes:
         'api.linkedin.com serves /rest/*, /v2/* and the /mediaUpload/* URL returned by assets?action=registerUpload. www.linkedin.com serves ONLY /oauth/* (authorization, accessToken, openid/jwks, .well-known/openid-configuration) — verified 2026-08-23 against the 3-legged OAuth guide and the OIDC discovery document, not inferred from api.linkedin.com.',
     },

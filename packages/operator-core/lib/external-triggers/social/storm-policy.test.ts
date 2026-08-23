@@ -48,7 +48,42 @@ describe('P-023 storm policy — no platform is left uncapped', () => {
     expect(Number.isFinite(policy.maxRuns)).toBe(true);
     expect(policy.maxRuns).toBeGreaterThan(0);
     expect(policy.maxRuns).toBeLessThanOrEqual(MAX_RUNS_CEILING);
-    expect(policy.windowSeconds).toBe(SOCIAL_STORM_WINDOW_SECONDS);
+
+    // The window is the STANDARD one unless the platform's budget is too tight
+    // to fund even one run per standard window, in which case the derivation
+    // deliberately WIDENS it rather than deriving a cap of zero.
+    //
+    // That branch existed from the start but was only ever reached by synthetic
+    // rows until LinkedIn (P-021) — the first platform whose real published
+    // budget (150 member requests/day) cannot fund a 300s cadence. Asserting
+    // the fixed window unconditionally would therefore have forced a choice
+    // between a false cap and deleting a correct safety behaviour, so the
+    // invariant is stated as it was always meant: bounded and positive, and
+    // widened ONLY with the basis saying so.
+    if (policy.windowSeconds !== SOCIAL_STORM_WINDOW_SECONDS) {
+      expect(policy.windowSeconds, `${id} widened its window`).toBeGreaterThan(SOCIAL_STORM_WINDOW_SECONDS);
+      expect(
+        'windowWidened' in policy.basis && policy.basis.windowWidened,
+        `${id} widened its window without recording why`,
+      ).toBe(true);
+    }
+  });
+
+  it('LinkedIn is the row that exercises window-widening against a REAL budget', () => {
+    // Pinned because it is the only production evidence that this branch works,
+    // and because a future tidy-up of LinkedIn's limits would silently return
+    // the branch to synthetic-only coverage.
+    const policy = socialStormPolicyFor(rowFor('linkedin'));
+    expect(policy.basis.kind).toBe('quota-bucket');
+    if (policy.basis.kind !== 'quota-bucket') throw new Error('unreachable');
+
+    // The MEMBER bucket, not the 100,000/day application one: it is the binding
+    // limit for a single owner and ~667x smaller (D-020 non-fungible buckets).
+    expect(policy.basis.bucket).toBe('member');
+    expect(policy.basis.perDay).toBe(150);
+    expect(policy.basis.windowWidened).toBe(true);
+    expect(policy.maxRuns).toBe(1);
+    expect(policy.windowSeconds).toBeGreaterThan(SOCIAL_STORM_WINDOW_SECONDS);
   });
 
   it('CONTROL: the uncapped-platform guard actually catches an uncapped platform', () => {
