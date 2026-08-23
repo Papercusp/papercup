@@ -819,14 +819,27 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // but it is NOT safe to advertise the byte boundary as an exact, complete
     // JSON recovery point — the omitted records were never serialized.
     const partialJsonBody = parsedJsonBody && innerTruncationMarkers.length > 0;
-    // `file_path` names the raw self-describing scratch file, so this offset
-    // must include its manifest header as well as the result-door prefix. The
-    // capability:read handler unwraps that header for byte paging, but shell /
-    // jq users applying the advertised offset to the named file must land on
-    // the JSON body in the actual on-disk bytes.
-    const spillBodyByteOffset = spillManifest == null
+    // TWO different byte streams reach a caller here, and ONE offset cannot
+    // serve both — EI-21239097430071791 followed this cursor exactly as written
+    // and landed mid-body, because the offset was measured against a stream the
+    // caller was never handed:
+    //   * the RAW on-disk file at `cursor.args.file_path` — what shell / jq /
+    //     grep users read. Its body is preceded by the scratch-reference
+    //     manifest header AND the result-door prefix.
+    //   * capability:read's returned `response.data` — what THIS cursor's own
+    //     `next` tells the caller to fetch. read.ts strips the manifest
+    //     (`bytes = parsed.payload`) BEFORE applying byte_offset, so only the
+    //     result-door prefix precedes the body there.
+    // The manifest header is ~450 bytes, so using the file-relative offset
+    // against capability:read's payload overshoots into the middle of the JSON
+    // and yields an unparseable fragment. Naming each field for the stream it
+    // measures is the durable fix: a bare `bodyByteOffset` silently means the
+    // wrong thing to whichever of the two audiences does not own it.
+    const spillPrefixBytes = Buffer.byteLength(spillPrefix, 'utf8');
+    const bodyOffsetInPayload = spillPrefixBytes;
+    const bodyOffsetInFile = spillManifest == null
       ? null
-      : scratchReferencePayloadByteOffset(spillManifest) + Buffer.byteLength(spillPrefix, 'utf8');
+      : scratchReferencePayloadByteOffset(spillManifest) + spillPrefixBytes;
     const recovery =
       fsPath != null && uri != null
         ? {
@@ -847,14 +860,31 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // end-to-end so the declaration and the bytes cannot drift apart.
               dataEncoding: 'base64',
               // The spill is plaintext with a Markdown header (and, for
-              // list-shaped results, an index) before the body. JSON callers
-              // need the exact byte boundary instead of guessing where jq can
-              // start parsing — but only when the tool emitted a complete JSON
-              // body. A tool-internally clipped JSON body is valid JSON while
-              // still being an incomplete population, so do not present its
-              // boundary as an exact recovery cursor.
-              ...(parsedJsonBody && !partialJsonBody && spillBodyByteOffset != null
-                ? { bodyByteOffset: spillBodyByteOffset }
+              // list-shaped results, an index) before the body, and the RAW file
+              // additionally opens with the scratch-reference manifest — whose
+              // `{` is the file's FIRST `{`. So the natural fallback, "start
+              // parsing at the first brace", finds the MANIFEST: a well-formed
+              // but WRONG object. JSON callers need the exact boundary for the
+              // stream they are actually reading, never a guess.
+              //
+              // Emitted for EVERY valid JSON body, INCLUDING a tool-internally
+              // clipped one. The prior rule withheld it whenever the tool had
+              // marked field truncation (EI-21185758364267344), which treated
+              // "where does the body start" as though it were "is the body
+              // complete" — two orthogonal facts. That filing's actual complaint
+              // was the COMPLETENESS promise, not the locator, and withholding
+              // the locator never stopped anyone parsing the same bytes: it only
+              // pushed them onto the first-brace fallback above, converting a
+              // loud failure into a silent wrong object (EI-21208128396414381,
+              // EI-21202588767992062). Completeness now travels as its own
+              // machine-readable field rather than being signalled by ABSENCE,
+              // which no caller can distinguish from "this door emitted nothing".
+              ...(parsedJsonBody
+                ? {
+                    bodyOffsetInPayload,
+                    ...(bodyOffsetInFile != null ? { bodyOffsetInFile } : {}),
+                    ...(partialJsonBody ? { bodyComplete: false } : {}),
+                  }
                 : {}),
             },
             next:
@@ -867,11 +897,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
               `next_cursor until eof to ` +
               (partialJsonBody
-                ? `inspect the emitted spill bytes. The tool marked ${innerTruncationMarkers.join(', ')}; ` +
-                  `this JSON is partial and paging cannot recover omitted fields. Re-call ${opts.toolName} ` +
-                  `with a wider per-field limit.`
-                : `recover the exact spill bytes. File is plaintext; ` +
-                  (parsedJsonBody ? `skip cursor.bodyByteOffset bytes in the raw file for JSON.` : `it opens with a text header.`)) +
+                ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The tool marked ` +
+                  `${innerTruncationMarkers.join(', ')}; this JSON is partial (bodyComplete:false) and ` +
+                  `paging cannot recover omitted fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                : `recover the exact spill bytes. Plaintext; ` +
+                  (parsedJsonBody
+                    ? `skip cursor.bodyOffsetInPayload bytes of response.data for JSON.`
+                    : `it opens with a text header.`)) +
               // Keep the established JSON recovery pointer deliberately terse. The
               // payload projector budgets the pointer together with the retained
               // JSON preview; expanding it here can evict coord:orient's recovery
