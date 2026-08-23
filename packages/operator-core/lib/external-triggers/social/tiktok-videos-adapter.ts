@@ -42,6 +42,7 @@ import {
   tiktokErrorFor,
   tiktokIsNewAgainstWatermark,
   tiktokRetryDelayMs,
+  tiktokWatermarkSeconds,
   TIKTOK_VIDEO_LIST_DEFAULT_COUNT,
   TIKTOK_VIDEO_LIST_MAX_COUNT,
   type TikTokWatermarkCursor,
@@ -293,6 +294,7 @@ export class TikTokVideosAdapter implements SocialAdapter {
     stored: TikTokWatermarkCursor | null,
   ): Promise<{ videos: Array<{ video: TikTokRawVideo; id: string }>; gapClosed: boolean }> {
     const out: Array<{ video: TikTokRawVideo; id: string }> = [];
+    const markSeconds = stored ? tiktokWatermarkSeconds(stored) : null;
     let cursor: number | null = null;
     let gapClosed = false;
 
@@ -305,10 +307,10 @@ export class TikTokVideosAdapter implements SocialAdapter {
         if (!video || typeof video.id !== 'string' || video.id.length === 0) continue;
         const id = video.id;
         if (
-          stored &&
+          markSeconds !== null &&
           typeof video.create_time === 'number' &&
           Number.isFinite(video.create_time) &&
-          Math.trunc(video.create_time) < stored.watermarkSeconds
+          Math.trunc(video.create_time) < markSeconds
         ) {
           gapClosed = true;
           break;
@@ -367,8 +369,8 @@ export class TikTokVideosAdapter implements SocialAdapter {
       occurrences: 1,
       detail:
         `walked the ${this.maxPages}-page bound (${this.maxPages * this.pageSize} videos at ` +
-        `max_count=${this.pageSize}) without reaching the stored watermark at create_time ` +
-        `${stored.watermarkSeconds}s, and TikTok offers no forward cursor to resume from. Videos ` +
+        `max_count=${this.pageSize}) without reaching the stored watermark at ` +
+        `${stored.watermark}, and TikTok offers no forward cursor to resume from. Videos ` +
         `older than the bound but newer than that watermark are not recoverable on a later pass, ` +
         `because the watermark advances past them. Raise maxPages to re-read a longer window.`,
     };

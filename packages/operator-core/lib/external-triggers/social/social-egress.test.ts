@@ -15,6 +15,7 @@ import {
   SocialEgressDeniedError,
 } from './social-egress';
 import { listSocialPlatforms } from './platform-registry';
+import { aNoEgressHostPlatformId } from './platform-exemplars.fixture';
 
 const denial = (platform: string, url: string, opts?: { connectionHost?: string }) => {
   const d = socialEgressDecision(platform, url, opts ?? {});
@@ -141,9 +142,13 @@ describe('unverified rows deny everything', () => {
   // D-005's ruling applied to egress: a row nobody has checked cannot be reached
   // by accident. An empty apiHosts under hostPolicy 'fixed' is a DENY, and the
   // denial says why rather than reading as an ordinary host mismatch.
-  // linkedin LEFT this list in P-021: its row is now verified and declares real
-  // hosts, so it is covered by the verified-row cases instead.
-  it.each(['tiktok', 'x-twitter'])('%s cannot reach anything yet', (platform) => {
+  // DERIVED, never enumerated. linkedin left this list in P-021 and tiktok in
+  // P-022, each because its row became verified and declared real hosts — a
+  // hardcoded list turns every such success into an unrelated test failure.
+  // Keying on the PROPERTY (fixed policy, zero declared hosts) tracks the
+  // registry on its own; see platform-exemplars.fixture.
+  it('a platform declaring zero API hosts cannot reach anything yet', () => {
+    const platform = aNoEgressHostPlatformId();
     const d = denial(platform, 'https://api.linkedin.com/v2/me');
     expect(d.reason).toBe('host-not-declared');
     expect(d.detail).toContain('declares no API hosts');

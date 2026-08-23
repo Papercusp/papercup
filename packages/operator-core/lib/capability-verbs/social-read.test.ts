@@ -25,6 +25,7 @@ import {
 import type { PersonalSearchResult } from '../personal-vault/types';
 import { formatSocialPostRef, parseSocialPostRef } from './social';
 import { listSocialPlatforms } from '../external-triggers/social/platform-registry';
+import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
 
 describe('social vault scopes are derived from the registry', () => {
   it('covers every registered platform, with no hand-written list to drift', () => {
@@ -215,9 +216,10 @@ describe('socialWriteAvailability — read verified, write refused, told at read
     // read-verified AND write-refused. Every Wave A row is now write-verified
     // and every other row is unverified, so that combination is covered
     // synthetically in social.test.ts against a constructed row instead.
-    // tiktok, not linkedin: LinkedIn was this example until P-021 verified it,
-    // and it now demonstrates a different refusal (see the test below).
-    const availability = socialWriteAvailability('tiktok', 'reply');
+    // DERIVED, not named. This exemplar moved bluesky -> linkedin -> tiktok as
+    // each got verified; pinning it to the PROPERTY stops that recurring churn
+    // (platform-exemplars.fixture).
+    const availability = socialWriteAvailability(anUnverifiedPlatformId(), 'reply');
     expect(availability.allowed).toBe(false);
     expect(availability.reason).toBe('unverified');
   });

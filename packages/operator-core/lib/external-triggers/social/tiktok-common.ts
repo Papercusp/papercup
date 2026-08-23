@@ -83,19 +83,44 @@ export function tiktokCursorMsToSeconds(ms: unknown): number | null {
  * posting in a burst, and without the boundary set the second one is either
  * emitted forever (if the comparison is `>=`) or dropped forever (if it is `>`).
  */
+/**
+ * WHY THE MARK IS AN ISO STRING AND NOT THE SECONDS TIKTOK GAVE US. The
+ * temptation is to store `create_time` verbatim — it is the native unit and
+ * every comparison here is in seconds. But the stored cursor is also read by
+ * `cursor-freshness.ts`, which derives the admin pane's "last synced" verdict
+ * from a small set of recognized field names, and `watermark` is already one of
+ * them. A bespoke numeric field would be unrecognized, and the pane would
+ * report this platform as NEVER SYNCED forever while it synced perfectly —
+ * a silent, cosmetic-looking failure of exactly the kind this plan keeps
+ * finding. Conforming costs one parse per comparison and no shared-code change.
+ *
+ * The conversion is lossless for integer seconds, which is all TikTok emits.
+ */
 export interface TikTokWatermarkCursor {
-  /** Newest `create_time` emitted so far, in SECONDS, as TikTok reports it. */
-  watermarkSeconds: number;
+  /** Newest emitted `create_time`, as an ISO instant. Recognized by cursor-freshness. */
+  watermark: string;
   /** Ids already emitted whose `create_time` is exactly that second. */
   boundaryIds: string[];
 }
 
 export function isTikTokWatermarkCursor(value: unknown): value is TikTokWatermarkCursor {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as { watermarkSeconds?: unknown; boundaryIds?: unknown };
-  if (typeof candidate.watermarkSeconds !== 'number') return false;
-  if (!Number.isFinite(candidate.watermarkSeconds) || candidate.watermarkSeconds < 0) return false;
+  const candidate = value as { watermark?: unknown; boundaryIds?: unknown };
+  if (typeof candidate.watermark !== 'string') return false;
+  if (!Number.isFinite(Date.parse(candidate.watermark))) return false;
   return Array.isArray(candidate.boundaryIds) && candidate.boundaryIds.every((id) => typeof id === 'string');
+}
+
+/** The mark as whole seconds, for comparison against a raw `create_time`. */
+export function tiktokWatermarkSeconds(cursor: TikTokWatermarkCursor): number | null {
+  const ms = Date.parse(cursor.watermark);
+  if (!Number.isFinite(ms)) return null;
+  return Math.floor(ms / MS_PER_SECOND);
+}
+
+/** A `create_time` in seconds as the ISO instant the cursor stores. */
+export function tiktokSecondsToInstant(seconds: number): string {
+  return new Date(Math.trunc(seconds) * MS_PER_SECOND).toISOString();
 }
 
 /**
@@ -114,9 +139,11 @@ export function tiktokIsNewAgainstWatermark(
 ): boolean {
   if (!stored) return true;
   if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return true;
+  const mark = tiktokWatermarkSeconds(stored);
+  if (mark === null) return true;
   const at = Math.trunc(seconds);
-  if (at < stored.watermarkSeconds) return false;
-  if (at === stored.watermarkSeconds) return !stored.boundaryIds.includes(id);
+  if (at < mark) return false;
+  if (at === mark) return !stored.boundaryIds.includes(id);
   return true;
 }
 
@@ -134,12 +161,14 @@ export function tiktokAdvanceWatermark(
 ): TikTokWatermarkCursor | null {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return stored;
   const at = Math.trunc(seconds);
-  if (!stored) return { watermarkSeconds: at, boundaryIds: [id] };
-  if (at > stored.watermarkSeconds) return { watermarkSeconds: at, boundaryIds: [id] };
-  if (at === stored.watermarkSeconds) {
+  if (!stored) return { watermark: tiktokSecondsToInstant(at), boundaryIds: [id] };
+  const mark = tiktokWatermarkSeconds(stored);
+  if (mark === null) return { watermark: tiktokSecondsToInstant(at), boundaryIds: [id] };
+  if (at > mark) return { watermark: tiktokSecondsToInstant(at), boundaryIds: [id] };
+  if (at === mark) {
     return stored.boundaryIds.includes(id)
       ? stored
-      : { watermarkSeconds: stored.watermarkSeconds, boundaryIds: [...stored.boundaryIds, id] };
+      : { watermark: stored.watermark, boundaryIds: [...stored.boundaryIds, id] };
   }
   return stored;
 }

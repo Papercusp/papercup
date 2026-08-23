@@ -25,6 +25,8 @@ import {
   tiktokErrorFor,
   tiktokIsNewAgainstWatermark,
   tiktokSecondsToCursorMs,
+  tiktokSecondsToInstant,
+  tiktokWatermarkSeconds,
   TikTokAuthRejected,
   TikTokRateLimited,
   TIKTOK_VIDEO_LIST_MAX_COUNT,
@@ -256,7 +258,7 @@ describe('same-second boundary', () => {
     // instead of `<` would drop this one.
     world.videos.unshift({
       id: 'sibling',
-      create_time: mark.watermarkSeconds,
+      create_time: Math.floor(Date.parse(mark.watermark) / 1000),
       video_description: 'same second',
       share_url: 'https://www.tiktok.com/@creator/video/sibling',
     });
@@ -474,15 +476,32 @@ describe('normalization', () => {
 });
 
 describe('watermark helpers', () => {
+  const at = (seconds: number): TikTokWatermarkCursor => ({
+    watermark: tiktokSecondsToInstant(seconds),
+    boundaryIds: [],
+  });
+
   it('rejects malformed stored cursors', () => {
-    expect(isTikTokWatermarkCursor({ watermarkSeconds: 1, boundaryIds: ['a'] })).toBe(true);
-    expect(isTikTokWatermarkCursor({ watermarkSeconds: '1', boundaryIds: [] })).toBe(false);
-    expect(isTikTokWatermarkCursor({ watermarkSeconds: 1 })).toBe(false);
+    expect(isTikTokWatermarkCursor({ watermark: '2023-11-14T22:13:20.000Z', boundaryIds: ['a'] })).toBe(
+      true,
+    );
+    expect(isTikTokWatermarkCursor({ watermark: 1700000000, boundaryIds: [] })).toBe(false);
+    expect(isTikTokWatermarkCursor({ watermark: 'not-a-date', boundaryIds: [] })).toBe(false);
+    expect(isTikTokWatermarkCursor({ watermark: '2023-11-14T22:13:20.000Z' })).toBe(false);
     expect(isTikTokWatermarkCursor(null)).toBe(false);
   });
 
+  it('stores the mark in the field cursor-freshness recognizes, not raw seconds', () => {
+    // Regression pin: a bespoke numeric field made the admin pane report this
+    // platform 'never synced' forever while it synced perfectly.
+    const mark = tiktokAdvanceWatermark(null, 1_700_000_000, 'a');
+    expect(typeof mark?.watermark).toBe('string');
+    expect(mark?.watermark).toBe('2023-11-14T22:13:20.000Z');
+    expect(tiktokWatermarkSeconds(mark as TikTokWatermarkCursor)).toBe(1_700_000_000);
+  });
+
   it('treats an unparseable create_time as NEW, preferring a duplicate over a silent drop', () => {
-    const stored: TikTokWatermarkCursor = { watermarkSeconds: 100, boundaryIds: [] };
+    const stored = at(100);
     expect(tiktokIsNewAgainstWatermark(stored, undefined, 'x')).toBe(true);
     expect(tiktokIsNewAgainstWatermark(stored, 99, 'x')).toBe(false);
     expect(tiktokIsNewAgainstWatermark(stored, 101, 'x')).toBe(true);
@@ -493,12 +512,12 @@ describe('watermark helpers', () => {
     mark = tiktokAdvanceWatermark(mark, 100, 'b');
     expect(mark?.boundaryIds).toEqual(['a', 'b']);
     mark = tiktokAdvanceWatermark(mark, 101, 'c');
-    expect(mark).toEqual({ watermarkSeconds: 101, boundaryIds: ['c'] });
+    expect(mark).toEqual({ watermark: tiktokSecondsToInstant(101), boundaryIds: ['c'] });
   });
 
   it('never moves the mark backwards', () => {
-    const mark = tiktokAdvanceWatermark({ watermarkSeconds: 100, boundaryIds: ['a'] }, 50, 'old');
-    expect(mark).toEqual({ watermarkSeconds: 100, boundaryIds: ['a'] });
+    const stored: TikTokWatermarkCursor = { watermark: tiktokSecondsToInstant(100), boundaryIds: ['a'] };
+    expect(tiktokAdvanceWatermark(stored, 50, 'old')).toEqual(stored);
   });
 });
 
