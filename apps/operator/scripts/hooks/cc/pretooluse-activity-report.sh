@@ -3,7 +3,9 @@
 # ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04, D-003) at the
 # START of the call, mirroring posttooluse-activity-report.sh (which reports
 # at the END). Fires after EVERY tool call is DISPATCHED (matcher "*"), before
-# it runs.
+# it runs. The same global seam also repairs Claude's native ToolSearch exact-
+# select spelling: Papercusp's canonical `group:verb` names become the MCP id
+# Claude indexes (`mcp__papercusp-su__group_verb`).
 #
 # WHY THIS EXISTS (EI-8997): the D-003 activity-driven plan-item claim
 # renewal (plan-items/activity-claim-renewal.ts) rides the SAME bus this
@@ -44,6 +46,55 @@ fi
 TOKEN=$(cat "$TOKEN_PATH")
 INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
+
+# Claude's native ToolSearch index contains client-mangled MCP ids, while every
+# Papercusp contract and prompt names tools canonically as `group:verb`. Rewrite
+# ONLY the exact-select grammar; ordinary keyword searches, plugin dot names,
+# already-mangled ids, and malformed inputs must continue through untouched.
+# This hook is global, so PAPERCUSP_SID above is the session-scope guard.
+rewrite_tool_search_exact_select() {
+  python3 - "$INPUT" <<'PYEOF'
+import json, re, sys
+
+try:
+    ev = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+if not isinstance(ev, dict):
+    sys.exit(0)
+
+tool_name = ev.get('tool_name') or ev.get('toolName')
+tool_input = ev.get('tool_input') or ev.get('toolInput')
+if tool_name != 'ToolSearch' or not isinstance(tool_input, dict):
+    sys.exit(0)
+
+query = tool_input.get('query')
+if not isinstance(query, str):
+    sys.exit(0)
+match = re.fullmatch(
+    r'select:([A-Za-z0-9][A-Za-z0-9_-]*):([A-Za-z0-9][A-Za-z0-9_-]*)',
+    query,
+)
+if not match:
+    sys.exit(0)
+
+updated_input = dict(tool_input)
+updated_input['query'] = (
+    'select:mcp__papercusp-su__' + match.group(1) + '_' + match.group(2)
+)
+print(json.dumps({
+    'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'updatedInput': updated_input,
+    },
+}, separators=(',', ':')))
+PYEOF
+}
+
+REWRITE_OUTPUT=$(rewrite_tool_search_exact_select 2>/dev/null || true)
+if [ -n "$REWRITE_OUTPUT" ]; then
+  printf '%s\n' "$REWRITE_OUTPUT"
+fi
 
 report() {
   python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" <<'PYEOF'
