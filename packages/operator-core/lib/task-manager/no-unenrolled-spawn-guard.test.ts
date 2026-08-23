@@ -7,12 +7,18 @@
  * same discipline `no-raw-spawn-guard.test.ts` applies to its own predicate.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   isUnenrolledDetachedSpawn,
   spawnTriggers,
   ALLOWLIST,
   KNOWN_DEFECTS,
 } from '../../../../scripts/check-no-unenrolled-detached-spawn.mjs';
+
+/** This file sits at packages/operator-core/lib/task-manager/ — four levels down. */
+const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 
 const check = isUnenrolledDetachedSpawn;
 const allow = ALLOWLIST;
@@ -244,12 +250,44 @@ export function run() {
       expect(check(NEW, enrolled)).toBe(false);
     });
 
-    it('parks the motivating site in KNOWN_DEFECTS, not ALLOWLIST', () => {
-      // Its lifetime IS ours to own, which is exactly what ALLOWLIST must never claim.
+    /**
+     * WI-41108 — the motivating site is now ENROLLED, so it must clear on the
+     * predicate's own terms and on NO exemption. This runs against the REAL file
+     * rather than a synthetic, because the thing worth pinning is not "the guard
+     * can be satisfied" but "this specific site actually satisfies it".
+     *
+     * The trap it exists to catch: a file can stop being reported for two very
+     * different reasons — it enrolled (correct), or the detector stopped seeing it
+     * (a silent regression that looks identical from `exit 0`). Asserting the
+     * trigger STILL FIRES separates them, which the old KNOWN_DEFECTS assertion
+     * could not do.
+     */
+    describe('the motivating site (desktop/a11y-bus.ts) after enrolment', () => {
       const a11y = 'packages/operator-core/lib/desktop/a11y-bus.ts';
-      expect(KNOWN_DEFECTS.has(a11y)).toBe(true);
-      expect(allow.has(a11y)).toBe(false);
-      expect(KNOWN_DEFECTS.get(a11y)).toMatch(/WI-41108/);
+      const source = readFileSync(join(REPO_ROOT, a11y), 'utf8');
+
+      it('earned neither exemption — it is in no map at all', () => {
+        expect(KNOWN_DEFECTS.has(a11y)).toBe(false);
+        expect(allow.has(a11y)).toBe(false);
+      });
+
+      it('STILL fires trigger (3) — the detector did not go quiet', () => {
+        // If this goes false, the file cleared because the guard stopped seeing
+        // `--fork`, not because anything was fixed.
+        expect(spawnTriggers(a11y, source).selfDaemonizing).toBe(true);
+      });
+
+      it('is not reported, because it enrols', () => {
+        expect(check(a11y, source)).toBe(false);
+      });
+
+      it('FALSIFIABILITY: drop the enrolment import and the guard convicts it again', () => {
+        // A pure string transform on an in-memory copy — never a tree mutation,
+        // which the git-sync sweep would commit while the probe ran.
+        const unenrolled = source.split("from '../task-manager/enroll-sync'").join("from '../task-manager/gone'");
+        expect(unenrolled).not.toEqual(source); // the transform actually did something
+        expect(check(a11y, unenrolled)).toBe(true);
+      });
     });
   });
 });

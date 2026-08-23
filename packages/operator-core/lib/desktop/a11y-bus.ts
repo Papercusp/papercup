@@ -46,6 +46,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseA11yBusAddress, a11yBusCommand, A11Y_APP_ENV } from '../agent-tools/computer/accessibility-tree';
 import { sandboxXEnv } from '../agent-tools/computer/desktop-driver';
+import {
+  beginSyncEnrolment,
+  completeSyncEnrolment,
+  finishSyncEnrolment,
+} from '../task-manager/enroll-sync';
+import type { TaskSpec } from '../task-manager/types';
 
 export { A11Y_APP_ENV };
 
@@ -109,6 +115,15 @@ export function parseSessionBusStartup(stdout: string): { sessionBus: string; pi
 export interface OwnedDaemonReleaseOptions {
   /** Injectable for tests; production uses the process signal primitive. */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /**
+   * Ran exactly once, AFTER the signal attempt, on the first release only.
+   * Exists so the caller can close the daemon's task-ledger row without having
+   * to re-implement the `released` latch — a second, independently-guarded
+   * closure is how a row gets closed twice (or, worse, not at all when the two
+   * latches disagree). Never throws into the release path: a ledger write must
+   * not be able to turn a successful teardown into an exception.
+   */
+  onRelease?: () => void;
 }
 
 /**
@@ -127,6 +142,12 @@ export function createOwnedDaemonRelease(pid: number, opts: OwnedDaemonReleaseOp
       kill(pid, 'SIGTERM');
     } catch {
       // The daemon may have exited during a failed start or an earlier release.
+    }
+    try {
+      opts.onRelease?.();
+    } catch {
+      // The process is already signalled; a bookkeeping failure must not
+      // propagate into a caller that is tearing a desktop down.
     }
   };
 }
@@ -227,9 +248,65 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
     // socket owner along with the rest of the display's processes. The daemon is
     // reparented after `--fork`, so capture its explicit PID instead of assuming it
     // remains under Xvfb's process tree.
+    //
+    // ── WI-41108: LEDGERED, DELIBERATELY UNCONFINED ──────────────────────────
+    // The daemon still has to be ENROLLED even though it cannot be a managed child:
+    // an unledgered process is invisible to `processes:list` and reads as
+    // `unaccounted` to the reconciler, which is the whole no-escape property this
+    // subsystem exists to provide. `beginSyncEnrolment` is the seam for exactly this
+    // shape — a spawn that cannot become async — and the PID we register is the
+    // FORKED daemon's (`--print-pid=1`), never the `spawnSync` client's, which is
+    // already gone by the time the row is written.
+    //
+    // `confine: false` is a deliberate, precedented caller-side veto (the same knob
+    // substrate-sidecar-spawn.ts uses), and it is the honest answer for THIS site on
+    // three independent grounds:
+    //
+    //  1. OWNERSHIP. A cgroup scope asserts that the spawning client owns this
+    //     lifetime. It does not — `--fork` is self-daemonization, and the bus's real
+    //     owner is the DISPLAY, a cross-process fact published on the X root window
+    //     and keyed on by ./a11y-bus-sweep. `caller-veto` states that accurately;
+    //     confining would encode an ownership claim the code does not have.
+    //  2. FAILURE MODE. `startA11yBus` returns null on ANY failure, and a desktop
+    //     without a11y is by design "a perfectly usable screenshot-only desktop". So
+    //     a `systemd-run` that could not start would DEGRADE ACCESSIBILITY SILENTLY
+    //     on every provisioned desktop rather than announcing itself. That is not a
+    //     failure mode to ship unverified — and it cannot be verified from an agent
+    //     session, because the native-scheduler guard refuses transient-unit creation
+    //     there. Three specifics would need a real measurement first: that the
+    //     `--print-address=1`/`--print-pid=1` stdout survives the wrapper, that the
+    //     scope outlives the `--fork` client exit, and that `systemd-run` still
+    //     reaches the user manager when this env deliberately deletes
+    //     DBUS_SESSION_BUS_ADDRESS (it would have to fall back to
+    //     $XDG_RUNTIME_DIR/bus, which `stripHostX` does preserve).
+    //  3. NOTHING IS LOST BY WAITING. Enrolment alone buys the visibility that was
+    //     missing; confinement would only add a better *how* to kill (the whole
+    //     at-spi subtree in one go), and the sweep already supplies the *when*,
+    //     which is the harder half and the one age cannot answer.
+    //
+    // Enrolment is NOT gated on the task-manager flag being flipped on: WI-6844
+    // graduated `papercusp-task-manager` out of DARK_FLAGS on 2026-08-02, so it
+    // derives default-ON and `taskManagerEnabledSync()` fails OPEN. An explicit OFF
+    // still restores byte-identical pre-feature behaviour via `enrolment.enrolled`.
+    const taskSpec: TaskSpec = {
+      class: 'desktop',
+      title: `a11y session bus ${display}`,
+      argv: [busCmd.bin, ...busCmd.args],
+      launchedBy: 'system:a11y-bus',
+      detail: { display, confDir: dir },
+    };
+    const enrolment = beginSyncEnrolment(taskSpec, { confine: false });
+    // Only close a row that was actually opened. `releaseDaemon` is armed from the
+    // partial-PID path BEFORE registration, so an early release must not try to
+    // close a task id the ledger has never seen.
+    let registered = false;
+    const onRelease = () => {
+      if (registered) finishSyncEnrolment(enrolment, { state: 'killed' });
+    };
+
     const started = spawnSync(busCmd.bin, busCmd.args, { encoding: 'utf8', timeout, env: daemonEnv });
     const partialPid = parseSessionBusPid(started.stdout ?? '');
-    releaseDaemon = partialPid === null ? undefined : createOwnedDaemonRelease(partialPid);
+    releaseDaemon = partialPid === null ? undefined : createOwnedDaemonRelease(partialPid, { onRelease });
     const startup = parseSessionBusStartup(started.stdout ?? '');
     if (!startup) {
       // A daemon can successfully fork and print only one of the two values before
@@ -242,8 +319,13 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
     // `partialPid` is the same PID on a complete startup; assigning the handle
     // above means every path after the fork, including a malformed output, owns
     // exactly one idempotent cleanup closure.
-    const ownedRelease = releaseDaemon ?? createOwnedDaemonRelease(pid);
+    const ownedRelease = releaseDaemon ?? createOwnedDaemonRelease(pid, { onRelease });
     releaseDaemon = ownedRelease;
+    // Fire-and-forget by contract: a ledger write must never be able to fail a
+    // desktop's accessibility bootstrap. A lost write degrades to an `unaccounted`
+    // row on the next reconcile — the alarm that classification exists to raise.
+    completeSyncEnrolment(enrolment, taskSpec, pid);
+    registered = true;
 
     const probe = a11yBusCommand(sessionBus);
     const got = spawnSync(probe.bin, probe.args, { encoding: 'utf8', env: probe.env, timeout });

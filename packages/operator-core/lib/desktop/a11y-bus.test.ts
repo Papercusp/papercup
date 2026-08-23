@@ -77,6 +77,51 @@ describe('createOwnedDaemonRelease', () => {
     expect(() => release()).not.toThrow();
     expect(kill).toHaveBeenCalledOnce();
   });
+
+  // WI-41108. The ledger row is closed from this hook, so it inherits the SAME
+  // `released` latch as the signal. A second, independently-guarded closure is how
+  // a row gets closed twice — or missed entirely when the two latches disagree.
+  it('runs onRelease exactly once, after the signal, however often release is called', () => {
+    const order: string[] = [];
+    const kill = vi.fn(() => { order.push('kill'); });
+    const onRelease = vi.fn(() => { order.push('onRelease'); });
+    const release = createOwnedDaemonRelease(1812773, { kill, onRelease });
+
+    release();
+    release();
+    release();
+
+    expect(onRelease).toHaveBeenCalledOnce();
+    expect(order).toEqual(['kill', 'onRelease']);
+  });
+
+  it('still closes the ledger row when the daemon is already gone', () => {
+    // The ESRCH path is the COMMON one for a stranded bus, so a row that only
+    // closes on a successful signal would leak precisely the rows that matter.
+    const kill = vi.fn(() => { throw new Error('ESRCH'); });
+    const onRelease = vi.fn();
+    const release = createOwnedDaemonRelease(1812773, { kill, onRelease });
+
+    expect(() => release()).not.toThrow();
+    expect(onRelease).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a failed ledger write break a desktop teardown', () => {
+    const kill = vi.fn();
+    const onRelease = vi.fn(() => { throw new Error('ledger unreachable'); });
+    const release = createOwnedDaemonRelease(1812773, { kill, onRelease });
+
+    expect(() => release()).not.toThrow();
+    expect(kill).toHaveBeenCalledOnce();
+  });
+
+  it('is unchanged for callers that pass no onRelease', () => {
+    const kill = vi.fn();
+    const release = createOwnedDaemonRelease(1812773, { kill });
+
+    expect(() => release()).not.toThrow();
+    expect(kill).toHaveBeenCalledWith(1812773, 'SIGTERM');
+  });
 });
 
 describe('publishBusPropertyCommand', () => {
