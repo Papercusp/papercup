@@ -63,6 +63,12 @@ export const ITEM_FIELDS = [
   'paths',
   'plan',
   'plan_item',
+  // `fleet` — EI-13524. A filter-only authorization field carried by
+  // `payload.fleet_slug` on work-items promoted for a fleet-owned plan lane. It lets
+  // a fleet spec explicitly adopt a stamped lane without making the fleet slug a
+  // meaningful ordering dimension. The shared claim floors consume the same field
+  // reference as an authorization signal; see claimSpecReferencesField below.
+  'fleet',
   'age',
   'blocked',
   'cursed',
@@ -243,7 +249,13 @@ export const NUMERIC_ITEM_FIELDS = ['priority', 'age', 'est_cost', 'redundancy']
  *  in `work_items` carries a `risk_tier` key at all — it remains FILTERABLE, which is the
  *  only way it has ever been used. */
 export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
-  (f) => f !== 'id' && f !== 'title' && f !== 'severity' && f !== 'risk_tier' && f !== 'goal',
+  (f) =>
+    f !== 'id' &&
+    f !== 'title' &&
+    f !== 'severity' &&
+    f !== 'risk_tier' &&
+    f !== 'goal' &&
+    f !== 'fleet',
 );
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
@@ -297,6 +309,26 @@ export type FilterLeaf = z.infer<typeof filterLeafSchema>;
  * `{ any: [...] }`, or `{ not: <node> }`. Recursive, so `z.lazy`.
  */
 export type FilterNode = FilterLeaf | { all: FilterNode[] } | { any: FilterNode[] } | { not: FilterNode };
+
+/**
+ * True when a claim spec's filter tree references `field` anywhere, including
+ * below `all` / `any` / `not`. This is intentionally structural: callers that
+ * use a field reference as an authorization signal must not re-implement a
+ * shallower predicate walk and silently disagree on nested specs.
+ */
+export function claimSpecReferencesField(spec: unknown, field: ItemField): boolean {
+  function walk(node: unknown): boolean {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
+    const obj = node as { field?: unknown; all?: unknown; any?: unknown; not?: unknown };
+    if (typeof obj.field === 'string') return obj.field === field;
+    if (Array.isArray(obj.all)) return obj.all.some(walk);
+    if (Array.isArray(obj.any)) return obj.any.some(walk);
+    if ('not' in obj) return walk(obj.not);
+    return false;
+  }
+  const filter = (spec as { view?: { filter?: unknown } } | null | undefined)?.view?.filter;
+  return walk(filter);
+}
 
 export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
   z.union([
