@@ -135,6 +135,8 @@ export interface GcpDiskInsertInput {
   sizeGb: number;
   type: string;
   labels: Readonly<Record<string, string>>;
+  sourceSnapshot?: string;
+  sourceSnapshotEncryptionKey?: { kmsKeyName: string };
   diskEncryptionKey?: { kmsKeyName: string };
 }
 
@@ -415,7 +417,7 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     stop: true,
     restart: true,
     snapshot: true,
-    restore: false,
+    restore: true,
     upgrade: true,
     repair: true,
     confirmedDestroy: true,
@@ -430,7 +432,7 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     'Data disks use a grow-only resize policy; shrinking requires snapshot-and-restore into a new disk',
     'Upgrade replaces the VM boot/runtime layer and reattaches the retained data disk',
     'Snapshot plans quiesce a running VM before capture and restore its prior running state afterward',
-    'Restore from snapshots is not yet supported',
+    'Restore creates a distinct host from a READY managed snapshot; the source host and disk remain intact',
   ],
 };
 
@@ -997,7 +999,9 @@ function stepInput(step: WorkspaceHostPlanStep): GcpStepInput {
 }
 
 function hostIdFor(request: WorkspaceHostPlanRequest): string {
-  return request.action === 'provision' ? request.desired.hostId : request.host.hostId;
+  return request.action === 'provision' || request.action === 'restore'
+    ? request.desired.hostId
+    : request.host.hostId;
 }
 
 function refName(value: string): string {
@@ -1086,7 +1090,30 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   ): Promise<readonly WorkspaceHostPlanStep[]> {
     if (request.action === 'provision') return this.planProvision(request, ctx);
     if (request.action === 'destroy') return this.planDestroy(request, ctx);
-    if (request.action === 'restore') throw new Error("GCP workspace-host action 'restore' is not supported");
+    if (request.action === 'restore') {
+      if (request.desired.hostId === request.host.hostId) {
+        throw new Error('GCP restore must create a distinct target host');
+      }
+      if (
+        request.snapshot.target !== GCP_WORKSPACE_HOST_TARGET ||
+        request.snapshot.hostId !== request.host.hostId
+      ) {
+        throw new Error('GCP restore snapshot must belong to the exact source host');
+      }
+      const sourceProject = request.host.resources.find(
+        (item) => item.target === GCP_WORKSPACE_HOST_TARGET,
+      )?.parentProviderId;
+      if (sourceProject && sourceProject !== request.desired.scope.id) {
+        throw new Error('GCP restore across projects is not supported');
+      }
+      const snapshotName = refName(request.snapshot.providerId);
+      const observedSnapshot = await this.client.getSnapshot(request.desired.scope.id, snapshotName);
+      if (observedSnapshot?.status !== 'READY') {
+        throw new Error(`GCP restore snapshot '${snapshotName}' is not READY`);
+      }
+      assertManagedHostResource(observedSnapshot, request.host.hostId, 'restore snapshot');
+      return this.planProvision(request, ctx, snapshotName);
+    }
     const instance = requireKnownResource(request.host.resources, [VM_KIND], request.action);
     const zone = requireString(instance.zone, `GCP ${request.action} instance zone`);
     const projectId = requireString(
@@ -1254,8 +1281,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   }
 
   private planProvision(
-    request: Extract<WorkspaceHostPlanRequest, { action: 'provision' }>,
+    request: Extract<WorkspaceHostPlanRequest, { action: 'provision' | 'restore' }>,
     ctx: WorkspaceHostProviderContext,
+    sourceSnapshotName?: string,
   ): readonly WorkspaceHostPlanStep[] {
     const desired = request.desired;
     const settings = readSettings(desired);
@@ -1268,7 +1296,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       steps.push(
         {
           id: 'create-network',
-          action: 'provision',
+          action: request.action,
           resourceKind: NETWORK_KIND,
           dependsOn: [],
           destructive: false,
@@ -1287,7 +1315,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         },
         {
           id: 'create-subnetwork',
-          action: 'provision',
+          action: request.action,
           resourceKind: SUBNETWORK_KIND,
           dependsOn: ['create-network'],
           destructive: false,
@@ -1315,7 +1343,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         firewallStepId = 'create-firewall';
         steps.push({
           id: firewallStepId,
-          action: 'provision',
+          action: request.action,
           resourceKind: FIREWALL_KIND,
           dependsOn: ['create-network'],
           destructive: false,
@@ -1341,7 +1369,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       steps.push(
         {
           id: 'record-existing-network',
-          action: 'provision',
+          action: request.action,
           resourceKind: EXISTING_NETWORK_KIND,
           dependsOn: [],
           destructive: false,
@@ -1355,7 +1383,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         },
         {
           id: 'record-existing-subnetwork',
-          action: 'provision',
+          action: request.action,
           resourceKind: EXISTING_SUBNETWORK_KIND,
           dependsOn: ['record-existing-network'],
           destructive: false,
@@ -1375,7 +1403,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         firewallStepId = 'record-existing-firewall';
         steps.push({
           id: firewallStepId,
-          action: 'provision',
+          action: request.action,
           resourceKind: EXISTING_FIREWALL_KIND,
           dependsOn: ['record-existing-network'],
           destructive: false,
@@ -1394,7 +1422,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const diskKey = `${request.idempotencyKey}:data-disk`;
     steps.push({
       id: 'create-data-disk',
-      action: 'provision',
+      action: request.action,
       resourceKind: DISK_KIND,
       dependsOn: [],
       destructive: false,
@@ -1411,6 +1439,18 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           sizeGb: positiveInteger(desired.data.volumeGiB, 'desired.data.volumeGiB'),
           type: settings.dataDiskType,
           labels: commonLabels,
+          ...(sourceSnapshotName
+            ? {
+                sourceSnapshot: `projects/${settings.projectId}/global/snapshots/${sourceSnapshotName}`,
+                ...(request.action === 'restore' && request.snapshot.encryptionKeyRef
+                  ? {
+                      sourceSnapshotEncryptionKey: {
+                        kmsKeyName: request.snapshot.encryptionKeyRef,
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
           ...(settings.kmsKeyName ? { diskEncryptionKey: { kmsKeyName: settings.kmsKeyName } } : {}),
         },
       } satisfies GcpStepInput,
@@ -1418,7 +1458,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const instanceKey = `${request.idempotencyKey}:instance`;
     steps.push({
       id: 'create-instance',
-      action: 'provision',
+      action: request.action,
       resourceKind: VM_KIND,
       dependsOn: [subnetworkStepId, ...(firewallStepId ? [firewallStepId] : []), 'create-data-disk'],
       destructive: false,
@@ -1724,6 +1764,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             providerId: found.name,
             hostId: input.hostId,
             createdAt: found.observedAt,
+            ...(input.request.snapshotEncryptionKey?.kmsKeyName
+              ? { encryptionKeyRef: input.request.snapshotEncryptionKey.kmsKeyName }
+              : {}),
           },
         };
       }

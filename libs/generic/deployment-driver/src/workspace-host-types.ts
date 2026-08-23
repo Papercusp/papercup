@@ -269,6 +269,10 @@ export interface WorkspaceHostSnapshotRef {
   providerId: string;
   hostId: string;
   createdAt?: string;
+  /** Non-secret KMS/resource reference needed to consume a CMEK snapshot. */
+  encryptionKeyRef?: string;
+  /** Provider-side retention boundary, when the snapshot policy supplies one. */
+  retainUntil?: string;
 }
 
 interface WorkspaceHostOperationBase {
@@ -281,7 +285,14 @@ export type WorkspaceHostPlanRequest =
   | (WorkspaceHostOperationBase & { action: 'provision'; desired: WorkspaceHostDesiredSpec })
   | (WorkspaceHostOperationBase & { action: 'start' | 'stop' | 'restart' | 'repair'; host: WorkspaceHostRef })
   | (WorkspaceHostOperationBase & { action: 'snapshot'; host: WorkspaceHostRef; name?: string })
-  | (WorkspaceHostOperationBase & { action: 'restore'; host: WorkspaceHostRef; snapshot: WorkspaceHostSnapshotRef })
+  | (WorkspaceHostOperationBase & {
+      action: 'restore';
+      /** Source host remains intact until the recovered host is independently verified. */
+      host: WorkspaceHostRef;
+      snapshot: WorkspaceHostSnapshotRef;
+      /** Full desired state for a distinct replacement host and immutable boot image. */
+      desired: WorkspaceHostDesiredSpec;
+    })
   | (WorkspaceHostOperationBase & {
       action: 'upgrade';
       host: WorkspaceHostRef;

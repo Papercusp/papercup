@@ -621,8 +621,14 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   }
 
   insertDisk(projectId: string, zone: string, input: GcpDiskInsertInput, requestId: string): Promise<GcpOperationRef> {
-    const { zone: _zone, type, ...rest } = input;
-    const body = { ...rest, type: resourcePath(type, `zones/${zone}/diskTypes`) };
+    const { zone: _zone, type, sourceSnapshot, ...rest } = input;
+    const body = {
+      ...rest,
+      type: resourcePath(type, `zones/${zone}/diskTypes`),
+      ...(sourceSnapshot
+        ? { sourceSnapshot: resourcePath(sourceSnapshot, 'global/snapshots') }
+        : {}),
+    };
     return this.mutate(
       projectId,
       'zone',

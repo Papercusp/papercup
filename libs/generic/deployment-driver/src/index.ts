@@ -265,3 +265,22 @@ export {
   parseWorkspaceHostBootstrapAttestation,
   validateWorkspaceHostBootstrapAttestation,
 } from './workspace-host-bootstrap';
+export type {
+  WorkspaceHostApplicationBackupRef,
+  WorkspaceHostProviderSnapshotPolicy,
+  WorkspaceHostSchemaRecoveryContract,
+  WorkspaceHostRestoreProofPolicy,
+  WorkspaceHostRecoverySpec,
+  WorkspaceHostRecoveryPhase,
+  WorkspaceHostRecoveryStep,
+  WorkspaceHostRecoveryPlan,
+  WorkspaceHostRestoreProof,
+  WorkspaceHostRestoreProofValidation,
+} from './workspace-host-recovery';
+export {
+  WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
+  WORKSPACE_HOST_RECOVERY_MAX_PROOF_CADENCE_DAYS,
+  WORKSPACE_HOST_RECOVERY_PHASES,
+  planWorkspaceHostRecovery,
+  validateWorkspaceHostRestoreProof,
+} from './workspace-host-recovery';
