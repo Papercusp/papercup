@@ -24,7 +24,7 @@ const LANGS = Object.keys(AST_GREP_LANGUAGES) as [AstGrepLanguage, ...AstGrepLan
 export default defineTool({
   name: 'code:structural',
   description:
-    'Find code by SHAPE using pinned ast-grep: `pattern` is code with metavariables (`foo($X)`, `if ($C) { $$$BODY }`), matched against the syntax tree — so it ignores formatting and line breaks, and does NOT match the same characters inside a string or comment. op:"search" lists matches; op:"rewrite_preview" additionally reports what each site WOULD become. NEVER writes: ast-grep applies only with --update-all, which this tool cannot emit. Returns { sites:[{path,line1,detail}], truncation, freshness, error }; line1 is ONE-indexed (ast-grep reports zero-indexed — this converts). Knows nothing about types: two identically-shaped calls from different modules are indistinguishable here.',
+    'Find code by SHAPE with pinned ast-grep: `pattern` uses metavariables (`foo($X)`, `if ($C) { $$$BODY }`) and matches syntax, ignoring formatting and strings/comments. op:"search" lists matches; op:"rewrite_preview" also shows each proposed replacement. Read-only: this tool cannot emit ast-grep --update-all. Returns { sites:[{path,line1,detail}], truncation, freshness, error }; line1 is ONE-indexed. It knows no types: identically-shaped calls from different modules are indistinguishable.',
   guidance: {
     when: 'The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.',
     notWhen:

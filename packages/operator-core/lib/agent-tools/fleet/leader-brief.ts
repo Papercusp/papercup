@@ -2094,12 +2094,11 @@ export default defineTool({
   name: 'fleet:leader-brief',
   profile: 'engineer',
   description:
-    "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
-    'sessionState, `wakeable`, `verdict`, wakeMode, ' +
-    'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
-    'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved, benchSuggestion, ' +
-    '`benchSuggestions` (complete target identity index), `dormant`, `spinning`, `throttled` (backed off from a provider wall — nextFireAt is ' +
-    'a wait, not a tick; see `throttled.until`/`.reason`), ' +
+    "Leader health brief for one fleet (yours by default). Per member: " +
+    'sessionState, `wakeable`, `verdict`, wakeMode, lastToolCallAgeMs, ' +
+    'claims (doing/ids/queue/load), loop+nextFireAt, stalled, unanswered, contextPressure, ' +
+    'parkedOn/resolved, benchSuggestion(s), dormant, spinning, ' +
+    'throttled (provider-wall backoff; see `throttled.until`/`.reason`), ' +
     'unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.',
   guidance: {
     when:
