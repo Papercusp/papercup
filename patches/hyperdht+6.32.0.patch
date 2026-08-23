@@ -1,8 +1,8 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..f7f4353 100644
+index 86afb4e..187a71b 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
-@@ -217,17 +217,122 @@ async function holepunch(c, opts) {
+@@ -217,32 +217,149 @@ async function holepunch(c, opts) {
  
    const relayed = diffAddress(serverAddress, relayAddress)
  
@@ -125,7 +125,12 @@ index 86afb4e..f7f4353 100644
    const onabort = () => {
      c.session.destroy()
      maybeDestroyEncryptedSocket(c, HOLEPUNCH_ABORTED())
-@@ -239,7 +344,14 @@ async function holepunch(c, opts) {
+   }
+ 
+   if (c.firewall === FIREWALL.OPEN) {
++    mark('udxPunchPath', 'passive')
+     c.passiveConnectTimeout = setTimeout(onabort, 10000)
+     return
    }
  
    // TODO: would be better to just try local addrs in the background whilst continuing with other strategies...
@@ -141,7 +146,27 @@ index 86afb4e..f7f4353 100644
      const serverAddresses = payload.addresses4.filter(onlyNonReserved)
  
      if (serverAddresses.length > 0) {
-@@ -477,6 +589,18 @@ async function connectThroughNode(c, address, socket) {
++      // This branch never constructs a Holepuncher. Mark it before the ping so
++      // both the successful LAN shortcut and its ping-failure return are
++      // distinguishable from a real punch attempt.
++      mark('udxPunchPath', 'lan')
+       const myAddresses = Holepuncher.localAddresses(c.dht.io.serverSocket)
+       const addr = Holepuncher.matchAddress(myAddresses, serverAddresses) || serverAddresses[0]
+ 
+@@ -259,10 +376,12 @@ async function holepunch(c, opts) {
+   }
+ 
+   if (!remoteHolepunchable) {
++    mark('udxPunchPath', 'cannot-holepunch')
+     maybeDestroyEncryptedSocket(c, CANNOT_HOLEPUNCH())
+     return
+   }
+ 
++  mark('udxPunchPath', 'holepunch-real')
+   c.puncher = new Holepuncher(c.dht, c.session, true, payload.firewall)
+ 
+   c.puncher.onconnect = c.onsocket
+@@ -477,6 +596,18 @@ async function connectThroughNode(c, address, socket) {
      payload
    }
  
@@ -160,7 +185,7 @@ index 86afb4e..f7f4353 100644
    c.payload = new SecurePayload(hs.holepunchSecret)
  
    c.onsocket = function (socket, port, host) {
-@@ -863,6 +987,38 @@ function onlyNonReserved(addr) {
+@@ -863,6 +994,38 @@ function onlyNonReserved(addr) {
    return !isReserved(addr.host)
  }
  
