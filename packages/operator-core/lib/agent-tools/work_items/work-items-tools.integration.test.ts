@@ -185,6 +185,13 @@ beforeAll(async () => {
   // relations cannot mask the handler contracts under test.
   await db.sql.unsafe(readMigration('500-agent-modes.sql')).simple();
   await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
+  // The handlers also exercise the shared event-await/watch machinery during
+  // lifecycle operations. Apply its canonical migrations so the integration
+  // suite validates the tool surface against the same schema as production.
+  await db.sql.unsafe(readMigration('163-await-event-subscriptions.sql')).simple();
+  await db.sql.unsafe(readMigration('175-watch-floor-coalesce-cols.sql')).simple();
+  await db.sql.unsafe(readMigration('541-predicate-watches.sql')).simple();
+  await db.sql.unsafe(readMigration('871-lifecycle-bound-watches.sql')).simple();
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim trust-leg join (mig 276)
@@ -432,7 +439,6 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     // 'closed' is a terminal issue-family state → the completion-integrity gate
     // (work-items.ts setWorkItemState) requires a non-empty completionRef.
     const closed = await setStateOne({ id: bugId, state: 'closed', completionRef: 'test: closing bug b' });
-    console.log('DEBUG_CLOSED_RESULT', JSON.stringify(closed));
     // Terminal-state UNIFICATION (work-items.ts): the legacy per-family terminals now
     // normalize onto done/dropped — issue `closed`→`dropped`, and the closed-vs-resolved
     // nuance is preserved in `terminal_reason`, not in `state`. Accepting 'closed' here

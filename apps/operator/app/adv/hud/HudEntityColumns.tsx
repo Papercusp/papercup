@@ -23,9 +23,10 @@
  * hud-open-destinations-and-true-counts-2026-07-27 P-002 closes the seam. A card
  * is a `<button>` exactly when `onOpenCard` is supplied, and stays an inert
  * `<div>` otherwise — so the reasoning above still holds for any board that has
- * no destination. The popups themselves are `PlanPopupModal` /
- * `WorkItemPopupModal`, mounted by HudView: the SAME components PlansPane (left
- * sidebar) and OperatorChat already open, never a second renderer.
+ * no destination. The destinations live with the CALLER (HudView): a work item
+ * opens `WorkItemPopupModal` (the same component OperatorChat opens); a plan
+ * opens the option-C dashboard takeover (`pdash` → PlanDashboardHost — P-007 /
+ * D-005, the same navigation PlansPane's rows make), never a second renderer.
  */
 
 import { memo, type ReactNode } from 'react';
@@ -39,9 +40,11 @@ import {
   HUD_ENTITY_COLUMN_LABEL,
   HUD_PLAN_SORTS,
   HUD_PLAN_SORT_LABEL,
+  HUD_PLAN_WORK_HOT_SEC,
   type HudEntityBoard,
   type HudEntityCard,
   type HudEntityColumnId,
+  type HudPlanCardMeta,
   type HudPlanSort,
 } from './hud-entity-board';
 
@@ -76,6 +79,73 @@ const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
 /** Same cap the session card applies — a card with eight chips communicates
  *  less than one with four, and the model already orders them by value. */
 const MAX_CHIPS = 4;
+
+/**
+ * The plan card's meta row + progress track (plan-visibility-revamp-2026-08-23
+ * P-007, per the HudH2 mockup): ✎ last edit, ⚒ last work (hot when fresher
+ * than PlansPane's shared 1h threshold), items progress, and the agent avatar
+ * stack with its live-count pill.
+ *
+ * All spans — this subtree renders inside a card that is a <button> whenever
+ * the board supplies a destination (see the Tag note in EntityCardBody), so
+ * phrasing content is a structural requirement, not a style choice. The flex
+ * rows live on the spans themselves, never the button (WebKitGTK).
+ *
+ * Native `title`s, not <Tooltip>, matching PlansPane's V1 header pair — the
+ * two surfaces show the SAME timestamps and should explain them identically.
+ */
+function PlanCardMetaRow({ meta }: { meta: HudPlanCardMeta }) {
+  const workHot = meta.workedSec != null && meta.workedSec < HUD_PLAN_WORK_HOT_SEC;
+  const showAvatars = meta.avatars.length > 0 || meta.liveCount > 0;
+  return (
+    <span className="hud__cardmeta">
+      <span
+        className="hud__mt"
+        title={meta.editedSec != null ? '✎ Last plan edit' : '✎ Plan edit time unknown'}
+      >
+        ✎ {formatAge(meta.editedSec)}
+      </span>
+      <span
+        className={`hud__mt${workHot ? ' hud__mt--hot' : ''}`}
+        title={meta.workedSec != null ? '⚒ Last work-item activity' : '⚒ No work-item activity yet'}
+      >
+        ⚒ {formatAge(meta.workedSec)}
+      </span>
+      {meta.itemsTotal != null ? (
+        <span className="hud__mt" title={`${meta.itemsDone} of ${meta.itemsTotal} items settled`}>
+          {meta.itemsDone}/{meta.itemsTotal} items
+        </span>
+      ) : null}
+      {showAvatars ? (
+        <span className="hud__avs">
+          {meta.avatars.map((a) => (
+            <span
+              key={a.ownerId}
+              className={`hud__av hud__av--c${a.colorIndex}${a.live === false ? ' hud__av--gone' : ''}`}
+              title={`${a.handle}${a.live === true ? ' — live' : a.live === false ? ' — not running' : ''}`}
+            >
+              {a.initials}
+            </span>
+          ))}
+          {meta.avatarsOverflow > 0 ? (
+            <span className="hud__av hud__av--more" title={`${meta.avatarsOverflow} more agents on this plan`}>
+              +{meta.avatarsOverflow}
+            </span>
+          ) : null}
+          {meta.liveCount > 0 ? (
+            <span
+              className="hud__liven"
+              title={`${meta.liveCount} agent${meta.liveCount === 1 ? '' : 's'} live on this plan right now`}
+            >
+              <span className="hud__dotg" aria-hidden="true" />
+              {meta.liveCount}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 function EntityCard({
   card,
@@ -141,7 +211,9 @@ function EntityCardBody({
           <span className="hud__card-h">
             <span className={`hud__dot hud__dot--${card.column}`} aria-hidden="true" />
             <span className="hud__handle">{card.ref}</span>
-            <span className="hud__age">{formatAge(card.sinceSec)}</span>
+            {/* A plan card carries ✎/⚒ in its meta row (P-007), so the header
+                age — the same ✎ number — would say it twice on one card. */}
+            {card.plan ? null : <span className="hud__age">{formatAge(card.sinceSec)}</span>}
           </span>
 
           <span className="hud__reason">{card.title}</span>
@@ -149,8 +221,19 @@ function EntityCardBody({
           {/* The "why" line sits BELOW the title here, inverting the session
               card (where the reason IS the content and there is no separate
               title). A plan's title is the thing you scan for; its next-action
-              is the detail you read once you have found it. */}
-          {card.reason ? <span className="hud__entity-why">{card.reason}</span> : null}
+              is the detail you read once you have found it.
+
+              P-007: when the roster knows WHO is on the plan and what they
+              declared, that live line outranks the stored next-action — it is
+              what is ACTUALLY happening, per the HudH2 mockup's working cards.
+              The next-action survives as the title so neither line is lost. */}
+          {card.plan?.who ? (
+            <span className="hud__entity-why hud__entity-why--who" title={card.reason ?? undefined}>
+              {card.plan.who}
+            </span>
+          ) : card.reason ? (
+            <span className="hud__entity-why">{card.reason}</span>
+          ) : null}
 
           {card.context ? <span className="hud__plan">{card.context}</span> : null}
 
@@ -168,6 +251,19 @@ function EntityCardBody({
                 ),
               )}
               {overflow > 0 ? <span className="hud__chip">+{overflow}</span> : null}
+            </span>
+          ) : null}
+
+          {/* P-007: ✎/⚒ + items + avatars, and the bottom progress track. */}
+          {card.plan ? <PlanCardMetaRow meta={card.plan} /> : null}
+          {card.plan && card.plan.itemsTotal != null && card.plan.itemsDone != null ? (
+            <span className="hud__track" aria-hidden="true">
+              <span
+                className="hud__track-fill"
+                style={{
+                  width: `${Math.round((100 * card.plan.itemsDone) / card.plan.itemsTotal)}%`,
+                }}
+              />
             </span>
           ) : null}
 

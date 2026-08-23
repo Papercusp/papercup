@@ -20,12 +20,17 @@ import killTool from '../fleet/kill';
 import launchTool from '../capability/launch-agent';
 import { resolveFleetMemberTarget } from './member-target';
 import { listFleetPresence, type FleetPresenceRow } from '../coordination/presence-fleet';
+import { sendMessage } from '../coordination/messages';
+import { wakeRecipients } from '../coordination/inbox-wake';
 import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 
 /** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
 const DEFAULT_VERIFY_SEC = 90;
 const VERIFY_POLL_MS = 3_000;
+/** A live unmanaged session needs a bounded cooperative-drain window before it can be replaced. */
+const DEFAULT_DRAIN_VERIFY_SEC = 90;
+const DRAIN_POLL_MS = 3_000;
 /** A presence row counts as the live replacement only if its heartbeat is this fresh. */
 const VERIFY_FRESH_MS = 120_000;
 
@@ -96,10 +101,96 @@ export async function awaitReplacementMember(opts: {
   }
 }
 
+export interface AwaitMemberDrainResult {
+  verified: boolean;
+  terminal: 'absent' | 'ended' | null;
+  sessionState: string | null;
+  waitedMs: number;
+  /** Owners seen in the fleet at the end of the wait — the evidence behind a `false`. */
+  rosterOwnerIds: string[];
+}
+
+/**
+ * Wait until the old member is provably gone before replacing an unmanaged session.
+ *
+ * `fleet:kill` deliberately refuses to signal an omp-hook session with no managed psu-pty
+ * host. A cooperative yield is therefore the only safe drain path: the member must observe
+ * the durable request, release its claims/locks, and end. Presence disappearance is sufficient;
+ * when the row is retained during cleanup, the shared liveness oracle's authoritative `ended`
+ * verdict is the second accepted terminal signal. Unknown/read failures never count as drained.
+ */
+export async function awaitMemberDrain(opts: {
+  memberOwnerId: string;
+  list: () => Promise<FleetPresenceRow[]>;
+  resolveState: () => Promise<string | null>;
+  timeoutMs: number;
+  intervalMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<AwaitMemberDrainResult> {
+  const {
+    memberOwnerId,
+    list,
+    resolveState,
+    timeoutMs,
+    intervalMs = DRAIN_POLL_MS,
+    now = () => Date.now(),
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  } = opts;
+  const startedAt = now();
+  const maxPolls = Math.ceil(timeoutMs / Math.max(1, intervalMs)) + 2;
+  let rosterOwnerIds: string[] = [];
+  let sessionState: string | null = null;
+  for (let poll = 0; ; poll += 1) {
+    let rosterReadable = false;
+    try {
+      const rows = await list();
+      rosterReadable = true;
+      rosterOwnerIds = rows.map((r) => r.ownerId);
+      if (!rosterOwnerIds.includes(memberOwnerId)) {
+        const at = now();
+        return { verified: true, terminal: 'absent', sessionState: null, waitedMs: at - startedAt, rosterOwnerIds };
+      }
+    } catch {
+      // A failed roster read is not evidence of absence; continue to the liveness oracle.
+    }
+
+    try {
+      sessionState = await resolveState();
+    } catch {
+      sessionState = null;
+    }
+    if (sessionState === 'ended') {
+      const at = now();
+      return { verified: true, terminal: 'ended', sessionState, waitedMs: at - startedAt, rosterOwnerIds };
+    }
+
+    const at = now();
+    if (at - startedAt + intervalMs > timeoutMs || poll + 1 >= maxPolls) {
+      return { verified: false, terminal: null, sessionState, waitedMs: at - startedAt, rosterOwnerIds };
+    }
+    // Keep the local variable explicit: a successful read with the member still present is
+    // different from a degraded read, but neither is terminal and both continue polling.
+    void rosterReadable;
+    await sleep(intervalMs);
+  }
+}
+
+async function readMemberSessionState(ownerId: string): Promise<string | null> {
+  const { resolveSessionStates } = await import('../coordination/liveness-oracle');
+  const verdicts = await resolveSessionStates(
+    [{ ownerId }],
+    // This cohort is a named fleet member, not a nursery cup. A retained parked row with no
+    // psu-pty host is therefore authoritative evidence that the unmanaged session ended.
+    { hydratePerId: true, psuHostAuthority: true },
+  );
+  return verdicts.get(ownerId)?.sessionState ?? null;
+}
+
 /** fleet:kill returns the bulk envelope `{ data: { ok, results, counts } }` — success is
  * zero failed items (top-level `ok` only means the batch ran). A structured not_found for the
  * already-resolved fleet member is the idempotent already-dead precondition, not a hard failure. */
-function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; data: Record<string, unknown> } {
+function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; unmanaged: boolean; data: Record<string, unknown> } {
   const data = ((res as { data?: unknown }).data ?? {}) as Record<string, unknown>;
   const counts = data.counts as { failed?: number } | undefined;
   const results = data.results as { ok?: boolean; code?: string; error?: string }[] | undefined;
@@ -111,7 +202,8 @@ function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; data: R
   const alreadyGone = failed > 0 && Boolean(results?.length) && results!.every(
     (r) => r.ok === false && (r.code === 'not_found' || r.error === 'not_found'),
   );
-  return { ok: failed === 0, alreadyGone, data };
+  const unmanaged = failed > 0 && Boolean(results?.some((r) => r.ok === false && r.code === 'live_unmanaged'));
+  return { ok: failed === 0, alreadyGone, unmanaged, data };
 }
 
 /** capability:launch-agent returns human-readable TEXT + an `isError` flag (not JSON) —
@@ -184,6 +276,13 @@ export default defineTool({
         .max(300)
         .optional()
         .describe(`Seconds to wait for the replacement's first heartbeat before reporting the respawn failed (default ${DEFAULT_VERIFY_SEC}). 0 skips verification and returns as soon as the launcher does — the launcher only knows it spawned a terminal, so ok:true then means "launch requested", not "agent exists".`),
+      drainVerifySec: z
+        .number()
+        .int()
+        .min(1)
+        .max(300)
+        .optional()
+        .describe(`Seconds to wait for a cooperative unmanaged-session drain before refusing the replacement launch (default ${DEFAULT_DRAIN_VERIFY_SEC}); unlike verifySec, this safety check cannot be skipped.`),
     })
     .refine(
       (a) =>
@@ -208,7 +307,7 @@ export default defineTool({
     if (!target.ok) {
       return json(target as unknown as Record<string, unknown>, true);
     }
-    const { slug, memberOwnerId, invokedAs, workspaceId } = target;
+    const { slug, memberOwnerId, invokedAs, workspaceId, identity } = target;
 
     // D-004/P-044: a respawn is a recovery, never a fresh reconstruction. Read
     // the canonical saved fleet profile BEFORE killing the old member, merge
@@ -283,9 +382,80 @@ export default defineTool({
         ctx,
       ),
     );
+    let cooperativeDrain: AwaitMemberDrainResult | undefined;
+    let cooperativeRequest: { msgId: string | null; wake: unknown } | undefined;
+    if (!kill.ok && kill.unmanaged) {
+      const summary = `cooperative replacement drain requested for ${memberOwnerId}`;
+      const body =
+        `The fleet leader is preparing a safe replacement for this unmanaged session. Do not start new work. ` +
+        `Checkpoint your active work-item, release any claims and file locks you hold, write a one-line successor note, ` +
+        `then end this unmanaged session/turn. The replacement will not launch until your presence disappears or the ` +
+        `shared liveness oracle reports sessionState='ended'.`;
+      let request: { msg_id?: string };
+      try {
+        request = await sendMessage(identity, { to: [memberOwnerId], summary, body, kind: 'yield' });
+      } catch (error) {
+        return json(
+          {
+            ok: false,
+            error: 'cooperative_drain_failed',
+            fleet: slug,
+            member: memberOwnerId,
+            killed: kill.data,
+            message: `Could not persist the cooperative drain request (${error instanceof Error ? error.message : String(error)}) — NOT launching a replacement (would double-run the lane).`,
+          },
+          true,
+        );
+      }
+      let wake: unknown;
+      try {
+        wake = await wakeRecipients([memberOwnerId], { summary, source: 'fleet:respawn-member', workspaceId });
+      } catch (error) {
+        return json(
+          {
+            ok: false,
+            error: 'cooperative_drain_failed',
+            fleet: slug,
+            member: memberOwnerId,
+            killed: kill.data,
+            requestId: request.msg_id ?? null,
+            message: `The cooperative drain request was persisted but its wake failed (${error instanceof Error ? error.message : String(error)}) — NOT launching a replacement (would double-run the lane).`,
+          },
+          true,
+        );
+      }
+      cooperativeRequest = { msgId: request.msg_id ?? null, wake };
+      cooperativeDrain = await awaitMemberDrain({
+        memberOwnerId,
+        list: () => listFleetPresence(workspaceId, slug),
+        resolveState: () => readMemberSessionState(memberOwnerId),
+        timeoutMs: (args.drainVerifySec ?? DEFAULT_DRAIN_VERIFY_SEC) * 1000,
+      });
+      if (!cooperativeDrain.verified) {
+        return json(
+          {
+            ok: false,
+            error: 'cooperative_drain_unverified',
+            fleet: slug,
+            member: memberOwnerId,
+            killed: kill.data,
+            requestId: request.msg_id ?? null,
+            wake,
+            verification: cooperativeDrain,
+            message: `The unmanaged member did not reach a verified terminal state within ${args.drainVerifySec ?? DEFAULT_DRAIN_VERIFY_SEC}s — NOT launching a replacement (would double-run the lane).`,
+          },
+          true,
+        );
+      }
+    }
     if (!kill.ok && !kill.alreadyGone) {
       return json({ ok: false, error: 'kill_failed', fleet: slug, member: memberOwnerId, killed: kill.data, message: 'could not drain the old member — NOT launching a replacement (would double-run the lane).' }, true);
     }
+    const drainOutcome = kill.unmanaged
+      ? 'cooperatively-drained'
+      : kill.alreadyGone
+        ? 'already-dead'
+        : 'killed';
 
     // 2. Fresh-launch the replacement into the SAME fleet from the RESOLVED
     //    canonical spec. The caller's explicit delta is already audited above;
@@ -320,9 +490,10 @@ export default defineTool({
           oldMember: memberOwnerId,
           invokedAs,
           changed: changedFields,
-          drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
+          drainOutcome,
           killed: kill.data,
           launched: launch.text,
+          ...(cooperativeRequest ? { cooperativeRequest, cooperativeDrain } : {}),
           launchSpec: {
             provenance: savedLaunchSpec.provenance,
             reusePath: savedLaunchSpec.reusePath,
@@ -348,9 +519,10 @@ export default defineTool({
         oldMember: memberOwnerId,
         invokedAs,
         changed: changedFields,
-        drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
+        drainOutcome,
         killed: kill.data,
         launched: launch.text,
+        ...(cooperativeRequest ? { cooperativeRequest, cooperativeDrain } : {}),
         launchSpec: {
           provenance: savedLaunchSpec.provenance,
           reusePath: savedLaunchSpec.reusePath,
@@ -376,9 +548,10 @@ export default defineTool({
         oldMember: memberOwnerId,
         invokedAs,
         changed: changedFields,
-        drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
+        drainOutcome,
         killed: kill.data,
         launched: launch.text,
+        ...(cooperativeRequest ? { cooperativeRequest, cooperativeDrain } : {}),
         launchSpec: {
           provenance: savedLaunchSpec.provenance,
           reusePath: savedLaunchSpec.reusePath,

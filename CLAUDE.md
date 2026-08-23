@@ -828,15 +828,14 @@ A mutation probe that mutates the shared tree can be committed by the sweep even
 | a subject (or `--test` cmd) containing DESTRUCTIVE primitives (rm/rmdir/unlink/shred/truncate/mkfs/`dd of=`/`find -delete`) | **TIER-0: `--fake-destructive`** — PATH shims log each destructive call's argv and delete NOTHING; assert on what the code WOULD delete. The probe REFUSES such a subject without it; REAL execution needs `--i-know-this-deletes --sandbox-root <dir>` (bwrap, `/` read-only). Limit: PATH interception only — an absolute-path `/bin/rm` call needs the sandbox. |
 | a MODULE / logic you `import` | Keep a deliberately-wrong implementation **permanently in the test file** as a control (plus a calibration case the REAL subject must pass, or the controls also pass when the property itself is broken). Never mutate production code. |
 | a FILE artifact the test reads by path (shell scripts, config, generated output) | Mutate a **COPY** outside the tree and point the test at it — zero window, no lock, no trap. Make the test's subject path overridable (an env var defaulting to the real path); that one line is what makes tier 2 available at all. |
+| a guard whose pre-fix source is already in Git history | **HISTORICAL MODE:** use `--against-commit <sha> --must-be-absent <literal>` or `--against-last-without <literal>`. The probe freezes current and historical snapshots before either run, requires `--positive-control <literal>` for every token the assertions index, and requires a `--calibration` command that passes on both snapshots. |
 | genuinely unavoidable in-tree mutation | Last resort. Hold the sweep for the probe's duration AND restore from a trap (see below). |
 
-**`scripts/mutation-probe.sh` implements tier 0 and tiers 2–3** so nobody hand-rolls the unsafe
-shape again. Copy-out is the default; it proves the tracked file is byte-identical
-before exiting, and it **refuses a mutation that changed nothing** — a no-op mutation
-makes any guard look weak, which is a false verdict from a probe that never mutated
-anything. `--mutate` is strict-checked: an undefined perl `$var` in the replacement is a
-hard refusal, not a silent empty-string expansion (the exact failure that once turned a
-probe's subject destructive).
+
+**`scripts/mutation-probe.sh` implements tier 0, historical mode, and tiers 2–3** so nobody hand-rolls the unsafe shape again. Copy-out is the default; it proves the tracked file is byte-identical before exiting, and it **refuses a mutation that changed nothing** — a no-op mutation makes any guard look weak, which is a false verdict from a probe that never mutated anything. `--mutate` is strict-checked: an undefined perl `$var` in the replacement is a hard refusal, not a silent empty-string expansion (the exact failure that once turned a probe's subject destructive).
+
+Historical mode is the first choice when a true pre-fix source exists in Git. Never assume `HEAD` is “before” on this swept tree: use `--against-commit <sha> --must-be-absent <literal>`, or let `--against-last-without <literal>` select the newest reachable commit whose file lacks that literal. Every `--positive-control <literal>` must be present in both snapshots, and `--calibration <command containing {}>` must pass against both; those checks prevent a missing token or a broken instrument from becoming a plausible falsifiability verdict. The guard command must pass against current and produce the requested caught/survived verdict against the frozen historical snapshot.
+
 
 ```bash
 # --fake-destructive is REQUIRED here: the subject contains rm/unlink, so the
@@ -848,10 +847,20 @@ scripts/mutation-probe.sh \
   --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
 ```
 
-Exit codes: `0` mutant CAUGHT (guard is falsifiable ✓) · `1` mutant SURVIVED (your guard
-is weaker than you think) · `2` misuse / no-op mutation · `3` in-tree restore FAILED, act
-now. Note `0` means *the guard failed on the mutant* — "the probe succeeded" and "the test
-passed" mean OPPOSITE things here.
+```bash
+# Historical mode: NEW_GUARD must be present now but absent from the selected
+# before-fix commit; stable-control is a required positive control.
+scripts/mutation-probe.sh \
+  --file packages/operator-core/lib/attention/bulk-resolve-kill-switch.test.ts \
+  --against-last-without 'NEW_GUARD' \
+  --positive-control 'stable-control' \
+  --calibration 'grep -q "^stable-control$" {}' \
+  --test 'grep -q "^NEW_GUARD$" {}'
+```
+
+
+Exit codes: `0` mutant/historical source CAUGHT (guard is falsifiable ✓) · `1` mutant/historical source SURVIVED (your guard is weaker than you think) · `2` misuse / missing historical control / failed calibration / no-op mutation · `3` in-tree restore FAILED, act now. Note `0` means *the guard failed on the mutant or historical source* — "the probe succeeded" and "the test passed" mean OPPOSITE things here.
+
 
 For tier 3, pause the sweep from your agent session — git-sync's own tick takes this
 same lock and **skips when a peer holds it**:

@@ -118,6 +118,7 @@ import {
   modelArgsFor,
   normalizeOmpModelSpec,
   ompModelCompatibilityNotice,
+  ompTitleMitigationArgs,
   reportSessionEnded,
   reportSessionResumed,
   reportSessionRespawned,
@@ -727,6 +728,54 @@ describe("routeFreshKickoff (EI-20339142329504181 OMP startup barrier)", () => {
       managedKickoff: null,
       kickoffSeeded: false,
     });
+  });
+});
+
+describe("OMP ox-alpha title mitigation (EI-21258695702342582)", () => {
+  it("matches only ox-alpha, including provider and effort decoration", () => {
+    for (const model of [
+      "stealth/ox-alpha",
+      "stealth/ox-alpha:max",
+      "openrouter/stealth/ox-alpha:high",
+    ]) {
+      expect(ompTitleMitigationArgs(model)).toEqual(["--no-title"]);
+    }
+    for (const model of [
+      null,
+      "openrouter/other/model:max",
+      "stealth/ox-alpha-preview:max",
+      "claude-sonnet-4-6:high",
+    ]) {
+      expect(ompTitleMitigationArgs(model)).toEqual([]);
+    }
+  });
+
+  it("applies to fresh role, fresh SU wrapper, and resume argv", () => {
+    const model = "openrouter/stealth/ox-alpha:max";
+    expect(
+      roleLaunchArgs("omp", { promptFile: "/p.md", model }).args,
+    ).toContain("--no-title");
+    expect(suWrapperExtraArgs("omp", { model })).toContain("--no-title");
+    expect(
+      resumeArgsFor(
+        { agent: "omp", cwd: "/x", ompThreadId: "thr-1" },
+        { model } as unknown as Parameters<typeof resumeArgsFor>[1],
+      ).args,
+    ).toContain("--no-title");
+  });
+
+  it("leaves unrelated OMP models byte-compatible", () => {
+    const model = "openrouter/anthropic/claude-sonnet-4-6:high";
+    expect(
+      roleLaunchArgs("omp", { promptFile: "/p.md", model }).args,
+    ).not.toContain("--no-title");
+    expect(suWrapperExtraArgs("omp", { model })).not.toContain("--no-title");
+    expect(
+      resumeArgsFor(
+        { agent: "omp", cwd: "/x", ompThreadId: "thr-1" },
+        { model } as unknown as Parameters<typeof resumeArgsFor>[1],
+      ).args,
+    ).not.toContain("--no-title");
   });
 });
 

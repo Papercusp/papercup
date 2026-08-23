@@ -29,6 +29,7 @@ vi.mock('../../events/await/store', () => ({
   // "nothing to retire" so every pre-existing test above is unaffected; overridden
   // per-test below to exercise the supersede path.
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+  FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
   // EI-18676056143796303: the orphan guard now asks the fire latch whether this key
   // (or a sibling in its family) has ever ACTUALLY fired before claiming no emitter
   // exists. Defaults to "no evidence", so every pre-existing case above still warns
@@ -208,7 +209,11 @@ describe('events:await wrapper defaults', () => {
   describe('EI-14225: supersede-on-registration', () => {
     it('retires the callers own prior pending await(s) on this EXACT key before registering the new one', async () => {
       await call({ event: 'work-item:claimable' });
-      expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(['su-awaiter'], ['work-item:claimable']);
+      expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
+        ['su-awaiter'],
+        ['work-item:claimable'],
+        { excludeNotePrefix: '[fleet:bench] ' },
+      );
       // Ordering: the retirement must run BEFORE the new row is registered (both
       // mocks recorded on the same shared timeline via invocationCallOrder).
       const supersedeOrder = vi.mocked(cancelAwaitsForSubscribersOnKeys).mock.invocationCallOrder[0];

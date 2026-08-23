@@ -2197,6 +2197,27 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith(".md"),
   },
   {
+    // EI-21271940404773459 — a raw ESM self-exec check is safe in an isolated source
+    // file but becomes true for every inlined module in the host's esbuild bundle. The
+    // source ratchet and the bundle metafile check are both repo-wide invariants; route
+    // the cheap source census whenever its scanned source surface or bundler seam moves.
+    workspace: "@papercusp/web",
+    script: "lint:no-hand-rolled-cli-entry",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f.endsWith("/package.json") ||
+      f === "package-lock.json" ||
+      f.endsWith("/package-lock.json") ||
+      f === "apps/operator/bin/bundle-host.sh" ||
+      f === "apps/operator/bin/bundle-host-common.sh" ||
+      f === "packages/operator-core/lib/util/cli-entry.ts" ||
+      ((/^(?:apps|libs|packages|scripts)\//.test(f) &&
+        /\.(?:[cm]?[jt]sx?|mjs|cjs)$/.test(f)) &&
+        !/(?:^|\/)(?:\.git|\.next|_retired|build|coverage|dist|dist-host|dist-sidecar|node_modules|out|public|target)\//.test(f) &&
+        !/(?:\.test|\.spec)\.[cm]?[jt]sx?$/.test(f) &&
+        !f.endsWith(".d.ts"))),
+  },
+  {
     // WI-38269 — the VACUOUS FLAG GUARD class, routed from the acceptance scorecard for
     // retire-mug-kettle-su-only-2026-08-09 (criterion `guards-bind-not-vacuous`).
     //

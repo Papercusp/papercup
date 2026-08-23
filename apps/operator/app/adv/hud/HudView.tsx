@@ -31,7 +31,7 @@ import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import SessionChatModal from '@/app/_components/chat/SessionChatModal';
-import PlanPopupModal from '@/app/_components/plans/PlanPopupModal';
+import { PLAN_DASHBOARD_PARAM } from '@/app/_components/plans/PlanDashboardHost';
 import WorkItemPopupModal from '@/app/_components/work-items/WorkItemPopupModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
 import { Modal } from '@/app/harness/Modal';
@@ -103,6 +103,7 @@ import {
   rollUpStateCounts,
   type HudEntityColumnId,
   type HudGoalInput,
+  type HudPlanAgent,
   type HudPlanInput,
   type HudTabId,
   type HudWorkItemInput,
@@ -654,6 +655,43 @@ export default function HudView({
     args: { workspaceId: activityWorkspaceId },
     enabled: tab === 'plans' && scopeReady,
   });
+  /* WHO is on each plan (P-007) — the roster join behind the plan cards'
+     avatar stacks, live pills and who-is-doing-what lines. The SAME
+     `advRoster.list` payload the Sessions tab renders (fetched above,
+     unconditionally), so this is one memo, not one fetch.
+
+     An agent is "on" a plan when it DECLARED it (`currentPlanSlug`) or holds a
+     CLAIM on one of its items — both, deduped, because a fleet member routinely
+     claims items on a plan it never re-declared. Sessions the oracle says are
+     over (`ended`/`recorded`) are excluded: a dead session's stale claim is
+     noise on a "who is here now" surface, and the pill counts positive `live`
+     verdicts only anyway. */
+  const planAgentsBySlug = useMemo(() => {
+    const bySlug = new Map<string, HudPlanAgent[]>();
+    for (const e of roster.data?.[0]?.active ?? []) {
+      if (e.sessionState === 'ended' || e.sessionState === 'recorded') continue;
+      const slugs = new Set<string>();
+      if (e.currentPlanSlug) slugs.add(e.currentPlanSlug);
+      for (const c of e.claims ?? []) {
+        if (c?.planSlug) slugs.add(c.planSlug);
+      }
+      if (slugs.size === 0) continue;
+      const agent: HudPlanAgent = {
+        ownerId: e.ownerId,
+        // Positive verdicts only; an absent sessionState stays UNKNOWN (null),
+        // never false — the HudCardIdentity.live rule.
+        live: e.sessionState == null ? null : e.sessionState === 'live',
+        sessionState: e.sessionState ?? null,
+        intent: e.intent?.trim() || null,
+      };
+      for (const slug of slugs) {
+        const list = bySlug.get(slug);
+        if (list) list.push(agent);
+        else bySlug.set(slug, [agent]);
+      }
+    }
+    return bySlug;
+  }, [roster.data]);
   const planInputs = useMemo((): HudPlanInput[] => {
     const rows = (planList.data?.plans ?? []) as HudPlanInput[];
     const bySlug = new Map<string, number>();
@@ -662,13 +700,18 @@ export default function HudView({
         bySlug.set(r.slug, r.lastWorkAtMs);
       }
     }
-    /* Feed not answered yet (or genuinely empty): hand the rows through
-       untouched. Every plan then has no ⚒ key, so the last-work sort degrades
-       to the fetch order instead of fabricating an ordering from a half-loaded
-       join — and re-running this memo when the feed lands re-sorts honestly. */
-    if (bySlug.size === 0) return rows;
-    return rows.map((p) => ({ ...p, lastWorkAtMs: bySlug.get(p.slug) ?? null }));
-  }, [planList.data, planWorkActivity.data]);
+    /* Feeds not answered yet (or genuinely empty): hand the rows through
+       untouched. Every plan then has no ⚒ key and no agents, so the last-work
+       sort degrades to the fetch order instead of fabricating an ordering from
+       a half-loaded join — and re-running this memo when a feed lands re-sorts
+       honestly. */
+    if (bySlug.size === 0 && planAgentsBySlug.size === 0) return rows;
+    return rows.map((p) => ({
+      ...p,
+      lastWorkAtMs: bySlug.get(p.slug) ?? null,
+      agents: planAgentsBySlug.get(p.slug) ?? null,
+    }));
+  }, [planList.data, planWorkActivity.data, planAgentsBySlug]);
   const planBoard = useMemo(
     () =>
       buildPlanBoard(planInputs, {
@@ -793,28 +836,26 @@ export default function HudView({
     [workItems.data, board.unattributed, nowMs, entityQuery, itemTotals],
   );
 
-  /* ── Card → popup (P-002) ───────────────────────────────────────────────
+  /* ── Card → destination (P-002; plans re-routed by P-007) ───────────────
      Owner ask 2026-07-27: clicking a Plans/Work-items row should open it in a
-     popup, "like it works in the plans tab in the left hand side bar". So this
-     opens the SAME two components that sidebar (PlansPane) and the chat's ref
-     pills already open — PlanPopupModal / WorkItemPopupModal — rather than a
-     third detail renderer.
+     popup, "like it works in the plans tab in the left hand side bar".
 
-     Own nuqs keys (`hudplanpop`/`hudwi`), deliberately distinct from PlansPane's
-     `pplan` and OperatorChat's `wpop`/`wppop`: the same convention those two
-     already follow, so a popup opened from the HUD and one opened from the
-     sidebar can coexist instead of fighting over one URL key.
+     PLANS NO LONGER FOLLOW THAT ASK — the newer one supersedes it
+     [owner 2026-08-23 interactive: "clicking a plan should open option C from
+     the mockup not the full plan"; recorded on plan-visibility-revamp-2026-08-23].
+     A plan click now writes `pdash` — the SAME app-pane dashboard takeover
+     PlansPane's rows navigate to (P-005/D-002, PlanDashboardHost at the SPA
+     root) — so a plan opens identically from the sidebar and the HUD, and the
+     full-plan popup is retired on every plan-CLICK path. `pplan` (the popup)
+     remains for its other writers (chat ref pills).
 
-     ⚠ `hudplanpop`, NOT `hudplan` — `hudplan` is ALREADY TAKEN, 330 lines up, by
-     the plan FILTER axis (`parseAsArrayOf`). This originally shipped as `hudplan`
-     and the two hooks silently fought over one key: clicking a plan card wrote the
-     slug, the ARRAY hook read it back as a filter, and the board emptied to zero
-     cards while no popup ever opened — strictly worse than the unwired card the
-     owner reported. The collision check that produced the comment above looked at
-     OTHER files (`pplan`, `wpop`) and missed the one in this same component, which
-     is exactly why `app/_lints/nuqs-key-collisions.test.ts` now asserts key
-     uniqueness here mechanically instead of by eye. */
-  const [openPlanSlug, setOpenPlanSlug] = useQueryState('hudplanpop', parseAsString);
+     Work items keep their popup + own nuqs key (`hudwi`), distinct from
+     OperatorChat's `wpop`/`wppop`, so a popup opened from the HUD and one
+     opened elsewhere can coexist instead of fighting over one URL key. Key
+     uniqueness inside THIS component is asserted mechanically by
+     `app/_lints/nuqs-key-collisions.test.ts` (the `hudplan` filter-axis
+     collision that motivated it is documented there). */
+  const [, setDashPlan] = useQueryState(PLAN_DASHBOARD_PARAM, parseAsString);
   const [openItemId, setOpenItemId] = useQueryState('hudwi', parseAsString);
   /* WI-6742: the third destination — the ask itself, for the asks that are not
      ABOUT a work item or plan (improvement triage, standing approval, dark-flag
@@ -822,16 +863,7 @@ export default function HudView({
      asserted unique by app/_lints/nuqs-key-collisions.test.ts. */
   const [openAskId, setOpenAskId] = useQueryState('hudask', parseAsString);
 
-  /* PlanDetail is harness-scoped — scoping plans:get to the wrong harness is
-     the "Server: not_found" trap PlanPopupModal's own docblock names. The plan
-     row already carries its harness, so read it from the loaded list rather
-     than assuming the board's active harness. */
-  const openPlanRow = useMemo(
-    () => (planList.data?.plans ?? []).find((p) => p.slug === openPlanSlug) ?? null,
-    [planList.data, openPlanSlug],
-  );
-
-  /* WorkItemPopupModal is harness-scoped for the SAME reason, and the board's
+  /* WorkItemPopupModal is harness-scoped, and the board's
      active harness is not a safe stand-in: the Work items tab renders the
      unattributed ASK cards even under `scope=all` with no harness resolved, so
      `harnessSlug` is null exactly when those cards are on screen and the popup
@@ -856,9 +888,11 @@ export default function HudView({
     [attention.items, openAskId],
   );
 
+  /* Option C (P-007 re-route): a plan card opens the app-pane dashboard
+     takeover, never the full-plan popup. The card `id` IS the slug. */
   const onOpenPlanCard = useCallback(
-    (card: HudEntityCard) => void setOpenPlanSlug(card.id),
-    [setOpenPlanSlug],
+    (card: HudEntityCard) => void setDashPlan(card.id),
+    [setDashPlan],
   );
   /* Clicking a goal SELECTS it (goal-mode-2026-08-07 P-020): `hudgoal` becomes
      that goal's id, which scopes the other tabs to it and — once P-021 lands —
@@ -934,7 +968,10 @@ export default function HudView({
       const target = card.open;
       if (!target) return;
       if (target.kind === 'work-item') void setOpenItemId(target.id);
-      else if (target.kind === 'plan') void setOpenPlanSlug(target.slug);
+      // Option C everywhere a click resolves to a PLAN (P-007 re-route): the
+      // ask card's plan destination opens the same dashboard takeover the
+      // Plans tab and sidebar open — one destination per entity, not per door.
+      else if (target.kind === 'plan') void setDashPlan(target.slug);
       else if (target.kind === 'ask') void setOpenAskId(target.askId);
       /* `start-goal` is the Goals board's own card and never reaches this
          handler — but it is named rather than swept into a trailing `else`,
@@ -942,7 +979,7 @@ export default function HudView({
          it read `target.askId` off a member that has none. A named branch turns
          the NEXT addition into a compile error instead of a runtime undefined. */
     },
-    [setOpenItemId, setOpenPlanSlug, setOpenAskId],
+    [setOpenItemId, setDashPlan, setOpenAskId],
   );
 
   /* WI-6560 — this MUST stay a stable reference, and it is load-bearing in a way
@@ -1193,15 +1230,12 @@ export default function HudView({
           void setOpenFocusSid(null);
         }}
       />
-      {/* P-002: the Plans / Work items tabs' destination. Mounted here (not in
+      {/* P-002: the Work items tab's destination. Mounted here (not in
           HudEntityColumns) for the same reason PlansPane mounts its own — the
-          popup is a pure function of props, the CALLER owns the open-id param. */}
-      <PlanPopupModal
-        planSlug={openPlanSlug}
-        harnessSlug={openPlanRow?.harness ?? harnessSlug}
-        planTitle={openPlanRow?.title ?? null}
-        onClose={() => void setOpenPlanSlug(null)}
-      />
+          popup is a pure function of props, the CALLER owns the open-id param.
+          The PLAN popup that used to mount beside it is retired (P-007): a plan
+          click writes `pdash`, and PlanDashboardHost at the SPA root renders
+          the option-C takeover — no per-view mount to own. */}
       <WorkItemPopupModal
         id={openItemId}
         harnessSlug={openItemHarness ?? harnessSlug}

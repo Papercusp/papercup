@@ -100,6 +100,12 @@ describe('nuqs key collisions', () => {
     expect([...counts.entries()].filter(([, n]) => n > 1).map(([k]) => k)).toEqual([]);
     // The board params are load-bearing; a rename should have to admit it here.
     expect([...counts.keys()].sort()).toContain('hudplan'); // the FILTER axis
-    expect([...counts.keys()].sort()).toContain('hudplanpop'); // the POPUP slug
+    // The plan POPUP key (`hudplanpop`) is deliberately GONE (P-007 / D-005 on
+    // plan-visibility-revamp-2026-08-23): a plan click opens the option-C
+    // dashboard takeover, so HudView writes PLAN_DASHBOARD_PARAM instead —
+    // bound via the imported constant, which the literal-key extractor above
+    // cannot see, so it is asserted textually here.
+    expect(src).not.toMatch(/hudplanpop/);
+    expect(src).toContain('PLAN_DASHBOARD_PARAM');
   });
 });

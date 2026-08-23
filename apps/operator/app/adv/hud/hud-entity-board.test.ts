@@ -16,9 +16,14 @@ import { GOAL_STATUSES } from '../../../../../packages/agent-mcp/src/tools/goals
 import {
   askTargetFor,
   askToCard,
+  avatarColorIndex,
+  avatarInitials,
   buildGoalBoard,
   buildPlanBoard,
   buildWorkItemBoard,
+  planCardMeta,
+  HUD_AVATAR_COLOR_COUNT,
+  HUD_PLAN_AVATARS_SHOWN,
   goalBurn,
   goalBurnLabel,
   goalColumn,
@@ -1587,5 +1592,149 @@ describe('work-item cards carry identity so the Work items tab filters by agent'
     );
     const ids = board.columns.flatMap((c) => c.cards.map((card) => card.id));
     expect(ids).toEqual(['WI-MINE']);
+  });
+});
+
+describe('planCardMeta — the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () => {
+  const OWNER_A = 'su-76a83f22-1111-4ea0-b546-8a692cdc949c';
+  const OWNER_B = 'su-6e294c10-2222-40e0-bd98-f88198fe84b4';
+  const OWNER_C = 'su-f4aa0000-3333-40e0-bd98-f88198fe84b4';
+  const OWNER_D = 'su-82be7000-4444-40e0-bd98-f88198fe84b4';
+  const OWNER_E = 'su-5a000000-5555-40e0-bd98-f88198fe84b4';
+
+  it('computes ✎ from `updated` and ⚒ from lastWorkAtMs, in seconds', () => {
+    const meta = planCardMeta(
+      plan({ updated: new Date(NOW - 120_000).toISOString(), lastWorkAtMs: NOW - 41_000 }),
+      NOW,
+    );
+    expect(meta.editedSec).toBe(120);
+    expect(meta.workedSec).toBe(41);
+  });
+
+  it('reports null — not zero — for a plan never worked or with no edit stamp', () => {
+    // The same unmeasured-is-not-zero rule the goals board applies (P-002):
+    // "worked 0s ago" would claim activity that never happened.
+    const meta = planCardMeta(plan({ updated: null, lastWorkAtMs: null }), NOW);
+    expect(meta.editedSec).toBeNull();
+    expect(meta.workedSec).toBeNull();
+  });
+
+  it('reports settled-over-total progress, counting dropped as settled', () => {
+    const meta = planCardMeta(
+      plan({ itemCounts: { done: 2, dropped: 1, todo: 5, wip: 1 } }),
+      NOW,
+    );
+    expect(meta.itemsDone).toBe(3);
+    expect(meta.itemsTotal).toBe(9);
+  });
+
+  it('reports NULL items for a plan with none — never a 0/0 fraction', () => {
+    const meta = planCardMeta(plan({ itemCounts: {} }), NOW);
+    expect(meta.itemsDone).toBeNull();
+    expect(meta.itemsTotal).toBeNull();
+  });
+
+  it('caps the avatar stack and reports the overflow from the full population', () => {
+    const meta = planCardMeta(
+      plan({
+        agents: [OWNER_A, OWNER_B, OWNER_C, OWNER_D, OWNER_E].map((ownerId) => ({ ownerId })),
+      }),
+      NOW,
+    );
+    expect(meta.avatars).toHaveLength(HUD_PLAN_AVATARS_SHOWN);
+    expect(meta.avatarsOverflow).toBe(1);
+  });
+
+  it('spends the capped avatar slots on LIVE agents first', () => {
+    const meta = planCardMeta(
+      plan({
+        agents: [
+          { ownerId: OWNER_A, live: false },
+          { ownerId: OWNER_B, live: null },
+          { ownerId: OWNER_C, live: true },
+          { ownerId: OWNER_D, live: false },
+          { ownerId: OWNER_E, live: true },
+        ],
+      }),
+      NOW,
+    );
+    expect(meta.avatars.map((a) => a.live)).toEqual([true, true, null, false]);
+  });
+
+  it('counts ONLY positive live verdicts in the pill — unknown is not alive', () => {
+    const meta = planCardMeta(
+      plan({
+        agents: [
+          { ownerId: OWNER_A, live: true },
+          { ownerId: OWNER_B, live: null },
+          { ownerId: OWNER_C },
+          { ownerId: OWNER_D, live: false },
+        ],
+      }),
+      NOW,
+    );
+    expect(meta.liveCount).toBe(1);
+  });
+
+  it('builds the who line from declared intents, live agents first, capped at two', () => {
+    const meta = planCardMeta(
+      plan({
+        agents: [
+          { ownerId: OWNER_A, live: false, intent: 'archived sweep' },
+          { ownerId: OWNER_B, live: true, intent: 'recording D-001' },
+          { ownerId: OWNER_C, live: true, intent: 'P-045 verification' },
+        ],
+      }),
+      NOW,
+    );
+    expect(meta.who).toBe('su-6e294c10: recording D-001 · su-f4aa0000: P-045 verification');
+  });
+
+  it('reports NO who line when nobody declared an intent — never an empty string', () => {
+    const meta = planCardMeta(
+      plan({ agents: [{ ownerId: OWNER_A }, { ownerId: OWNER_B, intent: '   ' }] }),
+      NOW,
+    );
+    expect(meta.who).toBeNull();
+  });
+
+  it('derives stable initials and a stable palette index from the owner id', () => {
+    expect(avatarInitials(OWNER_A)).toBe('76');
+    expect(avatarInitials('not-an-id')).toBe('no');
+    const idx = avatarColorIndex(OWNER_A);
+    expect(idx).toBe(avatarColorIndex(OWNER_A));
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(idx).toBeLessThan(HUD_AVATAR_COLOR_COUNT);
+  });
+
+  it('attaches meta to every plan card, agents or none — ✎/⚒ mean something alone', () => {
+    const card = toPlanCard(plan(), NOW);
+    expect(card.plan).toBeDefined();
+    expect(card.plan?.avatars).toEqual([]);
+    expect(card.plan?.liveCount).toBe(0);
+    expect(card.plan?.who).toBeNull();
+  });
+
+  it('extends card identity with the roster agents, deduped against the owner', () => {
+    const card = toPlanCard(
+      plan({ owner: OWNER_A, agents: [{ ownerId: OWNER_A, live: true }, { ownerId: OWNER_B }] }),
+      NOW,
+    );
+    const ids = (Array.isArray(card.identity) ? card.identity : [card.identity]).map(
+      (i) => i?.ownerId,
+    );
+    expect(ids).toEqual([OWNER_A, OWNER_B]);
+  });
+
+  it('filters the Plans board by an agent WORKING the plan, not only its owner', () => {
+    const board = buildPlanBoard(
+      [
+        plan({ slug: 'worked-by-b', agents: [{ ownerId: OWNER_B, live: true }] }),
+        plan({ slug: 'other-plan' }),
+      ],
+      { nowMs: NOW, query: 'su-6e294' },
+    );
+    const ids = board.columns.flatMap((c) => c.cards.map((card) => card.id));
+    expect(ids).toEqual(['worked-by-b']);
   });
 });

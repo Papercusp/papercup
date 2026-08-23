@@ -770,6 +770,132 @@
   white-space: nowrap;
 }
 
+/* The live who-is-doing-what variant (P-007): a shade brighter than a stored
+   next-action, because it describes agents working RIGHT NOW. */
+.hud__entity-why--who {
+  color: var(--fg-dim);
+}
+
+/* ── P-007: plan-card meta row, avatar stack, live pill, progress track ────
+   Per the HudH2 mockup (plan-visibility-revamp-2026-08-23). Every selector
+   targets a <span> — this subtree lives inside .hud__card, which is a
+   <button> whenever the board wires a destination, so flex goes on the spans
+   (the same WebKitGTK rule .hud__card-row documents). */
+.hud__cardmeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+/* One ✎/⚒/items timestamp cell. tabular-nums so a ticking age doesn't wiggle
+   the row; nowrap because a wrapped "3m" is worse than a clipped one. */
+.hud__mt {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ⚒ fresher than HUD_PLAN_WORK_HOT_SEC (1h — PlansPane's WORK_HOT_MS). */
+.hud__mt--hot {
+  color: var(--good);
+}
+
+.hud__avs {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  min-width: 0;
+}
+
+/* Overlapping avatar circle. The 2px --bg ring is what makes the overlap read
+   as a stack instead of a smear. Dark ink on the light palette fills. */
+.hud__av {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: #051827;
+  border: 2px solid var(--bg);
+  margin-left: -5px;
+  flex: 0 0 auto;
+}
+.hud__av:first-child { margin-left: 0; }
+
+/* Deterministic palette — indexed by avatarColorIndex(ownerId), so one agent
+   keeps one colour across every card and render. Count must stay in lockstep
+   with HUD_AVATAR_COLOR_COUNT in hud-entity-board.ts. */
+.hud__av--c0 { background: #7dd3fc; }
+.hud__av--c1 { background: #a78bfa; }
+.hud__av--c2 { background: #f9a8d4; }
+.hud__av--c3 { background: #fbbf24; }
+.hud__av--c4 { background: #34d399; }
+.hud__av--c5 { background: #fda4af; }
+.hud__av--c6 { background: #93c5fd; }
+.hud__av--c7 { background: #fdba74; }
+
+/* POSITIVELY not running (live === false). Unknown liveness renders at full
+   opacity — an unresolved verdict is not a dead one. */
+.hud__av--gone { opacity: 0.45; }
+
+/* The +N overflow disc — same geometry, neutral fill, theme ink. */
+.hud__av--more {
+  background: var(--bg-3);
+  color: var(--fg-dim);
+}
+
+/* The live-count pill: how many agents are POSITIVELY live on this plan. */
+.hud__liven {
+  margin-left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--good);
+  border: 1px solid color-mix(in srgb, var(--good) 50%, transparent);
+  background: color-mix(in srgb, var(--good) 14%, transparent);
+  flex: 0 0 auto;
+}
+
+.hud__dotg {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--good);
+}
+
+/* The bottom progress track: settled items over all items. Absolutely pinned
+   to the card's bottom edge (.hud__card is position:relative for exactly
+   this), 2px so it reads as a hairline, never a bar chart. */
+.hud__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: color-mix(in srgb, var(--fg-mute) 14%, transparent);
+}
+
+.hud__track-fill {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
 /* ── subdirectives, nested inside their parent goal card ───────────────────
    goals-tab-improvement-2026-08-09 P-017 / D-006 Q4 option A.
 
@@ -850,6 +976,10 @@
    doesn't, which is why a plain browser view never showed the bug. */
 .hud__card {
   display: block;
+  /* Anchor for the P-007 .hud__track progress bar, which pins to the card's
+     bottom edge. Also why the track survives overflow:hidden below — it sits
+     INSIDE the border box, not past it. */
+  position: relative;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 4px;

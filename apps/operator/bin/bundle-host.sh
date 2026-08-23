@@ -164,6 +164,7 @@ HOST_EXTERNALS+=(
 mkdir -p "$(dirname "$OUTFILE")"
 LOCKFILE="$OUTFILE.build.lock"
 TMPFILE="$OUTFILE.tmp.$$"
+METAFILE="$TMPFILE.meta.json"
 # EI-18119538868734274: the blueprints/ and sql/ asset directories below are
 # published with the SAME tmp-then-atomic-swap discipline as $TMPFILE here —
 # see the two "publish" comments further down for why (a live process's
@@ -171,7 +172,7 @@ TMPFILE="$OUTFILE.tmp.$$"
 # ANY time, including mid-rebuild).
 NEW_BLUEPRINTS_DIR=""
 NEW_SQL_DIR=""
-trap 'rm -f "$TMPFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"' EXIT
+trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"' EXIT
 
 # EI-20093985382484201: A BUNDLE FAILURE MUST NOT TAKE THE SERVICE DOWN.
 # ExecStartPre runs this on EVERY restart against the LIVE shared tree, which
@@ -206,10 +207,13 @@ if ! (
   npx --yes esbuild@0.25.0 "$ENTRY" \
     --bundle --platform=node --format=esm --target=node22 \
     --outfile="$TMPFILE" \
+    --metafile="$METAFILE" \
     --banner:js="$HOST_BANNER" \
     --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     --log-limit=20 \
     "${HOST_EXTERNALS[@]}"
+  node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
+    --metafile "$METAFILE" --base-dir "$SCRIPT_DIR/.."
   # WI-38221: widen-avoidance pass. Runs on $TMPFILE, BEFORE the atomic rename
   # below, so the swap stays atomic and a failure here leaves the last-known-good
   # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped

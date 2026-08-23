@@ -257,6 +257,18 @@ describe('P-007 dependsOn suggestions — precision guards', () => {
     expect(suggestDependsOnCells('the number 3 appears in the changelog')).toEqual([]);
   });
 
+  it('does NOT suggest a plan content hash as a Git pipeline dependency', () => {
+    // plans:get contentHash values are hex-shaped, but "plan v143/hash ... governs"
+    // is plan metadata, not a deployment or serving-state claim. Keep this exact
+    // acceptance-carry shape quiet so a stale plan fingerprint cannot arm
+    // git.pipelinePosition invalidation.
+    const body =
+      'The body said plan v143/hash 65e44ddf6efb governs; that value is plans:get.contentHash, ' +
+      'not a Git SHA, and the sentence says it governs the plan rather than deployment.';
+    expect(detectCellTranscriptions(body)).toEqual([]);
+    expect(suggestDependsOnCells(body)).toEqual([]);
+  });
+
   it('is fail-soft on anything unparseable', () => {
     // An advisory that can throw turns facts:assert into an outage — the one failure
     // mode a tier-3 mechanism must not have.

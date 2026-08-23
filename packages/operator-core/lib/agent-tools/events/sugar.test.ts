@@ -52,6 +52,7 @@ vi.mock("../../events/await/store", () => ({
     timeoutBehavior: i.timeoutBehavior,
   })),
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+  FLEET_BENCH_NOTE_PREFIX: "[fleet:bench] ",
 }));
 
 vi.mock("../../events/await/engine", () => ({ startAwaitSweeper: vi.fn() }));
@@ -290,6 +291,7 @@ describe("checkpoint:await sugar", () => {
         "green-checkpoint:red:papercusp",
         "green-checkpoint:inconclusive:papercusp",
       ],
+      { excludeNotePrefix: "[fleet:bench] " },
     );
     expect(callOrder[0]).toBe("supersede");
     expect(callOrder).toContain("register");

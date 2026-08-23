@@ -67,6 +67,35 @@ function runProbeIO(args: string[]): { code: number; out: string } {
 const read = () => readFileSync(subject, 'utf8');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function git(repo: string, args: string[]): string {
+  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${r.stderr ?? ''}`);
+  }
+  return (r.stdout ?? '').trim();
+}
+
+/** A tiny real Git history lets historical-mode tests exercise git show/rev-list, not mocks. */
+function makeHistoricalRepo(): { repo: string; file: string; oldSha: string } {
+  const repo = join(dir, 'historical-repo');
+  mkdirSync(repo);
+  const file = join(repo, 'subject.txt');
+  git(repo, ['init', '-q']);
+  git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+  git(repo, ['config', 'user.name', 'mutation-probe-test']);
+  writeFileSync(file, 'stable-control\nlegacy-path\n');
+  git(repo, ['add', 'subject.txt']);
+  git(repo, ['commit', '-qm', 'historical source']);
+  const oldSha = git(repo, ['rev-parse', 'HEAD']);
+  writeFileSync(file, 'stable-control\nNEW_GUARD\n');
+  git(repo, ['add', 'subject.txt']);
+  git(repo, ['commit', '-qm', 'fix source']);
+  // Leave the current source uncommitted: the probe must freeze it before any
+  // guard command runs, just as git-sync can commit a real working tree mid-run.
+  writeFileSync(file, 'stable-control\nNEW_GUARD\ncurrent-edit\n');
+  return { repo, file, oldSha };
+}
+
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('leaves the subject file byte-identical while still exercising the guard', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']);
@@ -208,6 +237,77 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   it('refuses a --test with no {} placeholder, so the probe cannot silently target the wrong file', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'true']);
     expect(code).toBe(2);
+  });
+});
+
+describe('mutation-probe.sh — historical source mode', () => {
+  it('uses an explicit commit, requires controls/calibration, and keeps both snapshots frozen', () => {
+    const history = makeHistoricalRepo();
+    const savedSubject = JSON.stringify(history.file);
+    // The command deliberately rewrites the working file between phases and
+    // restores it. A live-file implementation fails the current assertion;
+    // only a frozen current snapshot passes it.
+    const guard =
+      `printf 'stable-control\\nlegacy-path\\n' > ${savedSubject}; ` +
+      `grep -q '^NEW_GUARD$' {}; rc=$?; printf 'stable-control\\nNEW_GUARD\\ncurrent-edit\\n' > ${savedSubject}; exit "$rc"`;
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-commit',
+      history.oldSha,
+      '--must-be-absent',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      'grep -q "^stable-control$" {}',
+      '--test',
+      guard,
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/mode=historical/);
+    expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+    expect(out).toMatch(/calibration_current=0 calibration_historical=0/);
+    expect(out).toMatch(/absence_control=NEW_GUARD/);
+    expect(readFileSync(history.file, 'utf8')).toBe('stable-control\nNEW_GUARD\ncurrent-edit\n');
+  });
+
+  it('finds the newest reachable commit whose source lacks --against-last-without', () => {
+    const history = makeHistoricalRepo();
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-last-without',
+      'NEW_GUARD',
+      '--positive-control',
+      'stable-control',
+      '--calibration',
+      'grep -q "^stable-control$" {}',
+      '--test',
+      'grep -q "^NEW_GUARD$" {}',
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/mode=historical/);
+    expect(out).toMatch(/absence_control=NEW_GUARD/);
+    expect(out).toMatch(/positive_controls=1/);
+    expect(out).toMatch(new RegExp(`against_commit=${history.oldSha}`));
+  });
+
+  it('refuses historical mode without a positive control or calibration before running the guard', () => {
+    const history = makeHistoricalRepo();
+    const { code, out } = runProbeIO([
+      '--file',
+      history.file,
+      '--against-commit',
+      history.oldSha,
+      '--must-be-absent',
+      'NEW_GUARD',
+      '--test',
+      'printf ran > "' + join(dir, 'historical-ran') + '"; grep -q NEW_GUARD {}',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/requires at least one --positive-control/i);
+    expect(readFileSync(history.file, 'utf8')).toContain('NEW_GUARD');
   });
 });
 

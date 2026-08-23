@@ -90,8 +90,8 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '   - AUTO-RESOLVE when you can settle it from evidence: the ask is moot (its blocker already',
     '     cleared, the work already landed), it duplicates another item, it is a stale FYI, or it is a',
     '     plain acknowledgement. You have full authority to take the terminal action, INCLUDING',
-    "     delivering a derivable answer to the asking agent (which wakes them). Record WHY — that",
-    '     rationale is the audit note for something done on the owner\'s behalf.',
+    '     delivering a derivable answer to the asking agent (which wakes them). Record WHY — that',
+    "     rationale is the audit note for something done on the owner's behalf.",
     '   - CONSULT when you cannot settle it alone AND the item names an asking agent that is live or',
     '     parked (check coord:presence). Send them a directed coord:send asking them to either resolve',
     '     or withdraw their own ask right now, or reply with their recommended option id and a one-line',
@@ -103,7 +103,7 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '     composes.',
     '   - SKIP when the item offers no options yet or you genuinely cannot judge it — with the reason.',
     `3. AUTO-RESOLVE only through inbox:bulk-run-act { runId: "${runId}", itemId, actionId,`,
-    '   rationale, ... }. It is intentionally one action per call: the tool holds the run\'s revocable',
+    "   rationale, ... }. It is intentionally one action per call: the tool holds the run's revocable",
     '   authority lock across the real terminal dispatch, required audit row, outcome and counters.',
     '   Report only recommended/skipped/failed items through inbox:bulk-run-report { items:[...] }',
     '   (batch those non-action outcomes; do not call report once per item).',
@@ -111,10 +111,11 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '',
     'RULES:',
     '- NEVER invent an option id. Only ids the manifest listed for that item are accepted.',
-    '- A rationale is REQUIRED on every bulk-run-act; a reason is REQUIRED on skipped/failed reports.',
-    '- inbox:bulk-run-report rejects auto_resolved. Never dispatch an item\'s backing verb directly;',
+    '- A rationale is REQUIRED on every auto_resolved outcome; bulk-run-act is the only verb that',
+    '  can write one. A reason is REQUIRED on skipped/failed reports.',
+    "- inbox:bulk-run-report rejects auto_resolved. Never dispatch an item's backing verb directly;",
     '  only bulk-run-act can prove Stop had not revoked your authority before the action began.',
-    '- Prefer recommending over resolving when the item turns on the owner\'s preference, money, an',
+    "- Prefer recommending over resolving when the item turns on the owner's preference, money, an",
     '  irreversible action, or anything only they can know. Speed is not worth a wrong resolution.',
     '- Look for cross-item structure: several escalations with one root cause should be resolved',
     '  consistently, not judged independently.',
@@ -123,7 +124,7 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     'STOPPING (WI-41022) — Stop is authoritative at the bulk-run-act boundary:',
     '- The manifest carries `stopped`. Re-read the manifest before each BATCH of terminal actions,',
     '  and the moment `stopped` is true, HALT: take no further terminal action on any item, do not',
-    '  report, and do not re-route the work to an item\'s own verb outside the run. Stopping is the',
+    "  report, and do not re-route the work to an item's own verb outside the run. Stopping is the",
     '  owner withdrawing your authority, not a hint to finish faster.',
     '- bulk-run-act and Stop take the SAME run-row lock. If Stop commits first, bulk-run-act refuses',
     '  BEFORE entering the terminal callback. If an action commits first, Stop waits for its required',
@@ -197,10 +198,7 @@ async function invalidateBulkRun(): Promise<void> {
 async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise<Response> {
   const runId = typeof body.runId === 'string' ? body.runId.trim() : '';
   if (!runId) {
-    return Response.json(
-      { error: { code: 'missing_run_id', message: `op "${op}" requires runId` } },
-      { status: 400 },
-    );
+    return Response.json({ error: { code: 'missing_run_id', message: `op "${op}" requires runId` } }, { status: 400 });
   }
 
   try {
@@ -289,10 +287,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
     const txt = await req.text();
     if (txt) body = JSON.parse(txt) as Record<string, unknown>;
   } catch {
-    return Response.json(
-      { error: { code: 'invalid_json', message: 'request body must be JSON' } },
-      { status: 400 },
-    );
+    return Response.json({ error: { code: 'invalid_json', message: 'request body must be JSON' } }, { status: 400 });
   }
 
   const op = typeof body.op === 'string' ? body.op : 'start';
@@ -341,8 +336,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   }
 
   const harness = typeof body.harness === 'string' && body.harness.trim() ? body.harness.trim() : null;
-  const filter =
-    body.filter && typeof body.filter === 'object' ? (body.filter as Record<string, unknown>) : {};
+  const filter = body.filter && typeof body.filter === 'object' ? (body.filter as Record<string, unknown>) : {};
 
   try {
     const run = await createRun({

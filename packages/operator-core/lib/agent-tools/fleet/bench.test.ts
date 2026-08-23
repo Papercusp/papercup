@@ -41,6 +41,8 @@ vi.mock('../../events/await/store', () => ({
     eventKey: i.eventKey,
     expiresTs: i.timeoutSec == null ? null : '2030-01-01',
   })),
+  cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+  FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
   listParkedAwaitsForSubscribers: vi.fn(async () => []),
 }));
 vi.mock('../../scheduler/claim-spec-store', () => ({
@@ -70,7 +72,7 @@ vi.mock('../../fleet/lane-health', () => ({
 }));
 
 import benchTool, { projectBenchRows, benchQueueVerdict } from './bench';
-import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { registerAwait, cancelAwaitsForSubscribersOnKeys, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { listFleetAssignments, groupByAgent } from '../../fleet/assignments';
 import { deriveFleetMembership } from '../coordination/identity';
@@ -193,6 +195,22 @@ describe('fleet:bench — stage mode', () => {
       timeoutSec: 600,
     });
     expect(out).toMatchObject({ ok: true, expires_ts: '2030-01-01' });
+  });
+
+  it('re-staging a member/key retires only the prior fleet bench before registering the replacement', async () => {
+    vi.mocked(cancelAwaitsForSubscribersOnKeys).mockResolvedValueOnce(1);
+
+    const out = await call({ member: 'su-worker', wakeEvent: 'blocked:cleared', stagedAssignment: 'resume the staged leg' });
+
+    expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
+      ['su-worker'],
+      ['blocked:cleared'],
+      { includeNotePrefix: '[fleet:bench] ' },
+    );
+    expect(out).toMatchObject({ ok: true, superseded_benches: 1 });
+    const cleanupOrder = vi.mocked(cancelAwaitsForSubscribersOnKeys).mock.invocationCallOrder[0];
+    const registerOrder = vi.mocked(registerAwait).mock.invocationCallOrder[0];
+    expect(cleanupOrder).toBeLessThan(registerOrder);
   });
 
   it('narrows a bare work-item:claimable bench to the staged member\'s claim spec and harness', async () => {

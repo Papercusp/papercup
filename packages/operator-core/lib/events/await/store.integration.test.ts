@@ -55,6 +55,7 @@ const {
   probePatternMatchScope,
   claimDueVerifiedAwaits,
   settleVerifiedAwaitTimeout,
+  FLEET_BENCH_NOTE_PREFIX,
 } = await import('./store');
 const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
 const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
@@ -481,6 +482,38 @@ describe('await-event store (PG)', () => {
     // empty inputs are a no-op, not a query
     expect(await cancelAwaitsForSubscribersOnKeys([], ['green-checkpoint:red:papercusp'])).toBe(0);
     expect(await cancelAwaitsForSubscribersOnKeys(['sub-a'], [])).toBe(0);
+  });
+
+  it('keeps a leader-managed fleet bench out of member self-await supersede, while re-stage can retire it explicitly', async () => {
+    const bench = await registerAwait({
+      subscriberId: 'sub-bench',
+      eventKey: 'work-item:claimable',
+      note: `${FLEET_BENCH_NOTE_PREFIX}resume the staged leg`,
+    });
+    const memberAwait = await registerAwait({
+      subscriberId: 'sub-bench',
+      eventKey: 'work-item:claimable',
+      note: 'member idle loop',
+    });
+
+    // events:await / the sugar surfaces supersede the member's own row, but the
+    // leader-managed bench is a separate coordination owner and must survive.
+    expect(
+      await cancelAwaitsForSubscribersOnKeys(['sub-bench'], ['work-item:claimable'], {
+        excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+      }),
+    ).toBe(1);
+    expect((await listActiveAwaits('sub-bench')).map((row) => row.id)).toEqual([bench.id]);
+
+    // A subsequent fleet:bench stage explicitly retires the old bench before it
+    // registers its replacement; this must not cancel unrelated member awaits.
+    expect(
+      await cancelAwaitsForSubscribersOnKeys(['sub-bench'], ['work-item:claimable'], {
+        includeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+      }),
+    ).toBe(1);
+    expect((await listActiveAwaits('sub-bench')).map((row) => row.id)).toEqual([]);
+    expect(memberAwait.id).not.toBe(bench.id);
   });
 
   it('does not cancel an announced declaration sharing the waiter subscriber and key', async () => {

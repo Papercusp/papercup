@@ -1578,9 +1578,9 @@ export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {})
 
     let mod;
     try {
-      // Safe to import: every gate CLI guards its `main()` behind an
-      // `import.meta.url === pathToFileURL(process.argv[1]).href` check, so importing one reads
-      // its declarations without running it.
+      // Safe to import: gate CLIs use the bundle-aware `isCliEntry(import.meta.url)` primitive,
+      // so importing one reads its declarations without running its CLI main. The companion
+      // source and bundle guards reject new hand-rolled `import.meta.url`/argv entry checks.
       mod = await import(pathToFileURL(scriptPath).href);
     } catch (err) {
       unresolved.push({

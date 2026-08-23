@@ -495,6 +495,16 @@ export const PORTLESS_PROBE_NAME_SET: ReadonlySet<string> = new Set<string>(
   Object.values(PORTLESS_PROBE_NAMES),
 );
 
+/**
+ * The health probe must fit inside the interactive query-embedding budget.
+ * A successful /healthz response only proves that the sidecar's HTTP listener
+ * is alive; it does not prove that the model worker can accept an embed. Keep
+ * the functional request deliberately tiny and bounded so a saturated worker
+ * cannot stall the service-health tick.
+ */
+export const EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS = 1_200;
+const EMBED_SIDECAR_FUNCTIONAL_PROBE_TEXT = 'health probe';
+
 function toMs(v: Date | string | number | null | undefined): number | null {
   if (v == null) return null;
   if (v instanceof Date) return v.getTime();
@@ -771,7 +781,10 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
  * enabled on this host ⇒ `present: false` (nothing to probe — NEVER a phantom
  * DOWN; that is the exact EI-188/EI-276 false-alarm class the HEALTH_ENDPOINTS
  * header warns against, which is why this is a dedicated probe and not a raw
- * endpoint entry). Enabled + /healthz answers ⇒ up. Enabled + no answer ⇒ DOWN.
+ * endpoint entry). Enabled + a bounded functional POST /embed that returns one
+ * vector ⇒ up. Enabled + no answer, a non-2xx response, or a malformed vector
+ * response ⇒ DOWN. A /healthz 200 alone is intentionally insufficient: the
+ * 2026-08-23 incident had exactly that shape while every real embed stalled.
  *
  * ⚠ EI-18580900204592249: the DOWN note used to claim embedding "falls back to
  * in-process embedding (D-003)" — that fallback was RETIRED by WI-4021
@@ -783,7 +796,9 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
  * in-process path only survives on a host with NO sidecar configured at all
  * (desktop app, tests, bench) — see `embed-sidecar-wiring.ts`.
  */
-export async function probeEmbedSidecar(timeoutMs = 5000): Promise<ProbeResult> {
+export async function probeEmbedSidecar(
+  timeoutMs = EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS,
+): Promise<ProbeResult> {
   const name = PORTLESS_PROBE_NAMES.embedSidecar;
   const start = Date.now();
   let url: string;
@@ -804,15 +819,82 @@ export async function probeEmbedSidecar(timeoutMs = 5000): Promise<ProbeResult> 
   } catch {
     return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'embed-sidecar liveness unknown (spawn-module read failed)' };
   }
-  const result = await probeEndpoint({ name, url: `${url}/healthz`, timeoutMs });
-  if (!result.up) {
-    result.note =
-      `⚠ embed sidecar DOWN (healthz to ${url}: ${result.note ?? 'no response'}) — the shared warm-model embedding ` +
-      `process for this host. This host's sidecar is REQUIRED (in-process fallback retired by WI-4021/D-003): embed ` +
-      `calls reject loudly (sidecar_required_unavailable) and memory writes park in the write journal until it ` +
-      `returns — degraded + self-healing, not silent, and not a :3070 fault. Spawn-side auto-respawn should recover it.`;
+  const embedUrl = `${url}/embed`;
+  const budgetMs = Number.isFinite(timeoutMs) ? Math.max(1, Math.trunc(timeoutMs)) : EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), budgetMs);
+  try {
+    const response = await fetch(embedUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma', kind: 'query', texts: [EMBED_SIDECAR_FUNCTIONAL_PROBE_TEXT] }),
+      signal: ctl.signal,
+    });
+    if (!response.ok) {
+      return {
+        name,
+        up: false,
+        status: response.status,
+        latencyMs: Date.now() - start,
+        url: embedUrl,
+        note:
+          `⚠ embed sidecar DOWN (functional POST /embed returned HTTP ${response.status} within ${budgetMs}ms) — ` +
+          `the shared warm-model embedding process for this host. This host's sidecar is REQUIRED ` +
+          `(in-process fallback retired by WI-4021/D-003): embed calls reject loudly ` +
+          `(sidecar_required_unavailable) and memory writes park in the write journal until it returns.`,
+      };
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return {
+        name,
+        up: false,
+        status: response.status,
+        latencyMs: Date.now() - start,
+        url: embedUrl,
+        note: `⚠ embed sidecar DOWN (functional POST /embed returned invalid JSON within ${budgetMs}ms) — the response was not a usable embedding result.`,
+      };
+    }
+    const vectors = (body as { vectors?: unknown } | null)?.vectors;
+    const vector = Array.isArray(vectors) && vectors.length === 1 ? vectors[0] : null;
+    if (!Array.isArray(vector) || vector.length === 0 || vector.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+      return {
+        name,
+        up: false,
+        status: response.status,
+        latencyMs: Date.now() - start,
+        url: embedUrl,
+        note: `⚠ embed sidecar DOWN (functional POST /embed returned no usable vector within ${budgetMs}ms) — the response shape is invalid for the shared embedding client.`,
+      };
+    }
+    return {
+      name,
+      up: true,
+      status: response.status,
+      latencyMs: Date.now() - start,
+      url: embedUrl,
+      note: `functional POST /embed OK (one gemma query vector, budget ${budgetMs}ms)`,
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      name,
+      up: false,
+      status: null,
+      latencyMs: Date.now() - start,
+      url: embedUrl,
+      note:
+        `⚠ embed sidecar DOWN (functional POST /embed failed within ${budgetMs}ms: ${detail}) — ` +
+        `the shared warm-model embedding process for this host. This host's sidecar is REQUIRED ` +
+        `(in-process fallback retired by WI-4021/D-003): embed calls reject loudly ` +
+        `(sidecar_required_unavailable) and memory writes park in the write journal until it returns.`,
+    };
+  } finally {
+    clearTimeout(timer);
   }
-  return result;
 }
 
 // ---------------------------------------------------------------------------

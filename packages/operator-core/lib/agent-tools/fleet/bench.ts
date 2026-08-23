@@ -42,7 +42,12 @@ import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/ide
 import { COORD_ROLES } from '../coordination/roles';
 import { groupByAgent, listFleetAssignments } from '../../fleet/assignments';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
-import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/await/store';
+import {
+  registerAwait,
+  listParkedAwaitsForSubscribers,
+  cancelAwaitsForSubscribersOnKeys,
+  FLEET_BENCH_NOTE_PREFIX,
+} from '../../events/await/store';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { AWAIT_MAX_TIMEOUT_SEC } from '../../events/await/types';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -54,7 +59,7 @@ import { readFleetLaneHealth } from '../../fleet/lane-health';
 /** Tags a bench-staged await's `note` so `list` can pick it out from every
  *  OTHER reason an agent might hold an active await (a plain events:await, a
  *  lock wake_on_grant, …) sharing the same table. */
-const BENCH_NOTE_PREFIX = '[fleet:bench] ';
+const BENCH_NOTE_PREFIX = FLEET_BENCH_NOTE_PREFIX;
 
 /**
  * WI-5938 — PARK/PULL IS DERIVED STATE, NOT PROSE.
@@ -403,6 +408,18 @@ export default defineTool({
     const staged = clampText(args.stagedAssignment, LIMITS.ANNOTATION) ?? '';
     const { handle, note: handleNote } = await captureWakeHandleForOwner(args.member);
 
+    let supersededBenches = 0;
+    try {
+      // A member may re-stage the same key. Retire only the prior leader-managed
+      // bench; ordinary member awaits on that key are unrelated state and must
+      // remain untouched.
+      supersededBenches = await cancelAwaitsForSubscribersOnKeys([args.member], [eventKey], {
+        includeNotePrefix: BENCH_NOTE_PREFIX,
+      });
+    } catch {
+      /* best-effort — a failed cleanup must not prevent the new bench */
+    }
+
     const row = await registerAwait({
       subscriberId: args.member,
       eventKey,
@@ -429,6 +446,7 @@ export default defineTool({
         registered: handle !== null,
         wake_handle_note: handleNote,
         benched_by: ownerId,
+        ...(supersededBenches > 0 ? { superseded_benches: supersededBenches } : {}),
         ...(claimableFilterScope.source
           ? {
               auto_scoped_payload_filter: true,

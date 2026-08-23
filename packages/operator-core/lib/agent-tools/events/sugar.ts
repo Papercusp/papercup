@@ -25,7 +25,11 @@ import { z } from "zod";
 import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../coordination/identity";
 import { captureWakeHandleForOwner } from "../../events/await/handle";
-import { registerAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
+import {
+  registerAwait,
+  cancelAwaitsForSubscribersOnKeys,
+  FLEET_BENCH_NOTE_PREFIX,
+} from "../../events/await/store";
 import { startAwaitSweeper } from "../../events/await/engine";
 import { buildKey } from "../../events/await/catalog";
 import { clampText, LIMITS } from "../limits";
@@ -119,7 +123,9 @@ async function armAwaits(
   let superseded: number | undefined;
   if (opts.supersedeKeys && opts.supersedeKeys.length > 0) {
     try {
-      superseded = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], opts.supersedeKeys);
+      superseded = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], opts.supersedeKeys, {
+        excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+      });
     } catch {
       /* best-effort — a failed retirement must never block arming the new wait */
     }

@@ -14,6 +14,9 @@ const resolveFleetMemberTarget = vi.fn();
 const killHandler = vi.fn();
 const launchHandler = vi.fn();
 const listFleetPresence = vi.fn();
+const sendMessage = vi.fn();
+const wakeRecipients = vi.fn();
+const resolveSessionStates = vi.fn();
 const resolveSavedFleetLaunchSpec = vi.fn();
 
 const LEADER = 'su-leader';
@@ -28,6 +31,15 @@ vi.mock('../capability/launch-agent', () => ({ default: { handler: (...a: unknow
 vi.mock('../coordination/presence-fleet', () => ({
   listFleetPresence: (...a: unknown[]) => listFleetPresence(...a),
 }));
+vi.mock('../coordination/messages', () => ({
+  sendMessage: (...a: unknown[]) => sendMessage(...a),
+}));
+vi.mock('../coordination/inbox-wake', () => ({
+  wakeRecipients: (...a: unknown[]) => wakeRecipients(...a),
+}));
+vi.mock('../coordination/liveness-oracle', () => ({
+  resolveSessionStates: (...a: unknown[]) => resolveSessionStates(...a),
+}));
 vi.mock('./saved-launch-spec', () => ({
   resolveSavedFleetLaunchSpec: (...a: unknown[]) => resolveSavedFleetLaunchSpec(...a),
 }));
@@ -39,12 +51,13 @@ vi.mock('./_shared', () => ({
   }),
 }));
 
-import tool, { awaitReplacementMember } from './respawn-member';
+import tool, { awaitMemberDrain, awaitReplacementMember } from './respawn-member';
 
 const row = (ownerId: string, heartbeatAgoMs = 0) => ({
   ownerId,
   startedAt: new Date(Date.now() - 60_000),
   heartbeatAt: new Date(Date.now() - heartbeatAgoMs),
+  lastToolCallAt: null,
 });
 
 function parse(res: unknown) {
@@ -74,6 +87,9 @@ beforeEach(() => {
   killHandler.mockResolvedValue({ data: { ok: true, results: [{ ok: true, target: MEMBER }], counts: { ok: 1, failed: 0 } } });
   // capability:launch-agent → human-readable text + (optional) isError
   launchHandler.mockResolvedValue({ content: [{ type: 'text', text: `Launched su-new into ${SLUG}` }] });
+  sendMessage.mockResolvedValue({ msg_id: 'yield-1' });
+  wakeRecipients.mockResolvedValue({ targets: [MEMBER], keys: ['wake-1'], queued: 1, woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+  resolveSessionStates.mockReset().mockResolvedValue(new Map());
   // Roster: the old member before the kill, a NEW live owner once the replacement has booted.
   // mockReset (not clearAllMocks) — a leftover `once` value would be consumed by the verification
   // poll instead of the snapshot, and the test would then really wait out the 90s window.
@@ -269,6 +285,51 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(launchHandler).not.toHaveBeenCalled();
   });
 
+  it('cooperatively drains a live_unmanaged member, wakes it, and launches only after disappearance', async () => {
+    killHandler.mockResolvedValue({
+      data: {
+        ok: true,
+        results: [{ ok: false, target: MEMBER, kind: 'unmanaged', code: 'live_unmanaged' }],
+        counts: { ok: 0, failed: 1 },
+      },
+    });
+    listFleetPresence.mockReset()
+      .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
+      .mockResolvedValueOnce([row(LEADER)]);
+
+    const res = await tool.handler({ member: MEMBER, model: 'sonnet:high', drainVerifySec: 1, verifySec: 0 } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({ ok: true, drainOutcome: 'cooperatively-drained', verified: false });
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: LEADER }),
+      expect.objectContaining({ to: [MEMBER], kind: 'yield', body: expect.stringContaining('release any claims and file locks') }),
+    );
+    expect(wakeRecipients).toHaveBeenCalledWith([MEMBER], expect.objectContaining({ source: 'fleet:respawn-member', workspaceId: 'ws' }));
+    expect(launchHandler).toHaveBeenCalledTimes(1);
+    expect(p.cooperativeRequest).toMatchObject({ msgId: 'yield-1', wake: { woken: 1 } });
+    expect(p.cooperativeDrain).toMatchObject({ verified: true, terminal: 'absent' });
+  });
+
+  it('fails closed when a live_unmanaged member never reaches a terminal state', async () => {
+    killHandler.mockResolvedValue({
+      data: {
+        ok: true,
+        results: [{ ok: false, target: MEMBER, kind: 'unmanaged', code: 'live_unmanaged' }],
+        counts: { ok: 0, failed: 1 },
+      },
+    });
+    listFleetPresence.mockReset().mockResolvedValue([row(LEADER), row(MEMBER)]);
+    resolveSessionStates.mockResolvedValue(new Map([[MEMBER, { sessionState: 'parked' }]]));
+
+    const res = await tool.handler({ member: MEMBER, model: 'sonnet:high', drainVerifySec: 1 } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({ ok: false, error: 'cooperative_drain_unverified' });
+    expect(p.verification).toMatchObject({ verified: false, sessionState: 'parked' });
+    expect(launchHandler).not.toHaveBeenCalled();
+  });
+
   it('relaunches when the known member is already dead and kill returns not_found', async () => {
     killHandler.mockResolvedValue({
       data: {
@@ -442,5 +503,22 @@ describe('awaitReplacementMember', () => {
     // sleeps at t=0,1000,2000,3000,4000 → t=5000; the next poll would overrun the 5s budget
     expect(sleep).toHaveBeenCalledTimes(5);
     expect(res.waitedMs).toBeLessThanOrEqual(5_000);
+  });
+});
+
+describe('awaitMemberDrain', () => {
+  it('accepts the shared oracle ended verdict when presence is retained', async () => {
+    let state = 'parked';
+    let t = 0;
+    const res = await awaitMemberDrain({
+      memberOwnerId: MEMBER,
+      list: async () => [row(LEADER), row(MEMBER)],
+      resolveState: async () => state,
+      timeoutMs: 5_000,
+      intervalMs: 1_000,
+      now: () => t,
+      sleep: async (ms: number) => { t += ms; state = 'ended'; },
+    });
+    expect(res).toMatchObject({ verified: true, terminal: 'ended', sessionState: 'ended' });
   });
 });

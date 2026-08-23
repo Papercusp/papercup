@@ -769,7 +769,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, vi } from 'vitest';
-import { probeSubstrateSidecar } from './service-health';
+import { probeEmbedSidecar, probeSubstrateSidecar } from './service-health';
 import { closeSubstrateIpcClient } from './sync/hyperbee/substrate-ipc-client';
 import { SUBSTRATE_SOCKET_ENV } from './sync/hyperbee/substrate-socket-path';
 
@@ -1023,5 +1023,98 @@ describe('wedged-vs-down detection', () => {
     } finally {
       await listener.close();
     }
+  });
+});
+
+describe('probeEmbedSidecar — functional POST /embed liveness (EI-21271970090208994)', () => {
+  const sidecarUrlEnv = 'PAPERCUSP_EMBED_SIDECAR_URL';
+  const previousUrl = process.env[sidecarUrlEnv];
+  let server: http.Server | null = null;
+  const sockets = new Set<net.Socket>();
+
+  beforeEach(async () => {
+    server = http.createServer();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server!.once('error', reject);
+      server!.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address() as net.AddressInfo;
+    process.env[sidecarUrlEnv] = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterEach(async () => {
+    if (previousUrl === undefined) delete process.env[sidecarUrlEnv];
+    else process.env[sidecarUrlEnv] = previousUrl;
+    for (const socket of sockets) socket.destroy();
+    sockets.clear();
+    if (server) {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = null;
+    }
+  });
+
+  it('requires a usable one-vector POST response even when the listener is reachable', async () => {
+    let requestBody: unknown;
+    server!.on('request', (req, res) => {
+      if (req.method !== 'POST' || req.url !== '/embed') {
+        res.writeHead(404).end();
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        requestBody = JSON.parse(body);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ vectors: [[0.25, -0.5]], dims: 2, runtime: 'test', modelRev: 'test' }));
+      });
+    });
+
+    const result = await probeEmbedSidecar(500);
+    expect(result).toMatchObject({
+      name: 'embed-sidecar',
+      up: true,
+      status: 200,
+      url: expect.stringMatching(/\/embed$/),
+    });
+    expect(result.note).toMatch(/functional POST \/embed OK/);
+    expect(requestBody).toEqual({ model: 'gemma', kind: 'query', texts: ['health probe'] });
+  });
+
+  it('reports malformed functional output as down instead of trusting HTTP 200', async () => {
+    server!.on('request', (_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ vectors: [] }));
+    });
+
+    const result = await probeEmbedSidecar(500);
+    expect(result.up).toBe(false);
+    expect(result.status).toBe(200);
+    expect(result.url).toMatch(/\/embed$/);
+    expect(result.note).toMatch(/no usable vector/);
+  });
+
+  it('aborts a saturated POST within the supplied bound and reports the functional failure', async () => {
+    server!.on('request', (req, res) => {
+      if (req.method === 'POST' && req.url === '/embed') {
+        // Deliberately leave the response open. The probe's AbortController is
+        // the only thing that should end this request.
+        req.on('aborted', () => res.destroy());
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    const started = Date.now();
+    const result = await probeEmbedSidecar(40);
+    const elapsed = Date.now() - started;
+    expect(result.up).toBe(false);
+    expect(result.status).toBeNull();
+    expect(result.note).toMatch(/functional POST \/embed failed within 40ms/);
+    expect(elapsed).toBeLessThan(1000);
   });
 });

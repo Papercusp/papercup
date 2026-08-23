@@ -31,6 +31,7 @@ import {
   findNearMissKeys,
   cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
+  FLEET_BENCH_NOTE_PREFIX,
   probeKeyFireEvidence,
   probePatternMatchScope,
   type KeyFireEvidence,
@@ -851,7 +852,9 @@ export default defineTool({
     // about to register a fresh row.
     let supersededCount = 0;
     try {
-      supersededCount = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], [eventKey]);
+      supersededCount = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], [eventKey], {
+        excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+      });
     } catch {
       /* best-effort — never let a retirement failure block the new registration */
     }

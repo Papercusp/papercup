@@ -26,6 +26,7 @@ import type {
   Fidelity,
   ProviderRegistration,
 } from '@papercusp/testing-shell/census';
+import { pgTimestampToIsoOrNull } from '../pg-timestamp';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -69,7 +70,7 @@ export function createPgCensusStore(options: PgCensusStoreOptions = {}): CensusS
           provider: string;
           fidelity: string;
           source_file: string | null;
-          retired_at: Date | null;
+          retired_at: Date | string | null;
         }[]
       >`
         SELECT id, kind, surface_id, provider, fidelity, source_file, retired_at
@@ -84,7 +85,7 @@ export function createPgCensusStore(options: PgCensusStoreOptions = {}): CensusS
         provider: r.provider,
         fidelity: r.fidelity as Fidelity,
         sourceFile: r.source_file,
-        retiredAt: r.retired_at ? r.retired_at.toISOString() : null,
+        retiredAt: pgTimestampToIsoOrNull(r.retired_at),
       }));
     },
 

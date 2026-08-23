@@ -14,6 +14,8 @@
  * before anything acts on it, because a reaper firing on a false `unaccounted`
  * takes out real work — strictly worse than the bypass it polices.
  */
+import { statSync } from 'node:fs';
+
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -21,7 +23,11 @@ import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
-import { gcTerminalTasks } from '../../task-manager/store';
+import { gcTerminalTasks, listLiveTasks } from '../../task-manager/store';
+import {
+  censusAgentSessionProgress,
+  evaluateAgentSessionResidue,
+} from '../../task-manager/agent-session-progress-census';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { nodeResidueLivenessProbe } from '../../task-manager/residue-liveness-probe';
 import {
@@ -57,6 +63,21 @@ const RESIDUE_INTERVAL_MS = 60 * 60_000;
 const RESIDUE_RENOTIFY_MS = 6 * 60 * 60_000;
 /** Cap on the per-sample `unclaimedScopes` detail written into the routine row. */
 const MAX_REPORTED_UNCLAIMED_SCOPES = 20;
+/** The headless-agent progress census rides the same hourly cadence as the window one. */
+const PROGRESS_INTERVAL_MS = 60 * 60_000;
+const PROGRESS_RENOTIFY_MS = 6 * 60 * 60_000;
+/**
+ * How many quiet agent-sessions before this reports (EI-21268871278252116).
+ *
+ * NOT zero, deliberately. A single session can be legitimately quiet for hours —
+ * one parked on a long `events:await` writes nothing — and an indicator that
+ * fires on every straggler gets muted within a day, which is the exact failure
+ * D-016 recorded for the window census. What distinguishes residue is
+ * ACCUMULATION: the 2026-08-23 incident was 33 scopes / 118 processes, and the
+ * measured post-reap baseline was 0 quiet of 90 live. A floor of 5 therefore sits
+ * far above observed noise while still catching that incident six times over.
+ */
+const AGENT_SESSION_QUIET_THRESHOLD = 5;
 
 /**
  * EI-19407950136194410 — WALL-CLOCK watermarks, never tick counts.
@@ -85,6 +106,9 @@ let lastGcAtMs: number | null = null;
 let lastResidueAtMs: number | null = null;
 let residueWatermarkHydrated = false;
 let lastResidueNotifyAtMs = 0;
+/** Own watermark, so a fault in either census can never suppress the other. */
+let lastProgressAtMs: number | null = null;
+let lastProgressNotifyAtMs = 0;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
@@ -129,6 +153,11 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
     // call site passed nothing — so `knownLive` was `undefined` and listening
     // sockets were the only liveness evidence the census ever had.
     await sampleResidue(ctx, tick.scan.userManagerRoot, aliveEnrolledPids(tick));
+  }
+
+  if (isMaintDue({ lastAtMs: lastProgressAtMs, nowMs, intervalMs: PROGRESS_INTERVAL_MS })) {
+    lastProgressAtMs = nowMs;
+    await reportAgentSessionProgress(ctx);
   }
 });
 
@@ -257,5 +286,75 @@ async function sampleResidue(
     });
   } catch {
     /* the leading indicator must never break the reconcile it observes */
+  }
+}
+
+/**
+ * The HEADLESS-agent residue indicator (EI-21268871278252116) — the blind spot
+ * `sampleResidue` above cannot cover.
+ *
+ * That census walks the TERMINAL slice and decides liveness with the window
+ * probe, which `scan.ts:218` gates behind `isTerminalWindowScope`. A headless
+ * agent session has no window at all, so for this population the probe returns
+ * `not-a-window` and the scope can never be observed dead. That is how 118
+ * processes across 33 scopes accumulated over ~71h while every liveness surface
+ * reported healthy.
+ *
+ * The discriminator here is log-mtime — direct progress evidence — chosen after
+ * three plausible instruments gave confident WRONG answers (cmdline-tail match,
+ * window-title token match, and a `coord_presence.pid` join that false-positived
+ * on a live fleet member holding 97 processes). It needs no cmdline match, no
+ * window, and no presence row, which matters because both root causes
+ * (booted-but-never-woken, and the unbounded `psu-pty-host` CR resubmit loop,
+ * WI-41044) never reach a first turn and so never declare `coord_presence`.
+ *
+ * REPORT-ONLY, same as its sibling and for the same reason (D-006 / D-010). A
+ * quiet log is strong evidence of a stalled session, not proof of abandonment.
+ * The one reap this evidence has authorised was run by hand with every log tail
+ * preserved first.
+ *
+ * Fail-soft: an indicator must never break the reconcile it rides alongside.
+ */
+async function reportAgentSessionProgress(ctx: SystemActionCtx): Promise<void> {
+  try {
+    const rows = await listLiveTasks(ctx.workspaceId ?? undefined);
+    const census = censusAgentSessionProgress(rows, {
+      // MUST return null (never 0) when unreadable — `censusAgentSessionProgress`
+      // counts that as `unreadable`, never as quiet. Collapsing the two is the
+      // false-absence trap this whole module exists to avoid.
+      statMtimeMs: (path) => {
+        try {
+          return statSync(path).mtimeMs;
+        } catch {
+          return null;
+        }
+      },
+    });
+
+    const verdict = evaluateAgentSessionResidue(census, AGENT_SESSION_QUIET_THRESHOLD);
+    if (verdict.verdict === 'ok') return;
+
+    const nowMs = Date.now();
+    if (nowMs - lastProgressNotifyAtMs < PROGRESS_RENOTIFY_MS) return;
+    lastProgressNotifyAtMs = nowMs;
+
+    await sendMessage(TASK_MANAGER_IDENTITY, {
+      to: ['*'],
+      summary:
+        `[task-manager] headless agent-session residue: ${verdict.summary} ` +
+        `(${census.active} active, ${census.quiet} quiet, ${census.tooYoung} too young, ` +
+        `${census.noLog} no-log, ${census.unreadable} unreadable of ${census.measured} live). ` +
+        `These sessions hold a full agent process subtree and, if they never took a first ` +
+        `turn, declare no coord_presence — so they are invisible to fleet/presence/reaper. ` +
+        `REPORT ONLY: preserve each log tail before any reap, and never kill by pattern ` +
+        `(processes:kill { taskId }).`,
+      // 'unknown' means the instrument failed, which is an escalation: a census
+      // that cannot measure must not read as a quiet, healthy box.
+      category: verdict.verdict === 'unknown' ? undefined : 'task-manager',
+      kind: verdict.verdict === 'unknown' ? 'escalation' : 'message',
+      harnessSlug: ctx.installSlug,
+    });
+  } catch {
+    /* the indicator must never break the reconcile it observes */
   }
 }

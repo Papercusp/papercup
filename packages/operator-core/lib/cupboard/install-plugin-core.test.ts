@@ -197,6 +197,40 @@ status: draft
     expect(existsSync(join(res.installedTo, 'plan.md'))).toBe(true);
   });
 
+  // P-026. Separate from the trio above because the social packs differ in the
+  // two places that table hardcodes: they bind SEVERAL platforms to one target,
+  // and they declare no oauthField at all (no social platform in scope has a
+  // platform-wide OAuth provider to name). Folding them into the P-021 case
+  // would have to relax both assertions for every pack, weakening the trio's
+  // coverage to accommodate a different shape.
+  it.each([
+    ['social-mention-triage', 2, ['bluesky', 'mastodon']],
+    ['social-comment-digest', 5, ['facebook-pages', 'instagram', 'reddit', 'threads', 'youtube']],
+    // A `manual` source contributes no sourceKind: install-plugin-core collects
+    // them from external bindings only, so an empty list here is the correct
+    // reading of "nothing external feeds this pack", not a missing platform.
+    ['social-scheduled-crosspost', 1, []],
+  ] as const)('installs the shipped %s social pack through the real validation path', async (slug, bindingCount, sourceKinds) => {
+    fixtureRepo = join(REPO_ROOT, 'libs/papercusp/plugins', slug);
+
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: `https://github.com/papercupai/${slug}` },
+      makeDeps(),
+    );
+
+    expect(res.triggerPack).toMatchObject({
+      targetCount: 1,
+      bindingCount,
+      edgeCount: 0,
+      sourceKinds: [...sourceKinds],
+      planTargets: [{ path: 'plan.md', slug }],
+      armed: false,
+    });
+    expect(existsSync(join(res.installedTo, 'plan.md'))).toBe(true);
+    // Installing a starter pack must never grant a capability; these declare none.
+    expect(granted.flatMap((g) => g.capabilities)).toEqual([]);
+  });
+
   it('refuses an invalid trigger pack before replacing the install target', async () => {
     await writeManifest(fixtureRepo, {
       name: 'broken-trigger-pack',

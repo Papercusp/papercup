@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,8 @@ describe('check-bundled-cli-entry-guards', () => {
       const bad = join(scripts, 'bad.mjs');
       const good = join(scripts, 'good.mjs');
       const outside = join(root, 'node_modules', 'foreign.mjs');
+      mkdirSync(scripts, { recursive: true });
+      mkdirSync(join(root, 'node_modules'), { recursive: true });
       // The helper resolves input keys relative to apps/operator, mirroring bundle-host.sh.
       writeFileSync(bad, 'if (import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(1);\n');
       writeFileSync(good, 'if (isCliEntry(import.meta.url)) main();\n');
@@ -31,4 +33,3 @@ describe('check-bundled-cli-entry-guards', () => {
     }
   });
 });
-

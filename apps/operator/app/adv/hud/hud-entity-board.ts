@@ -206,6 +206,12 @@ export interface HudEntityCard {
    * have more than one agent (see identityMatches).
    */
   identity?: HudCardIdentity | HudCardIdentity[];
+  /**
+   * The Plans board's enriched meta row + progress track
+   * (plan-visibility-revamp-2026-08-23 P-007). Plans board only; omitted
+   * everywhere else, so the other tabs' cards render byte-identical trees.
+   */
+  plan?: HudPlanCardMeta;
 }
 
 /**
@@ -953,6 +959,29 @@ export function toPlanCard(
     badges.push({ id: `${plan.slug}:archived`, label: 'archived', tone: 'neutral' });
   }
 
+  // P-007: WHO can this card be found by. The recorded owner (P-006) PLUS the
+  // roster agents currently on the plan — several identities, like a goal's
+  // agent list, and for the same identityMatches reason: filtering by `su-76a`
+  // should surface the plans su-76a is working, not only the ones it owns.
+  // Deduped by ownerId (the owner is often also on the roster); still
+  // UNDEFINED when neither source names anyone — never a fabricated stand-in.
+  const identities: HudCardIdentity[] = [];
+  const seenIds = new Set<string>();
+  if (plan.owner) {
+    identities.push({ ownerId: plan.owner, agentHandle: shortAssignee(plan.owner) });
+    seenIds.add(plan.owner);
+  }
+  for (const a of plan.agents ?? []) {
+    if (seenIds.has(a.ownerId)) continue;
+    seenIds.add(a.ownerId);
+    identities.push({
+      ownerId: a.ownerId,
+      agentHandle: shortAssignee(a.ownerId),
+      live: a.live ?? null,
+      sessionState: a.sessionState ?? null,
+    });
+  }
+
   return {
     id: plan.slug,
     ref: plan.slug,
@@ -965,12 +994,15 @@ export function toPlanCard(
     badges,
     sinceSec: since,
     sortKey: planSortKey(plan, sort),
-    // P-006. UNDEFINED when the plan has no recorded owner — deliberately NOT
-    // falling back to `harnessSlug`, which is the nearest plausible string and
-    // exactly the fabrication D-003 forbids: filtering by an agent id would
-    // then return every plan in that agent's harness, which looks like it
-    // worked and is wrong.
-    identity: plan.owner ? { ownerId: plan.owner, agentHandle: shortAssignee(plan.owner) } : undefined,
+    identity:
+      identities.length === 0
+        ? undefined
+        : identities.length === 1
+          ? identities[0]
+          : identities,
+    // P-007: the enriched meta row + track. Always built for a plan card —
+    // ✎/⚒ and items progress are meaningful with no roster join at all.
+    plan: planCardMeta(plan, nowMs),
   };
 }
 
