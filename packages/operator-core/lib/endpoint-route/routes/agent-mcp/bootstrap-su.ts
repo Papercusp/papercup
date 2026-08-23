@@ -1467,6 +1467,10 @@ const post = defineTool({
        *  `--auto`. When true, bake the durable AUTO directive into the system prompt
        *  and prepend the AUTO activation to the seeded kickoff. */
       auto?: boolean;
+      /** headless-fleet-launch-and-carry-knob: the explicit per-member carry mode
+       *  from `psu --carry`; it must reach autoArmFleetMemberLoop rather than being
+       *  used only as launch_argv attestation. */
+      carry?: 'warm' | 'cold' | null;
       /** drain-mode-2026-07-03 P-003: named operating mode for this launch. The only
        *  recognized value is 'drain' (`psu --mode=drain`) — start the session in DRAIN
        *  mode (drain the target work queue to terminal; the persona's DRAIN-mode
@@ -1574,6 +1578,13 @@ const post = defineTool({
     const personaTier = personaTierRaw as 'full' | 'fleet' | null;
     // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
     const model = body.model?.trim() || null;
+    if (body.carry != null && body.carry !== 'warm' && body.carry !== 'cold') {
+      return jsonRes(
+        { status: 'error', error: `carry must be warm|cold (got ${String(body.carry).slice(0, 24)})` },
+        400,
+      );
+    }
+    const carry = body.carry ?? null;
 
     const brain = body.brain === true;
     if (brain) {
@@ -2204,6 +2215,7 @@ const post = defineTool({
           planSlug,
           fleetSlug: fleetPin.fleetSlug,
           fleetRole: fleetPin.fleetRole,
+          carry,
         });
       } catch (e: any) {
         loopAutoArm = { armed: false, reason: `error: ${e?.message ?? e}` };

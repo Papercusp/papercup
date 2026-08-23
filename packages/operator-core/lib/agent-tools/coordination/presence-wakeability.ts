@@ -318,10 +318,14 @@ export async function fetchWakeability(
       lastAny != null && !Number.isNaN(lastAny) && (lastEnd == null || Number.isNaN(lastEnd) || lastAny > lastEnd);
     const attempt = attemptByOwner.get(id)?.attempt_at;
     const attemptAt = attempt ? Date.parse(attempt) : null;
+    const wakeAttemptMiss = isConfirmedWakeAttemptMiss(attemptAt, lastAny);
     out.set(id, {
       wakeable: wakeSet.has(id),
       liveTurn,
-      wakeAttemptMiss: isConfirmedWakeAttemptMiss(attemptAt, lastAny),
+      // Keep the raw wakeability shape backward-compatible: absence means no
+      // confirmed miss, while the oracle still projects an explicit false for
+      // callers that need to distinguish "no miss" from a degraded read.
+      ...(wakeAttemptMiss ? { wakeAttemptMiss: true } : {}),
     });
   }
   return out;

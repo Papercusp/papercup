@@ -381,6 +381,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // ships independently and has no send branch. Owner-authority does not consume
   // a parking-watermark slot. Count 32 → 33.
   "papercusp-gmail-auto-send",
+  // 2026-08-23 (social-platform-integrations-2026-08-23 P-006 / D-004(b)) —
+  // deliberate owner-authority dark flag for create-shaped PUBLISHING to the
+  // owner's real public social identity. It is a publish kill-switch, not a
+  // hidden feature: social:post ships live and fully tested, runs both D-020
+  // rails and returns the resolved account + audience echo with this OFF, and
+  // social:reply (rail 1) is unaffected. Owner-authority does not consume a
+  // parking-watermark slot. Count 33 → 34.
+  "papercusp-social-auto-publish",
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the

@@ -126,6 +126,7 @@ describe('fetchWakeability (real PG)', () => {
 
   async function clean(): Promise<void> {
     await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${P}%`}`;
+    await admin`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${P}%`}`;
     await admin`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${`${P}%`}`;
   }
   beforeEach(clean);
@@ -142,6 +143,27 @@ describe('fetchWakeability (real PG)', () => {
       INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, fired_at, cancelled_at, expires_ts)
       VALUES (${owner}, ${opts.key ?? `${COORD_INBOX_WAKE_PREFIX}${owner}`},
               ${opts.firedAt ?? null}, ${opts.cancelledAt ?? null}, ${opts.expiresTs ?? null})`;
+  }
+
+  /** Seed a settled wake delivery at a chosen age. The delivery is attached to
+   * the target's standing await so the query exercises the production key and
+   * terminal-status/channel filters, not just the pure timestamp helper. */
+  async function seedDelivery(
+    id: string,
+    opts: { status: 'pending' | 'delivered' | 'dropped' | 'dead'; channel?: string | null; agoSec?: number },
+  ): Promise<void> {
+    const owner = own(id);
+    const awaitRows = await admin<{ id: number }[]>`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key)
+      VALUES (${owner}, ${COORD_INBOX_WAKE_PREFIX}${owner})
+      RETURNING id`;
+    const at = new Date(Date.now() - (opts.agoSec ?? 0) * 1000);
+    await admin`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (await_id, subscriber_id, event_key, status, channel, created_at, delivered_at)
+      VALUES (${awaitRows[0]!.id}, ${owner}, ${COORD_INBOX_WAKE_PREFIX}${owner}, ${opts.status},
+              ${opts.channel ?? null}, ${at},
+              ${opts.status === 'delivered' ? at : null})`;
   }
 
   /** Seed one agent_activity row at a chosen age (the `liveTurn` signal). */
@@ -216,6 +238,33 @@ describe('fetchWakeability (real PG)', () => {
   it('an owner with no rows is present in the map as { wakeable:false, liveTurn:false }', async () => {
     const m = await fetchWakeability([own('ghost')]);
     expect(m.get(own('ghost'))).toEqual({ wakeable: false, liveTurn: false });
+  });
+
+  it('EI-21216592915615709: terminal turn wake with only pre-wake activity is a miss, while pickup and non-turn rows are not', async () => {
+    // The incident shape: a recent activity row predates a terminal wake
+    // delivery, so heartbeat/activity freshness alone still says "live" even
+    // though no post-wake turn started.
+    await seedAwait('miss');
+    await seedActivity('miss', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
+    await seedDelivery('miss', { status: 'delivered', channel: 'pty-inject', agoSec: 2 });
+
+    // A later activity watermark proves pickup, even though the delivery is
+    // still recent and turn-burning.
+    await seedActivity('picked', { kind: 'tool', summary: 'post-wake work', agoSec: 2 });
+    await seedDelivery('picked', { status: 'delivered', channel: 'pty-inject', agoSec: 5 });
+
+    // Pending and inbox/coalesced settlements are deliberately not evidence of
+    // a turn attempt: queueing or settling without a turn is not pickup failure.
+    await seedActivity('pending', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
+    await seedDelivery('pending', { status: 'pending', channel: 'pty-inject', agoSec: 2 });
+    await seedActivity('inbox', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
+    await seedDelivery('inbox', { status: 'delivered', channel: 'inbox', agoSec: 2 });
+
+    const m = await fetchWakeability([own('miss'), own('picked'), own('pending'), own('inbox')]);
+    expect(m.get(own('miss'))).toMatchObject({ wakeable: true, liveTurn: true, wakeAttemptMiss: true });
+    expect(m.get(own('picked'))).toMatchObject({ wakeAttemptMiss: undefined });
+    expect(m.get(own('pending'))).toMatchObject({ wakeAttemptMiss: undefined });
+    expect(m.get(own('inbox'))).toMatchObject({ wakeAttemptMiss: undefined });
   });
 
   it('returns an empty map for an empty ownerIds list (no query fired)', async () => {

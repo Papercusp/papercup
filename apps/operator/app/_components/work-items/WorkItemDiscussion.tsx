@@ -45,14 +45,48 @@ export interface WorkItemDiscussionProps {
 function WorkItemConversationChat({
   harnessSlug,
   workItemId,
+  title,
   conversationId,
 }: {
   harnessSlug: string;
   workItemId: string;
+  title?: string | null;
   conversationId: string;
 }) {
   const conv = useOperatorConversation();
   const workspaceId = useWorkspaceId();
+  const starter = useMemo(
+    () => buildWorkItemDiscussionMessage(workItemId, title),
+    [title, workItemId],
+  );
+  const startedConversationRef = useRef<string | null>(null);
+
+  // Discuss is an ACTION, not just a navigation. Wait until the durable
+  // history has loaded before deciding the thread is empty, then send one
+  // contextual opening turn. Existing/reloaded conversations never receive a
+  // duplicate because their persisted history is non-empty; the ref closes
+  // repeated-effect/rerender races within the current mount.
+  useEffect(() => {
+    if (
+      !conv.historyHydrated ||
+      conv.messages.length > 0 ||
+      conv.busy ||
+      conv.error ||
+      startedConversationRef.current === conversationId
+    ) {
+      return;
+    }
+    startedConversationRef.current = conversationId;
+    conv.sendUserMessage(starter);
+  }, [
+    conv.busy,
+    conv.error,
+    conv.historyHydrated,
+    conv.messages.length,
+    conv.sendUserMessage,
+    conversationId,
+    starter,
+  ]);
 
   return (
     <div
@@ -83,9 +117,23 @@ function WorkItemConversationChat({
         conversationId={conv.conversationId ?? conversationId}
         workspaceId={workspaceId}
         harnessSlug={harnessSlug}
+        emptyStateBody={`Starting a discussion about ${workItemId}…`}
+        showQuickDraftPrompts={false}
       />
     </div>
   );
+}
+
+/** The explicit user intent sent once when a durable work-item thread is new. */
+export function buildWorkItemDiscussionMessage(
+  workItemId: string,
+  title?: string | null,
+): string {
+  const compactTitle = title?.trim().replace(/\s+/g, " ").slice(0, 500);
+  const subject = compactTitle
+    ? `${workItemId} — ${compactTitle}`
+    : workItemId;
+  return `Let's discuss ${subject}. Explain what this work item currently needs from me and help me decide or complete the next concrete step.`;
 }
 
 export default function WorkItemDiscussion({
@@ -207,6 +255,7 @@ export default function WorkItemDiscussion({
           <WorkItemConversationChat
             harnessSlug={harnessSlug}
             workItemId={workItemId}
+            title={title}
             conversationId={conversationId}
           />
         </OperatorConversationProvider>

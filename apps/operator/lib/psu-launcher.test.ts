@@ -2128,6 +2128,21 @@ describe('psu-launcher arg parsing', () => {
     expect(body.launch_argv).toContain('--no-plan');
   });
 
+  it('freshSuBootstrapBody forwards explicit --carry to bootstrap and records it (EI-21220636391634536)', () => {
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=f1', '--carry=cold']),
+    );
+    expect(body.carry).toBe('cold');
+    expect(body.launch_argv).toContain('--carry=cold');
+
+    const plain = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+    );
+    expect(plain).not.toHaveProperty('carry');
+  });
+
   it('freshSuBootstrapBody omits auto for a non-fleet launch, and honours --no-auto on a fleet launch (WI-1356)', () => {
     const plain = freshSuBootstrapBody(
       { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },

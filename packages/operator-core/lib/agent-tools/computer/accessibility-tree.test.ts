@@ -19,8 +19,11 @@ import {
   findByRef,
   isInteractive,
   a11yBusCommand,
+  actionCommand,
   parseA11yBusAddress,
   parseWalkerOutput,
+  screenBoundsAreTrustworthy,
+  ATSPI_ACTION_JS,
   HOST_BUS_ENV_KEYS,
   NoAccessibilityBusError,
   renderA11yTree,
@@ -130,18 +133,88 @@ describe('isInteractive', () => {
     ref: '0/0', role: 'panel', name: '', states: [], bounds: null, actions: [], value: '', children: [], ...over,
   });
 
-  it('treats a GTK4 button with an EMPTY action list as interactive (role, not actions)', () => {
+  it('treats a button with an EMPTY action list as interactive (GTK3 exports none)', () => {
     expect(isInteractive(mk({ role: 'push button', actions: [] }))).toBe(true);
   });
 
-  it('does not treat a focusable window/frame as a clickable element', () => {
+  it('does NOT treat a GTK4 label as interactive despite its eight clipboard actions', () => {
+    // Measured verbatim on GTK 4.14.5 — every static label exports these.
+    const label = mk({
+      role: 'label',
+      name: 'Sign in',
+      actions: ['clipboard.copy', 'selection.delete', 'clipboard.paste', 'link.open',
+                'clipboard.cut', 'link.copy', 'menu.popup', 'selection.select-all'],
+    });
+    expect(isInteractive(label)).toBe(false);
+  });
+
+  it('does not treat a focusable window/frame/dialog as a clickable element', () => {
     expect(isInteractive(mk({ role: 'window', states: ['focusable'] }))).toBe(false);
     expect(isInteractive(mk({ role: 'frame', states: ['focusable'] }))).toBe(false);
+    // A GTK4 dialog exports these two and is focusable; "click the dialog" is not an
+    // action to offer when the model wants a button inside it.
+    expect(isInteractive(mk({ role: 'dialog', states: ['focusable'], actions: ['window.close', 'default.activate'] }))).toBe(false);
   });
 
   it('treats plain layout scaffolding as non-interactive', () => {
     expect(isInteractive(mk({ role: 'filler' }))).toBe(false);
     expect(isInteractive(mk({ role: 'panel' }))).toBe(false);
+  });
+});
+
+describe('screenBoundsAreTrustworthy', () => {
+  it('rejects the GTK4/X11 signature: every node at (0,0) with its own real size', () => {
+    // Measured on GTK 4.14.5: SCREEN=(0,0 162x44) for a button whose WINDOW=(14,231 …).
+    const gtk4 = buildA11yTree([
+      node('0', 'application', 'zenity', { s: [], e: null }),
+      node('0/0', 'dialog', 'Probe Form', { e: [0, 0, 333, 275] }),
+      node('0/0/0', 'push button', 'Cancel', { e: [0, 0, 162, 44], a: ['click'] }),
+      node('0/0/1', 'push button', 'OK', { e: [0, 0, 162, 44], a: ['click'] }),
+      node('0/0/2', 'label', 'Sign in', { e: [0, 0, 44, 19] }),
+    ]);
+    expect(screenBoundsAreTrustworthy(gtk4)).toBe(false);
+  });
+
+  it('accepts a tree whose elements report distinct origins', () => {
+    expect(screenBoundsAreTrustworthy(compressA11yTree(buildA11yTree(FIXTURE)).roots)).toBe(true);
+  });
+
+  it('does not condemn a small tree that happens to sit at the origin', () => {
+    const tiny = buildA11yTree([
+      node('0', 'application', 'a', { s: [], e: null }),
+      node('0/0', 'push button', 'Only', { e: [0, 0, 10, 10], a: ['click'] }),
+    ]);
+    expect(screenBoundsAreTrustworthy(tiny)).toBe(true);
+  });
+});
+
+describe('actionCommand', () => {
+  it('activates via the a11y bus, carrying the ref and the chosen action', () => {
+    const cmd = actionCommand(':99', BUS, '#0/0/2', 'click');
+    expect(cmd.bin).toBe('gjs');
+    expect(cmd.args[1]).toBe(ATSPI_ACTION_JS);
+    expect(cmd.args[2]).toBe('0/0/2');
+    expect(cmd.args[3]).toBe('click');
+    expect(cmd.env.AT_SPI_BUS_ADDRESS).toBe(BUS);
+    expect(cmd.env.DISPLAY).toBe(':99');
+  });
+
+  it('rejects anything that is not an element ref, with the shape it wanted', () => {
+    expect(() => actionCommand(':99', BUS, 'OK button')).toThrow(/is not an element ref/);
+    expect(() => actionCommand(':99', BUS, '')).toThrow(/is not an element ref/);
+    expect(() => actionCommand(':99', BUS, '0//2')).toThrow(/is not an element ref/);
+  });
+
+  it('inherits the sandbox and bus rails from walkerCommand', () => {
+    expect(() => actionCommand(':0', BUS, '0/0')).toThrow(/HOST display/);
+    expect(() => actionCommand(':99', '', '0/0')).toThrow(NoAccessibilityBusError);
+  });
+
+  it('carries an action program that always emits a sentinel, on every exit path', () => {
+    // Each `emit(...)` is one sentinel use; a path that returns without emitting
+    // would parse as "the action never ran".
+    expect(ATSPI_ACTION_JS.split(ATSPI_SENTINEL).length - 1).toBe(1);
+    expect(ATSPI_ACTION_JS).toContain('imports.system.exit(0)');
   });
 });
 
@@ -246,6 +319,19 @@ describe('renderA11yTree', () => {
     expect(lines.find((l) => l.includes('"Username"'))).toContain('[focused editable]');
     expect(lines.find((l) => l.includes('"Apply"'))).toContain('disabled');
     expect(lines.find((l) => l.includes('"OK"'))).not.toContain('disabled');
+  });
+
+  it('does NOT call a GTK4 widget disabled just because it reports sensitive, not enabled', () => {
+    // GTK 4.14.5 sets SENSITIVE and never ENABLED. Testing ENABLED alone would label
+    // every widget in every GTK4 app disabled.
+    const gtk4 = buildA11yTree([
+      node('0', 'application', 'zenity', { s: [], e: null }),
+      node('0/0', 'push button', 'Cancel', {
+        s: ['showing', 'visible', 'sensitive', 'focusable'], a: ['click'], e: [10, 10, 80, 30],
+      }),
+    ]);
+    const { roots } = compressA11yTree(gtk4);
+    expect(renderA11yTree(roots)).not.toContain('disabled');
   });
 
   it('renders an entry\'s text value, which a screenshot can only show as pixels', () => {

@@ -220,6 +220,10 @@ export default function AdvAutomationsTab() {
   const { confirm, element: confirmElement } = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  // Mid-edit draft handed over from the landing's agent composer (D-018 region 2),
+  // so the operator's sentence survives the hop into the creation flow instead of
+  // making them retype it. Draft text is useState by the repo's nuqs/useState split.
+  const [composerPrompt, setComposerPrompt] = useState('');
 
   const catalogQuery = useSyncQuery<AutomationCatalog>({
     queryName: 'automation.catalog',
@@ -524,7 +528,8 @@ export default function AdvAutomationsTab() {
           plans={plansQuery.data ?? []}
           sources={external?.sources ?? []}
           defaultHarness={creationHarness}
-          onClose={() => setCreateOpen(false)}
+          initialOutcome={composerPrompt}
+          onClose={() => { setCreateOpen(false); setComposerPrompt(''); }}
           onCreated={(plan) => {
             refreshAll();
             void setView('flow');
@@ -577,7 +582,32 @@ export default function AdvAutomationsTab() {
         </div>
       ) : null}
 
-      {view === 'flow' ? (
+      {view === 'landing' ? (
+        <WorkflowsLanding
+          workflows={landingWorkflows}
+          sources={landingSources}
+          // Deliberately NOT measured. The only fire feed here is
+          // external.recentRuns — a bounded recent window, so counting today's
+          // entries in it would render an undercount as a fact. null makes the
+          // landing say "fires not counted", which is the truth.
+          firesToday={null}
+          // The catalog carries a 7-DAY spend total only; labelling it "today"
+          // would be a wrong number, not a rounded one.
+          spendTodayLabel={null}
+          onOpenWorkflow={(workflowId) => void setWfId(workflowId)}
+          onNeedsYouAction={(item: NeedsYouItem) => {
+            void setView(item.kind === 'reconnect' ? 'sources' : 'activity');
+          }}
+          // Workflow packs (D-014, P-012/P-021) are not built yet and there is no
+          // cupboard route in this app — creation is the real "get a new workflow"
+          // path today, so the control goes there rather than nowhere.
+          onInstallFromCupboard={() => setCreateOpen(true)}
+          onComposeWorkflow={(prompt) => {
+            setComposerPrompt(prompt);
+            setCreateOpen(true);
+          }}
+        />
+      ) : view === 'flow' ? (
         <>
           <div className="pc-automations__flow-toolbar">
             <label>
@@ -737,12 +767,15 @@ function CreateAutomationModal({
   plans,
   sources,
   defaultHarness,
+  initialOutcome = '',
   onClose,
   onCreated,
 }: {
   plans: AutomationPlanRow[];
   sources: ExternalTriggerAdminSnapshot['sources'];
   defaultHarness: string | null;
+  /** Seed for the outcome field, handed over from the landing's agent composer (D-018). */
+  initialOutcome?: string;
   onClose: () => void;
   onCreated: (plan: CreatePlanRef) => void;
 }) {
@@ -766,7 +799,7 @@ function CreateAutomationModal({
     connectedSources[0] ? `ext:${connectedSources[0].kind}:` : '',
   );
   const [planName, setPlanName] = useState('');
-  const [outcome, setOutcome] = useState('');
+  const [outcome, setOutcome] = useState(initialOutcome);
   const [createdPlan, setCreatedPlan] = useState<CreatePlanRef | null>(null);
   const [pendingArm, setPendingArm] = useState<PendingArm | null>(null);
   const [result, setResult] = useState<CreationResult | null>(null);

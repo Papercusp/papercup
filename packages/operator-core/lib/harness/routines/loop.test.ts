@@ -942,6 +942,13 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     expect(armInboxWakeSpy).not.toHaveBeenCalled();
   });
 
+  it('explicit member carry overrides the default when auto-arming', async () => {
+    const res = await autoArmFleetMemberLoop({ ...baseOpts, carry: 'cold', sql: emptySql as any });
+    expect(res.armed).toBe(true);
+    const insertInput = upsertRoutineSpy.mock.calls.at(-1)?.[1];
+    expect(insertInput.payloadTemplate.carry).toBe('cold');
+  });
+
   it('is idempotent: an existing ACTIVE loop for this owner is never clobbered', async () => {
     const activeRow = {
       install_slug: 'papercusp',

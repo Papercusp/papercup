@@ -90,15 +90,16 @@ function states(n) {
     const set = n.get_state_set();
     const M = [['showing', Atspi.StateType.SHOWING], ['visible', Atspi.StateType.VISIBLE],
                ['focused', Atspi.StateType.FOCUSED], ['focusable', Atspi.StateType.FOCUSABLE],
-               ['enabled', Atspi.StateType.ENABLED], ['checked', Atspi.StateType.CHECKED],
+               ['enabled', Atspi.StateType.ENABLED], ['sensitive', Atspi.StateType.SENSITIVE],
+               ['checked', Atspi.StateType.CHECKED],
                ['selected', Atspi.StateType.SELECTED], ['expanded', Atspi.StateType.EXPANDED],
                ['editable', Atspi.StateType.EDITABLE]];
     for (let i = 0; i < M.length; i++) if (set.contains(M[i][1])) s.push(M[i][0]);
   } catch (e) {}
   return s;
 }
-function extents(n) {
-  try { const r = n.get_extents(Atspi.CoordType.SCREEN); return [r.x, r.y, r.width, r.height]; }
+function extents(n, type) {
+  try { const r = n.get_extents(type); return [r.x, r.y, r.width, r.height]; }
   catch (e) { return null; }
 }
 function actions(n) {
@@ -121,7 +122,8 @@ function walk(n, path, depth) {
   let name = '', role = '?';
   try { name = n.get_name() || ''; } catch (e) {}
   try { role = n.get_role_name() || '?'; } catch (e) {}
-  out.push({ p: path, r: role, n: name, s: states(n), e: extents(n), a: actions(n), v: value(n) });
+  out.push({ p: path, r: role, n: name, s: states(n), e: extents(n, Atspi.CoordType.SCREEN),
+             w: extents(n, Atspi.CoordType.WINDOW), a: actions(n), v: value(n) });
   let count = 0;
   try { count = n.get_child_count(); } catch (e) { return; }
   for (let i = 0; i < count; i++) {
@@ -145,6 +147,93 @@ try {
 print('${ATSPI_SENTINEL}' + JSON.stringify({ ok: true, init, apps, truncated, nodes: out }));
 `;
 
+/**
+ * The ACT program: resolve a `#ref` and fire its activating action.
+ *
+ * 🚨 WHY ACTIVATION AND NOT A PIXEL CLICK — measured, and it inverts the obvious design.
+ * The natural implementation of "click this element" is to read its on-screen box and
+ * drive `xdotool` to the centre. That is unusable on the toolkit P-007 is required to
+ * verify against. Measured on GTK 4.14.5 (2026-08-23), for zenity's Cancel button:
+ *
+ *     SCREEN = (0,0 162x44)      <- x,y are ZERO, and are zero for EVERY node
+ *     WINDOW = (14,231 162x44)   <- correct, but relative to the toplevel
+ *
+ * Every element in the dialog reports the same (0,0) origin with a different size, so
+ * a centre computed from SCREEN extents sends every click to roughly the same wrong
+ * place — while the screenshot still looks right, which makes it present as the model
+ * misreading the screen rather than as a coordinate bug.
+ *
+ * `do_action` has no such dependency: it is a semantic invocation across the a11y bus.
+ * Verified end-to-end the same day — firing `click` on Cancel returned true and the
+ * dialog actually closed (the walk went from 1 application to 0).
+ *
+ * It is ALSO the more capable primitive: it activates an element that is scrolled out
+ * of view or overlapped, which a pixel click structurally cannot do.
+ */
+export const ATSPI_ACTION_JS = `
+imports.gi.versions.Atspi = '2.0';
+const { Atspi } = imports.gi;
+Atspi.init();
+const wanted = ARGV[0] || '';
+const preferred = (ARGV[1] || '').trim();
+function emit(o) { print('${ATSPI_SENTINEL}' + JSON.stringify(o)); imports.system.exit(0); }
+if (!wanted) emit({ ok: false, error: 'no ref' });
+let node = null;
+try {
+  const parts = wanted.split('/');
+  node = Atspi.get_desktop(0).get_child_at_index(parseInt(parts[0], 10));
+  for (let i = 1; i < parts.length; i++) node = node.get_child_at_index(parseInt(parts[i], 10));
+} catch (e) { emit({ ok: false, error: 'ref ' + wanted + ' does not resolve: ' + e }); }
+if (!node) emit({ ok: false, error: 'ref ' + wanted + ' does not resolve' });
+let role = '?', name = '';
+try { role = node.get_role_name(); } catch (e) {}
+try { name = node.get_name() || ''; } catch (e) {}
+const names = [];
+try { const c = node.get_n_actions(); for (let i = 0; i < c; i++) names.push(node.get_action_name(i)); }
+catch (e) { emit({ ok: false, role, name, actions: [], error: 'element exposes no Action interface' }); }
+if (names.length === 0) emit({ ok: false, role, name, actions: [], error: 'element exposes no actions' });
+let index = 0;
+if (preferred) {
+  index = names.indexOf(preferred);
+  if (index < 0) emit({ ok: false, role, name, actions: names, error: 'no action named ' + preferred });
+}
+let result = false;
+try { result = node.do_action(index); }
+catch (e) { emit({ ok: false, role, name, actions: names, error: String(e) }); }
+emit({ ok: result === true, role, name, actions: names, performed: names[index], result });
+`;
+
+export interface A11yActionResult {
+  ok: boolean;
+  role?: string;
+  name?: string;
+  actions?: string[];
+  performed?: string;
+  result?: boolean;
+  error?: string;
+}
+
+/**
+ * The invocation that activates one element. Same two rails as `walkerCommand`:
+ * sandbox-only display, explicitly pinned a11y bus.
+ */
+export function actionCommand(
+  display: string,
+  busAddress: string,
+  ref: string,
+  action?: string,
+): { bin: string; args: string[]; env: Record<string, string> } {
+  const cleanRef = (ref ?? '').trim().replace(/^#/, '');
+  if (!/^\d+(\/\d+)*$/.test(cleanRef)) {
+    throw new Error(
+      `computer:click_element — "${ref}" is not an element ref. Refs look like #0/0/2/1 and come from ` +
+        'computer:observe; call that first and pass a ref it printed.',
+    );
+  }
+  const base = walkerCommand(display, busAddress);
+  return { bin: 'gjs', args: ['-c', ATSPI_ACTION_JS, cleanRef, action ?? ''], env: base.env };
+}
+
 /** One node exactly as the walker emitted it. */
 export interface RawA11yNode {
   /** Child-index path from the a11y desktop, e.g. "0/2/1". THE ref. */
@@ -155,8 +244,11 @@ export interface RawA11yNode {
   n: string;
   /** The subset of states the walker reports. */
   s: string[];
-  /** [x, y, w, h] in SCREEN (display) pixels, or null when unobtainable. */
+  /** [x, y, w, h] in SCREEN (display) pixels, or null when unobtainable.
+   *  ⚠ Zeroed origins on GTK4/X11 — see `screenBoundsAreTrustworthy`. */
   e: [number, number, number, number] | null;
+  /** [x, y, w, h] relative to the TOPLEVEL. Correct on GTK4 where `e` is not. */
+  w?: [number, number, number, number] | null;
   /** Action names exposed by the Action interface. */
   a: string[];
   /** Text content for nodes implementing the Text interface (capped at 200 chars). */
@@ -183,6 +275,8 @@ export interface A11yNode {
   states: string[];
   /** [x, y, w, h] in DISPLAY-space pixels (never capture space — see `elementClickPoint`). */
   bounds: [number, number, number, number] | null;
+  /** [x, y, w, h] relative to the toplevel — correct where `bounds` is zeroed. */
+  windowBounds?: [number, number, number, number] | null;
   actions: string[];
   value: string;
   children: A11yNode[];
@@ -235,6 +329,7 @@ export function buildA11yTree(nodes: readonly RawA11yNode[]): A11yNode[] {
       name: raw.n ?? '',
       states: Array.isArray(raw.s) ? raw.s : [],
       bounds: raw.e ?? null,
+      windowBounds: raw.w ?? null,
       actions: Array.isArray(raw.a) ? raw.a : [],
       value: raw.v ?? '',
       children: [],
@@ -252,13 +347,39 @@ export function buildA11yTree(nodes: readonly RawA11yNode[]): A11yNode[] {
 const SCAFFOLD_ROLES = new Set(['filler', 'panel', 'separator', 'redundant object', 'section', 'grouping']);
 
 /**
+ * Roles that CONTAIN the UI rather than being an element of it. A toplevel is
+ * focusable and exports `window.close` / `default.activate`, so without this set it
+ * would be reported as a clickable element — and "click the dialog" is not an action
+ * a model should be offered when what it wants is a button inside the dialog.
+ */
+const CONTAINER_ROLES = new Set([
+  'window', 'frame', 'dialog', 'alert', 'file chooser', 'application', 'panel', 'filler',
+]);
+
+/**
+ * Actions that ACTIVATE an element, as opposed to merely operating on its text.
+ *
+ * ⚠ Exact-match against this set, NEVER `actions.length > 0`. Measured on GTK4
+ * (zenity 4.x, 2026-08-23): every static `label` in a dialog exports EIGHT actions —
+ * `clipboard.copy`, `clipboard.cut`, `clipboard.paste`, `selection.delete`,
+ * `selection.select-all`, `link.open`, `link.copy`, `menu.popup`. A length test
+ * therefore marks every caption in the UI as clickable, which both spends a `#ref`
+ * on each one and invites the model to "click" text. Conversely a `dialog` exports
+ * `window.close` / `default.activate`, which must not make the whole dialog a
+ * clickable element either — hence exact match rather than prefix match.
+ */
+const ACTIVATING_ACTIONS = new Set([
+  'click', 'press', 'activate', 'toggle', 'jump', 'expand', 'collapse', 'select', 'open',
+]);
+
+/**
  * Roles a model would plausibly ACT on. Used for two things: deciding which nodes
  * keep their ref in the rendering, and refusing to compress away something clickable.
  *
- * Membership is by role because `actions` is unreliable across toolkits — GTK4 in
- * particular exports a focusable, obviously-clickable button with an EMPTY action
- * list, so an actions-only test would silently strip the very nodes the tree exists
- * to expose.
+ * Kept as a role test alongside the action test because `actions` is unreliable in
+ * BOTH directions across toolkits: GTK3 exports a focusable, obviously-clickable
+ * button with an EMPTY action list, while GTK4 exports eight actions on a static
+ * label. Neither signal alone is sufficient.
  */
 const INTERACTIVE_ROLES = new Set([
   'push button', 'button', 'toggle button', 'check box', 'radio button', 'link',
@@ -269,8 +390,9 @@ const INTERACTIVE_ROLES = new Set([
 
 export function isInteractive(node: A11yNode): boolean {
   if (node.states.includes('editable')) return true;
-  if (node.actions.length > 0) return true;
-  if (node.states.includes('focusable') && node.role !== 'window' && node.role !== 'frame') return true;
+  if (node.actions.some((a) => ACTIVATING_ACTIONS.has(a))) return true;
+  if (CONTAINER_ROLES.has(node.role)) return false;
+  if (node.states.includes('focusable')) return true;
   return INTERACTIVE_ROLES.has(node.role);
 }
 
@@ -479,9 +601,16 @@ export function renderA11yTree(roots: readonly A11yNode[], opts: RenderOptions =
     if (node.value && node.value !== node.name) line += ` = "${node.value}"`;
     if (isInteractive(node)) line += ` #${node.ref}`;
     const flags: string[] = RENDERED_STATES.filter((s) => node.states.includes(s));
-    // `disabled` is rendered as the ABSENCE of `enabled`, and only where the absence
-    // is meaningful: a scaffolding box legitimately reports neither.
-    if (!node.states.includes('enabled') && isInteractive(node)) flags.push('disabled');
+    // `disabled` is the absence of BOTH enabled and sensitive, and only where the
+    // absence is meaningful (an interactive node; scaffolding reports neither).
+    //
+    // ⚠ Both states, not just ENABLED. GTK4 sets SENSITIVE and does NOT set ENABLED
+    // (measured on 4.14.5: a live, clickable Cancel button reports
+    // `[showing, visible, sensitive, focusable]`). Testing ENABLED alone therefore
+    // labels every widget in a GTK4 app `disabled` — an observation that is not just
+    // noisy but actively false, and would stop the model from even trying.
+    const usable = node.states.includes('enabled') || node.states.includes('sensitive');
+    if (!usable && isInteractive(node)) flags.push('disabled');
     if (flags.length) line += ` [${flags.join(' ')}]`;
     if (opts.includeBounds && node.bounds) {
       const [x, y, w, h] = node.bounds;
@@ -493,6 +622,35 @@ export function renderA11yTree(roots: readonly A11yNode[], opts: RenderOptions =
   };
   for (const root of roots) emit(root, 0);
   return lines.join('\n');
+}
+
+/**
+ * Can this tree's SCREEN extents be used to compute a click point?
+ *
+ * The falsifier is a tree-level pattern, not a per-node heuristic, because a single
+ * element legitimately sitting at the origin is common while a whole UI of
+ * differently-sized elements ALL at (0,0) is impossible. That is exactly the GTK4/X11
+ * signature: every node reports x=0, y=0 with its own real width/height.
+ *
+ * Answering this at tree level rather than per node is what keeps the coordinate
+ * fallback honest — a per-node check would pass for most nodes of a broken tree and
+ * hand back confident, wrong coordinates.
+ */
+export function screenBoundsAreTrustworthy(roots: readonly A11yNode[]): boolean {
+  let withBounds = 0;
+  let atOrigin = 0;
+  const visit = (n: A11yNode): void => {
+    if (n.bounds && (n.bounds[2] > 0 || n.bounds[3] > 0)) {
+      withBounds += 1;
+      if (n.bounds[0] === 0 && n.bounds[1] === 0) atOrigin += 1;
+    }
+    n.children.forEach(visit);
+  };
+  roots.forEach(visit);
+  // Below three measurable nodes there is no pattern to detect; treat as trustworthy
+  // and let `elementClickPoint`'s own zero-area guard catch the degenerate cases.
+  if (withBounds < 3) return true;
+  return atOrigin < withBounds;
 }
 
 /** Resolve a `#ref` (a child-index path) back to its node. */

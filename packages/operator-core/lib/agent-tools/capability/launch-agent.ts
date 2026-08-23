@@ -205,7 +205,7 @@ export default defineTool({
       .max(MAX_AGENTS)
       .optional()
       .describe(
-        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry` is emitted on the psu launch; `claimKinds` still needs fleet:launch-on-plan because that door owns the fleet/member claim-spec machinery.',
+        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
       ),
     cwd: z.string().max(500).optional().describe('Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session\'s own recorded cwd.'),
     label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
@@ -233,6 +233,12 @@ export default defineTool({
       .describe('Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.'),
   }),
   async handler(args, ctx) {
+    // Internal direct-handler seam used only by fleet:respawn-member after the
+    // canonical saved profile has been resolved. It is deliberately absent
+    // from the public zod schema, so ordinary fresh-launch behavior does not
+    // change and callers cannot smuggle an unaudited recovery carry.
+    const savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' })
+      .__savedLaunchCarry;
     const isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     if (!isResume && args.fork) {
       return err('`fork: true` needs a source session — pass `resume: { agentId }` (or `sessionId`) to fork from.');
@@ -725,7 +731,7 @@ export default defineTool({
               model: folded.model ?? null,
               effort: folded.effort ?? null,
               headless: !!folded.headless,
-              carry: folded.carry ?? null,
+              carry: savedLaunchCarry ?? null,
               contextSize: folded.contextSize ?? null,
               compactionLimit: folded.compactionLimit ?? null,
               role: folded.role ?? null,
@@ -753,11 +759,12 @@ export default defineTool({
     // Back-compat: `command` (singular) is the representative reported/recorded command
     // — identical across members in the common no-`members` case.
     const command = memberCommands[0] ?? '';
-    // `claimKinds` needs the fleet/member claim-spec machinery this general
-    // door doesn't build. `carry` is command-native and is emitted above.
-    if ((args.members ?? []).some((m) => m?.claimKinds?.length)) {
+    // Public member carry/claimKinds behavior stays unchanged. A respawn's
+    // INTERNAL savedLaunchCarry was resolved/audited before this handler and is
+    // emitted above; it is not the same as accepting a public member override.
+    if ((args.members ?? []).some((m) => m?.carry || m?.claimKinds?.length) && !savedLaunchCarry) {
       notes.push(
-        '⚠ `claimKinds` on a member is only honored by fleet:launch-on-plan (it seeds the per-member claim spec); this general launch door opens raw agents, so that field was IGNORED. Use fleet:launch-on-plan for a self-pulling fleet claim lane.',
+        '⚠ `carry` / `claimKinds` on a member are only honored by fleet:launch-on-plan (they seed the member baseline + per-member claim spec); this general launch door opens raw agents, so those fields were IGNORED. Use fleet:launch-on-plan for a self-pulling fleet.',
       );
     }
 

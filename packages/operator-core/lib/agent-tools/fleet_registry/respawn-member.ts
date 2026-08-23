@@ -304,6 +304,7 @@ export default defineTool({
           plan: savedLaunchSpec.effective.plan,
           harness: savedLaunchSpec.effective.harness,
           members: [spec],
+          __savedLaunchCarry: savedLaunchSpec.effective.member.carry,
           ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}),
         } as never,
         ctx,

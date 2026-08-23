@@ -1979,6 +1979,10 @@ export async function autoArmFleetMemberLoop(opts: {
   planSlug: string | null;
   fleetSlug: string;
   fleetRole: string | null;
+  /** Explicit per-member carry from the launch command. When present it wins
+   * over an inactive predecessor's stored carry; omitted launches preserve the
+   * predecessor facts for recovery. */
+  carry?: 'warm' | 'cold' | null;
   /** Test seam: an injected PG connection (createOrgTestDb().adminSql). When
    *  supplied, the live-singleton-only `armInboxWake` best-effort leg is SKIPPED
    *  (it has no `sql` override of its own and always targets the real org pool —
@@ -2027,7 +2031,7 @@ export async function autoArmFleetMemberLoop(opts: {
       priorLoopFacts?.goal ??
       existing?.goal ??
       `Drive plan \`${opts.planSlug}\` per your member role in fleet \`${opts.fleetSlug}\` (coord:orient to pull your lane).`;
-    const carry = existing?.carry ?? priorLoopFacts?.carry ?? 'warm';
+    const carry = opts.carry ?? existing?.carry ?? priorLoopFacts?.carry ?? 'warm';
     const continuation = existing?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
     const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
     const kickoff = buildLoopWakePrompt({

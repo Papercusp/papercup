@@ -15,6 +15,7 @@
  */
 import type postgres from 'postgres';
 import { listOwnedExternalTriggerSources, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
+import { listSocialPlatforms } from '../external-triggers/social/platform-registry';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -39,6 +40,12 @@ const TRIGGER_KIND_BY_VAULT_SOURCE: Record<string, string> = {
   contacts: 'contacts',
   slack: 'slack',
   facebook: 'facebook',
+  // Social platforms (D-001): the platform id IS the vault source name AND the
+  // trigger-source kind, so these are DERIVED from the registry rather than
+  // restated. Writing the ten ids out by hand would be a second copy of a truth
+  // the registry owns, and the drift it invites is silent — a platform whose
+  // adapter works and whose credential simply never resolves.
+  ...Object.fromEntries(listSocialPlatforms().map((row) => [row.id, row.id])),
 };
 
 export interface CanonicalDocument {

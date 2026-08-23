@@ -7245,6 +7245,9 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     plan_slug: selections.plan,
     // WI-1343: the literal psu invocation → adv_sessions.launch_argv (traceability).
     launch_argv: psuLaunchArgvRecord(selections, args, { brain }),
+    // headless-fleet-launch-and-carry-knob: the launch argv is an audit record;
+    // bootstrap also needs the resolved carry value to seed the member's loop.
+    ...(args.carry ? { carry: args.carry } : {}),
     // WI-1356: start fleet/auto launches in AUTO mode — bootstrap-su bakes the durable
     // AUTO directive into the system prompt + prepends it to the seeded kickoff.
     ...(effectiveAutoMode(args) ? { auto: true } : {}),

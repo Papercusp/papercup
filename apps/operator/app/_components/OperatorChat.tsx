@@ -58,6 +58,14 @@ interface Props {
   composerDisabled?: boolean;
   /** Copy shown when the composer is disabled (for example, relaunch guidance). */
   composerDisabledMessage?: string;
+  /** Override the default global-operator empty-state guidance. */
+  emptyStateBody?: string;
+  /**
+   * The workspace-wide Scan/Review/Summarize starters belong only to the
+   * global Papercup thread. Scoped Papercup callers set this false while still
+   * retaining the Papercup identity and full shared chat renderer.
+   */
+  showQuickDraftPrompts?: boolean;
   /** Called with the user's message when they submit. */
   onSend: (content: string) => void;
   /**
@@ -211,7 +219,8 @@ export function OperatorChat({
   onLoadEarlier, hasMoreEarlier, loadingEarlier, focusAnchor, focusIndex, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn, canDrillIn,
   renderAvatar, paneIcon, footer, harnessSlug, composerDisabled = false,
-  composerDisabledMessage,
+  composerDisabledMessage, emptyStateBody,
+  showQuickDraftPrompts = true,
 }: Props) {
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
   // WI-/EI-/F-/P- ref pill's click actually DOES something. ChatConversation
@@ -431,7 +440,7 @@ export function OperatorChat({
             ? unavailableCopy
             : passive
             ? 'In passive mode. Type below to wake them.'
-            : 'Tell me what you want to inspect, scan, or unblock.',
+            : emptyStateBody ?? 'Tell me what you want to inspect, scan, or unblock.',
           // WI-6503: the pane's own mark, not a hard-coded Papercup cup. See
           // the `paneIcon` prop doc — ChatConversation also derives its
           // per-message `fallbackIcon` from this, so overriding it here is
@@ -443,7 +452,7 @@ export function OperatorChat({
           // messaging an arbitrary su agent) has no business drafting these — they'd be
           // actively misleading there, not just off-brand — so gate the whole panel on
           // agentName rather than showing it unconditionally.
-          extra: agentName === 'Papercup' ? (
+          extra: agentName === 'Papercup' && showQuickDraftPrompts ? (
             <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
               <div className="op-chat-empty-panel-head">
                 <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />

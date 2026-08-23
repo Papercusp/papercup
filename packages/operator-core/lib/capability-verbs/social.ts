@@ -56,26 +56,89 @@ export interface SocialPostRef {
  * so splitting on the last colon, or on every colon, silently truncates real
  * Bluesky ids into something that looks like a valid id and resolves to nothing.
  */
-export function parseSocialPostRef(ref: string): SocialPostRef {
-  const raw = String(ref ?? '').trim();
-  if (!raw) throw new Error('social_post_ref_required');
+/**
+ * The shared first-colon split, factored so the two ref kinds below cannot
+ * drift apart.
+ *
+ * This is the same reasoning as D-006 ruling (d) applied one level down: the
+ * AT-URI rule is a single fact, and two hand-maintained copies of it would fail
+ * in the worst available way — a post ref that parses correctly beside a
+ * destination ref that truncates, or vice versa, with both looking valid.
+ */
+function splitPlatformToken(
+  value: string,
+  codes: { required: string; malformed: string; shape: string; tailName: string },
+): { platform: string; tail: string } {
+  const raw = String(value ?? '').trim();
+  if (!raw) throw new Error(codes.required);
   const separator = raw.indexOf(':');
   if (separator <= 0 || separator === raw.length - 1) {
     throw new Error(
-      `social_post_ref_malformed: expected "<platform>:<id>", got ${JSON.stringify(raw.slice(0, 64))}`,
+      `${codes.malformed}: expected "${codes.shape}", got ${JSON.stringify(raw.slice(0, 64))}`,
     );
   }
   const platform = raw.slice(0, separator).toLowerCase();
-  const externalId = raw.slice(separator + 1).trim();
-  if (!externalId) throw new Error('social_post_ref_malformed: empty id');
+  const tail = raw.slice(separator + 1).trim();
+  if (!tail) throw new Error(`${codes.malformed}: empty ${codes.tailName}`);
+  return { platform, tail };
+}
+
+export function parseSocialPostRef(ref: string): SocialPostRef {
+  const { platform, tail } = splitPlatformToken(ref, {
+    required: 'social_post_ref_required',
+    malformed: 'social_post_ref_malformed',
+    shape: '<platform>:<id>',
+  });
   // Validate through the registry so an unknown platform fails here, with the
   // registry's reason, rather than as a confusing vault miss further down.
   assertSocialPlatformUsable(platform);
-  return { platform: platform as SocialPlatformId, externalId };
+  return { platform: platform as SocialPlatformId, externalId: tail };
 }
 
 export function formatSocialPostRef(ref: SocialPostRef): string {
   return `${ref.platform}:${ref.externalId}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Destination references (create-shaped)                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where a NEW post goes: which platform, and that platform's own name for the
+ * community/page it is addressed to.
+ */
+export interface SocialDestinationRef {
+  platform: SocialPlatformId;
+  destination: string;
+}
+
+/**
+ * Parse `"<platform>:<destination>"` for a create-shaped post.
+ *
+ * WHY THE PLATFORM RIDES INSIDE THE TOKEN RATHER THAN BESIDE IT. A reply
+ * derives its platform from the stored parent (D-006 ruling a), which a create
+ * has no equivalent of — so the caller unavoidably names the destination. That
+ * does NOT license re-admitting a free-standing `platform` argument: a separate
+ * argument could be varied INDEPENDENTLY of the destination, which is exactly
+ * the failure D-006 forbids (choosing which of the owner's identities speaks).
+ * Carried inside one opaque token, the platform half cannot disagree with the
+ * destination half, and rail 2 below judges the token the caller actually named.
+ *
+ * Splits on the FIRST colon, via the shared splitter above, for the AT-URI
+ * reason recorded in D-006.
+ */
+export function parseSocialDestinationRef(ref: string): SocialDestinationRef {
+  const { platform, tail } = splitPlatformToken(ref, {
+    required: 'social_destination_ref_required',
+    malformed: 'social_destination_ref_malformed',
+    shape: '<platform>:<destination>',
+  });
+  assertSocialPlatformUsable(platform);
+  return { platform: platform as SocialPlatformId, destination: tail };
+}
+
+export function formatSocialDestinationRef(ref: SocialDestinationRef): string {
+  return `${ref.platform}:${ref.destination}`;
 }
 
 /* -------------------------------------------------------------------------- */

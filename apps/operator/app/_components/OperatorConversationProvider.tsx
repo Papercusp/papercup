@@ -776,6 +776,14 @@ interface OperatorConversationContextValue {
    *  is about to appear doesn't come out of nowhere (P-009). */
   peerBusy: boolean;
 
+  /**
+   * True only after the initial persisted-turn window for the active
+   * conversation has resolved. Callers that conditionally bootstrap an empty
+   * scoped thread must wait for this bit; `messages.length === 0` before
+   * hydration is not evidence that the durable conversation is empty.
+   */
+  historyHydrated: boolean;
+
   /** User-initiated send. Always allowed; restarts silence timer.
    *  `opts.spoken` marks a voice-initiated turn so the assistant reply
    *  is spoken back (voice → converse bridge, Phase 1). */
@@ -1040,6 +1048,9 @@ export function OperatorConversationProvider({
   const oldestLoadedSeqRef = useRef<number | null>(null);
   const newestLoadedSeqRef = useRef<number | null>(null);
   const hydratedRef = useRef(false);
+  const [hydratedConversationId, setHydratedConversationId] = useState<
+    string | null
+  >(null);
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
 
@@ -1092,6 +1103,7 @@ export function OperatorConversationProvider({
     conversationIdRef.current = currentConversation.id;
     setConvId(currentConversation.id);
     hydratedRef.current = false;
+    setHydratedConversationId(null);
   }, [currentConversation?.id, isGlobalTarget]);
 
   // A nested work-item host owns its explicit id. Switching rows clears the
@@ -1103,6 +1115,7 @@ export function OperatorConversationProvider({
     conversationIdRef.current = explicitConversationId;
     setConvId(explicitConversationId);
     hydratedRef.current = false;
+    setHydratedConversationId(null);
     hydratedConversationRef.current = null;
     oldestLoadedSeqRef.current = null;
     newestLoadedSeqRef.current = null;
@@ -1148,6 +1161,7 @@ export function OperatorConversationProvider({
       dispatch({ type: "replace_messages", messages: [] });
     }
     hydratedRef.current = true;
+    setHydratedConversationId(convId);
   }, [convId, initialPage]);
 
   const [olderBeforeSeq, setOlderBeforeSeq] = useState<number | null>(null);
@@ -2948,6 +2962,8 @@ export function OperatorConversationProvider({
       error: state.error,
       busy: state.sub === "generating",
       peerBusy,
+      historyHydrated:
+        !!convId && hydratedConversationId === convId,
       sendUserMessage,
       generateIdeas,
       flipMode,
@@ -2964,6 +2980,7 @@ export function OperatorConversationProvider({
       state.messages,
       state.error,
       peerBusy,
+      hydratedConversationId,
       sendUserMessage,
       generateIdeas,
       flipMode,

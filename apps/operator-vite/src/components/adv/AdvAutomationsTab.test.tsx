@@ -100,8 +100,23 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import AdvAutomationsTab from './AdvAutomationsTab';
 
-function renderTab() {
-  return render(<NuqsTestingAdapter><AdvAutomationsTab /></NuqsTestingAdapter>);
+function renderTab(searchParams?: Record<string, string>) {
+  return render(
+    <NuqsTestingAdapter searchParams={searchParams}>
+      <AdvAutomationsTab />
+    </NuqsTestingAdapter>,
+  );
+}
+
+/**
+ * The tab lands on the Workflows landing since D-018; the flow rows + inspector
+ * are a secondary view. Tests that exercise the inspector SEED the view in the
+ * URL rather than clicking through to it — nuqs batches its URL writes, so a
+ * click-then-assert races the flush, and the landing's ledger carries the same
+ * workflow names, which makes that race resolve to a false match.
+ */
+function renderTabOnFlows() {
+  return renderTab({ autoView: 'flow' });
 }
 
 beforeEach(() => {
@@ -126,8 +141,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('<AdvAutomationsTab>', () => {
-  it('lands on the causal trigger-flow view and keeps non-triggered routines in Catalog', async () => {
+  it('lands on the Workflows landing Blend rather than the flow rows (D-018)', async () => {
     renderTab();
+    expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
+    // The Blend's regions: composer hero + the all-workflows ledger.
+    expect(screen.getByRole('region', { name: 'Describe a workflow' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'All workflows' })).toBeTruthy();
+    // Fires are not measurable from the bounded recentRuns feed, so the landing
+    // must say so rather than render a confident 0.
+    expect(screen.getByText('fires not counted')).toBeTruthy();
+    // The superseded flow-row landing must NOT be what renders by default.
+    expect(screen.queryByLabelText('Search trigger flows')).toBeNull();
+  });
+
+  it('keeps the causal trigger-flow view reachable and non-triggered routines in Catalog', async () => {
+    renderTabOnFlows();
     expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
     expect(H.queries.some(({ queryName, args }) => queryName === 'plans.list' && JSON.stringify(args) === '{}')).toBe(true);
     expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
@@ -158,9 +186,9 @@ describe('<AdvAutomationsTab>', () => {
 
   it('renders truthful empty states instead of synthesizing automations when every producer is empty', async () => {
     H.emptyData = true;
-    renderTab();
+    renderTabOnFlows();
     expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Flows/ }).textContent).toContain('0');
+    expect(screen.getByRole('button', { name: /^Flows/ }).textContent).toContain('0');
     expect(screen.getByText(/No triggered plans match this view/)).toBeTruthy();
     expect(screen.queryByText('Customer feedback digest')).toBeNull();
     expect(screen.queryByText('git-sync')).toBeNull();
@@ -169,7 +197,7 @@ describe('<AdvAutomationsTab>', () => {
   });
 
   it('fires Run manually through plans:run-now and keeps role spend inside Activity', async () => {
-    renderTab();
+    renderTabOnFlows();
     fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
     fireEvent.click(screen.getByRole('button', { name: /Run manually/ }));
     await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('plans:run-now', { slug: 'customer-digest', harness: 'papercusp' }));
@@ -181,6 +209,7 @@ describe('<AdvAutomationsTab>', () => {
 
   it('toggles an external binding through the audited trigger admin route', async () => {
     renderTab();
+    await goToFlows();
     fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
     const details = await screen.findByLabelText('Automation details');
     const armed = within(details).getAllByRole('button', { name: 'Armed' });
