@@ -169,6 +169,27 @@ describe('evaluateExactPlanAdmission', () => {
     });
   });
 
+  it('D-055: refuses an actionable promoted feature whose post-floor lane is zero', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issue: 0, feature: 0 }),
+    });
+
+    expect(verdict).toMatchObject({
+      ready: false,
+      status: 'refused',
+      reason: 'floor-gated',
+      planItems: { actionable: 1 },
+      promotion: {
+        byFamily: { feature: 1, issue: 0 },
+        coveredActionable: 1,
+      },
+      lane: { effective: { claimable: 0 } },
+    });
+  });
+
   it('refuses when one actionable promoted family is zero while the other is claimable', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
