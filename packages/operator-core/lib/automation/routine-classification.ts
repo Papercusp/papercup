@@ -405,6 +405,15 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Reaps abandoned verify-tauri-headless work dirs, displays and sidecars — filesystem only',
   },
+  'system:gc-desktop-sessions': {
+    spend: 'none',
+    // The desktop lifecycle governor, built at parity with gc-verify-instances above. It walks
+    // leased DesktopSession rows and applies the freeze-first ladder — freeze/thaw a cgroup,
+    // reap an expired lease, update the row. Every effect is a process signal or a DB write; it
+    // never spawns an agent, wakes a session, or dispatches queued work, so a fire cannot bill
+    // a model turn.
+    why: 'Freezes idle desktop sessions and reaps expired leases — process + DB only',
+  },
   'system:session-dir-gc': { spend: 'none', why: 'Deletes isolation dirs of ended sessions' },
   'system:telemetry-retention': { spend: 'none', why: 'Applies telemetry retention windows' },
   'system:idle-session-reaper': { spend: 'none', why: 'Reaps idle session rows' },

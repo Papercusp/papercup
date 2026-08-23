@@ -37,6 +37,11 @@ import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
+import {
+  classifyClaimSkip,
+  recordUnclaimableRoutine,
+  clearUnclaimableRoutine,
+} from '../harness/routines/unclaimable-routine-detector';
 import { checkFireGate, recordFire } from '../autoloop';
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import {
@@ -462,7 +467,29 @@ async function routinesTickImpl(): Promise<void> {
     // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
-    if (!claimed) continue;
+    if (!claimed) {
+      // WI-40883: a bare `continue` here is what let 11 routines sit unclaimable and silent —
+      // one of them green-checkpoint for three pots, dark ~36h. Losing a claim IS normal (two
+      // executors race every tick and one must lose quietly), so the classifier stays silent
+      // unless the row has been due far longer than any race could explain. Fail-soft and not
+      // awaited: an instrument on the fire hot path must never delay or break dispatch.
+      const verdict = classifyClaimSkip(
+        {
+          id: r.id,
+          name: r.name,
+          installSlug: r.installSlug,
+          nextFireAt: r.nextFireAt ?? null,
+          lastFiredAt: r.lastFiredAt ?? null,
+        },
+        Date.now(),
+      );
+      if (verdict.state === 'unclaimable') {
+        console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
+        void recordUnclaimableRoutine(sql, r.id, verdict);
+      }
+      continue;
+    }
+    void clearUnclaimableRoutine(sql, r.id);
     try {
       await DBOS.startWorkflow(routineFireWorkflow, {
         // routines-queue-starvation fix (2026-06-23): git-sync → the protected `routines-critical` lane so a

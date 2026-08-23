@@ -96,6 +96,34 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
   // snapshot consume the new schedule. `IS NOT DISTINCT FROM` is intentional:
   // NULL is a valid due value and must compare equal to the captured NULL.
   const capturedNextFireAt = routine.nextFireAt ?? null;
+  // WI-40883 — the comparison MUST be millisecond-granular, and this is not a style
+  // choice: it is the difference between a routine that fires and one that is
+  // permanently dark. PostgreSQL `timestamptz` stores MICROSECONDS; `capturedNextFireAt`
+  // has already round-tripped through a JS `Date`, which holds only MILLISECONDS. So for
+  // any row whose next_fire_at was written by SQL `now()` (every `INSERT ... next_fire_at,
+  // now())` seeder), the captured value differs from the stored value in the µs digits a
+  // Date cannot represent, a bare `next_fire_at IS NOT DISTINCT FROM $captured` is FALSE
+  // FOREVER, this UPDATE matches 0 rows, and routinesTick's `if (!claimed) continue;`
+  // skips the routine silently on every tick for the life of the row.
+  //
+  // MEASURED 2026-08-23 on the live operator DB: 11 active/due routines had NEVER fired —
+  // green-checkpoint for three pots (hotel-reservations dark ~36h, so those pots' release
+  // gate had never once run), cross-hive-outbox-drain for three, external-trigger-dispatch,
+  // both Google pollers, the Facebook vault poller, and gc-desktop-sessions. The census was
+  // a clean 2x2 with zero exceptions: all 11 never-fired rows carried sub-millisecond
+  // precision, all 162 firing rows did not. Positive control isolating the row from the
+  // code: `green-checkpoint` fired normally for 8 other pots off this same handler and cron.
+  //
+  // date_trunc keeps the optimistic-concurrency intent intact — a real reschedule
+  // (`routines:set`, a cron advance) moves next_fire_at by seconds or minutes, never by the
+  // sub-millisecond sliver this tolerates — while making the guard immune to the precision
+  // floor. NULL survives it too: date_trunc(NULL) IS NOT DISTINCT FROM NULL is TRUE, so a
+  // legitimately-NULL due value still compares equal. Migration 906 additionally narrows the
+  // column to timestamptz(3) so PG cannot store what JS cannot read; this guard is the
+  // defence-in-depth for any writer that migration does not cover.
+  //
+  // Pinned by claim-precision.integration.test.ts — do not inline a bare comparison here.
+  const nextFireUnchanged = sql`date_trunc('milliseconds', next_fire_at) IS NOT DISTINCT FROM ${capturedNextFireAt}`;
   // Recurrence = a cron OR an rrule (scheduled-recurring-plans P-007).
   const hasRecurrence = !!(cfg && (cfg.cron || cfg.rrule));
   // A loop carries an interval (re-fire N sec after the turn completes). A PURE loop
@@ -113,7 +141,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
              updated_at = now()
        WHERE id = ${routine.id}
          AND active = TRUE
-         AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
+         AND ${nextFireUnchanged}
          AND (next_fire_at IS NULL OR next_fire_at <= now())
       RETURNING id
     `;
@@ -150,7 +178,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
              updated_at = now()
        WHERE id = ${routine.id}
          AND active = TRUE
-         AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
+         AND ${nextFireUnchanged}
          AND (next_fire_at IS NULL OR next_fire_at <= now())
       RETURNING id
     `;
@@ -202,7 +230,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
                updated_at = now()
          WHERE id = ${routine.id}
            AND active = TRUE
-           AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
+           AND ${nextFireUnchanged}
            AND (next_fire_at IS NULL OR next_fire_at <= now())
         RETURNING id
       `;
@@ -227,7 +255,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
            updated_at = now()
      WHERE id = ${routine.id}
        AND active = TRUE
-       AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
+       AND ${nextFireUnchanged}
        AND (next_fire_at IS NULL OR next_fire_at <= now())
     RETURNING id
   `;
