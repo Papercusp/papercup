@@ -279,6 +279,16 @@ describe('integration credential output redaction (EI-20478240377353884)', () =>
 });
 
 describe('background jobs', () => {
+  it('executes the background payload in its requested cwd, not the operator home', async () => {
+    const job = startBackground({ command: 'pwd', cwd: STATE, stateDir: STATE }, 10_000);
+    await waitForStatus(job.id);
+    const final = getJob(job.id)!;
+
+    expect(final.status).toBe('completed');
+    expect(final.exitCode).toBe(0);
+    expect(readJobOutput(final)).toContain(`${STATE}\n`);
+  });
+
   it('stamps background children with durable task provenance and rejects caller overrides', async () => {
     const enrolledAtSpawn = taskManagerEnabledSync();
     const job = startBackground(
