@@ -1,0 +1,350 @@
+/**
+ * Unit tests for the pure AT-SPI observation path (P-007 / D-010).
+ *
+ * Every assertion here runs with NO live display and NO a11y bus: the module is
+ * pure by construction, and the fixture below is a faithful reduction of a real
+ * walk (GTK's characteristic deep filler/panel nesting, a menubar whose unopened
+ * items are live-but-not-showing, and an application root with no extents).
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  ATSPI_SENTINEL,
+  ATSPI_WALKER_JS,
+  A11Y_APP_ENV,
+  buildA11yTree,
+  compressA11yTree,
+  elementClickPoint,
+  estimateImageTokens,
+  estimateTextTokens,
+  findByRef,
+  isInteractive,
+  parseWalkerOutput,
+  renderA11yTree,
+  walkerCommand,
+  type A11yNode,
+  type RawA11yNode,
+} from './accessibility-tree';
+
+const node = (p: string, r: string, n = '', over: Partial<RawA11yNode> = {}): RawA11yNode => ({
+  p,
+  r,
+  n,
+  s: ['showing', 'visible', 'enabled'],
+  e: [0, 0, 100, 40],
+  a: [],
+  v: '',
+  ...over,
+});
+
+/** A reduced but structurally real GTK dialog walk. */
+const FIXTURE: RawA11yNode[] = [
+  node('0', 'application', 'zenity', { s: [], e: null }),
+  node('0/0', 'frame', 'Probe Form', { e: [0, 0, 400, 220] }),
+  node('0/0/0', 'filler', '', { e: [0, 0, 400, 220] }),
+  node('0/0/0/0', 'panel', '', { e: [0, 0, 400, 220] }),
+  node('0/0/0/0/0', 'label', 'Sign in', { e: [10, 10, 80, 20] }),
+  node('0/0/0/0/1', 'entry', 'Username', {
+    s: ['showing', 'visible', 'enabled', 'focusable', 'editable', 'focused'],
+    e: [10, 40, 200, 30],
+    v: 'avi',
+  }),
+  node('0/0/0/0/2', 'password text', 'Password', {
+    s: ['showing', 'visible', 'enabled', 'focusable', 'editable'],
+    e: [10, 80, 200, 30],
+  }),
+  node('0/0/0/0/3', 'push button', 'OK', {
+    s: ['showing', 'visible', 'enabled', 'focusable'],
+    e: [300, 160, 80, 30],
+    a: ['click'],
+  }),
+  // Disabled button — must survive compression and be flagged.
+  node('0/0/0/0/4', 'push button', 'Apply', {
+    s: ['showing', 'visible', 'focusable'],
+    e: [200, 160, 80, 30],
+    a: ['click'],
+  }),
+  // A live but NOT-showing menu subtree, exactly as GTK reports an unopened menu.
+  node('0/0/1', 'menu bar', '', { e: [0, 0, 400, 20] }),
+  node('0/0/1/0', 'menu', 'File', { s: ['visible', 'enabled'], e: [0, 0, 40, 20] }),
+  node('0/0/1/0/0', 'menu item', 'Quit', { s: ['visible', 'enabled'], e: [0, 0, 0, 0], a: ['click'] }),
+  // Decorative leaf with nothing to say.
+  node('0/0/2', 'filler', '', { e: [0, 218, 400, 2] }),
+];
+
+describe('parseWalkerOutput', () => {
+  it('finds the sentinel line amid the toolkit noise that always surrounds it', () => {
+    const noisy = [
+      'libEGL warning: DRI3 error: Could not get DRI3 device',
+      '(zenity:123): GLib-GIO-CRITICAL **: Error while sending AddMatch()',
+      `${ATSPI_SENTINEL}{"ok":true,"init":0,"apps":1,"nodes":[{"p":"0","r":"application","n":"z","s":[],"e":null,"a":[],"v":""}]}`,
+      '(zenity:123): Gtk-WARNING **: teardown',
+    ].join('\n');
+    const parsed = parseWalkerOutput(noisy);
+    expect(parsed?.ok).toBe(true);
+    expect(parsed?.apps).toBe(1);
+    expect(parsed?.nodes).toHaveLength(1);
+  });
+
+  it('returns null when no sentinel is present — "the walker never ran" is NOT "the screen is empty"', () => {
+    expect(parseWalkerOutput('gjs: command not found')).toBeNull();
+    expect(parseWalkerOutput('')).toBeNull();
+  });
+
+  it('returns null rather than a partial tree when the sentinel payload is unparseable', () => {
+    expect(parseWalkerOutput(`${ATSPI_SENTINEL}{"ok":true,"nodes":`)).toBeNull();
+    // Well-formed JSON that is not a walk result is also refused.
+    expect(parseWalkerOutput(`${ATSPI_SENTINEL}{"ok":true}`)).toBeNull();
+  });
+
+  it('takes the LAST sentinel, so a warning quoting the sentinel cannot shadow the result', () => {
+    const out = [
+      `Gtk-WARNING: something mentioned ${ATSPI_SENTINEL}{"ok":false,"init":1,"apps":0,"nodes":[]}`,
+      `${ATSPI_SENTINEL}{"ok":true,"init":0,"apps":2,"nodes":[]}`,
+    ].join('\n');
+    expect(parseWalkerOutput(out)?.apps).toBe(2);
+  });
+});
+
+describe('buildA11yTree', () => {
+  it('rebuilds parent/child purely from the index paths', () => {
+    const roots = buildA11yTree(FIXTURE);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.role).toBe('application');
+    expect(roots[0]!.children[0]!.name).toBe('Probe Form');
+    expect(roots[0]!.children[0]!.children[0]!.children[0]!.children).toHaveLength(5);
+  });
+
+  it('promotes an orphan to a root instead of dropping it, so truncation loses shape not content', () => {
+    const roots = buildA11yTree([node('0', 'application', 'a', { s: [], e: null }), node('7/3', 'push button', 'Orphan')]);
+    expect(roots).toHaveLength(2);
+    expect(roots[1]!.name).toBe('Orphan');
+  });
+});
+
+describe('isInteractive', () => {
+  const mk = (over: Partial<A11yNode>): A11yNode => ({
+    ref: '0/0', role: 'panel', name: '', states: [], bounds: null, actions: [], value: '', children: [], ...over,
+  });
+
+  it('treats a GTK4 button with an EMPTY action list as interactive (role, not actions)', () => {
+    expect(isInteractive(mk({ role: 'push button', actions: [] }))).toBe(true);
+  });
+
+  it('does not treat a focusable window/frame as a clickable element', () => {
+    expect(isInteractive(mk({ role: 'window', states: ['focusable'] }))).toBe(false);
+    expect(isInteractive(mk({ role: 'frame', states: ['focusable'] }))).toBe(false);
+  });
+
+  it('treats plain layout scaffolding as non-interactive', () => {
+    expect(isInteractive(mk({ role: 'filler' }))).toBe(false);
+    expect(isInteractive(mk({ role: 'panel' }))).toBe(false);
+  });
+});
+
+describe('compressA11yTree', () => {
+  const compressed = () => compressA11yTree(buildA11yTree(FIXTURE));
+
+  it('lifts widgets out of the unnamed scaffolding boxes GTK nests everything in', () => {
+    const { roots } = compressed();
+    // application > frame > [widgets]; the filler AND the multi-child panel are
+    // spliced away, which a collapse-1-child-chains rule could not have done.
+    const frame = roots[0]!.children[0]!;
+    expect(frame.role).toBe('frame');
+    const kids = frame.children.map((c) => c.role);
+    expect(kids).not.toContain('filler');
+    expect(kids).not.toContain('panel');
+    expect(kids).toEqual(['label', 'entry', 'password text', 'push button', 'push button']);
+  });
+
+  it('measurably shrinks the tree it was given', () => {
+    const { stats } = compressed();
+    expect(stats.rawNodes).toBe(FIXTURE.length);
+    expect(stats.keptNodes).toBeLessThan(stats.rawNodes);
+  });
+
+  it('NEVER drops a showing interactive node — the invariant the whole design rests on', () => {
+    const { roots } = compressed();
+    const rendered = renderA11yTree(roots);
+    expect(rendered).toContain('"OK"');
+    expect(rendered).toContain('"Apply"');
+    expect(rendered).toContain('"Username"');
+    expect(rendered).toContain('"Password"');
+  });
+
+  it('DOES drop a not-showing menu subtree, so the model cannot click items that are not on screen', () => {
+    const { roots } = compressed();
+    const rendered = renderA11yTree(roots);
+    expect(rendered).not.toContain('"Quit"');
+    expect(rendered).not.toContain('"File"');
+  });
+
+  it('keeps a hidden subtree when the caller explicitly asks for it', () => {
+    const { roots } = compressA11yTree(buildA11yTree(FIXTURE), { includeHidden: true });
+    expect(renderA11yTree(roots)).toContain('"Quit"');
+  });
+
+  it('drops decorative leaves that carry no name, text, children or actions', () => {
+    const { roots } = compressed();
+    expect(renderA11yTree(roots)).not.toContain('filler');
+  });
+
+  it('always keeps the application root, so an empty app is distinguishable from no app', () => {
+    const bare = buildA11yTree([node('0', 'application', 'ghost-app', { s: [], e: null })]);
+    const { roots } = compressA11yTree(bare);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.name).toBe('ghost-app');
+  });
+
+  it('caps same-role siblings and reports how many it hid', () => {
+    const many: RawA11yNode[] = [node('0', 'application', 'list-app', { s: [], e: null }), node('0/0', 'frame', 'L')];
+    for (let i = 0; i < 50; i++) {
+      many.push(node(`0/0/${i}`, 'list item', `row ${i}`, { s: ['showing', 'visible', 'enabled'] }));
+    }
+    const { roots, stats } = compressA11yTree(buildA11yTree(many), { maxSiblingsPerRole: 5 });
+    const rendered = renderA11yTree(roots);
+    expect(rendered).toContain('row 0');
+    expect(rendered).not.toContain('row 40');
+    expect(rendered).toContain('… +45 more');
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('enforces the global node cap and flags the truncation', () => {
+    const { stats } = compressA11yTree(buildA11yTree(FIXTURE), { maxNodes: 3 });
+    expect(stats.keptNodes).toBeLessThanOrEqual(3);
+    expect(stats.truncated).toBe(true);
+  });
+
+  it('clips long names rather than letting one tooltip dominate the observation', () => {
+    const long = 'x'.repeat(500);
+    const tree = buildA11yTree([
+      node('0', 'application', 'a', { s: [], e: null }),
+      node('0/0', 'push button', long, { s: ['showing', 'visible', 'enabled'], a: ['click'] }),
+    ]);
+    const { roots } = compressA11yTree(tree, { maxNameChars: 20 });
+    expect(roots[0]!.children[0]!.name).toHaveLength(20);
+    expect(roots[0]!.children[0]!.name.endsWith('…')).toBe(true);
+  });
+});
+
+describe('renderA11yTree', () => {
+  it('emits a #ref for interactive nodes and none for static context', () => {
+    const { roots } = compressA11yTree(buildA11yTree(FIXTURE));
+    const lines = renderA11yTree(roots).split('\n');
+    const okLine = lines.find((l) => l.includes('"OK"'))!;
+    const labelLine = lines.find((l) => l.includes('"Sign in"'))!;
+    expect(okLine).toContain('#0/0/0/0/3');
+    expect(labelLine).not.toContain('#');
+  });
+
+  it('renders state flags, including disabled as the absence of enabled', () => {
+    const { roots } = compressA11yTree(buildA11yTree(FIXTURE));
+    const lines = renderA11yTree(roots).split('\n');
+    expect(lines.find((l) => l.includes('"Username"'))).toContain('[focused editable]');
+    expect(lines.find((l) => l.includes('"Apply"'))).toContain('disabled');
+    expect(lines.find((l) => l.includes('"OK"'))).not.toContain('disabled');
+  });
+
+  it('renders an entry\'s text value, which a screenshot can only show as pixels', () => {
+    const { roots } = compressA11yTree(buildA11yTree(FIXTURE));
+    expect(renderA11yTree(roots)).toContain('= "avi"');
+  });
+
+  it('omits bounds by default and includes them on request', () => {
+    const { roots } = compressA11yTree(buildA11yTree(FIXTURE));
+    expect(renderA11yTree(roots)).not.toContain('300,160');
+    expect(renderA11yTree(roots, { includeBounds: true })).toContain('(300,160 80x30)');
+  });
+});
+
+describe('findByRef + elementClickPoint', () => {
+  const roots = () => compressA11yTree(buildA11yTree(FIXTURE)).roots;
+
+  it('resolves a ref with or without the rendered # prefix', () => {
+    expect(findByRef(roots(), '0/0/0/0/3')?.name).toBe('OK');
+    expect(findByRef(roots(), '#0/0/0/0/3')?.name).toBe('OK');
+  });
+
+  it('returns null for an unknown or blank ref instead of guessing a neighbour', () => {
+    expect(findByRef(roots(), '9/9/9')).toBeNull();
+    expect(findByRef(roots(), '')).toBeNull();
+  });
+
+  it('clicks the CENTRE of the element in DISPLAY space — never scaled by capture geometry', () => {
+    const ok = findByRef(roots(), '0/0/0/0/3')!;
+    // Bounds [300,160,80,30] -> centre (340,175). The same point regardless of the
+    // capture box, which is the structural advantage of an element click over a
+    // pixel click under D-006 downscaling.
+    expect(elementClickPoint(ok, { width: 1920, height: 1080 })).toEqual([340, 175]);
+    expect(elementClickPoint(ok, { width: 1024, height: 768 })).toEqual([340, 175]);
+  });
+
+  it('clamps a centre that falls outside the display', () => {
+    const off: A11yNode = {
+      ref: '0/1', role: 'push button', name: 'Far', states: ['showing'], bounds: [5000, 5000, 20, 20],
+      actions: ['click'], value: '', children: [],
+    };
+    expect(elementClickPoint(off, { width: 1024, height: 768 })).toEqual([1023, 767]);
+  });
+
+  it('refuses a zero-area element loudly instead of clicking its corner', () => {
+    const zero: A11yNode = {
+      ref: '0/2', role: 'menu item', name: 'Quit', states: ['visible'], bounds: [0, 0, 0, 0],
+      actions: ['click'], value: '', children: [],
+    };
+    expect(() => elementClickPoint(zero, { width: 1024, height: 768 })).toThrow(/zero-area/);
+  });
+
+  it('refuses an element with no bounds at all', () => {
+    const none: A11yNode = {
+      ref: '0', role: 'application', name: 'a', states: [], bounds: null, actions: [], value: '', children: [],
+    };
+    expect(() => elementClickPoint(none, { width: 1024, height: 768 })).toThrow(/no on-screen bounds/);
+  });
+});
+
+describe('walkerCommand', () => {
+  it('inherits the sandbox rail — reading a desktop is as guarded as driving one', () => {
+    expect(() => walkerCommand(':0')).toThrow(/HOST display/);
+    expect(() => walkerCommand('not-a-display')).toThrow(/invalid display/);
+  });
+
+  it('binds DISPLAY to the sandbox and carries the walker on argv', () => {
+    const cmd = walkerCommand(':99');
+    expect(cmd.bin).toBe('gjs');
+    expect(cmd.args[0]).toBe('-c');
+    expect(cmd.args[1]).toBe(ATSPI_WALKER_JS);
+    expect(cmd.env.DISPLAY).toBe(':99');
+  });
+
+  it('carries a walker that prints exactly one sentinel line on both paths', () => {
+    // Cheap structural guard: the success and failure paths must BOTH emit the
+    // sentinel, or a walk that throws would parse as "the walker never ran".
+    const emissions = ATSPI_WALKER_JS.split(ATSPI_SENTINEL).length - 1;
+    expect(emissions).toBe(2);
+  });
+});
+
+describe('A11Y_APP_ENV', () => {
+  it('enables the bridge for GTK3, GTK4 and Qt in one env — no per-toolkit guess', () => {
+    expect(A11Y_APP_ENV.GTK_A11Y).toBe('atspi');
+    expect(A11Y_APP_ENV.GTK_MODULES).toContain('atk-bridge');
+    expect(A11Y_APP_ENV.NO_AT_BRIDGE).toBe('0');
+    expect(A11Y_APP_ENV.QT_ACCESSIBILITY).toBe('1');
+  });
+});
+
+describe('token estimates', () => {
+  it('keeps the image constant identical to the one D-006 measured with', () => {
+    expect(estimateImageTokens(1024, 576)).toBe(786);
+    expect(estimateImageTokens(1920, 1080)).toBe(2765);
+  });
+
+  it('makes the P-007 comparison a ratio between two observations of one screen', () => {
+    const { roots } = compressA11yTree(buildA11yTree(FIXTURE));
+    const text = renderA11yTree(roots);
+    const treeTokens = estimateTextTokens(text);
+    const shotTokens = estimateImageTokens(1024, 576);
+    expect(treeTokens).toBeGreaterThan(0);
+    expect(treeTokens).toBeLessThan(shotTokens);
+  });
+});

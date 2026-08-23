@@ -36,6 +36,8 @@
  * below unit-tests against a fixture with no live display.
  */
 
+import { sandboxXEnv } from './desktop-driver';
+
 /** Debian/Ubuntu packages a desktop needs before ANY accessibility observation works. */
 export const A11Y_APT_PACKAGES: readonly string[] = Object.freeze(['at-spi2-core', 'gjs']);
 
@@ -304,11 +306,19 @@ export interface CompressStats {
  * hidden siblings are gone). Running them the other way around keeps whole
  * subtrees of empty GTK boxes — which is exactly the noise this exists to remove.
  *
- * What is deliberately NOT dropped: anything `isInteractive`, whatever its name,
- * size or nesting. A compression that can hide a button is worse than no
- * compression at all, because the model cannot tell the difference between "there
- * is no Save button" and "the Save button was compressed away", and will confidently
+ * THE INVARIANT, stated precisely because the sloppy version of it is wrong in a
+ * dangerous direction: **a node the toolkit reports as SHOWING and that
+ * `isInteractive` is never dropped** — not for being unnamed, not for being
+ * zero-area, not for being deeply nested. A compression that can hide a live button
+ * is worse than no compression, because the model cannot distinguish "there is no
+ * Save button" from "the Save button was compressed away" and will confidently
  * report the former.
+ *
+ * What that invariant does NOT promise, deliberately: a NOT-showing interactive node
+ * IS dropped. A GTK menubar carries its entire unopened menu as a live, fully
+ * populated, not-showing subtree; rendering those items would invite the model to
+ * click things that are not on screen — a worse failure than omitting them, because
+ * the click silently lands on whatever IS at those coordinates.
  */
 export function compressA11yTree(
   roots: readonly A11yNode[],
@@ -325,18 +335,24 @@ export function compressA11yTree(
 
   const clip = (s: string): string => (s.length > maxChars ? `${s.slice(0, maxChars - 1)}…` : s);
 
-  /** Pass 1+2: bottom-up prune, then collapse. Returns null when the node is dropped. */
-  const prune = (node: A11yNode, depth: number): A11yNode | null => {
+  /**
+   * Pass 1+2: bottom-up prune, then splice.
+   *
+   * Returns a LIST, not a node, because the dominant GTK compression is not
+   * "drop this node" but "lift this node's children into its parent": a dialog
+   * arrives as frame > filler > panel > box > [the real widgets], and only the
+   * list-returning shape can remove those three intermediate boxes while keeping
+   * every widget. A node-returning version can only collapse a 1-child chain,
+   * which leaves every multi-child box in place — the majority of the noise.
+   */
+  const prune = (node: A11yNode, depth: number): A11yNode[] => {
     rawNodes += 1;
     if (depth > maxDepth) {
       truncated = true;
-      return null;
+      return [];
     }
     const kids: A11yNode[] = [];
-    for (const child of node.children) {
-      const kept = prune(child, depth + 1);
-      if (kept) kids.push(kept);
-    }
+    for (const child of node.children) kids.push(...prune(child, depth + 1));
 
     // Sibling capping, per role, so a 500-row list costs a line and a count rather
     // than 500 lines. Applied here (post-prune) so the cap counts nodes that SURVIVED.
@@ -355,46 +371,47 @@ export function compressA11yTree(
     }
     if (dropped > 0 && capped.length > 0) capped[capped.length - 1]!.omittedSiblings = dropped;
 
-    const isApp = depth === 0;
+    const keep = (): A11yNode[] => [
+      { ...node, name: clip(node.name), value: clip(node.value), children: capped },
+    ];
+
+    // An application root is always kept: it is the census the caller needs in order
+    // to tell "no apps on the a11y bus" from "apps present, nothing interesting".
+    if (depth === 0) return keep();
+
     const interactive = isInteractive(node);
     const named = node.name.trim().length > 0;
     const hasText = node.value.trim().length > 0;
 
-    // An application root is always kept: it is the census the caller needs in order
-    // to tell "no apps on the a11y bus" from "apps present, nothing interesting".
-    if (isApp) {
-      return { ...node, name: clip(node.name), value: clip(node.value), children: capped };
-    }
+    // NOT-SHOWING nodes go, unless something under them survived.
+    //
+    // ⚠ `showing`, deliberately NOT `showing || visible`. In AT-SPI the two are
+    // different questions: VISIBLE is "the object is marked visible" and SHOWING is
+    // "it is actually rendered on screen". A GTK menubar reports its unopened menus
+    // as visible-but-not-showing, so accepting `visible` here readmits the entire
+    // closed-menu subtree — items the model would then be invited to click, at
+    // coordinates occupied by something else entirely.
+    if (!includeHidden && capped.length === 0 && !node.states.includes('showing')) return [];
 
-    // Hidden / zero-area nodes go, unless something under them survived. A GTK menu
-    // that has never been opened is a real, fully-populated subtree reported as not
-    // showing; rendering it would invite the model to click items that are not there.
-    if (!includeHidden && capped.length === 0) {
-      const showing = node.states.includes('showing') || node.states.includes('visible');
-      if (!showing) return null;
+    // Scaffolding: an unnamed, non-interactive layout box contributes no meaning, so
+    // its children are LIFTED into its parent. This is the pass that actually shrinks
+    // a GTK tree — see the doc on `prune`'s return type.
+    if (SCAFFOLD_ROLES.has(node.role) && !named && !interactive) return capped;
+
+    // A leaf carrying nothing: no children, nothing to click, no name, no text.
+    if (capped.length === 0 && !interactive && !named && !hasText) return [];
+
+    // A zero-area leaf is present in the tree but not on screen.
+    if (capped.length === 0 && !interactive) {
       const area = node.bounds ? node.bounds[2] * node.bounds[3] : 0;
-      if (area <= 0 && !interactive) return null;
+      if (area <= 0) return [];
     }
 
-    // A leaf carrying no meaning at all.
-    if (capped.length === 0 && !interactive && !named && !hasText) return null;
-
-    // Scaffolding: an unnamed, non-interactive layout box. Its children are lifted
-    // into its parent by returning a marker the caller splices — handled below by
-    // returning the single child directly when there is exactly one, and by keeping
-    // the box otherwise (a box with several children is genuine grouping information).
-    if (SCAFFOLD_ROLES.has(node.role) && !named && !interactive && capped.length === 1) {
-      return capped[0]!;
-    }
-
-    return { ...node, name: clip(node.name), value: clip(node.value), children: capped };
+    return keep();
   };
 
   const pruned: A11yNode[] = [];
-  for (const root of roots) {
-    const kept = prune(root, 0);
-    if (kept) pruned.push(kept);
-  }
+  for (const root of roots) pruned.push(...prune(root, 0));
 
   // Pass 3: the global node cap, applied depth-first so the cut is a suffix of the
   // rendering rather than a hole in the middle of it.
@@ -461,8 +478,10 @@ export function renderA11yTree(roots: readonly A11yNode[], opts: RenderOptions =
     if (node.name) line += ` "${node.name}"`;
     if (node.value && node.value !== node.name) line += ` = "${node.value}"`;
     if (isInteractive(node)) line += ` #${node.ref}`;
-    const flags = RENDERED_STATES.filter((s) => node.states.includes(s));
-    if (!node.states.includes('enabled') && !SCAFFOLD_ROLES.has(node.role)) flags.push('disabled' as never);
+    const flags: string[] = RENDERED_STATES.filter((s) => node.states.includes(s));
+    // `disabled` is rendered as the ABSENCE of `enabled`, and only where the absence
+    // is meaningful: a scaffolding box legitimately reports neither.
+    if (!node.states.includes('enabled') && isInteractive(node)) flags.push('disabled');
     if (flags.length) line += ` [${flags.join(' ')}]`;
     if (opts.includeBounds && node.bounds) {
       const [x, y, w, h] = node.bounds;
@@ -523,9 +542,16 @@ export function elementClickPoint(
  * The walker invocation for a display. `gjs -c <program>` rather than a checked-in
  * script path — see the module header for why an asset path is the wrong dependency
  * for a bundled package.
+ *
+ * The env comes from `sandboxXEnv`, which is what makes the observation path inherit
+ * the SAME deny-by-default rail as every input action: the walker cannot be pointed
+ * at the operator's `:0`, so reading a desktop is exactly as sandboxed as driving one.
+ * That matters more here than it looks — a tree read is the one desktop operation
+ * that feels passive enough to justify skipping the guard, and a tree of the
+ * operator's real session is a straight exfiltration of the fleet's terminals.
  */
-export function walkerCommand(display: string): { bin: string; args: string[] } {
-  return { bin: 'gjs', args: ['-c', ATSPI_WALKER_JS] };
+export function walkerCommand(display: string): { bin: string; args: string[]; env: Record<string, string> } {
+  return { bin: 'gjs', args: ['-c', ATSPI_WALKER_JS], env: sandboxXEnv(display) };
 }
 
 /**
