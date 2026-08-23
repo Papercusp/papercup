@@ -426,6 +426,15 @@ function safeHeader(value: string, field: string, maxLength = 8_000): string {
   return normalized;
 }
 
+/**
+ * `Re:`-prefix a subject exactly once. Mail-protocol knowledge, so it belongs
+ * with the adapter rather than being re-implemented by each caller.
+ */
+export function replySubjectFor(subject: string): string {
+  const normalized = String(subject ?? '').trim();
+  return /^re\s*:/i.test(normalized) ? normalized : `Re: ${normalized}`;
+}
+
 function replyReferences(references: string | null | undefined, inReplyTo: string): string {
   const prior = references?.trim() ?? '';
   const combined = prior ? `${prior} ${inReplyTo}` : inReplyTo;

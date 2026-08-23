@@ -4,7 +4,7 @@ import { hashPlanContent } from '@papercusp/plan-parser';
 import { deriveIndexFromContent } from '../agent-tools/plans/source';
 import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
 import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from './admin';
-import { createGoogleGmailDraft, type GoogleGmailDraftResult } from './google-gmail';
+import { createGoogleGmailDraft, replySubjectFor, type GoogleGmailDraftResult } from './google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from './google-workspace';
 import type { ExternalTriggerSourceRow } from './source-store';
 
@@ -210,9 +210,8 @@ function string(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function replySubject(subject: string): string {
-  return /^re\s*:/i.test(subject) ? subject : `Re: ${subject}`;
-}
+/** Re-exported from the adapter so `Re:` handling exists in exactly one place. */
+const replySubject = replySubjectFor;
 
 /** Resolve the originating email from a durable run and create exactly one draft reply. */
 export async function draftResponseToGmailTriggerPlanRun(
