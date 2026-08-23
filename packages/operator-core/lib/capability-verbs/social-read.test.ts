@@ -215,9 +215,28 @@ describe('socialWriteAvailability — read verified, write refused, told at read
     // read-verified AND write-refused. Every Wave A row is now write-verified
     // and every other row is unverified, so that combination is covered
     // synthetically in social.test.ts against a constructed row instead.
-    const availability = socialWriteAvailability('linkedin', 'reply');
+    // tiktok, not linkedin: LinkedIn was this example until P-021 verified it,
+    // and it now demonstrates a different refusal (see the test below).
+    const availability = socialWriteAvailability('tiktok', 'reply');
     expect(availability.allowed).toBe(false);
     expect(availability.reason).toBe('unverified');
+  });
+
+  it('reports a VERIFIED platform as not replyable when the verb itself is unsupported', () => {
+    // A refusal shape that had no real example until LinkedIn (P-021), and the
+    // distinction is the point: this platform is fully verified, usable, and
+    // can write — it just cannot reply, because its self-serve grant covers
+    // posting but not commenting. `unverified` would tell an owner to go verify
+    // something; `write-verb-unsupported` tells them the truth, which is that
+    // no amount of verification will add this verb without a different grant.
+    const availability = socialWriteAvailability('linkedin', 'reply');
+    expect(availability.allowed).toBe(false);
+    expect(availability.reason).toBe('write-verb-unsupported');
+
+    // …and the verbs it DOES support are genuinely available, which is what
+    // makes the refusal above specific rather than a blanket platform block.
+    expect(socialWriteAvailability('linkedin', 'post').allowed).toBe(true);
+    expect(socialWriteAvailability('linkedin', 'delete').allowed).toBe(true);
   });
 
   it('never throws for a registered platform — it is a report, not a gate', () => {
