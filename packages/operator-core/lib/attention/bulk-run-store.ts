@@ -421,31 +421,8 @@ export async function reportOutcomes(input: {
     else unknown.push(o.itemId);
   }
 
-  const runRows = await sql<RawRunRow[]>`
-    UPDATE harness_shared.attention_bulk_runs r
-       SET auto_resolved = c.auto_resolved,
-           recommended = c.recommended,
-           skipped = c.skipped,
-           failed = c.failed,
-           updated_at = now()
-      FROM (
-        SELECT
-          COUNT(*) FILTER (WHERE outcome = 'auto_resolved')::int AS auto_resolved,
-          COUNT(*) FILTER (WHERE outcome = 'recommended')::int  AS recommended,
-          COUNT(*) FILTER (WHERE outcome = 'skipped')::int      AS skipped,
-          COUNT(*) FILTER (WHERE outcome = 'failed')::int       AS failed
-          FROM harness_shared.attention_bulk_run_items
-         WHERE workspace_id = ${ws} AND run_id = ${input.runId}
-      ) c
-     WHERE r.workspace_id = ${ws} AND r.run_id = ${input.runId}
-    RETURNING ${sql.unsafe(RUN_COLUMNS.replace(/\b(\w+)\b/g, 'r.$1').replace(/r\.(?=,|$|\s)/g, ''))}
-  `.catch(async () => {
-    // The RETURNING alias rewrite is cosmetic; fall back to a plain re-read
-    // rather than failing a report that already landed.
-    return [] as RawRunRow[];
-  });
-
-  const run = runRows[0] ? mapRun(runRows[0]) : await getRun(input.runId, ws);
+  await reportCountersOnly(input.runId, ws);
+  const run = await getRun(input.runId, ws);
   return { updated, unknown, run };
 }
 
