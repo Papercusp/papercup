@@ -781,6 +781,10 @@ export interface GitSyncSkippedPath {
  * any conflict → 'conflict', else any error → 'error', else 'synced'/'nothing'.
  */
 export type GitSyncOutcome = {
+  /** Number of dirty paths measured across every repo visited by this pass. */
+  dirtyPathCount: number;
+  /** Number of local commits created across every repo during this pass. */
+  committedCount: number;
   /** Dirty files excluded from this pass's auto-commits for exceeding maxBlobBytes
    *  (EI-18). Non-empty = someone must gitignore/remove them — this NEVER self-heals;
    *  the caller escalates. Present on every status ('nothing' included: an
@@ -1971,6 +1975,10 @@ export function newStashEntries(current: StashEntry[], knownShas: readonly strin
 }
 
 type RepoSyncResult = {
+  /** Dirty paths measured before this repo's commit stage. */
+  dirtyPathCount: number;
+  /** Local commits created by this repo during this pass. */
+  committedCount: number;
   oversized: OversizedFile[];
   contentErrors: ContentOffender[];
   mergeCompleted?: boolean;
@@ -2115,12 +2123,13 @@ export async function commitAttributedGroups(
   excludePaths: string[],
   message: string,
   opts: { diffSubjects?: boolean } = {},
-): Promise<{ committedAny: boolean; error?: string }> {
+): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
   const excludeSet = new Set(excludePaths);
   const dirty = (await dirtyFiles(runGit, repoPath)).filter((f) => !excludeSet.has(f));
   const groups = groupFilesForAttribution(dirty, attribution);
   const suffix = skipCiSuffix(message);
   let committedAny = false;
+  let committedCount = 0;
   for (const g of groups) {
     if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
     await runGit(['add', '--', ...g.files], repoPath);
@@ -2150,12 +2159,15 @@ export async function commitAttributedGroups(
     if (g.sessionId) args.push('-m', `Papercusp-Session: ${g.sessionId}`);
     if (g.planSlug) args.push('-m', `Papercusp-Plan: ${g.planSlug}`);
     const c = await runGit(args, repoPath);
-    if (c.code === 0) committedAny = true;
+    if (c.code === 0) {
+      committedAny = true;
+      committedCount += 1;
+    }
     else if (!nothingToCommit(c)) {
-      return { committedAny, error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}` };
+      return { committedAny, committedCount, error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}` };
     }
   }
-  return { committedAny };
+  return { committedAny, committedCount };
 }
 
 /** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
@@ -2199,6 +2211,8 @@ type ReconcileRepoOpts = Pick<
 /** JSON-serializable — checkpointed as the superproject `git-sync:pointer-bump` step output. */
 interface CommitRepoResult {
   committedLocal: boolean;
+  dirtyPathCount: number;
+  committedCount: number;
   oversized: OversizedFile[];
   contentErrors: ContentOffender[];
   skippedPaths?: GitSyncSkippedPath[];
@@ -2216,9 +2230,11 @@ interface CommitRepoResult {
 async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts): Promise<CommitRepoResult> {
   const { message } = o;
   let committedLocal = false;
+  let committedCount = 0;
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
   const dirty = await dirtyFiles(runGit, repoPath);
+  const dirtyPathCount = dirty.length;
   const skippedPaths = o.protectedHoldings
     .filter((holding) =>
       dirty.some(
@@ -2239,13 +2255,15 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       `[git-sync] ${o.scope}: deferring the whole commit group because live lock(s) hold dirty path(s): ` +
         skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
     );
-    return { committedLocal: false, oversized: [], contentErrors: [], skippedPaths };
+    return { committedLocal: false, dirtyPathCount, committedCount, oversized: [], contentErrors: [], skippedPaths };
   }
   if (await isDirty(runGit, repoPath)) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
     if ('error' in attachment) {
       return {
         committedLocal: false,
+        dirtyPathCount,
+        committedCount,
         error: attachment.error,
         oversized,
         contentErrors,
@@ -2384,6 +2402,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         );
       }
       committedAny = res.committedAny;
+      committedCount += res.committedCount;
     }
     // Catch-all = today's single whole-tree commit: sweeps the unattributed remainder (or
     // EVERYTHING when no attribution), including anything a path-specific add missed (rename
@@ -2486,6 +2505,8 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       if (addRes.code !== 0) {
         return {
           committedLocal: false,
+          dirtyPathCount,
+          committedCount,
           error: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
           oversized,
           contentErrors,
@@ -2517,6 +2538,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     const c = await runGit(commitArgs, repoPath);
     if (c.code === 0) {
       committedAny = true;
+      committedCount += 1;
     } else if (!nothingToCommit(c)) {
       // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
       // a merge conflict. If the still-dirty tree fell through to the merge phase it
@@ -2525,6 +2547,8 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       // stayed invisible. Surface it as an error.
       return {
         committedLocal: false,
+        dirtyPathCount,
+        committedCount,
         error: `commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
         oversized,
         contentErrors,
@@ -2532,7 +2556,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     }
     committedLocal = committedAny;
   }
-  return { committedLocal, oversized, contentErrors };
+  return { committedLocal, dirtyPathCount, committedCount, oversized, contentErrors };
 }
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:push` step output. */
