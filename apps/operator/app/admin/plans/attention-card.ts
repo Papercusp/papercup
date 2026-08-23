@@ -110,6 +110,9 @@ function hintFor(item: AttentionItem, optionId: string, namedEscalationOption: b
     case 'discuss':
       return 'Opens a message thread with the agent below. Does not answer or close this.';
     case 'answer':
+      if (kind === 'work-item-needs-human' || kind === 'owner-wall') {
+        return 'Sends your answer to the live agent, wakes it, then clears this owner block after delivery.';
+      }
       return 'Opens a text box below. Your reply is recorded as the accepted answer and closes this.';
     case 'chat':
     case 'message-owner':
@@ -426,9 +429,41 @@ export interface ReplyResult extends ResolveResult {
  * call above.
  */
 export async function replyToAttentionItem(item: AttentionItem, answerText: string): Promise<ReplyResult> {
-  const resolved = await answerAttentionItem(item, answerText);
   const askerId = item.ownerAgentId;
   const body = answerText.trim();
+  const kind = (item.ref as { kind: string }).kind;
+
+  // P-013: needs-human work items and owner walls are already durable source
+  // records; their missing operation was the OWNER'S TEXT reaching the live
+  // agent that can clear the source. Deliver first, then triage the attention
+  // card only after that authoritative owner turn lands. If the agent is gone
+  // or delivery fails, leave the card unresolved — the adapter exposes the
+  // honest source/session fallback instead of silently losing the answer.
+  if (kind === 'work-item-needs-human' || kind === 'owner-wall') {
+    if (!askerId || !body) return { resolved: false, live: false, woken: 0 };
+    try {
+      const delivered = await deliverInboxReply({
+        askerId,
+        text: body,
+        summary: `Owner answered your ${item.kind} (${item.id})`,
+        planSlug: item.planSlug ?? undefined,
+      });
+      if (delivered.error || !delivered.delivered) {
+        return { resolved: false, live: delivered.live, woken: delivered.woken };
+      }
+      const triaged = await triageAttentionItem({
+        itemId: item.id,
+        action: 'resolve',
+        note: 'Owner answer delivered from the Resolution Inbox',
+      });
+      if (triaged?.error) throw new Error(triaged.error);
+      return { resolved: true, live: delivered.live, woken: delivered.woken };
+    } catch {
+      return { resolved: false, live: false, woken: 0 };
+    }
+  }
+
+  const resolved = await answerAttentionItem(item, answerText);
   if (!resolved.resolved || !askerId || !body) return { ...resolved, live: false, woken: 0 };
   try {
     const res = await deliverInboxReply({

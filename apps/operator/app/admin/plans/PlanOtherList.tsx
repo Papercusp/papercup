@@ -39,6 +39,7 @@ import {
   TIER_LABEL,
   useHydratedAttentionItem,
   type AttentionGroup,
+  type AttentionActionId,
   type AttentionItem,
   type AttentionKind,
   type AttentionTier,
@@ -409,13 +410,17 @@ export default function PlanOtherList({
   );
 }
 
-export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
+export function OtherDetail({ item: listItem, onResolved, onDiscuss, onNavigate }: {
   item: AttentionItem | null;
   onResolved: () => void;
   /** Host override for the Discuss pick (owner ask 2026-07-16: the sidebar
    *  Inbox routes Discuss to the Papercup chat). Return true = handled —
    *  the inline DiscussPanel is suppressed; false/omitted = default panel. */
   onDiscuss?: (item: AttentionItem) => boolean;
+  /** Host-specific navigation for source/session actions. The Resolution Inbox
+   *  uses this to open the shared work-item popup or focus SessionChatModal;
+   *  the Queue keeps its existing explanatory fallback. */
+  onNavigate?: (item: AttentionItem, actionId: AttentionActionId) => boolean;
 }) {
   // The row arrives from the SLIMMED list feed (body clipped, `actions` dropped
   // — slim-plans-attention-sync-payload-2026-07-26 P-003), so the detail pane
@@ -460,6 +465,8 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
       } else if (resp.option_id === 'answer') {
         // D-027 follow-on (1): reveal the inline Answer InputCard (conversation).
         setAnswerOpen((v) => !v);
+      } else if (onNavigate?.(item, resp.option_id as AttentionActionId)) {
+        return;
       } else {
         toast.info(
           `${resp.label}: this ${kindLabel} lives in its harness view${
@@ -582,7 +589,11 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
         />
         {answerOpen ? (
           <InputCard
-            prompt="Your answer — recorded as the accepted answer (resolves the question and captures it for the next asker)."
+            prompt={
+              item.ref.kind === 'work-item-needs-human' || item.ref.kind === 'owner-wall'
+                ? 'Your answer — delivered to the live agent and clears this owner block after delivery.'
+                : 'Your answer — recorded as the accepted answer (resolves the question and captures it for the next asker).'
+            }
             presentation={{ kind: 'text', placeholder: 'Type your answer…', multiline: true }}
             onResponse={(r) => void onAnswerResponse(r)}
           />

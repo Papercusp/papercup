@@ -669,14 +669,11 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
     expect(screen.queryByTestId('op-chat-rail-badge')).toBeNull();
   });
 
-  /* hud-open-destinations-and-true-counts-2026-07-27 P-003 (owner report:
-     "clicking open on one of the papercup reports is supposed to open something
-     relevant but it isn't"). Before P-003 every one of these refs produced a
-     bare `/adv?tab=hud` unless the matched item happened to carry an
-     ownerAgentId — a visible no-op fired from a sidebar already on /adv. Each
-     kind of ref now opens the thing it NAMES. */
+  /* owner-inbox-single-pane P-013: a ref that matches a LIVE attention row
+     opens the canonical Inbox and selects that row. Refs with no live Inbox
+     row preserve the specific popup/HUD fallbacks. */
 
-  it('an escalation ref with an owning agent still opens that agent\'s HUD conversation', () => {
+  it('a live escalation opens the canonical Inbox with that card selected', () => {
     drillState.ref = 'escalation:msg-9';
     withEscalationRef();
     inboxState.items = [
@@ -684,20 +681,21 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
     ];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    // Carries the workspace + harness context forward (see below) rather than
-    // pushing a bare `/adv?tab=hud&hudsession=…`.
-    expect(routerPushSpy).toHaveBeenCalledWith(
-      '/adv?tab=hud&ws=ws-test&slug=papercusp&hudsession=su-abc123',
-    );
+    expect(nuqsWrites.current.opcv).toBe('inbox');
+    expect(nuqsWrites.current.opci).toBe('all');
+    expect(nuqsWrites.current.opcis).toBe('coord-escalation:msg-9');
+    expect(routerPushSpy).not.toHaveBeenCalled();
   });
 
-  it('a WORK-ITEM ref opens the work-item popup instead of navigating (the reported no-op)', () => {
+  it('a work-item ref with a live attention row opens that Inbox card', () => {
     drillState.ref = 'wi:WI-1';
     inboxState.items = [{ id: 'wi-1', itemRef: 'WI-1', planSlug: null, ownerAgentId: null }];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    // `wpop` is "<harnessSlug>::<id>" — the param OperatorChat's popup reads.
-    expect(nuqsWrites.current.wpop).toBe('papercusp::WI-1');
+    expect(nuqsWrites.current.opcv).toBe('inbox');
+    expect(nuqsWrites.current.opci).toBe('all');
+    expect(nuqsWrites.current.opcis).toBe('wi-1');
+    expect(nuqsWrites.current.wpop).toBeUndefined();
     expect(routerPushSpy).not.toHaveBeenCalled();
   });
 
@@ -728,12 +726,9 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
      the exact visible no-op this plan fixes, reachable again in two clicks.
      These assert the CONTEXT survives a navigation, and that view state does
      not ride along with it. */
-  it('a navigating drill-in carries workspace + harness context so the NEXT work-item drill-in still resolves', () => {
-    drillState.ref = 'escalation:msg-9';
-    withEscalationRef();
-    inboxState.items = [
-      { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
-    ];
+  it('a fallback HUD navigation carries workspace + harness context', () => {
+    drillState.ref = 'health:some-panel';
+    inboxState.items = [];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
     const href = routerPushSpy.mock.calls[0][0] as string;
@@ -754,11 +749,8 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
       search: '?ws=papercusp-workspace&slug=papercusp&tab=hud',
     } as Location);
     try {
-      drillState.ref = 'escalation:msg-9';
-      withEscalationRef();
-      inboxState.items = [
-        { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
-      ];
+      drillState.ref = 'health:some-panel';
+      inboxState.items = [];
       render(<OperatorChatSidebar />);
       fireEvent.click(screen.getByTestId('drill-in-trigger'));
       const href = routerPushSpy.mock.calls[0][0] as string;
@@ -773,11 +765,8 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
   });
 
   it('falls back to the hook workspace/harness when the URL carries neither (the /quick-panel mount)', () => {
-    drillState.ref = 'escalation:msg-9';
-    withEscalationRef();
-    inboxState.items = [
-      { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
-    ];
+    drillState.ref = 'health:some-panel';
+    inboxState.items = [];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
     const href = routerPushSpy.mock.calls[0][0] as string;

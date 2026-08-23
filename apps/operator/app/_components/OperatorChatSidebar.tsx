@@ -38,7 +38,11 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { OperatorChat } from './OperatorChat';
-import { resolveDrillInTarget, reportNeedsLiveItems } from './chat/curator-card-drill-in';
+import {
+  resolveDrillInTarget,
+  resolveInboxDrillIn,
+  reportNeedsLiveItems,
+} from './chat/curator-card-drill-in';
 import {
   CHAT_PLAN_POPUP_PARAM,
   CHAT_WORK_ITEM_POPUP_PARAM,
@@ -333,6 +337,12 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
     [extraFaceIds],
   );
   const [view, setView] = useQueryState('opcv', viewParser);
+  // P-013: a report row that already corresponds to a live attention item
+  // opens the canonical Resolution Inbox face and selects that exact card.
+  // Keep these params beside `opcv`: the click owns one atomic destination,
+  // even though InboxPane also reads the same URL state once mounted.
+  const [, setInboxFilter] = useQueryState('opci', parseAsString);
+  const [, setInboxSelection] = useQueryState('opcis', parseAsString);
   const potOpen = view === 'pot';
   const plansOpen = view === 'plans';
   const inboxOpen = view === 'inbox';
@@ -473,7 +483,22 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   );
   const handleCardDrillIn = useCallback(
     (ref: string) => {
-      const target = resolveDrillInTarget(ref, inboxItemsRef.current, harnessSlug);
+      const liveItems = inboxItemsRef.current;
+      const inboxTarget = resolveInboxDrillIn(ref, liveItems);
+      // `resolveInboxDrillIn` intentionally synthesizes an escalation id even
+      // after that row ages out. Only prefer the Inbox when the selected id is
+      // present NOW; otherwise preserve the specific popup/HUD fallback below.
+      if (
+        inboxTarget.selId &&
+        liveItems.some((item) => item.id === inboxTarget.selId)
+      ) {
+        void setView('inbox');
+        void setInboxFilter(inboxTarget.filter ?? 'all');
+        void setInboxSelection(inboxTarget.selId);
+        return;
+      }
+
+      const target = resolveDrillInTarget(ref, liveItems, harnessSlug);
       switch (target?.kind) {
         case 'work-item':
           // `wpop` encodes "<harness>::<id>" — workItems.detail is harness-scoped.
@@ -500,7 +525,16 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
       // renders the ask itself, so it is the least-wrong destination.
       router.push(buildAdvHudHref());
     },
-    [router, harnessSlug, setOpenWorkItem, setOpenChatPlan, buildAdvHudHref],
+    [
+      router,
+      harnessSlug,
+      setOpenWorkItem,
+      setOpenChatPlan,
+      setView,
+      setInboxFilter,
+      setInboxSelection,
+      buildAdvHudHref,
+    ],
   );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;

@@ -166,6 +166,22 @@ const conversationNoAsker = item({
   actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'message-owner', label: 'Message owner' }],
   ref: { kind: 'conversation', conversationId: 'CONV-8' },
 });
+const workItemOwnerBlock = item({
+  id: 'work-item-needs-human:WI-42',
+  kind: 'work-item-needs-human',
+  source: 'harness',
+  ownerAgentId: 'su-worker-42',
+  actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'open', label: 'Open work item' }],
+  ref: { kind: 'work-item-needs-human', workItemId: 'WI-42', itemKind: 'change' },
+});
+const liveOwnerWall = item({
+  id: 'owner-wall:work-item:WI-43',
+  kind: 'owner-wall',
+  source: 'harness',
+  ownerAgentId: 'su-worker-43',
+  actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'message-owner', label: 'Open agent session' }],
+  ref: { kind: 'owner-wall', wallSource: 'work-item', wallOwnerId: 'su-worker-43', wallRef: 'WI-43' },
+});
 const improvement = item({
   kind: 'improvement',
   status: 'needs-triage',
@@ -434,6 +450,29 @@ describe('answerAttentionItem (P-021 Answer flow parity)', () => {
 // owner-inbox-single-pane-2026-07-17 P-006 (D-006/D-007): reply routing layered
 // on top of the existing answer/resolve path.
 describe('replyToAttentionItem (P-006 reply routing, D-006/D-007)', () => {
+  it.each([workItemOwnerBlock, liveOwnerWall])(
+    'delivers a live heterogeneous owner answer before clearing $kind',
+    async (ownerBlock) => {
+      const r = await replyToAttentionItem(ownerBlock, 'Use the safe migration path');
+      expect(deliverInboxReply).toHaveBeenCalledWith(
+        expect.objectContaining({ askerId: ownerBlock.ownerAgentId, text: 'Use the safe migration path' }),
+      );
+      expect(triageAttentionItem).toHaveBeenCalledWith({
+        itemId: ownerBlock.id,
+        action: 'resolve',
+        note: 'Owner answer delivered from the Resolution Inbox',
+      });
+      expect(r).toMatchObject({ resolved: true, live: true, woken: 1 });
+    },
+  );
+
+  it('keeps a heterogeneous owner block unresolved when delivery cannot reach the agent', async () => {
+    vi.mocked(deliverInboxReply).mockResolvedValueOnce({ ok: true, live: false, delivered: false, woken: 0 });
+    const r = await replyToAttentionItem(workItemOwnerBlock, 'Use the safe migration path');
+    expect(triageAttentionItem).not.toHaveBeenCalled();
+    expect(r).toEqual({ resolved: false, live: false, woken: 0 });
+  });
+
   it('resolves the conversation AND pushes the reply to a LIVE asker (ownerAgentId set)', async () => {
     const r = await replyToAttentionItem(conversation, 'use approach B');
     expect(resolveConversationAnswer).toHaveBeenCalledWith({ conversation_id: 'CONV-7', accepted_answer: 'use approach B' });
