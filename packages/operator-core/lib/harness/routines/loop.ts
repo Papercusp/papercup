@@ -1927,7 +1927,9 @@ export async function readActiveLoopFacts(
  *     kickoff's self-arm instruction still applies for an unplanned member).
  *   - IDEMPOTENT — never clobbers an existing loop for this owner (self-armed,
  *     armed on a prior boot, or already retuned): a live active loop is left
- *     completely untouched. The member can always `loop:end` + re-arm to retune.
+ *     completely untouched, and an inactive predecessor's cadence/lifecycle/
+ *     mission are carried into the recovery arm. An explicit `loop:arm` remains
+ *     the path for a member that intentionally wants to retune.
  *   - Respects the same `papercusp-loops` feature gate `loop:arm` itself checks.
  *
  * Best-effort: any failure here must never fail the launch — the kickoff's
@@ -1964,24 +1966,56 @@ export async function autoArmFleetMemberLoop(opts: {
     const existing = await getLoopStatus(opts.ownerId, { sql: opts.sql });
     if (existing?.active) return { armed: false, reason: 'already-armed', loopName: existing.name };
 
-    const intervalSec = LOOP_INTERVAL_FLOOR_SEC; // 60s — the AUTO-mode standing default cadence
-    const goal = `Drive plan \`${opts.planSlug}\` per your member role in fleet \`${opts.fleetSlug}\` (coord:orient to pull your lane).`;
+    // A boot/recovery path can see the owner's prior loop after loop:end or a
+    // session teardown. Replacing that inactive row with the fleet default is a
+    // silent retune: it discards an explicit fallback cadence (for example 1200s),
+    // cold/gated lifecycle, monitor mode, and any blocker-aware kickoff. Read the
+    // full payload only for this inactive recovery case; active loops returned
+    // above remain completely untouched.
+    let priorLoopFacts: PriorLoopFacts | null = null;
+    if (existing && !existing.active) {
+      try {
+        priorLoopFacts = await readActiveLoopFacts(opts.ownerId, { sql: opts.sql });
+      } catch (e) {
+        // Best-effort recovery must still be able to arm with safe defaults when
+        // the optional payload read is unavailable.
+        console.warn(
+          `[autoArmFleetMemberLoop] prior inactive loop read failed; using defaults: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+
+    const intervalSec = existing?.intervalSec ?? priorLoopFacts?.intervalSec ?? LOOP_INTERVAL_FLOOR_SEC;
+    const goal =
+      priorLoopFacts?.goal ??
+      existing?.goal ??
+      `Drive plan \`${opts.planSlug}\` per your member role in fleet \`${opts.fleetSlug}\` (coord:orient to pull your lane).`;
+    const carry = existing?.carry ?? priorLoopFacts?.carry ?? 'warm';
+    const continuation = existing?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
+    const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
     const kickoff = buildLoopWakePrompt({
       ownerId: opts.ownerId,
       intervalSec,
       harness: opts.harnessSlug,
       goal,
-      mode: 'work',
+      carry,
+      continuation,
+      mode,
     });
+    const preservedKickoff = priorLoopFacts?.kickoff?.trim() || kickoff;
     const loop = await materializeLoop({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       ownerId: opts.ownerId,
       intervalSec,
-      kickoff,
+      kickoff: preservedKickoff,
       // EI-20194544581627100: auto-arm derives the member mission above; persist
       // it structurally so loop:status and cold resets can recover the goal.
       goal,
+      carry,
+      continuation,
+      mode,
+      ...(priorLoopFacts?.customWakePrompt === true ? { customWakePrompt: true } : {}),
       sql: opts.sql,
     });
     // Wake-reachability is INTRINSIC to arming a loop (mirrors loop:arm's own

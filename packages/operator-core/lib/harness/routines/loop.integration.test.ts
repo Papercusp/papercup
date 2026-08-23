@@ -813,6 +813,64 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     expect(retained!.payload_template).toMatchObject({ kickoff: 'member reset retained goal', goal: expectedGoal });
     expect((await getLoopStatus(OTHER, { sql }))!.goal).toBe(expectedGoal);
   });
+
+  it('EI-21206138277595747: inactive recovery preserves an explicit cadence and lifecycle payload', async () => {
+    const OTHER = 'su-fleet-member-inactive-config-test';
+    const priorGoal = 'continue the monitor at the widened fallback cadence';
+    const priorKickoff = '⏸ BACKOFF PREMISE — re-check the release gate before proceeding';
+
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OTHER,
+      intervalSec: 1200,
+      kickoff: priorKickoff,
+      customWakePrompt: true,
+      goal: priorGoal,
+      carry: 'cold',
+      continuation: 'gated',
+      mode: 'monitor',
+      sql,
+    });
+    await deactivateLoop(OTHER, { sql });
+
+    expect(await getLoopStatus(OTHER, { sql })).toMatchObject({
+      active: false,
+      intervalSec: 1200,
+      carry: 'cold',
+      continuation: 'gated',
+      mode: 'monitor',
+      goal: priorGoal,
+    });
+
+    const res = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: OTHER,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+
+    expect(res).toEqual({ armed: true, reason: 'armed', loopName: loopRoutineName(OTHER) });
+    expect(await getLoopStatus(OTHER, { sql })).toMatchObject({
+      active: true,
+      intervalSec: 1200,
+      carry: 'cold',
+      continuation: 'gated',
+      mode: 'monitor',
+      goal: priorGoal,
+    });
+    expect((await rawRow(OTHER))!.payload_template).toMatchObject({
+      kickoff: priorKickoff,
+      customWakePrompt: true,
+      goal: priorGoal,
+      carry: 'cold',
+      continuation: 'gated',
+      mode: 'monitor',
+    });
+  });
 });
 
 /**
