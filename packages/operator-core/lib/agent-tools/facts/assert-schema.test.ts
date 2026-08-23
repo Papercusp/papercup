@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import assertTool from './assert';
+import { FACT_MAX_SUPERSEDES } from '../../agent-facts/store';
 
 const base = {
   scope: 'owner',
@@ -89,5 +90,30 @@ describe('facts:assert shareable federation contract', () => {
     expect(json).toContain('shareable');
     expect(json).toContain('Concrete federation harness required');
     expect(json).toContain('const":true');
+  });
+});
+
+describe('facts:assert supersedes contract', () => {
+  it('publishes a bounded sibling-key list on every modality branch', () => {
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        supersedes: Array.from({ length: FACT_MAX_SUPERSEDES }, (_, i) => `old-${i}`),
+      }).success,
+    ).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        supersedes: Array.from({ length: FACT_MAX_SUPERSEDES + 1 }, (_, i) => `old-${i}`),
+      }).success,
+    ).toBe(false);
+    expect(assertTool.args.safeParse({ ...base, supersedes: [''] }).success).toBe(false);
+  });
+
+  it('documents same-scope atomic retirement and the actual-change receipt', () => {
+    const json = JSON.stringify(z.toJSONSchema(assertTool.args as never));
+    expect(json).toContain('supersedes');
+    expect(json).toContain('SAME workspace/scope/ref');
+    expect(json).toContain('receipt reports the keys actually retired');
   });
 });

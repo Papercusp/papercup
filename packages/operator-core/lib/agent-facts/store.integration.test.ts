@@ -1307,6 +1307,146 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   });
 });
 
+describe('EI-15900 cross-key supersession — one current conclusion replaces its siblings', () => {
+  const scopeRef = 'su-cross-key-supersession';
+  const base = {
+    scope: 'owner' as const,
+    scopeRef,
+    createdBy: 'su-reconciler',
+    workspaceId: WS,
+  };
+  const selector = { scope: 'owner' as const, scopeRef };
+
+  it('normalizes + deduplicates keys, retires only current same-scope locals, and reports what changed', async () => {
+    await assertFact({ ...base, key: 'incident-a', body: 'partial diagnosis A' }, db.sql);
+    await assertFact({ ...base, key: 'incident-b', body: 'partial diagnosis B' }, db.sql);
+    await assertFact({ ...base, key: 'already-retired', body: 'old conclusion' }, db.sql);
+    await retractFact(
+      {
+        ...selector,
+        key: 'already-retired',
+        workspaceId: WS,
+        retractedBy: 'su-earlier',
+        reason: 'already obsolete',
+      },
+      db.sql,
+    );
+    await assertFact(
+      {
+        ...base,
+        scopeRef: 'a-different-owner',
+        key: 'wrong-scope',
+        body: 'must remain live',
+      },
+      db.sql,
+    );
+
+    const replacement = await assertFact(
+      {
+        ...base,
+        key: 'incident-settled',
+        body: 'one corrected incident conclusion',
+        supersedes: [
+          ' incident-b ',
+          'incident-a',
+          'incident-a',
+          'missing-key',
+          'wrong-scope',
+          'already-retired',
+          '   ',
+        ],
+      },
+      db.sql,
+    );
+
+    expect(replacement.retiredKeys).toEqual(['incident-a', 'incident-b']);
+
+    const retired = await db.sql`
+      SELECT key, retracted_by, retraction_reason, evicted_at
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND key = ANY(${['incident-a', 'incident-b']}::text[])
+       ORDER BY key`;
+    expect(retired).toEqual([
+      {
+        key: 'incident-a',
+        retracted_by: 'su-reconciler',
+        retraction_reason: 'superseded by incident-settled',
+        evicted_at: null,
+      },
+      {
+        key: 'incident-b',
+        retracted_by: 'su-reconciler',
+        retraction_reason: 'superseded by incident-settled',
+        evicted_at: null,
+      },
+    ]);
+
+    const folded = await foldFacts([selector], { workspaceId: WS, audiences: 'all' }, db.sql);
+    const listed = await listFacts(selector, { workspaceId: WS }, db.sql);
+    expect(folded.map((fact) => fact.key)).toEqual(['incident-settled']);
+    expect(listed.map((fact) => fact.key)).toEqual(['incident-settled']);
+
+    const wrongScope = await listFacts(
+      { scope: 'owner', scopeRef: 'a-different-owner' },
+      { workspaceId: WS },
+      db.sql,
+    );
+    expect(wrongScope.map((fact) => fact.key)).toContain('wrong-scope');
+
+    const [alreadyRetired] = await factVersions(
+      { ...selector, key: 'already-retired', workspaceId: WS },
+      db.sql,
+    );
+    expect(alreadyRetired.retractedBy).toBe('su-earlier');
+    expect(alreadyRetired.retractionReason).toBe('already obsolete');
+  });
+
+  it('refuses the asserted key itself and enforces the direct-store fan-out bound', async () => {
+    await expect(
+      assertFact(
+        {
+          ...base,
+          key: 'self-key',
+          body: 'must not write',
+          supersedes: [' self-key '],
+        },
+        db.sql,
+      ),
+    ).rejects.toThrow(/supersedes cannot contain the asserted key/);
+
+    await expect(
+      assertFact(
+        {
+          ...base,
+          key: 'too-many',
+          body: 'must not write',
+          supersedes: Array.from({ length: 13 }, (_, i) => `sibling-${i}`),
+        },
+        db.sql,
+      ),
+    ).rejects.toThrow(/at most 12 distinct keys/);
+
+    expect(await listFacts(selector, { workspaceId: WS }, db.sql)).toEqual([]);
+  });
+
+  it('rolls sibling retirement back when the replacement insert fails', async () => {
+    await assertFact({ ...base, key: 'still-valid', body: 'keep me on failed replacement' }, db.sql);
+    const invalid = {
+      scope: 'owner',
+      scopeRef,
+      key: 'replacement-fails',
+      body: 'missing createdBy on purpose',
+      supersedes: ['still-valid'],
+      workspaceId: WS,
+    } as unknown as Parameters<typeof assertFact>[0];
+
+    await expect(assertFact(invalid, db.sql)).rejects.toThrow(/created_by/i);
+    const live = await listFacts(selector, { workspaceId: WS }, db.sql);
+    expect(live.map((fact) => fact.key)).toEqual(['still-valid']);
+  });
+});
+
 // EI-19328780288425209: a retractFact miss is ambiguous — "never existed" vs "exists at a
 // DIFFERENT scope" — the latter left a WRONG fact live and believed-retracted for 5h+ while
 // the author had already told six agents it was gone. findFactKeyElsewhere is the disambiguator

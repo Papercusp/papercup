@@ -397,6 +397,12 @@ export interface FactDependency {
  *  rather than by a CHECK so an over-long declaration CLIPS like an over-long
  *  body instead of failing the write (this table's standing P-007 rule). */
 export const FACT_MAX_DEPENDENCIES = 12;
+/**
+ * Bound one assertion's cross-key retirement fan-out. A fact correction should
+ * be able to collapse a small cluster of overlapping conclusions, not become an
+ * unbounded bulk-delete surface.
+ */
+export const FACT_MAX_SUPERSEDES = 12;
 /** Bound for {@link FactDependency.observed} — a label, not a payload. */
 export const FACT_DEPENDENCY_OBSERVED_CHARS = 120;
 
@@ -506,6 +512,12 @@ export interface FactEviction {
  * `assertFact: typeof assertFact` dependency stubs keep compiling untouched.
  */
 export type AssertFactResult = AgentFact & {
+  /**
+   * CURRENT local sibling keys this write actually retired via `supersedes`.
+   * Absent when none matched — missing, wrong-scope, expired-only-history, and
+   * already-retired keys are deliberately not reported as changed.
+   */
+  retiredKeys?: string[];
   /**
    * Facts the cap evicted to seat THIS write. Absent when nothing was displaced
    * — never an empty array, so `if (result.evicted)` reads correctly.
@@ -625,6 +637,13 @@ export interface AssertFactInput {
   /** Stable slug — the upsert/retract target. */
   key: string;
   body: string;
+  /**
+   * Other CURRENT local keys in this exact workspace/scope/ref whose conclusion
+   * this assertion replaces. They are soft-retracted atomically with the new
+   * row, preserving their audit/history records. The asserted key itself is
+   * refused; same-key correction already has append-version semantics.
+   */
+  supersedes?: readonly string[] | null;
   sourceRef?: string | null;
   /** P-007: restrict fold delivery to an audience (v1: `fleet:<slug>`).
    *  Validated via {@link validateAudienceScope} — reject a typo loudly rather
@@ -1137,6 +1156,26 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const audienceScope = (input.audienceScope ?? '').trim() || null;
   const key = input.key.trim();
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
+  const retiredKeySet = new Set<string>();
+  for (const raw of input.supersedes ?? []) {
+    const siblingKey = raw.trim();
+    if (!siblingKey) continue;
+    if (siblingKey === key) {
+      throw new InvalidInputError(
+        `facts:assert — supersedes cannot contain the asserted key '${key}'; ` +
+          're-assert that key normally to append a same-key version',
+      );
+    }
+    retiredKeySet.add(siblingKey);
+  }
+  if (retiredKeySet.size > FACT_MAX_SUPERSEDES) {
+    throw new InvalidInputError(
+      `facts:assert — supersedes accepts at most ${FACT_MAX_SUPERSEDES} distinct keys`,
+    );
+  }
+  // Stable ordering makes the receipt deterministic and gives concurrent
+  // cross-key writers the same lock acquisition preference.
+  const retiredKeyCandidates = [...retiredKeySet].sort();
   const body = clampFactBody(input.body);
   if (!body) throw new InvalidInputError('facts:assert — body required');
   const measuredAtInput = input.measuredAt?.trim() || null;
@@ -1296,7 +1335,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // frozen-snapshot defect D-003 forbids — and it would fail in the confident
   // direction, reporting FRESH because the digest it compares against was never
   // re-observed. A re-assert re-declares its dependencies or has none.
-  const rows = await sql<AgentFactRow[]>`
+  const retractionReason = `superseded by ${key}`;
+  const rows = await sql<(AgentFactRow & { retired_keys: string[] | null })[]>`
     WITH superseded AS (
       UPDATE harness_shared.agent_facts
          SET superseded_at = now()
@@ -1305,8 +1345,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
          AND source_hive IS NULL
          AND superseded_at IS NULL
       RETURNING id, harness_slug
-    )
-    INSERT INTO harness_shared.agent_facts
+    ), inserted AS (
+      INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
        audience_scope, source_provenance, confidence, measurement, supersedes_id, kind, depends_on, claim,
        enforcement, settled_by)
@@ -1330,9 +1370,25 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${claim ? JSON.stringify(claim) : null}::text::jsonb,
        ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb,
        ${settledBy})
-    RETURNING id, superseded_at::text, supersedes_id,
-              scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-              confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text`;
+      RETURNING id, superseded_at::text, supersedes_id,
+                scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+                confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
+    ), retired AS (
+      UPDATE harness_shared.agent_facts
+         SET retracted_at = now(),
+             retracted_by = ${input.createdBy ?? null},
+             retraction_reason = ${retractionReason}
+       WHERE workspace_id = ${ws} AND scope = ${input.scope}
+         AND coalesce(scope_ref, '') = ${ref ?? ''}
+         AND key = ANY(${retiredKeyCandidates as string[]}::text[])
+         AND source_hive IS NULL
+         AND superseded_at IS NULL
+         AND retracted_at IS NULL
+      RETURNING key
+    )
+    SELECT inserted.*,
+           COALESCE((SELECT array_agg(key ORDER BY key) FROM retired), ARRAY[]::text[]) AS retired_keys
+      FROM inserted`;
   // Cap enforcement — evict the LOWEST-RANKED live incumbents past the cap for
   // this (scope, ref); the ranking is the ORDER BY below, NOT oldest-updated.
   // LOCAL partition only (H6): the local writer's cap must never
@@ -1520,6 +1576,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                   AND id = ${writtenId}))
     RETURNING key, confidence, expires_at, created_by`;
   const fact = rowToFact(rows[0]) as AssertFactResult;
+  if (rows[0].retired_keys.length > 0) fact.retiredKeys = rows[0].retired_keys;
 
   // P-006 / D-011: disclose every repair. Attached only when something was actually
   // repaired, so `if (result.normalized)` stays a correct read on the common path.

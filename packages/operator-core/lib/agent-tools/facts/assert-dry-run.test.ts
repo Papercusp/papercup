@@ -236,4 +236,32 @@ describe('facts:assert { dryRun } — forecasts the cap cost without writing', (
 
     expect(payloadOf(result).overwroteAuthor).toBeUndefined();
   });
+
+  it('passes supersedes to the store and keeps the actual retired keys in the write receipt, not the fact', async () => {
+    assertFactSpy.mockResolvedValue({
+      ...writtenFact({ key: 'incident-settled' }),
+      retiredKeys: ['incident-a', 'incident-b'],
+    });
+
+    const result = await assertTool.handler(
+      {
+        scope: 'owner',
+        scopeRef: 'su-test-dry-run',
+        key: 'incident-settled',
+        body: 'one corrected incident conclusion',
+        supersedes: ['incident-b', 'incident-a'],
+      } as never,
+      ctx,
+    );
+
+    expect(assertFactSpy.mock.calls[0][0].supersedes).toEqual(['incident-b', 'incident-a']);
+    const payload = payloadOf(result) as {
+      fact: Record<string, unknown>;
+      retired: { keys: string[]; note: string };
+    };
+    expect(payload.retired.keys).toEqual(['incident-a', 'incident-b']);
+    expect(payload.retired.note).toContain('same transaction');
+    expect(payload.retired.note).toContain('superseded by incident-settled');
+    expect(payload.fact.retiredKeys).toBeUndefined();
+  });
 });

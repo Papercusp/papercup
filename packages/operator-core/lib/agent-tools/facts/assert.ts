@@ -24,6 +24,7 @@ import {
   FACT_CONFIDENCE_LEVELS,
   CONVENTION_ENFORCEMENT_TIERS,
   FACT_MAX_DEPENDENCIES,
+  FACT_MAX_SUPERSEDES,
   FACTS_PER_SCOPE_CAP,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
@@ -373,6 +374,13 @@ export default defineTool({
         'Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef. For shareable:true, also pass a concrete harness here when the caller context is not already harness-scoped.',
       ),
     key: z.string().min(1).max(120).describe('Stable slug — upsert + retract target (e.g. "wi-1439-owner-residue").'),
+    supersedes: z
+      .array(z.string().min(1).max(120))
+      .max(FACT_MAX_SUPERSEDES)
+      .optional()
+      .describe(
+        `Retire up to ${FACT_MAX_SUPERSEDES} overlapping sibling fact keys in the SAME workspace/scope/ref while asserting this replacement. Keys are trimmed and deduplicated; the asserted key itself is refused because same-key corrections already append a version. Only CURRENT local matches are soft-retracted, atomically with this write, and the receipt reports the keys actually retired. Missing, wrong-scope, and already-retired keys are unchanged and omitted from that receipt.`,
+      ),
     // Transport ceiling 4000 ≫ the stored cap: the store TRUNCATES to FACT_BODY_MAX_CHARS
     // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
     // write 7×/14d; truncate-not-reject preserves the fact, '…' makes it visible).
@@ -705,6 +713,7 @@ export default defineTool({
       scopeRef: scopeRef ?? null,
       key: slotted.key,
       body: slotted.body,
+      ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       sourceRef: args.sourceRef ?? null,
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
@@ -871,7 +880,7 @@ export default defineTool({
     //
     // Stripped off the nested `fact` so the wire shape of a fact stays exactly an
     // AgentFact: the eviction report is a property of the WRITE, not of the fact.
-    const { evicted: evictedFacts, survival, ...factForWire } = fact;
+    const { evicted: evictedFacts, survival, retiredKeys, ...factForWire } = fact;
     return {
       content: [
         {
@@ -879,6 +888,17 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             fact: factForWire,
+            ...(retiredKeys?.length
+              ? {
+                  retired: {
+                    keys: retiredKeys,
+                    note:
+                      `These ${retiredKeys.length} CURRENT local sibling fact(s) were soft-retracted in the ` +
+                      `same transaction as this assert with reason "superseded by ${fact.key}". Their history remains ` +
+                      'available through facts:list history; missing, wrong-scope, and already-retired requested keys were unchanged.',
+                  },
+                }
+              : {}),
             ...(evictedFacts?.length
               ? {
                   evicted: {
