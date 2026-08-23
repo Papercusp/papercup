@@ -85,6 +85,26 @@ function makeClient(
   return client;
 }
 
+/**
+ * Await a write expected to fail ambiguously, and hand back the TYPED error.
+ *
+ * Written as a helper rather than `.catch(e => e as ThreadsPublishAmbiguous)`
+ * because that idiom types the result as `outcome | error` — the union then
+ * hides every property access behind a compile error that `vitest` never sees,
+ * since it does not typecheck. It also silently PASSES if the call unexpectedly
+ * SUCCEEDS: `.catch` is simply not invoked and the assertions run against an
+ * outcome object. Throwing on success is the half that matters.
+ */
+async function expectAmbiguous(promise: Promise<unknown>): Promise<ThreadsPublishAmbiguous> {
+  try {
+    await promise;
+  } catch (e) {
+    if (e instanceof ThreadsPublishAmbiguous) return e;
+    throw e;
+  }
+  throw new Error('expected the write to fail ambiguously, but it succeeded');
+}
+
 /** A clock that advances only when the adapter sleeps, so tests are instant. */
 function fakeClock() {
   let t = 1_000_000;
@@ -327,18 +347,14 @@ describe('an ambiguous publish is settled by the CONTAINER, not by guessing (D-0
 
   it('EXPIRED means nothing was published — retryable true', async () => {
     const client = makeClient({ publishFails: true, status: 'EXPIRED' });
-    const err = await newAdapter(client)
-      .reply(replyRequest(), CTX)
-      .catch((e) => e as ThreadsPublishAmbiguous);
+    const err = await expectAmbiguous(newAdapter(client).reply(replyRequest(), CTX));
     expect(err.retryable).toBe(true);
     expect(err.message).toMatch(/NEW container/);
   });
 
   it('a publish returning no id is ambiguous too, not a silent success', async () => {
     const client = makeClient({ publishReturnsNoId: true, status: 'ERROR' });
-    const err = await newAdapter(client)
-      .reply(replyRequest(), CTX)
-      .catch((e) => e as ThreadsPublishAmbiguous);
+    const err = await expectAmbiguous(newAdapter(client).reply(replyRequest(), CTX));
     expect(err).toBeInstanceOf(ThreadsPublishAmbiguous);
     expect(err.retryable).toBe(true);
   });
@@ -347,9 +363,7 @@ describe('an ambiguous publish is settled by the CONTAINER, not by guessing (D-0
     // "once per minute, for no more than 5 minutes". The loop must terminate on
     // the deadline rather than spinning while the status stays IN_PROGRESS.
     const client = makeClient({ publishFails: true, status: 'IN_PROGRESS' });
-    const err = await newAdapter(client)
-      .reply(replyRequest(), CTX)
-      .catch((e) => e as ThreadsPublishAmbiguous);
+    const err = await expectAmbiguous(newAdapter(client).reply(replyRequest(), CTX));
     expect(err.retryable).toBeNull();
     expect(err.message).toMatch(/park this for a human/);
     // 5 minutes at one call per minute, plus the initial probe.
@@ -364,9 +378,7 @@ describe('an ambiguous publish is settled by the CONTAINER, not by guessing (D-0
     client.getContainerStatus = async () => {
       throw new Error('probe exploded');
     };
-    const err = await newAdapter(client)
-      .reply(replyRequest(), CTX)
-      .catch((e) => e as ThreadsPublishAmbiguous);
+    const err = await expectAmbiguous(newAdapter(client).reply(replyRequest(), CTX));
     expect(err).toBeInstanceOf(ThreadsPublishAmbiguous);
     expect(err.containerId).toBe('container-1');
   });
