@@ -1580,6 +1580,27 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
+  it('flag ON: explains the supported federated route for a cross-hive work_items:claim', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'work_items:claim',
+      {
+        id: 'EI-cross-hive-probe',
+        harness: 'hiveB-home',
+        force: true,
+        ownerOverride: true,
+        reason: 'gating matrix probe',
+      },
+      hiveScoped(),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(textOf(res)).toContain('discovery:pots');
+    expect(textOf(res)).toContain('pot:request_work');
+    expect(textOf(res)).toContain('outbound work-request grant');
+    expect(textOf(res)).toContain('direct work_items:claim is per-Hive');
+  });
+
   it('flag ON: rejects a harness:\'all\' escape', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('gatingtest:scoped', { harness: 'all' }, hiveScoped());
