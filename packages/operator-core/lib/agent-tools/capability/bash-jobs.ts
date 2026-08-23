@@ -263,6 +263,7 @@ function spawnShell(
     binary: string,
     argv: string[],
     env?: Readonly<Record<string, string | undefined>>,
+    cwd?: string,
   ) => { binary: string; argv: string[] },
   /** Per-job nonce for an authenticated command-not-found marker. Generic
    *  `command not found` text is ordinary child output (test fixtures emit it),
@@ -293,8 +294,13 @@ function spawnShell(
       `[capability:bash] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,
     );
   }
+  // EI-21229453838112711: `cwd` MUST be handed to the wrapper, not only to
+  // childSpawn below. A background bash job is enrolled as a transient systemd
+  // SERVICE, and a service payload does not inherit this process's cwd — the
+  // childSpawn `cwd` applies to the systemd-run client only, leaving the real
+  // command in $HOME.
   const launch = wrapScope
-    ? wrapScope(decision.binary, decision.argv, env)
+    ? wrapScope(decision.binary, decision.argv, env, cwd)
     : { binary: decision.binary, argv: decision.argv };
   const child = childSpawn(launch.binary, launch.argv, {
     cwd,

@@ -97,11 +97,17 @@ export interface SyncEnrolment {
    *  later identity update: a terminal close may safely win against `markSpawned`'s
    *  `state = 'pending'` guard once the row exists. */
   registrationReady: Promise<void> | null;
-  /** Wrap a resolved binary+argv into the task's scope. Identity when unconfined. */
+  /** Wrap a resolved binary+argv into the task's scope. Identity when unconfined.
+   *  `cwd` (EI-21229453838112711) is REQUIRED for correctness on the SERVICE
+   *  path — a service payload is started by the user manager and defaults to
+   *  $HOME, so passing the caller's cwd to `spawn` alone silently runs the job
+   *  in the wrong directory. Optional because the scope path inherits cwd and
+   *  genuinely does not need it. */
   wrap: (
     binary: string,
     argv: string[],
     env?: Readonly<Record<string, string | undefined>>,
+    cwd?: string,
   ) => { binary: string; argv: string[] };
 }
 
@@ -157,7 +163,7 @@ export function beginSyncEnrolment(
     scopeUnit,
     enrolled,
     registrationReady: null,
-    wrap: (binary, argv, env) =>
+    wrap: (binary, argv, env, cwd) =>
       confined
         ? {
             binary: 'systemd-run',
@@ -165,6 +171,9 @@ export function beginSyncEnrolment(
               unit: scopeUnit!,
               slice: sliceForClass(spec.class),
               env,
+              // Only the service builder reads this; the scope payload inherits
+              // the client's cwd. See TaskScopeProperties.workingDirectory.
+              workingDirectory: cwd,
               memoryMaxBytes: spec.memoryMaxBytes,
               cpuWeight: spec.cpuWeight,
               tasksMax: spec.tasksMax,

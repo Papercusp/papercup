@@ -152,6 +152,39 @@ describe('with the task manager ON', () => {
     });
   });
 
+  /**
+   * EI-21229453838112711. A transient SERVICE is started by the user manager
+   * rather than forked from the systemd-run client, so it does not inherit our
+   * cwd — systemd defaults its WorkingDirectory to $HOME. Passing `cwd` to
+   * `spawn` only positions the CLIENT, so before this every `npm run …`
+   * backgrounded through capability:bash executed in the home directory and
+   * died on a missing package.json, while the launch result reported the
+   * project dir and the job reported exit 0.
+   */
+  it('binds the payload cwd on a transient service, so a background job does not run in $HOME', () => {
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    const { argv } = e.wrap('/bin/bash', ['-lc', 'npm run test'], undefined, '/repo/root');
+    expect(argv).toContain('--working-directory=/repo/root');
+    // Ahead of the payload, or systemd-run would read it as a command argument.
+    expect(argv.indexOf('--working-directory=/repo/root')).toBeLessThan(argv.indexOf('/bin/bash'));
+  });
+
+  it('omits the working-directory flag when no cwd is supplied', () => {
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    const { argv } = e.wrap('/bin/bash', ['-lc', 'x']);
+    expect(argv.some((a) => a.startsWith('--working-directory='))).toBe(false);
+  });
+
+  it('does NOT bind working-directory on a scope, which already inherits the client cwd', () => {
+    // The calibration half: the flag is service-specific, not blanket-applied.
+    // A scope payload is forked from this process and already has the right cwd,
+    // so emitting it there would imply a fix the scope path never needed.
+    const e = beginSyncEnrolment({ class: 'sidecar' });
+    const { argv } = e.wrap('/bin/node', ['child.js'], undefined, '/repo/root');
+    expect(e.unitKind).toBe('scope');
+    expect(argv.some((a) => a.startsWith('--working-directory='))).toBe(false);
+  });
+
   it('retains a transient scope for every non-bash sync-enrolled class', () => {
     const e = beginSyncEnrolment({ class: 'sidecar' });
     expect(e.unitKind).toBe('scope');

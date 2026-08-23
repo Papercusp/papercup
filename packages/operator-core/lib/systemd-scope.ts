@@ -97,6 +97,16 @@ export interface TaskScopeProperties {
   cpuWeight?: number | null;
   tasksMax?: number | null;
   runtimeMaxSec?: number | null;
+  /**
+   * EI-21229453838112711 — the directory the PAYLOAD runs in. Only a transient
+   * SERVICE needs this. A `--scope` payload is forked from the systemd-run
+   * client and inherits its cwd, so the scope path is already correct and
+   * deliberately ignores this field; a service is started by the user manager
+   * instead, whose WorkingDirectory defaults to $HOME. Spawning with
+   * `{ cwd }` sets it for the systemd-run CLIENT and has no effect on a service
+   * payload, so without this the job silently runs in the home directory.
+   */
+  workingDirectory?: string | null;
   /** Extra `--property=K=V` pairs; escape hatch for a one-off, kept last. */
   extraProperties?: readonly string[];
 }
@@ -170,6 +180,17 @@ export function buildTaskServiceArgv(base: string[], props: TaskScopeProperties)
     '--property=KillMode=control-group',
     '--property=TimeoutStopSec=10s',
   ];
+  // EI-21229453838112711: a transient service is started by the USER MANAGER,
+  // not forked from this client, so it does not inherit our cwd — systemd
+  // defaults its WorkingDirectory to $HOME. Every `npm run …` backgrounded
+  // through capability:bash therefore died with an ENOENT on the repo's
+  // package.json while REPORTING the project dir, which reads as a clean pass.
+  // Deliberately NOT the `-` (tolerate-missing) form: falling back to $HOME is
+  // precisely the silent failure this exists to stop, so an unusable directory
+  // must fail the unit loudly instead.
+  if (props.workingDirectory) {
+    argv.push(`--working-directory=${props.workingDirectory}`);
+  }
   appendTaskEnvironment(argv, props.env);
   appendTaskProperties(argv, props);
   argv.push(...base);
