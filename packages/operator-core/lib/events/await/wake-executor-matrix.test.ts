@@ -103,6 +103,12 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       // Hermetic by default (P-001): a dead-waiter degrade never reaches the
       // real sendMessage (which touches PG/coordLog) unless a test overrides it.
       sendCoordMessage: async () => ({}) as never,
+      // Channel 2 claims the adv row atomically before spawning. Hermetic by
+      // default for the same reason as sendCoordMessage above (the production
+      // claim writes to PG); model a WINNING claim so these rows exercise the
+      // outcome under test. The claim's own losing/faulting behaviour is
+      // covered explicitly below.
+      claimResume: async () => true,
       ...over,
     };
   }
