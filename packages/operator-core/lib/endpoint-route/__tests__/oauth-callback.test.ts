@@ -73,7 +73,7 @@ vi.mock('../../oauth/state', () => ({
         claims: {
           plugin: 'google-workspace',
           harness: 'papercusp',
-          field: 'owner',
+          field: 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'accounts.google.com',
           provider: 'google',
         },
@@ -132,6 +132,16 @@ describe('GET /api/oauth/callback', () => {
     const r = await GET(new Request('http://x/api/oauth/callback?error=access_denied'));
     expect(r.status).toBe(307);
     expect(r.headers.get('location') ?? '').toContain('oauth_error=access_denied');
+  });
+
+  it('returns a cancelled Google Workspace consent to Personal Vault settings', async () => {
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?error=access_denied&state=google.valid'),
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_error=access_denied',
+    );
   });
 
   it('rejects state with bad signature', async () => {
@@ -218,7 +228,7 @@ describe('GET /api/oauth/callback', () => {
     expect(sourceMocks.provision).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
-      field: 'owner',
+      field: 'owner-22222222-2222-4222-8222-222222222222',
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
     expect(sourceMocks.ensureGmailBinding).toHaveBeenCalledWith(
@@ -229,8 +239,11 @@ describe('GET /api/oauth/callback', () => {
     );
     const cfgPath = join(TMP_HOME, 'harnesses/papercusp/plugin-configs/google-workspace.json');
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
-    expect(cfg.owner).toBe('google-access');
-    expect(cfg.owner_refresh).toBe('google-refresh');
+    expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('google-access');
+    expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('google-refresh');
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_connected=google-workspace',
+    );
   });
 
   it('fails closed when a Google Workspace callback lacks server-owned identity context', async () => {

@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import PersonalVaultSettingsPage from './page';
+import PersonalVaultSettingsPage, { googleWorkspaceConnectHref } from './page';
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -20,6 +20,20 @@ const status = {
   grants: [],
   supportedSources: ['gmail', 'calendar', 'contacts', 'facebook', 'instagram', 'x'],
   embedding: { mode: 'gemma', localOnly: true },
+  integrations: {
+    google: {
+      provider: 'google',
+      configured: true,
+      connected: true,
+      status: 'connected',
+      sources: [{
+        kind: 'gmail',
+        status: 'connected',
+        lastConnectedAt: '2026-08-23T00:00:00.000Z',
+        lastSyncAt: '2026-08-23T00:00:00.000Z',
+      }],
+    },
+  },
 };
 
 const fetchMock = vi.fn();
@@ -44,6 +58,9 @@ beforeEach(() => {
         principalId: 'meeting-prep-brief',
         declaredScopes: ['personal:gmail', 'personal:calendar'],
       });
+    }
+    if (url === '/api/user/personal-vault/integrations/google' && init?.method === 'DELETE') {
+      return Response.json({ ok: true, disconnectedSources: 2 });
     }
     throw new Error(`unexpected fetch ${init?.method ?? 'GET'} ${url}`);
   });
@@ -72,6 +89,26 @@ describe('PersonalVaultSettingsPage', () => {
       );
     });
     expect(screen.getByText(/It does not delete anything/i)).toBeTruthy();
+  });
+
+  it('renders Google live status and disconnects without invoking purge', async () => {
+    render(<PersonalVaultSettingsPage />);
+    expect(await screen.findByRole('heading', { name: 'Live integrations' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reconnect Google Workspace' })).toBeTruthy();
+    expect(googleWorkspaceConnectHref()).toBe(
+      '/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/user/personal-vault/integrations/google',
+        { method: 'DELETE' },
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/api/user/personal-vault',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
   });
 
   it('explains how to acquire supported provider archives with official links and formats', async () => {

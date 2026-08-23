@@ -3,7 +3,9 @@ import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   createOwnedExternalTriggerSource,
+  disconnectOwnedExternalTriggerSources,
   getExternalTriggerSource,
+  listOwnedExternalTriggerSources,
   listPollableExternalTriggerSources,
   requireExternalTriggerSourceOwner,
   updateExternalTriggerSourceSyncState,
@@ -141,5 +143,50 @@ describe('external trigger source ownership', () => {
        WHERE workspace_id = ${WS} AND id = ${pollable.id}::uuid`;
     expect(stored[0].last_error).toBe('provider timeout');
     expect(stored[0].last_connected_at).toBeInstanceOf(Date);
+  });
+
+  it('lists one owner safely and disconnects selected kinds without deleting rows', async () => {
+    const otherUsers = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.users (username, display_name)
+      VALUES (${'trigger-other-' + Date.now()}, 'Other Trigger Owner')
+      RETURNING id`;
+    const gmail = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      credentialRef: 'google-workspace:owner-user',
+      status: 'connected',
+      cursor: { historyId: 'private-provider-cursor', lastSyncAt: '2026-08-23T00:00:00.000Z' },
+    });
+    const calendar = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gcal',
+      ownerUserId: userId,
+      credentialRef: 'google-workspace:owner-user',
+      status: 'degraded',
+    });
+    const other = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: otherUsers[0].id,
+      credentialRef: 'google-workspace:other-user',
+      status: 'connected',
+    });
+
+    await expect(listOwnedExternalTriggerSources(sql, WS, userId)).resolves.toEqual([
+      expect.objectContaining({ id: calendar.id, kind: 'gcal', ownerUserId: userId }),
+      expect.objectContaining({ id: gmail.id, kind: 'gmail', ownerUserId: userId }),
+    ]);
+    await expect(disconnectOwnedExternalTriggerSources(sql, WS, userId, ['gmail', 'gcal']))
+      .resolves.toEqual({ sources: 2, credentialRefs: ['google-workspace:owner-user'] });
+
+    const disconnected = await listOwnedExternalTriggerSources(sql, WS, userId);
+    expect(disconnected).toEqual([
+      expect.objectContaining({ id: calendar.id, status: 'disabled', credentialRef: null }),
+      expect.objectContaining({ id: gmail.id, status: 'disabled', credentialRef: null }),
+    ]);
+    await expect(listPollableExternalTriggerSources(sql, WS, 'gmail')).resolves.toEqual([
+      expect.objectContaining({ id: other.id, ownerUserId: otherUsers[0].id }),
+    ]);
   });
 });

@@ -146,13 +146,14 @@ describe('GET /api/oauth/start', () => {
         provider: 'google',
         plugin: 'google-workspace',
         harness: 'papercusp',
-        field: 'owner',
+        field: 'owner-22222222-2222-4222-8222-222222222222',
       }),
       {
         privateContext: {
           codeVerifier: 'server-only-verifier',
           ownerUserId: '22222222-2222-4222-8222-222222222222',
           workspaceId: 'workspace-1',
+          returnPath: '/settings/personal-vault',
         },
       },
     );
@@ -162,6 +163,7 @@ describe('GET /api/oauth/start', () => {
       expect.objectContaining({
         ownerUserId: '22222222-2222-4222-8222-222222222222',
         workspaceId: 'workspace-1',
+        returnPath: '/settings/personal-vault',
       }),
     );
   });

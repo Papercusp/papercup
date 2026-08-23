@@ -32,10 +32,10 @@ export default defineTool({
     const providerId = url.searchParams.get('provider') ?? '';
     const plugin = url.searchParams.get('plugin') ?? '';
     const harness = url.searchParams.get('harness') ?? '';
-    const field = url.searchParams.get('field') ?? '';
+    const requestedField = url.searchParams.get('field') ?? '';
     const scopesRaw = url.searchParams.get('scopes') ?? '';
 
-    if (!providerId || !plugin || !harness || !field) {
+    if (!providerId || !plugin || !harness || !requestedField) {
       return Response.json({ ok: false, error: 'provider, plugin, harness, field all required' }, { status: 400 });
     }
     const connectsGoogleWorkspace =
@@ -80,13 +80,16 @@ export default defineTool({
       );
     }
     const providerHost = new URL(provider.config.authorizeUrl).host;
+    let field = requestedField;
     let privateContext = { ...((await provider.createFlowContext?.()) ?? {}) };
     if (connectsGoogleWorkspace) {
       const owner = await getSessionUserOrDefault(req.headers);
+      field = 'owner-' + owner.id;
       privateContext = {
         ...privateContext,
         ownerUserId: owner.id,
         workspaceId: activeWorkspaceId(),
+        returnPath: '/settings/personal-vault',
       };
     }
     const state = await signState(

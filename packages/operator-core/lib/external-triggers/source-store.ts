@@ -18,6 +18,17 @@ export interface ExternalTriggerSourceRow {
   cursor: Record<string, unknown>;
 }
 
+export interface OwnedExternalTriggerSourceRow extends ExternalTriggerSourceRow {
+  lastError: string | null;
+  lastConnectedAt: string | null;
+  updatedAt: string;
+}
+
+export interface DisconnectOwnedExternalTriggerSourcesResult {
+  sources: number;
+  credentialRefs: string[];
+}
+
 export interface CreateOwnedExternalTriggerSourceInput {
   workspaceId: string;
   kind: string;
@@ -167,6 +178,71 @@ export async function listPollableExternalTriggerSources(
        AND credential_ref IS NOT NULL
        AND status IN ('ready', 'connecting', 'connected', 'degraded')
      ORDER BY id`;
+}
+
+/** Read every source owned by one authenticated local principal, including disabled/error rows. */
+export async function listOwnedExternalTriggerSources(
+  sql: postgres.Sql,
+  workspaceId: string,
+  ownerUserId: string,
+): Promise<OwnedExternalTriggerSourceRow[]> {
+  return sql<OwnedExternalTriggerSourceRow[]>`
+    SELECT id::text,
+           workspace_id AS "workspaceId",
+           kind,
+           owner_user_id::text AS "ownerUserId",
+           credential_ref AS "credentialRef",
+           status,
+           config,
+           cursor,
+           last_error AS "lastError",
+           last_connected_at::text AS "lastConnectedAt",
+           updated_at::text AS "updatedAt"
+      FROM harness_shared.trigger_sources
+     WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
+       AND owner_user_id = ${required(ownerUserId, 'owner_user_id')}::uuid
+     ORDER BY kind, id`;
+}
+
+/**
+ * Stop polling selected owned source kinds without deleting settled events or
+ * Personal Vault documents. Returns only the opaque credential refs needed by
+ * the server to clear its token store; callers must never serialize them.
+ */
+export async function disconnectOwnedExternalTriggerSources(
+  sql: postgres.Sql,
+  workspaceId: string,
+  ownerUserId: string,
+  kinds: string[],
+): Promise<DisconnectOwnedExternalTriggerSourcesResult> {
+  const normalizedKinds = [...new Set(kinds.map((kind) => required(kind, 'source_kind')))];
+  if (!normalizedKinds.length) throw new Error('external_trigger_source_kinds_required');
+  const rows = await sql<Array<{ sources: number; credentialRefs: string[] }>>`
+    WITH matched AS (
+      SELECT id, credential_ref
+        FROM harness_shared.trigger_sources
+       WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
+         AND owner_user_id = ${required(ownerUserId, 'owner_user_id')}::uuid
+         AND kind = ANY(${normalizedKinds as string[]}::text[])
+       FOR UPDATE
+    ),
+    disconnected AS (
+      UPDATE harness_shared.trigger_sources AS source
+         SET credential_ref = NULL,
+             status = 'disabled',
+             last_error = NULL,
+             updated_at = now()
+        FROM matched
+       WHERE source.id = matched.id
+       RETURNING matched.credential_ref
+    )
+    SELECT count(*)::int AS sources,
+           COALESCE(
+             array_agg(DISTINCT credential_ref) FILTER (WHERE credential_ref IS NOT NULL),
+             ARRAY[]::text[]
+           ) AS "credentialRefs"
+      FROM disconnected`;
+  return rows[0] ?? { sources: 0, credentialRefs: [] };
 }
 
 /** Persist one provider cursor/status transition on the source row. */

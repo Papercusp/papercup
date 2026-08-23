@@ -28,6 +28,19 @@ async function ensureProvidersLoaded(): Promise<void> {
   providersLoaded = true;
 }
 
+function redirectWith(reqUrl: string, path: string, key: string, value: string): Response {
+  const destination = new URL(path, reqUrl);
+  destination.searchParams.set(key, value);
+  return Response.redirect(destination.toString(), 307);
+}
+
+function callbackReturnPath(plugin: string, providerId: string, harness: string): string {
+  if (providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN) {
+    return '/settings/personal-vault';
+  }
+  return '/harness/' + encodeURIComponent(harness) + '?panel=config';
+}
+
 export default defineTool({
   method: 'GET',
   path: '/oauth/callback',
@@ -40,10 +53,18 @@ export default defineTool({
     const errorParam = url.searchParams.get('error');
 
     if (errorParam) {
-      return Response.redirect(
-        new URL(`/harness?oauth_error=${encodeURIComponent(errorParam)}`, req.url).toString(),
-        307,
-      );
+      if (state) {
+        const verified = await verifyAndConsumeState(state);
+        if (verified.ok && verified.claims) {
+          const path = callbackReturnPath(
+            verified.claims.plugin,
+            verified.claims.provider,
+            verified.claims.harness,
+          );
+          return redirectWith(req.url, path, 'oauth_error', errorParam);
+        }
+      }
+      return redirectWith(req.url, '/harness', 'oauth_error', errorParam);
     }
     if (!code || !state) {
       return Response.json({ ok: false, error: 'code + state required' }, { status: 400 });
@@ -55,6 +76,7 @@ export default defineTool({
     }
 
     const { plugin, harness, field, provider: providerId } = verified.claims;
+    const returnPath = callbackReturnPath(plugin, providerId, harness);
     const provider = getProvider(providerId);
     if (!provider) {
       return Response.json({ ok: false, error: `provider ${providerId} not registered` }, { status: 500 });
@@ -79,13 +101,7 @@ export default defineTool({
       tokens = await provider.exchangeCode(code, verified.privateContext);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return Response.redirect(
-        new URL(
-          `/harness/${encodeURIComponent(harness)}?panel=config&oauth_error=${encodeURIComponent(msg)}`,
-          req.url,
-        ).toString(),
-        307,
-      );
+      return redirectWith(req.url, returnPath, 'oauth_error', msg);
     }
 
     const patch: Record<string, unknown> = { [field]: tokens.accessToken };
@@ -111,22 +127,10 @@ export default defineTool({
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return Response.redirect(
-          new URL(
-            `/harness/${encodeURIComponent(harness)}?panel=config&oauth_error=${encodeURIComponent(message)}`,
-            req.url,
-          ).toString(),
-          307,
-        );
+        return redirectWith(req.url, returnPath, 'oauth_error', message);
       }
     }
 
-    return Response.redirect(
-      new URL(
-        `/harness/${encodeURIComponent(harness)}?panel=config&oauth_connected=${encodeURIComponent(plugin)}`,
-        req.url,
-      ).toString(),
-      307,
-    );
+    return redirectWith(req.url, returnPath, 'oauth_connected', plugin);
   },
 });

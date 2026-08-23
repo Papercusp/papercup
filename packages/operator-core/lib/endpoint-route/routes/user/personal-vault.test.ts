@@ -14,6 +14,11 @@ const mocks = vi.hoisted(() => ({
   revokeGrant: vi.fn(),
   purge: vi.fn(),
   upsert: vi.fn(),
+  listSources: vi.fn(),
+  disconnectSources: vi.fn(),
+  loadProviders: vi.fn(),
+  getProvider: vi.fn(),
+  tokenUpdate: vi.fn(),
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -24,6 +29,22 @@ vi.mock('@papercusp/plan-parser', () => ({ parsePlan: mocks.parsePlan }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: mocks.getUser }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../personal-vault/archive-import', () => ({ parsePersonalArchive: mocks.parseArchive }));
+vi.mock('../../../external-triggers/source-store', () => ({
+  listOwnedExternalTriggerSources: mocks.listSources,
+  disconnectOwnedExternalTriggerSources: mocks.disconnectSources,
+}));
+vi.mock('../../../external-triggers/google-workspace', () => ({
+  GOOGLE_WORKSPACE_OAUTH_PLUGIN: 'google-workspace',
+  GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal'],
+  googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
+}));
+vi.mock('../../../oauth/providers', () => ({
+  loadAndRegisterProvidersFromDisk: mocks.loadProviders,
+  getProvider: mocks.getProvider,
+}));
+vi.mock('../../../oauth/storage-fs', () => ({
+  fsTokenStorage: { update: mocks.tokenUpdate },
+}));
 vi.mock('../../../personal-vault/store', async () => {
   const actual = await vi.importActual<typeof import('../../../personal-vault/store')>(
     '../../../personal-vault/store',
@@ -62,6 +83,27 @@ beforeEach(() => {
   mocks.revokeGrant.mockResolvedValue(true);
   mocks.purge.mockResolvedValue({ documents: 2, cursors: 1, aliases: 1, identities: 1 });
   mocks.upsert.mockResolvedValue({ insertedOrUpdated: 1, ids: ['doc-1'] });
+  mocks.loadProviders.mockResolvedValue(['google']);
+  mocks.getProvider.mockReturnValue({ id: 'google' });
+  mocks.listSources.mockResolvedValue([
+    {
+      id: 'gmail-source',
+      workspaceId: 'ws-test',
+      kind: 'gmail',
+      ownerUserId: 'user-1',
+      credentialRef: 'google-workspace:owner-user-1',
+      status: 'connected',
+      config: {},
+      cursor: { historyId: 'never-serialize-me', lastSyncAt: '2026-08-23T00:00:00.000Z' },
+      lastError: null,
+      lastConnectedAt: '2026-08-23T00:00:00.000Z',
+      updatedAt: '2026-08-23T00:00:00.000Z',
+    },
+  ]);
+  mocks.disconnectSources.mockResolvedValue({
+    sources: 2,
+    credentialRefs: ['google-workspace:owner-user-1'],
+  });
   mocks.parseArchive.mockReturnValue({
     documents: [{ source: 'gmail', kind: 'message', text: 'hello' }],
     sources: ['gmail'],
@@ -89,13 +131,55 @@ describe('Personal Vault owner routes', () => {
       new Request('http://localhost/user/personal-vault'),
     );
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    const payload = await response.json();
+    expect(payload).toMatchObject({
       enabled: true,
       workspaceId: 'ws-test',
       embedding: { mode: 'gemma', localOnly: true },
       stats: { unembedded: 1 },
+      integrations: {
+        google: {
+          configured: true,
+          connected: true,
+          status: 'connected',
+          sources: [{
+            kind: 'gmail',
+            status: 'connected',
+            lastSyncAt: '2026-08-23T00:00:00.000Z',
+          }],
+        },
+      },
     });
     expect(mocks.stats).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1');
+    const body = JSON.stringify(payload);
+    expect(body).not.toContain('historyId');
+    expect(body).not.toContain('credentialRef');
+  });
+
+  it('disconnects Google sources and clears server-side token fields without purging vault data', async () => {
+    const response = await invoke(
+      'DELETE',
+      '/user/personal-vault/integrations/google',
+      new Request('http://localhost/user/personal-vault/integrations/google', { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      provider: 'google',
+      disconnectedSources: 2,
+    });
+    expect(mocks.disconnectSources).toHaveBeenCalledWith(
+      mocks.sql,
+      'ws-test',
+      'user-1',
+      ['gmail', 'gcal'],
+    );
+    expect(mocks.tokenUpdate).toHaveBeenCalledWith('google-workspace', 'papercusp', {
+      'owner-user-1': null,
+      'owner-user-1_refresh': null,
+      'owner-user-1_expires_at': null,
+      'owner-user-1_expired': true,
+    });
+    expect(mocks.purge).not.toHaveBeenCalled();
   });
 
   it('requires explicit confirmation before purge', async () => {

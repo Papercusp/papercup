@@ -33,6 +33,22 @@ interface VaultStatus {
   grants: PersonalGrant[];
   supportedSources: string[];
   embedding: { mode: 'gemma'; localOnly: true };
+  integrations?: { google: IntegrationStatus };
+}
+
+interface IntegrationSourceStatus {
+  kind: string;
+  status: string;
+  lastConnectedAt: string | null;
+  lastSyncAt: string | null;
+}
+
+interface IntegrationStatus {
+  provider: 'google';
+  configured: boolean;
+  connected: boolean;
+  status: 'needs-app-config' | 'available' | 'connected' | 'degraded' | 'error';
+  sources: IntegrationSourceStatus[];
 }
 
 interface GrantPreview {
@@ -56,6 +72,16 @@ const ARCHIVE_HELP = {
   instagram: 'https://www.facebook.com/help/181231772500920',
   x: 'https://help.x.com/en/managing-your-account/accessing-your-x-data',
 } as const;
+
+export function googleWorkspaceConnectHref(): string {
+  const params = new URLSearchParams({
+    provider: 'google',
+    plugin: 'google-workspace',
+    harness: 'papercusp',
+    field: 'owner',
+  });
+  return '/api/oauth/start?' + params.toString();
+}
 
 async function responseJson<T>(response: Response): Promise<T> {
   const value = (await response.json().catch(() => ({}))) as T & ApiFailure;
@@ -127,6 +153,22 @@ export default function PersonalVaultSettingsPage() {
       setBusy(null);
     }
   }, [busy, status]);
+
+  const disconnectGoogle = useCallback(async () => {
+    if (!status || busy) return;
+    setBusy('disconnect-google');
+    try {
+      await responseJson<{ ok: true; disconnectedSources: number }>(
+        await fetch('/api/user/personal-vault/integrations/google', { method: 'DELETE' }),
+      );
+      toast.success('Google Workspace disconnected. Existing Personal Vault documents were kept.');
+      await load();
+    } catch (err) {
+      toast.error('Google Workspace disconnect failed: ' + (err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, load, status]);
 
   const importFiles = useCallback(async (files: FileList | File[]) => {
     if (!status?.enabled) {
@@ -363,6 +405,83 @@ export default function PersonalVaultSettingsPage() {
           <div><dt>Awaiting embedding</dt><dd>{status.stats.unembedded.toLocaleString()}</dd></div>
           <div><dt>Active grants</dt><dd>{liveGrants.length.toLocaleString()}</dd></div>
         </dl>
+      </section>
+
+      <section className="pc-settings-section" aria-labelledby="vault-integrations-heading">
+        <h2 id="vault-integrations-heading">Live integrations</h2>
+        <p className="pc-settings-note">
+          Live connections keep new provider records flowing into the same owner-local vault.
+          OAuth tokens remain server-side and are never returned to this page.
+        </p>
+        {(() => {
+          const google = status.integrations?.google ?? {
+            provider: 'google' as const,
+            configured: false,
+            connected: false,
+            status: 'needs-app-config' as const,
+            sources: [],
+          };
+          return (
+            <article
+              aria-labelledby="vault-google-heading"
+              style={{ marginTop: 16, padding: 16, border: '1px solid var(--border)', borderRadius: 10 }}
+            >
+              <div style={{ display: 'flex', gap: 12, alignItems: 'start', justifyContent: 'space-between' }}>
+                <div>
+                  <h3 id="vault-google-heading" style={{ marginTop: 0 }}>Google Workspace</h3>
+                  <p className="pc-settings-note">
+                    One consent connects Gmail, Calendar, and Contacts. Gmail uses provider push
+                    notifications plus replay-safe incremental history sync.
+                  </p>
+                </div>
+                <strong aria-label={'Google Workspace status: ' + google.status}>
+                  {google.status === 'needs-app-config' ? 'Needs app setup' : google.status}
+                </strong>
+              </div>
+              {google.sources.length ? (
+                <dl className="pc-settings-status">
+                  {google.sources.map((source) => (
+                    <div key={source.kind}>
+                      <dt>{source.kind === 'gcal' ? 'Calendar' : source.kind}</dt>
+                      <dd>
+                        {source.status}
+                        {source.lastSyncAt ? ' · synced ' + formatDate(source.lastSyncAt) : ''}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+              {!google.configured ? (
+                <p className="pc-settings-note" role="status">
+                  Add a Google Desktop OAuth client at
+                  {' '}~/.config/papercusp/google-oauth-client.json to enable consent on this machine.
+                </p>
+              ) : null}
+              <div className="pc-settings-actions" style={{ marginTop: 12 }}>
+                <Button
+                  variant="primary"
+                  disabled={!google.configured || busy !== null}
+                  onClick={() => window.location.assign(googleWorkspaceConnectHref())}
+                >
+                  {google.connected ? 'Reconnect Google Workspace' : 'Connect Google Workspace'}
+                </Button>
+                {google.connected ? (
+                  <Button
+                    variant="destructive"
+                    disabled={busy !== null}
+                    onClick={() => void disconnectGoogle()}
+                  >
+                    {busy === 'disconnect-google' ? 'Disconnecting…' : 'Disconnect'}
+                  </Button>
+                ) : null}
+              </div>
+              <p className="pc-settings-note" style={{ marginBottom: 0 }}>
+                Disconnect stops live sync but keeps imported documents. Use Purge below only when
+                you want verified deletion.
+              </p>
+            </article>
+          );
+        })()}
       </section>
 
       <section className="pc-settings-section" aria-labelledby="vault-import-heading">
