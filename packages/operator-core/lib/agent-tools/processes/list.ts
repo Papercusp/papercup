@@ -19,6 +19,7 @@ import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { TASK_STATES } from '../../task-manager/types';
+import { redactSensitiveText } from '../../sensitive-text';
 
 function mb(bytes: number | null | undefined): number | null {
   return bytes == null ? null : Math.round(bytes / 1048576);
@@ -27,6 +28,11 @@ function mb(bytes: number | null | undefined): number | null {
 function ageSec(startedAt: string): number {
   const t = Date.parse(startedAt);
   return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
+}
+
+function safeDiagnosticText(text: string, maxChars?: number): string {
+  const redacted = redactSensitiveText(text);
+  return maxChars === undefined ? redacted : redacted.slice(0, maxChars);
 }
 
 const taskResultSchema = z.object({
@@ -176,18 +182,18 @@ export default defineTool({
               cgroupPath: g.cgroupPath,
               scopeUnit: g.scopeUnit,
               pids: g.pids,
-              sample: g.sampleCmdline.slice(0, 160),
+              sample: safeDiagnosticText(g.sampleCmdline, 160),
             })),
             foreignGroups: tick.result.foreign.map((g) => ({
               cgroupPath: g.cgroupPath,
               pids: g.pids,
-              sample: g.sampleCmdline.slice(0, 160),
+              sample: safeDiagnosticText(g.sampleCmdline, 160),
             })),
             verifierGroups: tick.result.verifierScope.map((g) => ({
               cgroupPath: g.cgroupPath,
               scopeUnit: g.scopeUnit,
               pids: g.pids,
-              sample: g.sampleCmdline.slice(0, 160),
+              sample: safeDiagnosticText(g.sampleCmdline, 160),
             })),
           };
     }
@@ -221,7 +227,7 @@ export default defineTool({
               tasks: rows.map((r) => ({
                 taskId: r.taskId,
                 class: r.class,
-                title: r.title,
+                title: safeDiagnosticText(r.title),
                 state: r.state,
                 launchedBy: r.launchedBy,
                 workItemId: r.workItemId,
@@ -238,8 +244,8 @@ export default defineTool({
                 memoryMaxMb: mb(r.memoryMaxBytes),
                 deadlineAt: r.deadlineAt,
                 exitCode: r.exitCode,
-                exitReason: r.exitReason,
-                logPath: r.logPath,
+                exitReason: r.exitReason == null ? r.exitReason : safeDiagnosticText(r.exitReason),
+                logPath: r.logPath == null ? r.logPath : safeDiagnosticText(r.logPath),
               })),
             },
             null,

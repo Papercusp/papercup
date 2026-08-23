@@ -126,6 +126,28 @@ describe('upsertUnaccounted scope identity', () => {
     `;
     expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
   });
+
+  it('redacts credential-bearing residue titles before persisting and on conflict refresh', async () => {
+    const group = {
+      taskId: 't-redaction',
+      cgroupPath: '/sys/fs/cgroup/papercusp.slice/pc-t-redaction.scope',
+      scopeUnit: 'pc-t-redaction.scope',
+      pids: [11],
+      sampleCmdline: 'DATABASE_URL=postgresql://user:opaque-password@localhost/app',
+    };
+
+    await store.upsertUnaccounted([group], { workspaceId: WS });
+    let [row] = await db.sql`SELECT title FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}`;
+    expect(row!.title).toBe('DATABASE_URL=[redacted]');
+
+    await store.upsertUnaccounted(
+      [{ ...group, sampleCmdline: 'AWS_ACCESS_KEY_ID=opaque-aws-access-key' }],
+      { workspaceId: WS },
+    );
+    [row] = await db.sql`SELECT title FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}`;
+    expect(row!.title).toBe('AWS_ACCESS_KEY_ID=[redacted]');
+    expect(row!.title).not.toContain('opaque-');
+  });
 });
 
 describe('registerTask detector-placeholder adoption', () => {

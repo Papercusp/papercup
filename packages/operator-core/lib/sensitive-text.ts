@@ -12,7 +12,7 @@ const SELF_IDENTIFYING_SECRET_RE =
 
 const KEY_DIRECTED_SECRET_RE = new RegExp(
   [
-    String.raw`((?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?["'\s]*[:=]\s*["']?)([^\s"',;&)}\]]{8,})`,
+    String.raw`((?:(?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?|(?:[A-Za-z_][A-Za-z0-9_-]*_)?(?:access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|database[_-]?url))["'\s]*[:=]\s*["']?)([^\s"',;&)}\]]{8,})`,
     String.raw`((?:authorization|proxy-authorization)["'\s]*[:=]\s*["']?(?:bearer|basic|token)\s+)([^\s"',;&)}\]]{8,})`,
     String.raw`(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(?=-----END)`,
   ].join('|'),

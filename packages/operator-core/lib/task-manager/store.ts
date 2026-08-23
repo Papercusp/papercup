@@ -17,6 +17,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
+import { redactSensitiveText } from '../sensitive-text';
 import {
   TASK_STATES,
   isTerminalState,
@@ -501,18 +502,23 @@ export async function upsertUnaccounted(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const seen: string[] = [];
   for (const g of groups) {
+    // Residue samples originate in `/proc/<pid>/cmdline` and are persisted so the
+    // reconciler can retain history. Redact before the durable boundary, and before
+    // capping, so a credential-shaped assignment cannot survive in the ledger.
+    const title = redactSensitiveText(g.sampleCmdline).slice(0, 200) || '(unknown)';
     await sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
         launched_by, scope_unit, cgroup_path, pid, confined, state, detail
       ) VALUES (
         ${g.taskId}, ${ws}, ${g.taskId}, 'other',
-        ${g.sampleCmdline.slice(0, 200) || '(unknown)'},
+        ${title},
         '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
         ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb
       )
       ON CONFLICT (task_id) DO UPDATE
-        SET scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
+        SET title = EXCLUDED.title,
+            scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
             last_seen_at = now(),
             updated_at = now(),
             state = CASE WHEN harness_shared.task_ledger.ended_at IS NULL

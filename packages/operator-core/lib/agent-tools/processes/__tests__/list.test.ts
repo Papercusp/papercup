@@ -207,6 +207,92 @@ describe('processes:list structured output', () => {
     ]);
   });
 
+  it('redacts credential assignments in live groups and persisted task titles', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    vi.mocked(listTasks).mockResolvedValueOnce([
+      {
+        taskId: 'task-redaction',
+        workspaceId: 'default',
+        rootTaskId: 'task-redaction',
+        class: 'bash-job',
+        title: 'DATABASE_URL=postgresql://user:opaque-password@localhost/app',
+        argv: [],
+        launchedBy: 'su-test',
+        workItemId: null,
+        planSlug: null,
+        parentTaskId: null,
+        confined: true,
+        state: 'running',
+        startedAt: '2026-08-23T09:00:00.000Z',
+        lastSeenAt: '2026-08-23T09:00:00.000Z',
+        lastMemoryBytes: null,
+        peakMemoryBytes: null,
+        cpuUsec: null,
+        pidsCurrent: 1,
+        scopeUnit: 'pc-task-redaction.scope',
+        memoryMaxBytes: null,
+        deadlineAt: null,
+        exitCode: null,
+        exitReason: null,
+        logPath: null,
+        detail: {},
+      },
+    ]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { unaccounted: 1 },
+      result: {
+        unaccounted: [
+          {
+            cgroupPath: '/user.slice/papercusp.slice/pc-orphan-redaction.scope',
+            scopeUnit: 'pc-orphan-redaction.scope',
+            pids: [11],
+            sampleCmdline: 'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
+          },
+        ],
+        verifierScope: [],
+        foreign: [],
+      },
+      scan: { processes: 1, foreignTruncated: false },
+      degraded: false,
+      touched: 0,
+      strandedCount: 0,
+      endedUnobservedCount: 0,
+      unaccountedPersisted: 1,
+      residueCleared: 0,
+    } as never);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { live: true, limit: 2000 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-redaction-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      live: { unaccountedGroups: Array<{ sample: string }> };
+      tasks: Array<{ title: string }>;
+    };
+    expect(structured.live.unaccountedGroups[0]!.sample).toBe('AWS_ACCESS_KEY_ID=[redacted]');
+    expect(structured.tasks[0]!.title).toBe('DATABASE_URL=[redacted]');
+    expect(JSON.stringify(structured)).not.toContain('opaque-');
+  });
+
   it('omits unrelated global groups from a filtered live task read', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');

@@ -25,6 +25,21 @@ describe('sensitive diagnostic text', () => {
     expect(output).toBe('worker.ts API_KEY=[redacted] --mode verify');
   });
 
+  it('redacts credential-shaped environment assignments used by provider and database processes', () => {
+    const input = [
+      'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
+      'AWS_SECRET_ACCESS_KEY=opaque-aws-secret-key',
+      'DATABASE_URL=postgresql://user:opaque-password@localhost:5432/app',
+    ].join(' ');
+    const output = redactSensitiveText(input);
+    expect(output).toBe([
+      'AWS_ACCESS_KEY_ID=[redacted]',
+      'AWS_SECRET_ACCESS_KEY=[redacted]',
+      'DATABASE_URL=[redacted]',
+    ].join(' '));
+    expect(output).not.toContain('opaque-');
+  });
+
   it('does not redact prose that merely mentions credential concepts', () => {
     const prose = 'The API key is unavailable, so the task remains stopped.';
     expect(redactSensitiveText(prose)).toBe(prose);
