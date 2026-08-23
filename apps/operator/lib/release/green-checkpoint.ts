@@ -632,10 +632,11 @@ export interface CheckpointDeps {
     queue: FrozenCandidateRepairQueue,
   ): Promise<boolean | null>;
   /** EI-21007486441633274: publish an additive integration-history join only after the
-   * exact frozen repair has passed every gate. The returned SHA must be the integration
-   * head, must descend from both the prior integration tip and `queue.repairHead`, and
-   * must preserve the prior integration tree byte-for-byte. Returning null (or throwing)
-   * is inconclusive: the ready-to-promote queue remains durable and `main` never moves. */
+   * exact frozen repair has passed every gate and has become the green release ref. The
+   * returned SHA must be the integration head, must descend from both the prior integration
+   * tip and `queue.repairHead`, and must preserve the prior integration tree byte-for-byte.
+   * Returning null (or throwing) keeps the ready-to-promote queue durable: `main` stays on
+   * that exact tested repair while newer integration tips remain blocked. */
   reconcileFrozenRepairIntoStaging?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<string | null>;
@@ -6431,6 +6432,7 @@ export async function runGreenCheckpoint(
   let repairVerification = false;
   let initialCandidateVerification = false;
   let repairOutcomeReconciled = false;
+  let repairPromotionAdvance: AdvanceResult | null = null;
   const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
   const finalizeFrozenRepairFixer = deps.finalizeFrozenRepairFixer;
   const hasFrozenRepairDispatchReservation =
@@ -6568,6 +6570,64 @@ export async function runGreenCheckpoint(
       );
     }
   };
+
+  /**
+   * Publish and advance the exact repair SHA before touching staging. `ready-to-promote`
+   * is the durable transaction journal: if a process dies after the remote push but before
+   * the local ref move, the next pass safely repeats the push; if it dies after the ref move,
+   * `lastReady === repairHead` skips both effects and resumes at the staging join.
+   */
+  const advanceExactFrozenRepair = async (
+    queue: FrozenCandidateRepairQueue,
+    onFailure?: (leg: "push" | "advance") => void,
+  ): Promise<{ candidate: string; advance: AdvanceResult }> => {
+    const exactCandidate = await revParse(
+      cfg.integrationRoot,
+      queue.repairHead,
+    );
+    if (lastReady === exactCandidate) {
+      return {
+        candidate: exactCandidate,
+        advance: {
+          advanced: false,
+          from: exactCandidate,
+          to: exactCandidate,
+          reason: "already-at-candidate",
+        },
+      };
+    }
+
+    if (!opts.noPush) {
+      await pushGreenCandidateOrThrow(
+        cfg,
+        deps,
+        exactCandidate,
+        lastReady,
+      ).catch((error: unknown) => {
+        onFailure?.("push");
+        throw error;
+      });
+    }
+    const advance = await deps
+      .advance(exactCandidate)
+      .catch((error: unknown) => {
+        onFailure?.("advance");
+        throw error;
+      });
+    if (
+      advance.to !== exactCandidate ||
+      advance.reason === "not-fast-forward"
+    ) {
+      const error = new Error(
+        `verified frozen repair ${exactCandidate.slice(0, 12)} was published but ${cfg.releaseRef} ` +
+          `did not fast-forward to it (reason=${advance.reason}, from=${advance.from?.slice(0, 12) ?? "unset"}, ` +
+          `to=${advance.to.slice(0, 12)})`,
+      );
+      onFailure?.("advance");
+      throw error;
+    }
+    return { candidate: exactCandidate, advance };
+  };
   if (deps.readFrozenRepairQueue) {
     try {
       repairQueue = await deps.readFrozenRepairQueue();
@@ -6585,13 +6645,14 @@ export async function runGreenCheckpoint(
     }
   }
   if (repairQueue) {
-    // A process may die after proving the exact repair green but before publishing its
-    // additive integration-history join. A real reconciliation hook resumes that
-    // promotion-only step WITHOUT spending a second suite and, critically, without moving
-    // `main` to the detached repair head. Old/direct callers that do not provide the new
-    // hook retain the historical exact-head re-verification path for compatibility.
+    // A process may die after proving the exact repair green, before or after advancing
+    // `main`, or while publishing the additive staging-history join. The persisted
+    // ready-to-promote row resumes those idempotent effects WITHOUT spending a second suite.
+    // Old/direct callers without the reconciliation hook retain the historical exact-head
+    // re-verification path for compatibility.
     if (repairQueue.phase === "ready-to-promote") {
       if (deps.reconcileFrozenRepairIntoStaging) {
+        const exactPromotion = await advanceExactFrozenRepair(repairQueue);
         let reconciledHead: string | null = null;
         let reconciliationError: unknown = null;
         try {
@@ -6605,19 +6666,79 @@ export async function runGreenCheckpoint(
             ? `: ${reconciliationError instanceof Error ? reconciliationError.message : reconciliationError}`
             : "";
           const summary =
-            `verified frozen repair ${repairQueue.repairHead.slice(0, 8)} could not be joined into ` +
-            `the current ${cfg.integrationBranch} history${detail}; keeping the ready-to-promote queue and refusing to move ${cfg.releaseRef}`;
+            `verified frozen repair ${exactPromotion.candidate.slice(0, 8)} is the exact green ` +
+            `${cfg.releaseRef} commit, but could not be joined into the current ` +
+            `${cfg.integrationBranch} history${detail}; keeping the ready-to-promote queue and ` +
+            `refusing to select a newer integration tip`;
           deps.log(summary);
           return {
-            advanced: false,
-            candidate: repairQueue.repairHead,
-            from: lastReady,
-            green: null,
+            advanced: exactPromotion.advance.advanced,
+            candidate: exactPromotion.candidate,
+            from: exactPromotion.advance.from,
+            green: true,
             reason: "repair-in-progress",
             summary,
             repairQueue,
           };
         }
+        const summary =
+          `verified frozen repair ${exactPromotion.candidate.slice(0, 8)} is the exact green ` +
+          `${cfg.releaseRef} commit and was joined additively into ${cfg.integrationBranch} at ` +
+          `${reconciledHead.slice(0, 8)}; the persisted queue is complete and the next gate may select the latest integration tip`;
+        deps.log(summary);
+
+        // Report while the durable row still exists. A crash after delivery but before the
+        // clear can repeat the signal; clearing first could lose the only success signal.
+        await deps
+          .broadcast(
+            `🟩 green-checkpoint: \`${cfg.releaseRef}\` is at exact verified repair ${exactPromotion.candidate.slice(0, 8)} (green, deployable)`,
+            summary,
+          )
+          .catch(() => {});
+        await deps.clearEscalation?.().catch(() => {});
+        {
+          const pipeline = pipelineName(cfg.integrationRoot);
+          const greenSummary =
+            `[${pipeline}] ${cfg.releaseRef} is at exact verified repair ` +
+            `${exactPromotion.candidate.slice(0, 8)} (green, deployable)`;
+          const payload = {
+            sha: exactPromotion.candidate,
+            from: exactPromotion.advance.from,
+            pipeline,
+            runId: deps.runId ?? null,
+          };
+          try {
+            await deps.emitEvent?.({
+              key: "release:green",
+              summary: greenSummary,
+              payload,
+              cancelSiblingKeysFor: [
+                "green-checkpoint:red",
+                `green-checkpoint:red:${pipeline}`,
+              ],
+            });
+            await deps.emitEvent?.({
+              key: `release:green:${pipeline}`,
+              summary: greenSummary,
+              payload,
+              cancelSiblingKeysFor: [
+                "green-checkpoint:red",
+                `green-checkpoint:red:${pipeline}`,
+              ],
+            });
+          } catch (error) {
+            deps.log(
+              `warn: resumed frozen-repair release:green emit failed: ${error instanceof Error ? error.message : error}`,
+            );
+          }
+        }
+        await deps
+          .clearInFlightCandidate?.()
+          .catch((error) =>
+            deps.log(
+              `warn: resumed frozen-repair in-flight marker clear failed: ${error instanceof Error ? error.message : error}`,
+            ),
+          );
         await deps.writeFrozenRepairQueue?.(null);
         await deps
           .cleanupFrozenRepairWorktree?.(repairQueue)
@@ -6626,17 +6747,12 @@ export async function runGreenCheckpoint(
               `warn: reconciled repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
             ),
           );
-        const summary =
-          `verified frozen repair ${repairQueue.repairHead.slice(0, 8)} joined additively into ` +
-          `${cfg.integrationBranch} at ${reconciledHead.slice(0, 8)}; ${cfg.releaseRef} remains at ` +
-          `${lastReady?.slice(0, 8) ?? "unset"} until a normal fast-forward gate verifies the joined tip`;
-        deps.log(summary);
         return {
-          advanced: false,
-          candidate: reconciledHead,
-          from: lastReady,
-          green: null,
-          reason: "repair-in-progress",
+          advanced: exactPromotion.advance.advanced,
+          candidate: exactPromotion.candidate,
+          from: exactPromotion.advance.from,
+          green: true,
+          reason: "advanced",
           summary,
         };
       }
@@ -8501,16 +8617,26 @@ export async function runGreenCheckpoint(
   // standing — which reads as "died in an optional post-verdict leg" and is exactly wrong. The
   // gate had decided green; it died publishing it.
   if (repairVerification && repairQueue) {
-    // Persist the exact-green transition BEFORE reconciliation. A process that dies after
-    // this write resumes the unchanged-tree history join above without re-running the full
-    // suite. The queue is cleared only after the hook has published/discovered the joined
-    // integration head, and `main` is deliberately untouched until the next normal gate.
+    // Persist the exact-green transition before ANY ref effect. `ready-to-promote` resumes
+    // publication, release advance, or staging reconciliation without another suite. The
+    // exact tested SHA reaches `main` first; the queue remains until staging contains that
+    // commit in its history and its joined head has been published.
     repairQueue = markFrozenRepairVerificationGreen(repairQueue, {
       repairHead: candidate,
       nowMs: Date.now(),
     });
     if (deps.reconcileFrozenRepairIntoStaging) {
       await deps.writeFrozenRepairQueue?.(repairQueue);
+      const exactPromotion = await advanceExactFrozenRepair(
+        repairQueue,
+        (leg) =>
+          stampPromotion(
+            false,
+            leg === "push" ? "push-failed" : "advance-failed",
+          ),
+      );
+      candidate = exactPromotion.candidate;
+      repairPromotionAdvance = exactPromotion.advance;
       let reconciledHead: string | null = null;
       let reconciliationError: unknown = null;
       try {
@@ -8524,15 +8650,20 @@ export async function runGreenCheckpoint(
           ? `: ${reconciliationError instanceof Error ? reconciliationError.message : reconciliationError}`
           : "";
         const reconciliationSummary =
-          `exact frozen repair ${candidate.slice(0, 8)} passed, but its additive ` +
-          `${cfg.integrationBranch} history join did not complete${detail}; ${cfg.releaseRef} remains unchanged and the ready-to-promote queue will resume`;
+          `exact frozen repair ${candidate.slice(0, 8)} passed and is now the green ` +
+          `${cfg.releaseRef} commit, but its additive ${cfg.integrationBranch} history join ` +
+          `did not complete${detail}; the ready-to-promote queue will resume before any newer tip is selected`;
         deps.log(reconciliationSummary);
-        stampPromotion(false, "repair-in-progress");
+        stampPromotion(
+          exactPromotion.advance.advanced,
+          "repair-in-progress",
+          exactPromotion.advance.advanced ? candidate : null,
+        );
         return {
-          advanced: false,
+          advanced: exactPromotion.advance.advanced,
           candidate,
-          from: lastReady,
-          green: null,
+          from: exactPromotion.advance.from,
+          green: true,
           reason: "repair-in-progress",
           summary: reconciliationSummary,
           repairQueue,
@@ -8541,45 +8672,40 @@ export async function runGreenCheckpoint(
           ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
         };
       }
+      const completedQueue = repairQueue;
       await deps.writeFrozenRepairQueue?.(null);
       await deps
-        .cleanupFrozenRepairWorktree?.(repairQueue)
+        .cleanupFrozenRepairWorktree?.(completedQueue)
         .catch((e) =>
           deps.log(
             `warn: reconciled repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
           ),
         );
       const reconciliationSummary =
-        `exact frozen repair ${candidate.slice(0, 8)} passed and was joined additively into ` +
-        `${cfg.integrationBranch} at ${reconciledHead.slice(0, 8)}; ${cfg.releaseRef} remains at ` +
-        `${lastReady?.slice(0, 8) ?? "unset"} until a normal fast-forward gate verifies the joined tip`;
+        `exact frozen repair ${candidate.slice(0, 8)} passed, became the green ` +
+        `${cfg.releaseRef} commit, and was joined additively into ${cfg.integrationBranch} at ` +
+        `${reconciledHead.slice(0, 8)}; the next gate may now select the latest integration tip`;
       deps.log(reconciliationSummary);
-      stampPromotion(false, "repair-in-progress");
-      return {
-        advanced: false,
-        candidate: reconciledHead,
-        from: lastReady,
-        green: null,
-        reason: "repair-in-progress",
-        summary: reconciliationSummary,
-        ...(deps.runId ? { runId: deps.runId } : {}),
-        ...(logPath ? { logPath } : {}),
-        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-      };
+      repairQueue = null;
     }
   }
-  if (!opts.noPush) {
-    await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady).catch(
-      (error: unknown) => {
-        stampPromotion(false, "push-failed");
+  if (!repairPromotionAdvance) {
+    if (!opts.noPush) {
+      await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady).catch(
+        (error: unknown) => {
+          stampPromotion(false, "push-failed");
+          throw error;
+        },
+      );
+    }
+    repairPromotionAdvance = await deps
+      .advance(candidate)
+      .catch((error: unknown) => {
+        stampPromotion(false, "advance-failed");
         throw error;
-      },
-    );
+      });
   }
-  const adv = await deps.advance(candidate).catch((error: unknown) => {
-    stampPromotion(false, "advance-failed");
-    throw error;
-  });
+  const adv = repairPromotionAdvance;
   if (repairQueue) {
     await deps.writeFrozenRepairQueue?.(null);
     await deps
