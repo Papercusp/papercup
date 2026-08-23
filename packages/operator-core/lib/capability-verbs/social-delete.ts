@@ -47,7 +47,6 @@ import type postgres from 'postgres';
 import {
   assertSocialWriteAllowed,
   type SocialPlatformId,
-  type SocialPlatformRow,
 } from '../external-triggers/social/platform-registry';
 import {
   formatSocialPostRef,
@@ -253,6 +252,5 @@ export async function deleteCanonicalSocialPost(
   // `deleted:false` is carried through as-is rather than raised or smoothed
   // into success. "Nothing was there to delete" is a different fact from "I
   // deleted it", and only the adapter can tell them apart.
-  void row;
   return { echo, deleted: outcome.deleted, detail: outcome.detail };
 }

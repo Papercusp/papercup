@@ -48,6 +48,7 @@ import {
   type SocialPostRef,
   type SocialVisibility,
 } from './social';
+import { socialDeleteToken } from './social-delete';
 import { string, type CanonicalDocument } from './resolve';
 
 /** Longest post body returned by `social:read`. Posts are short; this is a fence, not a budget. */
@@ -236,6 +237,16 @@ export interface SocialPostView {
   visibility: SocialVisibility;
   /** Whether `social:reply` would be accepted, resolved from the same rule the write path uses. */
   replyable: SocialWriteAvailability;
+  /**
+   * The confirmation `social:delete` requires for THIS post (P-008).
+   *
+   * Handed out here, and only here, because that is what makes it mean
+   * something: it is derived from the post's own text, so producing it requires
+   * having read the post. Delete is irreversible and its retry is
+   * indistinguishable from its success, so the rail has to be more than a
+   * boolean the caller sets — see social-delete.ts.
+   */
+  deleteToken: string;
 }
 
 function authorOf(payload: Record<string, unknown>, participants: readonly string[]): string {
@@ -255,6 +266,10 @@ function viewFromDocument(doc: CanonicalDocument, row: SocialPlatformRow, postId
     url: string(doc.payload.url),
     visibility: normalizeSocialVisibility(doc.payload.visibility),
     replyable: socialWriteAvailability(row.id),
+    // Computed from the FULL stored text, not the bounded `text` above: the
+    // token must be reproducible at delete time from the row, and the delete
+    // path bounds it identically rather than trusting what was displayed.
+    deleteToken: socialDeleteToken({ platform: row.id, externalId: doc.externalId }, doc.text),
   };
 }
 

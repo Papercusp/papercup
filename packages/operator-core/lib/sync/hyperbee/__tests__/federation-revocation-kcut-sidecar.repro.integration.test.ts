@@ -625,6 +625,24 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       expect(Number(ownerHasKey1[0]?.n ?? 0), 'owner minted its own epoch-1 key row').toBe(1);
       expect(Number(dbOwnerHasBKey1[0]?.n ?? 0), 'the revoked B was NEVER wrapped an epoch-1 key').toBe(0);
 
+      // WI-40905: exercise the LIVE revoke seam too. The original version of this
+      // guard advanced the cryptographic boundary but never called handle.revoke(),
+      // so it bypassed the production action that retires B's admitted log session.
+      // That made the test incapable of catching the exact live red: A correctly
+      // stopped reading B, but closing B's replica session also froze A's own-log
+      // serving on the shared connection, so B never received the post-boundary
+      // ciphertext to defer. The security contract is asymmetric: A must refuse
+      // B's future writes while B still receives A's encrypted bytes.
+      expect(
+        owner.handle.admitted.has(bPeer.handle.ownLog.keyHex),
+        'precondition: owner admitted B before the live revoke',
+      ).toBe(true);
+      await owner.handle.revoke(idB.devicePubkey);
+      expect(
+        owner.handle.admitted.has(bPeer.handle.ownLog.keyHex),
+        'live revoke must remove B from the owner read set',
+      ).toBe(false);
+
       // ── EPOCH 1: the owner authors POST-boundary content (encrypted under epoch 1). ──
       const EPOCH1_BODY = 'SECRET epoch-1 body — the revoked member must NOT be able to read this';
       await dbOwner.adminSql`

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 798,
+  "count": 799,
   "tools": [
     {
       "name": "ablation:report",
@@ -2567,7 +2567,7 @@
           "POST"
         ]
       },
-      "description": "Operate a sandboxed desktop (GUI) — screenshot, click, type, key, scroll — using the canonical computer-use action vocabulary. Returns a screenshot image after each action so you can see the result. ONLY for genuinely visual/GUI steps: for anything scriptable (files, CLIs, APIs) prefer capability:bash, and for web pages prefer a browser tool — both are faster and more reliable than pixel-clicking.",
+      "description": "Operate a sandboxed desktop (GUI) — screenshot, click, type, key, scroll — using the canonical computer-use action vocabulary. ONLY for genuinely visual/GUI steps: for anything scriptable (files, CLIs, APIs) prefer capability:bash, and for web pages prefer a browser tool — both are faster and more reliable than pixel-clicking.",
       "capabilities": [
         "capability:computer"
       ],
@@ -2628,9 +2628,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` first to see, then act on what you see.",
+        "when": "A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` (or computer:observe) first to see, then act on what you see.",
         "notWhen": "Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent's leased sandbox desktop.",
-        "chaining": "screenshot → inspect the image → left_click/type/key at the coordinates you see → screenshot to confirm. Repeat."
+        "chaining": "screenshot once to orient → then act, reading the tree that comes back with each action → screenshot again only when the tree cannot answer (a canvas, a video, a plain X11 client like xterm, or anything about pixels/layout/colour). Set `observe` per action: \"image\" when you must see pixels, \"none\" when you do not need to check the effect."
       }
     },
     {
@@ -25929,6 +25929,39 @@
       "guidance": {
         "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the mug, a UI 'run this on that agent' action, a mug placing a precise command (not prose) onto a cup.",
         "notWhen": "Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue."
+      }
+    },
+    {
+      "name": "social:delete",
+      "http": {
+        "path": "/api/agent-tools/social/delete",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Permanently delete one of the owner's own social posts. Irreversible — there is no undo on these platforms. Requires the confirmToken that social:read returns for that exact post, so a post can only be deleted after it has been read.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks you to take a post down, or to retract something that was posted in error.",
+        "notWhen": "Editing or replacing content — delete does not do that. Never delete to \"clean up\" or on your own initiative; only on an explicit owner instruction.",
+        "chaining": "social:read → confirmToken → social:delete. Report `deleted` honestly: false means the platform found nothing to remove, which is NOT the same as having deleted it."
       }
     },
     {
