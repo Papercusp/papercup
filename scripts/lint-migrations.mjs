@@ -160,6 +160,85 @@ export function findRawTxControl(sqlText) {
 }
 
 /**
+ * FROZEN offenders: applied files whose tx-control red no sanctioned action can clear.
+ *
+ * THE DEADLOCK THIS RESOLVES (WI-41119). Check #2 below fails any file ≥
+ * ENFORCED_FROM carrying top-level BEGIN/COMMIT, and tells you to remove it. But
+ * once that file is APPLIED, the migration-immutability guard (WI-38352) REFUSES
+ * the edit — correctly, because the runner keys its ledger by filename, so an
+ * edit would silently diverge fresh installs from applied ones (see WHY APPLIED
+ * FILES ARE FROZEN above). A new migration cannot help either: this lint reads
+ * the OLD FILE'S BYTES, which no later migration changes.
+ *
+ * So the two rails contradict each other and the check goes permanently red — and
+ * because lint:migrations is a green-checkpoint GATE check
+ * (apps/operator/lib/release/green-checkpoint.ts), that red-pins the gate
+ * fleet-wide until someone notices why it cannot be fixed.
+ *
+ * WHY THIS IS A LIST AND NOT "exempt every applied file". The gate applies pending
+ * migrations in its own preflight BEFORE judging. So a brand-new offender would
+ * already be APPLIED — and therefore exempt — by the time the lint ran, which
+ * would defang the check exactly when it is supposed to fire. Automatic exemption
+ * is worse than no check. Entry here must be DELIBERATE.
+ *
+ * ADDING AN ENTRY IS NOT A FIX — IT IS AN ADMISSION that a bad migration escaped
+ * to applied state. Fix the escape, not the symptom. This list is SHRINK-ONLY in
+ * intent: it exists for files that are already frozen, never as a bypass for work
+ * you could still correct. A listed file that is NOT actually applied is a HARD
+ * ERROR (see unappliedFrozenExemptions) precisely so it cannot be used that way.
+ */
+export const FROZEN_TXCTL_EXEMPTIONS = new Map([
+  [
+    "923-typed-goal-plan-properties.sql",
+    "Applied 2026-08-23T22:02:43Z (committed in the libs/papercusp submodule at 21:56:02Z, e9f98454). Carries BEGIN; / COMMIT;. The immutability guard refuses the edit this lint prescribes, so the red is otherwise permanent and gate-blocking. Filed as WI-41119.",
+  ],
+]);
+
+/**
+ * Partition migration files by the tx-control rule.
+ *
+ * `entries` is `[{ file, text }]`. Returns offenders (a real failure), the
+ * pre-ENFORCED_FROM grandfathered count, and the frozen-exempt files — reported
+ * separately so an exemption is never silent.
+ */
+export function partitionRawTxControl(
+  entries,
+  { enforcedFrom = ENFORCED_FROM, exemptions = FROZEN_TXCTL_EXEMPTIONS } = {},
+) {
+  const offenders = [];
+  const exempted = [];
+  let grandfathered = 0;
+  for (const { file, text } of entries) {
+    const hits = findRawTxControl(text);
+    if (!hits.length) continue;
+    const num = Number.parseInt(/^(\d+)-/.exec(file)?.[1] ?? "0", 10);
+    if (num < enforcedFrom) {
+      grandfathered++;
+    } else if (exemptions.has(file)) {
+      exempted.push({ file, hits, reason: exemptions.get(file) });
+    } else {
+      offenders.push({ file, hits });
+    }
+  }
+  return { offenders, grandfathered, exempted };
+}
+
+/**
+ * Exemption entries that are NOT in the applied set — a hard error.
+ *
+ * This is what stops the list becoming a bypass. The ONLY justification for an
+ * entry is "this file is frozen because it is already applied"; if it is not
+ * applied, it is still editable and must simply be fixed. Requires a real applied
+ * set, so callers skip it when PG is unreachable rather than inventing a verdict.
+ */
+export function unappliedFrozenExemptions(
+  appliedFilenames,
+  exemptions = FROZEN_TXCTL_EXEMPTIONS,
+) {
+  return [...exemptions.keys()].filter((f) => !appliedFilenames.has(f)).sort();
+}
+
+/**
  * Top-level `RENAME CONSTRAINT` statements — the 42704 footgun (WI-4547).
  *
  * `ALTER TABLE IF EXISTS t RENAME CONSTRAINT x TO y` READS as guarded and is NOT:
@@ -637,23 +716,25 @@ async function main() {
 
   // 2. raw top-level transaction control (enforced ≥ ENFORCED_FROM;
   //    pre-contract applied files are grandfathered, reported as a count)
-  let grandfathered = 0;
-  for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
-    const hits = findRawTxControl(readFileSync(join(SQL_DIR, f), "utf8"));
-    if (!hits.length) continue;
-    if (num >= ENFORCED_FROM) {
-      failed = true;
-      console.error(
-        `✗ ${f}: top-level transaction control (${hits.join(", ")}) — the runner provides the transaction; remove it`,
-      );
-    } else {
-      grandfathered++;
-    }
+  const { offenders, grandfathered, exempted } = partitionRawTxControl(
+    files.map((f) => ({ file: f, text: readFileSync(join(SQL_DIR, f), "utf8") })),
+  );
+  for (const { file, hits } of offenders) {
+    failed = true;
+    console.error(
+      `✗ ${file}: top-level transaction control (${hits.join(", ")}) — the runner provides the transaction; remove it`,
+    );
   }
   if (grandfathered) {
     console.log(
       `· ${grandfathered} pre-${ENFORCED_FROM} applied file(s) carry legacy BEGIN/COMMIT — grandfathered (ledgered history, do not edit)`,
+    );
+  }
+  // Never silent: an exemption is an admission that a bad migration reached
+  // applied state, so it stays visible on every run.
+  for (const { file, hits } of exempted) {
+    console.log(
+      `· ${file}: top-level transaction control (${hits.join(", ")}) — FROZEN (already applied; the immutability guard refuses the edit). See FROZEN_TXCTL_EXEMPTIONS / WI-41119.`,
     );
   }
 
@@ -746,6 +827,16 @@ async function main() {
       failed = true;
       console.error(
         `✗ migration number(s) ≥${ENFORCED_FROM} on disk without a reservation row (use db:next-migration): ${unreserved.join(", ")}`,
+      );
+    }
+    // The guard on the frozen-exemption list: every entry must ACTUALLY be
+    // applied. An entry that is not applied is still editable, so it must be
+    // fixed rather than excused — this is what stops the list becoming a bypass.
+    const bogus = unappliedFrozenExemptions(appliedFilenames);
+    if (bogus.length) {
+      failed = true;
+      console.error(
+        `✗ FROZEN_TXCTL_EXEMPTIONS lists file(s) that are NOT applied, so they are not frozen and must be fixed, not exempted: ${bogus.join(", ")}`,
       );
     }
     const mismatches = reservationFilenameMismatches(files, reservations, {
