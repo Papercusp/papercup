@@ -19,12 +19,7 @@ import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 export { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
-import {
-  claimSpecSchema,
-  positiveIdCohortIds,
-  validateClaimSpec,
-  type ClaimSpec,
-} from '../../scheduler/claim-spec';
+import { claimSpecSchema, positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
 
 /**
@@ -136,10 +131,7 @@ type ExplainIssueFloors = (
   opts?: { assignee?: string; rigAvailable?: boolean; states?: readonly string[] },
 ) => Promise<ClaimFloorAttribution[]>;
 
-type ResolveWorkItemFamily = (
-  id: string,
-  harness: string,
-) => Promise<'issue' | 'feature' | null>;
+type ResolveWorkItemFamily = (id: string, harness: string) => Promise<'issue' | 'feature' | null>;
 
 /**
  * WI-4429: reject a fixed issue cohort that is already 0-admissible BEFORE the
@@ -243,9 +235,7 @@ export async function previewClaimSpecAdmission(args: {
     admissibleIds,
     floored,
     effectiveStates,
-    ...(featureIds.length > 0
-      ? { reason: 'feature-family claim floors remain enforced at pull time' }
-      : {}),
+    ...(featureIds.length > 0 ? { reason: 'feature-family claim floors remain enforced at pull time' } : {}),
   };
   const floorSummary = floored.map((row) => `${row.id}:${row.refusedBy ?? 'unknown'}`).join(', ');
   const noUncheckedFeatureCandidate = featureIds.length === 0;
@@ -400,8 +390,8 @@ export default defineTool({
             'field is one of priority|tags|kind|risk_tier|paths|plan|plan_item|age|redundancy|est_cost|assignee|id|title|severity|goal (never blocked/cursed; those are global floors); ' +
             '`title` (WI-3268) is for durable keyword EXCLUSION when `tags` is unpopulated — e.g. `{ not:{ field:"title", op:"word", value:"p2p" } }` to stop a fleet re-encountering excluded work; not rankable. Prefer `word` (whole-word) over `glob`\'s `*p2p*` (bare substring — false-positives on a title merely CONTAINING "p2p", e.g. a fleet named "nonp2p-..."). ' +
             'op is one of = | != | < | <= | > | >= | in | contains | glob | word. ' +
-            'rank.mode is "lexicographic" (terms break ties in order) or "weighted" (each term needs a numeric `weight`; only priority|age|est_cost|redundancy, affinity(), or severity_rank may be summed). ' +
-            'rank.terms is an ARRAY of { expr, dir }, NOT { field, order }; functions include affinity(bee.held_paths,item.paths) | severity_rank | model_fit(bee.model,item) | tag_weight(tags) | redundancy_need. Bare id|title|severity|risk_tier are not rankable; use severity_rank desc for critical-first ordering, or a severity filter to scope the lane. ' +
+            'rank.mode is "lexicographic" (terms break ties in order) or "weighted" (each term needs a numeric `weight`; only priority|age|est_cost|redundancy and numeric functions may be summed). ' +
+            'rank.terms is an ARRAY of { expr, dir }, NOT { field, order }; functions include affinity(bee.held_paths,item.paths) | severity_rank | dependency_unlock_score | model_fit(bee.model,item) | tag_weight(tags) | redundancy_need. dependency_unlock_score is the number of downstream items for which this candidate is the last unresolved blocker; work_items:claimable exposes the same value as dependencyUnlockScore. Bare id|title|severity|risk_tier are not rankable; use severity_rank desc for critical-first ordering, or a severity filter to scope the lane. ' +
             'EXAMPLE: { specVersion:"1.0", specId:"bugs", revision:1, view:{ filter:{ field:"kind", op:"in", value:["bug","change"] } }, rank:{ mode:"lexicographic", terms:[{ expr:"severity_rank", dir:"desc" }, { expr:"age", dir:"asc" }] } }. ' +
             'OPTIONAL view.fence (WI-6050): a NAMED fence macro — currently only "p2p-lane" — expanded server-side into view.filter at write time from the shared P2P_LANE_EXCLUSION_TERMS source, ANDed onto any filter you also supply. Use this instead of hand-typing p2p/federation/rig title excludes for a single-box fleet: `view:{ fence:"p2p-lane" }` (or combine with your own filter) always applies the CURRENT exclusion list, so it cannot drift the way 3 prior hand-typed fences did. ' +
             "OPTIONAL `states` (drain-claim-spec-hardening-2026-07-13, D-002/EI-11300): a claimable-status subset — same allowlist as scheduler:get_next's own `states` arg (open|failing). `open` is the unified claimable token for BOTH families now (feature `todo` retired, work-item-status-full-unify), and it is the floor default — so an unqualified spec already matches every open bug AND feature; set `states` only to restrict further (e.g. add `failing` for re-drive). A member's explicit get_next {states} still wins over this.",
@@ -411,7 +401,8 @@ export default defineTool({
       message: 'pass exactly ONE of cupId (steer one cup) or fleet (steer the whole fleet via inheritance)',
     })
     .refine((a) => a.clear === true || a.spec !== undefined, {
-      message: 'spec is required unless clear:true (clear deletes the target row so it falls back to fleet inheritance)',
+      message:
+        'spec is required unless clear:true (clear deletes the target row so it falls back to fleet inheritance)',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -499,13 +490,10 @@ export default defineTool({
     let poolEffectWarning: string | undefined;
     if (admission.preview.mode === 'dynamic') {
       try {
-        const { previewSpecPoolEffect, evaluateCollapseGuard } = await import(
-          '../../scheduler/spec-pool-preview'
-        );
+        const { previewSpecPoolEffect, evaluateCollapseGuard } = await import('../../scheduler/spec-pool-preview');
         const { getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
         const { activeWorkspaceId } = await import('../../workspace-registry');
-        const wsForCount =
-          ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : activeWorkspaceId();
+        const wsForCount = ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : activeWorkspaceId();
         const countScope = { workspaceId: wsForCount, harness: resolvedHarness ?? null };
         const current = await previewSpecPoolEffect(validated.spec, countScope);
         // Effective-BEFORE at the same target key (bee row → fleet inheritance → default).

@@ -176,6 +176,15 @@ export const RANK_FUNCTIONS = [
   // CASE yields 0 for every one of them — a clean, error-free NULL leg on a relation where
   // severity is structurally absent, matching how the `severity` FILTER already behaves.
   'severity_rank',
+  // `dependency_unlock_score` (work-item-deps-and-readiness Phase 5) — one-hop dependency
+  // leverage: how many present non-terminal downstream items would become dependency-ready
+  // if this candidate completed now. This is intentionally NOT descendant centrality; a
+  // descendant that remains blocked at the next hop is not unlocked and earns no credit.
+  // The SQL oracle reads the existing work_item_deps graph and the same per-family endpoint /
+  // terminal semantics as the readiness floor. It returns an integer, so the term is safe in
+  // both lexicographic and weighted modes. The score is also projected by
+  // work_items:claimable as `dependencyUnlockScore`, making the ordering inspectable.
+  'dependency_unlock_score',
 ] as const;
 export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 
@@ -618,10 +627,7 @@ function detectBroadKindDisjunctFootgun(node: unknown, path: string, warnings: s
  * `bee_claim_specs.id_only` so over-reliance is countable — is the shape oracle, so the
  * warning and the stored tripwire can never disagree about what "id-only" means.
  */
-function detectFrozenIdListFootgun(
-  spec: { view?: { filter?: unknown } },
-  warnings: string[],
-): void {
+function detectFrozenIdListFootgun(spec: { view?: { filter?: unknown } }, warnings: string[]): void {
   if (!isIdOnlySelector(spec)) return;
   warnings.push(
     'view.filter: this spec selects on `id` ALONE — a FROZEN SNAPSHOT, not a standing lane. ' +

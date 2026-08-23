@@ -1272,6 +1272,13 @@ export interface IssueClaimableRow {
   featureOrder: number | null;
   /** created_ts (epoch ms). */
   createdTs: number | null;
+  /**
+   * One-hop dependency leverage: downstream items for which this row is the last
+   * unresolved blocker. This is the exact value used by the `dependency_unlock_score`
+   * rank term. Null when the active spec does not use that term; computing the graph score
+   * only for a policy that consumes it keeps ordinary claimability reads cheap.
+   */
+  dependencyUnlockScore: number | null;
 }
 
 /**
@@ -1324,6 +1331,12 @@ export async function listIssueClaimableRows(
   // Empty heldPaths ⇒ the `affinity` term is NEUTRAL (dropped), leaving the spec's
   // deterministic feature_order→created ordering — exactly get_next's for a fresh bee.
   const order = compileRank(sql, opts.spec ?? DEFAULT_CLAIM_SPEC, { assignee });
+  // Score only when it explains an active policy term. Keeping the projection NULL for
+  // specs that do not use the term avoids paying a graph query per row on every ordinary
+  // claimability read, and makes "not part of this ordering" distinct from a real score 0.
+  const dependencyUnlockScore = specUsesRankTerm(opts.spec ?? DEFAULT_CLAIM_SPEC, 'dependency_unlock_score')
+    ? dependencyUnlockScoreSql(sql)
+    : sql`NULL::integer`;
   const sub = issueClaimCandidateSubquery(sql, {
     compiled,
     assignee,
@@ -1351,7 +1364,8 @@ export async function listIssueClaimableRows(
       COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS severity,
       source_plan_slug          AS plan,
       feature_order,
-      created_ts
+      created_ts,
+      ${dependencyUnlockScore} AS dependency_unlock_score
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
     WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
     ORDER BY ${order}
@@ -1366,6 +1380,7 @@ export async function listIssueClaimableRows(
     plan: string | null;
     feature_order: number | string | null;
     created_ts: number | string | null;
+    dependency_unlock_score: number | string | null;
   }>;
   return rows.map((r) => ({
     id: r.id,
@@ -1377,6 +1392,7 @@ export async function listIssueClaimableRows(
     plan: r.plan,
     featureOrder: r.feature_order == null ? null : Number(r.feature_order),
     createdTs: r.created_ts == null ? null : Number(r.created_ts),
+    dependencyUnlockScore: r.dependency_unlock_score == null ? null : Number(r.dependency_unlock_score),
   }));
 }
 
@@ -1652,11 +1668,7 @@ export async function readIssueClaimability(
     const breakdown = await aggregateIssueClaimExclusions(filter, { ...shared, client, precomputedTable });
     const rows = readOpts.breakdownOnly
       ? []
-      : await listIssueClaimableRows(
-          filter,
-          { ...shared, spec: opts.spec, client, precomputedTable },
-          readOpts.limit,
-        );
+      : await listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client, precomputedTable }, readOpts.limit);
     const sample = readOpts.sampleLimit
       ? await sampleIssueClaimExclusions(filter, { ...shared, client, precomputedTable }, readOpts.sampleLimit)
       : undefined;
@@ -1817,6 +1829,10 @@ export async function readClaimSpecDelta(
       rigAvailable: opts.rigAvailable,
     });
     const proposedMatch = compileFilter(client, proposed.filter);
+    const explainDependencyUnlock =
+      specUsesRankTerm(current.spec ?? DEFAULT_CLAIM_SPEC, 'dependency_unlock_score') ||
+      specUsesRankTerm(proposed.spec ?? DEFAULT_CLAIM_SPEC, 'dependency_unlock_score');
+    const dependencyUnlockScore = explainDependencyUnlock ? dependencyUnlockScoreSql(client) : client`NULL::integer`;
     const table = 'claim_spec_delta_snapshot';
     await client`
       CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
@@ -1842,6 +1858,7 @@ export async function readClaimSpecDelta(
         origin                    AS delta_origin,
         COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS delta_severity,
         source_plan_slug          AS delta_plan,
+        ${dependencyUnlockScore}  AS delta_dependency_unlock_score,
         -- Positive comparisons on nullable fields (e.g. plan = '<slug>') evaluate to SQL NULL,
         -- which WHERE correctly treats as a non-match but which NOT in_current would also turn
         -- into NULL and silently omit from newly-admitted counts. Normalize both match columns
@@ -1915,6 +1932,7 @@ export interface ClaimSpecDeltaSqlRow {
   proposed_match: boolean;
   status_in_current: boolean;
   status_in_proposed: boolean;
+  delta_dependency_unlock_score?: number | string | null;
 }
 
 /**
@@ -1931,9 +1949,7 @@ export interface ClaimSpecDeltaSqlRow {
 export function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'admitted'): ClaimSpecDeltaRow {
   const byFilter = side === 'excluded' ? r.spec_match && !r.proposed_match : r.proposed_match && !r.spec_match;
   const byStates =
-    side === 'excluded'
-      ? r.status_in_current && !r.status_in_proposed
-      : r.status_in_proposed && !r.status_in_current;
+    side === 'excluded' ? r.status_in_current && !r.status_in_proposed : r.status_in_proposed && !r.status_in_current;
   return {
     id: r.delta_id,
     kind: r.delta_kind,
@@ -1944,6 +1960,7 @@ export function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'adm
     plan: r.delta_plan,
     featureOrder: r.feature_order == null ? null : Number(r.feature_order),
     createdTs: r.created_ts == null ? null : Number(r.created_ts),
+    dependencyUnlockScore: r.delta_dependency_unlock_score == null ? null : Number(r.delta_dependency_unlock_score),
     cause: byFilter && byStates ? 'both' : byStates ? 'states' : 'filter',
   };
 }
@@ -1956,9 +1973,24 @@ export function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'adm
  * Compile a single rank term's EXPRESSION to a sortable `sql` value, ignoring its
  * direction (the caller appends ASC/DESC). Returns null when the term is a NEUTRAL
  * (descoped) function — the caller drops it from the ORDER BY so it doesn't perturb
- * ordering. A bare item field maps through {@link FIELD_MAP}; an `inverted` field
  * (feature_order) flags the caller to flip the direction.
  */
+function dependencyUnlockScoreSql(sql: OrgSql): SqlFragment {
+  return sql`harness_shared.work_item_dependency_unlock_score(
+    workspace_id,
+    harness_slug,
+    feature_id,
+    COALESCE(item_kind, kind)
+  )`;
+}
+
+function specUsesRankTerm(spec: ClaimSpec, head: string): boolean {
+  return spec.rank.terms.some((term) => {
+    const exprHead = term.expr.includes('(') ? term.expr.slice(0, term.expr.indexOf('(')).trim() : term.expr.trim();
+    return exprHead === head;
+  });
+}
+
 function compileRankExpr(
   sql: OrgSql,
   expr: string,
@@ -2011,6 +2043,19 @@ function compileRankExpr(
       inverted: false,
       // A CASE over integer literals — casts cleanly to ::numeric, so unlike the bare
       // `severity` field this is safe to sum in a weighted rank.
+      numeric: true,
+    };
+  }
+
+  // One-hop dependency leverage (work-item-deps-and-readiness Phase 5). The SQL function
+  // consumes only stable row identity columns, so this fragment stays alias-agnostic across
+  // feature tiers, issue tier 3, claimability reads and delta previews. It counts ONLY
+  // downstream rows for which this candidate is the last unresolved blocker; descendant
+  // centrality would over-credit work that remains blocked after the candidate completes.
+  if (head === 'dependency_unlock_score') {
+    return {
+      value: dependencyUnlockScoreSql(sql),
+      inverted: false,
       numeric: true,
     };
   }
@@ -2366,7 +2411,9 @@ export async function getNextWorkItem(
   if (!claimed) return null;
   claimed.interestWatch = await armWorkItemHolderInterests(claimed, bee.assignee);
   // Same claimed-event as the legacy claim path (best-effort fanout).
-  void trackDetached(import('../work-items-events')).then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee)).catch(() => {});
+  void trackDetached(import('../work-items-events'))
+    .then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee))
+    .catch(() => {});
   return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };
 }
 

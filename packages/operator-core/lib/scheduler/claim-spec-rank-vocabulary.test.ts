@@ -91,9 +91,9 @@ describe('severity_rank is the ORDINAL severity term (EI-19286355119013384)', ()
   it('ACCEPTS severity_rank in WEIGHTED mode — it compiles to integers, so the ::numeric cast is safe', () => {
     // This is the property that distinguishes it from the bare `severity` field, whose text
     // column makes the same weighted spec a hard PG error that aborts the claim query.
-    expect(
-      validateClaimSpec(specWithRank('weighted', [{ expr: 'severity_rank', dir: 'desc', weight: 2 }])).ok,
-    ).toBe(true);
+    expect(validateClaimSpec(specWithRank('weighted', [{ expr: 'severity_rank', dir: 'desc', weight: 2 }])).ok).toBe(
+      true,
+    );
   });
 
   it('still REJECTS the bare `severity` field in both modes', () => {
@@ -113,6 +113,22 @@ describe('severity_rank is the ORDINAL severity term (EI-19286355119013384)', ()
       'minor',
       'nit',
     ]);
+  });
+});
+
+describe('dependency_unlock_score is the one-hop dependency-leverage term (Phase 5)', () => {
+  it('is a numeric rank function accepted in lexicographic and weighted modes', () => {
+    expect(RANK_FUNCTIONS).toContain('dependency_unlock_score');
+    expect(
+      validateClaimSpec(specWithRank('lexicographic', [{ expr: 'dependency_unlock_score', dir: 'desc' }])).ok,
+    ).toBe(true);
+    expect(
+      validateClaimSpec(specWithRank('weighted', [{ expr: 'dependency_unlock_score', dir: 'desc', weight: 3 }])).ok,
+    ).toBe(true);
+  });
+
+  it('keeps the default policy unchanged until a leader deliberately authors the term', () => {
+    expect(DEFAULT_CLAIM_SPEC.rank.terms.map((t) => t.expr)).not.toContain('dependency_unlock_score');
   });
 });
 

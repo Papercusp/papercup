@@ -42,7 +42,8 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { resolve } from 'node:path';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
@@ -69,6 +70,10 @@ const H = 'papercup';
 const WS = 'default';
 const BEE = 'bee-rank-1';
 let db: FreshPgDb;
+const UNLOCK_SCORE_MIGRATION = resolve(
+  __dirname,
+  '../../../libs/papercusp/libs/db/sql/911-work-item-dependency-unlock-score.sql',
+);
 
 /**
  * Seed one issue-family row. `severity` is written to `payload._ei.severity` — the accessor
@@ -79,7 +84,7 @@ let db: FreshPgDb;
  */
 async function seedIssue(
   id: string,
-  opts: { createdTs: number; severity?: string; featureOrder?: number | null },
+  opts: { createdTs: number; severity?: string; featureOrder?: number | null; takenBy?: string | null },
 ) {
   const payload = opts.severity === undefined ? {} : { _ei: { severity: opts.severity } };
   // Use postgres-js `sql.json()` here — the idiom every sibling work_items integration test
@@ -90,8 +95,15 @@ async function seedIssue(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id,
        created_ts, updated_ts, payload, feature_order)
-    VALUES (${H}, ${id}, 'bug', ${`title ${id}`}, 'open', ${null}, ${WS},
+    VALUES (${H}, ${id}, 'bug', ${`title ${id}`}, 'open', ${opts.takenBy ?? null}, ${WS},
             ${opts.createdTs}, 0, ${db.sql.json(payload)}, ${opts.featureOrder ?? null})`;
+}
+
+async function blockIssue(blocked: string, blocker: string) {
+  await db.sql`
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    VALUES ('default', 'issue', ${blocked}, 'issue', ${blocker}, 'blocks')`;
 }
 
 /** The compiled DEFAULT_CLAIM_SPEC rank, exactly as get-next.ts's tier 3 now passes it down. */
@@ -110,6 +122,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await applyMigrationForTest(db.sql, UNLOCK_SCORE_MIGRATION);
   await ensureCoordCapabilityTables(db.sql);
 }, 180_000);
 afterAll(async () => {
@@ -179,5 +192,54 @@ describe('issue-family claim ordering WITH DEFAULT_CLAIM_SPEC’s compiled rank 
 
     const got = await claimIssue({ withSpecRank: true });
     expect(got?.id).toBe('WI-steered');
+  });
+});
+
+describe('dependency_unlock_score ordering and explanation (work-item deps Phase 5)', () => {
+  const unlockSpec = {
+    ...DEFAULT_CLAIM_SPEC,
+    specId: 'dependency-unlock-first',
+    revision: 46,
+    rank: {
+      mode: 'lexicographic' as const,
+      terms: [
+        { expr: 'dependency_unlock_score', dir: 'desc' as const },
+        { expr: 'age', dir: 'asc' as const },
+      ],
+    },
+  };
+
+  async function seedUnlockGraph() {
+    await seedIssue('WI-old-no-impact', { createdTs: 100, severity: 'major' });
+    await seedIssue('WI-new-unlocker', { createdTs: 900, severity: 'major' });
+    await seedIssue('WI-other-live-blocker', { createdTs: 50, severity: 'major', takenBy: 'peer' });
+    await seedIssue('WI-unlocks-1', { createdTs: 1_000, severity: 'minor' });
+    await seedIssue('WI-unlocks-2', { createdTs: 1_100, severity: 'minor' });
+    await seedIssue('WI-still-multi-blocked', { createdTs: 1_200, severity: 'minor' });
+    await blockIssue('WI-unlocks-1', 'WI-new-unlocker');
+    await blockIssue('WI-unlocks-2', 'WI-new-unlocker');
+    await blockIssue('WI-still-multi-blocked', 'WI-new-unlocker');
+    await blockIssue('WI-still-multi-blocked', 'WI-other-live-blocker');
+  }
+
+  it('serves a newer two-item unlocker ahead of an older zero-impact item', async () => {
+    await seedUnlockGraph();
+    const order = compileRank(getOrgPg().sql, unlockSpec, { assignee: BEE });
+    const got = await wi.claimNextIssueWorkItem({ harness: H, assignee: BEE }, WS, {
+      issueKinds: ['bug'],
+      specOrderSql: order,
+    });
+    expect(got?.id).toBe('WI-new-unlocker');
+  });
+
+  it('exposes the exact score on claimable rows and excludes a dependent with another live blocker', async () => {
+    await seedUnlockGraph();
+    const rows = await (
+      await import('./scheduler/get-next')
+    ).listIssueClaimableRows(undefined, { harness: H, assignee: BEE, spec: unlockSpec }, 10);
+    expect(rows.map((r) => [r.id, r.dependencyUnlockScore])).toEqual([
+      ['WI-new-unlocker', 2],
+      ['WI-old-no-impact', 0],
+    ]);
   });
 });
