@@ -25,6 +25,8 @@ function fakeDesktop(n: number): SandboxDesktop & { released: () => number } {
     height: 768,
     // No live X server here, so no GL was measured — the honest zero value.
     gl: NO_GL_STRATEGY,
+    // P-005: a fake desktop enrols nothing — the honest "unenrolled" value.
+    taskId: null,
     release: async () => {
       releases += 1;
     },

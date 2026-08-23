@@ -29,6 +29,9 @@ function fakeLease(display: string, width = 1024, height = 768) {
     width,
     height,
     gl: NO_GL_STRATEGY,
+    // P-005: a fixture enrols nothing in the task ledger — the honest
+    // "unenrolled" value, which the lifecycle governor reports as unfreezable.
+    taskId: null,
     release: async () => {},
   };
 }

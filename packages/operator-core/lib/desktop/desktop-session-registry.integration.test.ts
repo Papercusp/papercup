@@ -30,6 +30,13 @@ import {
   resolveLocalDesktopByDisplay,
   setDesktopViewer,
   reconcileLocalDesktopSessions,
+  renewDesktopLease,
+  setDesktopTaskId,
+  markDesktopIdle,
+  markDesktopFrozen,
+  markDesktopThawed,
+  listGovernableDesktopSessions,
+  guestDisplayBackendError,
   DEFAULT_CAPTURE_GEOMETRY,
   TERMINAL_DESKTOP_STATES,
   isTerminalDesktopState,
@@ -37,6 +44,10 @@ import {
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const MIGRATION_900 = join(SQL_DIR, '900-desktop-sessions-registry.sql');
+/** P-005's lifecycle columns. Applied in order after 900, exactly as the runner
+ *  would — a hand-rolled CREATE TABLE here would silently fall behind the real
+ *  schema the first time either migration changes. */
+const MIGRATION_905 = join(SQL_DIR, '905-desktop-session-lifecycle.sql');
 
 const WS = 'ws-registry-test';
 let db: FreshPgDb | undefined;
@@ -66,6 +77,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('desktopregistry');
   sql = db.sql;
   await applyMigrationForTest(sql, MIGRATION_900);
+  await applyMigrationForTest(sql, MIGRATION_905);
 }, 180_000);
 
 afterAll(async () => {
@@ -401,5 +413,184 @@ describe('SQL/TS terminal-state drift guard', () => {
     expect(states.length).toBeGreaterThan(0);
     const terminal = states.filter((s) => isTerminalDesktopState(s as never));
     expect(terminal.sort()).toEqual([...TERMINAL_DESKTOP_STATES].sort());
+  });
+});
+
+/**
+ * P-005 lifecycle surface (WI-40868) — the columns and transitions migration 905
+ * adds, against real Postgres.
+ *
+ * Real PG matters here for the same reason it did for P-003: the guarantees are
+ * things the DATABASE refuses. `markDesktopFrozen` is guarded to ready/idle by a
+ * WHERE clause and `frozen_at` is required by a CHECK — a mocked client proves
+ * the module emitted SQL, not that a frozen row can never lose its stamp.
+ */
+describe('P-005 — lease renewal', () => {
+  it('bumps the activity clock and promotes idle back to ready', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await sql`UPDATE harness_shared.desktop_sessions
+                 SET state='idle', last_active_at = now() - interval '2 hours'
+               WHERE id = ${s.id}`;
+
+    const renewed = await renewDesktopLease(s.id, {}, sql);
+    expect(renewed?.state).toBe('ready');
+    expect(Date.now() - new Date(renewed!.lastActiveAt).getTime()).toBeLessThan(60_000);
+  });
+
+  it('an explicit ttlSec sets it; omitting ttlSec LEAVES IT ALONE', async () => {
+    // The distinction that matters: collapsing "omitted" and "null" into one
+    // nullable parameter is how a renewal silently turns a TTL'd lease immortal.
+    const s = await registerDesktopSession(base({ ttlSec: 300 }), sql);
+    expect((await renewDesktopLease(s.id, {}, sql))?.ttlSec).toBe(300);
+    expect((await renewDesktopLease(s.id, { ttlSec: 900 }, sql))?.ttlSec).toBe(900);
+    expect((await renewDesktopLease(s.id, { ttlSec: null }, sql))?.ttlSec).toBeNull();
+  });
+
+  it('returns undefined for a released session rather than reporting a false success', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await closeDesktopSession(s.id, 'released', sql);
+    expect(await renewDesktopLease(s.id, { ttlSec: 60 }, sql)).toBeUndefined();
+  });
+});
+
+describe('P-005 — the idle/freeze/thaw transitions', () => {
+  const stateOf = async (scopeRef: string) =>
+    (await resolveDesktopForScope({ workspaceId: WS, scope: 'pot', scopeRef }, sql)) ?? undefined;
+
+  it('walks ready → idle → frozen → ready, stamping and clearing frozen_at', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+
+    expect(await markDesktopIdle(s.id, sql)).toBe(true);
+    expect(await markDesktopFrozen(s.id, sql)).toBe(true);
+    const frozen = await stateOf(s.scopeRef);
+    expect(frozen?.state).toBe('frozen');
+    expect(frozen?.frozenAt).toBeInstanceOf(Date);
+
+    expect(await markDesktopThawed(s.id, sql)).toBe(true);
+    const thawed = await stateOf(s.scopeRef);
+    expect(thawed?.state).toBe('ready');
+    expect(thawed?.frozenAt).toBeNull();
+  });
+
+  it('markDesktopIdle refuses a frozen session — demoting it would drop frozen_at', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await markDesktopFrozen(s.id, sql);
+    expect(await markDesktopIdle(s.id, sql)).toBe(false);
+  });
+
+  it('touchDesktopSession promotes idle → ready but NEVER un-freezes a frozen session', async () => {
+    // A row saying `ready` over a still-frozen cgroup hands an agent a desktop
+    // whose X server cannot answer — the blank-screen class, by the back door.
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await markDesktopIdle(s.id, sql);
+    await touchDesktopSession(s.id, sql);
+    expect((await stateOf(s.scopeRef))?.state).toBe('ready');
+
+    await markDesktopFrozen(s.id, sql);
+    await touchDesktopSession(s.id, sql);
+    expect((await stateOf(s.scopeRef))?.state).toBe('frozen');
+  });
+
+  it('the database itself refuses a frozen row with no frozen_at', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await expect(
+      sql`UPDATE harness_shared.desktop_sessions SET state='frozen' WHERE id = ${s.id}`,
+    ).rejects.toThrow(/desktop_sessions_frozen_at_ck/);
+  });
+});
+
+describe('P-005 — task-ledger binding', () => {
+  it('round-trips a task id set at registration', async () => {
+    const s = await registerDesktopSession(base({ taskId: 'task-abc', idleAfterSec: 42 }), sql);
+    expect(s.taskId).toBe('task-abc');
+    expect(s.idleAfterSec).toBe(42);
+  });
+
+  it('binds a task id after the fact, and reports honestly on a terminal row', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    expect(s.taskId).toBeNull();
+    expect(await setDesktopTaskId(s.id, 'task-late', sql)).toBe(true);
+    await closeDesktopSession(s.id, 'released', sql);
+    expect(await setDesktopTaskId(s.id, 'task-later', sql)).toBe(false);
+  });
+});
+
+describe('P-005 — the governor read', () => {
+  it('returns live LOCAL rows and excludes terminal and remote ones', async () => {
+    const live = await registerDesktopSession(base(), sql);
+    await markDesktopReady(live.id, {}, sql);
+    const gone = await registerDesktopSession(base(), sql);
+    await closeDesktopSession(gone.id, 'released', sql);
+    const remote = await registerDesktopSession(base({ hostRef: 'frame-7' }), sql);
+
+    const ids = (await listGovernableDesktopSessions({}, sql)).map((r) => r.id);
+    expect(ids).toContain(live.id);
+    expect(ids).not.toContain(gone.id);
+    // The negative control that matters: a governor can only freeze cgroups on
+    // its OWN host, so pulling a remote row in would "act" and change nothing
+    // while marking the row frozen — misreporting a spinning guest as suspended.
+    expect(ids).not.toContain(remote.id);
+
+    const remoteIds = (await listGovernableDesktopSessions({ hostRef: 'frame-7' }, sql)).map((r) => r.id);
+    expect(remoteIds).toContain(remote.id);
+  });
+
+  it('orders by least-recently-active first, so a capped run reaps the stalest', async () => {
+    const fresh = await registerDesktopSession(base(), sql);
+    const stale = await registerDesktopSession(base(), sql);
+    await sql`UPDATE harness_shared.desktop_sessions
+                 SET last_active_at = now() - interval '9 hours' WHERE id = ${stale.id}`;
+    const rows = await listGovernableDesktopSessions({}, sql);
+    expect(rows.findIndex((r) => r.id === stale.id)).toBeLessThan(
+      rows.findIndex((r) => r.id === fresh.id),
+    );
+  });
+});
+
+describe('P-005 — a guest must declare its display backend at boot (EI-20504354859682877)', () => {
+  it.each(['vm-guest', 'microvm'] as const)(
+    'refuses a %s registered without capabilities.displayBackend',
+    async (kind) => {
+      // QMP display-update updates an EXISTING backend; it cannot create one. A
+      // guest booted with none can never be viewed and cannot be repaired without
+      // a reboot — so the constraint is enforced where it is still cheap.
+      await expect(registerDesktopSession(base({ kind }), sql)).rejects.toThrow(
+        /must declare capabilities\.displayBackend/,
+      );
+    },
+  );
+
+  it("refuses a guest that explicitly declares displayBackend 'none'", async () => {
+    await expect(
+      registerDesktopSession(base({ kind: 'vm-guest', capabilities: { displayBackend: 'none' } }), sql),
+    ).rejects.toThrow(/cannot have one attached later/);
+  });
+
+  it('accepts a guest that declares a real backend', async () => {
+    const s = await registerDesktopSession(
+      base({ kind: 'vm-guest', capabilities: { displayBackend: 'vnc', kvm: true } }),
+      sql,
+    );
+    expect(s.capabilities.displayBackend).toBe('vnc');
+  });
+
+  it('does NOT impose the constraint on non-guest kinds (the positive control)', async () => {
+    // Without this, the refusals above would pass against a registry that
+    // rejected every registration.
+    for (const kind of ['xvfb-local', 'frame-slot', 'bwrap'] as const) {
+      const s = await registerDesktopSession(base({ kind }), sql);
+      expect(s.kind).toBe(kind);
+    }
+  });
+
+  it('guestDisplayBackendError is a pure function P-011 can reuse without a database', () => {
+    expect(guestDisplayBackendError('xvfb-local', undefined)).toBeNull();
+    expect(guestDisplayBackendError('vm-guest', { displayBackend: 'egl-headless' })).toBeNull();
+    expect(guestDisplayBackendError('vm-guest', undefined)).toMatch(/EI-20504354859682877/);
   });
 });

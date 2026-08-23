@@ -121,6 +121,10 @@ async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): 
       scopeRef: potSlug,
       display: desktop.display,
       displayGeometry: { width: desktop.width, height: desktop.height },
+      // P-005 — the cross-process freeze/kill handle. Without it the lifecycle
+      // governor can see this desktop go idle and cannot do anything about it,
+      // because `release()` above is a closure in THIS loop.
+      taskId: desktop.taskId,
     });
     sessionIds.set(potSlug, session.id);
     await markDesktopReady(

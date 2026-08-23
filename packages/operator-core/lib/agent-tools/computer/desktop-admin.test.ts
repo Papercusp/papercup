@@ -39,6 +39,9 @@ function fakeProvisioner() {
       height: opts?.height ?? 768,
       // No live X server here, so no GL was measured — the honest zero value.
       gl: NO_GL_STRATEGY,
+      // P-005: no task ledger in a fake provisioner — the honest "unenrolled"
+      // value, which is exactly what the governor reports as unfreezable.
+      taskId: null,
       release: async () => {},
     };
     return d;

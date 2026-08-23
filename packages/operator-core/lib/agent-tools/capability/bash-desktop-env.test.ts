@@ -57,6 +57,9 @@ function fakeLease(display: string) {
     height: 768,
     // No live X server here, so no GL was measured — the honest zero value.
     gl: NO_GL_STRATEGY,
+    // P-005: a fixture enrols nothing in the task ledger — the honest
+    // "unenrolled" value.
+    taskId: null,
     release: async () => {},
   }));
 }

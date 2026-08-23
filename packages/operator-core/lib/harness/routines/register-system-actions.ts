@@ -342,6 +342,13 @@ import './stalled-loops-action';
 // process that started before it.
 import './pty-host-wedge-action';
 import './gc-verify-instances-action';
+// `system:gc-desktop-sessions` — the desktop lifecycle governor
+// (agent-virtual-desktops-2026-08-23 P-005). Applies the idle ladder to live
+// DesktopSession rows: demote → FREEZE the cgroup → reap. The freeze rung is the
+// durable fix for the WI-5978 class, where three idle QEMU guests spin-burned
+// 12.8 cores (11% of this box) continuously for 5-9 days because a guest whose
+// idle loop never reaches HLT cannot tell it is idle — the host can.
+import './gc-desktop-sessions-action';
 // `system:precompute-derived-reads` — the cadence behind the derived-read substrate
 // (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive
 // derived sync reads (storage.usage 20.0s, plans.lint 13.8s, learning.soakReport

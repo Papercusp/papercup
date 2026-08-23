@@ -63,6 +63,55 @@ export interface DesktopCapabilities {
   wayland?: boolean;
   kvm?: boolean;
   a11y?: boolean;
+  /**
+   * P-005 — the display backend the session was BOOTED with, for guest kinds.
+   *
+   * This exists because of a QEMU property that is easy to discover the expensive
+   * way (EI-20504354859682877, measured on QEMU 8.2): `display-update` updates an
+   * EXISTING display backend, it cannot CREATE one. A guest booted with `-display
+   * none` answers `query-vnc-servers` with `[]` forever, and every attempt to
+   * attach a viewer later fails with `Can not find vnc display` — no listener and
+   * no guest state changed, so it presents as a viewer bug rather than a boot-time
+   * decision made hours earlier and now unfixable without a reboot.
+   *
+   * So a guest desktop declares its backend at REGISTRATION and registration
+   * refuses one that does not: the constraint is enforced where it is still
+   * cheap to satisfy, rather than discovered when someone wants to look.
+   */
+  displayBackend?: 'vnc' | 'spice' | 'gtk' | 'sdl' | 'egl-headless' | 'none';
+}
+
+/** Desktop kinds that are a GUEST — a VM whose display backend must be chosen at
+ *  boot because it cannot be added later (see `displayBackend`). */
+export const GUEST_DESKTOP_KINDS: readonly DesktopKind[] = ['vm-guest', 'microvm'] as const;
+
+/**
+ * The EI-20504354859682877 precondition, as a pure function so both the registry
+ * and any future guest provisioner (P-011) enforce the same rule from one place.
+ *
+ * Returns an error message, or null when the input is acceptable.
+ */
+export function guestDisplayBackendError(
+  kind: DesktopKind,
+  capabilities: DesktopCapabilities | undefined,
+): string | null {
+  if (!GUEST_DESKTOP_KINDS.includes(kind)) return null;
+  const backend = capabilities?.displayBackend;
+  if (!backend) {
+    return (
+      `desktop-session-registry — a '${kind}' session must declare capabilities.displayBackend at registration. ` +
+      'QMP display-update can only update an EXISTING backend, never create one (EI-20504354859682877), ' +
+      'so a guest booted without one can never be viewed and cannot be repaired without a reboot.'
+    );
+  }
+  if (backend === 'none') {
+    return (
+      `desktop-session-registry — refusing to register a '${kind}' session with displayBackend 'none'. ` +
+      'A guest booted with no display backend cannot have one attached later (EI-20504354859682877); ' +
+      "boot it with 'vnc' or 'egl-headless' if anything will ever need to see it."
+    );
+  }
+  return null;
 }
 
 export interface DesktopSessionRecord {
@@ -84,6 +133,14 @@ export interface DesktopSessionRecord {
   viewerActor: string | null;
   capabilities: DesktopCapabilities;
   ttlSec: number | null;
+  /** P-005: the task-ledger id of the process subtree backing this desktop — the
+   *  freeze/thaw/kill HANDLE. NULL = unenrolled: still reapable (the row closes),
+   *  but not freezable, and the governor reports that rather than no-opping. */
+  taskId: string | null;
+  /** P-005: per-session idle threshold override; NULL takes the per-kind default. */
+  idleAfterSec: number | null;
+  /** P-005: when the session entered `frozen`; cleared on thaw. */
+  frozenAt: Date | null;
   createdAt: Date;
   lastActiveAt: Date;
   releasedAt: Date | null;
@@ -104,6 +161,11 @@ export interface RegisterDesktopSessionInput {
   leaseHolder?: string | null;
   capabilities?: DesktopCapabilities;
   ttlSec?: number | null;
+  /** P-005 — the task-ledger id backing this desktop, when the caller enrolled
+   *  its processes. Omit and the session is reapable but not freezable. */
+  taskId?: string | null;
+  /** P-005 — per-session idle threshold override; omit to take the per-kind default. */
+  idleAfterSec?: number | null;
   /** Defaults to this process. Pass explicitly for a remote-owned session. */
   ownerPid?: number | null;
   ownerBootId?: string | null;
@@ -164,6 +226,9 @@ function toRecord(r: any): DesktopSessionRecord {
     viewerActor: r.viewer_actor ?? null,
     capabilities: (r.capabilities ?? {}) as DesktopCapabilities,
     ttlSec: r.ttl_sec ?? null,
+    taskId: r.task_id ?? null,
+    idleAfterSec: r.idle_after_sec ?? null,
+    frozenAt: r.frozen_at ?? null,
     createdAt: r.created_at,
     lastActiveAt: r.last_active_at,
     releasedAt: r.released_at ?? null,
@@ -187,6 +252,11 @@ export async function registerDesktopSession(
   input: RegisterDesktopSessionInput,
   sql?: Sql,
 ): Promise<DesktopSessionRecord> {
+  // Enforced BEFORE the insert: a guest without a display backend is not a row to
+  // fix up later, it is a boot decision that can no longer be changed.
+  const guestErr = guestDisplayBackendError(input.kind, input.capabilities);
+  if (guestErr) throw new Error(guestErr);
+
   const id = input.id ?? randomUUID();
   const capture = input.captureGeometry ?? DEFAULT_CAPTURE_GEOMETRY;
   const rows = await db(sql)`
@@ -195,7 +265,7 @@ export async function registerDesktopSession(
       owner_pid, owner_boot_id, display,
       display_width, display_height, display_depth,
       capture_width, capture_height,
-      state, lease_holder, capabilities, ttl_sec
+      state, lease_holder, capabilities, ttl_sec, task_id, idle_after_sec
     ) VALUES (
       ${id}, ${input.workspaceId}, ${input.harnessSlug ?? null}, ${input.kind},
       ${input.scope}, ${input.scopeRef}, ${input.hostRef ?? null},
@@ -205,7 +275,8 @@ export async function registerDesktopSession(
       ${input.displayGeometry.depth ?? 24},
       ${capture.width}, ${capture.height},
       'provisioning', ${input.leaseHolder ?? null},
-      ${db(sql).json((input.capabilities ?? {}) as never)}, ${input.ttlSec ?? null}
+      ${db(sql).json((input.capabilities ?? {}) as never)}, ${input.ttlSec ?? null},
+      ${input.taskId ?? null}, ${input.idleAfterSec ?? null}
     )
     RETURNING *`;
   return toRecord(rows[0]);
@@ -239,12 +310,133 @@ export async function markDesktopReady(
   return rows[0] ? toRecord(rows[0]) : undefined;
 }
 
-/** Bump the activity clock — what an idle reaper and P-014 cost attribution read. */
+/**
+ * Bump the activity clock — what the idle governor and P-014 cost attribution read.
+ *
+ * A touch also THAWS the state machine: a session that was demoted to `idle`
+ * returns to `ready` the moment someone drives it again. It deliberately does NOT
+ * un-freeze a `frozen` session, because the processes really are suspended at the
+ * cgroup and only `thawDesktopSession` (which actuates the freezer) can undo that
+ * — flipping the row alone would publish a "ready" desktop whose X server cannot
+ * answer, which is the blank-screen class P-002 fixed, reintroduced through the
+ * back door.
+ */
 export async function touchDesktopSession(id: string, sql?: Sql): Promise<void> {
   await db(sql)`
     UPDATE harness_shared.desktop_sessions
-       SET last_active_at = now()
+       SET last_active_at = now(),
+           state          = CASE WHEN state = 'idle' THEN 'ready' ELSE state END
      WHERE id = ${id} AND state NOT IN ('released', 'dead')`;
+}
+
+/**
+ * P-005 — renew a lease: bump the activity clock and, optionally, re-set the TTL.
+ *
+ * Distinct from `touchDesktopSession` on purpose. A touch says "someone drove
+ * this"; a renewal says "the holder still wants it", which is what a lease TTL
+ * actually measures. They differ for exactly the case the TTL exists to catch: an
+ * agent that crashed mid-loop leaves a desktop whose last screenshot was seconds
+ * ago (touched) but whose holder is never coming back to renew it.
+ *
+ * Returns undefined when the session is gone or terminal — a renewal that silently
+ * "succeeded" against a reaped session is how a caller keeps believing it holds a
+ * desktop it does not.
+ */
+export async function renewDesktopLease(
+  id: string,
+  patch: { ttlSec?: number | null; leaseHolder?: string | null } = {},
+  sql?: Sql,
+): Promise<DesktopSessionRecord | undefined> {
+  // `undefined` means "leave the TTL alone"; an explicit `null` means "clear it".
+  // Collapsing those two into one nullable parameter is how a renewal silently
+  // turns a TTL'd lease into an immortal one.
+  const setTtl = patch.ttlSec !== undefined;
+  const rows = await db(sql)`
+    UPDATE harness_shared.desktop_sessions
+       SET last_active_at = now(),
+           state          = CASE WHEN state = 'idle' THEN 'ready' ELSE state END,
+           ttl_sec        = CASE WHEN ${setTtl ? 1 : 0} = 1
+                                 THEN ${patch.ttlSec ?? null}::integer
+                                 ELSE ttl_sec END,
+           lease_holder   = COALESCE(${patch.leaseHolder ?? null}, lease_holder)
+     WHERE id = ${id} AND state NOT IN ('released', 'dead')
+    RETURNING *`;
+  return rows[0] ? toRecord(rows[0]) : undefined;
+}
+
+/**
+ * Bind a session to its task-ledger row. This is what makes a desktop FREEZABLE:
+ * `freezeTask(taskId)` freezes the whole cgroup subtree, so a guest that
+ * double-forks or reparents to init is still caught.
+ *
+ * Best-effort at the call site (the desktop works without it) but never silent
+ * here: the return value says whether the binding landed, so a caller that cares
+ * can log an unenrolled desktop instead of discovering it when a freeze no-ops.
+ */
+export async function setDesktopTaskId(
+  id: string,
+  taskId: string | null,
+  sql?: Sql,
+): Promise<boolean> {
+  const rows = await db(sql)`
+    UPDATE harness_shared.desktop_sessions
+       SET task_id = ${taskId}
+     WHERE id = ${id} AND state NOT IN ('released', 'dead')
+    RETURNING id`;
+  return rows.length > 0;
+}
+
+/**
+ * Demote a `ready` session to `idle` — a pure bookkeeping transition that
+ * actuates nothing. It is the governor's first, cheapest move: it makes the
+ * session visible as a freeze candidate without suspending anything, so a short
+ * gap in an agent's loop costs a state flip rather than a freeze/thaw round trip.
+ *
+ * Guarded to `ready` so it can never demote a `frozen` session (which would drop
+ * the frozen_at stamp the reaper escalates on) or resurrect a terminal one.
+ */
+export async function markDesktopIdle(id: string, sql?: Sql): Promise<boolean> {
+  const rows = await db(sql)`
+    UPDATE harness_shared.desktop_sessions
+       SET state = 'idle'
+     WHERE id = ${id} AND state = 'ready'
+    RETURNING id`;
+  return rows.length > 0;
+}
+
+/**
+ * Record that a session's processes are suspended. Stamps `frozen_at`, which the
+ * SQL CHECK requires and the reaper escalates on — a frozen row without one would
+ * read as freshly-frozen on every pass and never age out, leaking its display
+ * forever.
+ *
+ * ⚠ THE ROW IS THE RECORD, NOT THE ACT. Call this only AFTER the freezer actually
+ * reported success; see `desktop-lifecycle.ts`, which owns that ordering.
+ */
+export async function markDesktopFrozen(id: string, sql?: Sql): Promise<boolean> {
+  const rows = await db(sql)`
+    UPDATE harness_shared.desktop_sessions
+       SET state = 'frozen', frozen_at = now()
+     WHERE id = ${id} AND state IN ('ready', 'idle')
+    RETURNING id`;
+  return rows.length > 0;
+}
+
+/**
+ * Record that a session's processes are running again: back to `ready`, stamp
+ * cleared, activity clock bumped (a thaw is a use).
+ *
+ * Same ordering rule as `markDesktopFrozen`, inverted: actuate the thaw FIRST,
+ * then write this. A row that says `ready` over a still-frozen cgroup hands an
+ * agent a desktop that cannot answer.
+ */
+export async function markDesktopThawed(id: string, sql?: Sql): Promise<boolean> {
+  const rows = await db(sql)`
+    UPDATE harness_shared.desktop_sessions
+       SET state = 'ready', frozen_at = NULL, last_active_at = now()
+     WHERE id = ${id} AND state = 'frozen'
+    RETURNING id`;
+  return rows.length > 0;
 }
 
 /**
@@ -308,6 +500,33 @@ export async function listDesktopSessions(
  * ⚠ Returns the RECORD, never a liveness verdict (D-004). A caller that needs a
  * drivable display must still hold — or resolve — the in-process handle.
  */
+/**
+ * P-005 — every live session THIS HOST may govern, oldest activity first.
+ *
+ * Host-scoped on purpose, and not as an optimisation. The governor's actions are
+ * host-local operations on a real cgroup: it can freeze, thaw and kill only
+ * processes on the machine it is running on. A sweep that pulled in another
+ * host's rows would classify them, "act" on them, and report success having done
+ * nothing to the actual processes — while marking the row frozen, which then
+ * misreports a busily-spinning guest as suspended. Better to see only what we can
+ * touch. Remote hosts govern their own; that is what `host_ref` is for.
+ *
+ * Not filtered by workspace: a host runs one operator serving whatever tenants it
+ * serves, and CPU on the box is shared by all of them.
+ */
+export async function listGovernableDesktopSessions(
+  args: { hostRef?: string | null; limit?: number } = {},
+  sql?: Sql,
+): Promise<DesktopSessionRecord[]> {
+  const rows = await db(sql)`
+    SELECT * FROM harness_shared.desktop_sessions
+     WHERE COALESCE(host_ref, '') = ${args.hostRef ?? ''}
+       AND state NOT IN ('released', 'dead')
+     ORDER BY last_active_at ASC
+     LIMIT ${Math.min(args.limit ?? 500, 2000)}`;
+  return rows.map(toRecord);
+}
+
 export async function resolveDesktopForScope(
   args: { workspaceId: string; scope: DesktopScope; scopeRef: string },
   sql?: Sql,

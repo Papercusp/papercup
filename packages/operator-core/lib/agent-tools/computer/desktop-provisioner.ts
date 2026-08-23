@@ -15,9 +15,10 @@
  * The returned `display` is what the capability:computer lease env
  * (`PAPERCUSP_COMPUTER_DISPLAY`) is set to for the operating agent.
  */
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { applyGlStrategy, detectGlStrategy, type GlStrategy } from '../../desktop/gl-strategy';
+import { managedSpawn } from '../../task-manager/managed-spawn';
 import { sandboxXEnv } from './desktop-driver';
 
 const DEFAULT_W = 1024;
@@ -42,6 +43,19 @@ export interface SandboxDesktop {
    * is specified as MEASURED and never assumed.
    */
   gl: GlStrategy;
+  /**
+   * P-005 — the task-ledger id of the Xvfb, when the ledger enrolled it.
+   *
+   * This is what makes the desktop governable ACROSS PROCESSES: the in-process
+   * `release()` below dies with this operator loop, but a task id is a durable
+   * handle any process on the host can freeze, thaw or kill. The lifecycle
+   * governor (`gc-desktop-sessions`) has no other way to reach these processes.
+   *
+   * `null` when the task manager is off or its ledger write failed. That is a
+   * legal, degraded state, not an error: the desktop works, it simply cannot be
+   * frozen — and the governor reports exactly that rather than no-opping.
+   */
+  taskId: string | null;
   /** Tear the desktop down — kill apps, WM, Xvfb. Idempotent. */
   release: () => Promise<void>;
 }
@@ -66,6 +80,15 @@ export interface ProvisionOptions {
    * capability record the measurement exists to prevent.
    */
   gl?: GlStrategy;
+  /**
+   * P-005 task-ledger provenance — who this desktop is FOR. Shows up in
+   * `processes:list`, which is the whole reason the ledger exists: `ps` can tell
+   * you an Xvfb is running and never why, so a stray one is undiagnosable and
+   * therefore never cleaned up. Defaults to `system:desktop-provisioner`.
+   */
+  launchedBy?: string;
+  /** Harness the desktop belongs to, recorded on its ledger rows. */
+  harnessSlug?: string;
 }
 
 /**
@@ -114,6 +137,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   const width = opts.width ?? DEFAULT_W;
   const height = opts.height ?? DEFAULT_H;
   const procs: ChildProcess[] = [];
+  let taskId: string | null = null;
 
   const release = async (): Promise<void> => {
     for (const p of [...procs].reverse()) {
@@ -126,8 +150,41 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   };
 
   try {
-    const xvfb = spawn('Xvfb', [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp'], { stdio: 'ignore' });
-    procs.push(xvfb);
+    // P-005 — the Xvfb is enrolled in the task ledger, and the WM/apps are
+    // enrolled as its CHILDREN. Three things follow, and only the first is
+    // observability:
+    //
+    //  1. `processes:list` can say what a stray Xvfb is FOR (which pot, which
+    //     agent) — `ps` answers none of that.
+    //  2. `killTask(taskId, { includeSubtree: true })` reaps the whole desktop
+    //     from ANOTHER PROCESS. `release()` below cannot: it is a closure in this
+    //     operator loop, so a desktop outliving its operator was previously
+    //     unreachable by anything but a hand-run pkill.
+    //  3. `freezeTask(taskId)` suspends it without destroying it.
+    //
+    // ⚠ ONE HONEST LIMIT, stated so nobody discovers it as a bug: each child gets
+    // its OWN transient scope (that is what `parentTaskId` models — logically
+    // nested tasks, which is why `killTask` needs an explicit `includeSubtree`).
+    // So a FREEZE of the root scope suspends the X server, not the app processes.
+    // For a guest desktop — the WI-5978 case this rung exists for — that is
+    // complete, because the guest IS one process. For an Xvfb desktop it is
+    // partial, and deliberately so: an idle X stack costs a few MB and no CPU
+    // (which is why the policy freezes those kinds lazily), and real per-desktop
+    // containment is P-010's bubblewrap tier, not a wrapper bolted on here.
+    const xvfbTask = await managedSpawn(
+      'Xvfb',
+      [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp'],
+      {
+        class: 'desktop',
+        title: `Xvfb ${display} (${width}x${height})`,
+        launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
+        argv: [],
+        ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+      },
+      { spawnOptions: { stdio: 'ignore' } },
+    );
+    taskId = xvfbTask.taskId;
+    procs.push(xvfbTask.child);
     await waitForDisplay(display, opts.readyTimeoutMs ?? 8000);
 
     // ISOLATION: the WM + apps run with a host-stripped env bound to the sandbox
@@ -146,14 +203,40 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     // about app CONTENT, not chrome (the chrome is exactly what still shows up when GL is
     // missing, which is what makes the failure look like a half-broken app).
     if (opts.windowManager !== false) {
-      procs.push(spawn('openbox', [], { env, stdio: 'ignore' }));
+      const wm = await managedSpawn(
+        'openbox',
+        [],
+        {
+          class: 'desktop',
+          title: `openbox ${display}`,
+          launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
+          argv: [],
+          parentTaskId: taskId,
+          ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+        },
+        { spawnOptions: { env, stdio: 'ignore' } },
+      );
+      procs.push(wm.child);
     }
     for (const appArgv of opts.apps ?? []) {
       if (appArgv.length === 0) continue;
       const launch = applyGlStrategy(gl, env, appArgv);
-      procs.push(spawn(launch.argv[0]!, launch.argv.slice(1), { env: launch.env, stdio: 'ignore' }));
+      const app = await managedSpawn(
+        launch.argv[0]!,
+        launch.argv.slice(1),
+        {
+          class: 'desktop',
+          title: `${launch.argv[0]} ${display}`,
+          launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
+          argv: [],
+          parentTaskId: taskId,
+          ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+        },
+        { spawnOptions: { env: launch.env, stdio: 'ignore' } },
+      );
+      procs.push(app.child);
     }
-    return { display, number, width, height, gl, release };
+    return { display, number, width, height, gl, taskId, release };
   } catch (e) {
     await release(); // never leak a half-provisioned Xvfb
     throw e;
