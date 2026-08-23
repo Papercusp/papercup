@@ -1492,12 +1492,17 @@ export interface PeerConnectionPath {
    * candidates it had. These exist because `relayed` + the addresses tell you the
    * data path was dead but not WHY the address was wrong.
    *
-   * `punchPath: 'open'` is hyperdht's UNVERIFIED fast path (connect.js:219-227,
-   * counted as `dht.stats.punches.open`): taken when the remote is not
-   * holepunchable, it calls `onsocket()` with no round-trip confirmation and
-   * returns — no holepunch is ever attempted. So an 'open' record is NOT a failed
-   * punch, it is a punch that never happened, and the two must not be pooled when
-   * measuring a holepunch failure rate.
+   * WI-6025 makes this a terminal branch discriminator:
+   *  - `open`: unverified fast path; no punch.
+   *  - `passive`: local firewall is open, so hyperdht waits passively; no punch.
+   *  - `lan`: same-link shortcut (including its ping-failure exit); no punch.
+   *  - `cannot-holepunch`: remote refused/cannot punch; no punch.
+   *  - `holepunch-real`: a Holepuncher was actually constructed; this is the
+   *    ONLY value admissible in a real-punch failure-rate denominator.
+   *
+   * Legacy bundles emitted the ambiguous value `holepunch` before WI-6025. Keep
+   * reading it so old diagnostic corpora remain parseable, but never count it as
+   * a proven attempt: it pooled the last four exits above into one value.
    *
    * `addressFromFallback` is the load-bearing one: hyperdht picks the first
    * NON-BOGON entry of `addresses4` and otherwise falls back to `serverAddress` —
@@ -1506,7 +1511,13 @@ export interface PeerConnectionPath {
    * (`addresses4AllBogon`), so the fallback is the only reachable path and we
    * dial an address the peer may not own.
    */
-  punchPath?: 'open' | 'holepunch';
+  punchPath?:
+    | 'open'
+    | 'passive'
+    | 'lan'
+    | 'cannot-holepunch'
+    | 'holepunch-real'
+    | 'holepunch';
   addressFromFallback?: boolean;
   addresses4AllBogon?: boolean;
   addresses4?: Array<{ host?: string; port?: number; bogon?: boolean }>;
@@ -1593,9 +1604,16 @@ export function extractConnectionPath(socket: unknown): PeerConnectionPath {
   // could not read which path it took" never collapse into the same value. That
   // distinction is the whole point here: an absent punchPath rendered as 'open'
   // would fabricate exactly the finding this instrumentation exists to test.
-  if (s.udxPunchPath === 'open' || s.udxPunchPath === 'holepunch') {
-    out.punchPath = s.udxPunchPath;
-    out.present = true;
+  switch (s.udxPunchPath) {
+    case 'open':
+    case 'passive':
+    case 'lan':
+    case 'cannot-holepunch':
+    case 'holepunch-real':
+    case 'holepunch':
+      out.punchPath = s.udxPunchPath;
+      out.present = true;
+      break;
   }
   if (typeof s.udxAddressFromFallback === 'boolean') {
     out.addressFromFallback = s.udxAddressFromFallback;

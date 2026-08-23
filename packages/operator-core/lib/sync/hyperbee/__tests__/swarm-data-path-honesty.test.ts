@@ -26,6 +26,9 @@
  *     would re-create the same overclaiming failure one layer down.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type Corestore from 'corestore';
 import {
@@ -39,6 +42,11 @@ import {
   type DataPathNeverUpInfo,
 } from '../swarm';
 import { _setSwarmGuardForTests } from '../swarm-guard';
+
+const HYPERDHT_PATCH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../../patches/hyperdht+6.32.0.patch',
+);
 
 afterEach(() => {
   _setSwarmGuardForTests(null);
@@ -228,10 +236,15 @@ describe('WI-5980 — the address-resolution branch is recorded, and absent stay
     ]);
   });
 
-  it('records the holepunch branch distinctly from the unverified open branch', () => {
-    // 'holepunch' means a punch was actually ATTEMPTED. An 'open' record is a
-    // punch that never happened, so pooling the two would corrupt any holepunch
-    // failure rate computed from these logs.
+  it('distinguishes every no-punch exit from a real holepunch attempt', () => {
+    for (const punchPath of ['open', 'passive', 'lan', 'cannot-holepunch'] as const) {
+      expect(extractConnectionPath({ udxPunchPath: punchPath }).punchPath).toBe(punchPath);
+    }
+    expect(extractConnectionPath({ udxPunchPath: 'holepunch-real' }).punchPath).toBe(
+      'holepunch-real',
+    );
+    // Old diagnostic corpora remain readable, but this legacy value is
+    // deliberately named as ambiguous and must not be used as an attempt.
     expect(extractConnectionPath({ udxPunchPath: 'holepunch' }).punchPath).toBe('holepunch');
   });
 
@@ -247,11 +260,25 @@ describe('WI-5980 — the address-resolution branch is recorded, and absent stay
   });
 
   it('refuses an unrecognised punchPath rather than passing it through', () => {
-    // Only the two branches hyperdht actually has are admissible; anything else
-    // is an unreadable or future shape and must stay absent.
+    // Only the explicit writer contract is admissible; anything else is an
+    // unreadable or future shape and must stay absent.
     expect(extractConnectionPath({ udxPunchPath: 'relayed' }).punchPath).toBeUndefined();
     expect(extractConnectionPath({ udxPunchPath: true }).punchPath).toBeUndefined();
     expect(extractConnectionPath({ udxPunchPath: 'open' }).punchPath).toBe('open');
+  });
+
+  it('pins the terminal path marks in the canonical HyperDHT patch', () => {
+    const patch = readFileSync(HYPERDHT_PATCH, 'utf8');
+    for (const punchPath of ['passive', 'lan', 'cannot-holepunch', 'holepunch-real']) {
+      expect(patch).toContain(`mark('udxPunchPath', '${punchPath}')`);
+    }
+
+    // The real-attempt mark must immediately precede construction. If it moves
+    // above an early-return branch, the denominator becomes ambiguous again.
+    const realMark = patch.indexOf("mark('udxPunchPath', 'holepunch-real')");
+    const constructor = patch.indexOf('c.puncher = new Holepuncher');
+    expect(realMark).toBeGreaterThan(-1);
+    expect(constructor).toBeGreaterThan(realMark);
   });
 
   it('keeps these fields out of the result entirely for a bare socket', () => {
