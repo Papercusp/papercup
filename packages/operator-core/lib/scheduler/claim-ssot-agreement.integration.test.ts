@@ -469,7 +469,7 @@ describe('the three DELIBERATE, documented divergences are pinned (a future "ali
  * production "0 before, 0 after" run would prove exactly nothing, and these seeds are the ONLY
  * way to observe the floor at all.
  *
- * Every plan here is 'draft' with op_status NULL, which SATISFIES floor #11 — so each verdict
+ * Every plan here is 'ready' with op_status NULL, which SATISFIES floor #11 — so each verdict
  * below is attributable to floor #13 alone rather than to the pre-existing lane reservation.
  * Both representations are asserted on every case: the SSOT view (migration 759) and the real
  * inline claim path (the TS fragment). They are hand-maintained copies, and a case that checked
@@ -596,7 +596,7 @@ describe('floor #13 plan-item-blocked — the PLAN blockedBy graph gates the cla
     // lane. Both element scans are jsonb_typeof-guarded. The unrelated control row proves the
     // claim path still SERVES work rather than merely not throwing.
     await db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status, op_status, items)
-                  VALUES ('malformed-plan', 'draft', NULL, '{"not":"an array"}'::jsonb)`;
+                  VALUES ('malformed-plan', 'ready', NULL, '{"not":"an array"}'::jsonb)`;
     await seedPlanLinkedIssue('WI-MALFORMED', 'malformed-plan', 'P-01');
     await seed('WI-UNRELATED');
 

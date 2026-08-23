@@ -86,9 +86,11 @@ const planItemLaneBlockReasonMock = vi.fn(async (..._args: unknown[]) => null as
 // same kind of module-boundary mock, for the same reason — pinned separately in
 // scheduler/plan-item-lane-guard.test.ts.
 const planItemLiveClaimReasonMock = vi.fn(async (..._args: unknown[]) => null as unknown);
+const planItemNeedsHumanContradictionMock = vi.fn(async (..._args: unknown[]) => null as unknown);
 vi.mock('./scheduler/plan-item-lane-guard', () => ({
   planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReasonMock(...args),
   planItemLiveClaimReason: (...args: unknown[]) => planItemLiveClaimReasonMock(...args),
+  planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradictionMock(...args),
 }));
 
 const wi = await import('./work-items');
@@ -150,6 +152,7 @@ beforeEach(async () => {
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   planItemLaneBlockReasonMock.mockReset().mockResolvedValue(null);
   planItemLiveClaimReasonMock.mockReset().mockResolvedValue(null);
+  planItemNeedsHumanContradictionMock.mockReset().mockResolvedValue(null);
 });
 
 describe('per-family state normalization (EI-24)', () => {
@@ -206,6 +209,45 @@ describe('per-family state normalization (EI-24)', () => {
       onAlias: (info) => seen.push(info),
     });
     expect(seen).toEqual([]); // 'done' is already the canonical unified terminal state
+  });
+});
+
+describe('EI-13766 — plan-authoritative needs-human writer guard', () => {
+  it('rejects a structured owner park that contradicts the linked plan and leaves state unchanged', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:test',
+        summary: 'Provide test credential',
+        nextVerb: 'provide credential',
+      },
+      'agA',
+    );
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'plan-linked owner park',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: {
+        plan_item: { plan_slug: 'agent-plan', item_id: 'P-001' },
+        externalBlockers: blockers,
+      },
+    });
+    planItemNeedsHumanContradictionMock.mockResolvedValueOnce({
+      reason: 'linked plan item agent-plan#P-001 explicitly remains agent-actionable (needsHuman=false)',
+      planSlug: 'agent-plan',
+      itemIds: ['P-001'],
+    });
+
+    await expect(wi.setWorkItemState(bug.id, 'needs_human', { harness: 'papercup', by: 'agA' })).rejects.toThrow(
+      /agent-plan#P-001.*needsHuman=false/,
+    );
+    expect(planItemNeedsHumanContradictionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: bug.id, harness: 'papercup', family: 'issue' }),
+    );
+    expect((await wi.getWorkItem(bug.id, 'papercup'))?.state).toBe('open');
   });
 });
 
