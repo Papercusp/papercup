@@ -266,6 +266,26 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     }
   });
 
+  it('keeps a healthy pending event-await/watch/subscription registration VERIFIED', () => {
+    const healthyEvidence = [
+      'status: pending; exact event-await registered and armed for its gate',
+      'exact watch registered and active; state: pending until the event fires',
+      'subscription registration is live; status: pending for the next delivery',
+    ];
+
+    for (const evidence of healthyEvidence) {
+      expect(findVerificationConflict(evidence), evidence).toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim: 'the wake registration is healthy', recheck: 'events:status', verified: evidence }],
+        [],
+        Date.parse('2026-07-19T05:00:00.000Z'),
+      );
+      expect(row).toMatchObject({ verified: expect.stringContaining(evidence) });
+      expect(row?.verified).toContain('@2026-07-19T05:00:00.000Z');
+      expect(row).not.toHaveProperty('contested');
+    }
+  });
+
   it('renders an explicitly contested row with ⚠ and never upgrades it to ✓', () => {
     const row: CheckEntry = {
       claim: 'the suite is green',

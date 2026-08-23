@@ -220,6 +220,25 @@ const VERIFICATION_CONFLICT_PATTERNS: ReadonlyArray<RegExp> = [
 ];
 
 /**
+ * A registered event-await/watch is intentionally pending until its event fires.
+ * Keep that healthy liveness state distinct from unresolved work such as a pending
+ * verdict or approval. These patterns are deliberately narrow: the registration
+ * and the pending state must occur in the same short evidence clause, so unrelated
+ * pending work elsewhere in another sentence still downgrades a VERIFIED row.
+ */
+const HEALTHY_PENDING_REGISTRATION_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bpending\s+(?:an?\s+)?(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b/i,
+  /\b(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b[^\n.!?]{0,120}\b(?:status|state)\s*[:=]\s*pending\b/i,
+  /\b(?:status|state)\s*[:=]\s*pending\b[^\n.!?]{0,120}\b(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b/i,
+];
+
+/** Return true when a pending/awaiting marker describes a healthy registration. */
+function isHealthyPendingRegistration(text: string, match: RegExpExecArray): boolean {
+  if (!/\b(?:pending|awaiting|awaits?)\b/i.test(match[0])) return false;
+  return HEALTHY_PENDING_REGISTRATION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
  * A status token can be present in a completed NEGATIVE measurement rather than
  * describing an unresolved check. Inspect the short clause before the match and
  * the common boolean/status suffixes after it before downgrading the evidence.
@@ -242,7 +261,13 @@ export function findVerificationConflict(evidence: string | null | undefined): s
   if (!text.trim()) return null;
   for (const pattern of VERIFICATION_CONFLICT_PATTERNS) {
     const match = pattern.exec(text);
-    if (match?.[0] && !isNegatedVerificationConflict(text, match)) return match[0];
+    if (
+      match?.[0] &&
+      !isNegatedVerificationConflict(text, match) &&
+      !isHealthyPendingRegistration(text, match)
+    ) {
+      return match[0];
+    }
   }
   return null;
 }
