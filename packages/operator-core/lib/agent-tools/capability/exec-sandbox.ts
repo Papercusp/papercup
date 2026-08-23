@@ -326,6 +326,42 @@ const EXEC_ENV_ALLOW_PREFIXES: readonly string[] = [
   'PYENV_',
 ];
 
+/**
+ * The bwrap args that mask credentials under `home`, plus the absolute-path executable
+ * masks. ONE emitter, shared by every sandbox that wraps a papercusp subprocess — the
+ * capability-exec path here and P-010's desktop tier — because three separate subtleties
+ * live in these few lines and a second hand-rolled copy will drift on at least one:
+ *
+ *  1. FILE vs DIR. `--tmpfs` needs a directory mount point, so a tmpfs over `~/.npmrc`
+ *     NO-OPS and leaves the token readable. Files are masked with `--ro-bind /dev/null`.
+ *  2. SKIP ABSENT targets. bwrap cannot create a mount point under the read-only `/` bind
+ *     (`Can't mkdir …: Read-only file system`) and aborts the WHOLE command — fail-CLOSED,
+ *     not just a skipped mask. WI-608: a host merely lacking `~/.config/gcloud` broke every
+ *     capability:bash on this path.
+ *  3. RUNTIME ADDITIONS. P-019's `exec_sandbox:set_policy` masks are tighten-only and union
+ *     over the baked set; a copy that forgets them silently ignores an operator lockdown.
+ *
+ * Applied AFTER the ro-bind of `/`, so the overlay wins.
+ */
+export function credentialMaskArgs(
+  home: string,
+  maskExists: (abs: string) => boolean = existsSync,
+): string[] {
+  const argv: string[] = [];
+  for (const d of [...CAPABILITY_SANDBOX_MASK_DIRS, ...authSandboxMaskAdditions()]) {
+    const abs = join(home, d);
+    if (!maskExists(abs)) continue;
+    if (CAPABILITY_SANDBOX_MASK_FILES.has(d)) argv.push('--ro-bind', '/dev/null', abs);
+    else argv.push('--tmpfs', abs);
+  }
+  // WI-39391: mask the canonical systemd-run binary itself. Binding /dev/null at the real
+  // path covers both PATH-resolved and absolute-path invocations.
+  for (const abs of CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES) {
+    if (maskExists(abs)) argv.push('--ro-bind', '/dev/null', abs);
+  }
+  return argv;
+}
+
 export function scrubExecEnv(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
   extraAllow: readonly string[] = [],
@@ -461,19 +497,7 @@ export function buildCapabilitySandboxCommand(
   // `~/.config/gcloud` broke every capability:bash on the bwrap-fallback path.)
   // P-019: union any runtime add-only mask dirs (exec_sandbox:set_policy) over the baked set —
   // tighten-only (extra masks; the baked set is never removable). Additions are dirs ⇒ tmpfs.
-  for (const d of [...CAPABILITY_SANDBOX_MASK_DIRS, ...authSandboxMaskAdditions()]) {
-    const abs = join(home, d);
-    if (!maskExists(abs)) continue;
-    if (CAPABILITY_SANDBOX_MASK_FILES.has(d)) argv.push('--ro-bind', '/dev/null', abs);
-    else argv.push('--tmpfs', abs);
-  }
-  // WI-39391: mask the canonical systemd-run binary itself. Binding /dev/null
-  // at the real path covers both PATH-resolved and absolute-path invocations.
-  // As with credential masks, skip absent targets so bwrap does not fail the
-  // whole command while creating a mount point under its read-only root.
-  for (const abs of CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES) {
-    if (maskExists(abs)) argv.push('--ro-bind', '/dev/null', abs);
-  }
+  argv.push(...credentialMaskArgs(home));
   if (denyAllEgress) argv.push('--unshare-net');
   // No `--clearenv`: a capability:bash build/test needs the caller's env (PATH,
   // HOME, npm/cargo config); the caller passes the same env to the bwrap spawn and

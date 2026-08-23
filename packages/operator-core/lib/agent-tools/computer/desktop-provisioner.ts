@@ -21,6 +21,13 @@ import { applyGlStrategy, detectGlStrategy, type GlStrategy } from '../../deskto
 import { managedSpawn } from '../../task-manager/managed-spawn';
 import { sandboxXEnv } from './desktop-driver';
 import { startA11yBus, type A11yBus } from '../../desktop/a11y-bus';
+import {
+  a11yBusSocketPath,
+  buildDesktopSandboxCommand,
+  desktopAppSandboxEnabled,
+  desktopSandboxEnv,
+  type DesktopSandboxDecision,
+} from './desktop-sandbox';
 
 const DEFAULT_W = 1024;
 const DEFAULT_H = 768;
@@ -127,6 +134,22 @@ export interface ProvisionOptions {
    * be screenshotted.
    */
   accessibility?: boolean;
+  /**
+   * P-010 — wrap each app in bubblewrap. Defaults to the `papercusp-desktop-app-sandbox`
+   * flag. Present as an override so a test can pin either side without touching flag IO,
+   * and so a caller launching something that genuinely needs the host FS can opt out
+   * per-desktop rather than flipping the flag off for everyone.
+   */
+  sandboxApps?: boolean;
+  /**
+   * P-010 — also deny the apps NETWORK access (`--unshare-net`). Default false, per
+   * D-015 §3: a desktop exists to run real apps, and a silently network-less browser is a
+   * worse failure than an un-isolated one. Safe to combine with the sandbox — the mount
+   * plan keeps the display reachable when the abstract X socket disappears with the netns.
+   */
+  denyAppNetwork?: boolean;
+  /** P-010 — HOME to give apps a private writable copy of. Defaults to the operator's. */
+  sandboxHomeDir?: string;
 }
 
 /**
@@ -266,21 +289,60 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     const a11y = opts.accessibility === false ? null : startA11yBus(display);
     const appEnv = a11y ? { ...env, ...a11y.env } : env;
 
+    // P-010 (D-015): apps are the ONLY thing wrapped in bubblewrap. Xvfb and openbox are
+    // the desktop's own infrastructure — confining the X server inside a namespace whose
+    // whole job is to serve clients outside it buys nothing and breaks the socket the
+    // sandbox then has to hand back. The app is the untrusted party here.
+    const sandboxOn = opts.sandboxApps ?? (await desktopAppSandboxEnabled());
+    const a11yBusPath = a11yBusSocketPath(appEnv.DBUS_SESSION_BUS_ADDRESS);
+    const sandboxDecisions: DesktopSandboxDecision[] = [];
+
     for (const appArgv of opts.apps ?? []) {
       if (appArgv.length === 0) continue;
       const launch = applyGlStrategy(gl, appEnv, appArgv);
+      // The GL prefix is applied BEFORE the sandbox wrap, so `vglrun` runs INSIDE the
+      // sandbox rather than around it — otherwise VirtualGL's interposition would sit
+      // outside the confinement it is supposed to be subject to.
+      const sandbox = buildDesktopSandboxCommand(
+        {
+          cmd: launch.argv,
+          display,
+          a11yBusPath,
+          glTier: gl.tier,
+          ...(opts.sandboxHomeDir ? { homeDir: opts.sandboxHomeDir } : {}),
+        },
+        { enabled: sandboxOn, ...(opts.denyAppNetwork ? { denyNetwork: true } : {}) },
+      );
+      sandboxDecisions.push(sandbox);
       const app = await managedSpawn(
-        launch.argv[0]!,
-        launch.argv.slice(1),
+        sandbox.binary,
+        sandbox.argv,
         {
           class: 'desktop',
-          title: `${launch.argv[0]} ${display}`,
+          // Keep the APP's name in the title, not `bwrap` — a ledger row reading
+          // "bwrap :110" for every app on every desktop is unreadable, which is the exact
+          // provenance failure P-005's ledger exists to fix.
+          title: `${launch.argv[0]} ${display}${sandbox.sandboxed ? ' [sandboxed]' : ''}`,
           launchedBy: opts.launchedBy ?? 'system:desktop-provisioner',
           argv: [],
           parentTaskId: taskId,
           ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
         },
-        { spawnOptions: { env: launch.env, stdio: 'ignore' } },
+        // D-011: the caller-supplied env is the PAYLOAD's. bwrap forwards its own env to
+        // the app, so scrubbing here reaches the app while leaving the systemd-run client
+        // (which managedSpawn runs with the operator's env) untouched.
+        //
+        // ⚠ The scrub applies to the AMBIENT inheritance only. The a11y bus address and the
+        // GL strategy's vars are what this desktop deliberately computed, and most GL vars
+        // (`__GLX_VENDOR_LIBRARY_NAME`, `VGL_*`) are on no allowlist — scrubbing them would
+        // silently drop the desktop to no-GL, which is P-002's bug reintroduced by a
+        // security change. So they ride as OVERLAYS, applied after the scrub.
+        {
+          spawnOptions: {
+            env: desktopSandboxEnv(launch.env, { ...(a11y?.env ?? {}), ...gl.env }),
+            stdio: 'ignore',
+          },
+        },
       );
       procs.push(app.child);
     }
