@@ -363,6 +363,33 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.serving.startedSinceCodeChange).toBe(true);
   });
 
+  it('measures target-to-green-pin ancestry instead of reversing the relationship', async () => {
+    const target = 'targetsha0';
+    const greenPin = 'readysha0';
+    const git = fakeGit({
+      pathCommit: target,
+      subject: 'target',
+      contains: {
+        HEAD: [target],
+        'origin/staging': [target],
+        'origin/main': [target],
+        deployedsha0: [target],
+        // The target is newer than the green pin: the green pin is an ancestor of
+        // target, but target is not in the green pin's history.
+        [greenPin]: [],
+        [target]: [greenPin],
+      },
+    });
+
+    const res = await gitPipelinePosition(
+      { sha: target },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.positions.inMain).toBe(true);
+    expect(res.verdictProvenance.targetIncludedInGreenPin).toBe(false);
+  });
+
   it('projects structured git-sync skipped-path provenance into the pipeline position', async () => {
     const skippedPaths = [
       {

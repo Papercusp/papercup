@@ -1158,6 +1158,14 @@ export interface PipelinePosition {
      */
     mainFastForwarded: boolean | null;
     /**
+     * Whether the requested target commit is an ancestor of the recorded green pin.
+     * This is deliberately separate from `positions.inMain`: main can contain a
+     * force-deployed or otherwise newer commit while the last tested pin still lags.
+     * `null` means the exact relationship could not be measured (or is not applicable,
+     * such as a nested submodule commit).
+     */
+    targetIncludedInGreenPin?: boolean | null;
+    /**
      * THE SAME MEASUREMENT AS `mainFastForwarded`, IN THE POLARITY AGENTS ASK IN:
      * `true` means main IS behind staging (a buffer exists). A PROJECTION, not a second
      * derivation (axis 5) — both are the one `greenPinAtStagingHead` read, negated from
@@ -4514,11 +4522,18 @@ export async function gitPipelinePosition(
     greenPinAtStagingHead === false && ready && stagingHeadSha
       ? await oldestCommitAgeMs(git, root, ready.sha, stagingHeadSha)
       : null;
+  // The green pin is a separate authority from origin/main. In particular, a
+  // force-deployed commit can already be in main while remaining outside the last
+  // full-suite-tested pin. Measure the ancestry in the same direction as
+  // `deployedIsAncestorOfReady` below: does the green pin's history contain targetSha?
+  const targetIncludedInGreenPin =
+    !submodule && targetSha && ready ? await refContains(git, root, ready.sha, targetSha) : null;
   const verdictProvenance: PipelinePosition['verdictProvenance'] = {
     lastGreenSha: ready?.sha ?? null,
     lastGreenShortSha: ready?.shortSha ?? null,
     lastGreenAgeMs: ready ? Date.now() - ready.committedAtMs : null,
     mainFastForwarded: greenPinAtStagingHead,
+    targetIncludedInGreenPin,
     // The polarity the `git.mainBehindStaging` cell is NAMED after (EI-20046248345042252).
     // An unmeasured `null` stays `null` — negating it would manufacture a confident `true`.
     mainBehindStaging: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
@@ -4532,6 +4547,16 @@ export async function gitPipelinePosition(
    * that reads as good news, so each one that is NOT a measurement is named here.
    */
   const verdictUnknown: PipelinePosition['verdictUnknown'] = [];
+
+  if (!submodule && targetSha && ready && targetIncludedInGreenPin === null) {
+    verdictUnknown.push({
+      leg: 'verdictProvenance.targetIncludedInGreenPin',
+      unknown: cellUnknown(
+        'resolver-failed',
+        `The green pin ${ready.sha.slice(0, 12)} and target ${targetSha.slice(0, 12)} resolved, but their ancestry could not be measured.`,
+      ),
+    });
+  }
 
   // Leg 1 — the red streak. PROJECTED from the snapshot, never re-derived here: only
   // git-pipeline-stats can see whether `gate_health` carried a counter, because it
