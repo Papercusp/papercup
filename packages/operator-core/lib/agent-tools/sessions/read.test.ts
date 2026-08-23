@@ -9,6 +9,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
+
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
 }));
@@ -16,6 +18,7 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('./_shared', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   sessionSearchEnabled: vi.fn(async () => true),
+  refreshTargetSessionBeforeRead,
 }));
 
 await import('./read');
@@ -67,5 +70,42 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
     const structured = dispatched.result?.structuredContent as { turns: unknown[] };
     expect(structured.turns).toHaveLength(33);
+  });
+
+  it('refreshes a named target before querying its indexed turns', async () => {
+    refreshTargetSessionBeforeRead.mockClear();
+    const tx = makeTx([{
+      source_kind: 'codex',
+      turn_idx: 7,
+      speaker: 'assistant',
+      owner: 'su-peer',
+      ts: null,
+      text: 'fresh target turn',
+    }]);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'sess-live', source_kind: 'codex' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'read-target-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx,
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, 'codex', 'sess-live');
+    expect(tx).toHaveBeenCalledTimes(1);
   });
 });

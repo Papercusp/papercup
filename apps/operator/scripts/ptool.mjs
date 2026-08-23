@@ -807,6 +807,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // `coord:orient` is the wake-bootstrap compound read. Its individual legs
+  // are bounded, but the full reconciliation can legitimately outlive the
+  // ordinary 30s ptool liveness deadline when several legs degrade together.
+  // Keep the client deadline above the server transport cap so the caller
+  // observes the orient result or its structured fallback instead of an
+  // ambiguous client-side -32001 timeout.
+  ['coord:orient', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
 ]);
 

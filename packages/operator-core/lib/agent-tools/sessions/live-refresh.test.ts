@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { refreshLiveSessionsBeforeRead } from './_shared';
+import { refreshLiveSessionsBeforeRead, refreshTargetSessionBeforeRead } from './_shared';
 
 describe('refreshLiveSessionsBeforeRead', () => {
   it('refreshes explicitly requested owners concurrently and preserves owner identity', async () => {
@@ -27,5 +27,41 @@ describe('refreshLiveSessionsBeforeRead', () => {
     });
 
     expect(result).toEqual({ attempted: 2, refreshed: 1 });
+  });
+
+  it('refreshes an active target session with its resolved owner and target id', async () => {
+    const sql = vi.fn(async () => [{
+      id: 42,
+      agent: 'codex',
+      owner: 'su-owner',
+      session_id: 'target-session',
+      omp_thread_id: null,
+    }]) as never;
+    const resolve = vi.fn(async (sourceKind: string, sessionId: string) => ({
+      filePath: `/tmp/${sourceKind}/${sessionId}.jsonl`,
+      sessionId,
+    }));
+    const ingest = vi.fn(async () => undefined);
+
+    const result = await refreshTargetSessionBeforeRead(sql, undefined, 'target-session', { resolve, ingest });
+
+    expect(result).toEqual({ attempted: 1, refreshed: 1 });
+    expect(resolve).toHaveBeenCalledWith('codex', 'target-session', expect.objectContaining({ id: 42, owner: 'su-owner' }));
+    expect(ingest).toHaveBeenCalledWith('/tmp/codex/target-session.jsonl', {
+      owner: 'su-owner',
+      sessionId: 'target-session',
+    });
+  });
+
+  it('skips inactive targets so indexed and archive reads keep their existing behavior', async () => {
+    const sql = vi.fn(async () => []) as never;
+    const resolve = vi.fn();
+    const ingest = vi.fn();
+
+    const result = await refreshTargetSessionBeforeRead(sql, 'codex', 'historical-session', { resolve, ingest });
+
+    expect(result).toEqual({ attempted: 0, refreshed: 0 });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(ingest).not.toHaveBeenCalled();
   });
 });

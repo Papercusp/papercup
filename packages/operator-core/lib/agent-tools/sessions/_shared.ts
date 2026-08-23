@@ -43,6 +43,98 @@ interface LiveRefreshDeps {
   ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
 }
 
+interface TargetSessionRow {
+  id: number;
+  agent: string | null;
+  owner: string | null;
+  session_id: string | null;
+  omp_thread_id: string | null;
+}
+
+interface TargetRefreshDeps {
+  resolve?: (
+    sourceKind: string,
+    sessionId: string,
+    row: TargetSessionRow,
+  ) => Promise<{ filePath: string; sessionId: string } | null>;
+  ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
+}
+
+async function resolveTargetSessionTranscript(
+  sourceKind: string,
+  sessionId: string,
+  row: TargetSessionRow,
+): Promise<{ filePath: string; sessionId: string } | null> {
+  if (!row.owner) return null;
+
+  if (sourceKind === 'claude') {
+    const { findSessionTranscript } = await import('../../claude-sessions');
+    const filePath = await findSessionTranscript(sessionId, { owner: row.owner });
+    return filePath ? { filePath, sessionId } : null;
+  }
+
+  if (sourceKind === 'omp') {
+    const { findOmpSessionPath } = await import('../../session-transcript-resolvers');
+    const threadId = row.omp_thread_id ?? sessionId;
+    const filePath = await findOmpSessionPath(threadId, { sessionKey: row.id });
+    return filePath ? { filePath, sessionId } : null;
+  }
+
+  if (sourceKind === 'codex') {
+    const [{ findCodexRolloutPathByUuid }, { codexHomeForSessionKey }] = await Promise.all([
+      import('../../session-transcript-resolvers'),
+      import('@papercusp/orchestrator/session-launch-dirs'),
+    ]);
+    const filePath = await findCodexRolloutPathByUuid(sessionId, {
+      homeOverride: codexHomeForSessionKey(row.id),
+    });
+    return filePath ? { filePath, sessionId } : null;
+  }
+
+  return null;
+}
+
+/**
+ * Refresh one explicitly requested live session immediately before reading its
+ * indexed turns. Historical sessions deliberately skip this path, leaving the
+ * existing index/archive behavior unchanged. The active adv_sessions lookup is
+ * tenant-independent for the same reason as the owner fallback in sessions:list:
+ * adv_sessions is tenant-keyed while the transcript corpus is stored in the
+ * shared/default namespace.
+ */
+export async function refreshTargetSessionBeforeRead(
+  sql: Sql,
+  sourceKind: string | null | undefined,
+  sessionId: string,
+  deps: TargetRefreshDeps = {},
+): Promise<{ attempted: number; refreshed: number }> {
+  if (!sessionId || sourceKind === 'agent_chat') return { attempted: 0, refreshed: 0 };
+
+  const rows = await sql<TargetSessionRow[]>`
+    SELECT id, agent, coord_owner_id AS owner, session_id, omp_thread_id
+      FROM harness_shared.adv_sessions
+     WHERE ended_at IS NULL
+       AND coord_owner_id IS NOT NULL
+       AND (${sourceKind ?? null}::text IS NULL OR agent = ${sourceKind ?? null})
+       AND (
+         session_id = ${sessionId}
+         OR (agent = 'omp' AND omp_thread_id = ${sessionId})
+       )
+  ORDER BY started_at DESC
+     LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row?.agent || !row.owner) return { attempted: 0, refreshed: 0 };
+
+  const resolve = deps.resolve ?? resolveTargetSessionTranscript;
+  const target = await resolve(row.agent, sessionId, row);
+  if (!target) return { attempted: 1, refreshed: 0 };
+
+  const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
+  await ingest(target.filePath, { owner: row.owner, sessionId: target.sessionId });
+  return { attempted: 1, refreshed: 1 };
+}
+
 /**
  * Bring open Codex sessions into the indexed corpus immediately before a read.
  * Archive ingestion is intentionally not a freshness boundary: an active

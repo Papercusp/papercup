@@ -2590,8 +2590,82 @@ _FA_ARGFLAGS_LS = frozenset((
 # positional operand after them is a PATH rather than the first being the
 # pattern.
 _FA_PATTERN_FLAGS = frozenset(('-e', '-f', '--regexp', '--file'))
-_FA_SEPARATORS = frozenset(('&&', '||', ';', '|', '&'))
+_FA_SEPARATORS = frozenset(('&&', '||', ';', '|', '&', '\n'))
 _FA_UNRESOLVABLE = '$`*?[]{}~'
+
+
+def _fa_shell_tokens(text):
+    """Tokenize *text* while retaining unquoted newlines as separators.
+
+    ``shlex`` treats a raw newline as whitespace, so a command on the next
+    line can be mistaken for a path operand of the preceding grep/ls. Split
+    only shell-newline boundaries before handing each line to ``shlex``;
+    quoted and backslash-continued newlines stay inside their original token.
+    Comments are discarded here so a synthetic line boundary cannot make the
+    rest of a command comment text.
+    """
+    _fa_lines, _fa_current = [], []
+    _fa_quote = None
+    _fa_escaped = False
+    _fa_i = 0
+    while _fa_i < len(text):
+        _fa_c = text[_fa_i]
+        if _fa_quote == "'":
+            _fa_current.append(_fa_c)
+            if _fa_c == "'":
+                _fa_quote = None
+            _fa_i += 1
+            continue
+        if _fa_quote == '"':
+            _fa_current.append(_fa_c)
+            if _fa_escaped:
+                _fa_escaped = False
+            elif _fa_c == '\\':
+                _fa_escaped = True
+            elif _fa_c == '"':
+                _fa_quote = None
+            _fa_i += 1
+            continue
+        if _fa_escaped:
+            _fa_current.append(_fa_c)
+            _fa_escaped = False
+            _fa_i += 1
+            continue
+        if _fa_c == '\\':
+            _fa_current.append(_fa_c)
+            _fa_escaped = True
+            _fa_i += 1
+            continue
+        if _fa_c in ("'", '"'):
+            _fa_quote = _fa_c
+            _fa_current.append(_fa_c)
+            _fa_i += 1
+            continue
+        if _fa_c == '#' and (not _fa_current or _fa_current[-1].isspace()):
+            _fa_i = text.find('\n', _fa_i)
+            if _fa_i == -1:
+                break
+            _fa_lines.append(''.join(_fa_current))
+            _fa_current = []
+            _fa_i += 1
+            continue
+        if _fa_c == '\n':
+            _fa_lines.append(''.join(_fa_current))
+            _fa_current = []
+            _fa_i += 1
+            continue
+        _fa_current.append(_fa_c)
+        _fa_i += 1
+    _fa_lines.append(''.join(_fa_current))
+
+    _fa_tokens = []
+    for _fa_i, _fa_line in enumerate(_fa_lines):
+        _fa_lex = shlex.shlex(_fa_line, posix=True, punctuation_chars=True)
+        _fa_lex.whitespace_split = True
+        _fa_tokens.extend(list(_fa_lex))
+        if _fa_i + 1 < len(_fa_lines):
+            _fa_tokens.append('\n')
+    return _fa_tokens
 
 
 def _fa_operands(argv, argflags):
@@ -2717,9 +2791,10 @@ try:
             r'(?:^|[\s;&|(])(?:[\w./-]*/)?(?:grep|egrep|fgrep|rg|ls|find|bfs)\b',
             command):
         import shlex
-        _fa_lex = shlex.shlex(command, posix=True, punctuation_chars=True)
-        _fa_lex.whitespace_split = True
-        _fa_tokens = list(_fa_lex)
+        # Keep raw shell newlines as command separators. The normal shlex
+        # whitespace set erases them, which makes the next line's command
+        # name look like another path operand of the first search command.
+        _fa_tokens = _fa_shell_tokens(command)
         # A subshell reorders what `cd` applies to; refuse to guess.
         if '(' in _fa_tokens or ')' in _fa_tokens:
             _fa_tokens = []

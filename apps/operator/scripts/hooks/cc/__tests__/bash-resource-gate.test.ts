@@ -2166,6 +2166,24 @@ describe('false-absence search-path guard (EI-20580705812821502)', () => {
     expectFalseAbsenceDeny(runGate(at('cd work_items && grep -rn foo no-such-dir/')));
   });
 
+  it('does not treat the next line\'s command name as a path operand', () => {
+    expectAllow(runGate(at('grep -rn foo work_items/\necho done')));
+  });
+
+  it('preserves a quoted newline inside a search argument', () => {
+    expectAllow(runGate(at(`grep -rn "foo
+bar" work_items/`)));
+  });
+
+  it('preserves a backslash-continued newline instead of making a separator', () => {
+    const command = 'echo first' + '\\' + '\n' + 'second\ngrep -rn foo work_items/';
+    expectAllow(runGate(at(command)));
+  });
+
+  it('keeps operator chains intact when an operator precedes a newline', () => {
+    expectAllow(runGate(at('grep -rn foo work_items/ &&\necho done')));
+  });
+
   it('names the missing path AND its resolved form in the refusal', () => {
     const reason = parseDecision(runGate(at("grep -rn 'foo' no-such-dir/")))
       .hookSpecificOutput.permissionDecisionReason as string;
