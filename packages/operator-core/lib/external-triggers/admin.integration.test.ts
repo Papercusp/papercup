@@ -387,3 +387,86 @@ describe('P-020 — goal-targeted bindings through the create door', () => {
     ).rejects.toThrow('external_trigger_goal_binding_ensure_unsupported');
   });
 });
+
+describe('P-027 — the admin snapshot carries social platform facts per source', () => {
+  /**
+   * These assert through loadExternalTriggerAdminSnapshot, NOT through
+   * socialAdminFacts directly. The pane consumes the SNAPSHOT, so a test of the
+   * helper alone would prove the declaration and miss the wiring — the exact
+   * gap that let seven trigger packs validate green while every one of them
+   * failed at install (D-047).
+   */
+  const snapshotSource = async (kind: string) => {
+    const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
+    const row = snapshot.sources.find((source) => source.kind === kind);
+    if (!row) throw new Error(`no source row for kind ${kind}`);
+    return row;
+  };
+
+  it('attaches platform facts to a social source', async () => {
+    await createExternalTriggerSource(sql, WS, { kind: 'reddit' });
+    const row = await snapshotSource('reddit');
+
+    expect(row.social).not.toBeNull();
+    expect(row.social?.platformId).toBe('reddit');
+    expect(row.social?.wave).toBe('A');
+    // A cap the budget actually funds — never unbounded.
+    expect(row.social?.rateBudget.maxRuns).toBeGreaterThan(0);
+    expect(row.social?.rateBudget.windowSeconds).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: a non-social source carries social:null and cannot inherit a budget', async () => {
+    // Without this control the assertion above passes for a helper that
+    // returns facts for EVERY kind, which would give gmail a social rate cap.
+    await createExternalTriggerSource(sql, WS, { kind: 'gmail' });
+    const row = await snapshotSource('gmail');
+    expect(row.social).toBeNull();
+  });
+
+  it('reports a fresh source as never-synced, not as a broken cursor', async () => {
+    // createExternalTriggerSource persists `{}`; that cold shape must read as
+    // never-synced. Reading it as `unrecognized` would alarm on every new source.
+    await createExternalTriggerSource(sql, WS, { kind: 'mastodon' });
+    const row = await snapshotSource('mastodon');
+    expect(row.social?.cursor.state).toBe('never-synced');
+  });
+
+  it('reads a persisted watermark cursor as synced, through the real column', async () => {
+    const created = await createExternalTriggerSource(sql, WS, { kind: 'threads' });
+    const at = new Date(Date.now() - 90_000).toISOString();
+    await sql`
+      UPDATE harness_shared.trigger_sources
+         SET cursor = ${JSON.stringify({ watermark: at, boundaryIds: ['m1'] })}::jsonb
+       WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
+
+    const row = await snapshotSource('threads');
+    expect(row.social?.cursor.state).toBe('synced');
+    expect(row.social?.cursor.at).toBe(at);
+    // ~90s, allowing for the round trip.
+    expect(row.social?.cursor.ageMs ?? 0).toBeGreaterThanOrEqual(89_000);
+    expect(row.social?.cursor.ageMs ?? 0).toBeLessThan(600_000);
+  });
+
+  it('reads reddit’s timeless fullname cursor as position-only, not never-synced', async () => {
+    // The regression this exists to catch: a pane keyed on `cursor.watermark`
+    // reports a perfectly healthy reddit source as never synced, forever.
+    const created = await createExternalTriggerSource(sql, WS, { kind: 'reddit' });
+    await sql`
+      UPDATE harness_shared.trigger_sources
+         SET cursor = ${JSON.stringify({ newestFullname: 't3_abc123' })}::jsonb
+       WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
+
+    const row = await snapshotSource('reddit');
+    expect(row.social?.cursor.state).toBe('position-only');
+    expect(row.social?.cursor.position).toBe('newestFullname=t3_abc123');
+  });
+
+  it('surfaces the owner-side wall on a review-gated platform', async () => {
+    // Wave B is gated on Meta app review; the pane must say so rather than
+    // presenting it as merely disconnected.
+    await createExternalTriggerSource(sql, WS, { kind: 'instagram' });
+    const row = await snapshotSource('instagram');
+    expect(row.social?.platformId).toBe('instagram');
+    expect(row.social?.wave).toBe('B');
+  });
+});

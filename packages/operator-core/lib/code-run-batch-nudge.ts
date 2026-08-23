@@ -61,6 +61,8 @@
  * is only consulted when a hint actually fires (rare), so the per-call cost stays the ring push.
  */
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from './agent-tools/capability/foreground-transport-cap';
 import { ROLE_ENVELOPES, matchesAny } from './capability-envelope/policy';
 // Reused verbatim (EI-10894): "find the row arrays in a tool payload" is the SAME job the
 // empty-mapping detector already does — including the one-hop descent into nested row arrays
@@ -290,6 +292,9 @@ interface RecentCall {
   argsRender?: string;
   /** Distinctive scalar arg values (ids/slugs) — the chained-burst signal (P-002). */
   argValues?: string[];
+  /** Measured wall time of this call (EI-21254965187146713). What makes the fold advice CHECKABLE:
+   *  without it the hint can only assert that folding is cheaper, and for slow children it is not. */
+  durationMs?: number;
 }
 
 interface SessionState {
@@ -467,7 +472,7 @@ function effectiveCall(toolName: string, args: unknown): { tool: string; args: u
 
 /** The same-tool list-then-loop skeleton: loop the ONE repeated call over `inputs` — prefilled with
  *  the args of the calls just made (P-003), so acting on it is extending a list, not authoring. */
-function sameToolSkeleton(toolName: string, recent: RecentCall[]): string {
+function sameToolSkeleton(toolName: string, recent: RecentCall[], timeoutSec?: number): string {
   const renders = recent
     .filter((c) => c.tool === toolName && c.argsRender !== undefined)
     .map((c) => c.argsRender as string)
@@ -476,19 +481,18 @@ function sameToolSkeleton(toolName: string, recent: RecentCall[]): string {
     renders.length > 0
       ? `[\n${renders.map((r) => `    ${r},`).join('\n')}\n    /* …the NEXT ${toolName} args go here — extend this list, not another solo call */\n  ]`
       : `[/* the args for each ${toolName} call */]`;
-  return (
-    'code:run { script: `\n' +
+  return codeRunCall(
     `  const inputs = ${inputs};\n` +
-    '  const out = [];\n' +
-    `  for (const a of inputs) out.push(await ${facadeCall(toolName, 'a')});\n` +
-    '  return out;\n' +
-    '` }'
+      '  const out = [];\n' +
+      `  for (const a of inputs) out.push(await ${facadeCall(toolName, 'a')});\n` +
+      '  return out;\n',
+    timeoutSec,
   );
 }
 
 /** The fan-out skeleton: a Promise.all over the EXACT distinct tools just seen, each prefilled with
  *  its last call's args (P-003) — acting on it is a paste, not authoring from scratch. */
-function fanoutSkeleton(distinctTools: string[], recent: RecentCall[]): string {
+function fanoutSkeleton(distinctTools: string[], recent: RecentCall[], timeoutSec?: number): string {
   const lastRender = new Map<string, string>();
   for (const c of recent) {
     if (c.argsRender !== undefined) lastRender.set(c.tool, c.argsRender);
@@ -497,34 +501,115 @@ function fanoutSkeleton(distinctTools: string[], recent: RecentCall[]): string {
   const binds = shown.map((_t, i) => `r${i}`).join(', ');
   const lines = shown.map((t) => `    ${facadeCall(t, lastRender.get(t) ?? '/* args */')},`).join('\n');
   const elided = distinctTools.length > shown.length ? `    /* …and ${distinctTools.length - shown.length} more */\n` : '';
-  return (
-    'code:run { script: `\n' +
-    `  const [${binds}] = await Promise.all([\n` +
-    lines +
-    '\n' +
-    elided +
-    '  ]);\n' +
-    `  return { ${binds} };\n` +
-    '` }'
+  return codeRunCall(
+    `  const [${binds}] = await Promise.all([\n` + lines + '\n' + elided + '  ]);\n' + `  return { ${binds} };\n`,
+    timeoutSec,
   );
 }
 
 /** The pipeline skeleton (P-002): the burst's calls IN ORDER inside one script. A script threads
  *  one result into the next (and can branch on it), so a dependent-but-mechanical chain is still
  *  ONE round-trip — only a genuine read-and-REASON gate earns a separate call. */
-function pipelineSkeleton(recent: RecentCall[]): string {
+function pipelineSkeleton(recent: RecentCall[], timeoutSec?: number): string {
   const shown = recent.slice(-MAX_SKELETON_TOOLS);
   const binds = shown.map((_c, i) => `r${i}`);
   const lines = shown
     .map((c, i) => `  const ${binds[i]} = await ${facadeCall(c.tool, c.argsRender ?? '/* args */')};`)
     .join('\n');
-  return (
-    'code:run { script: `\n' +
-    lines +
-    '\n' +
-    `  return { ${binds.join(', ')} };\n` +
-    '` }'
-  );
+  return codeRunCall(lines + '\n' + `  return { ${binds.join(', ')} };\n`, timeoutSec);
+}
+
+/**
+ * Fixed allowance for what the fold costs BEYOND the child calls themselves — worker boot, script
+ * parse, dispatch binding, result serialization. Deliberately a flat number rather than a
+ * percentage: the overhead does not scale with how slow the children are.
+ */
+const FOLD_OVERHEAD_MS = 2_000;
+
+/** Verdict on whether the fold this hint is about to recommend can actually finish.
+ *  - `fits`     — inside the default script budget; emit the skeleton unchanged.
+ *  - `raise`    — needs an explicit `timeoutSec`, which the skeleton then carries.
+ *  - `overruns` — cannot finish even at the foreground ceiling; say nothing at all.
+ *  - `unknown`  — no call in the burst was timed; behave exactly as before the gate existed. */
+type FoldBudgetVerdict = 'fits' | 'raise' | 'overruns' | 'unknown';
+
+interface FoldBudget {
+  verdict: FoldBudgetVerdict;
+  /** Floor on the fold's wall time, in ms — see `projectFoldCostMs`. Absent when `unknown`. */
+  projectedMs?: number;
+  /** The `timeoutSec` the skeleton must carry for the fold to fit. Only set on `raise`. */
+  timeoutSec?: number;
+}
+
+/**
+ * A FLOOR on what the recommended fold would cost, measured from the calls actually observed.
+ *
+ * A floor, not an estimate, and the distinction is the whole reason the gate is conservative: the
+ * same-tool skeleton's own text invites the agent to EXTEND the list ("the NEXT args go here"), so
+ * the real script is at least this long and usually longer. Untimed calls contribute nothing, which
+ * pushes the floor down — so a burst with partial timing is judged on the part we measured and can
+ * only ever under-estimate, never over-estimate, the risk of recommending it.
+ *
+ * Shape follows the skeleton each kind emits: `same-tool` and `pipeline` await in sequence (sum),
+ * `fanout` is a Promise.all (max).
+ */
+function projectFoldCostMs(kind: BatchNudgeKind, recent: readonly RecentCall[], toolName: string): number | undefined {
+  const timed = (calls: readonly RecentCall[]): number[] =>
+    calls.map((c) => c.durationMs).filter((d): d is number => typeof d === 'number' && Number.isFinite(d) && d >= 0);
+
+  if (kind === 'same-tool') {
+    const ds = timed(recent.filter((c) => c.tool === toolName).slice(-MAX_SKELETON_TOOLS));
+    return ds.length ? ds.reduce((a, b) => a + b, 0) : undefined;
+  }
+  if (kind === 'pipeline') {
+    const ds = timed(recent.slice(-MAX_SKELETON_TOOLS));
+    return ds.length ? ds.reduce((a, b) => a + b, 0) : undefined;
+  }
+  // fan-out: Promise.all, so the script waits for the SLOWEST branch, not their sum. One branch per
+  // distinct tool — its most recent timed call.
+  const lastByTool = new Map<string, number>();
+  for (const c of recent) {
+    if (typeof c.durationMs === 'number' && Number.isFinite(c.durationMs) && c.durationMs >= 0) {
+      lastByTool.set(c.tool, c.durationMs);
+    }
+  }
+  const branches = [...lastByTool.values()].slice(0, MAX_SKELETON_TOOLS);
+  return branches.length ? Math.max(...branches) : undefined;
+}
+
+/**
+ * Decide whether to recommend the fold at all, and under what budget.
+ *
+ * EI-21254965187146713 is the reason this exists. The hint is persuasive by design — it prefills the
+ * agent's own arguments and escalates on repetition — and it recommended chaining `testing:run`
+ * calls inside a script whose budget was HALF what the dispatch stack grants a single child
+ * (`exec.tool.timeoutSec ?? 60` vs a 30s script). The agent complied, the script was killed at 30s,
+ * four dispatches were spent for nothing, and the work was finished with the individual calls the
+ * hint had discouraged. Complying cost strictly more than ignoring it.
+ *
+ * Note what is NOT the fix: a list of known-slow tools. The mismatch is not special to `testing:run`
+ * — 60s is the DEFAULT allowance for every tool that declares none, so any child that uses a
+ * meaningful share of its own budget breaks the same way. A hand-maintained exclusion list would
+ * also have to be right about tools nobody has measured yet. Measured duration answers for every
+ * tool, including the next one, and cannot go stale.
+ */
+function assessFoldBudget(kind: BatchNudgeKind, recent: readonly RecentCall[], toolName: string): FoldBudget {
+  const projectedMs = projectFoldCostMs(kind, recent, toolName);
+  if (projectedMs === undefined) return { verdict: 'unknown' };
+  const needed = projectedMs + FOLD_OVERHEAD_MS;
+  if (needed <= DEFAULT_SCRIPT_TIMEOUT_MS) return { verdict: 'fits', projectedMs };
+  if (needed <= FOREGROUND_TIMEOUT_CEILING_MS) {
+    return { verdict: 'raise', projectedMs, timeoutSec: Math.ceil(needed / 1000) };
+  }
+  return { verdict: 'overruns', projectedMs };
+}
+
+/** Wrap a script body as the `code:run { … }` call to paste, carrying `timeoutSec` only when the
+ *  measured burst needs one. Emitting it unconditionally would be worse than useless: a default-
+ *  budget fold that displays an explicit budget teaches that the arg is always required. */
+function codeRunCall(scriptBody: string, timeoutSec?: number): string {
+  const args = timeoutSec ? `timeoutSec: ${timeoutSec}, script: ` : 'script: ';
+  return `code:run { ${args}\`\n${scriptBody}\` }`;
 }
 
 const TRAILER =
@@ -594,6 +679,13 @@ export interface BatchNudgeInput {
    * Default true (full-catalog sessions).
    */
   codeRunInSurface?: boolean;
+  /**
+   * Measured wall time of the call just completed (EI-21254965187146713). The handler already
+   * computes this one statement away for telemetry. Without it the hint can only ASSERT that
+   * folding is cheaper; with it the hint can check, and decline to recommend a fold that would be
+   * killed by the script budget. Optional: absent timing degrades to the pre-gate behaviour.
+   */
+  durationMs?: number;
   /** Injectable clock for tests; defaults to Date.now(). */
   now?: number;
 }
@@ -635,6 +727,10 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     at: now,
     argsRender: renderArgs(args),
     argValues: argValues.length > 0 ? argValues : undefined,
+    durationMs:
+      typeof input.durationMs === 'number' && Number.isFinite(input.durationMs) && input.durationMs >= 0
+        ? input.durationMs
+        : undefined,
   });
   st.callsSinceNudge += 1;
   const cutoff = now - NUDGE_WINDOW_MS;
@@ -682,6 +778,13 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     kind = isChainedBurst(st.recent) ? 'pipeline' : 'fanout';
   if (!kind) return null;
 
+  // BUDGET GATE (EI-21254965187146713) — before the backoff, deliberately. A fold we decline to
+  // recommend must not consume the cooldown: the caller did nothing wrong, and burning their quota
+  // here would silence the NEXT burst, which may well be foldable.
+  const budget = assessFoldBudget(kind, st.recent, toolName);
+  if (budget.verdict === 'overruns') return null;
+  const foldTimeoutSec = budget.timeoutSec;
+
   // Backoff gate: the first nudge fires immediately; later ones wait out an exponential cooldown.
   if (st.everNudged && st.callsSinceNudge < cooldownCalls(st.nudgeCount)) return null;
 
@@ -692,19 +795,26 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   const windowS = Math.round(NUDGE_WINDOW_MS / 1000);
   const banner = escalationPrefix(st.nudgeCount);
   const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
+  // Named only when the measured burst forced it, so the reason the arg is there travels with it.
+  const budgetNote = foldTimeoutSec
+    ? `\nThese calls measured ~${Math.round((budget.projectedMs ?? 0) / 1000)}s together, past code:run's ` +
+      `${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s default script budget — the skeleton carries the timeoutSec that fits. ` +
+      `Adding more calls to it may not fit: split them across two code:run calls rather than raising it further ` +
+      `(${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is the foreground ceiling).`
+    : '';
   if (kind === 'same-tool') {
     const burst = totalRecent > sameToolTurns ? ` (${totalRecent} tool calls total this burst)` : '';
-    const suggestedScript = sameToolSkeleton(toolName, st.recent);
+    const suggestedScript = sameToolSkeleton(toolName, st.recent, foldTimeoutSec);
     const text =
       `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
       `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. If these are ` +
       `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton, ` +
       `\`inputs\` prefilled from this burst (extend it instead of firing another solo call):\n` +
-      `${suggestedScript}\n${TRAILER}${activate}`;
+      `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
     return { text, suggestedScript, kind, tool: toolName };
   }
   if (kind === 'pipeline') {
-    const suggestedScript = pipelineSkeleton(st.recent);
+    const suggestedScript = pipelineSkeleton(st.recent, foldTimeoutSec);
     const text =
       `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
       `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
@@ -712,18 +822,18 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
       `the SAME object through different verbs — a CHAINED pipeline, and dependence does NOT mean ` +
       `one-call-per-turn: a script threads one result into the next (and can branch on it). Sequence the chain ` +
       `INSIDE one code:run — this burst as one round-trip (args prefilled):\n` +
-      `${suggestedScript}\n${TRAILER}${activate}`;
+      `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
     return { text, suggestedScript, kind, tool: toolName };
   }
   // fan-out
-  const suggestedScript = fanoutSkeleton(distinctOrder, st.recent);
+  const suggestedScript = fanoutSkeleton(distinctOrder, st.recent, foldTimeoutSec);
   const text =
     `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools spanning ` +
     `${distinctTurnsInWindow} separate turns in the last ~${windowS}s — that's ~${distinctTurnsInWindow} ` +
     `round-trips, each re-reading your whole context. Collapse the burst ` +
     `into ONE code:run — Promise.all when the calls are independent, sequential awaits when one feeds the ` +
     `next — ready-to-paste skeleton (args prefilled from your last calls):\n` +
-    `${suggestedScript}\n${TRAILER}${activate}`;
+    `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
   return { text, suggestedScript, kind, tool: toolName };
 }
 

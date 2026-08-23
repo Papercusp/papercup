@@ -7,6 +7,7 @@ import { Select } from '@/app/harness/Select';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import type {
   ExternalTriggerBindingAdminRow,
+  ExternalTriggerSocialAdminFacts,
   ExternalTriggerSourceAdminRow,
 } from '@papercusp/operator-core/lib/external-triggers/admin';
 import {
@@ -500,8 +501,9 @@ function ExternalComposer({
     setSourceId(first?.id ?? '');
     setPattern(first ? `ext:${first.kind}:` : '');
     setFilter('{}');
-    setMaxRuns('');
-    setWindowSeconds('60');
+    const defaults = stormDefaultsFor(first);
+    setMaxRuns(defaults.maxRuns);
+    setWindowSeconds(defaults.windowSeconds);
     setError(null);
   }, [open, sources]);
 
@@ -542,7 +544,12 @@ function ExternalComposer({
             onChange={(id) => {
               const selected = sources.find((candidate) => candidate.id === id);
               setSourceId(id);
-              if (selected) setPattern(`ext:${selected.kind}:`);
+              if (selected) {
+                setPattern(`ext:${selected.kind}:`);
+                const defaults = stormDefaultsFor(selected);
+                setMaxRuns(defaults.maxRuns);
+                setWindowSeconds(defaults.windowSeconds);
+              }
             }}
             ariaLabel="Source"
             options={sources.map((candidate) => ({
@@ -551,6 +558,7 @@ function ExternalComposer({
             }))}
           />
         </label>
+        {source?.social && <SocialSourceNote social={source.social} />}
         <label className="pc-plan-dialog__field"><span>Event pattern</span><input value={pattern} onChange={(event) => setPattern(event.target.value)} required /></label>
         <label className="pc-plan-dialog__field"><span>Event filter</span><textarea rows={4} value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
         <label className="pc-plan-dialog__field"><span>Storm max runs <em className="pc-plan-dialog__opt">(blank = unbounded)</em></span><input type="number" min="1" value={maxRuns} onChange={(event) => setMaxRuns(event.target.value)} /></label>
@@ -558,6 +566,60 @@ function ExternalComposer({
         <ComposerFooter error={error} submitting={submitting} submitLabel="Attach off" onCancel={onClose} />
       </form>
     </Modal>
+  );
+}
+
+/**
+ * Storm-policy defaults for a newly attached binding (P-027).
+ *
+ * A social source gets the cap its PLATFORM budget actually funds, rather than
+ * the generic blank-means-unbounded default. That default is the wrong one here
+ * in a way that is invisible until it bites: an unbounded coalesce cap on a
+ * metered platform spends the whole quota day on one storm, and the integration
+ * then stops entirely until the quota rolls over. Non-social sources are
+ * untouched and keep the landed behaviour.
+ */
+export function stormDefaultsFor(
+  source: ExternalTriggerSourceAdminRow | undefined,
+): { maxRuns: string; windowSeconds: string } {
+  if (!source?.social) return { maxRuns: '', windowSeconds: '60' };
+  return {
+    maxRuns: String(source.social.rateBudget.maxRuns),
+    windowSeconds: String(source.social.rateBudget.windowSeconds),
+  };
+}
+
+/**
+ * The constraints that decide whether arming this binding can actually work.
+ *
+ * Shown at the moment of ATTACHING, because that is when the owner is choosing
+ * — a wall discovered later, from a failed run, costs far more than a line here.
+ */
+function SocialSourceNote({ social }: { social: ExternalTriggerSocialAdminFacts }) {
+  return (
+    <div className="pc-plan-dialog__note" data-platform={social.platformId}>
+      <div>
+        <strong>{social.label}</strong> · wave {social.wave} · {social.authMode}
+      </div>
+      {social.blockedOn && (
+        <div className="pc-plan-dialog__warn">
+          Blocked on {social.blockedOn} — bindings can be attached, but this source cannot
+          connect until that clears.
+        </div>
+      )}
+      {!social.writeVerified && (
+        <div className="pc-plan-dialog__warn">
+          Write path unverified — a reply/post action on this source is refused at run time.
+          Read-only triggers still work.
+        </div>
+      )}
+      <div>
+        Storm defaults set from this platform&rsquo;s rate budget:{' '}
+        {social.rateBudget.maxRuns} run{social.rateBudget.maxRuns === 1 ? '' : 's'} /{' '}
+        {social.rateBudget.windowSeconds}s ({social.rateBudget.basis}). Raising them past the
+        budget spends the quota day early.
+      </div>
+    </div>
   );
 }
 

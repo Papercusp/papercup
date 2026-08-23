@@ -2809,6 +2809,11 @@ const handler = createMcpHandler(
                     args,
                     canCodeRun: canCodeRunHere,
                     codeRunInSurface,
+                    // EI-21254965187146713: what the call actually COST. The nudge uses it to
+                    // refuse to recommend a fold the code:run script budget would kill — the
+                    // failure that made an agent pay for the sequential calls it discouraged,
+                    // a timed-out script, AND the re-run.
+                    durationMs: Date.now() - callStartedAt,
                   });
                   // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE; fan-out AND
                   // pipeline (the chained variant of the same multi-tool trigger) under

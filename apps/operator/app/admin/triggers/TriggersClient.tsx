@@ -8,6 +8,7 @@ import type {
   ExternalTriggerAdminSnapshot,
   ExternalTriggerBindingAdminRow,
   ExternalTriggerRunAdminRow,
+  ExternalTriggerSocialAdminFacts,
 } from "@papercusp/operator-core/lib/external-triggers/admin";
 import { Table, type TableColumn } from "@/app/harness/Table";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
@@ -22,6 +23,95 @@ import "./triggers.css";
 
 type View = "bindings" | "sources" | "runs";
 type LoadState = "loading" | "ok" | "error";
+/** Sources view filter. Social sources are the ones with a rate budget worth watching. */
+type SourceScope = "all" | "social";
+
+/**
+ * Render a cursor-freshness verdict (P-027).
+ *
+ * The four states are NOT collapsed into "last synced <time>" on purpose:
+ * `position-only` means the platform's cursor carries no timestamp at all
+ * (reddit's `t3_…` fullname, a bluesky `seq` before any event landed), so
+ * showing it as "never synced" would report a healthy integration as dead.
+ */
+function cursorLabel(cursor: ExternalTriggerSocialAdminFacts["cursor"]): {
+  tone: "ok" | "warn" | "idle";
+  text: string;
+} {
+  switch (cursor.state) {
+    case "synced":
+      return { tone: "ok", text: `synced · ${formatAge(cursor.ageMs)}` };
+    case "position-only":
+      return { tone: "ok", text: `advancing · ${cursor.position} · no timestamp on this platform` };
+    case "never-synced":
+      return { tone: "idle", text: "never synced — no cursor persisted yet" };
+    case "unrecognized":
+      return { tone: "warn", text: `unreadable cursor — ${cursor.detail}` };
+    default:
+      return { tone: "warn", text: cursor.detail };
+  }
+}
+
+/** Compact age. Negative means the provider instant is AHEAD of us — a skew signal, shown not hidden. */
+function formatAge(ageMs: number | null): string {
+  if (ageMs === null) return "unknown age";
+  if (ageMs < 0) return `${formatAge(-ageMs)} in the future (clock skew)`;
+  const seconds = Math.round(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function SocialSourceFacts({ social }: { social: ExternalTriggerSocialAdminFacts }) {
+  const cursor = cursorLabel(social.cursor);
+  const budget = social.rateBudget;
+  return (
+    <div className="tr-social" data-platform={social.platformId}>
+      <div className="tr-meta">
+        <span className="tr-badge tr-social-platform">{social.label}</span>
+        <span className="tr-social-tag">wave {social.wave}</span>
+        <span className="tr-social-tag">{social.authMode}</span>
+        <span className="tr-social-tag">{social.readTransport}</span>
+        {!social.verified && (
+          <span className="tr-badge status-error" title="Registry row is not verified against its cited sources">
+            unverified
+          </span>
+        )}
+        {social.blockedOn && (
+          // An owner-side wall (Meta app review, a TikTok audit). Distinct from
+          // "not connected": nobody can clear this from the pane.
+          <span className="tr-badge status-degraded" title={social.blockedOn}>
+            blocked: {social.blockedOn}
+          </span>
+        )}
+      </div>
+      <div className={`tr-meta tr-social-cursor tone-${cursor.tone}`}>cursor: {cursor.text}</div>
+      <div className="tr-meta">
+        {budget.hold ? (
+          // A hold is not a cap of zero: the provider told us to stop, and it expires.
+          <span className="tr-social-hold">
+            budget HELD: {budget.hold.reason}
+            {budget.hold.retryForbidden ? " · retry forbidden (retrying extends the block)" : ""}
+            {budget.hold.untilMs === null ? " · no stated duration" : ` · ~${formatAge(-budget.hold.untilMs)}`}
+          </span>
+        ) : (
+          <>
+            budget: up to {budget.maxRuns} run{budget.maxRuns === 1 ? "" : "s"} / {budget.windowSeconds}s
+            {" "}({budget.basis})
+          </>
+        )}
+      </div>
+      <div className="tr-meta">
+        write: {social.writeVerbs.length ? social.writeVerbs.join(", ") : "none"}
+        {" · "}
+        {social.writeVerified ? "verified" : "UNVERIFIED — writes refused"}
+      </div>
+    </div>
+  );
+}
 
 const VIEW_LABELS: Record<View, string> = {
   bindings: "Bindings",
@@ -103,6 +193,12 @@ export default function TriggersClient() {
     "binding",
     parseAsString,
   );
+  // nuqs, not useState: a filter is user-meaningful state, so it must survive a
+  // reload AND be drivable by an agent through ui:get_state / ui:dispatch.
+  const [sourceScope, setSourceScope] = useQueryState(
+    "sources",
+    parseAsStringEnum<SourceScope>(["all", "social"]).withDefault("all"),
+  );
   const [payload, setPayload] = useState<ExternalTriggerAdminSnapshot | null>(
     null,
   );
@@ -135,6 +231,14 @@ export default function TriggersClient() {
       payload?.bindings.find((binding) => binding.id === selectedBindingId) ??
       null,
     [payload, selectedBindingId],
+  );
+
+  const visibleSources = useMemo(
+    () =>
+      (payload?.sources ?? []).filter((source) =>
+        sourceScope === "social" ? source.social !== null : true,
+      ),
+    [payload, sourceScope],
   );
 
   useEffect(() => {
@@ -326,10 +430,31 @@ export default function TriggersClient() {
 
           {view === "sources" && (
             <section className="tr-list" aria-label="Trigger sources">
-              {payload.sources.length === 0 && (
-                <Empty message="No external sources are configured yet." />
+              <div className="tr-filter-row" role="group" aria-label="Filter sources">
+                {(["all", "social"] as const).map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    className={`tr-filter${sourceScope === scope ? " is-active" : ""}`}
+                    aria-pressed={sourceScope === scope}
+                    onClick={() => void setSourceScope(scope)}
+                  >
+                    {scope === "all"
+                      ? `All (${payload.sources.length})`
+                      : `Social (${payload.sources.filter((s) => s.social).length})`}
+                  </button>
+                ))}
+              </div>
+              {visibleSources.length === 0 && (
+                <Empty
+                  message={
+                    sourceScope === "social"
+                      ? "No social sources are connected yet."
+                      : "No external sources are configured yet."
+                  }
+                />
               )}
-              {payload.sources.map((source) => (
+              {visibleSources.map((source) => (
                 <article key={source.id} className="tr-card">
                   <div className="tr-card-main">
                     <div className="tr-card-heading">
@@ -351,6 +476,7 @@ export default function TriggersClient() {
                       {source.credentialRef ? "configured" : "not configured"} ·
                       failures 24h: {source.failedDeliveries24h}
                     </div>
+                    {source.social && <SocialSourceFacts social={source.social} />}
                     {source.lastError && (
                       <div className="tr-error-copy">{source.lastError}</div>
                     )}

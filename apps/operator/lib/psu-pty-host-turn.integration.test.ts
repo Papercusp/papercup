@@ -194,7 +194,13 @@ function echoChildCode(ttlMs: number): string {
 /** Child that consumes submitted bytes but never emits output, modeling a
  *  swallowed submit from the host verifier's perspective. */
 function silentChildCode(ttlMs: number): string {
-  return `process.stdin.resume();setTimeout(()=>process.exit(0),${ttlMs});`;
+  // The child is hosted under a PTY. Put its stdin in raw mode so the PTY's
+  // canonical line discipline cannot echo the injected text/CR back through
+  // stdout and falsely look like output from a submitted turn.
+  return (
+    "try{process.stdin.setRawMode&&process.stdin.setRawMode(true);}catch(e){}" +
+    `process.stdin.resume();setTimeout(()=>process.exit(0),${ttlMs});`
+  );
 }
 
 /** A child that models the Claude Code TUI's PASTE detector (the naive echoChild
