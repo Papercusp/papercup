@@ -383,3 +383,63 @@
     flex-direction: column;
   }
 }
+
+/* --- P-027: social source facts on the sources view ----------------------- */
+
+.tr-filter-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.tr-filter {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg-dim);
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tr-filter.is-active {
+  border-color: var(--accent-strong);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.tr-social {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tr-social .tr-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tr-social-tag {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.tr-social-platform {
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+/* Cursor freshness. `idle` is deliberately NOT an error colour: a source that
+   has never synced is cold, not broken. Only an unreadable cursor is a fault. */
+.tr-social-cursor.tone-ok { color: var(--good); }
+.tr-social-cursor.tone-idle { color: var(--fg-mute); }
+.tr-social-cursor.tone-warn { color: var(--bad); }
+
+.tr-social-hold {
+  color: var(--warn);
+}
