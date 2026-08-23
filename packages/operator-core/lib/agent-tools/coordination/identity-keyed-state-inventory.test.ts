@@ -114,6 +114,14 @@ const ALLOWLIST: Record<string, Classification> = {
   'agent_facts.scope_ref': { status: 'covered', surface: 'owner-facts' },
 
   // --- EXEMPT: deliberately not re-keyed ---
+  'desktop_sessions.scope_ref': {
+    status: 'exempt',
+    reason:
+      "polymorphic desktop RESOURCE selector paired with scope='pot'|'agent'|'workspace' — not an owner-id column. " +
+      'Desktop liveness and reaping use owner_pid + owner_boot_id, lifecycle state, TTL, and task_id; no ' +
+      'presence-tied reader/reaper treats scope_ref as the current holder. Rebinding it would wrongly transfer a ' +
+      'display lease (and would corrupt pot/workspace refs), so callers explicitly resolve or re-register the scope.',
+  },
   'agent_activity.owner_id': {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',
