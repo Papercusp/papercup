@@ -62,9 +62,21 @@ vi.mock('../agent-tools/coordination/identity', () => ({
 
 const RUN_ID = 'run-kill-switch-test';
 
-/** Parse the single JSON text block these tools return. */
-function body(res: { content: Array<{ type: string; text: string }> }): Record<string, unknown> {
-  return JSON.parse(res.content[0]!.text) as Record<string, unknown>;
+/**
+ * Parse the single JSON text block these tools return. Takes `unknown` because
+ * defineTool's declared return is a union (ToolResponse<unknown> | ToolResult)
+ * that a narrower literal parameter type cannot accept; the assertion below is
+ * where the shape is actually checked, and it THROWS rather than returning an
+ * empty object — a silent {} here would make every expectation below read as a
+ * pass against a response that was never parsed.
+ */
+function body(res: unknown): Record<string, unknown> {
+  const content = (res as { content?: Array<{ text?: string }> } | null)?.content;
+  const text = content?.[0]?.text;
+  if (typeof text !== 'string') {
+    throw new Error(`tool response carried no JSON text block: ${JSON.stringify(res)}`);
+  }
+  return JSON.parse(text) as Record<string, unknown>;
 }
 
 async function tools() {
