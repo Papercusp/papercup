@@ -47,7 +47,7 @@
  */
 import { readFileSync, existsSync, globSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -436,13 +436,17 @@ function main() {
   process.exit(EXIT_CONFLICTS);
 }
 
-const isMain = (() => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  try {
-    return import.meta.url === pathToFileURL(argv1).href;
-  } catch {
-    return false;
-  }
-})();
-if (isMain) main();
+/**
+ * Only run as the named CLI entry.
+ *
+ * Do not compare `import.meta.url` with `process.argv[1]` here. This module is also
+ * imported by check-declared-deps-extracted.mjs, which is reachable from the bundled
+ * Hono host through tsc-baseline-gate.mjs. Esbuild gives every bundled module the host
+ * bundle's `import.meta.url`; an URL-equality guard therefore mistakes
+ * dist-host/hono-host.mjs for this script and calls process.exit() during host boot.
+ */
+export const isDirectCliInvocation = (entryPath = process.argv[1]) =>
+  typeof entryPath === 'string' &&
+  /(?:^|[\\/])check-peer-dep-conflicts\.mjs$/.test(entryPath);
+
+if (isDirectCliInvocation()) main();

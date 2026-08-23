@@ -49,6 +49,7 @@ import {
   EXIT_OK,
   EXIT_CONFLICTS,
   EXIT_NOT_CHECKED,
+  isDirectCliInvocation,
 } from '../../../../scripts/check-peer-dep-conflicts.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
@@ -321,6 +322,13 @@ describe('check-peer-dep-conflicts — range grammar', () => {
 });
 
 describe('check-peer-dep-conflicts — calibration against the real repo', () => {
+  it('never self-executes when esbuild imports it into the Hono host bundle', () => {
+    expect(isDirectCliInvocation('/repo/scripts/check-peer-dep-conflicts.mjs')).toBe(true);
+    expect(isDirectCliInvocation('C:\\repo\\scripts\\check-peer-dep-conflicts.mjs')).toBe(true);
+    expect(isDirectCliInvocation('/repo/apps/operator/dist-host/hono-host.mjs')).toBe(false);
+    expect(isDirectCliInvocation(undefined)).toBe(false);
+  });
+
   // Without this, every assertion above would still pass for a guard that flags
   // everything. This is what makes the mutant cases meaningful.
   it('measures the live tree CLEAN, and keeps BASELINE empty', () => {
