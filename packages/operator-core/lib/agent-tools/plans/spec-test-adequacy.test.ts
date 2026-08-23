@@ -197,6 +197,30 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(staleResult.ratings.freshness.rating).toBe('fail');
     expect(staleResult.verdict).toBe('fail');
 
+    const unknownFreshness = evidence({
+      evidenceRef: 'surface:unknown-history',
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        dimensions: {
+          ...evidence().currentness.dimensions,
+          source: 'unknown',
+        },
+        unknownReasons: ['source_fingerprint_absent'],
+      },
+    });
+    const unknownFreshnessResult = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [unknownFreshness],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(unknownFreshnessResult.ratings.freshness).toMatchObject({
+      rating: 'unknown',
+      evidence: expect.stringContaining('source_fingerprint_absent'),
+    });
+    expect(unknownFreshnessResult.evidenceRefs).toEqual(['surface:unknown-history']);
+    expect(unknownFreshnessResult.verdict).toBe('unknown');
+
     const incomplete = evidence({ details: { adequacy: { coverageRungs: { l3: true } } } });
     const unknown = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -206,6 +230,71 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(unknown.ratings['execution-integrity'].rating).toBe('unknown');
     expect(unknown.ratings['oracle-independence'].rating).toBe('unknown');
     expect(unknown.verdict).toBe('fail');
+  });
+
+  it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {
+    const staleHistorical = evidence({
+      evidenceRef: 'surface:historical-stale',
+      currentness: {
+        ...evidence().currentness,
+        overall: 'stale',
+        dimensions: {
+          ...evidence().currentness.dimensions,
+          source: 'stale',
+        },
+        staleReasons: ['source_fingerprint_mismatch'],
+      },
+      details: {
+        adequacy: {
+          fixtureCalibrated: false,
+          falsifiable: false,
+          testLayer: 'integration',
+          pathReachable: false,
+          oracleIndependent: false,
+          collected: false,
+          skipped: true,
+          executed: false,
+          outcome: 'failed',
+          coverageRungs: { l3: false },
+        },
+      },
+    });
+    const unknownHistorical = evidence({
+      evidenceRef: 'surface:historical-unknown',
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        dimensions: {
+          ...evidence().currentness.dimensions,
+          test: 'unknown',
+        },
+        unknownReasons: ['test_fingerprint_absent'],
+      },
+    });
+    const current = evidence({ evidenceRef: 'surface:current' });
+
+    const passing = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [staleHistorical, unknownHistorical, current],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(passing.verdict).toBe('pass');
+    expect(passing.ratings.freshness.rating).toBe('pass');
+    expect(passing.evidenceRefs).toEqual(['surface:current']);
+
+    const incompleteCurrent = evidence({
+      evidenceRef: 'surface:current-incomplete',
+      details: { adequacy: { coverageRungs: { l3: true } } },
+    });
+    const notSatisfiedByHistory = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [staleHistorical, incompleteCurrent],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(notSatisfiedByHistory.evidenceRefs).toEqual(['surface:current-incomplete']);
+    expect(notSatisfiedByHistory.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(notSatisfiedByHistory.ratings['oracle-independence'].rating).toBe('unknown');
+    expect(notSatisfiedByHistory.verdict).not.toBe('pass');
   });
 
   it('never lets evidence for another revision establish traceability', () => {

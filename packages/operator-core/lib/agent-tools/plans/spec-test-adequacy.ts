@@ -260,13 +260,18 @@ export function evaluateSpecTestAdequacy(input: {
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
-  const evidence = input.evidence.filter(
+  const exactEvidence = input.evidence.filter(
     (row) =>
       row.planSlug === clause.planSlug &&
       row.specId === clause.specId &&
       row.specRevision === clause.revision &&
       row.specFingerprint === clause.contentHash,
   );
+  const currentEvidence = exactEvidence.filter((row) => row.currentness.overall === 'current');
+  // Immutable historical bindings remain available to the evidence store, but once an exact
+  // current cohort exists they can neither satisfy nor veto the verdict for that cohort. When
+  // there is no current cohort, retain the full exact set so stale/unknown diagnostics survive.
+  const evidence = currentEvidence.length > 0 ? currentEvidence : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
   ratings.traceability = evidence.length

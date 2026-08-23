@@ -232,6 +232,34 @@ describe('specTestAdequacyCompletionGate', () => {
     expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
 
+  it('accepts the exact current cohort without historical unknown bindings vetoing it', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([
+      listedEvidence({
+        id: 1,
+        evidenceRef: 'test:historical',
+        currentness: {
+          ...evidence().currentness,
+          overall: 'unknown',
+          dimensions: {
+            ...evidence().currentness.dimensions,
+            source: 'unknown',
+            test: 'unknown',
+          },
+          unknownReasons: ['source_fingerprint_absent', 'test_fingerprint_absent'],
+        },
+      }),
+      listedEvidence({ id: 2 }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+  });
+
   it.each([
     ['stale evidence fingerprint', { evidenceFingerprint: 'sha256:stale' }],
     ['provisional scorecard', { provisional: { violatableKeys: ['freshness'], stampedAt: '2026-08-20T00:02:00.000Z' } }],
