@@ -54,7 +54,7 @@ vi.mock('./store', () => ({
   },
 }));
 
-import { managedSpawn } from './managed-spawn';
+import { managedSpawn, SCOPE_HANDOFF_GRACE_MS, SCOPE_HANDOFF_RECHECK_MS } from './managed-spawn';
 import { CGROUP_ROOT, type CgroupFs } from './cgroup-read';
 import { scopeCgroupRelPath, scopeUnitForTask, type TaskSpec } from './types';
 
@@ -105,12 +105,18 @@ function makeFs(scope: ScopeState): CgroupFs {
       return null;
     },
     readDir: () => [],
-    isDir: () => false,
+    isDir: (path: string) =>
+      Boolean(scope.rel && path === `${CGROUP_ROOT}${scope.rel}` && scope.procs !== null),
   };
 }
 
 async function flush(n = 12): Promise<void> {
   for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+}
+
+async function flushAfterHandoff(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, SCOPE_HANDOFF_GRACE_MS + SCOPE_HANDOFF_RECHECK_MS));
+  await flush();
 }
 
 /** Spawn one confined sidecar against a scope whose contents the caller controls. */
@@ -125,7 +131,7 @@ async function spawnConfined(procs: number[] | null, pidsCurrent?: number | null
   // The path is fully determined by task id + class, so it is knowable the moment
   // managedSpawn returns — the same derivation the subject itself performs.
   scope.rel = scopeCgroupRelPath(MGR, 'sidecar', result.scopeUnit!);
-  return { emitter, result, scopeRel: scope.rel };
+  return { emitter, result, scopeRel: scope.rel, scope };
 }
 
 describe('confined task exit recording (WI-37509)', () => {
@@ -133,7 +139,10 @@ describe('confined task exit recording (WI-37509)', () => {
     L.closed.length = 0;
     L.marked.length = 0;
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it('does NOT close the row when the client dies but the scope still holds processes', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -166,11 +175,32 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
   });
 
+  it('waits for a delayed scope handoff instead of closing a live task row', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, scope } = await spawnConfined([]);
+
+    // systemd-run can report its client gone before the payload has joined the
+    // named scope. The first read is therefore empty even though the scope is
+    // about to become live.
+    emitter.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_RECHECK_MS - 1);
+    expect(L.closed).toEqual([]);
+
+    scope.procs = [3204532, 3204609, 3204726];
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+
+    expect(L.closed).toEqual([]);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+  });
+
   it('DOES close the row when the scope is gone — the ordinary healthy ending', async () => {
     const { emitter } = await spawnConfined(null);
 
     emitter.emit('exit', 0, null);
-    await flush();
+    await flushAfterHandoff();
 
     expect(L.closed).toHaveLength(1);
     expect(L.closed[0]!.state).toBe('exited');
@@ -180,7 +210,7 @@ describe('confined task exit recording (WI-37509)', () => {
     const { emitter } = await spawnConfined([]);
 
     emitter.emit('exit', null, 'SIGKILL');
-    await flush();
+    await flushAfterHandoff();
 
     expect(L.closed).toHaveLength(1);
     expect(L.closed[0]!.state).toBe('killed');
@@ -229,7 +259,7 @@ describe('confined task exit recording (WI-37509)', () => {
     L.closed.length = 0;
     const drained = await spawnConfined([]);
     drained.emitter.emit('exit', null, 'SIGTERM');
-    await flush();
+    await flushAfterHandoff();
     const closedWhenDrained = L.closed.length;
 
     expect(closedWhilePopulated).toBe(0);

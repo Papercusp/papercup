@@ -69,6 +69,16 @@ export interface ManagedSpawnResult {
   confinementSkippedReason?: string;
 }
 
+/**
+ * systemd-run can report its client gone before the payload has joined the
+ * transient scope. Keep the row live for a short, bounded handoff window so a
+ * one-shot empty cgroup read cannot turn a resident payload into `unaccounted`.
+ * The timer is unref'd below, so this safety window never keeps the operator
+ * alive during shutdown.
+ */
+export const SCOPE_HANDOFF_GRACE_MS = 250;
+export const SCOPE_HANDOFF_RECHECK_MS = 25;
+
 // ── systemd availability probe ──────────────────────────────────────────────
 
 let scopeProbe: Promise<{ ok: boolean; reason?: string }> | null = null;
@@ -441,18 +451,55 @@ function wireExit(
     return pidsCurrent != null && pidsCurrent > 0;
   };
 
-  child.on('exit', (code, signal) => {
-    if (payloadOutlivedClient()) {
-      const message =
-        `[managed-spawn] task ${taskId}: the systemd-run client exited (${signal ? `signal ${signal}` : `code ${code}`}) ` +
-        'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
-      // A clean systemd-run client exit is an expected handoff to the reconciler,
-      // not a warning. Keep abnormal exits loud so the task ledger still surfaces
-      // a client that died while its payload remained alive.
-      if (signal || code !== 0) console.warn(message);
-      else console.info(message);
-      return;
-    }
+  const reportPayloadOutlivedClient = (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    afterDelayedHandoff: boolean,
+  ): void => {
+    const message =
+      `[managed-spawn] task ${taskId}: the systemd-run client exited ` +
+      `(${signal ? `signal ${signal}` : `code ${code}`}) ` +
+      (afterDelayedHandoff ? 'after the delayed handoff window, ' : '') +
+      'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
+    // A clean systemd-run client exit is an expected handoff to the reconciler,
+    // not a warning. Keep abnormal exits loud so the task ledger still surfaces
+    // a client that died while its payload remained alive.
+    if (signal || code !== 0) console.warn(message);
+    else console.info(message);
+  };
+
+  /**
+   * Re-read the scope after the client exit. A single immediate read is not a
+   * sufficient handoff barrier: systemd may have created the scope but not yet
+   * attached the payload when it emits the client's exit. The window is finite
+   * and every empty/missing/unreadable scope still closes at its deadline, so
+   * this is a race guard rather than a leak-prone keepalive.
+   */
+  const waitForPayloadHandoff = (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    settle: () => void,
+  ): void => {
+    const deadline = Date.now() + SCOPE_HANDOFF_GRACE_MS;
+    const recheck = (): void => {
+      if (closed) return;
+      if (payloadOutlivedClient()) {
+        reportPayloadOutlivedClient(code, signal, true);
+        return;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        settle();
+        return;
+      }
+      const timer = setTimeout(recheck, Math.min(SCOPE_HANDOFF_RECHECK_MS, remaining));
+      timer.unref?.();
+    };
+    const timer = setTimeout(recheck, SCOPE_HANDOFF_RECHECK_MS);
+    timer.unref?.();
+  };
+
+  const closeAfterExit = (code: number | null, signal: NodeJS.Signals | null): void => {
     if (signal) {
       close('killed', code, `signal ${signal}`);
     } else if (confined && code !== 0) {
@@ -478,6 +525,24 @@ function wireExit(
     } else {
       close('exited', code, null);
     }
+  };
+
+  child.on('exit', (code, signal) => {
+    if (payloadOutlivedClient()) {
+      reportPayloadOutlivedClient(code, signal, false);
+      return;
+    }
+    if (confined && scopeCgroupPath) {
+      waitForPayloadHandoff(code, signal, () => {
+        if (payloadOutlivedClient()) {
+          reportPayloadOutlivedClient(code, signal, true);
+          return;
+        }
+        closeAfterExit(code, signal);
+      });
+      return;
+    }
+    closeAfterExit(code, signal);
   });
 
   child.on('error', (e) => {
