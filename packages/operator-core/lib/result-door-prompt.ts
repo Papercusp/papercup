@@ -78,6 +78,11 @@ tool's own args, never inside them — with \`tools:invoke\` that means alongsid
     projection: { pick: ["[].id", "[].title"] }                 // ARRAY-root body (a bare list)
     projection: { pipe: [{ op: "grep", pattern: "ERROR" }, { op: "tail", n: 20 }] }
 
+Common keyed envelopes keep fields under their emitted roots — copy the shape, not a
+generic field name:
+    projection: { pick: ["event_inspection.current_generation", "event_inspection.current_state", "active_awaits"] } // events:status
+    projection: { pick: ["results[].id", "results[].workItem.state", "results[].workItem.assignee", "results[].checkpoint"] } // work_items:get
+
 Path shape follows the BODY's root: a tool that returns a bare array (work_items:list,
 plans:items, …) is selected with \`[].field\` — a bare \`field\` addresses an object root
 and matches nothing there (the door auto-adjusts the obvious case and tells you).

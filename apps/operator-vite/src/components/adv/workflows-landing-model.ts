@@ -242,6 +242,64 @@ function toLedgerRow(workflow: LandingWorkflowInput, nowMs: number): WorkflowLed
   };
 }
 
+/**
+ * The automation fields the adapter reads — a structural subset of `AutomationItem`.
+ * Structural for the same reason the other inputs are: the derivation stays independent of
+ * the model that happens to feed it today.
+ */
+export interface AutomationItemLike {
+  id: string;
+  label: string;
+  running: boolean;
+  paused: boolean;
+  needsAttention: boolean;
+  lastAt: number | null;
+  spendLabel: string;
+  triggers: ReadonlyArray<{ kind: 'schedule' | 'external'; provider: string }>;
+  flow: { outcomeLabel: string } | null;
+}
+
+/** Short chain tokens per trigger, matching the artboard's "gmail → plan → tool" vocabulary. */
+function triggerToken(trigger: { kind: 'schedule' | 'external'; provider: string }): string {
+  if (trigger.kind === 'schedule') return 'schedule';
+  const short: Record<string, string> = {
+    'google-gmail': 'gmail',
+    gmail: 'gmail',
+    'google-calendar': 'calendar',
+    'google-workspace': 'workspace',
+    slack: 'slack',
+  };
+  return short[trigger.provider] ?? trigger.provider;
+}
+
+/**
+ * Adapt one automation row into the landing's workflow shape.
+ *
+ * The chain is `<trigger> → plan → <outcome>`, with the outcome dropped when the row does
+ * not declare one — an invented terminal step would claim the workflow does something it
+ * does not. A row with no trigger at all yields a chain of just `plan`, which `formatChain`
+ * still renders honestly rather than as an empty string.
+ */
+export function toLandingWorkflow(item: AutomationItemLike): LandingWorkflowInput {
+  const chainKinds: string[] = [];
+  const trigger = item.triggers[0];
+  if (trigger) chainKinds.push(triggerToken(trigger));
+  chainKinds.push('plan');
+  const outcome = item.flow?.outcomeLabel?.trim();
+  if (outcome) chainKinds.push(outcome.toLowerCase());
+
+  return {
+    id: item.id,
+    label: item.label,
+    running: item.running,
+    paused: item.paused,
+    needsAttention: item.needsAttention,
+    lastAt: item.lastAt,
+    spendLabel: item.spendLabel,
+    chainKinds,
+  };
+}
+
 /** Compact relative time for the ledger's "last fired" column. */
 export function relativeSince(atMs: number, nowMs: number): string {
   const deltaMs = nowMs - atMs;

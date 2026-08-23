@@ -35,6 +35,10 @@ vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
 // the suite never shells out to systemctl; its own logic is covered in
 // restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
 vi.mock('./restart-preflight', () => ({ preflightRestartTarget: vi.fn() }));
+vi.mock('./desktop-dev-restart', () => ({
+  DESKTOP_DEV_RESOURCE: 'desktop-dev-server',
+  restartDesktopDev: vi.fn(),
+}));
 // EI-18198340374286980: the audit_log writer — asserted directly in the new
 // authorize-arg tests below, and must never make a real restart fail if it
 // throws (fire-and-forget), so every OTHER test gets a working no-op stub.
@@ -51,6 +55,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
 import { preflightRestartTarget } from './restart-preflight';
+import { restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
 
 const acquireM = vi.mocked(tryAcquireResource);
@@ -59,6 +64,7 @@ const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
 const preflightM = vi.mocked(preflightRestartTarget);
+const desktopRestartM = vi.mocked(restartDesktopDev);
 /** A boot-integrity verdict. Defaults to an inspected, clean tree. */
 const bootVerdict = (over: Record<string, unknown> = {}) =>
   ({
@@ -106,6 +112,7 @@ beforeEach(() => {
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never);
   preflightM.mockResolvedValue(bootVerdict());
+  desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   auditUnsafeM.mockClear();
   orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
 });
@@ -184,6 +191,19 @@ describe('dev:restart dry run', () => {
       expect(b.note).toMatch(/~2min/);
       expect(b.note).not.toMatch(/~13min/);
     }
+  });
+
+  it('target:desktop-dev previews the wrapper-owned listener operation without invoking systemd preflight', async () => {
+    const b = body(await call({ target: 'desktop-dev' }));
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      target: 'desktop-dev',
+      would_run: 'SIGKILL verified desktop-dev listener on :3270 (wrapper respawns it)',
+    });
+    expect(b.note).toMatch(/exclusive\(desktop-dev-server\)/);
+    expect(preflightM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
   });
 
   it('takes no lock and drains nobody on a dry run', async () => {
@@ -553,5 +573,28 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
     expect(acquireM).not.toHaveBeenCalled();
     expect(releaseM).not.toHaveBeenCalled();
     expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-dev-api.service')], expect.anything());
+  });
+
+  it('target:desktop-dev drains the named resource and signals only the verified listener child', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(7)) as never);
+    const b = body(await call({ target: 'desktop-dev', confirm: true, authorize: true, reason: 'reload desktop operator edit' }));
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'desktop-dev',
+      drained: true,
+      restarted: true,
+      listenerPid: 327001,
+      enabledVia: 'env',
+      audited: true,
+    });
+    expect(desktopRestartM).toHaveBeenCalledTimes(1);
+    expect(guardM).toHaveBeenCalledWith(
+      expect.objectContaining({ resource: 'desktop-dev-server', mode: 'exclusive' }),
+      expect.any(Function),
+    );
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    expect(details).toMatchObject({ target: 'desktop-dev', unit: 'desktop-dev-wrapper' });
   });
 });

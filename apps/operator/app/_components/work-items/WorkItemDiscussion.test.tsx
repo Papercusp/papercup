@@ -8,6 +8,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const H = vi.hoisted(() => ({
   rows: [] as Array<{ id: string }>,
@@ -82,6 +84,15 @@ afterEach(() => {
 });
 
 describe("WorkItemDiscussion", () => {
+  it("cannot flex-shrink the chat host to a border inside WorkItemDetail", () => {
+    const css = readFileSync(
+      join(__dirname, "work-item-discussion.css"),
+      "utf8",
+    );
+    const rootRule = css.match(/\.wi-discussion\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rootRule).toMatch(/flex:\s*0\s+0\s+auto/);
+  });
+
   it("reuses an existing scoped identity without mutating and forwards the full rich-chat runtime", () => {
     H.rows = [{ id: "conversation-existing" }];
     const fetchMock = vi.fn();

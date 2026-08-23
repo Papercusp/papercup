@@ -1,0 +1,306 @@
+/*
+ * adv-workflows-landing — the Workflows tab landing (the Blend).
+ *
+ * Plan: external-triggers-gmail-slack-2026-08-22 P-027 (D-018).
+ * Tokens only (--accent/--good/--warn/--bad, --fg/--fg-dim/--fg-mute, --border, --bg-raised)
+ * so the surface follows the operator theme.
+ *
+ * NOTE: no `letter-spacing` anywhere in this file. Nonzero tracking is not an approved
+ * design primitive and lint:design-primitives is a green-checkpoint leg — a single
+ * declaration reds the gate for the whole fleet. Emphasis is carried with case + weight.
+ */
+
+.pc-workflows {
+  --wfl-line: color-mix(in srgb, var(--border, #26384a), transparent 8%);
+  --wfl-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), transparent 12%);
+  --wfl-panel-2: color-mix(in srgb, var(--bg-raised, #0d1a27), white 2%);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  color: var(--fg, #e8f5ff);
+}
+
+/* ── masthead ───────────────────────────────────────────────────────────────────────── */
+
+.pc-workflows__masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pc-workflows__title {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 660;
+}
+
+.pc-workflows__install,
+.pc-workflows__linkbtn,
+.pc-workflows__needsyou-action {
+  border: 1px solid var(--wfl-line);
+  background: var(--wfl-panel);
+  color: var(--fg-dim, #a9c4da);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.pc-workflows__install:hover,
+.pc-workflows__linkbtn:hover,
+.pc-workflows__needsyou-action:hover {
+  color: var(--fg, #e8f5ff);
+  border-color: color-mix(in srgb, var(--accent, #38bdf8), transparent 55%);
+}
+
+.pc-workflows__linkbtn {
+  background: transparent;
+  font-size: 0.8rem;
+}
+
+/* ── needs-you strip (only ever rendered when non-empty) ────────────────────────────── */
+
+.pc-workflows__needsyou {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn, #fbbf24), transparent 62%);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--warn, #fbbf24), transparent 92%);
+}
+
+.pc-workflows__needsyou-lead {
+  font-weight: 660;
+  color: var(--warn, #fbbf24);
+  white-space: nowrap;
+}
+
+.pc-workflows__needsyou-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-workflows__needsyou-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+  color: var(--fg-dim, #a9c4da);
+}
+
+.pc-workflows__needsyou-item.is-bad > span:first-child { color: var(--bad, #f87171); }
+
+.pc-workflows__needsyou-action {
+  padding: 3px 10px;
+  font-size: 0.76rem;
+}
+
+/* ── composer hero ──────────────────────────────────────────────────────────────────── */
+
+.pc-workflows__hero {
+  padding: 18px;
+  border: 1px solid var(--wfl-line);
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 12% 0, color-mix(in srgb, var(--accent, #38bdf8), transparent 92%), transparent 22rem),
+    var(--wfl-panel);
+}
+
+.pc-workflows__hero-label {
+  display: block;
+  font-size: 0.98rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.pc-workflows__hero-row {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.pc-workflows__hero-input {
+  flex: 1;
+  min-width: 220px;
+  border: 1px solid var(--wfl-line);
+  border-radius: 9px;
+  background: var(--wfl-panel-2);
+  color: var(--fg, #e8f5ff);
+  padding: 9px 12px;
+}
+
+.pc-workflows__hero-input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #38bdf8), transparent 40%);
+  outline-offset: 1px;
+}
+
+.pc-workflows__hero-submit {
+  border: 1px solid color-mix(in srgb, var(--accent, #38bdf8), transparent 45%);
+  background: color-mix(in srgb, var(--accent, #38bdf8), transparent 86%);
+  color: var(--fg, #e8f5ff);
+  border-radius: 9px;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+
+.pc-workflows__hero-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.pc-workflows__chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 11px;
+}
+
+.pc-workflows__chip {
+  border: 1px dashed var(--wfl-line);
+  background: transparent;
+  color: var(--fg-mute, #6f8ba3);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.pc-workflows__chip:hover {
+  color: var(--fg-dim, #a9c4da);
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent, #38bdf8), transparent 60%);
+}
+
+/* ── sections ───────────────────────────────────────────────────────────────────────── */
+
+.pc-workflows__section {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.pc-workflows__sectionhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pc-workflows__sectionhead h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 620;
+}
+
+.pc-workflows__sectionmeta {
+  font-size: 0.8rem;
+  color: var(--fg-mute, #6f8ba3);
+}
+
+.pc-workflows__empty {
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed var(--wfl-line);
+  border-radius: 11px;
+  color: var(--fg-mute, #6f8ba3);
+  font-size: 0.84rem;
+  text-align: center;
+}
+
+/* ── active-now cards ───────────────────────────────────────────────────────────────── */
+
+.pc-workflows__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 11px;
+}
+
+.pc-workflows__card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 13px;
+  border: 1px solid var(--wfl-line);
+  border-radius: 11px;
+  background: var(--wfl-panel);
+  color: inherit;
+  cursor: pointer;
+}
+
+.pc-workflows__card:hover {
+  border-color: color-mix(in srgb, var(--accent, #38bdf8), transparent 55%);
+}
+
+.pc-workflows__card-label {
+  font-size: 0.9rem;
+  font-weight: 620;
+}
+
+.pc-workflows__card-chain {
+  font-size: 0.75rem;
+  color: var(--fg-dim, #a9c4da);
+}
+
+.pc-workflows__card-foot {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+  font-size: 0.72rem;
+  color: var(--fg-mute, #6f8ba3);
+}
+
+.pc-workflows__card-attention { color: var(--warn, #fbbf24); }
+
+/* ── ledger ─────────────────────────────────────────────────────────────────────────── */
+
+.pc-workflows__ledger {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.pc-workflows__ledger th,
+.pc-workflows__ledger td {
+  text-align: left;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--wfl-line);
+}
+
+.pc-workflows__ledger thead th {
+  color: var(--fg-mute, #6f8ba3);
+  font-weight: 600;
+  font-size: 0.76rem;
+}
+
+.pc-workflows__ledger tbody tr {
+  cursor: pointer;
+}
+
+.pc-workflows__ledger tbody tr:hover {
+  background: var(--wfl-panel);
+}
+
+.pc-workflows__ledger tbody tr.is-attention th[scope='row'] {
+  color: var(--warn, #fbbf24);
+}
+
+.pc-workflows__ledger tbody th[scope='row'] {
+  font-weight: 600;
+}
+
+.pc-workflows__more {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--fg-mute, #6f8ba3);
+}

@@ -223,6 +223,69 @@ describe('applyResultProjection — pick (structured, D-041 tier 3)', () => {
     });
   });
 
+  it('selects events:status fields from their event_inspection root', () => {
+    const eventStatus = JSON.stringify({
+      ok: true,
+      active_awaits: [{ event: 'gate:one', state: 'registered' }],
+      recent_wakes: [],
+      event_inspection: {
+        current_generation: 1,
+        current_state: 'declared',
+        waiters: [{ await_id: 7, state: 'registered' }],
+      },
+    });
+
+    const out = applyResultProjection(
+      textResult(eventStatus),
+      spec({ pick: ['event_inspection.current_generation', 'event_inspection.current_state', 'active_awaits'] }),
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({
+      active_awaits: [{ event: 'gate:one', state: 'registered' }],
+      event_inspection: { current_generation: 1, current_state: 'declared' },
+    });
+  });
+
+  it('selects work_items:get fields from nested workItem and row-level checkpoint roots', () => {
+    const workItemsGet = JSON.stringify({
+      ok: true,
+      results: [
+        {
+          ok: true,
+          id: 'EI-1',
+          workItem: { state: 'open', assignee: 'su-1', title: 'first' },
+          checkpoint: 'first checkpoint',
+        },
+        {
+          ok: true,
+          id: 'EI-2',
+          workItem: { state: 'done', assignee: null, title: 'second' },
+          checkpoint: 'second checkpoint',
+        },
+      ],
+      counts: { ok: 2 },
+    });
+
+    const out = applyResultProjection(
+      textResult(workItemsGet),
+      spec({
+        pick: [
+          'results[].id',
+          'results[].workItem.state',
+          'results[].workItem.assignee',
+          'results[].checkpoint',
+        ],
+      }),
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({
+      results: [
+        { id: 'EI-1', workItem: { state: 'open', assignee: 'su-1' }, checkpoint: 'first checkpoint' },
+        { id: 'EI-2', workItem: { state: 'done', assignee: null }, checkpoint: 'second checkpoint' },
+      ],
+    });
+  });
+
   it('pick composes into pipe — the JSON is re-rendered as greppable lines', () => {
     const out = applyResultProjection(
       textResult(body),

@@ -67,6 +67,20 @@ describe('result-door standing-context section', () => {
     expect(text).toMatch(/NOT nested in `args`/);
   });
 
+  it('teaches the real roots of the high-risk keyed envelopes', () => {
+    const text = renderResultDoorSection();
+
+    // events:status keeps exact-key inspection under event_inspection, while
+    // work_items:get nests the work-item record inside each result row and
+    // leaves checkpoint on that row. Generic roots such as event.current_state
+    // and results[].state silently match nothing and can be misread as null.
+    expect(text).toContain('event_inspection.current_generation');
+    expect(text).toContain('event_inspection.current_state');
+    expect(text).toContain('results[].workItem.state');
+    expect(text).toContain('results[].workItem.assignee');
+    expect(text).toContain('results[].checkpoint');
+  });
+
   it('never emits a literal splice marker (psu-prompt-isolation)', () => {
     expect(renderResultDoorSection()).not.toContain('<!-- PAPERCUSP-SU:');
   });

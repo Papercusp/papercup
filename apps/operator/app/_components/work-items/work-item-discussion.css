@@ -1,4 +1,5 @@
 .wi-discussion {
+  flex: 0 0 auto;
   min-width: 0;
   margin-top: 10px;
   overflow: hidden;
@@ -118,7 +119,7 @@
 }
 
 .wi-discussion__state--error {
-  color: var(--danger, #ef6b73);
+  color: var(--bad);
 }
 
 .wi-discussion__state button {

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 791,
+  "count": 792,
   "tools": [
     {
       "name": "ablation:report",
@@ -9071,7 +9071,7 @@
           "POST"
         ]
       },
-      "description": "Restart a SHARED long-running host, coordinated (drain + coalesce + audit). Targets: \"dev\" (:3070 operator, default) · \"staging\" (:3170) · \"gateway\" (:8788 — every agent's LLM egress) · \"bg-host\" (routines/git-sync) · \"embed-sidecar\" (:3384 embeddings). DRY RUN unless confirm:true; a real one needs PAPERCUSP_ALLOW_DEV_RESTART=1 or `authorize:true` (audited). All but \"dev\" DEBOUNCE (~2min; bg-host ~13min).",
+      "description": "Coordinated restart for a shared long-running host (drain/coalesce/audit). Targets: \"dev\" (:3070, default) · \"staging\" (:3170) · \"desktop-dev\" (wrapper-owned :3270) · \"gateway\" (:8788 LLM egress) · \"bg-host\" (routines/git-sync) · \"embed-sidecar\" (:3384). Dry run unless confirm:true; real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or authorize:true (audited); non-dev targets debounce (~2m; bg-host ~13m).",
       "capabilities": [
         "locks:write"
       ],
@@ -9132,8 +9132,8 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "To LOAD a code edit into a long-running host. gateway/bg-host/embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build/deploy) — a RESTART loads your edit, never wait on a deploy. Pick by what you edited: inference-gateway/** → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; operator server-side → \"staging\" (then probe :3170).",
-        "notWhen": "Just probing. A gateway restart drops in-flight LLM requests fleet-wide (read gateway:status first). ⚠ \"bg-host\" kills its WHOLE cgroup — agent spawner, desktop sidecars, in-flight pg_dump (~208 tasks); its drain is a LOCK drain, not a child drain, so blast radius = a raw systemctl (EI-19479764372783341). NEVER raw `systemctl --user restart` these units — bypasses drain + debounce (WI-4221). gateway/bg-host/embed-sidecar are REFUSED while a green-checkpoint run is live/imminent — wait, or override_gate_collision:true.",
+        "when": "Load code edits into a long-running host. desktop-dev kills only the verified wrapper-owned :3270 listener; its wrapper respawns it. gateway/bg-host/embed-sidecar run tsx from staging (no deploy); restart loads edits. Choose: desktop session → \"desktop-dev\"; inference-gateway/** → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; shared server → \"staging\" (probe :3170).",
+        "notWhen": "Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.",
         "chaining": "dry → review holders → { confirm:true, authorize:true, reason:\"<why>\", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status."
       }
     },
@@ -11406,7 +11406,7 @@
           "POST"
         ]
       },
-      "description": "Show a fleet's identity (title, description, current leader plus its liveness/vacancy signal) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 has background bees but no visible desktop members; use fleet:launch-on-plan for desktop members. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. When a launch transaction has `unconfirmedMemberIds`, `launchTransactionUnconfirmedMembers` joins those ids to the same roster presence read as `present`, `absent`, or `unknown` (a degraded presence read never becomes a false absence). Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.",
+      "description": "Show one fleet's identity, leader liveness/vacancy, and live roster. Counts split visible desktop su members (`memberCount`) from background autonomous-loop bees (`beeCount`); `runningBees` is workspace-wide, so 0 members with runningBees>0 does not mean this fleet has desktop members. Use fleet:launch-on-plan to add desktop members. Optional harness-scoped completion-integrity stats separate genuine completions from dedup churn. `launchTransactionUnconfirmedMembers` resolves `unconfirmedMemberIds` against the same presence read as present/absent/unknown; degraded reads never become false absence. Slow presence, assignments, completion-stats, or bee-count legs fail soft and return `degraded:true` plus `degradedLegs`. Fleet-scoped analog of coord:presence.",
       "capabilities": [
         "fleet:status"
       ],
@@ -23598,6 +23598,36 @@
         "when": "After reviewing a near-duplicate MERGE CLUSTER from recipes:candidates and deciding which one survives — pass the keeper as survivorId and the rest as duplicateIds to collapse the cluster into one recipe whose counts reflect all of them.",
         "notWhen": "To retire a stale one-off (recipes:sweep) or to promote a recipe to a tool (file a work-item). Do not merge recipes that are genuinely distinct just because they look similar — the dedup score is a worklist, the merge decision is yours. Inspect each script with recipes:get first.",
         "chaining": "recipes:candidates (mergeClusters) → recipes:get { id } per member to confirm they're truly duplicates → recipes:merge { survivorId, duplicateIds }."
+      }
+    },
+    {
+      "name": "recipes:revise",
+      "http": {
+        "path": "/api/agent-tools/recipes/revise",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Revise the stored source of one saved recipe WITHOUT executing it. Requires the exact current revision plus a reason, compares-and-swaps the row, preserves its binding/capability contract and execution counters, refreshes toolsUsed, and returns old/new revisions. SU-only and audited through the normal tool invocation ledger.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Correcting a known defect in a saved recipe when its historical executions must remain immutable. First inspect with recipes:get, then pass that exact authority.revision as expectedRevision.",
+        "notWhen": "To run or replay a recipe (recipes:run), create one (code:run capture), change its runtime-input contract, or overwrite a revision you did not inspect. A stale expectedRevision fails closed.",
+        "chaining": "recipes:get { id } → recipes:revise { id, expectedRevision, script, reason } → recipes:get { id }; verify the revision changed and runCount/successCount did not."
       }
     },
     {
