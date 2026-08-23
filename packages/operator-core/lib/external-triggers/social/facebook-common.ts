@@ -205,7 +205,7 @@ export function selectFacebookPageCredential(
     if (typeof row?.id !== 'string' || row.id !== pageId) continue;
     const token = typeof row.access_token === 'string' ? row.access_token.trim() : '';
     if (!token) return null;
-    const tasks = Array.isArray(row.tasks) ? row.tasks.filter((t): t is string => typeof t === 'string') : [];
+    const tasks = Array.isArray(row.tasks) ? row.tasks.filter((t: unknown): t is string => typeof t === 'string') : [];
     return { pageId, accessToken: token, tasks };
   }
   return null;
