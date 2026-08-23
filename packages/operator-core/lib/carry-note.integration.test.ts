@@ -16,6 +16,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
+// Keep the contention regression fast. The production default remains 8s; this
+// test only needs to prove the loop path installs a DB-side lock bound.
+const priorLoopLockTimeout = process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
+process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS = '100';
+
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -31,6 +36,7 @@ const {
   getCarryNote,
   getCarryJournal,
   setLoopCarryNote,
+  setLoopCarryNoteWithPrior,
   getLoopCarryNote,
   getLoopCarryNoteWithMeta,
   getLoopCarryJournal,
@@ -40,6 +46,9 @@ const {
   renderCarryNote,
   parseCarryNote,
 } = await import('./carry-note');
+
+if (priorLoopLockTimeout === undefined) delete process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
+else process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS = priorLoopLockTimeout;
 
 const CARRY_NOTES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
@@ -104,6 +113,45 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     expect(await getLoopCarryNote(LOOP)).toBeNull();
     expect((await getLoopCarryJournal(LOOP)).map((e) => e.note)).toEqual(['wake 2', 'wake 1']);
     expect(await rowCount()).toBe(1); // row lingers to hold the journal
+  });
+
+  it('bounded loop writes return a typed retryable contention error and preserve the prior note', async () => {
+    const scope = loopScope(LOOP.harness, LOOP.ownerId);
+    await setLoopCarryNote(LOOP, 'prior cold-wake anchor');
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      lockedResolve = resolve;
+    });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT note
+          FROM harness_shared.carry_notes
+         WHERE workspace_id = 'default' AND scope = ${scope}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    const startedAt = Date.now();
+    let error: unknown;
+    try {
+      await setLoopCarryNoteWithPrior(LOOP, 'blocked replacement');
+    } catch (caught) {
+      error = caught;
+    } finally {
+      release();
+      await blocker;
+    }
+
+    expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(await getLoopCarryNote(LOOP)).toBe('prior cold-wake anchor');
   });
 });
 

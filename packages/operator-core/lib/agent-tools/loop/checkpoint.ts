@@ -20,6 +20,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
@@ -71,6 +72,7 @@ import { carryProvenanceFields, retainedProvenanceText } from '../../carry-surfa
 import { detectAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 
@@ -160,7 +162,7 @@ export default defineTool({
     'blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses ' +
     "rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use " +
     "rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, " +
-    'contentHash, walls, checks }; writes verify-read.',
+    "contentHash, walls, checks }; writes verify-read. Transient PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true } instead of hanging the transport.",
   guidance: {
     when:
       "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
@@ -567,23 +569,50 @@ export default defineTool({
     // a second merge against a staler prior that could disagree with it.
     const captured: { merged?: ReturnType<typeof mergeCarryRows> } = {};
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
-    const { stored } = await setLoopCarryNoteWithPrior(
-      { harness, ownerId, workspaceId: workspaceId ?? undefined },
-      baseNote,
-      {
-        transform: (priorNote) => {
-          captured.merged = mergeCarryRows({
-            priorNote,
-            baseNote,
-            walls: effectiveWalls,
-            checks: effectiveChecks,
-            hasNoteWrite,
-            mode: rowsMode,
-          });
-          return captured.merged.note;
+    let stored: string | null;
+    try {
+      ({ stored } = await setLoopCarryNoteWithPrior(
+        { harness, ownerId, workspaceId: workspaceId ?? undefined },
+        baseNote,
+        {
+          transform: (priorNote) => {
+            captured.merged = mergeCarryRows({
+              priorNote,
+              baseNote,
+              walls: effectiveWalls,
+              checks: effectiveChecks,
+              hasNoteWrite,
+              mode: rowsMode,
+            });
+            return captured.merged.note;
+          },
         },
-      },
-    );
+      ));
+    } catch (error) {
+      // The loop carry-note is the cold successor's only durable anchor. A
+      // transient lock wait or admin-pool acquisition deadline must be visible
+      // as a retryable result, not bubble into an MCP transport timeout.
+      if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
+        const pgCode = error instanceof OrgTxnTimeoutError ? error.pgCode : undefined;
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'timeout',
+                retryable: true,
+                ...(pgCode ? { pgCode } : {}),
+                message:
+                  `loop:checkpoint carry-note write hit transient database contention: ${error.message}. ` +
+                  'No carry-note was committed; retry now.',
+              }),
+            },
+          ],
+        };
+      }
+      throw error;
+    }
 
     // WI-7124 (mirrors the work_items:checkpoint P-003 verify-read precedent,
     // fleet-deltas-leader-primitives-2026-07-10): prove the write is visible through
