@@ -159,7 +159,9 @@ export function extractDarkFlagKeys(source: string): Set<string> {
   const rest = source.slice(darkStart);
   const mapMatch = rest.match(/new Map<[^>]*>\(\[([\s\S]*?)\n\s*\]\);/);
   const body = mapMatch ? mapMatch[1] : rest;
-  return new Set([...body.matchAll(/\[FLAGS\.([A-Z0-9_]+),/g)].map((m) => m[1]));
+  return new Set(
+    [...body.matchAll(/\[\s*FLAGS\.([A-Z0-9_]+)\s*,/g)].map((m) => m[1]),
+  );
 }
 
 /** Strips quoted narrative spans + the "alpha (flags-)default-on (policy)" boilerplate

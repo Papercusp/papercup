@@ -57,6 +57,19 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     expect(extractDarkFlagKeys(src)).toEqual(new Set(['ALPHA', 'GAMMA']));
   });
 
+  it('extracts DARK_FLAGS keys when the tuple key and opening bracket span lines', () => {
+    const src = `
+export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }> =
+  new Map<FlagKey, { case: DarkCase; reason: string }>([
+    [
+      FLAGS.MULTILINE,
+      { case: 'owner-authority', reason: 'outward-facing action' },
+    ],
+  ]);
+`;
+    expect(extractDarkFlagKeys(src)).toEqual(new Set(['MULTILINE']));
+  });
+
   it('a clean, self-consistent tree (claims agree with DARK_FLAGS) reports zero mismatches', () => {
     const src = `
 export const FLAGS = {
