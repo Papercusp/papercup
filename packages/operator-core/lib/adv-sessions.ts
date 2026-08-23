@@ -1014,6 +1014,59 @@ export async function reactivateAdvSession(id: number): Promise<boolean> {
 }
 
 /**
+ * How recently a resume claim must have been taken for a LATER claimant to be
+ * treated as the loser of a live race rather than the resumer of a stale row.
+ * Comfortably longer than an agent spawn + bootstrap handshake (tens of
+ * seconds): once the resumed process is up it registers presence, and the wake
+ * executor parks on liveness long before it reaches the claim at all.
+ */
+const RESUME_CLAIM_WINDOW_SEC = 300;
+
+/**
+ * EI-21247460909447431: claim the single-winner right to RESUME an adv session.
+ *
+ * Deliberately NOT `reactivateAdvSession`. That function is a best-effort,
+ * idempotent SELF-REPORT ("I am live again") whose `false` means "already live
+ * — a harmless no-op", and its contract test pins exactly that reading. A
+ * resume CLAIM needs the opposite reading of `false` ("another writer won —
+ * do not spawn"), so a single function cannot serve both without conflating a
+ * no-op with a lost race.
+ *
+ * Two shapes of row are legitimately resumable, and the claim must admit both:
+ *   - `ended_at IS NOT NULL` — the clean-exit case.
+ *   - a row NEVER marked ended, because the process died without recording its
+ *     exit. These are not an edge case: 341 of the 469 such rows on this box
+ *     are over a day old. An `ended_at IS NOT NULL`-only predicate makes every
+ *     one of them permanently un-resumable — the wake parks forever, reporting
+ *     a race that never happened.
+ *
+ * Single-winner is preserved by the `started_at` bump rather than by the ended
+ * state: a competing resumer that just won sets `started_at = now()`, so a
+ * second claimant inside the window loses. Outside the window, a stale-active
+ * row means the previous winner's process is gone — a live one never reaches
+ * this claim, because the executor parks on liveness first — so claiming it is
+ * the correct outcome, not a double-spawn.
+ *
+ * Throws on a genuine datastore fault instead of swallowing it, so a caller can
+ * tell "could not evaluate the claim" apart from "lost the race". Returning
+ * `false` for an unreachable database would report a race that never happened.
+ */
+export async function claimAdvSessionResume(
+  id: number,
+  windowSec: number = RESUME_CLAIM_WINDOW_SEC,
+): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: number }[]>`
+    UPDATE harness_shared.adv_sessions
+       SET ended_at = NULL, exit_code = NULL, started_at = now()
+     WHERE id = ${id}
+       AND (ended_at IS NOT NULL OR started_at < now() - make_interval(secs => ${windowSec}))
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
  * WI-573 (honest-presence): reactivate a resumed session's adv row keyed by its COORD owner id,
  * for resume paths that never re-POST bootstrap-su (harness compaction, or any resume that is not
  * `psu --resume`). Called from the declared-activity presence write so the instant a live agent
