@@ -2228,7 +2228,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // omp keeps flat per-cwd transcripts under the shared sessions root — same
     // rematerialize-on-miss before the thread resume (P-008).
     if (resumeAgent === 'omp') {
-      const sid = fresh?.sessionId ?? handle.sessionId;
+      const sid = fresh?.ompThreadId ?? handle.ompThreadId;
       if (sid) {
         try {
           const have = await collectSessionFiles({ sourceKind: 'omp', sessionId: sid, sessionRoot: ompSessionsRoot() });
