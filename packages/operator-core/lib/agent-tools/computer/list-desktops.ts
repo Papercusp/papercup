@@ -8,7 +8,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { hiveDesktop, leasedHiveDesktops } from './desktop-lease';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { listDesktopSessions } from '../../desktop/desktop-session-registry';
+import { listDesktopSessions, type DesktopCapabilities } from '../../desktop/desktop-session-registry';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -52,7 +52,26 @@ export default defineTool({
       registryError = e instanceof Error ? e.message : String(e);
     }
 
-    const desktops = registryRows.map((s) => {
+    interface DesktopRow {
+      id: string | null;
+      kind: string;
+      scope: string;
+      scopeRef: string;
+      pot: string | null;
+      hostRef: string | null;
+      display: string | null;
+      width: number | null;
+      height: number | null;
+      captureWidth: number | null;
+      captureHeight: number | null;
+      state: string;
+      capabilities: DesktopCapabilities;
+      lastActiveAt: Date | null;
+      liveHandleInThisProcess: boolean;
+      registered: boolean;
+    }
+
+    const desktops: DesktopRow[] = registryRows.map((s): DesktopRow => {
       const local = s.scope === 'pot' ? localByPot.get(s.scopeRef) : undefined;
       return {
         id: s.id,
@@ -73,31 +92,46 @@ export default defineTool({
         // proof of one. `true` only when THIS process holds the handle; `false` on a
         // remote-owned or unreconciled row — never read a row alone as liveness.
         liveHandleInThisProcess: Boolean(local),
+        registered: true,
       };
     });
 
-    // Anything this process holds that the registry does not know about (a failed
-    // best-effort write, or a pre-migration lease). Surfacing it beats pretending
-    // the registry is complete.
-    const registered = new Set(
+    // Leases this process holds that the registry does not describe — a failed
+    // best-effort write, a pre-migration lease, or simply no operator database
+    // (a frame, or a unit test). These belong in the SAME list: a caller asking
+    // "what desktops exist" must not have to union two arrays to find out, and
+    // omitting them would make a locally-leased desktop invisible exactly when the
+    // registry is unavailable. They carry registered:false rather than a separate
+    // bucket, so the distinction survives without splitting the contract.
+    const registeredPots = new Set(
       registryRows.filter((s) => s.scope === 'pot').map((s) => s.scopeRef),
     );
-    const unregistered = [...localByPot.entries()]
-      .filter(([hive]) => !registered.has(hive))
-      .map(([hive, d]) => ({
+    for (const [hive, d] of localByPot) {
+      if (registeredPots.has(hive)) continue;
+      desktops.push({
+        id: null,
+        kind: 'xvfb-local',
+        scope: 'pot',
+        scopeRef: hive,
         pot: hive,
+        hostRef: null,
         display: d?.display ?? null,
         width: d?.width ?? null,
         height: d?.height ?? null,
+        captureWidth: null,
+        captureHeight: null,
+        state: 'ready',
+        capabilities: {},
+        lastActiveAt: null,
         liveHandleInThisProcess: true,
-        note: 'held in this process but absent from the registry',
-      }));
+        registered: false,
+      });
+    }
 
     return text({
       ok: true,
-      count: desktops.length + unregistered.length,
+      count: desktops.length,
       desktops,
-      ...(unregistered.length > 0 ? { unregistered } : {}),
       ...(registryError ? { registryError, degraded: 'local-only' } : {}),
     });
   },

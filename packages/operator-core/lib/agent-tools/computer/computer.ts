@@ -136,7 +136,36 @@ async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
       return { display: leased.display, width: leased.width, height: leased.height };
     }
   }
-  // 2. Process-env fallback (direct/SU/dev + frame per-slot marker).
+  // 2. P-003 (D-004): the REGISTRY. Finds a session this process does not hold in
+  //    its Map — a frame slot or a VM guest — which step 1 structurally cannot see.
+  //    Ordered AFTER the in-process lease on purpose: that Map holds the actual
+  //    child process and so remains the liveness authority, while a row is only a
+  //    CLAIM about a process. This step is therefore purely ADDITIVE — it resolves
+  //    where there was previously nothing, and never overrides a live local lease.
+  //    Best-effort: a registry outage must not take capability:computer down when
+  //    the env fallback below would still have served the caller.
+  if (hive) {
+    try {
+      const session = await resolveDesktopForScope({
+        workspaceId: activeWorkspaceId(),
+        scope: 'pot',
+        scopeRef: hive,
+      });
+      if (session) {
+        assertSandboxDisplay(session.display); // same rail as every other path: never :0
+        // D-006: the AGENT is served capture geometry, not the display geometry.
+        return {
+          display: session.display,
+          width: session.captureGeometry.width,
+          height: session.captureGeometry.height,
+        };
+      }
+    } catch {
+      /* fall through to the env path — a missing inventory is not a missing desktop */
+    }
+  }
+
+  // 3. Process-env fallback (direct/SU/dev + frame per-slot marker).
   const display = (process.env.PAPERCUSP_COMPUTER_DISPLAY ?? process.env.PAPERCUSP_AGENT_DISPLAY ?? '').trim();
   if (!display) {
     throw new Error(
@@ -197,7 +226,7 @@ export async function runComputerAction(
   args: ComputerArgs,
   ctx: ComputerCtx = {},
 ): Promise<ComputerToolResult> {
-  const target = resolveBoundDisplay(ctx); // throws loudly if no lease / refuses :0
+  const target = await resolveBoundDisplay(ctx); // throws loudly if no lease / refuses :0
   const signal = ctx.signal;
   const input = args as ComputerActionInput;
   const plan = planAction(input, target);

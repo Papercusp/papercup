@@ -33,6 +33,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
@@ -52,7 +53,7 @@ let sql: FreshPgDb['sql'];
 /** A complete, valid row; each test overrides only the field it is probing. */
 function row(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     workspace_id: WS,
     harness_slug: 'papercusp',
     kind: 'xvfb-local',
@@ -84,7 +85,7 @@ async function insert(over: Record<string, unknown> = {}): Promise<void> {
   await sql.unsafe(
     `INSERT INTO harness_shared.desktop_sessions (${cols.join(', ')})
      VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`,
-    cols.map((c) => r[c]),
+    cols.map((c) => r[c]) as never[],
   );
 }
 

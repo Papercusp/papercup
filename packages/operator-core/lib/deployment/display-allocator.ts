@@ -18,10 +18,58 @@
  * precondition (D-001: isolation matters more than universal coverage).
  */
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { activeWorkspaceId } from '../workspace-registry';
+import { registerDesktopSession, closeDesktopSession } from '../desktop/desktop-session-registry';
 
 export interface DisplayLeaseMeta {
   /** The role of the agent the display was leased for (worker/validator/…). */
   role?: string;
+  /** The agent this display is leased to — becomes the registry row's scope_ref
+   *  under scope='agent' (D-005), which is what makes the lease EXCLUSIVE by
+   *  construction rather than by every caller remembering to check. */
+  ownerId?: string;
+}
+
+/**
+ * P-003 (D-004): mirror a slot lease into the DesktopSession registry so a frame
+ * display is visible to `computer:list_desktops`, which previously could only see
+ * one operator process's Map.
+ *
+ * FIRE-AND-FORGET, and that is a design constraint rather than laziness: `acquire`
+ * is SYNCHRONOUS and sits on the agent-spawn path. Making it async to await a PG
+ * write would ripple through every caller and put a database round-trip in front of
+ * every spawn — to maintain an INVENTORY. The pool (in-process) stays the authority
+ * for what is leased; the row is bookkeeping, so it is written beside the lease and
+ * never in front of it.
+ *
+ * On a frame with no operator database this simply no-ops, which is the correct
+ * degrade: the display still leases and the spawn still proceeds.
+ */
+function mirrorSlotLease(n: number, meta: DisplayLeaseMeta | undefined, onId: (id: string) => void): void {
+  void (async () => {
+    try {
+      const session = await registerDesktopSession({
+        workspaceId: activeWorkspaceId(),
+        kind: 'frame-slot',
+        scope: 'agent',
+        scopeRef: meta?.ownerId ?? `display-${n}`,
+        leaseHolder: meta?.ownerId ?? null,
+        display: `:${n}`,
+        // A frame runs at the full 1920x1080 because the HUMAN live view wants the
+        // real thing; capture geometry defaults to 1024x768 so the agent is not
+        // silently billed ~2.6x per observation for it (D-006).
+        displayGeometry: { width: 1920, height: 1080 },
+      });
+      onId(session.id);
+    } catch {
+      /* inventory only — never block or fail a spawn on bookkeeping */
+    }
+  })();
+}
+
+function unmirrorSlotLease(id: string | undefined): void {
+  if (!id) return;
+  void closeDesktopSession(id, 'released').catch(() => {});
 }
 
 export interface DisplayLease {
@@ -68,6 +116,14 @@ export function createDisplayPool(
         inUse.set(n, { number: n, role: meta?.role, sinceMs: Date.now() });
         changed();
         let released = false;
+        let sessionId: string | undefined;
+        // Beside the lease, never in front of it — see mirrorSlotLease.
+        mirrorSlotLease(n, meta, (id) => {
+          // If release() already ran, the row arrived after teardown; close it
+          // immediately rather than leaking a live row for a returned display.
+          if (released) void closeDesktopSession(id, 'released').catch(() => {});
+          else sessionId = id;
+        });
         return {
           display: `:${n}`,
           number: n,
@@ -75,6 +131,7 @@ export function createDisplayPool(
             if (released) return;
             released = true;
             inUse.delete(n);
+            unmirrorSlotLease(sessionId);
             changed();
           },
         };
