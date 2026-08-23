@@ -6,7 +6,9 @@
  * package configs whose include globs are relative to their workspace. This router
  * discovers the owning cwd/config, asks `vitest list` what would actually execute,
  * fails before the run when any requested file matched zero tests, and then runs the
- * exact matched files. One command therefore works from any directory in the repo.
+ * exact matched files. Non-test source inputs are reported as unsupported and skipped;
+ * they are never misreported as collection failures. One command therefore works from
+ * any directory in the repo.
  *
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
@@ -255,6 +257,25 @@ export function discoverTestRoute(file, root = REPO_ROOT) {
     throw new Error(`requested test file is outside the repository: ${absolute}`);
   }
   return nonWorkspaceNodeRoute(rootRelative, absolute, root) ?? discoverVitestRoute(file, root);
+}
+
+// `test:file` accepts exact test files, not the production modules those tests import. Keep this
+// check filename-based and runner-neutral so a source path is filtered before route discovery (a
+// source file under a config-less tree may not have any test runner route at all).
+const TEST_FILE_SUFFIX_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/i;
+
+export function isTestFilePath(file) {
+  return typeof file === 'string' && TEST_FILE_SUFFIX_RE.test(file.replaceAll('\\', '/'));
+}
+
+export function formatUnsupportedTestInputs(files) {
+  const paths = files ?? [];
+  if (paths.length === 0) return null;
+  return [
+    `TEST_FILE_UNSUPPORTED_INPUT requested=${paths.length} — test:file accepts test paths only; ` +
+      'non-test source inputs are skipped and are not collection failures:',
+    ...paths.map((file) => `  ⚠ NON_TEST  ${file} — skipped; pass its importing *.test.* or *.spec.* file instead`),
+  ].join('\n');
 }
 
 export function groupRoutes(routes) {
@@ -1341,9 +1362,23 @@ export function main(argv = process.argv.slice(2)) {
     return 2;
   }
 
+  const unsupportedFiles = files.filter((file) => !isTestFilePath(file));
+  const testFiles = files.filter((file) => isTestFilePath(file));
+  const unsupportedMarker = formatUnsupportedTestInputs(unsupportedFiles);
+  if (unsupportedMarker) console.error(unsupportedMarker);
+  if (testFiles.length === 0) {
+    console.error(
+      formatRouteError(
+        'no test paths were requested after filtering unsupported non-test inputs; ' +
+          'pass a *.test.* or *.spec.* file',
+      ),
+    );
+    return 2;
+  }
+
   let routes;
   try {
-    routes = files.map((file) => discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
+    routes = testFiles.map((file) => discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
   } catch (error) {
     console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
     return 2;

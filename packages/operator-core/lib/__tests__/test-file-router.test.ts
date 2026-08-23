@@ -10,8 +10,10 @@ import {
   discoverTestRoute,
   discoverVitestRoute,
   evaluateMatch,
+  formatUnsupportedTestInputs,
   formatRouteError,
   groupRoutes,
+  isTestFilePath,
   listedFiles,
   main,
   looksLikeMidInstallCorruption,
@@ -56,6 +58,38 @@ describe('test-files router', () => {
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'papercusp-desktop'));
     expect(route.config).toBeNull();
     expect(route.requested).toBe('test/build-windows-identity.test.js');
+  });
+
+  it('classifies source modules as unsupported rather than test files', () => {
+    expect(isTestFilePath('lib/agent-tools/capability/inspect.ts')).toBe(false);
+    expect(isTestFilePath('lib/agent-tools/capability/inspect.test.ts')).toBe(true);
+    expect(isTestFilePath('papercusp-desktop/test/build-windows-identity.test.js')).toBe(true);
+    expect(formatUnsupportedTestInputs(['lib/agent-tools/capability/inspect.ts'])).toContain(
+      'NON_TEST  lib/agent-tools/capability/inspect.ts',
+    );
+  });
+
+  it('does not route source modules into Vitest collection attribution', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const code = main([
+        '--dry',
+        'packages/operator-core/lib/agent-tools/capability/inspect.ts',
+        'packages/operator-core/lib/__tests__/test-file-router.test.ts',
+      ]);
+      const errors = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      const output = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(code).toBe(0);
+      expect(errors).toContain('TEST_FILE_UNSUPPORTED_INPUT');
+      expect(errors).toContain('NON_TEST  packages/operator-core/lib/agent-tools/capability/inspect.ts');
+      expect(errors).not.toContain('TEST_FILE_COLLECTION_ATTRIBUTION');
+      expect(errors).not.toContain('BROKEN');
+      expect(output).toMatch(/TEST_FILE_DRYRUN requested=1 .*matched=1/);
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 
   it('resolves a release-trace package-relative path to its unique owning workspace', () => {
