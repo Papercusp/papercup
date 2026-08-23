@@ -360,6 +360,17 @@ registerProjectedTool({
 });
 registerProjectedTool({
   pluginName: 'gating-matrix-test',
+  description: 'test-only probe: txless target retains caller harness scope',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: [],
+  requirePrincipal: false,
+  skipWorkspaceTx: true,
+  agentRoles: ['operator'],
+  expose: { mcp: { name: 'gatingtest:txless_scope' } },
+  fn: probeFn('gatingtest:txless_scope'),
+});
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
   description: 'test-only probe: a cross_harness-prefixed tool (reads other harnesses)',
   inputSchema: { type: 'object', additionalProperties: true },
   capabilities: [],
@@ -2285,6 +2296,34 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     // A concrete workspace ⇒ the harness_app workspace tx (fakeTx), opened for ws-test.
     expect(inner?.ctx.tx).toBe(h.fakeTx);
     expect(h.withWorkspaceCalls).toContain('ws-test');
+  });
+
+  it('preserves the caller harness on a nested target (EI-21238811054889658)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:crossworkspace', args: {} },
+      superuserExtra('&workspace=ws-test&harness=papercup'),
+    );
+    expect(res.isError).not.toBe(true);
+    const inner = seen.at(-1);
+    expect(inner?.tool).toBe('gatingtest:crossworkspace');
+    expect(inner?.ctx.harnessSlug).toBe('papercup');
+  });
+
+  it('preserves the caller harness on a txless nested target (EI-21238811054889658)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:txless_scope', args: {} },
+      superuserExtra('&workspace=ws-test&harness=papercup'),
+    );
+    expect(res.isError).not.toBe(true);
+    const inner = seen.at(-1);
+    expect(inner?.tool).toBe('gatingtest:txless_scope');
+    expect(inner?.ctx.harnessSlug).toBe('papercup');
+    expect(inner?.ctx.tx).toBeUndefined();
+    expect(inner?.ctx.principal).toBeUndefined();
   });
 });
 
