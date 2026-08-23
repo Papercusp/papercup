@@ -336,6 +336,13 @@ export function buildAutomationFlows(items: readonly AutomationItem[]): Automati
   return items.filter((item) => item.kind === 'triggered-plan' && item.flow != null);
 }
 
+export function nextFutureAutomationAt(items: readonly AutomationItem[], nowMs = Date.now()): number | null {
+  return items.reduce<number | null>((current, item) => {
+    if (item.nextAt == null || item.nextAt < nowMs) return current;
+    return current == null || item.nextAt < current ? item.nextAt : current;
+  }, null);
+}
+
 export function buildAutomationItems(input: BuildAutomationModelInput): AutomationItem[] {
   const nowMs = input.nowMs ?? Date.now();
   const schedules = new Map(input.schedules.map((row) => [planKey(row.harnessSlug, row.templateSlug), row]));

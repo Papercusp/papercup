@@ -7,6 +7,7 @@ import {
   buildAutomationItems,
   buildAutomationSources,
   filterAutomationItems,
+  nextFutureAutomationAt,
   type BuildAutomationModelInput,
 } from './automations-model';
 
@@ -80,7 +81,11 @@ function fixture(): BuildAutomationModelInput {
       },
     ],
     recentRuns: [
-      { id: 'run-1', bindingId: '11111111-1111-4111-8111-111111111111', sourceKind: 'slack', eventPattern: 'ext:slack:message', planHarnessSlug: 'papercusp', planSlug: 'customer-digest', status: 'done', attempts: 1, triggeredAt: '2026-08-22T19:00:00.000Z', completedAt: '2026-08-22T19:01:00.000Z', planRunRef: 'customer-digest-run-1', error: null },
+      {
+        id: 'run-1', bindingId: '11111111-1111-4111-8111-111111111111', sourceKind: 'slack', eventPattern: 'ext:slack:message', planHarnessSlug: 'papercusp', planSlug: 'customer-digest', status: 'done', attempts: 1,
+        dedupeKey: 'slack:run-1', triggeredAt: '2026-08-22T19:00:00.000Z', startedAt: '2026-08-22T19:00:00.000Z', completedAt: '2026-08-22T19:01:00.000Z', planRunRef: 'customer-digest-run-1', error: null,
+        causeSummary: 'Slack message matched', policyDisposition: 'ran', policyDetail: 'ran', eventFilter: {}, stormPolicy: {}, redactedPayload: {}, outcomeLinks: [], timeline: [], planRun: null,
+      },
     ],
   };
   return {
@@ -173,6 +178,14 @@ describe('automations model', () => {
     expect(system?.spendLabel).toBe('$0 model spend');
     expect(filterAutomationItems(items, 'ai', '')).toEqual([ai]);
     expect(filterAutomationItems(items, 'system', 'git')).toEqual([system]);
+  });
+
+  it('uses only future timestamps for the workspace next-run metric', () => {
+    const items = buildAutomationItems(fixture()).map((item) => item.label === 'git-sync'
+      ? { ...item, nextAt: NOW - 79 * 24 * 60 * 60 * 1000 }
+      : item);
+    expect(nextFutureAutomationAt(items, NOW)).toBe(NOW + 10 * 60_000);
+    expect(nextFutureAutomationAt(items.map((item) => ({ ...item, nextAt: null })), NOW)).toBeNull();
   });
 
   it('builds Activity and Sources from the same joined data', () => {

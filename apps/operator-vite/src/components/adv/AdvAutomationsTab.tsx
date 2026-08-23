@@ -29,6 +29,7 @@ import {
   buildAutomationItems,
   buildAutomationSources,
   filterAutomationItems,
+  nextFutureAutomationAt,
   relativeTime,
   type AutomationActivityItem,
   type AutomationFilter,
@@ -337,7 +338,7 @@ export default function AdvAutomationsTab() {
   const loading = catalogQuery.loading || plansQuery.loading || schedulesQuery.loading;
   const attentionCount = items.filter((item) => item.needsAttention).length;
   const runningCount = items.filter((item) => item.running).length;
-  const nextAt = items.reduce<number | null>((current, item) => item.nextAt != null && (current == null || item.nextAt < current) ? item.nextAt : current, null);
+  const nextAt = nextFutureAutomationAt(items);
 
   return (
     <section className="pc-automations" aria-label="Automations">
