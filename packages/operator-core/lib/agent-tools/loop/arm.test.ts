@@ -460,6 +460,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
       firstSeenAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
+    // A workspace with no formal home still uses the durable coord:orient scope.
+    homePotM.mockResolvedValueOnce(null);
     mockReturnOnceTyped(potHomeM, 'oriented-harness');
     const out = await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
@@ -467,9 +469,43 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     ) as Out;
     const b = body(out);
     expect(briefM).toHaveBeenCalledWith({ ownerId: 'su-caller-own-id' });
-    expect(homePotM).not.toHaveBeenCalled();
+    expect(homePotM).toHaveBeenCalledWith('ws-1');
     expect(b).toMatchObject({ ok: true, loop: { harness: 'oriented-harness' } });
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'oriented-harness' }));
+  });
+
+  it('EI-21280482685800432: workspace home beats a stale session brief for a wildcard Codex member', async () => {
+    briefM.mockResolvedValue({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+      ownerLabel: 'su · caller',
+      source: 'stale-session',
+      intent: 'previous devboard work',
+      currentPlanSlug: null,
+      currentFiles: [],
+      ambientExcludedRefs: null,
+      harnessSlug: 'sb-devboard-hive',
+      potSlug: null,
+      goalId: null,
+      nativeSessionId: null,
+      lifecycle: null,
+      firstSeenAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    homePotM.mockResolvedValueOnce('papercusp');
+    mockReturnOnceTyped(potHomeM, 'papercusp');
+
+    const out = await tool.handler(
+      { intervalSec: 120, goal: 'continue the papercusp fleet lane' } as never,
+      { harnessSlug: '*', workspaceId: 'ws-1' } as never,
+    ) as Out;
+    const b = body(out);
+
+    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(briefM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(b.loop.harness).not.toBe('sb-devboard-hive');
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
   });
 
   it('EI-20245033088778955: reuses an existing routine install scope through a wildcard tools:invoke context', async () => {

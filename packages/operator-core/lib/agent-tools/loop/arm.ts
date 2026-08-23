@@ -582,22 +582,17 @@ export default defineTool({
     };
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
-    if (onlyWorkspaceScope) {
-      // EI-20211399000978706: coord:orient/declare-intent already persists the
-      // caller's concrete harness on its durable session brief. Treat that as
-      // session scope before falling back to the workspace home pot; otherwise
-      // loop:arm forgets scope learned one call earlier and makes the caller
-      // redundantly repeat `harness` (or fails no_harness when no home exists).
-      // Explicit args and a concrete request ctx still win by construction:
-      // this branch runs only when both are absent/wildcard.
-      const brief = await getSessionBrief({ ownerId }).catch(() => null);
-      if (isConcreteHarness(brief?.harnessSlug)) {
-        harness = resolvePotHomeSlug(brief!.harnessSlug!, undefined);
-      }
-    }
-    if (onlyWorkspaceScope && !harness && isConcreteHarness(prior?.harnessSlug)) {
+    // EI-20245033088778955: an ACTIVE routine's install scope is authoritative
+    // for a wildcard re-arm. It is the scope the existing wake marker and cold
+    // carry reader already use, so changing it mid-loop would split one loop
+    // across harness namespaces.
+    if (onlyWorkspaceScope && isConcreteHarness(prior?.harnessSlug)) {
       harness = resolvePotHomeSlug(prior!.harnessSlug!, undefined);
     }
+    // A wildcard operator session means "this workspace", not "whatever harness
+    // the last session brief happened to retain". Resolve the formal workspace
+    // home before consulting the populate-once brief; the latter can be stale
+    // after a Codex member is relaunched into a different harness (EI-212804...).
     if (onlyWorkspaceScope && !harness) {
       try {
         const home = await resolveHomePotSlug(workspaceId);
@@ -607,6 +602,16 @@ export default defineTool({
         // the registry is temporarily unreadable, preserve the older env/ctx
         // fallback and let the existing no_harness response explain the gap.
         harness = null;
+      }
+    }
+    // EI-20211399000978706: retain the durable coord:orient/declare-intent
+    // scope as a fallback for workspaces without a formal home pot. Explicit
+    // args, concrete request context, an active routine, and the workspace home
+    // all win by construction above.
+    if (onlyWorkspaceScope && !harness) {
+      const brief = await getSessionBrief({ ownerId }).catch(() => null);
+      if (isConcreteHarness(brief?.harnessSlug)) {
+        harness = resolvePotHomeSlug(brief!.harnessSlug!, undefined);
       }
     }
     harness ??= resolvePotHomeSlug(args.harness, ctx.harnessSlug);
