@@ -2220,20 +2220,43 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     expect((await wi.claimWorkItem(reserved.id, 'bee-y', { harness: 'papercup' }))?.id).toBe(reserved.id);
   });
 
-  it('a plan-lane-reserved feature whose PLAN is not active drains normally (no over-exclusion)', async () => {
-    // NB: 'paused' here is written to the LIFECYCLE `status` column, where it is not a real
-    // value — the operational paused state is `op_status` (covered by the EI-19409397800537963
-    // block below). What this asserts is the anti-starvation property: a plan row that is
-    // neither lifecycle-active nor operationally started/paused reserves nothing.
+  it('a plan-lane-reserved feature on a READY plan with no operation drains normally', async () => {
+    // A ready plan with NULL op_status is the free ordinary-plan control. The lifecycle
+    // draft/paused/active states below are owner-controlled and must remain reserved.
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
-                 VALUES ('default', 'papercup', 'wi-5343-paused-plan', 'paused')`;
+                 VALUES ('default', 'papercup', 'wi-5343-ready-plan', 'ready')`;
     const item = await wi.createWorkItem({
-      kind: 'feature', title: 'paused-lane feature', harness: 'papercup', createdBy: 'agA',
-      payload: { plan_item: { plan_slug: 'wi-5343-paused-plan', item_id: 'P-1' } },
+      kind: 'feature', title: 'ready-lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'wi-5343-ready-plan', item_id: 'P-1' } },
     });
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     expect(list.some((w) => w.id === item.id)).toBe(true);
     expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-z' }))?.id).toBe(item.id);
+  });
+
+  it.each(['draft', 'paused'] as const)('RESERVES an item on an ordinary lifecycle-%s plan', async (status) => {
+    const planSlug = `wi-5343-lifecycle-${status}`;
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', ${planSlug}, ${status})`;
+    const item = await wi.createWorkItem({
+      kind: 'feature', title: `${status} lifecycle lane feature`, harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: planSlug, item_id: 'P-1' } },
+    });
+
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: `bee-${status}` })).toBeNull();
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === item.id)).toBe(false);
+  });
+
+  it('does NOT reserve an item on a READY plan whose operation is DONE', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
+                 VALUES ('default', 'papercup', 'wi-5343-done-plan', 'ready', 'done')`;
+    const item = await wi.createWorkItem({
+      kind: 'feature', title: 'done-operation lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'wi-5343-done-plan', item_id: 'P-1' } },
+    });
+
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-done' }))?.id).toBe(item.id);
   });
 });
 
