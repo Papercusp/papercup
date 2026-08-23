@@ -244,10 +244,38 @@ import tool, {
   MEMBER_BASELINE_RULES,
   LEADER_STANDING_JOB,
   LEADER_AUTO_MODE_DIRECTIVE,
+  LAUNCH_RESPONSE_DEADLINE_MS,
+  raceLaunchResponseWithinBudget,
 } from '../launch-on-plan';
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
 import { standardValidate } from '@papercusp/tooldef';
+
+describe('fleet:launch-on-plan bounded response race (EI-21200981774877112)', () => {
+  it('returns a pending response at the deadline without cancelling detached completion', async () => {
+    let finish!: () => void;
+    let completed = false;
+    const operation = new Promise<string>((resolve) => {
+      finish = () => {
+        completed = true;
+        resolve('verified');
+      };
+    });
+
+    const response = await raceLaunchResponseWithinBudget(operation, 5);
+
+    expect(response).toEqual({ timedOut: true });
+    expect(completed).toBe(false);
+    finish();
+    await expect(operation).resolves.toBe('verified');
+  });
+
+  it('keeps a fast completion on the caller response path', async () => {
+    const response = await raceLaunchResponseWithinBudget(Promise.resolve('verified'), LAUNCH_RESPONSE_DEADLINE_MS);
+
+    expect(response).toEqual({ timedOut: false, value: 'verified' });
+  });
+});
 
 describe('memberSpecIndexForLaunch', () => {
   it('keeps first-launch specs zero-based', () => {
@@ -1861,6 +1889,56 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.launchTransaction.unconfirmedMemberIds).toEqual([payload.launchTransaction.openedMemberIds[0]]);
     expect(payload.launchTransaction.openedMemberIds).toHaveLength(5);
     expect(payload.launchTransaction.recovery.retryOwnerIds).toEqual([payload.launchTransaction.openedMemberIds[0]]);
+  });
+
+  it('returns a durable pending handle before a slow verifier settles, then persists the detached result', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveVerification!: (value: {
+        agentStarted: boolean;
+        waitedMs: number;
+        sessions: never[];
+        note: string;
+      }) => void;
+      const verification = new Promise<{
+        agentStarted: boolean;
+        waitedMs: number;
+        sessions: never[];
+        note: string;
+      }>((resolve) => {
+        resolveVerification = resolve;
+      });
+      launchTransaction.verify.mockReturnValue(verification);
+
+      const responsePromise = tool.handler(
+        { name: 'Bounded Response Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+        {} as never,
+      );
+      await vi.advanceTimersByTimeAsync(LAUNCH_RESPONSE_DEADLINE_MS);
+
+      const response = await responsePromise;
+      const payload = JSON.parse((response as any).content[0].text);
+      expect(payload.completionPending).toBe(true);
+      expect(payload.completionHandle).toMatchObject({
+        transactionId: payload.launchTransaction.transactionId,
+        fleet: 'bounded-response-fleet',
+        status: 'pending',
+      });
+      expect(payload.launchTransaction.state).toBe('launching');
+      expect(payload.message).toContain('continues in the background');
+
+      resolveVerification({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
+      await vi.advanceTimersByTimeAsync(0);
+      const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
+        transaction: { transactionId: string; state: string };
+      };
+      expect(persisted.transaction).toMatchObject({
+        transactionId: payload.launchTransaction.transactionId,
+        state: 'verified',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a SLOW canary that verifies on the bounded re-probe opens the cohort (the measured EI-20437060078324174 shape)', async () => {
