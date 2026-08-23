@@ -44,20 +44,23 @@ describe('EI-16466 — verify-tauri-headless display picker skips stale leaked X
 
   it('the auto-pick loop treats a stale /tmp/.X11-unix socket file as occupied, not just a live xdpyinfo probe', () => {
     const loop = src.match(
-      /while DISPLAY=":\$DISPLAY_NUM" xdpyinfo >\/dev\/null 2>&1[\s\S]*?\n\s*done/,
+      /while x_display_taken "\$DISPLAY_NUM"; do[\s\S]*?\n\s*done/,
     )?.[0];
     expect(loop).toBeTruthy();
-    // The exact fix: OR in a stale-socket-file check alongside the live-server probe.
-    expect(loop).toMatch(/\|\|\s*\[\s*-S\s*"\/tmp\/\.X11-unix\/X\$DISPLAY_NUM"\s*\]/);
+    // The exact fix: the picker delegates occupancy to a predicate that includes
+    // both the live-server probe and stale socket files.
+    expect(loop).toContain('x_display_taken "$DISPLAY_NUM" || break');
+    expect(src).toContain('[ -S "/tmp/.X11-unix/X$1" ] && return 0');
   });
 
-  it('the pre-fix bug is gone: the loop condition is not the live-probe alone', () => {
-    // Would match the old, insufficient condition with nothing else on the same
-    // `while` line/expression — i.e. no `-S` stale-socket check anywhere in it.
-    const loopLine = src.split('\n').find((l) => l.includes('while DISPLAY=":$DISPLAY_NUM" xdpyinfo'));
+  it('the pre-fix bug is gone: the loop delegates occupancy to the shared predicate', () => {
+    const loopLine = src.split('\n').find((l) => l.includes('while x_display_taken "$DISPLAY_NUM"'));
     expect(loopLine).toBeTruthy();
-    expect(loopLine).toContain('-S');
-    expect(loopLine).toContain('/tmp/.X11-unix/X$DISPLAY_NUM');
+    expect(loopLine).not.toContain('xdpyinfo');
+    const taken = src.match(/x_display_taken\(\)\s*\{[\s\S]*?\n\}/)?.[0];
+    expect(taken).toBeTruthy();
+    expect(taken).toContain('xdpyinfo');
+    expect(taken).toContain('[ -S "/tmp/.X11-unix/X$1" ] && return 0');
   });
 
   it('picker still starts at :90 and walks forward past any occupied number', () => {
