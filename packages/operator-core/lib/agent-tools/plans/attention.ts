@@ -70,6 +70,12 @@ import { readTriageByWorkspace } from "../../attention/triage-store";
 import { shapePlansAttention } from "./attention-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { conversationsScopeWorkspace } from "../coordination/conversations";
+import {
+  classifyReadActionability,
+  resolveSessionStates,
+  type LivenessSubject,
+  type LivenessVerdict,
+} from "../coordination/liveness-oracle";
 import { runWithWorkspace } from "../../workspace-als";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { ownerAttentionSourcesFor, type OwnerAttentionSource } from "../../interest-profiles";
@@ -703,6 +709,8 @@ export default defineTool({
                     ref: w.ref ?? null,
                     waitingHours: w.waitingHours,
                     status: w.status,
+                    actionability: w.actionability,
+                    livenessState: w.livenessState,
                   }),
                   // A wall has no stored timestamp, but waitingHours is how long
                   // it has been open — derive when it was raised.
@@ -761,10 +769,28 @@ export default defineTool({
                 order: "oldest",
                 limit: 100,
               });
+              const gateOwners = [
+                ...new Set(
+                  gates
+                    .map((g) => g.owner_id)
+                    .filter((ownerId): ownerId is string => Boolean(ownerId)),
+                ),
+              ];
+              let gateVerdicts = new Map<string, LivenessVerdict>();
+              if (gateOwners.length > 0) {
+                try {
+                  const subjects: LivenessSubject[] = gateOwners.map((ownerId) => ({ ownerId }));
+                  gateVerdicts = await resolveSessionStates(subjects, { hydratePerId: true });
+                } catch {
+                  // Preserve pending rows as unknown rather than turning a
+                  // liveness read failure into a false owner decision.
+                }
+              }
               const now = Date.now();
               for (const g of gates) {
                 if (harnessFilter && g.harness_slug && g.harness_slug !== harnessFilter)
                   continue;
+                const verdict = g.owner_id ? gateVerdicts.get(g.owner_id) : undefined;
                 const openedMs = g.opened_at
                   ? new Date(g.opened_at).getTime()
                   : null;
@@ -780,6 +806,8 @@ export default defineTool({
                     ownerAgentId: g.owner_id,
                     harnessSlug: resolveHarness(g.harness_slug, null),
                     waitingHours,
+                    actionability: classifyReadActionability(verdict?.sessionState),
+                    livenessState: verdict?.sessionState ?? null,
                   }),
                   occurredAt: toIsoOrNull(g.opened_at ?? null),
                 });
