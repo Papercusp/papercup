@@ -78,6 +78,7 @@ import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
+import { DESKTOP_DEV_RESOURCE, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { checkGateCollision, isGateSensitiveTarget } from '../../release/gate-collision-guard';
 
@@ -120,7 +121,7 @@ const GATEWAY_COOLDOWN_SEC = 120;
  */
 const BG_HOST_COOLDOWN_SEC = 13 * 60; // 780s
 
-type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
+type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'desktop-dev';
 
 /**
  * Exported for the registry-parity regression test. A target added here is
@@ -155,6 +156,13 @@ export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: st
     resource: 'embed-sidecar',
     cooldownResource: 'embed-sidecar-cooldown',
     blastRadius: 'the shared embedding sidecar (:3384) — semantic search / memory recall degrade until it is back',
+  },
+  'desktop-dev': {
+    // This is a wrapper label, not a systemd unit. The target branch below
+    // validates and signals the wrapper-owned :3270 listener directly.
+    unit: 'desktop-dev-wrapper',
+    resource: DESKTOP_DEV_RESOURCE,
+    blastRadius: 'the owner-visible :3270 desktop dev operator (the wrapper respawns its listener child)',
   },
 };
 
@@ -220,10 +228,10 @@ async function writeRestartAudit(
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit). Targets: "dev" (:3070 operator, default) · "staging" (:3170) · "gateway" (:8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; a real one needs PAPERCUSP_ALLOW_DEV_RESTART=1 or `authorize:true` (audited). All but "dev" DEBOUNCE (~2min; bg-host ~13min).',
+    'Coordinated restart for shared long-running host (drain/coalesce/audit). Targets: "dev" (:3070, default) · "staging" (:3170) · "desktop-dev" (wrapper-owned :3270) · "gateway" (:8788 LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384). Dry run unless confirm:true; real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or authorize:true (audited); non-dev targets debounce (~2m; bg-host ~13m).',
   guidance: {
-    when: 'To LOAD a code edit into a long-running host. gateway/bg-host/embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build/deploy) — a RESTART loads your edit, never wait on a deploy. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170).',
-    notWhen: 'Just probing. A gateway restart drops in-flight LLM requests fleet-wide (read gateway:status first). ⚠ "bg-host" kills its WHOLE cgroup — agent spawner, desktop sidecars, in-flight pg_dump (~208 tasks); its drain is a LOCK drain, not a child drain, so blast radius = a raw systemctl (EI-19479764372783341). NEVER raw `systemctl --user restart` these units — bypasses drain + debounce (WI-4221). gateway/bg-host/embed-sidecar are REFUSED while a green-checkpoint run is live/imminent — wait, or override_gate_collision:true.',
+    when: 'Load code edits into a long-running host. desktop-dev kills only the verified wrapper-owned :3270 listener; its wrapper respawns it. gateway/bg-host/embed-sidecar run tsx from staging (no deploy); restart loads edits. Choose: desktop session → "desktop-dev"; inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; shared server → "staging" (probe :3170).',
+    notWhen: 'Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.',
     chaining: 'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
     seeAlso: [
       'dev:service_health (check what is down first)',
@@ -245,7 +253,7 @@ export default defineTool({
   args: z.object({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
-    target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar']).optional(),
+    target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'desktop-dev']).optional(),
     /** EI-18198340374286980: in-band alternative to the operator-process-env
      *  PAPERCUSP_ALLOW_DEV_RESTART=1 gate, which an agent cannot set for a
      *  server it did not itself spawn. Only takes effect with confirm:true —
@@ -298,13 +306,24 @@ export default defineTool({
     // but fleet/spawner-sidecar-spawn.ts:194 uses a raw spawn(…,{detached:false})
     // and inherits this cgroup. Do NOT "fix" this by widening the drain — a lock
     // drain cannot reach a child process. Fix the spawn site.
-    const restartCmd = `systemctl --user restart ${cfg.unit}`;
+    const restartCmd = target === 'desktop-dev'
+      ? 'SIGKILL verified desktop-dev listener on :3270 (wrapper respawns it)'
+      : `systemctl --user restart ${cfg.unit}`;
     // EI-13307: per-target, not global — computed up front so both the
     // dry-run note and the real debounce path below quote the SAME window.
     const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
 
     // Dry run — ctx-free, takes no lock, drains nobody.
     if (!args.confirm) {
+      if (target === 'desktop-dev') {
+        return json({
+          ok: true,
+          dry_run: true,
+          target,
+          would_run: restartCmd,
+          note: 'Pass confirm:true to acquire exclusive(desktop-dev-server), drain current users, verify the owner-visible :3270 listener is the desktop-dev hono-host under dev-operator-ifneeded.sh, then SIGKILL only that child so the wrapper respawns it. The wrapper and unrelated processes are never signaled. confirm:true alone is not enough — pass authorize:true + a short reason, or set PAPERCUSP_ALLOW_DEV_RESTART=1.',
+        });
+      }
       const cooldownNote = cfg.cooldownResource
         ? ` If a peer restarted this target within the last ~${Math.round(cooldownSec / 60)}min, the restart is coalesced (skipped) instead of re-run.${
             target === 'bg-host'
@@ -397,8 +416,8 @@ export default defineTool({
     // Soft block, mirroring override_gate_collision: a genuinely wedged host whose remedy
     // IS the restart must stay restartable via override_boot_integrity. Fails OPEN — an
     // unreadable tree reports checked:false and proceeds, and is NEVER treated as clean.
-    const bootIntegrity = await preflightRestartTarget(target);
-    if (!bootIntegrity.ok && args.override_boot_integrity !== true) {
+    const bootIntegrity = target === 'desktop-dev' ? null : await preflightRestartTarget(target);
+    if (bootIntegrity && !bootIntegrity.ok && args.override_boot_integrity !== true) {
       return json({
         ok: false,
         target,
@@ -570,6 +589,43 @@ export default defineTool({
             fence_seq: fence.seq,
             live_fence_seq: fc.live_fence_seq,
             note: `Restart ABORTED — our exclusive(${cfg.resource}) lease was superseded while we held it. Re-acquire before retrying.`,
+          });
+        }
+        if (target === 'desktop-dev') {
+          const desktopRestart = await restartDesktopDev();
+          if (!desktopRestart.ok) {
+            await releaseCooldownOnAbort();
+            return json({
+              ok: false,
+              target,
+              drained: true,
+              restarted: false,
+              reason: desktopRestart.reason ?? 'desktop_dev_restart_failed',
+              ...(desktopRestart.pid === undefined ? {} : { listenerPid: desktopRestart.pid }),
+              note: desktopRestart.note,
+            });
+          }
+          void writeRestartAudit(ownerId, {
+            target,
+            unit: cfg.unit,
+            viaEnv: enabledByEnv,
+            viaAuthorizeArg: enabledByArg,
+            reason: args.reason ?? null,
+            fenceSeq: fence.seq,
+            phantomCoalesceBroken: false,
+            gateCollision: null,
+          });
+          return json({
+            ok: true,
+            target,
+            drained: true,
+            restarted: true,
+            listenerPid: desktopRestart.pid,
+            fence_seq: fence.seq,
+            enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+            audited: true,
+            verifyWith: 'dev:listening_ports { port: 3270 } (expect a new owner-visible hono-host listener under dev-operator-ifneeded.sh)',
+            note: desktopRestart.note,
           });
         }
         // EI-11137: capture the pre-restart MainPID so the caller can VERIFY a
