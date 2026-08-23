@@ -461,11 +461,7 @@ export interface EscalationRerouteDriver {
   fleetSlug: string | null;
 }
 
-export type EscalationRerouteReason =
-  | 'author-fleet-leader'
-  | 'author-fleet-member'
-  | 'same-plan'
-  | 'same-harness';
+export type EscalationRerouteReason = 'author-fleet-leader' | 'author-fleet-member' | 'same-plan' | 'same-harness';
 
 export interface EscalationRerouteSelection {
   escalation: EscalationRerouteInput;
@@ -520,33 +516,29 @@ export function selectEscalationSlaReroutes(
     const authorFleet = author?.fleetSlug ?? null;
     const planSlug = concrete(escalation.plan_slug) ?? author?.currentPlanSlug ?? null;
     const harnessSlug =
-      concrete(escalation.harness_slug) ??
-      concrete(escalation.harnessSlug) ??
-      author?.potSlug ??
-      null;
+      concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? author?.potSlug ?? null;
 
     const ranked = roster
       .filter(
-        (candidate) =>
-          candidate.ownerId !== from &&
-          candidate.sessionState === 'live' &&
-          candidate.agentRole === 'su',
+        (candidate) => candidate.ownerId !== from && candidate.sessionState === 'live' && candidate.agentRole === 'su',
       )
-      .map((candidate): { candidate: EscalationRerouteDriver; rank: number; reason: EscalationRerouteReason } | null => {
-        if (authorFleet && leaderByFleet.get(authorFleet) === candidate.ownerId) {
-          return { candidate, rank: 0, reason: 'author-fleet-leader' };
-        }
-        if (authorFleet && candidate.fleetSlug === authorFleet) {
-          return { candidate, rank: 1, reason: 'author-fleet-member' };
-        }
-        if (planSlug && candidate.currentPlanSlug === planSlug) {
-          return { candidate, rank: 2, reason: 'same-plan' };
-        }
-        if (harnessSlug && candidate.potSlug === harnessSlug) {
-          return { candidate, rank: 3, reason: 'same-harness' };
-        }
-        return null;
-      })
+      .map(
+        (candidate): { candidate: EscalationRerouteDriver; rank: number; reason: EscalationRerouteReason } | null => {
+          if (authorFleet && leaderByFleet.get(authorFleet) === candidate.ownerId) {
+            return { candidate, rank: 0, reason: 'author-fleet-leader' };
+          }
+          if (authorFleet && candidate.fleetSlug === authorFleet) {
+            return { candidate, rank: 1, reason: 'author-fleet-member' };
+          }
+          if (planSlug && candidate.currentPlanSlug === planSlug) {
+            return { candidate, rank: 2, reason: 'same-plan' };
+          }
+          if (harnessSlug && candidate.potSlug === harnessSlug) {
+            return { candidate, rank: 3, reason: 'same-harness' };
+          }
+          return null;
+        },
+      )
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
       .sort((a, b) => a.rank - b.rank || a.candidate.ownerId.localeCompare(b.candidate.ownerId));
 
@@ -584,18 +576,12 @@ async function readEscalationResponseMarkers(msgIds: readonly string[]): Promise
          AND body ? 'related_msg_id'
          AND body->>'related_msg_id' = ANY(${ids})
     `;
-    return new Set(
-      rows
-        .map((row) => row.related_msg_id)
-        .filter((id): id is string => typeof id === 'string'),
-    );
+    return new Set(rows.map((row) => row.related_msg_id).filter((id): id is string => typeof id === 'string'));
   } catch {
     const idSet = new Set(ids);
     const lines = await coordLog.readLines('messages');
     return new Set(
-      lines
-        .map((line) => line.related_msg_id)
-        .filter((id): id is string => typeof id === 'string' && idSet.has(id)),
+      lines.map((line) => line.related_msg_id).filter((id): id is string => typeof id === 'string' && idSet.has(id)),
     );
   }
 }
@@ -674,12 +660,14 @@ export async function rerouteUnackedEscalationsOnce(
     fleetSlug: membership.get(p.ownerId)?.fleetSlug ?? null,
   }));
   const authorIds = new Set(unmarked.map((e) => concrete(e.from)).filter((id): id is string => id !== null));
-  const authorFleets = [...new Set(
-    roster
-      .filter((r) => authorIds.has(r.ownerId))
-      .map((r) => r.fleetSlug)
-      .filter((slug): slug is string => slug !== null),
-  )];
+  const authorFleets = [
+    ...new Set(
+      roster
+        .filter((r) => authorIds.has(r.ownerId))
+        .map((r) => r.fleetSlug)
+        .filter((slug): slug is string => slug !== null),
+    ),
+  ];
   const fleetRows = await Promise.all(
     authorFleets.map(async (slug) => [slug, await getFleetFn(workspaceId, slug).catch(() => null)] as const),
   );
@@ -710,8 +698,7 @@ export async function rerouteUnackedEscalationsOnce(
           'escalation open: only the human resolution path is authoritative.',
         plan_slug: concrete(escalation.plan_slug) ?? undefined,
         related_msg_id: escalation.msg_id,
-        harnessSlug:
-          concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
+        harnessSlug: concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
         extra: {
           auto: true,
           lifecycle: 'escalation-sla-reroute',
