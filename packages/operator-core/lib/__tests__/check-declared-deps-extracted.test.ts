@@ -33,10 +33,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import { findUnextractedDeps, findUnextractedDepsWithRetry, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
+import {
+  RUNTIME_CONTENT_PROBES,
+  findUnextractedDeps,
+  findUnextractedDepsWithRetry,
+  findUnusableRuntimeDeps,
+  findUnusableRuntimeDepsWithRetry,
+  resolveRuntimeContentProbes,
+  resolveWorkspaceDirs,
+  resolvesOnDisk,
+} from '../../../../scripts/check-declared-deps-extracted.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
-import { normalizeNpmArgs, parseCliArgs, repoLockName, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+import {
+  normalizeNpmArgs,
+  parseCliArgs,
+  repoLockName,
+  runCommandUnderInstallMutex,
+  verifyDepsExtracted,
+} from '../../../../scripts/npm-install-safe.mjs';
 
 const made: string[] = [];
 afterEach(() => {
@@ -179,6 +194,81 @@ describe('retry absorbs a filesystem-sync race but not a real miss (WI-5769 retr
   });
 });
 
+describe('runtime-content probes catch partial packages that directory checks cannot (EI-21252116452570853)', () => {
+  it('selects probes from the locked graph and flags missing entrypoint/transitive/native content', () => {
+    const root = fixture({
+      packages: {
+        'apps/operator': {
+          dependencies: { '@modelcontextprotocol/sdk': '^1', hono: '^4' },
+        },
+      },
+      extracted: {
+        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native'],
+      },
+    });
+    writeFileSync(
+      join(root, 'package-lock.json'),
+      JSON.stringify({
+        packages: Object.fromEntries(
+          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native'].map(
+            (name) => [`node_modules/${name}`, {}],
+          ),
+        ),
+      }),
+    );
+
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]); // old directory-only verdict
+    expect(resolveRuntimeContentProbes(root)).toEqual(RUNTIME_CONTENT_PROBES);
+
+    const writePackage = (name: string, pkg: object, files: Record<string, string> = {}) => {
+      const dir = join(root, 'node_modules', name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg));
+      for (const [rel, content] of Object.entries(files)) {
+        mkdirSync(join(dir, rel, '..'), { recursive: true });
+        writeFileSync(join(dir, rel), content);
+      }
+    };
+
+    // Every package DIRECTORY exists. Their real entrypoint/import graph is what is
+    // truncated: SDK -> missing zod entry, hono/rocksdb -> missing dist/binding,
+    // and node-pty -> missing selected platform payload.
+    writePackage(
+      '@modelcontextprotocol/sdk',
+      { type: 'module', exports: { './client/index.js': './dist/client.js' } },
+      { 'dist/client.js': "import 'zod-to-json-schema'; export const Client = {};" },
+    );
+    writePackage('zod-to-json-schema', { type: 'module', exports: './dist/esm/index.js' });
+    writePackage('hono', { type: 'module', exports: './dist/cjs/index.js' });
+    writePackage(
+      '@lydell/node-pty',
+      { type: 'module', exports: './index.js' },
+      { 'index.js': "import '@lydell/node-pty-linux-x64'; export const fork = () => {};" },
+    );
+    writePackage('rocksdb-native', { type: 'module', exports: './binding.js' });
+
+    const failures = findUnusableRuntimeDeps({ repoRoot: root });
+    expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
+    for (const failure of failures) expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
+  });
+
+  it('retries a real import so a filesystem-settle race does not become a false failure', async () => {
+    let calls = 0;
+    const result = await findUnusableRuntimeDepsWithRetry({
+      repoRoot: '/fixture',
+      probeSpecifiers: ['hono'],
+      attempts: 3,
+      delayMs: 0,
+      deps: {
+        sleep: async () => {},
+        probeRuntimeImport: () => (++calls === 1 ? { ok: false, detail: 'dist entry settling' } : { ok: true }),
+      },
+    });
+    expect(result).toEqual({ failures: [], attempts: 2 });
+    expect(calls).toBe(2);
+  });
+});
+
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
   it('returns 0 without repairing when every declared dep resolves', async () => {
     const root = fixture({
@@ -236,6 +326,55 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     expect(status).toBe(1);
     expect(calls).toHaveLength(1); // ONE bounded repair, not a loop
   });
+
+  it('repairs when package directories exist but a critical runtime import is incomplete', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/operator': { dependencies: { hono: '^4' } } },
+      extracted: { '': ['hono'] },
+    });
+    let runtimeHealthy = false;
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      probeSpecifiers: ['hono'],
+      runNpm: (args: string[]) => {
+        calls.push(args);
+        runtimeHealthy = true;
+        return 0;
+      },
+      deps: {
+        sleep: async () => {},
+        probeRuntimeImport: () =>
+          runtimeHealthy ? { ok: true } : { ok: false, detail: 'MODULE_NOT_FOUND: hono/dist/cjs/index.js' },
+      },
+    });
+    expect(status).toBe(0);
+    expect(calls).toEqual([['install', '--legacy-peer-deps']]);
+  });
+
+  it('fails immediately when the bounded repair exits nonzero, even if later spot probes could pass', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/operator': { dependencies: { hono: '^4' } } },
+      extracted: { '': ['hono'] },
+    });
+    let calls = 0;
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      probeSpecifiers: ['hono'],
+      runNpm: () => {
+        calls += 1;
+        return 217; // observed ENOTEMPTY terminal
+      },
+      deps: {
+        sleep: async () => {},
+        probeRuntimeImport: () => ({ ok: false, detail: 'partial package content' }),
+      },
+    });
+    expect(status).toBe(1);
+    expect(calls).toBe(1);
+  });
 });
 
 describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
@@ -255,6 +394,42 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
     expect(normalizeNpmArgs([])).toEqual(['install']);
     expect(normalizeNpmArgs(['--legacy-peer-deps'])).toEqual(['install', '--legacy-peer-deps']);
     expect(normalizeNpmArgs(['ci', '--ignore-scripts'])).toEqual(['ci', '--ignore-scripts']);
+  });
+
+  it('routes a dependency reader through the repo mutex without treating it as npm argv', () => {
+    expect(
+      parseCliArgs(['--repo-root', '../sidestage', '--exec-under-lock', '--', 'bash', 'bin/bundle-host.sh'], {
+        cwd: '/managed/papercusp',
+      }),
+    ).toEqual({
+      repoRoot: '/managed/sidestage',
+      commandArgs: ['bash', 'bin/bundle-host.sh'],
+    });
+  });
+
+  it('marks a guarded reader child and preserves the selected repo cwd', async () => {
+    const root = fixture({ packages: { 'apps/operator': { dependencies: {} } }, extracted: {} });
+    type GuardedCommandOptions = { cwd: string; stdio: 'inherit'; env: NodeJS.ProcessEnv };
+    const calls: Array<{ command: string; args: string[]; options: GuardedCommandOptions }> = [];
+
+    await expect(
+      runCommandUnderInstallMutex({
+        repoRoot: root,
+        commandArgs: ['bash', 'bin/bundle-host.sh', 'entry.ts'],
+        runCommand: (command: string, args: string[], options: GuardedCommandOptions) => {
+          calls.push({ command, args, options });
+          return { status: 0 };
+        },
+      }),
+    ).resolves.toBe(0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      command: 'bash',
+      args: ['bin/bundle-host.sh', 'entry.ts'],
+      options: { cwd: root },
+    });
+    expect(calls[0].options.env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe('1');
   });
 
   it('keys the mutex by the selected root realpath, including symlink aliases', () => {
