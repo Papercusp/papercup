@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { BG_HOST_HOT_PATHS as SERVICE_HEALTH_BG_HOST_HOT_PATHS } from '../../../../packages/operator-core/lib/service-health';
 
 // Don't let the watchdog's poll loop auto-start on import — exercise the pure decision logic only.
 process.env.PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART = '1';
@@ -72,6 +73,53 @@ let readCollateral: (deps?: {
   readFile?: (p: string, enc: string) => string;
   unit?: string;
 }) => Promise<CollateralSummary | null>;
+let BG_HOST_COMMITTED_HOT_PATHS: readonly string[];
+type ActivationInput = {
+  activeForSec: number | null;
+  latestCommitMs: number | null;
+  nowMs: number | null;
+  dirtyEntries: string[] | null;
+  collateral: { collateral: number } | null;
+};
+type ActivationVerdict = {
+  activate: boolean;
+  code: string;
+  dirtyCount?: number;
+  dirtySample?: string[];
+  collateral?: number;
+};
+let evaluateCommittedHotPathActivation: (input: ActivationInput) => ActivationVerdict;
+let shouldCheckCommittedHotPathActivation: (input: {
+  inFlight: boolean;
+  lastCheckMs: number;
+  nowMs: number;
+  intervalMs: number;
+}) => boolean;
+let readCommittedHotPathState: (deps?: {
+  root?: string;
+  sh?: (
+    cmd: string,
+    args: string[],
+    opts?: { stdin?: string; timeout?: number },
+  ) => Promise<{ err: Error | null; stdout: string; stderr?: string }>;
+}) => Promise<{
+  root: string | null;
+  latestCommitMs: number | null;
+  latestCommitHash: string | null;
+  dirtyEntries: string[] | null;
+  error: string | null;
+}>;
+let requestCommittedHotPathRestart: (
+  hash: string,
+  deps?: {
+    ptoolScript?: string;
+    sh?: (
+      cmd: string,
+      args: string[],
+      opts?: { stdin?: string; timeout?: number },
+    ) => Promise<{ err: Error | null; stdout: string; stderr?: string }>;
+  },
+) => Promise<{ ok: boolean; restarted: boolean; coalesced: boolean; code: string }>;
 beforeAll(async () => {
   ({
     parseIdleSec,
@@ -94,6 +142,11 @@ beforeAll(async () => {
     classifyCollateral,
     collateralAlertMessage,
     readCollateral,
+    BG_HOST_COMMITTED_HOT_PATHS,
+    evaluateCommittedHotPathActivation,
+    shouldCheckCommittedHotPathActivation,
+    readCommittedHotPathState,
+    requestCommittedHotPathRestart,
     // PROBE_SCRIPT points the WHOLE suite — pure functions included — at a mutated COPY outside the
     // tree, so scripts/mutation-probe.sh can prove falsifiability without ever mutating the shared
     // working tree (git-sync would commit the mutant mid-probe).
@@ -104,6 +157,149 @@ beforeAll(async () => {
     // grep-shaped tests, and read as evidence that a perfectly good behavioural guard was weak. Caught
     // 2026-08-10 probing the EI-20025430746362695 liveness requirement.
   } = await import(/* @vite-ignore */ process.env.PROBE_SCRIPT || '../bghost-watchdog.mjs'));
+});
+
+describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
+  const NOW = 1_000_000;
+  const safe: ActivationInput = {
+    activeForSec: 100,
+    latestCommitMs: 950_000,
+    nowMs: NOW,
+    dirtyEntries: [],
+    collateral: { collateral: 0 },
+  };
+
+  it('pins the external watchdog hot-path list to service-health.ts canonical coverage', () => {
+    expect([...BG_HOST_COMMITTED_HOT_PATHS]).toEqual([...SERVICE_HEALTH_BG_HOST_HOT_PATHS]);
+  });
+
+  it('activates only for a newer committed change, a clean tree, and known-zero collateral', () => {
+    expect(evaluateCommittedHotPathActivation(safe)).toMatchObject({ activate: true, code: 'activate' });
+  });
+
+  it.each([
+    ['generation age unknown', { activeForSec: null }, 'generation_unknown'],
+    ['clock unknown', { nowMs: null }, 'clock_unknown'],
+    ['commit unknown', { latestCommitMs: null }, 'commit_unknown'],
+    ['future-dated commit', { latestCommitMs: NOW + 1 }, 'commit_time_future'],
+    ['running generation is current', { latestCommitMs: NOW - 101_000 }, 'generation_current'],
+    ['cleanliness unknown', { dirtyEntries: null }, 'cleanliness_unknown'],
+    ['collateral unknown', { collateral: null }, 'collateral_unknown'],
+    ['collateral present', { collateral: { collateral: 1 } }, 'collateral_present'],
+  ])('fails closed when %s', (_label, patch, code) => {
+    expect(evaluateCommittedHotPathActivation({ ...safe, ...patch })).toMatchObject({
+      activate: false,
+      code,
+    });
+  });
+
+  it('suppresses on ANY dirty hot-path entry, including an untracked test file', () => {
+    const verdict = evaluateCommittedHotPathActivation({
+      ...safe,
+      dirtyEntries: [' M packages/operator-core/lib/events/await/store.ts', '?? packages/operator-core/lib/events/new.test.ts'],
+    });
+    expect(verdict).toMatchObject({ activate: false, code: 'hot_paths_dirty', dirtyCount: 2 });
+  });
+
+  it('throttles repeated checks and refuses an overlapping check', () => {
+    expect(shouldCheckCommittedHotPathActivation({ inFlight: false, lastCheckMs: 0, nowMs: 10, intervalMs: 300 })).toBe(true);
+    expect(shouldCheckCommittedHotPathActivation({ inFlight: true, lastCheckMs: 0, nowMs: 10, intervalMs: 300 })).toBe(false);
+    expect(shouldCheckCommittedHotPathActivation({ inFlight: false, lastCheckMs: 100, nowMs: 399, intervalMs: 300 })).toBe(false);
+    expect(shouldCheckCommittedHotPathActivation({ inFlight: false, lastCheckMs: 100, nowMs: 400, intervalMs: 300 })).toBe(true);
+  });
+
+  it('reads the latest NON-TEST commit but treats every dirty/untracked hot-path file as unsafe', async () => {
+    const calls: string[][] = [];
+    const state = await readCommittedHotPathState({
+      root: '/repo',
+      sh: async (_cmd, args) => {
+        calls.push(args);
+        if (args.includes('log')) return { err: null, stdout: '950\u0000abcdef1234567890\n' };
+        return {
+          err: null,
+          stdout:
+            ' M packages/operator-core/lib/events/await/store.ts\u0000' +
+            '?? packages/operator-core/lib/events/new.test.ts\u0000',
+        };
+      },
+    });
+    expect(state).toMatchObject({
+      latestCommitMs: 950_000,
+      latestCommitHash: 'abcdef1234567890',
+      dirtyEntries: [
+        'M packages/operator-core/lib/events/await/store.ts',
+        '?? packages/operator-core/lib/events/new.test.ts',
+      ],
+      error: null,
+    });
+    const logArgs = calls.find((args) => args.includes('log'))!;
+    const statusArgs = calls.find((args) => args.includes('status'))!;
+    expect(logArgs).toContain(':(exclude,glob)**/*.test.ts');
+    expect(logArgs).toContain(':(exclude,glob)**/__tests__/**');
+    expect(statusArgs).toContain('--untracked-files=all');
+    expect(statusArgs).not.toContain(':(exclude,glob)**/*.test.ts');
+  });
+
+  it('invokes the coordinated dev:restart tool with an immediate drain refusal and no unsafe overrides', async () => {
+    let observed:
+      | { cmd: string; args: string[]; opts?: { stdin?: string; timeout?: number } }
+      | undefined;
+    const outcome = await requestCommittedHotPathRestart('abcdef1234567890', {
+      ptoolScript: '/repo/apps/operator/scripts/ptool.mjs',
+      sh: async (cmd, args, opts) => {
+        observed = { cmd, args, opts };
+        return { err: null, stdout: JSON.stringify({ ok: true, target: 'bg-host', restarted: true }) };
+      },
+    });
+    expect(outcome).toMatchObject({ ok: true, restarted: true, code: 'restarted' });
+    expect(observed?.cmd).toBe(process.execPath);
+    expect(observed?.args).toEqual([
+      '/repo/apps/operator/scripts/ptool.mjs',
+      'dev:restart',
+      '--json',
+      '-',
+    ]);
+    const payload = JSON.parse(observed?.opts?.stdin ?? '{}');
+    expect(payload).toMatchObject({
+      target: 'bg-host',
+      confirm: true,
+      authorize: true,
+      max_drain_sec: 0,
+    });
+    expect(payload.reason).toContain('abcdef123456');
+    expect(payload).not.toHaveProperty('override_gate_collision');
+    expect(payload).not.toHaveProperty('override_boot_integrity');
+    expect(observed?.opts?.timeout).toBe(30_000);
+  });
+
+  it('fails closed when ptool fails or returns a refusal', async () => {
+    await expect(
+      requestCommittedHotPathRestart('abc', {
+        sh: async () => ({ err: new Error('boom'), stdout: '' }),
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'ptool_failed' });
+    await expect(
+      requestCommittedHotPathRestart('abc', {
+        sh: async () => ({ err: null, stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
+  });
+
+  it('wires activation before PG freshness and exits the poll after a real restart request', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, resolve } = await import('node:path');
+    const subject =
+      process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+    const src = readFileSync(subject, 'utf8');
+    const start = src.indexOf('async function poll(');
+    const pollBody = src.slice(start, src.indexOf('\n/** Mirrors build-info.ts', start));
+    const activationIdx = pollBody.indexOf('await maybeActivateCommittedHotPathCode(');
+    const dbIdx = pollBody.indexOf('await resolveDbUrlAsync(');
+    expect(activationIdx).toBeGreaterThan(-1);
+    expect(activationIdx).toBeLessThan(dbIdx);
+    expect(pollBody).toContain('if (activation.restartRequested) return;');
+  });
 });
 
 /**
