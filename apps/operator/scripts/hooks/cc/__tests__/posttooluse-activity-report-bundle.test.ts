@@ -30,6 +30,8 @@ import { createServer, type Server } from 'node:http';
 
 const HOOK = join(__dirname, '..', 'posttooluse-activity-report.sh');
 const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
+const GREP_NO_RESULT_ADVISORY =
+  '⚠ Native Grep returned no results. Treat this zero as UNMEASURED: run a positive-control search for a token you know exists in the same batch, then use `rg` via Bash and its exit status before claiming absence.';
 
 let home: string, cache: string;
 let server: Server;
@@ -83,6 +85,7 @@ afterEach(() => {
 async function run(
   sid: string,
   extraEnv: Record<string, string> = {},
+  event: Record<string, unknown> = {},
 ): Promise<{ status: number | null; stdout: string }> {
   const { status, stdout } = await runHookProcess('bash', [HOOK], {
     input: JSON.stringify({
@@ -91,6 +94,7 @@ async function run(
       tool_use_id: 't',
       session_id: 's',
       cwd: '/x',
+      ...event,
     }),
     env: {
       ...process.env,
@@ -111,6 +115,77 @@ function cursorFor(sid: string): { generation?: string | null; since_ts?: string
 }
 
 describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operator)', () => {
+  it('native Grep no-result response emits the unmeasured-result advisory', async () => {
+    nextResult = { ok: true, id: 1 }; // no fold response; the local advisory is independent
+    const r = await run('sid-grep-nudge', {}, {
+      tool_name: 'Grep',
+      tool_response: 'No files found',
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: GREP_NO_RESULT_ADVISORY,
+      },
+    });
+  });
+
+  it('appends the Grep advisory after folded coord context', async () => {
+    nextResult = {
+      ok: true,
+      id: 1,
+      hook_bundle: {
+        schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
+        generation: 'host-a:1',
+        changed: true,
+        complete: true,
+        surfaces: {
+          inbox: {
+            entries: [{ ts: '2026-07-16T00:01:00Z', msg_id: 'm0' }],
+            injection: '[coord+1] peer: check this',
+            summary: { newest_ts: '2026-07-16T00:01:00Z' },
+          },
+        },
+      },
+    };
+    const r = await run('sid-grep-coord', {}, {
+      tool_name: 'Grep',
+      tool_response: 'No matches found',
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `[coord+1] peer: check this\n\n${GREP_NO_RESULT_ADVISORY}`,
+      },
+    });
+  });
+
+  it('emits the Grep advisory even when the operator is unreachable', async () => {
+    const r = await run(
+      'sid-grep-down',
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' },
+      { tool_name: 'Grep', tool_response: 'No matches found' },
+    );
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: GREP_NO_RESULT_ADVISORY,
+      },
+    });
+  });
+
+  it('keeps positive Grep results silent', async () => {
+    nextResult = { ok: true, id: 1 }; // no local advisory and no fold injection
+    const r = await run('sid-grep-positive', {}, {
+      tool_name: 'Grep',
+      tool_response: 'Found 12 files',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
   it('first call: sends only a generation cursor and preserves a pre-session inbox injection', async () => {
     const sid = 'sid-seed';
     nextResult = {
