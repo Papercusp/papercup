@@ -931,7 +931,7 @@ export default defineTool({
             checkpointToStore,
             {
               ...(checksTransform ? { transform: checksTransform } : {}),
-              guard: composeGuards(appendBaseGuard, overflowGuard),
+              guard: composeGuards(overflowGuard),
               ...depsOpt,
             },
           );
