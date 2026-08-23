@@ -9,7 +9,12 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/pre-prompt-registry-config.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { advertisedArgsSchema, isPositionalReadEncoding } from '@papercusp/result-encoding';
+import {
+  advertisedArgsSchema,
+  isPositionalReadEncoding,
+  projectWriteColumns,
+  reconstructArgs,
+} from '@papercusp/result-encoding';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { PRE_PROMPT_REGISTRY } from './pre-prompt-registry-config';
 import './work_items/set_state';
@@ -47,7 +52,25 @@ describe('PRE_PROMPT_REGISTRY', () => {
 
   it('hardens the positional work-item claim id with columnOverrides (D-007 residual, EI-7927)', () => {
     const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
-    expect(claim?.columnOverrides?.id?.pattern).toBe('^(WI|F|EI)-\\d+$');
+    expect(claim?.columnOverrides?.id?.pattern).toBe('^(?:(?:WI|F|EI)-\\d+|PR-\\d+-P-\\d+)$');
+  });
+
+  it('reconstructs a scheduler-created PR work-item id through the real claim registry projection', () => {
+    const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
+    const claimTool = lookupByMcpName('work_items:claim');
+    expect(claim).toBeDefined();
+    expect(claimTool).toBeDefined();
+
+    const columns = projectWriteColumns(claimTool!.inputSchema as Record<string, unknown>, {
+      columnNames: claim!.writeColumnNames,
+      requiredColumnNames: claim!.writeRequiredColumnNames,
+      columnOverrides: claim!.columnOverrides,
+    });
+    expect(columns).toBeDefined();
+    expect(reconstructArgs('PR-971-P-001,worker,papercusp', columns!)).toEqual({
+      ok: true,
+      args: { id: 'PR-971-P-001', assignee: 'worker', harness: 'papercusp' },
+    });
   });
 
   it('advertises claim as row+keyed while set_state stays on its full keyed schema (WI-3260)', () => {
