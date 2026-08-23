@@ -93,11 +93,11 @@ describe('releaseDesktopProcesses — managed teardown', () => {
 
     try {
       await releaseDesktopProcesses([client], root, { killTask, sleep: async () => {} });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('leaving client handles untouched'));
     } finally {
       warn.mockRestore();
     }
 
     expect(client.kill).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('leaving client handles untouched'));
   });
 });
