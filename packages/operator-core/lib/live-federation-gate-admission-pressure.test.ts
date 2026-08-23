@@ -68,8 +68,19 @@ const SERVICE_PATH = join(
   'systemd',
   'papercup-live-federation-gate.service',
 );
+const RUNBOOK_PATH = join(
+  ROOT,
+  'apps',
+  'operator-docs',
+  'src',
+  'content',
+  'docs',
+  'agent-insights',
+  'shared-pot-live-federation-witnessing.mdx',
+);
 const gate = readFileSync(GATE_PATH, 'utf8');
 const service = readFileSync(SERVICE_PATH, 'utf8');
+const runbook = readFileSync(RUNBOOK_PATH, 'utf8');
 
 /** The whole §1 admission chain, from the PSI helper to the closing `fi` of the decision. */
 function extractAdmissionChain(): string {
@@ -339,6 +350,21 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       expect(gate).toContain('${LOADAVG_FILE:-/proc/loadavg}');
       expect(gate).toContain('MEMORY_PRESSURE_GATE="${MEMORY_PRESSURE_GATE:-5}"');
       expect(gate).toContain('${MEMORY_PRESSURE_FILE:-/sys/fs/cgroup/memory.pressure}');
+    });
+
+    it('keeps the script synopsis and operator runbook on the PSI policy', () => {
+      // EI-21268624337015026: a managed witness copied the old load1<=77 policy from these
+      // surfaced instructions even though the executable had already moved to PSI. The real
+      // behavioral test above was green, so pin the documentation seam too.
+      expect(gate).toContain('behind CPU/memory pressure admission');
+      expect(gate).toContain('STORM_GATE        (default nproc*0.9)');
+      expect(gate).not.toContain('load-gated quiet box');
+
+      expect(runbook).toContain('CPU PSI `some avg60`');
+      expect(runbook).toContain('memory PSI `full avg10`');
+      expect(runbook).toContain('`STORM_GATE` (default `nproc*0.9`, 115 on a 128-core host)');
+      expect(runbook).not.toContain('`STORM_GATE` (default `nproc*0.6`, 77 on 128 cores)');
+      expect(runbook).not.toContain('`LOAD_GATE` is now CORE-AWARE');
     });
 
     it('reads `some`, not `full` (full is structurally 0 on a many-core host)', () => {
