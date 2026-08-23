@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 782,
+  "count": 784,
   "tools": [
     {
       "name": "ablation:report",
@@ -15143,7 +15143,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } (or goal as an alias for next) or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read. Transient PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true } instead of hanging the transport.",
+      "description": "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],
@@ -15166,7 +15166,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. When updating one wall/check, pass rowsMode:'replace' only when retiring omitted rows; the default merge mode preserves them. Pair with work_items:checkpoint because a loop note can be lost if the session dies.",
+        "when": "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge mode preserves them. Pair with work_items:checkpoint because a loop note can be lost if the session dies.",
         "notWhen": "WARM loops (carry:'warm', the default) carry the live transcript and need no note. Use work_items:checkpoint for work-item state.",
         "chaining": "Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor recovery and facts:assert for durable conclusions."
       }
@@ -18620,6 +18620,37 @@
       }
     },
     {
+      "name": "plans:get-output-schema",
+      "http": {
+        "path": "/api/agent-tools/plans/get-output-schema",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read what a plan PROMISES to produce: { declared, outputSchema, required, chainable, version }. `required` is the outputs a completing run must publish; `chainable` says whether this plan may be the upstream half of a chain edge into a DETERMINISTIC step (which needs declared outputs — D-015). `declared:false` is a valid terminal-only plan, not a misconfiguration. Read-only.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "kettle"
+      ],
+      "guidance": {
+        "when": "Finding out what a plan produces — before wiring it as the upstream half of a chain, or rendering what a completed run will publish. `chainable` answers the wiring question directly.",
+        "notWhen": "Declaring the schema — plans:set-output-schema. Reading what the plan is GIVEN — plans:get-input-schema. Reading what a specific run actually published — that lives on the run, not the plan.",
+        "chaining": "plans:get-output-schema { slug } → if `chainable`, the plan may feed a deterministic downstream step; if not, chain it into a PLAN target instead, or declare outputs with plans:set-output-schema."
+      }
+    },
+    {
       "name": "plans:get-spec-evidence",
       "http": {
         "path": "/api/agent-tools/plans/get-spec-evidence",
@@ -20316,6 +20347,80 @@
         "when": "Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.",
         "notWhen": "Per-item flip — that's plans:set-status. Or a decision — that's plans:add-decision.",
         "chaining": "plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — if either overflows, trim it and offload the detail to plans:set-content / set-content-chunk rather than retrying a too-long Now."
+      }
+    },
+    {
+      "name": "plans:set-output-schema",
+      "http": {
+        "path": "/api/agent-tools/plans/set-output-schema",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Declare a plan's own JSON Schema for what it PRODUCES (the `output_schema` jsonb) — the symmetric half of plans:set-input-schema, giving a plan a RETURN VALUE so another step can consume its product. Rejected fail-loud unless the schema ajv-compiles, so the completion gate can never be left unable to check. Outputs are OPTIONAL: a plan that declares none is a valid terminal-only plan. Unlike input_schema this does NOT conflict with a code-registry `template:` type. Advisory-locked, version-bumped, revisioned. Pass schema:null to un-declare.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Giving a plan a return value — the fields a completing run publishes so a downstream step can consume them. Required-ness lives in the schema's `required` array.",
+        "notWhen": "Declaring what the plan is GIVEN — plans:set-input-schema. Reading the schema back — plans:get-output-schema. A plan whose product nothing consumes needs no output schema at all; outputs are optional by design.",
+        "chaining": "plans:set-output-schema { slug, schema } → the plan may then be the UPSTREAM half of a chain edge whose downstream step is deterministic (a recipe or one-step tool call), which requires declared outputs."
       }
     },
     {
