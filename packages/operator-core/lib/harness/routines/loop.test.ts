@@ -1060,6 +1060,50 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     const out = await getLoopStatuses(['su-x'], { sql: rowSql({ parked: false, parked_ms: 95_000 }) as unknown as Sql });
     expect(out.get('su-x')!.parkedForSec).toBeNull();
   });
+
+  it('EI-21276782387845111: exposes cadenceDrift while keeping the filed parked slow-cadence shape quiet', async () => {
+    const now = Date.now();
+    const out = await getLoopStatuses(
+      ['su-x'],
+      {
+        sql: rowSql({
+          fire_count: 1,
+          fire_count_at_arm: 0,
+          armed_at: new Date(now - 34 * 120_000).toISOString(),
+          last_fired_at: new Date(now - 216_000).toISOString(),
+          longest_observed_gap_sec: 2_400,
+          parked: true,
+          next_fire_at: null,
+        }) as unknown as Sql,
+      },
+    );
+    const status = out.get('su-x')!;
+
+    expect(status.firesSinceArm).toBe(1);
+    expect(status.expectedFiresSinceArm).toBeGreaterThanOrEqual(34);
+    expect(status.cadenceRatio).toBeGreaterThan(4);
+    expect(status.cadenceDrift).toBe(false);
+  });
+
+  it('EI-21276782387845111: flags sustained cadence drift only for an overdue scheduled fire', async () => {
+    const now = Date.now();
+    const out = await getLoopStatuses(
+      ['su-x'],
+      {
+        sql: rowSql({
+          fire_count: 5,
+          fire_count_at_arm: 0,
+          armed_at: new Date(now - 70 * 60_000).toISOString(),
+          last_fired_at: new Date(now - 10 * 60_000).toISOString(),
+          longest_observed_gap_sec: 1_207.28,
+          parked: false,
+          next_fire_at: new Date(now - 10 * 60_000).toISOString(),
+        }) as unknown as Sql,
+      },
+    );
+
+    expect(out.get('su-x')!.cadenceDrift).toBe(true);
+  });
 });
 
 describe('computeLoopCadence (EI-20217869515819188 — configured vs observed cadence)', () => {
