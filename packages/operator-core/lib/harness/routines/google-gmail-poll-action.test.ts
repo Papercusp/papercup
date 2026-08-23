@@ -152,6 +152,47 @@ describe('google-gmail-poll system action', () => {
     });
   });
 
+  it('contains shared Pub/Sub provisioning failures and degrades every mailbox', async () => {
+    const sources = [source('source-a', 'a@example.com'), source('source-b', 'b@example.com')];
+    const updateSource = vi.fn(async () => sources[0]);
+    const provisionError = 'google_pubsub_create_topic_403:User not authorized to perform this action.';
+    const pull = vi.fn();
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => sources),
+      provision: vi.fn(async () => {
+        throw new Error(provisionError);
+      }),
+      pull,
+      updateSource,
+    });
+
+    expect(result).toEqual({
+      sources: 2,
+      succeeded: 0,
+      failed: 2,
+      renewed: 0,
+      pulled: 0,
+      acknowledged: 0,
+      messages: 0,
+      fullResyncs: 0,
+      failures: [
+        { sourceId: 'source-a', status: 'degraded', error: provisionError },
+        { sourceId: 'source-b', status: 'degraded', error: provisionError },
+      ],
+    });
+    expect(updateSource).toHaveBeenCalledTimes(2);
+    expect(updateSource).toHaveBeenNthCalledWith(1, expect.anything(), 'papercusp-workspace', 'source-a', {
+      status: 'degraded',
+      lastError: provisionError,
+    });
+    expect(updateSource).toHaveBeenNthCalledWith(2, expect.anything(), 'papercusp-workspace', 'source-b', {
+      status: 'degraded',
+      lastError: provisionError,
+    });
+    expect(pull).not.toHaveBeenCalled();
+  });
+
   it('registers the durable handler', () => {
     expect(getSystemAction('google-gmail-poll')).toBeTypeOf('function');
   });

@@ -122,7 +122,18 @@ export async function runGoogleGmailPoll(
     result.failures.push({ sourceId: source.id, status, error });
   };
 
-  const pubsub = await provision(ctx.workspaceId);
+  let pubsub: GooglePubSubProvisionResult;
+  try {
+    pubsub = await provision(ctx.workspaceId);
+  } catch (cause) {
+    // Pub/Sub provisioning is shared by every mailbox. A missing GCP permission
+    // must degrade the owned sources, not escape the system action and wedge the
+    // routine on every cron tick before it can report a useful source status.
+    for (const source of sources) await recordFailure(source, cause);
+    result.failed = failedSourceIds.size;
+    result.succeeded = sources.length - result.failed;
+    return result;
+  }
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const accessTokens = new Map<string, string>();
   const renewBeforeMs = boundedInteger(
