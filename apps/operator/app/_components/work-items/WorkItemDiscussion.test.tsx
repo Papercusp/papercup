@@ -40,6 +40,7 @@ const conversation = {
   error: null,
   busy: false,
   peerBusy: false,
+  historyHydrated: true,
   sendUserMessage: vi.fn(),
   generateIdeas: vi.fn(),
   flipMode: vi.fn(),
@@ -80,6 +81,12 @@ afterEach(() => {
   H.invalidate.mockReset();
   H.providerTargets.mockReset();
   H.chatProps.mockReset();
+  conversation.messages = [
+    { role: "assistant" as const, content: "Existing scoped turn." },
+  ];
+  conversation.historyHydrated = true;
+  conversation.busy = false;
+  conversation.sendUserMessage.mockReset();
   vi.unstubAllGlobals();
 });
 
@@ -123,6 +130,40 @@ describe("WorkItemDiscussion", () => {
         conversationId: "conversation-existing",
         workspaceId: "workspace-1",
         harnessSlug: "papercusp",
+        emptyStateBody: "Starting a discussion about WI-42…",
+        showQuickDraftPrompts: false,
+      }),
+    );
+    expect(conversation.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("waits for durable history, then starts a new work-item discussion exactly once without global starters", async () => {
+    H.rows = [{ id: "conversation-empty" }];
+    conversation.messages = [];
+    conversation.historyHydrated = false;
+    const props = {
+      harnessSlug: "papercusp",
+      workItemId: "WI-99",
+      title: "  Resolve   this blocker  ",
+    };
+
+    const view = render(<WorkItemDiscussion {...props} />);
+    expect(conversation.sendUserMessage).not.toHaveBeenCalled();
+
+    conversation.historyHydrated = true;
+    view.rerender(<WorkItemDiscussion {...props} />);
+    await waitFor(() =>
+      expect(conversation.sendUserMessage).toHaveBeenCalledWith(
+        "Let's discuss WI-99 — Resolve this blocker. Explain what this work item currently needs from me and help me decide or complete the next concrete step.",
+      ),
+    );
+
+    view.rerender(<WorkItemDiscussion {...props} />);
+    expect(conversation.sendUserMessage).toHaveBeenCalledTimes(1);
+    expect(H.chatProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        emptyStateBody: "Starting a discussion about WI-99…",
+        showQuickDraftPrompts: false,
       }),
     );
   });

@@ -1805,8 +1805,7 @@ export function OperatorConversationProvider({
           messages: history,
           trigger,
           mayAskActive: isGlobalTarget ? mayAskActiveNow(snapshot) : false,
-          modality:
-            isGlobalTarget && voiceActiveRef.current ? "voice" : "text",
+          modality: isGlobalTarget && voiceActiveRef.current ? "voice" : "text",
           welcomedUser: opts?.welcomedUser,
           signal: ctrl.signal,
           // V8 continue-chain ledger plumbing — server records one
@@ -2785,34 +2784,37 @@ export function OperatorConversationProvider({
     isGlobalTarget,
   ]);
 
-  const flipMode = useCallback((mode: OperatorMode) => {
-    if (!isGlobalTarget) {
-      dispatch({ type: "set_mode", mode });
-      return;
-    }
-    writeOperatorModeToSession(mode);
-    // Flipping TO active wakes the operator if it was sleeping —
-    // otherwise the user-visible chip says "Active" while the silence
-    // timers stay parked. Per the active-mode plan, flipping to
-    // active means "I'm here, talk to me." Sleep event fires so the
-    // chip's reactive sleepUntilMs state clears immediately. B5.
-    if (mode === "active") {
-      writeSleepUntilMs(0);
+  const flipMode = useCallback(
+    (mode: OperatorMode) => {
+      if (!isGlobalTarget) {
+        dispatch({ type: "set_mode", mode });
+        return;
+      }
+      writeOperatorModeToSession(mode);
+      // Flipping TO active wakes the operator if it was sleeping —
+      // otherwise the user-visible chip says "Active" while the silence
+      // timers stay parked. Per the active-mode plan, flipping to
+      // active means "I'm here, talk to me." Sleep event fires so the
+      // chip's reactive sleepUntilMs state clears immediately. B5.
+      if (mode === "active") {
+        writeSleepUntilMs(0);
+        try {
+          window.dispatchEvent(new Event("papercusp:operatorSleep"));
+        } catch {
+          /* ignore */
+        }
+      }
       try {
-        window.dispatchEvent(new Event("papercusp:operatorSleep"));
+        window.dispatchEvent(
+          new CustomEvent("papercusp:operatorMode", { detail: { mode } }),
+        );
       } catch {
         /* ignore */
       }
-    }
-    try {
-      window.dispatchEvent(
-        new CustomEvent("papercusp:operatorMode", { detail: { mode } }),
-      );
-    } catch {
-      /* ignore */
-    }
-    dispatch({ type: "set_mode", mode });
-  }, [isGlobalTarget]);
+      dispatch({ type: "set_mode", mode });
+    },
+    [isGlobalTarget],
+  );
 
   // Banner text for transient sub-states (silence prompts).
   const bannerText = useMemo<string | null>(() => {
@@ -2833,7 +2835,8 @@ export function OperatorConversationProvider({
       declined?: boolean;
     }): Promise<void> => {
       const id = conversationIdRef.current;
-      if (!id) throw new CardAnswerError("no active conversation", "no_conversation");
+      if (!id)
+        throw new CardAnswerError("no active conversation", "no_conversation");
       const r = await fetch(`/api/operator/conversations/${id}/turn-answer`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -2849,12 +2852,15 @@ export function OperatorConversationProvider({
         const raw = await r.text().catch(() => "");
         let parsed: { error?: string; answered?: unknown } | null = null;
         try {
-          parsed = raw ? (JSON.parse(raw) as { error?: string; answered?: unknown }) : null;
+          parsed = raw
+            ? (JSON.parse(raw) as { error?: string; answered?: unknown })
+            : null;
         } catch {
           /* non-JSON body — fall back to the raw text below */
         }
         if (r.status === 409) {
-          const answered = (parsed?.answered ?? null) as CardAnsweredState | null;
+          const answered = (parsed?.answered ??
+            null) as CardAnsweredState | null;
           if (answered) {
             // Settle the local card to the server's answer so the UI stops
             // pretending the question is still open.
@@ -2884,7 +2890,8 @@ export function OperatorConversationProvider({
           );
         }
         throw new CardAnswerError(
-          parsed?.error ?? `turn-answer failed (${r.status})${raw ? `: ${raw.slice(0, 120)}` : ""}`,
+          parsed?.error ??
+            `turn-answer failed (${r.status})${raw ? `: ${raw.slice(0, 120)}` : ""}`,
           "failed",
         );
       }
@@ -2962,8 +2969,7 @@ export function OperatorConversationProvider({
       error: state.error,
       busy: state.sub === "generating",
       peerBusy,
-      historyHydrated:
-        !!convId && hydratedConversationId === convId,
+      historyHydrated: !!convId && hydratedConversationId === convId,
       sendUserMessage,
       generateIdeas,
       flipMode,

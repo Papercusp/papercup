@@ -11,9 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const EMPTY_SYNC_DATA: unknown[] = [];
 const EMPTY_CARDS: unknown[] = [];
+const SYNC = vi.hoisted(() => ({
+  turnPage: null as null | { turns: unknown[]; hasMoreEarlier: boolean },
+}));
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: () => ({ data: EMPTY_SYNC_DATA }),
+  useSyncQuery: (input: { queryName?: string; enabled?: boolean }) => ({
+    data:
+      input.queryName === "operatorTurns.page" &&
+      input.enabled !== false &&
+      SYNC.turnPage
+        ? [SYNC.turnPage]
+        : EMPTY_SYNC_DATA,
+  }),
 }));
 
 vi.mock("@/lib/use-workspace-id", () => ({
@@ -71,6 +81,9 @@ function Probe() {
         Send test
       </button>
       <div data-testid="busy">{String(conversation.busy)}</div>
+      <div data-testid="history-hydrated">
+        {String(conversation.historyHydrated)}
+      </div>
       <div data-testid="error">{conversation.error ?? ""}</div>
       <div data-testid="messages">
         {conversation.messages.map((message, index) => (
@@ -95,6 +108,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    SYNC.turnPage = null;
     sessionStorage.clear();
     sessionStorage.setItem(
       "papercusp.operatorMessages",
@@ -315,6 +329,23 @@ describe("OperatorConversationProvider streamed say projection", () => {
     expect(screen.getByTestId("messages").children).toHaveLength(0);
   });
 
+  it("marks a scoped conversation history hydrated only after its persisted turn window resolves", async () => {
+    SYNC.turnPage = { turns: [], hasMoreEarlier: false };
+
+    render(
+      <OperatorConversationProvider
+        target={{ kind: "work-item", conversationId: "work-item-empty-99" }}
+      >
+        <Probe />
+      </OperatorConversationProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("history-hydrated").textContent).toBe("true"),
+    );
+    expect(screen.getByTestId("messages").children).toHaveLength(0);
+  });
+
   it("uses only the explicit scoped id for history, writes, and generation", async () => {
     const generationFn: GenerationFn = vi.fn(async () => ({
       chunks: (async function* () {
@@ -325,7 +356,10 @@ describe("OperatorConversationProvider streamed say projection", () => {
     render(
       <OperatorConversationProvider
         generationFn={generationFn}
-        target={{ kind: "work-item", conversationId: "work-item-conversation-42" }}
+        target={{
+          kind: "work-item",
+          conversationId: "work-item-conversation-42",
+        }}
       >
         <Probe />
       </OperatorConversationProvider>,
@@ -340,20 +374,20 @@ describe("OperatorConversationProvider streamed say projection", () => {
       mayAskActive: false,
     });
 
-    const urls = vi
-      .mocked(fetch)
-      .mock.calls.map(([input]) => String(input));
+    const urls = vi.mocked(fetch).mock.calls.map(([input]) => String(input));
     expect(urls.length).toBeGreaterThanOrEqual(3);
     expect(
       urls.every((url) =>
-        url.includes("/api/operator/conversations/work-item-conversation-42/turns"),
+        url.includes(
+          "/api/operator/conversations/work-item-conversation-42/turns",
+        ),
       ),
     ).toBe(true);
     expect(urls.some((url) => url.includes("/active/"))).toBe(false);
 
     // No scoped turn may overwrite the root/global paint cache.
-    expect(JSON.parse(sessionStorage.getItem("papercusp.operatorMessages") ?? "[]")).toEqual([
-      { role: "system", content: "Existing conversation" },
-    ]);
+    expect(
+      JSON.parse(sessionStorage.getItem("papercusp.operatorMessages") ?? "[]"),
+    ).toEqual([{ role: "system", content: "Existing conversation" }]);
   });
 });

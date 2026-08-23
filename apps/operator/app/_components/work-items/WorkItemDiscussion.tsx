@@ -130,9 +130,7 @@ export function buildWorkItemDiscussionMessage(
   title?: string | null,
 ): string {
   const compactTitle = title?.trim().replace(/\s+/g, " ").slice(0, 500);
-  const subject = compactTitle
-    ? `${workItemId} — ${compactTitle}`
-    : workItemId;
+  const subject = compactTitle ? `${workItemId} — ${compactTitle}` : workItemId;
   return `Let's discuss ${subject}. Explain what this work item currently needs from me and help me decide or complete the next concrete step.`;
 }
 

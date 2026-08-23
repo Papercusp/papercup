@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * OperatorChat — single-thread chat with the Operator.
@@ -18,32 +18,37 @@
  * component already exposes.
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Lightbulb, UserRound, Wrench } from 'lucide-react';
-import { toast } from 'sonner';
-import { parseAsString, useQueryState } from 'nuqs';
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Lightbulb, UserRound, Wrench } from "lucide-react";
+import { toast } from "sonner";
+import { parseAsString, useQueryState } from "nuqs";
 import {
   ChatConversation,
   type ChatIconComponent,
   type ChatMessage,
   type ChatToolCall,
-} from './chat/ChatConversation';
-import type { WorkRefKind } from './chat/parse-work-refs';
+} from "./chat/ChatConversation";
+import type { WorkRefKind } from "./chat/parse-work-refs";
 import {
   CHAT_PLAN_POPUP_PARAM,
   CHAT_WORK_ITEM_POPUP_PARAM,
   encodeScopedRef,
-} from './chat/chat-ref-popup-params';
-import { CardAnswerError } from './OperatorConversationProvider';
-import { PendingCardsBar } from './chat/PendingCardsBar';
-import { renderCard } from '@/lib/chat-cards';
-import { CHAT_SEED_EVENT, consumePendingChatSeed, readChatDraft, writeChatDraft } from './inbox/chat-seed';
-import { OperatorLogoMark } from './OperatorLogoMark';
-import { Tooltip } from '../harness/Tooltip';
-import { FLAGS } from '@papercusp/flags';
-import { useFlag } from '@/lib/flag-hooks';
-import { ReportBlockCard } from './chat/ReportBlockCard';
-import { useCurrentUserIdentity } from './use-current-user';
+} from "./chat/chat-ref-popup-params";
+import { CardAnswerError } from "./OperatorConversationProvider";
+import { PendingCardsBar } from "./chat/PendingCardsBar";
+import { renderCard } from "@/lib/chat-cards";
+import {
+  CHAT_SEED_EVENT,
+  consumePendingChatSeed,
+  readChatDraft,
+  writeChatDraft,
+} from "./inbox/chat-seed";
+import { OperatorLogoMark } from "./OperatorLogoMark";
+import { Tooltip } from "../harness/Tooltip";
+import { FLAGS } from "@papercusp/flags";
+import { useFlag } from "@/lib/flag-hooks";
+import { ReportBlockCard } from "./chat/ReportBlockCard";
+import { useCurrentUserIdentity } from "./use-current-user";
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -198,28 +203,50 @@ interface Props {
 
 const STARTING_PROMPTS = [
   {
-    title: 'Scan workspaces',
-    hint: 'find active harnesses and urgent issues',
-    prompt: 'Scan my workspaces for active harnesses and urgent issues.',
+    title: "Scan workspaces",
+    hint: "find active harnesses and urgent issues",
+    prompt: "Scan my workspaces for active harnesses and urgent issues.",
   },
   {
-    title: 'Review blockers',
-    hint: 'surface failing runs, audits, and pending answers',
-    prompt: 'Review current blockers, failing runs, audits, and pending answers.',
+    title: "Review blockers",
+    hint: "surface failing runs, audits, and pending answers",
+    prompt:
+      "Review current blockers, failing runs, audits, and pending answers.",
   },
   {
-    title: 'Summarize state',
-    hint: 'get a quick brief on what changed recently',
-    prompt: 'Summarize the current workspace state and what changed recently.',
+    title: "Summarize state",
+    hint: "get a quick brief on what changed recently",
+    prompt: "Summarize the current workspace state and what changed recently.",
   },
 ] as const;
 
 export function OperatorChat({
-  messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
-  onLoadEarlier, hasMoreEarlier, loadingEarlier, focusAnchor, focusIndex, onAnswerChoice,
-  conversationId, workspaceId, agentName = 'Papercup', onDrillIn, canDrillIn,
-  renderAvatar, paneIcon, footer, harnessSlug, composerDisabled = false,
-  composerDisabledMessage, emptyStateBody,
+  messages,
+  busy,
+  peerBusy,
+  passive,
+  onSend,
+  onGenerateIdeas,
+  banner,
+  error,
+  onLoadEarlier,
+  hasMoreEarlier,
+  loadingEarlier,
+  focusAnchor,
+  focusIndex,
+  onAnswerChoice,
+  conversationId,
+  workspaceId,
+  agentName = "Papercup",
+  onDrillIn,
+  canDrillIn,
+  renderAvatar,
+  paneIcon,
+  footer,
+  harnessSlug,
+  composerDisabled = false,
+  composerDisabledMessage,
+  emptyStateBody,
   showQuickDraftPrompts = true,
 }: Props) {
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
@@ -233,12 +260,18 @@ export function OperatorChat({
   //
   // Only the SETTERS are bound — reading these here would be the per-instance
   // render this component no longer does.
-  const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
-  const [, setOpenChatPlan] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
+  const [, setOpenWorkItem] = useQueryState(
+    CHAT_WORK_ITEM_POPUP_PARAM,
+    parseAsString,
+  );
+  const [, setOpenChatPlan] = useQueryState(
+    CHAT_PLAN_POPUP_PARAM,
+    parseAsString,
+  );
 
   const handleWorkRefActivate = useCallback(
     (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => {
-      if (ref.kind === 'plan-item') {
+      if (ref.kind === "plan-item") {
         // A P- ref opens the EXISTING PlanPopupModal (D-001) — do not build a
         // second plan popup. No message plan_slug context ⇒ nothing safe to
         // open (P-006's "no plan context" stance, one layer over).
@@ -247,7 +280,8 @@ export function OperatorChat({
         // harness-scoped, and the single root-level renderer can only fall
         // back to the surface's `?slug` — which is the wrong harness whenever
         // a session chat for harness X is open over a board scoped to Y.
-        if (ref.planSlug) void setOpenChatPlan(encodeScopedRef(harnessSlug, ref.planSlug));
+        if (ref.planSlug)
+          void setOpenChatPlan(encodeScopedRef(harnessSlug, ref.planSlug));
         return;
       }
       // A WI-/EI-/F- ref needs a harness to scope workItems.detail — with
@@ -281,12 +315,14 @@ export function OperatorChat({
     (m: ChatMessage): ReactNode | null | undefined => {
       const override = renderAvatar?.(m);
       if (override) return override;
-      if (m.role !== 'user') return override;
+      if (m.role !== "user") return override;
       // Identity not resolved yet (or unresolvable) ⇒ a neutral person glyph.
       // NEVER the papercup mark: that fallback is the reported bug.
       return (
         <span className="oracle-msg-avatar oracle-msg-avatar--user-identity">
-          <span className="pc-sr-only">{currentUser ? `${currentUser.displayName} (you)` : 'You'}</span>
+          <span className="pc-sr-only">
+            {currentUser ? `${currentUser.displayName} (you)` : "You"}
+          </span>
           {currentUser ? (
             <span aria-hidden="true">{currentUser.initial}</span>
           ) : (
@@ -305,7 +341,9 @@ export function OperatorChat({
   // wins over a persisted draft; otherwise the draft survives REMOUNTS (body
   // swap to the inbox/pot view and back, reconnect re-keys) via the
   // per-workspace sessionStorage mirror kept in sync below.
-  const [input, setInput] = useState<string>(() => consumePendingChatSeed() ?? readChatDraft() ?? '');
+  const [input, setInput] = useState<string>(
+    () => consumePendingChatSeed() ?? readChatDraft() ?? "",
+  );
   useEffect(() => {
     writeChatDraft(input);
   }, [input]);
@@ -322,13 +360,13 @@ export function OperatorChat({
     if (composerDisabled) return;
     const text = input.trim();
     if (!text) return;
-    setInput('');
+    setInput("");
     onSend(text);
   }, [composerDisabled, input, onSend]);
 
   const unavailableCopy =
     composerDisabledMessage ??
-    'This session cannot receive messages. Relaunch or resume the agent to continue.';
+    "This session cannot receive messages. Relaunch or resume the agent to continue.";
 
   // Tool-card dispatch via the chat-cards registry (phase-4 T2.1).
   // The registry maps tool names → renderers; we supply only the
@@ -352,11 +390,11 @@ export function OperatorChat({
             toast.error("This card isn't interactive here.");
             return;
           }
-          if (typeof msg.seq !== 'number') {
+          if (typeof msg.seq !== "number") {
             // The message hasn't been assigned its persisted seq yet — the
             // answer has nowhere to land. Transient: it resolves once the turn
             // persists, so say "not yet", not "broken".
-            toast.error('Still saving this message — try again in a moment.');
+            toast.error("Still saving this message — try again in a moment.");
             return;
           }
           // Fire-and-forget — server-side atomicity guarantees the
@@ -370,16 +408,19 @@ export function OperatorChat({
               ...(declined ? { declined: true } : {}),
             }),
           ).catch((err: unknown) => {
-            const reason = err instanceof CardAnswerError ? err.reason : 'failed';
+            const reason =
+              err instanceof CardAnswerError ? err.reason : "failed";
             const message =
-              err instanceof Error ? err.message : 'Could not submit your answer.';
+              err instanceof Error
+                ? err.message
+                : "Could not submit your answer.";
             // already_answered reconciles the card to the server's answer, so
             // it's informational — the user sees the truth appear. The rest are
             // real failures worth an error toast.
-            if (reason === 'already_answered') toast.info(message);
+            if (reason === "already_answered") toast.info(message);
             else toast.error(message);
             // eslint-disable-next-line no-console
-            console.warn('[operator-chat] answerChoice failed:', err);
+            console.warn("[operator-chat] answerChoice failed:", err);
           });
         },
       });
@@ -424,23 +465,33 @@ export function OperatorChat({
         banner={
           <>
             {composerDisabled ? (
-              <div className="oracle-session-composer-unavailable" data-testid="session-chat-composer-unavailable" role="status">
+              <div
+                className="oracle-session-composer-unavailable"
+                data-testid="session-chat-composer-unavailable"
+                role="status"
+              >
                 {unavailableCopy}
               </div>
             ) : null}
             {banner}
           </>
         }
-        transcriptTail={conversationId && workspaceId ? (
-          <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
-        ) : null}
+        transcriptTail={
+          conversationId && workspaceId ? (
+            <PendingCardsBar
+              conversationId={conversationId}
+              workspaceId={workspaceId}
+            />
+          ) : null
+        }
         emptyState={{
           title: agentName,
           body: composerDisabled
             ? unavailableCopy
             : passive
-            ? 'In passive mode. Type below to wake them.'
-            : emptyStateBody ?? 'Tell me what you want to inspect, scan, or unblock.',
+              ? "In passive mode. Type below to wake them."
+              : (emptyStateBody ??
+                "Tell me what you want to inspect, scan, or unblock."),
           // WI-6503: the pane's own mark, not a hard-coded Papercup cup. See
           // the `paneIcon` prop doc — ChatConversation also derives its
           // per-message `fallbackIcon` from this, so overriding it here is
@@ -452,32 +503,47 @@ export function OperatorChat({
           // messaging an arbitrary su agent) has no business drafting these — they'd be
           // actively misleading there, not just off-brand — so gate the whole panel on
           // agentName rather than showing it unconditionally.
-          extra: agentName === 'Papercup' && showQuickDraftPrompts ? (
-            <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
-              <div className="op-chat-empty-panel-head">
-                <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
-                <div className="op-chat-empty-panel-label">Quick draft prompts</div>
+          extra:
+            agentName === "Papercup" && showQuickDraftPrompts ? (
+              <div
+                className="op-chat-empty-panel"
+                aria-label="Quick draft prompts"
+              >
+                <div className="op-chat-empty-panel-head">
+                  <OperatorLogoMark
+                    variant="compact"
+                    className="op-chat-empty-panel-logo"
+                  />
+                  <div className="op-chat-empty-panel-label">
+                    Quick draft prompts
+                  </div>
+                </div>
+                <div className="op-chat-empty-panel-list">
+                  {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
+                    <button
+                      key={title}
+                      type="button"
+                      className="op-chat-empty-row"
+                      onClick={() => setInput(prompt)}
+                      disabled={busy || composerDisabled}
+                      aria-label={`${title}: ${hint}. Draft this prompt.`}
+                    >
+                      <span className="op-chat-empty-row-title">{title}</span>
+                      <span className="op-chat-empty-row-hint">{hint}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="op-chat-empty-panel-list">
-                {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
-                  <button
-                    key={title}
-                    type="button"
-                    className="op-chat-empty-row"
-                    onClick={() => setInput(prompt)}
-                    disabled={busy || composerDisabled}
-                    aria-label={`${title}: ${hint}. Draft this prompt.`}
-                  >
-                    <span className="op-chat-empty-row-title">{title}</span>
-                    <span className="op-chat-empty-row-hint">{hint}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : undefined,
+            ) : undefined,
         }}
         labelForRole={NO_ROLE_LABEL}
-        inputPlaceholder={composerDisabled ? unavailableCopy : passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
+        inputPlaceholder={
+          composerDisabled
+            ? unavailableCopy
+            : passive
+              ? `Type to wake ${agentName}…`
+              : `Reply to ${agentName}…`
+        }
         inputValue={input}
         onInputChange={setInput}
         onSubmit={submit}
@@ -494,7 +560,7 @@ export function OperatorChat({
                 type="button"
                 aria-label="Generate ideas"
                 onClick={onGenerateIdeas}
-                disabled={busy || composerDisabled || input.trim() !== ''}
+                disabled={busy || composerDisabled || input.trim() !== ""}
                 className="pc-button op-chat-ideas-button"
               >
                 <Lightbulb aria-hidden="true" className="oracle-send-icon" />
@@ -536,7 +602,7 @@ export function OperatorChat({
 // Keep the shared message type exported here so OperatorChatSidebar
 // + the (forthcoming) OperatorConversation provider don't need to
 // reach across the chat/ folder. Re-export, not redeclare.
-export type { ChatMessage as OperatorChatMessage } from './chat/ChatConversation';
+export type { ChatMessage as OperatorChatMessage } from "./chat/ChatConversation";
 
 /**
  * This pane draws its own role label into the avatar column, so ChatConversation
@@ -544,7 +610,7 @@ export type { ChatMessage as OperatorChatMessage } from './chat/ChatConversation
  * of every transcript row: a fresh arrow each render re-renders every row on every
  * keystroke, which is half of WI-6502's typing lag. See the <ChatMessageRow> memo.
  */
-const NO_ROLE_LABEL = () => '';
+const NO_ROLE_LABEL = () => "";
 
 /**
  * Compact chip for an MCP/tool call the operator made during the preceding
@@ -554,15 +620,22 @@ const NO_ROLE_LABEL = () => '';
 function renderOperatorToolChip(t: ChatToolCall, i: number): ReactNode {
   const input = (t.input ?? {}) as Record<string, unknown>;
   const detail =
-    typeof input.role === 'string' ? input.role :
-    typeof input.spawnId === 'string' ? input.spawnId :
-    typeof input.featureId === 'string' ? input.featureId :
-    typeof input.scope === 'string' ? input.scope :
-    null;
-  const label = `${formatOperatorToolName(t.name)}${detail ? ` (${detail})` : ''}`;
+    typeof input.role === "string"
+      ? input.role
+      : typeof input.spawnId === "string"
+        ? input.spawnId
+        : typeof input.featureId === "string"
+          ? input.featureId
+          : typeof input.scope === "string"
+            ? input.scope
+            : null;
+  const label = `${formatOperatorToolName(t.name)}${detail ? ` (${detail})` : ""}`;
   const tooltip = (
     <span className="op-chat-tool-tooltip">
-      <strong>{t.name}{detail ? ` (${detail})` : ''}</strong>
+      <strong>
+        {t.name}
+        {detail ? ` (${detail})` : ""}
+      </strong>
       <span>{JSON.stringify(input).slice(0, 240)}</span>
     </span>
   );
@@ -583,12 +656,12 @@ function renderOperatorToolChip(t: ChatToolCall, i: number): ReactNode {
 
 function formatOperatorToolName(name: string): string {
   const compact = name
-    .replace(/^mcp__agentmcp_/, '')
-    .replace(/^mcp__/, '')
-    .replace(/^agentmcp_/, '')
-    .replace(/^search_tool_/, 'search_')
-    .replace(/_/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/^mcp__agentmcp_/, "")
+    .replace(/^mcp__/, "")
+    .replace(/^agentmcp_/, "")
+    .replace(/^search_tool_/, "search_")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
   return compact.length > 0 ? compact : name;
