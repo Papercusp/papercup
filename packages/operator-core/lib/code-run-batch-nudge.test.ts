@@ -979,3 +979,104 @@ describe('isPreferredDoor — the door classifier the nine hardcoded copies used
     }
   });
 });
+
+describe('maybeBatchNudge — the fold must FIT the script budget (EI-21254965187146713)', () => {
+  // The founding incident: the hint told an agent to chain testing:run calls inside one script,
+  // prefilled with its own args and escalating on repetition. The script's budget is 30s; the
+  // dispatch stack grants a single child 60s (`exec.tool.timeoutSec ?? 60`). The fold was killed
+  // at 30s, four dispatches were spent for nothing, and the work was finished with the individual
+  // calls the hint had discouraged. Complying cost strictly MORE than ignoring it.
+  const burst = (durationMs: number | undefined, opts: { tool?: string; times?: number } = {}) => {
+    const tool = opts.tool ?? 'testing:run';
+    const times = opts.times ?? BATCH_NUDGE_THRESHOLD;
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < times; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 's-budget', toolName: tool, canCodeRun: true, now: t, durationMs });
+    }
+    return hit;
+  };
+
+  it('stays silent when the measured fold cannot finish even at the foreground ceiling', () => {
+    // 2 × 30s sequential = 60s, past the 50s ceiling. There is no timeoutSec that rescues this,
+    // so the honest move is to say nothing: a recommendation that cannot succeed is worse than
+    // none, because it spends a round-trip teaching the agent to distrust the hint.
+    expect(burst(30_000)).toBeNull();
+  });
+
+  it('CONTROL: the identical burst WITHOUT timing still fires — measurement is what suppresses it', () => {
+    // Without this control, the test above passes just as happily if the suppression were caused
+    // by the tool name, the burst shape, or a broken trigger. Same session shape, same tool, same
+    // call count; the ONLY difference is that no duration was recorded.
+    const hit = burst(undefined);
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.suggestedScript).toContain('testing:run');
+  });
+
+  it('fires unchanged for a fast burst — no timeoutSec on a fold that fits the default budget', () => {
+    const hit = burst(200);
+    expect(hit?.kind).toBe('same-tool');
+    // Emitting the arg unconditionally would teach that it is always required.
+    expect(hit?.suggestedScript).toContain('code:run { script:');
+    expect(hit?.suggestedScript).not.toContain('timeoutSec');
+    expect(hit?.text).not.toContain('script budget');
+  });
+
+  it('fires WITH a fitting timeoutSec when the fold overruns the default but not the ceiling', () => {
+    // 2 × 18s = 36s: past the 30s default, inside the 50s ceiling. The skeleton must carry the
+    // budget that makes it work, not be suppressed.
+    const hit = burst(18_000);
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.suggestedScript).toMatch(/code:run \{ timeoutSec: (3[89]|4\d), script:/);
+    expect(hit?.text).toContain('script budget');
+  });
+
+  it('declining to recommend does NOT consume the backoff — the next foldable burst still fires', () => {
+    // The caller did nothing wrong. Burning their cooldown here would silence the NEXT burst,
+    // which may well be foldable — turning one bad recommendation into a lasting blind spot.
+    expect(burst(30_000)).toBeNull();
+    let t = 100_000; // a fresh window, same session
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({
+        sessionKey: 's-budget',
+        toolName: 'work_items:get',
+        canCodeRun: true,
+        now: t,
+        durationMs: 150,
+      });
+    }
+    expect(hit?.kind).toBe('same-tool');
+    // First fire for this session ⇒ no escalation banner. A consumed nudgeCount would show here.
+    expect(hit?.text).not.toContain('reminder this session');
+  });
+
+  it('projects fan-out as the SLOWEST branch, not the sum — Promise.all does not add up', () => {
+    // Three independent 15s reads: sequentially 45s, but the fan-out skeleton is a Promise.all, so
+    // the script waits ~15s. Summing here would suppress a fold that is not only valid but is
+    // exactly the case parallelism was for.
+    let t = 0;
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (const tool of ['plans:get', 'work_items:get', 'issues:list']) {
+      t += TURN_GAP_MS * 3; // distinct inference turns
+      hit = maybeBatchNudge({ sessionKey: 's-fan', toolName: tool, canCodeRun: true, now: t, durationMs: 15_000 });
+    }
+    expect(hit?.kind).toBe('fanout');
+    expect(hit?.suggestedScript).toContain('Promise.all');
+    expect(hit?.suggestedScript).not.toContain('timeoutSec');
+  });
+
+  it('CONTROL: the same fan-out at a duration that overruns even in parallel IS suppressed', () => {
+    // Guards the test above from passing because fan-out is simply never gated: raise the SLOWEST
+    // branch past the ceiling and the same shape must go quiet.
+    let t = 0;
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (const tool of ['plans:get', 'work_items:get', 'issues:list']) {
+      t += TURN_GAP_MS * 3;
+      hit = maybeBatchNudge({ sessionKey: 's-fan2', toolName: tool, canCodeRun: true, now: t, durationMs: 55_000 });
+    }
+    expect(hit).toBeNull();
+  });
+});
