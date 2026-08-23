@@ -39,6 +39,7 @@ vi.mock('../../../voice-prefs', () => ({
   loadVoicePrefs: vi.fn(async () => null),
 }));
 vi.mock('../../../operator-conversations', () => ({
+  getConversationById: vi.fn(async () => null),
   readConversationSummary: vi.fn(async () => ({
     summaryText: 'SUMMARY: older turns compacted.',
     summaryThroughSeq: 3,

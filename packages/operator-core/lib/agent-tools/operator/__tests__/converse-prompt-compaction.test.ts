@@ -37,6 +37,7 @@ vi.mock('../../../voice-prefs', () => ({
   loadVoicePrefs: vi.fn(async () => h.prefs),
 }));
 vi.mock('../../../operator-conversations', () => ({
+  getConversationById: vi.fn(async () => null),
   readConversationSummary: vi.fn(async (id: string) => {
     h.readCalls.push(id);
     if (h.readShouldThrow) throw new Error('pg down');
