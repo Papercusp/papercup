@@ -27,7 +27,44 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { listDesktopSessions } from '../../../desktop/desktop-session-registry';
+import {
+  listDesktopSessions,
+  type DesktopSessionRecord,
+} from '../../../desktop/desktop-session-registry';
+
+/**
+ * Registry records → the roster rows the Swarm view consumes. Exported pure so
+ * the two filters below are testable without standing up a route: both are
+ * silent when wrong (a remote row renders a tile whose VNC session can only
+ * fail; an unparseable display renders a tile that cannot be dialled at all).
+ */
+export function toLocalDesktopRows(sessions: readonly DesktopSessionRecord[]) {
+  return sessions
+    // Only LOCAL rows: a remote row's display belongs to its own host and is
+    // reached over the frame path, not by spawning x11vnc here.
+    .filter((s) => s.hostRef === null)
+    .map((s) => ({
+      id: s.id,
+      slug: s.harnessSlug,
+      kind: s.kind,
+      scope: s.scope,
+      scopeRef: s.scopeRef,
+      // The bare number is what the VNC route and the tile key want; the raw
+      // ':110' string stays available for anything that displays it.
+      display: Number(s.display.replace(/^:/, '')),
+      displayRaw: s.display,
+      displayGeometry: s.displayGeometry,
+      captureGeometry: s.captureGeometry,
+      state: s.state,
+      viewerMode: s.viewerMode,
+      viewerActor: s.viewerActor,
+      capabilities: s.capabilities,
+      lastActiveAt: s.lastActiveAt,
+    }))
+    // A display that does not parse to a number cannot be VNC'd (x11vnc takes a
+    // display number), so it would render a tile that can only fail.
+    .filter((d) => Number.isInteger(d.display));
+}
 
 export default defineTool({
   method: 'GET',
@@ -46,31 +83,6 @@ export default defineTool({
         { status: 200 },
       );
     }
-    const desktops = sessions
-      // Only LOCAL rows: a remote row's display belongs to its own host and is
-      // reached over the frame path, not by spawning x11vnc here.
-      .filter((s) => s.hostRef === null)
-      .map((s) => ({
-        id: s.id,
-        slug: s.harnessSlug,
-        kind: s.kind,
-        scope: s.scope,
-        scopeRef: s.scopeRef,
-        // The bare number is what the VNC route and the tile key want; the raw
-        // ':110' string stays available for anything that displays it.
-        display: Number(s.display.replace(/^:/, '')),
-        displayRaw: s.display,
-        displayGeometry: s.displayGeometry,
-        captureGeometry: s.captureGeometry,
-        state: s.state,
-        viewerMode: s.viewerMode,
-        viewerActor: s.viewerActor,
-        capabilities: s.capabilities,
-        lastActiveAt: s.lastActiveAt,
-      }))
-      // A display that does not parse to a number cannot be VNC'd (x11vnc takes
-      // a display number), so it would render a tile that can only fail.
-      .filter((d) => Number.isInteger(d.display));
-    return Response.json({ desktops });
+    return Response.json({ desktops: toLocalDesktopRows(sessions) });
   },
 });

@@ -254,6 +254,11 @@ export async function createVncSession(req: VncSessionRequest): Promise<VncTicke
   const target: VncTarget = req.target ?? 'frame';
   let spawnCmd: { cmd: string; args: string[] };
   let desktopSessionId: string | null = null;
+  // The slug this session is RECORDED under. For a local desktop the registry
+  // row is authoritative, not the caller's URL: admission is keyed on workspace
+  // + display, so a caller could otherwise name any slug and file an audit entry
+  // against a harness that has nothing to do with the desktop it opened.
+  let slug = req.slug;
 
   if (target === 'local') {
     // ADMISSION GATE. The display number arrives from the caller, and this host
@@ -269,6 +274,7 @@ export async function createVncSession(req: VncSessionRequest): Promise<VncTicke
       );
     }
     desktopSessionId = record.id;
+    slug = record.harnessSlug ?? req.slug;
     spawnCmd = localVncCommand(req.display, req.mode);
   } else {
     const loadFrame = depsOverride.loadFrame ?? loadDeployedFrame;
@@ -279,7 +285,7 @@ export async function createVncSession(req: VncSessionRequest): Promise<VncTicke
   }
 
   const ticket = randomBytes(24).toString('hex');
-  pending.set(ticket, { ...req, target, ticket, createdAt: now(), spawnCmd, desktopSessionId });
+  pending.set(ticket, { ...req, slug, target, ticket, createdAt: now(), spawnCmd, desktopSessionId });
   audit({
     // ONE audit namespace across both targets, on purpose: an operator asking
     // "who took over a desktop" writes one filter and finds every session. Two
@@ -287,8 +293,8 @@ export async function createVncSession(req: VncSessionRequest): Promise<VncTicke
     // below is what distinguishes them.
     action: `frame-vnc.${req.mode === 'takeover' ? 'takeover-requested' : 'watch-requested'}`,
     actor: req.actor,
-    subject: auditSubject(target, req.slug, req.display),
-    details: { slug: req.slug, display: req.display, mode: req.mode, target, desktopSessionId },
+    subject: auditSubject(target, slug, req.display),
+    details: { slug, display: req.display, mode: req.mode, target, desktopSessionId },
   });
   // GC stale pending tickets opportunistically.
   for (const [t, s] of pending) {
@@ -300,7 +306,7 @@ export async function createVncSession(req: VncSessionRequest): Promise<VncTicke
     wsPort: getFrameVncPort(),
     mode: req.mode,
     display: req.display,
-    slug: req.slug,
+    slug,
     target,
     desktopSessionId,
   };

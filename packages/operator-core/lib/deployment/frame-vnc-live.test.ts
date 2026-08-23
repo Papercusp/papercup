@@ -111,10 +111,13 @@ describe.skipIf(!LIVE)('local VNC bridge, live against a real Xvfb (P-004)', () 
     // preflight, an absent x11vnc reported `x11vnc-no-port`, which reads as
     // "x11vnc ran and gave no port" and sends the reader after a display bug.
     if (await haveBinary('x11vnc')) {
-      // Simulate absence by running the same script with an empty PATH.
+      // Simulate absence with an empty PATH — invoking bash by ABSOLUTE path,
+      // because a bare 'bash' is itself unresolvable once PATH is gone (which is
+      // how this test first failed, with a spawn ENOENT that had nothing to do
+      // with the behaviour under test).
       const { args } = localVncCommand(DISPLAY, 'watch');
       const out = await new Promise<string>((resolve) => {
-        const p = spawn('bash', ['-c', args[1]], { env: { ...process.env, PATH: '/nonexistent' } });
+        const p = spawn('/bin/bash', ['-c', args[1]], { env: { ...process.env, PATH: '/nonexistent' } });
         let err = '';
         p.stderr.on('data', (b: Buffer) => (err += String(b)));
         p.on('close', () => resolve(err));

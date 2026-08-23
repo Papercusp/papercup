@@ -333,6 +333,29 @@ describe('local desktop VNC target (P-004)', () => {
     expect(consumeTicket(t.ticket)!.spawnCmd.cmd).toBe('ssh');
   });
 
+  it('records the REGISTRY\'s harness, not the caller\'s slug — audit attribution', async () => {
+    // Admission is keyed on workspace + display, so the URL slug is unverified
+    // input. Trusting it would let a caller file a takeover audit entry against
+    // a harness that has nothing to do with the desktop they actually opened.
+    const { audits } = localDeps({ ':110': localRecord({ harnessSlug: 'the-real-owner' }) });
+    const t = await createVncSession({
+      slug: 'some-other-harness', workspaceId: 'ws', display: 110, mode: 'takeover', actor: 'user:a', target: 'local',
+    });
+    expect(t.slug).toBe('the-real-owner');
+    expect(audits[0]).toMatchObject({
+      subject: 'local:the-real-owner:110',
+      details: expect.objectContaining({ slug: 'the-real-owner' }),
+    });
+  });
+
+  it('falls back to the caller slug when the registry row has no harness', async () => {
+    const { audits } = localDeps({ ':110': localRecord({ harnessSlug: null }) });
+    await createVncSession({
+      slug: 'fallback', workspaceId: 'ws', display: 110, mode: 'watch', actor: 'user:a', target: 'local',
+    });
+    expect(audits[0]).toMatchObject({ subject: 'local:fallback:110' });
+  });
+
   // ── the cross-process viewer indicator ──
   it('binds the viewer on the registry row while open and CLEARS it on teardown', async () => {
     const child = fakeChild();
