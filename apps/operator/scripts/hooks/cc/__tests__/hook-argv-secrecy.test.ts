@@ -56,7 +56,9 @@ describe('cc hook child-process argv secrecy', () => {
       );
       expect(source, `${name} must read the bearer inside Python`).toContain('read_token_file');
 
-      for (const line of source.split('\n').filter((candidate) => /python3\s+-/.test(candidate))) {
+      for (const line of source
+        .split('\n')
+        .filter((candidate) => /^\s*python3\s+-\s/.test(candidate))) {
         const argvPrefix = line.split(/\s+3<<<|\s+<<['"]?PYEOF/)[0]!;
         expect(argvPrefix, `${name}: token value reached Python argv`).not.toContain('"$TOKEN"');
         expect(argvPrefix, `${name}: raw hook JSON reached Python argv`).not.toContain('"$INPUT"');
