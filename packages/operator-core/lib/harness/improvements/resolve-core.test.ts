@@ -228,7 +228,27 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     );
     expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'needs-human', routedToOwnerAction: true });
     expect(r.routedToLeaderTriage).toBeUndefined();
-    expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsOwnerAction: true, humanCapability: 'credential' } }]);
+    expect(d.rec.payloads).toEqual([
+      {
+        id: 'EI-3',
+        patch: {
+          needsOwnerAction: true,
+          humanCapability: 'credential',
+          externalBlockers: [
+            expect.objectContaining({
+              kind: 'human',
+              capability: 'credential',
+              ref: 'owner-capability:EI-3:credential',
+              summary: 'needs a prod DB credential only the owner holds',
+              nextVerb: expect.stringContaining('Provide credential'),
+              status: 'active',
+            }),
+          ],
+        },
+      },
+    ]);
+    expect(d.rec.payloads[0]).toBeDefined();
+    expect(d.rec.payloads[0]!.id).toBe('EI-3');
     // EI-18210987268765837 regression: a comment-only handoff (payload flag with NO state
     // transition) left the item in 'open' — every claim path gates on state='open', so it
     // stayed claimable and resurfaced days later as if freshly auto-eligible (root-caused on

@@ -80,6 +80,37 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  it('a strict human capability records the ask before entering needs-human', async () => {
+    const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.',
+      nextVerb: 'setup:save_key',
+    });
+
+    expect(out.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-1',
+      'needs-human',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+  });
+
+  it('refuses a strict human capability without a question and unblock action', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} });
+    const out = await one({ id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:prod-db' });
+    expect(out).toMatchObject({ ok: false, id: 'WI-1' });
+    expect(out.error).toMatch(/structured ask requires both.*summary.*nextVerb/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('clears the last blocker, retains history, and removes the issue claim hold', async () => {
     const blocker = {
       kind: 'runtime',
@@ -293,6 +324,8 @@ describe('work_items:set_blocker', () => {
       kind: 'human',
       capability: 'physical-device',
       ref: 'live-microphone',
+      summary: 'Connect a live microphone for the hardware-only verification.',
+      nextVerb: 'work_items:set_blocker { clear: true } after the device is connected',
     });
     expect(out.ok).toBe(true);
     expect(out.autoCleared).toBe(false);
@@ -304,7 +337,7 @@ describe('work_items:set_blocker', () => {
     });
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
       'WI-1',
-      'blocked',
+      'needs-human',
       expect.objectContaining({ by: 'su-a' }),
     );
   });

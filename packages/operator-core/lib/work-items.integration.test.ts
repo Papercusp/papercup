@@ -1788,7 +1788,12 @@ describe('unified work_items surface (real PG)', () => {
 
   it('set_state dispatches: feature → status; issue → state', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
-    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      { kind: 'human', capability: 'credential', ref: 'credential:test', summary: 'Provide test credential', nextVerb: 'provide credential' },
+      'agA',
+    );
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA', payload: { externalBlockers: blockers } });
     expect((await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' }))?.state).toBe('wip');
     expect((await wi.setWorkItemState(bug.id, 'needs_human'))?.state).toBe('needs-human');
     expect((await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'test' }))?.state).toBe('done');

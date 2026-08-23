@@ -26,6 +26,7 @@ import {
   EXTERNAL_BLOCKER_CAPABILITIES,
   type ExternalBlockerKind,
 } from '../../external-blockers';
+import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 
 const BLOCKER_KIND = z.enum(['event', 'gate', 'runtime', 'human']);
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
@@ -119,6 +120,17 @@ export default defineTool({
             error: `work_item '${input.id}' is already terminal ('${workItem.state}') — reopen it explicitly before adding an active blocker`,
           };
         }
+        const strictHumanAsk =
+          !input.clear && input.kind === 'human' && isStrictOwnerActionCapability(input.capability);
+        if (strictHumanAsk && (!input.summary?.trim() || !input.nextVerb?.trim())) {
+          return {
+            ok: false as const,
+            id: input.id,
+            error:
+              `work_item '${input.id}' owner-capability blocker rejected — a structured ask requires both ` +
+              '`summary` (the concrete question) and `nextVerb` (what action unblocks it).',
+          };
+        }
 
         const history = applyExternalBlockerUpdate(
           workItem.payload,
@@ -168,7 +180,7 @@ export default defineTool({
         let lifecycle: unknown = null;
         try {
           if (active.length > 0) {
-            lifecycle = await setWorkItemStateWithAliasInfo(input.id, 'blocked', {
+            lifecycle = await setWorkItemStateWithAliasInfo(input.id, strictHumanAsk ? 'needs-human' : 'blocked', {
               harness: input.harness,
               by: identity.ownerId,
             });

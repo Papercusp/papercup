@@ -5,7 +5,7 @@
  * Migration 864 replaced the ambiguous payload flag with typed owner-action and agent-review
  * destinations. The legacy key remains readable for pre-migration rows, but no lifecycle writer
  * may recreate it. Stored status='needs-human' is reserved for a strict typed owner capability;
- * untyped requests become blocked leader-triage work instead.
+ * unstructured requests are refused at the lifecycle seam.
  *
  * Run:
  *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
@@ -13,7 +13,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
@@ -55,6 +55,13 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   // The by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
+  // Claims and lifecycle transitions emit awaited-event latches. Keep this fixture's
+  // runtime dependency explicit and migration-audited so a missing latch relation does
+  // not turn otherwise-correct assertions into vitest-fail-on-console failures.
+  await applyMigrationsForTest(db.sql, ['632-event-key-fire-latch.sql'], {
+    label: 'work-items-needs-human-exclusion.integration.test.ts',
+    runtimeTables: ['harness_shared.event_key_fires'],
+  });
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -125,22 +132,32 @@ describe('diagnoseClaimNextMiss counts a legacy needsHuman OPEN row as ordinary 
 });
 
 describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)', () => {
-  it('aliases an untyped needs-human request to blocked leader triage', async () => {
+  it('refuses an unstructured needs-human request instead of creating a write-only park', async () => {
     await seedIssue('EI-echo-1', { kind: 'change', status: 'open', createdTs: 100, payload: {} });
 
-    const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-1', 'needs-human', { harness: H, by: 'tester' });
-
-    expect(res).toMatchObject({ requestedState: 'needs-human', appliedState: 'blocked', aliased: true });
-    expect(res.aliasNote).toMatch(/lacked a strict typed owner capability.*leader triage/);
-    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBeUndefined();
+    await expect(
+      wi.setWorkItemStateWithAliasInfo('EI-echo-1', 'needs-human', { harness: H, by: 'tester' }),
+    ).rejects.toThrow(/no structured owner ask.*work_items:set_blocker/);
   });
 
-  it('keeps a strict typed owner capability parked and replaces the legacy key atomically', async () => {
+  it('keeps a strict structured owner ask parked and replaces the legacy key atomically', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:prod-db',
+        summary: 'Provide the production DB credential.',
+        nextVerb: 'setup:save_key',
+      },
+      'tester',
+      '2026-08-23T18:00:00.000Z',
+    );
     await seedIssue('EI-echo-2', {
       kind: 'change',
       status: 'open',
       createdTs: 100,
-      payload: { humanCapability: 'credential', needsHuman: true },
+      payload: { humanCapability: 'credential', needsHuman: true, externalBlockers: blockers },
     });
     const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-2', 'needs-human', { harness: H, by: 'tester' });
 

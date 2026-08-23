@@ -9,7 +9,12 @@
  * the lifecycle module import this file so the status vocabulary cannot drift.
  */
 import type { OrgSql } from '../../work-items';
-import { activeExternalBlockers, type ExternalBlockerCapability } from '../../external-blockers';
+import {
+  activeExternalBlockers,
+  externalBlockerCapabilityPolicy,
+  type ExternalBlockerCapability,
+  type ExternalBlockerRecord,
+} from '../../external-blockers';
 
 export const AGENT_REVIEW_STATUSES = ['pending', 'revision-requested', 'approved'] as const;
 export type AgentReviewStatus = (typeof AGENT_REVIEW_STATUSES)[number];
@@ -44,6 +49,43 @@ export function hasStrictOwnerAction(payloadValue: unknown): boolean {
   if (payload.needsOwnerAction === true) return true;
   if (isStrictOwnerActionCapability(payload.humanCapability)) return true;
   return activeExternalBlockers(payload).some((blocker) => isStrictOwnerActionCapability(blocker.capability));
+}
+
+/**
+ * A durable owner ask encoded on the existing typed external-blocker surface.
+ * The record already carries the four facts EI-13766 requires, under the shared
+ * blocker vocabulary rather than a second parallel payload object:
+ *   question    = summary
+ *   askedOf     = the capability policy's resolutionOwner
+ *   askedAt     = createdAt (createdBy records the asker)
+ *   unblockedBy = nextVerb (ref is the stable condition identity)
+ */
+export interface StructuredOwnerAsk {
+  blocker: ExternalBlockerRecord;
+  question: string;
+  askedOf: ReturnType<typeof externalBlockerCapabilityPolicy>['resolutionOwner'];
+  askedAt: string;
+  askedBy: string;
+  unblockedBy: string;
+}
+
+export function readStructuredOwnerAsk(payloadValue: unknown): StructuredOwnerAsk | null {
+  for (const blocker of activeExternalBlockers(payloadValue)) {
+    if (blocker.kind !== 'human' || !isStrictOwnerActionCapability(blocker.capability)) continue;
+    const question = blocker.summary.trim();
+    const askedBy = blocker.createdBy.trim();
+    const unblockedBy = blocker.nextVerb?.trim() ?? '';
+    if (!question || !askedBy || !unblockedBy || !Number.isFinite(Date.parse(blocker.createdAt))) continue;
+    return {
+      blocker,
+      question,
+      askedOf: externalBlockerCapabilityPolicy(blocker.capability).resolutionOwner,
+      askedAt: blocker.createdAt,
+      askedBy,
+      unblockedBy,
+    };
+  }
+  return null;
 }
 
 function record(value: unknown): Record<string, unknown> {

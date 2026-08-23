@@ -36,7 +36,11 @@ import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import { initializeIdeaLifecycle, updateIdeaLifecycle, type IdeaLifecyclePayload } from './lifecycle';
 import { closeDispatchesForItem } from './dispatch-ledger';
 import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
-import { externalBlockerCapabilityPolicy, type ExternalBlockerCapability } from '../../external-blockers';
+import {
+  externalBlockerCapabilityPolicy,
+  updateExternalBlockerHistory,
+  type ExternalBlockerCapability,
+} from '../../external-blockers';
 import { enterAgentReview } from './agent-review';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
@@ -332,12 +336,26 @@ export async function resolveImprovement(
       // human" because payload.needsHuman was the only thing set. Mirror the OTHER resolve
       // branches (fixed → 'resolved', leader-triage → 'blocked') by ALSO moving state here —
       // 'needs-human' is a first-class, non-terminal IssueState that the claim floor excludes.
-      const updated = await deps.setIssueState(input.id, 'needs-human', by);
+      const askRef = `owner-capability:${input.id}:${input.blockerCapability}`;
+      const { blockers } = updateExternalBlockerHistory(
+        issue.payload,
+        {
+          kind: 'human',
+          capability: input.blockerCapability,
+          ref: askRef,
+          summary: input.summary,
+          nextVerb: `Provide ${input.blockerCapability} for ${input.id}, then clear blocker ${askRef}.`,
+        },
+        by,
+      );
       await deps.mergeIssuePayload(
         input.id,
-        { needsOwnerAction: true, humanCapability: input.blockerCapability },
+        { needsOwnerAction: true, humanCapability: input.blockerCapability, externalBlockers: blockers },
         { unset: ['needsHuman'] },
       );
+      // Persist the ask before the lifecycle park. A needs-human state without its
+      // question/unblock contract is the write-only queue EI-13766 closes.
+      const updated = await deps.setIssueState(input.id, 'needs-human', by);
       await deps.releaseIssue(input.id);
       await closeLedger();
       // A null `updated` (e.g. a federated/remote-owned issue whose view UPDATE no-ops, same
