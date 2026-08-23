@@ -25,6 +25,7 @@
  * clamp, EI-30 workspace promotion, tx/principal synthesis, the tooldef
  * dispatch stack — runs for real.
  */
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -437,6 +438,8 @@ registerProjectedTool({
 // `projected.skipResultDoor` before calling applyResultDoor, not just that
 // the flag is threaded through define-tool.ts/tool-projection.ts.
 const DOOR_TEST_BIG_TEXT = 'x'.repeat(20000);
+const FULL_SOURCE_CHECKPOINT_TAIL = 'CURRENT_CHECKPOINT_TAIL_EI_211604';
+const FULL_SOURCE_CHECKPOINT = `${DOOR_TEST_BIG_TEXT}${FULL_SOURCE_CHECKPOINT_TAIL}`;
 defineTool({
   name: 'gatingtest:door_default',
   requirePrincipal: false,
@@ -500,6 +503,25 @@ defineTool({
       codexLocks: { lockMode: 'automatic' },
     },
   }),
+});
+
+// EI-21160410643006790: an explicit full-tier nested dispatch must reach the
+// outer result-door with the TARGET's unshaped source. This synthetic target
+// deliberately has a lossy shaper; the spill assertion below is the durable
+// proof that `tools:invoke(... payloadTier:'full')` bypasses it before the
+// outer door writes the recoverable result.
+defineTool({
+  name: 'gatingtest:full_source_spill',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  payloadTierCeilingChars: 18_000,
+  shape: {
+    standard: () => ({ checkpoint: 'SHAPED_CHECKPOINT_MARKER' }),
+    trimmed: () => ({ checkpoint: 'SHAPED_CHECKPOINT_MARKER' }),
+  },
+  handler: async () => ({ data: { checkpoint: FULL_SOURCE_CHECKPOINT } }),
 });
 
 afterAll(() => {
@@ -840,6 +862,27 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
       cursor: { kind: 'scratch-page', tool: 'capability:read' },
     });
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  it('spills the exact unshaped checkpoint from an explicit-full nested target', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:full_source_spill',
+        args: { payloadTier: 'full' },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+
+    const body = JSON.parse((res.content[0] as { text: string }).text) as {
+      _projection: { cursor: { args: { file_path: string } } };
+    };
+    const spill = readFileSync(body._projection.cursor.args.file_path, 'utf8');
+    expect(spill).toContain(FULL_SOURCE_CHECKPOINT);
+    expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
   });
 });
 
