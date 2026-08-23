@@ -163,6 +163,7 @@ export const bulkRunManifest = defineTool({
       .describe('include items already reported (default false — you normally want only what is left)'),
   }),
   async handler(args) {
+    const featureEnabled = await bulkResolveEnabled();
     const runId = await resolveRunId(args.runId);
     if (!runId) {
       return {
@@ -241,7 +242,7 @@ export const bulkRunManifest = defineTool({
             // for a stopped run are refused, and a refusal after you have
             // already acted means the action happened with nothing recording
             // it — which is exactly the state to avoid.
-            stopped: !['pending', 'running'].includes(run.phase),
+            stopped: !featureEnabled || !['pending', 'running'].includes(run.phase),
           }),
         },
       ],
@@ -320,6 +321,30 @@ export const bulkRunReport = defineTool({
     if (!runId) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no_active_run' }) }],
+      };
+    }
+
+    // WI-41021 — the owner flipped the kill switch. Refuse BEFORE any write, and
+    // in the same shape as a stopped run (below), because to the resolver these
+    // are the same event: its authority to act was revoked mid-run. Distinct
+    // `refused` reason so an operator reading a log can tell a flag flip from an
+    // owner Stop without guessing.
+    if (!(await bulkResolveEnabled())) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              refused: 'feature_disabled',
+              flag: FLAGS.INBOX_BULK_RESOLVE,
+              runId,
+              wrote: 0,
+              message:
+                "Bulk resolve has been turned OFF by the owner while this run was in flight. Nothing from this report was written. STOP: take no further action on any item in this run, and do NOT re-route the work to the item's own verb outside the run. If you already took an action before this refusal, say so plainly in your final message rather than retrying or hiding it.",
+            }),
+          },
+        ],
       };
     }
 
@@ -449,6 +474,13 @@ export const bulkRunReport = defineTool({
   },
 });
 
+// WI-41021 — DELIBERATELY NOT FLAG-GATED. Do not "fix" this by adding a
+// bulkResolveEnabled() check to match its two siblings: settle is the WIND-DOWN
+// path, the tool half of the owner's Stop. Refusing it while the flag is off
+// would strand every in-flight run in `running` forever — the same inversion the
+// route-level blanket gate had (a kill switch that disables the kill button),
+// one level down. The flag gates ACTING (manifest authority, report writes);
+// finishing cleanly is never gated.
 export const bulkRunSettle = defineTool({
   name: 'inbox:bulk-run-settle',
   description:
