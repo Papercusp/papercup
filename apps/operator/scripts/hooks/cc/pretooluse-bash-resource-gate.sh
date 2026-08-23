@@ -4432,9 +4432,10 @@ def _write_call_arg_spans(body):
 # argument early) means the path was constructed at runtime and is invisible
 # to every literal-matching check in this guard, by the file's own documented
 # "honest limit".
-def _first_call_arg_has_no_literal(span):
+def _first_call_arg_text(span):
+    """Return the first top-level argument from a balanced call span."""
     if not span or span[0] != '(':
-        return False
+        return None
     depth = 0
     in_quote = None
     first_arg_end = None
@@ -4463,8 +4464,14 @@ def _first_call_arg_has_no_literal(span):
             break
         i += 1
     if first_arg_end is None:
-        return False  # unbalanced — nothing safe to conclude
-    first_arg = span[1:first_arg_end]
+        return None  # unbalanced — nothing safe to conclude
+    return span[1:first_arg_end]
+
+
+def _first_call_arg_has_no_literal(span):
+    first_arg = _first_call_arg_text(span)
+    if first_arg is None:
+        return False
     return not any(c in first_arg for c in ('\'', '"'))
 
 
@@ -4516,49 +4523,26 @@ def _first_call_arg_bare_ident(span):
     single bare identifier (`open(p, 'w')` -> `'p'`); None for anything else
     (an attribute/index/call/binop, multiple tokens, or an unbalanced span).
     Same balanced-paren first-arg extraction as `_first_call_arg_has_no_literal`."""
-    if not span or span[0] != '(':
+    first_arg = _first_call_arg_text(span)
+    if first_arg is None:
         return None
-    depth = 0
-    in_quote = None
-    first_arg_end = None
-    i, n = 0, len(span)
-    while i < n:
-        ch = span[i]
-        if in_quote:
-            if ch == '\\' and i + 1 < n:
-                i += 2
-                continue
-            if ch == in_quote:
-                in_quote = None
-            i += 1
-            continue
-        if ch in '\'"':
-            in_quote = ch
-        elif ch in '([{':
-            depth += 1
-        elif ch in ')]}':
-            depth -= 1
-            if depth == 0:
-                first_arg_end = i
-                break
-        elif ch == ',' and depth == 1:
-            first_arg_end = i
-            break
-        i += 1
-    if first_arg_end is None:
-        return None  # unbalanced — nothing safe to conclude
-    cand = span[1:first_arg_end].strip()
+    cand = first_arg.strip()
     return cand if _BARE_IDENT_RE.match(cand) else None
 
 
 def _payload_literal_tree_path(body, canon, cwd):
-    # Every quoted token inside a write-call argument span (see
-    # _write_call_arg_spans above — EI-18814109122347052) that looks
-    # path-like (contains `/` or a dotted extension) and carries no
+    # Every quoted token inside the FIRST, top-level path argument of a
+    # write-call span (see _write_call_arg_spans above — EI-18814109122347052)
+    # that looks path-like (contains `/` or a dotted extension) and carries no
     # shell/interpreter expansion syntax ($, `, {, }) — resolved the same
-    # literal-only way as _resolve_write_target.
+    # literal-only way as _resolve_write_target. Later arguments are payloads,
+    # not path operands; scanning them caused rationale prose such as
+    # `wave-b-gate.test.ts` to manufacture a false in-tree hit (EI-21274601485463217).
     _var_literals = None  # lazily built only if a bare-identifier arg needs it
     for _span in _write_call_arg_spans(body):
+        _first_arg = _first_call_arg_text(_span)
+        if _first_arg is None:
+            continue  # unbalanced — nothing safe to scan
         # EI-19327302389409134: the call's path argument may be a BARE VARIABLE
         # whose value was a plain literal assigned earlier in the same body
         # (`p = 'tree/path'; ...; open(p, 'w')`) — see the helpers + comment
@@ -4578,7 +4562,7 @@ def _payload_literal_tree_path(body, canon, cwd):
                     if (resolved and (resolved == canon or resolved.startswith(canon + os.sep))
                             and not _is_sanctioned_scratch(resolved, canon)):
                         return cand
-        for _m in _QUOTED_LITERAL_RE.finditer(_span):
+        for _m in _QUOTED_LITERAL_RE.finditer(_first_arg):
             raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
             if any(ch in raw for ch in ('$', '`', '{', '}')):
                 continue

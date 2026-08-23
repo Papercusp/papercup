@@ -4691,6 +4691,37 @@ describe('interpreter literal scan — only WRITE-CALL ARGUMENTS are candidates 
 });
 
 /**
+ * EI-21274601485463217 — a write target outside the tree must not be denied
+ * because a later payload argument names a tracked file in its rationale.
+ * Only the first path argument is an operand for the interpreter write guard;
+ * JSON payloads and other later arguments are data, not paths.
+ */
+describe('interpreter literal scan — only the first write-call path argument is scanned (EI-21274601485463217)', () => {
+  const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toMatch(/Edit or Write/);
+    return reason;
+  };
+
+  it('allows a /tmp write whose JSON rationale names a tracked test file', () => {
+    const command =
+      `node -e "const fs=require('fs'); fs.writeFileSync('/tmp/p019-done.json', ` +
+      `JSON.stringify({rationale:'Wave B gate landed: wave-b-gate.test.ts (14 tests) closes both halves...'}));"`;
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies an in-tree first path argument even when its payload also contains prose', () => {
+    const command =
+      `node -e "const fs=require('fs'); fs.writeFileSync('apps/operator/generated.ts', ` +
+      `JSON.stringify({rationale:'Wave B gate landed: wave-b-gate.test.ts (14 tests) closes both halves...'}));"`;
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('`apps/operator/generated.ts`');
+    expect(reason).not.toContain('wave-b-gate.test.ts');
+  });
+});
+
+/**
  * EI-18828567391761902 — a PROSE WORD carrying a period was resolved as a path.
  *
  * Fifth in the not-a-path-resolved-as-one family. The predecessor
