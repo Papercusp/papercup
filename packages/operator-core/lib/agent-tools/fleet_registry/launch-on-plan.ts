@@ -576,6 +576,43 @@ export function isProtectedAgentSessionTask(task: Pick<TaskRow, 'class' | 'memor
   );
 }
 
+export interface ProtectedAgentMemoryUsage {
+  activeProtectedAgentScopes: number;
+  observedProtectedMemoryBytes: number;
+  unmeasuredProtectedAgentScopes: number;
+}
+
+/**
+ * Summarize the memory footprint of protected agent scopes without turning a
+ * missing cgroup sample into a false zero. A peak is an upper bound for the
+ * scope's observed lifetime; a scope without one is accounted for separately so
+ * admission can reserve its full enforced cap.
+ */
+export function summarizeProtectedAgentMemory(
+  tasks: ReadonlyArray<Pick<TaskRow, 'class' | 'memoryMaxBytes' | 'peakMemoryBytes'>>,
+): ProtectedAgentMemoryUsage {
+  let activeProtectedAgentScopes = 0;
+  let observedProtectedMemoryBytes = 0;
+  let unmeasuredProtectedAgentScopes = 0;
+
+  for (const task of tasks) {
+    if (!isProtectedAgentSessionTask(task)) continue;
+    activeProtectedAgentScopes += 1;
+    const peak = task.peakMemoryBytes;
+    if (typeof peak === 'number' && Number.isFinite(peak) && peak >= 0) {
+      observedProtectedMemoryBytes += peak;
+    } else {
+      unmeasuredProtectedAgentScopes += 1;
+    }
+  }
+
+  return {
+    activeProtectedAgentScopes,
+    observedProtectedMemoryBytes,
+    unmeasuredProtectedAgentScopes,
+  };
+}
+
 export interface HeadlessHostMemoryClamp {
   requestedOpenCount: number;
   openCount: number;
@@ -588,17 +625,22 @@ export interface HeadlessHostMemoryClamp {
   activeProtectedAgentScopes: number;
   maxProtectedAgentScopes: number;
   availableProtectedAgentScopes: number;
+  observedProtectedMemoryBytes: number;
+  unmeasuredProtectedAgentScopes: number;
+  reservedProtectedMemoryBytes: number;
+  availableProtectedMemoryBytes: number;
   reason: string;
 }
 
 /**
  * Pure aggregate admission for headless agent scopes.
  *
- * Every headless member receives the shared agent-scope MemoryMax. The host can
- * therefore admit only floor(total * (1 - reserve) / cap) protected scopes in
- * aggregate; existing active protected agent-session scopes consume that budget
- * before this wave is considered. This is intentionally independent of gateway
- * capacity: it protects the machine even when inference accounts are healthy.
+ * Every new headless member receives the shared agent-scope MemoryMax. Existing
+ * scopes use their observed peak memory as the reservation, while a scope without
+ * a peak sample reserves the full cap. This keeps the admission fail-closed for
+ * unknown tasks without treating every long-lived scope as if it were currently
+ * consuming its worst-case budget. The configured uniform-cap ceiling remains in
+ * `maxProtectedAgentScopes` as a diagnostic reference.
  */
 export function clampHeadlessLaunchToHostMemory(
   requestedOpenCount: number,
@@ -606,6 +648,8 @@ export function clampHeadlessLaunchToHostMemory(
     hostTotalMemoryBytes: number;
     activeProtectedAgentScopes: number;
     perScopeMemoryBytes: number;
+    observedProtectedMemoryBytes?: number;
+    unmeasuredProtectedAgentScopes?: number;
     reservedFraction?: number;
   },
 ): HeadlessHostMemoryClamp {
@@ -622,15 +666,34 @@ export function clampHeadlessLaunchToHostMemory(
   const reservedMemoryBytes = total * reservedFraction;
   const usableMemoryBytes = Math.max(0, total - reservedMemoryBytes);
   const maxProtectedAgentScopes = Math.floor(usableMemoryBytes / perScope);
-  const availableProtectedAgentScopes = Math.max(0, maxProtectedAgentScopes - active);
+  const observedProtectedMemoryBytes =
+    typeof opts.observedProtectedMemoryBytes === 'number' &&
+    Number.isFinite(opts.observedProtectedMemoryBytes)
+      ? Math.max(0, opts.observedProtectedMemoryBytes)
+      : 0;
+  const unmeasuredProtectedAgentScopes =
+    typeof opts.unmeasuredProtectedAgentScopes === 'number' &&
+    Number.isFinite(opts.unmeasuredProtectedAgentScopes)
+      ? Math.max(0, Math.min(active, Math.floor(opts.unmeasuredProtectedAgentScopes)))
+      : active;
+  const reservedProtectedMemoryBytes =
+    observedProtectedMemoryBytes + unmeasuredProtectedAgentScopes * perScope;
+  const availableProtectedMemoryBytes = Math.max(0, usableMemoryBytes - reservedProtectedMemoryBytes);
+  const availableProtectedAgentScopes = Math.floor(availableProtectedMemoryBytes / perScope);
   const openCount = Math.min(requested, availableProtectedAgentScopes);
   const clamped = openCount < requested;
   const hostGiB = (total / 1024 ** 3).toFixed(1);
   const usableGiB = (usableMemoryBytes / 1024 ** 3).toFixed(1);
   const capGiB = (perScope / 1024 ** 3).toFixed(1);
+  const reservedGiB = (reservedProtectedMemoryBytes / 1024 ** 3).toFixed(1);
+  const observedGiB = (observedProtectedMemoryBytes / 1024 ** 3).toFixed(1);
+  const metricNote =
+    unmeasuredProtectedAgentScopes > 0
+      ? `, ${unmeasuredProtectedAgentScopes} without peak metrics reserved at cap`
+      : '';
   const reason = clamped
-    ? `host-memory-clamped headless top-up ${requested}→${openCount} — ${active} active protected agent-session scope(s), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per scope, ${availableProtectedAgentScopes} protected scope slot(s) available`
-    : `host-memory-ok headless top-up ${requested} — ${active} active protected agent-session scope(s), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per scope, ${availableProtectedAgentScopes} protected scope slot(s) available`;
+    ? `host-memory-clamped headless top-up ${requested}→${openCount} — ${active} active protected agent-session scope(s), ${reservedGiB}GiB reserved (${observedGiB}GiB observed peak${metricNote}), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per new scope, ${availableProtectedAgentScopes} protected scope slot(s) available`
+    : `host-memory-ok headless top-up ${requested} — ${active} active protected agent-session scope(s), ${reservedGiB}GiB reserved (${observedGiB}GiB observed peak${metricNote}), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per new scope, ${availableProtectedAgentScopes} protected scope slot(s) available`;
   return {
     requestedOpenCount: requested,
     openCount,
@@ -643,6 +706,10 @@ export function clampHeadlessLaunchToHostMemory(
     activeProtectedAgentScopes: active,
     maxProtectedAgentScopes,
     availableProtectedAgentScopes,
+    observedProtectedMemoryBytes,
+    unmeasuredProtectedAgentScopes,
+    reservedProtectedMemoryBytes,
+    availableProtectedMemoryBytes,
     reason,
   };
 }
@@ -2618,15 +2685,19 @@ export default defineTool({
     if (args.headless && openCount > 0) {
       try {
         const liveTasks = await listLiveTasks(workspaceId);
-        const activeProtectedAgentScopes = liveTasks.filter(isProtectedAgentSessionTask).length;
+        const protectedAgentMemory = summarizeProtectedAgentMemory(liveTasks);
         // A spawned headless leader consumes the same protected scope as a member,
         // but has not enrolled in the ledger yet. Reserve that slot before deciding
         // how many member scopes this call may open.
         const reservedForSpawnedLeader = spawningLeader ? 1 : 0;
         hostMemoryClamp = clampHeadlessLaunchToHostMemory(openCount, {
           hostTotalMemoryBytes: totalmem(),
-          activeProtectedAgentScopes: activeProtectedAgentScopes + reservedForSpawnedLeader,
+          activeProtectedAgentScopes:
+            protectedAgentMemory.activeProtectedAgentScopes + reservedForSpawnedLeader,
           perScopeMemoryBytes: agentSpawnScopeMemoryMaxG() * 1024 ** 3,
+          observedProtectedMemoryBytes: protectedAgentMemory.observedProtectedMemoryBytes,
+          unmeasuredProtectedAgentScopes:
+            protectedAgentMemory.unmeasuredProtectedAgentScopes + reservedForSpawnedLeader,
         });
         if (hostMemoryClamp.clamped) openCount = hostMemoryClamp.openCount;
       } catch (e: any) {

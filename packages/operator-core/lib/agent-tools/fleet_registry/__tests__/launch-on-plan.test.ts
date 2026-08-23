@@ -23,7 +23,8 @@ const ensureFleetLeaderControlMock = vi.fn();
 const assembleRolePromptMock = vi.fn();
 const resolveProjectDirMock = vi.fn();
 const listLiveTasksMock = vi.fn(
-  async (..._args: unknown[]) => [] as Array<{ class: string; memoryMaxBytes: number | null }>,
+  async (..._args: unknown[]) =>
+    [] as Array<{ class: string; memoryMaxBytes: number | null; peakMemoryBytes?: number | null }>,
 );
 const totalmemMock = vi.fn((..._args: unknown[]) => 256 * 1024 ** 3);
 const agentSpawnScopeMemoryMaxGMock = vi.fn((..._args: unknown[]) => 6);
@@ -246,6 +247,8 @@ import tool, {
   LEADER_AUTO_MODE_DIRECTIVE,
   LAUNCH_RESPONSE_DEADLINE_MS,
   raceLaunchResponseWithinBudget,
+  clampHeadlessLaunchToHostMemory,
+  summarizeProtectedAgentMemory,
 } from '../launch-on-plan';
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
@@ -286,6 +289,56 @@ describe('memberSpecIndexForLaunch', () => {
   it('appends a deficit wave after the live members', () => {
     expect(memberSpecIndexForLaunch(1, 0)).toBe(1);
     expect(memberSpecIndexForLaunch(1, 1)).toBe(2);
+  });
+});
+
+describe('headless host-memory admission', () => {
+  const GiB = 1024 ** 3;
+
+  it('uses observed peak memory for existing scopes while reserving the full cap for unknown scopes', () => {
+    const usage = summarizeProtectedAgentMemory([
+      { class: 'agent-session', memoryMaxBytes: 6 * GiB, peakMemoryBytes: 1 * GiB },
+      { class: 'agent-session', memoryMaxBytes: 6 * GiB, peakMemoryBytes: null },
+      { class: 'sidecar', memoryMaxBytes: 6 * GiB, peakMemoryBytes: 20 * GiB },
+    ]);
+
+    expect(usage).toEqual({
+      activeProtectedAgentScopes: 2,
+      observedProtectedMemoryBytes: 1 * GiB,
+      unmeasuredProtectedAgentScopes: 1,
+    });
+
+    const clamp = clampHeadlessLaunchToHostMemory(1, {
+      hostTotalMemoryBytes: 32 * GiB,
+      activeProtectedAgentScopes: usage.activeProtectedAgentScopes,
+      perScopeMemoryBytes: 6 * GiB,
+      observedProtectedMemoryBytes: usage.observedProtectedMemoryBytes,
+      unmeasuredProtectedAgentScopes: usage.unmeasuredProtectedAgentScopes,
+    });
+
+    expect(clamp).toMatchObject({
+      clamped: false,
+      openCount: 1,
+      observedProtectedMemoryBytes: 1 * GiB,
+      unmeasuredProtectedAgentScopes: 1,
+      reservedProtectedMemoryBytes: 7 * GiB,
+    });
+  });
+
+  it('retains fail-closed full-cap admission when peak metrics are unavailable', () => {
+    const clamp = clampHeadlessLaunchToHostMemory(1, {
+      hostTotalMemoryBytes: 32 * GiB,
+      activeProtectedAgentScopes: 4,
+      perScopeMemoryBytes: 6 * GiB,
+    });
+
+    expect(clamp).toMatchObject({
+      clamped: true,
+      openCount: 0,
+      unmeasuredProtectedAgentScopes: 4,
+      reservedProtectedMemoryBytes: 24 * GiB,
+      availableProtectedAgentScopes: 0,
+    });
   });
 });
 
@@ -430,6 +483,33 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       availableProtectedAgentScopes: 0,
     });
     expect(payload.message).toContain('host-memory admission allows 0 new headless members');
+  });
+
+  it('admits a measured fleet whose aggregate peaks fit the host budget', async () => {
+    const GiB = 1024 ** 3;
+    totalmemMock.mockReturnValueOnce(256 * GiB);
+    listLiveTasksMock.mockResolvedValueOnce(
+      Array.from({ length: 53 }, () => ({
+        class: 'agent-session',
+        memoryMaxBytes: 6 * GiB,
+        peakMemoryBytes: 1.4 * GiB,
+      })),
+    );
+
+    const res = await tool.handler(
+      { name: 'Measured Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(spawnHeadlessMock).toHaveBeenCalled();
+    expect(payload.hostMemoryClamp).toMatchObject({
+      activeProtectedAgentScopes: 53,
+      unmeasuredProtectedAgentScopes: 0,
+      requestedOpenCount: 1,
+      openCount: 1,
+      clamped: false,
+    });
   });
 
   it('rejects an unresolved member role before promotion, fleet creation, or terminal spawn', async () => {
