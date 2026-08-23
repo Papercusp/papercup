@@ -71,6 +71,7 @@ import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/
 import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
+  MAX_PICK_PATHS,
   PROJECTION_ARG,
   applyNamedViewToResult,
   applyResultProjection,
@@ -100,6 +101,7 @@ import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
+import { getSessionBrief } from '../../../session-brief';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { isEngineeringDocsSentinel } from '../../../agent-tools/_harness-scope';
@@ -665,6 +667,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     //   4. '*' — unscoped, exactly the pre-fix behavior.
     const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
     let workspaceId = headerWs || wsParam;
+    const sidForLookup = headerClient || clientParam;
     // Harness, same precedence as workspace above (WI-4393): `x-papercusp-harness`
     // header (OMP's per-launch carrier — omp-integration.ts's buildMcpEntry) first,
     // then `?harness=` (claude's `${PAPERCUSP_HARNESS_SLUG:-}` env-expanded url —
@@ -673,8 +676,15 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // prelude (buildMcpPrelude) never fired a harness-scoped recall for su-* OMP
     // sessions (zero port=initialize ledger stamps, live-verified in the WI).
     const headerHarness = (headers.get('x-papercusp-harness') ?? '').trim();
-    const harnessParam = headerHarness || harnessUrlParam;
-    const sidForLookup = headerClient || clientParam;
+    const explicitHarness = headerHarness || harnessUrlParam;
+    // A resumed/transport-reconnected SU session can retain its stable client SID
+    // while the launch URL loses its harness carrier. Recover the durable session
+    // brief only for that carrier-miss; an explicit header/URL harness always wins.
+    const briefHarness =
+      !explicitHarness && sidForLookup
+        ? ((await getSessionBrief({ ownerId: sidForLookup }).catch(() => null))?.harnessSlug ?? '').trim()
+        : '';
+    const harnessParam = explicitHarness || briefHarness;
     if (!workspaceId && sidForLookup) {
       workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
     }
@@ -1440,6 +1450,7 @@ async function buildMcpToolContext(
                 `projection_invalid: ${parsed.error}\n` +
                 `The \`projection\` argument reduces ANY tool result: ` +
                 `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+                `A single \`pick\` list accepts at most ${MAX_PICK_PATHS} paths; split larger selections across calls. ` +
                 `An ARRAY-root body (a bare list result) is selected with "[].field", not "field". ` +
                 `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
             },
@@ -2298,6 +2309,7 @@ const handler = createMcpHandler(
                       `projection_invalid: ${parsed.error}\n` +
                       `The \`projection\` argument reduces ANY tool result: ` +
                       `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+                      `A single \`pick\` list accepts at most ${MAX_PICK_PATHS} paths; split larger selections across calls. ` +
                       `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
                   },
                 ],

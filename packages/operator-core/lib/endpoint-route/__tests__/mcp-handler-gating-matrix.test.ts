@@ -33,6 +33,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
+import { MAX_PICK_PATHS } from '../../result-projection';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -123,6 +124,10 @@ const h = vi.hoisted(() => {
     ),
     /** SID→adv-row workspace fallback seam (psu-workspace-scoping fix). */
     workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
+    /** Durable session-brief harness fallback seam for resumed SU sessions. */
+    getSessionBrief: vi.fn(
+      async (_query: { ownerId?: string | null }): Promise<{ harnessSlug?: string | null } | null> => null,
+    ),
   };
 });
 
@@ -252,6 +257,10 @@ vi.mock('../../superuser-token', async (importOriginal) => {
 vi.mock('../../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, workspaceForCoordOwner: h.workspaceForCoordOwner };
+});
+vi.mock('../../session-brief', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, getSessionBrief: h.getSessionBrief };
 });
 vi.mock('../../resolve-harness-paths', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -607,6 +616,7 @@ const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').joi
 
 beforeEach(() => {
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
+  h.getSessionBrief.mockResolvedValue(null);
   seen.length = 0;
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
@@ -703,6 +713,18 @@ describe('projection — the caller-specified reduction stage at the dispatch la
     expect(textOf(res)).toContain('projection_invalid');
     expect(textOf(res)).toContain('POSIX');
     expect(seen).toHaveLength(0); // the tool was never dispatched
+  });
+
+  it('explains the pick-list ceiling when a direct projection is too large', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      { projection: { pick: Array.from({ length: MAX_PICK_PATHS + 1 }, (_, i) => `field${i}`) } },
+      scoped('ws-test'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain(`projection.pick accepts at most ${MAX_PICK_PATHS} paths`);
+    expect(textOf(res)).toContain(`A single \`pick\` list accepts at most ${MAX_PICK_PATHS} paths`);
+    expect(seen).toHaveLength(0);
   });
 
   it('no `projection` arg leaves the result byte-identical (the overwhelmingly common path)', async () => {
@@ -963,6 +985,16 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('projection_invalid');
     expect(invokeProbeSeen).toEqual([]); // never reached the target tool
+  });
+
+  it('explains the pick-list ceiling when a nested projection is too large', async () => {
+    const res = await invokeCall({
+      projection: { pick: Array.from({ length: MAX_PICK_PATHS + 1 }, (_, i) => `field${i}`) },
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain(`projection.pick accepts at most ${MAX_PICK_PATHS} paths`);
+    expect(textOf(res)).toContain(`A single \`pick\` list accepts at most ${MAX_PICK_PATHS} paths`);
+    expect(invokeProbeSeen).toEqual([]);
   });
 
   it('no `projection` arg leaves the re-dispatched result byte-identical', async () => {
@@ -2324,6 +2356,20 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     expect(inner?.ctx.harnessSlug).toBe('papercup');
     expect(inner?.ctx.tx).toBeUndefined();
     expect(inner?.ctx.principal).toBeUndefined();
+  });
+
+  it('recovers the caller harness from the session brief when only a client SID is present (EI-21238811054889658)', async () => {
+    h.getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercup' });
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:txless_scope', args: {} },
+      superuserExtra('&workspace=ws-test&client=su-brief-sid'),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(h.getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-brief-sid' });
+    const inner = seen.at(-1);
+    expect(inner?.tool).toBe('gatingtest:txless_scope');
+    expect(inner?.ctx.harnessSlug).toBe('papercup');
   });
 });
 
