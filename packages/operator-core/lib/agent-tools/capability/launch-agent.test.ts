@@ -514,6 +514,22 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--fork');
   });
 
+  it('falls through to an ordinary exact resume when restoreVisible is requested after the host already ended', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+
+    const res = await launchAgent.handler({
+      resume: { sessionId: 'sid-dead' },
+      restoreVisible: true,
+    }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(waitForPtyHostGoneMock).not.toHaveBeenCalled();
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(spawnedCommand()).not.toContain('--fork');
+    expect(textOf(res)).toContain('ordinary exact resume');
+  });
+
   it('refuses guarded restoration when the exact live session still has a desktop window', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
     windowScopeVerdictMock.mockReturnValue('alive');

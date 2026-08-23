@@ -76,6 +76,10 @@ import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
+import {
+  resolveSavedFleetLaunchSpec,
+  type SavedFleetLaunchSpecProvenance,
+} from '../fleet_registry/saved-launch-spec';
 
 /** Launching more than this many agents in one call is almost certainly a mistake
  *  (and is heavy — each is a real CLI process). Mirrors capability:terminal's cap. */
@@ -174,7 +178,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. Refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. The old agent-launched, unattended host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
+        'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. The old agent-launched, unattended host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
       ),
     agent: z
       .enum(['claude', 'codex', 'omp'])
@@ -201,7 +205,7 @@ export default defineTool({
       .max(MAX_AGENTS)
       .optional()
       .describe(
-        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
+        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry` is emitted on the psu launch; `claimKinds` still needs fleet:launch-on-plan because that door owns the fleet/member claim-spec machinery.',
       ),
     cwd: z.string().max(500).optional().describe('Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session\'s own recorded cwd.'),
     label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
@@ -334,43 +338,53 @@ export default defineTool({
       let sourceStillLive = target.live;
       if (args.restoreVisible) {
         if (!target.live || !target.ownerId) {
-          return err(
-            `Cannot restore ${target.sessionId}: no live managed host is attached to the resolved owner. ` +
-              'Use an ordinary exact resume; restoration is only for a host that survived its window.',
+          sourceStillLive = false;
+          notes.push(
+            `ⓘ Visible restore requested for ${target.sessionId}, but no live managed host remains; ` +
+              'continuing with an ordinary exact resume (nothing to terminate).',
           );
+        } else {
+          const host = findLiveHost(target.ownerId);
+          if (!host) {
+            // The host can disappear between resolveResumeTarget and this check.
+            // That race is safe: there is no remaining CLI to collide with, so
+            // continue as the ordinary exact resume instead of forcing a retry.
+            sourceStillLive = false;
+            notes.push(
+              `ⓘ Visible restore requested for ${target.sessionId}, but its managed host disappeared during ` +
+                'verification; continuing with an ordinary exact resume (nothing to terminate).',
+            );
+          } else {
+            const windowVerdict = isPidInLiveWindowScope(host.pid, nodeCgroupFs);
+            if (!restoreVisibleMayShutdown(windowVerdict)) {
+              return err(
+                `Cannot restore ${target.sessionId}: desktop-window verdict for ${target.ownerId} is ${windowVerdict}. ` +
+                  'Only a positive dead-window witness permits shutdown; alive, unknown, and not-a-window all refuse. Nothing was terminated.',
+              );
+            }
+            const shutdown = await shutdownViaPty(target.ownerId, {
+              force: true,
+              reason: `guarded visible restore of exact native session ${target.sessionId}`,
+            });
+            if (shutdown !== 'sent') {
+              return err(
+                `Cannot restore ${target.sessionId}: the proven-windowless host refused or missed graceful shutdown (${shutdown}). ` +
+                  'Nothing was killed and no replacement was launched.',
+              );
+            }
+            if (!(await waitForPtyHostGone(target.ownerId))) {
+              return err(
+                `Cannot restore ${target.sessionId}: graceful shutdown was accepted but the old host did not disappear within 10s. ` +
+                  'No replacement was launched, preventing two CLIs on one transcript.',
+              );
+            }
+            sourceStillLive = false;
+            notes.push(
+              `✓ Guarded restore: kernel cgroup evidence proved ${target.ownerId}'s desktop window dead; ` +
+                `its unattended agent-launched host shut down gracefully before exact UUID ${target.sessionId} was relaunched.`,
+            );
+          }
         }
-        const host = findLiveHost(target.ownerId);
-        if (!host) {
-          return err(`Cannot restore ${target.sessionId}: its live-host record changed during verification. Nothing was terminated.`);
-        }
-        const windowVerdict = isPidInLiveWindowScope(host.pid, nodeCgroupFs);
-        if (!restoreVisibleMayShutdown(windowVerdict)) {
-          return err(
-            `Cannot restore ${target.sessionId}: desktop-window verdict for ${target.ownerId} is ${windowVerdict}. ` +
-              'Only a positive dead-window witness permits shutdown; alive, unknown, and not-a-window all refuse. Nothing was terminated.',
-          );
-        }
-        const shutdown = await shutdownViaPty(target.ownerId, {
-          force: true,
-          reason: `guarded visible restore of exact native session ${target.sessionId}`,
-        });
-        if (shutdown !== 'sent') {
-          return err(
-            `Cannot restore ${target.sessionId}: the proven-windowless host refused or missed graceful shutdown (${shutdown}). ` +
-              'Nothing was killed and no replacement was launched.',
-          );
-        }
-        if (!(await waitForPtyHostGone(target.ownerId))) {
-          return err(
-            `Cannot restore ${target.sessionId}: graceful shutdown was accepted but the old host did not disappear within 10s. ` +
-              'No replacement was launched, preventing two CLIs on one transcript.',
-          );
-        }
-        sourceStillLive = false;
-        notes.push(
-          `✓ Guarded restore: kernel cgroup evidence proved ${target.ownerId}'s desktop window dead; ` +
-            `its unattended agent-launched host shut down gracefully before exact UUID ${target.sessionId} was relaunched.`,
-        );
       }
       if (sourceStillLive && !fork) {
         fork = true;
@@ -466,26 +480,75 @@ export default defineTool({
     // come from the fleet profile so a dead visible member returns headlessly
     // when that is the fleet's recorded shape.
     let persistedHeadcountProfile: Awaited<ReturnType<typeof getFleetHeadcountTarget>> = null;
+    let savedLaunchSpecMeta: {
+      provenance: SavedFleetLaunchSpecProvenance;
+      reusePath: string;
+    } | null = null;
     if (fleetSlug) {
-      try {
-        persistedHeadcountProfile = await getFleetHeadcountTarget(workspaceId, fleetSlug);
-      } catch (e) {
-        return err(
-          `Could not read the persisted launch profile for fleet \`${fleetSlug}\`: ${(e as Error)?.message ?? e}. ` +
-            'Refusing to reconstruct member settings ad hoc.',
-        );
-      }
-      if (persistedHeadcountProfile) {
-        const profile = persistedHeadcountProfile.config;
-        args.agent ??= profile.agent;
-        args.headless ??= profile.headless ?? true;
-        args.account ??= profile.account;
-        args.model ??= composeModelSpec(profile.model, profile.effort);
-        args.extraArgs ??= profile.extraArgs;
-        notes.push(
-          `✓ Applied persisted fleet launch profile from fleet:headcount-target ` +
-            `(target ${persistedHeadcountProfile.target}, ${args.headless ? 'headless' : 'visible'}).`,
-        );
+      if (isResume) {
+        const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
+          workspaceId,
+          fleetSlug,
+          requested: {
+            account: args.account,
+            model: args.model,
+            headless: args.headless,
+            extraArgs: args.extraArgs,
+          },
+          reusePath: 'capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand',
+        });
+        if (!savedLaunchSpec.ok) return err(savedLaunchSpec.message);
+        if (savedLaunchSpec.found) {
+          persistedHeadcountProfile = {
+            workspaceId,
+            fleetSlug,
+            target: savedLaunchSpec.target,
+            config: savedLaunchSpec.config,
+            nextAttemptAt: null,
+            backoffMs: 0,
+            lastError: null,
+          };
+          args.headless ??= savedLaunchSpec.effective.member.headless;
+          args.account ??= savedLaunchSpec.effective.member.account;
+          args.model ??= composeModelSpec(
+            savedLaunchSpec.effective.member.model,
+            savedLaunchSpec.effective.member.effort,
+          );
+          args.extraArgs ??= savedLaunchSpec.effective.member.extraArgs;
+          savedLaunchSpecMeta = {
+            provenance: savedLaunchSpec.provenance,
+            reusePath: savedLaunchSpec.reusePath,
+          };
+          notes.push(
+            `✓ Applied canonical saved fleet launch spec from ${savedLaunchSpec.provenance.source} ` +
+              `(target ${savedLaunchSpec.target}, ${args.headless ? 'headless' : 'visible'}, ` +
+              `reuse ${savedLaunchSpec.reusePath}).`,
+          );
+        }
+      } else {
+        // P-044 is deliberately resume-only here: a FRESH launch retains its
+        // existing behavior while the fleet-specific top-up door owns strict
+        // conflict policy. The shared resolver does not change fresh launches.
+        try {
+          persistedHeadcountProfile = await getFleetHeadcountTarget(workspaceId, fleetSlug);
+        } catch (e) {
+          return err(
+            `Could not read the persisted launch profile for fleet \`${fleetSlug}\`: ${(e as Error)?.message ?? e}. ` +
+              'Refusing to reconstruct member settings ad hoc.',
+          );
+        }
+        if (persistedHeadcountProfile) {
+          const profile = persistedHeadcountProfile.config;
+          args.agent ??= profile.agent;
+          args.headless ??= profile.headless ?? true;
+          args.account ??= profile.account;
+          args.model ??= composeModelSpec(profile.model, profile.effort);
+          args.extraArgs ??= profile.extraArgs;
+          notes.push(
+            `✓ Applied persisted fleet launch profile from fleet:headcount-target ` +
+              `(target ${persistedHeadcountProfile.target}, ${args.headless ? 'headless' : 'visible'}).`,
+          );
+        }
       }
     }
 
@@ -662,6 +725,7 @@ export default defineTool({
               model: folded.model ?? null,
               effort: folded.effort ?? null,
               headless: !!folded.headless,
+              carry: folded.carry ?? null,
               contextSize: folded.contextSize ?? null,
               compactionLimit: folded.compactionLimit ?? null,
               role: folded.role ?? null,
@@ -689,11 +753,11 @@ export default defineTool({
     // Back-compat: `command` (singular) is the representative reported/recorded command
     // — identical across members in the common no-`members` case.
     const command = memberCommands[0] ?? '';
-    // `carry`/`claimKinds` need the fleet baseline + claim-spec machinery this general
-    // door doesn't build — accept them for schema parity, but never honor them silently.
-    if ((args.members ?? []).some((m) => m?.carry || m?.claimKinds?.length)) {
+    // `claimKinds` needs the fleet/member claim-spec machinery this general
+    // door doesn't build. `carry` is command-native and is emitted above.
+    if ((args.members ?? []).some((m) => m?.claimKinds?.length)) {
       notes.push(
-        '⚠ `carry` / `claimKinds` on a member are only honored by fleet:launch-on-plan (they seed the member baseline + per-member claim spec); this general launch door opens raw agents, so those fields were IGNORED. Use fleet:launch-on-plan for a self-pulling fleet.',
+        '⚠ `claimKinds` on a member is only honored by fleet:launch-on-plan (it seeds the per-member claim spec); this general launch door opens raw agents, so that field was IGNORED. Use fleet:launch-on-plan for a self-pulling fleet claim lane.',
       );
     }
 
@@ -915,7 +979,12 @@ export default defineTool({
       command,
       fleet: fleetSlug,
       headcountProfile: persistedHeadcountProfile
-        ? { applied: true, target: persistedHeadcountProfile.target, config: persistedHeadcountProfile.config }
+        ? {
+            applied: true,
+            target: persistedHeadcountProfile.target,
+            config: persistedHeadcountProfile.config,
+            ...(savedLaunchSpecMeta ?? {}),
+          }
         : null,
       mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
       resumedOwnerId: resumeOwnerId,
