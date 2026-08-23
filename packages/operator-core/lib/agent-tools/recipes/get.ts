@@ -97,6 +97,13 @@ export default defineTool({
               refs: authority.refs,
               requiresContext: authority.bound,
               runnable: !authority.unresolved,
+              // WI-40896 / D-048: an unresolved analysis collects NO refs (inspectCall
+              // returns before collectArgs), so `refs: {}` + `requiresContext: false`
+              // used to be indistinguishable from "this recipe needs no authority" when
+              // it actually meant "authority could not be measured". Carry the
+              // boundedness marker and the cause so the caller can tell them apart.
+              refsMeasured: !authority.unresolved,
+              unresolvedCause: authority.unresolvedCause ?? null,
             },
           },
         };
