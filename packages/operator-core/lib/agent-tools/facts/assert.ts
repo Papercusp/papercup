@@ -42,6 +42,7 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { factMeasurementHint } from '../../fact-measurement-detector';
+import { getCellUnchecked } from '../../cell-registry';
 import {
   suggestDependsOnCells,
   type DependsOnSuggestion,
@@ -104,6 +105,52 @@ export function overwroteAuthorField(input: {
   };
 }
 
+type DependsOnInput = string | { cell: string; as?: string };
+
+export interface IncompleteDependsOnSuggestion {
+  /** The cell the body transcribed but the accept payload could not safely add. */
+  cell: string;
+  /** The subject parameter a caller must supply before this dependency is executable. */
+  required: string;
+  /** Why this entry was withheld from the accept-ready payload. */
+  reason: 'caller-relative-subject-required' | 'cell-contract-unavailable';
+}
+
+export interface DependsOnSuggestionField {
+  suggested: DependsOnSuggestion[];
+  /** Present only when every newly suggested dependency in this field is executable. */
+  accept?: { dependsOn: DependsOnInput[] };
+  /** Present when one or more suggestions need caller input before they can be accepted. */
+  incomplete?: IncompleteDependsOnSuggestion[];
+  note: string;
+}
+
+function dependencyAcceptance(cell: string):
+  | { acceptReady: true }
+  | { acceptReady: false; required: string; reason: IncompleteDependsOnSuggestion['reason'] } {
+  const spec = getCellUnchecked(cell);
+  if (!spec) {
+    return {
+      acceptReady: false,
+      required: 'the cell subject',
+      reason: 'cell-contract-unavailable',
+    };
+  }
+  if (spec.callerRelativity.kind === 'global') return { acceptReady: true };
+  if (spec.callerRelativity.kind === 'parameter') {
+    return {
+      acceptReady: false,
+      required: spec.callerRelativity.param,
+      reason: 'caller-relative-subject-required',
+    };
+  }
+  return {
+    acceptReady: false,
+    required: `ambient ${spec.callerRelativity.source}`,
+    reason: 'caller-relative-subject-required',
+  };
+}
+
 /**
  * P-007 — the OTHER half of the dependency-disclosure story.
  *
@@ -130,12 +177,11 @@ export function overwroteAuthorField(input: {
  */
 export function dependsOnSuggestionField(
   body: string,
-  declaredCells: readonly string[],
-): {
-  suggested: DependsOnSuggestion[];
-  accept: { dependsOn: string[] };
-  note: string;
-} | null {
+  declaredDependencies: readonly DependsOnInput[],
+): DependsOnSuggestionField | null {
+  const declaredCells = declaredDependencies.map((dependency) =>
+    typeof dependency === 'string' ? dependency : dependency.cell,
+  );
   let suggested: DependsOnSuggestion[] = [];
   try {
     suggested = suggestDependsOnCells(body, declaredCells);
@@ -143,22 +189,45 @@ export function dependsOnSuggestionField(
     return null;
   }
   if (suggested.length === 0) return null;
+
+  const acceptReady = suggested.filter((suggestion) => dependencyAcceptance(suggestion.cell).acceptReady);
+  const incomplete = suggested.flatMap((suggestion) => {
+    const acceptance = dependencyAcceptance(suggestion.cell);
+    return acceptance.acceptReady
+      ? []
+      : [{ cell: suggestion.cell, required: acceptance.required, reason: acceptance.reason }];
+  });
+  const acceptedDependencies = declaredDependencies
+    .map((dependency) =>
+      typeof dependency === 'string'
+        ? dependency.trim()
+        : {
+            cell: dependency.cell.trim(),
+            ...(dependency.as !== undefined ? { as: dependency.as } : {}),
+          },
+    )
+    .filter((dependency) => (typeof dependency === 'string' ? dependency.length > 0 : dependency.cell.length > 0));
+
   return {
     suggested,
     // Accept-in-one-call: hand back the exact argument to re-send, already merged with
     // whatever the caller declared, so acting on this costs a copy rather than a trip to
-    // the schema docs and a manual union the caller can get wrong.
-    accept: {
-      dependsOn: [
-        ...declaredCells.map((c) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean),
-        ...suggested.map((s) => s.cell),
-      ],
-    },
+    // the schema docs and a manual union the caller can get wrong. Caller-relative
+    // suggestions are deliberately withheld: a bare cell id would be accepted by the
+    // schema but can never produce a comparison anchor without its subject.
+    ...(acceptReady.length > 0
+      ? { accept: { dependsOn: [...acceptedDependencies, ...acceptReady.map((s) => s.cell)] } }
+      : {}),
+    ...(incomplete.length > 0 ? { incomplete } : {}),
     note:
       `This fact's body states ${suggested.length} value(s) a registered CELL answers authoritatively, but the ` +
       'fact does not depend on those cells — so nothing will ever mark it stale when they change, and it will ' +
-      'keep folding into orients as standing context long after it stopped being true. Re-assert with the ' +
-      '`accept.dependsOn` above to arm staleness detection. NOTHING was attached or changed by this suggestion; ' +
+      'keep folding into orients as standing context long after it stopped being true. ' +
+      (incomplete.length > 0
+        ? `The ${incomplete.length} incomplete suggestion(s) require caller input before they can be added; `
+        : '') +
+      (acceptReady.length > 0 ? 'Re-assert with the `accept.dependsOn` above to arm staleness detection. ' : '') +
+      'NOTHING was attached or changed by this suggestion; ' +
       'if you are deliberately recording HISTORICAL state, ignore it.',
   };
 }
@@ -714,7 +783,7 @@ export default defineTool({
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
     const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
-    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, declaredCells);
+    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, args.dependsOn ?? []);
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {

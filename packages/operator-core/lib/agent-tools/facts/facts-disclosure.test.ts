@@ -6,8 +6,9 @@
  * Both are the same defect in different clothes: the tool KNEW something the caller needed
  * (your write was lossy / this read is huge) and said nothing.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import assertTool, { truncationField, dependsOnSuggestionField } from './assert';
+import { __resetCellRegistryForTests, registerCell } from '../../cell-registry';
 import factsListTool, {
   FACTS_LIST_EXCERPT_NOTE,
   projectFact,
@@ -27,6 +28,23 @@ type AssertSchemaField = {
   description?: string;
   safeParse(value: unknown): { success: boolean };
 };
+
+beforeAll(() => {
+  __resetCellRegistryForTests();
+  registerCell({
+    cell: 'git.pipelinePosition',
+    owner: 'test',
+    headline: 'positions.deployed',
+    falsifier: { field: 'serving.startedSinceCodeChange', measurement: 'test probe', kills: 'test' },
+    nullable: false,
+    callerRelativity: { kind: 'parameter', param: 'path' },
+    provenance: { obtainedBy: 'test', liveExercised: true, evidence: 'test' },
+    resolver: 'test resolver',
+    visibility: { kind: 'workspace' },
+    federation: { kind: 'local' },
+    changeSignal: { kind: 'event', key: 'test' },
+  });
+});
 
 const assertSchemaField = (name: string): AssertSchemaField => {
   const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
@@ -118,13 +136,21 @@ describe('dependsOnSuggestionField — facts:assert suggests the dependency the 
     expect(TRANSCRIBING).toContain(out.suggested[0].value);
   });
 
-  it('accept.dependsOn is re-sendable AS-IS — it MERGES the caller\'s declared cells, never replaces them', () => {
-    // The failure this pins: emitting only the suggestion would make an obedient caller
-    // re-assert with their own declared dependency silently DROPPED. A one-call accept
-    // that quietly loses caller input is worse than no accept field at all.
+  it('does not emit a bare accept for a caller-relative suggestion — it marks the result incomplete', () => {
+    // The failure this pins: emitting git.pipelinePosition as a bare string lets an
+    // obedient caller re-assert successfully while recording insufficient-data because
+    // the required path subject was missing. A field that looks accept-ready but cannot
+    // arm staleness is worse than an explicit incomplete result.
     const out = dependsOnSuggestionField(TRANSCRIBING, ['deploy.3070.sha'])!;
-    expect(out.accept.dependsOn).toContain('deploy.3070.sha');
-    expect(out.accept.dependsOn).toContain('git.pipelinePosition');
+    expect(out.accept).toBeUndefined();
+    expect(out.incomplete).toEqual([
+      {
+        cell: 'git.pipelinePosition',
+        required: 'path',
+        reason: 'caller-relative-subject-required',
+      },
+    ]);
+    expect(out.note).toMatch(/incomplete suggestion/i);
   });
 
   it('says plainly that nothing was attached, so the caller is not left guessing', () => {
