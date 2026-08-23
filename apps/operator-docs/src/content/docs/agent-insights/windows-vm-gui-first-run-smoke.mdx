@@ -4,18 +4,18 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: How to drive a Windows desktop first-run GUI smoke headlessly on VM :2223
+title: "How to drive a Windows desktop first-run GUI smoke headlessly on VM :2223"
 description: "The Windows 11 QEMU dev VM (:2223 ssh, :5931 SPICE) can be driven for a full first-run GUI smoke WITHOUT a human at the SPICE viewer. Observe the screen with QEMU monitor `screendump`; run PowerShell over SSH via base64 `-EncodedCommand` (dodges cmd/$ quoting hell); launch the GUI on the visible console session and INJECT mouse clicks with an interactive scheduled task (SSH lands in a non-visible session, so Start-Process there shows no window). Includes the clean-reset recipe and the elevated-launch=no-window gotcha."
+type: Insight
 discovered: 2026-06-25
-tags: [windows, desktop, qemu, vm, spice, first-run, smoke-test, wsl2, scheduled-task, screendump, powershell-over-ssh, release, runbook, WI-800]
+tags: ["windows", "desktop", "qemu", "vm", "spice", "first-run", "smoke-test", "wsl2", "scheduled-task", "screendump", "powershell-over-ssh", "release", "runbook", "WI-800"]
 status: active
 documents:
-  - papercusp-desktop/bin/build-windows-cross.sh
-  - papercusp-desktop/src-tauri/src/wsl_setup.rs
-  - papercusp-desktop/src-tauri/src/main.rs
+  - "papercusp-desktop/bin/build-windows-cross.sh"
+  - "papercusp-desktop/src-tauri/src/wsl_setup.rs"
+  - "papercusp-desktop/src-tauri/src/main.rs"
 sidebar:
   order: 96
-type: Insight
 generated:
   by: agent
   at: 2026-06-25
@@ -25,12 +25,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Build mechanism changed (WI-5651) — this testing recipe is about the VM as a TEST target, not a build machine">
 This doc predates WI-5651, which retired the VM as the Windows **build**
-mechanism (`bin/build-windows-on-vm.sh` → `bin/build-windows-cross.sh`,
-cross-compiled on Linux). Nothing here is about building, though — it's about
+mechanism. Builds now use `papercusp-desktop/bin/build-windows-cross.sh`,
+cross-compiled on Linux. Nothing here is about building, though — it's about
 driving an *installed* Windows app inside a VM for a first-run smoke test, and
 that need doesn't go away just because the artifact is no longer built inside
 that same VM: a Windows box (VM or otherwise) is still needed to install and
-run whatever `build-windows-cross.sh` produces. The SSH/SPICE/scheduled-task
+run whatever `papercusp-desktop/bin/build-windows-cross.sh` produces. The SSH/SPICE/scheduled-task
 recipe below should still apply to a cross-built installer, but has not been
 specifically re-verified against one.
 </Aside>
