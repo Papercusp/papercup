@@ -157,7 +157,7 @@ describe('confined task exit recording (WI-37509)', () => {
 
     // The exact shape measured live: client SIGTERMed, payload untouched.
     emitter.emit('exit', null, 'SIGTERM');
-    await flush();
+    await flushAfterHandoff();
 
     expect(L.closed).toEqual([]);
     // The suppression must be AUDIBLE. A row silently left open looks identical to
@@ -172,7 +172,7 @@ describe('confined task exit recording (WI-37509)', () => {
     const { emitter } = await spawnConfined([3204532, 3204609, 3204726]);
 
     emitter.emit('exit', 0, null);
-    await flush();
+    await flushAfterHandoff();
 
     expect(L.closed).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
@@ -187,7 +187,7 @@ describe('confined task exit recording (WI-37509)', () => {
 
     markManagedSpawnTeardown(result.child);
     emitter.emit('exit', null, 'SIGTERM');
-    await flush();
+    await flushAfterHandoff();
 
     expect(L.closed).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
@@ -236,6 +236,20 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
   });
 
+  it('closes a scope that drains during the handoff window without warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitter, scope } = await spawnConfined([3204532, 3204609, 3204726]);
+
+    emitter.emit('exit', null, 'SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, SCOPE_HANDOFF_RECHECK_MS - 1));
+    scope.procs = [];
+    await flushAfterHandoff();
+
+    expect(L.closed).toHaveLength(1);
+    expect(L.closed[0]!.state).toBe('killed');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('DOES close the row when the scope is gone — the ordinary healthy ending', async () => {
     const { emitter } = await spawnConfined(null);
 
@@ -264,7 +278,7 @@ describe('confined task exit recording (WI-37509)', () => {
     const { emitter } = await spawnConfined([], 3);
 
     emitter.emit('exit', null, 'SIGTERM');
-    await flush();
+    await flushAfterHandoff();
 
     expect(L.closed).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
@@ -293,7 +307,7 @@ describe('confined task exit recording (WI-37509)', () => {
 
     const populated = await spawnConfined([3204532, 3204609, 3204726]);
     populated.emitter.emit('exit', null, 'SIGTERM');
-    await flush();
+    await flushAfterHandoff();
     const closedWhilePopulated = L.closed.length;
 
     L.closed.length = 0;

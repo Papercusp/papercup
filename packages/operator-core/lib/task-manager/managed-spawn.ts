@@ -560,11 +560,13 @@ function wireExit(
 
   child.on('exit', (code, signal) => {
     const intentionalTeardown = intentionalTeardownChildren.delete(child);
-    if (payloadOutlivedClient()) {
-      reportPayloadOutlivedClient(code, signal, false, intentionalTeardown);
-      return;
-    }
     if (confined && scopeCgroupPath) {
+      // A populated scope at the instant the client exits is not yet proof that
+      // the payload outlived it. Normal payload teardown can leave a short-lived
+      // child in the scope (notably when an accessibility action closes a GTK app),
+      // so use the same bounded handoff barrier for both initially-empty and
+      // initially-populated scopes. Persistent occupants still produce the
+      // warning after the grace window; a scope that drains closes normally.
       waitForPayloadHandoff(code, signal, intentionalTeardown, () => {
         if (payloadOutlivedClient()) {
           reportPayloadOutlivedClient(code, signal, true, intentionalTeardown);
