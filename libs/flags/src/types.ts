@@ -976,6 +976,16 @@ export const FLAGS = {
   // spawn (today's behavior) — it can never break a non-bwrap host. OFF by default until
   // validated end-to-end on a bwrap-capable host (this dev box's userns is restricted).
   CAPABILITY_EXEC_SANDBOX: "papercusp-capability-exec-sandbox",
+  // agent-virtual-desktops-2026-08-23 P-010 (D-015): wrap APPS launched on a leased
+  // sandbox desktop in bubblewrap — read-only host root, a private /tmp and HOME, and the
+  // shared credential masks — so a GUI app no longer runs bare as the operator user.
+  // ON by default (alpha default-on) and FAIL-OPEN: bwrap unavailable ⇒ the app launches
+  // raw exactly as before, so this can never break a non-bwrap host. Distinct from
+  // CAPABILITY_EXEC_SANDBOX, which contains capability:bash/git payloads: that one's
+  // `--tmpfs /tmp` is actively WRONG for a desktop app, whose display and a11y bus are both
+  // sockets under /tmp (D-015). Network isolation is a separate per-desktop opt-in, not
+  // this flag — see `denyNetwork` in desktop-sandbox.ts.
+  DESKTOP_APP_SANDBOX: "papercusp-desktop-app-sandbox",
   // git-sync-content-guard-2026-06-13 (D-006-superseded): the runtime KILL-SWITCH for
   // the git-sync content guard (EI-438) — the pre-commit check that quarantines a dirty
   // file failing a content detector (an .mdx that won't compile, a curly quote used as

@@ -30,7 +30,7 @@ function hasBin(bin: string): boolean {
 }
 const liveEnabled =
   process.env.PAPERCUSP_COMPUTER_LIVE === '1' &&
-  ['Xvfb', 'xdotool', 'xdpyinfo', 'bwrap', 'dbus-daemon'].every(hasBin);
+  ['Xvfb', 'xdotool', 'xdpyinfo', 'bwrap', 'dbus-daemon', 'python3'].every(hasBin);
 
 const DISPLAY_NUM = 187;
 const DISPLAY = `:${DISPLAY_NUM}`;
@@ -156,13 +156,57 @@ describe.skipIf(!liveEnabled)('P-010 desktop sandbox — LIVE (real Xvfb, real b
     const busPath = a11yBusSocketPath(busAddress);
     expect(busPath).toBeTruthy(); // the fixture itself must be a FILESYSTEM bus (D-015)
 
-    const argv = sandboxArgv(['test', '-S', busPath!], { a11yBusPath: busPath, denyNetwork: true });
-    expect(run('bwrap', argv).status).toBe(0);
+    // A real connect(), NOT `test -S`. Statting the socket only proves a directory entry is
+    // visible; what an a11y client actually needs is to CONNECT, and the two can differ (a
+    // mount can expose the inode while the connect is refused). Asserting the weaker thing
+    // was a gap in this test's first version.
+    const CONNECT = `import socket,sys
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+try:
+    s.connect(sys.argv[1]); print("CONNECT_OK")
+except Exception as e: print("CONNECT_FAIL",e)`;
+    const argv = sandboxArgv(['python3', '-c', CONNECT, busPath!], {
+      a11yBusPath: busPath,
+      denyNetwork: true,
+    });
+    expect(run('bwrap', argv).out).toContain('CONNECT_OK');
 
     // CONTROL: same run, bus bind dropped → the private /tmp hides it. This is the silent
     // failure D-015 warns about: nothing crashes, observation just degrades to pixels.
     const blinded = withoutMount(argv, '--bind', busPath!);
-    expect(run('bwrap', blinded).status).not.toBe(0);
+    expect(run('bwrap', blinded).out).not.toContain('CONNECT_OK');
+  }, 120_000);
+
+  it('the AT-SPI bus under /run stays connectable through the read-only root bind', () => {
+    // The bus P-007 publishes as AT_SPI_BUS is NOT the /tmp session bus — measured, it is
+    // `unix:path=/run/user/1000/at-spi/bus_<display>`. It is carried by `--ro-bind / /`
+    // rather than an explicit bind, and a read-only MOUNT does not block connect() to a
+    // socket inode. Pinned here because "read-only mount ⇒ no socket connect" is a very
+    // natural wrong assumption, and acting on it would add a pointless rw bind over /run.
+    const probeDir = '/run/user/1000';
+    const sock = `${probeDir}/p010-live-probe.sock`;
+    const listener = spawnSync('sh', [
+      '-c',
+      `python3 -c 'import socket,os,sys,time,threading
+p=sys.argv[1]
+try: os.unlink(p)
+except FileNotFoundError: pass
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(p); s.listen(1)
+threading.Thread(target=lambda:[s.accept() for _ in iter(int,1)],daemon=True).start()
+time.sleep(15)' ${sock} & echo $!`,
+    ], { encoding: 'utf8' });
+    const pid = Number.parseInt((listener.stdout ?? '').trim(), 10);
+    try {
+      spawnSync('sleep', ['1']);
+      const argv = sandboxArgv(
+        ['python3', '-c', 'import socket,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.connect(sys.argv[1])\nprint("CONNECT_OK")', sock],
+        { denyNetwork: true },
+      );
+      expect(run('bwrap', argv).out).toContain('CONNECT_OK');
+    } finally {
+      if (pid > 0) spawnSync('kill', [String(pid)]);
+      rmSync(sock, { force: true });
+    }
   }, 120_000);
 
   it('the confinement is REAL: host root is read-only and credentials are masked', () => {
