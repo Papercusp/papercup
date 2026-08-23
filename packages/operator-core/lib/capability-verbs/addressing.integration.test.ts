@@ -213,6 +213,40 @@ describe('D-020 rail 2 — addressee standing against real Postgres', () => {
     expect(stranger).toMatchObject({ standing: 'unknown', verified: false });
   });
 
+  it('KNOWN LIMIT — an attacker who has EMAILED the owner is a prior-correspondent, and is admitted', async () => {
+    await seedInjectedMessage();
+    // The same address, now also the sender of a message that really arrived.
+    // participants[] here is derived from real From/To/Cc headers, so this is
+    // not the injection signature — it is a genuine correspondence trace.
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [
+      {
+        source: 'gmail',
+        kind: 'message',
+        externalId: 'attacker-sent-1',
+        occurredAt: '2026-08-22T10:00:00Z',
+        participants: [INJECTED],
+        title: 'Hello',
+        text: 'An unsolicited but genuinely delivered message.',
+        dedupeKey: 'attacker-sent-1',
+      },
+    ]);
+
+    // Documented boundary, pinned so it stays a DECISION rather than becoming a
+    // surprise: correspondence outranks the body-only signature. Closing this
+    // by tightening prior-correspondent would break replies to real people —
+    // see the KNOWN LIMIT note on classifyAddressee for the correct lever.
+    expect(await classifyAddressee(org.adminSql, { workspaceId: WS, userId, address: INJECTED }))
+      .toBe('prior-correspondent');
+    await expect(
+      assertTrustedAddressee(org.adminSql, {
+        workspaceId: WS,
+        userId,
+        address: INJECTED,
+        provenance: OWNER_INSTRUCTION,
+      }),
+    ).resolves.toMatchObject({ standing: 'prior-correspondent' });
+  });
+
   it('an EMPTY vault makes every address unknown — so unknown is never evidence of safety', async () => {
     // Nothing seeded. The rail admits the injected address here, and that is
     // correct: with no vault there is no signature to detect. Pinned so nobody

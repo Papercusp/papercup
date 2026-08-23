@@ -87,6 +87,19 @@ export function normalizeAddressee(value: string): string {
  *    every participants[] and contact row.
  *  - An empty vault makes EVERY address `unknown`. That is why the caller must
  *    not treat `unknown` as evidence of safety on its own.
+ *  - KNOWN LIMIT — an attacker who has actually EMAILED the owner is a
+ *    `prior-correspondent`, because their address really does appear in a
+ *    participants[] derived from real headers. A later injected instruction
+ *    naming that same address therefore passes rail 2. This is a deliberate
+ *    boundary, not an oversight: the rail's claim is only that an address
+ *    lifted from message CONTENT is refused, and "someone who has corresponded
+ *    with the owner" is a materially different standing from "a string an
+ *    attacker typed into a body". The residual exposure is also small, because
+ *    such an attacker can already be replied to through rail 1. Do not close
+ *    this by tightening `prior-correspondent`, which would break ordinary
+ *    replies to real people; if it ever needs closing, the lever is requiring
+ *    a stronger provenance (`contact`) for create-shaped sends.
+ *    Pinned by addressing.integration.test.ts.
  */
 export async function classifyAddressee(
   sql: Db,
