@@ -111,16 +111,23 @@ describe('plugin dependency + config fields', () => {
 
 describe('triggerPack manifest shape (external-triggers P-012)', () => {
   const triggerPack = {
-    source: { kind: 'gmail', oauthField: 'googleWorkspace' },
-    plan: {
+    inputs: { type: 'object', properties: {} },
+    defaultStormPolicy: { maxRuns: 5, windowSeconds: 60 },
+    targets: [{
+      id: 'draft-reply',
+      kind: 'plan',
       path: 'plan.md',
       inputSchema: { type: 'object', properties: { trigger: { type: 'object' } } },
-    },
-    binding: {
+    }],
+    bindings: [{
+      id: 'gmail-to-draft',
+      source: { kind: 'external', sourceKind: 'gmail', oauthField: 'googleWorkspace' },
+      target: 'draft-reply',
       eventPattern: 'ext:gmail:message.received',
       filter: { direction: 'inbound' },
-      stormPolicy: { maxRuns: 5, windowSeconds: 60 },
-    },
+      mapping: { mode: 'payload-context' },
+    }],
+    edges: [],
   };
 
   it('accepts the strict pure-data declaration', () => {
@@ -139,7 +146,7 @@ describe('triggerPack manifest shape (external-triggers P-012)', () => {
       kind: 'plugin',
       triggerPack: {
         ...triggerPack,
-        binding: { ...triggerPack.binding, armed: true },
+        bindings: [{ ...triggerPack.bindings[0], armed: true }],
       },
     });
     expect(r.ok).toBe(false);
@@ -152,11 +159,45 @@ describe('triggerPack manifest shape (external-triggers P-012)', () => {
       version: '0.1.0',
       triggerPack: {
         ...triggerPack,
-        source: { ...triggerPack.source, token: 'leak' },
-        binding: { ...triggerPack.binding, stormPolicy: { maxRuns: 0 } },
+        bindings: [{
+          ...triggerPack.bindings[0],
+          source: { ...triggerPack.bindings[0].source, token: 'leak' },
+          stormPolicy: { maxRuns: 0 },
+        }],
       },
     });
     expect(r.ok).toBe(false);
+  });
+
+  it('requires recipe args declarations and an explicit dead-letter retry disposition', () => {
+    const recipeTarget = {
+      id: 'record-draft',
+      kind: 'recipe',
+      ref: 'recipes:record-draft',
+    };
+    const recipeBinding = {
+      id: 'record-draft-binding',
+      source: { kind: 'manual' },
+      target: 'record-draft',
+      mapping: { mode: 'type-match' },
+      retry: { maxAttempts: 2 },
+    };
+    const r = validateManifest({
+      name: '@test/recipe-pack',
+      version: '0.1.0',
+      kind: 'plugin',
+      triggerPack: {
+        inputs: { type: 'object', properties: {} },
+        targets: [recipeTarget],
+        bindings: [recipeBinding],
+        edges: [],
+      },
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.issues.map((issue) => issue.message).join(' ')).toMatch(
+      /required property 'argsSchema'.*required property 'onExhausted'/,
+    );
   });
 });
 

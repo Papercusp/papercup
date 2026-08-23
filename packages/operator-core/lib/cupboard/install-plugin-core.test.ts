@@ -100,16 +100,50 @@ describe('installPluginFromCupboardCore', () => {
         },
       },
       triggerPack: {
-        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
-        plan: {
-          path: 'plan.md',
-          inputSchema: { type: 'object', properties: { trigger: { type: 'object' } } },
-        },
-        binding: {
-          eventPattern: 'ext:gmail:message.received',
-          filter: { direction: 'inbound' },
-          stormPolicy: { maxRuns: 5, windowSeconds: 60 },
-        },
+        inputs: { type: 'object', properties: {} },
+        defaultStormPolicy: { maxRuns: 5, windowSeconds: 60 },
+        targets: [
+          {
+            id: 'draft-reply',
+            kind: 'plan',
+            path: 'plan.md',
+            inputSchema: { type: 'object', properties: { trigger: { type: 'object' } } },
+          },
+          {
+            id: 'record-draft',
+            kind: 'recipe',
+            ref: 'recipes:record-draft',
+            revision: 2,
+            argsSchema: {
+              type: 'object',
+              required: ['draftId'],
+              properties: { draftId: { type: 'string' } },
+            },
+          },
+        ],
+        bindings: [
+          {
+            id: 'gmail-to-draft',
+            source: { kind: 'external', sourceKind: 'gmail', oauthField: 'googleWorkspace' },
+            target: 'draft-reply',
+            eventPattern: 'ext:gmail:message.received',
+            filter: { direction: 'inbound' },
+            mapping: { mode: 'payload-context' },
+          },
+          {
+            id: 'draft-to-record',
+            source: { kind: 'internal', event: 'plan-completed' },
+            target: 'record-draft',
+            mapping: { mode: 'fields', fields: { draftId: 'plan.output.draftId' } },
+            retry: { maxAttempts: 3, onExhausted: 'dead-letter' },
+          },
+        ],
+        edges: [{
+          from: 'gmail-to-draft',
+          to: 'draft-to-record',
+          event: 'plan-completed',
+          correlation: 'inherit',
+        }],
       },
     });
     await fs.writeFile(join(fixtureRepo, 'plan.md'), `---
@@ -127,10 +161,11 @@ status: draft
       makeDeps(),
     );
     expect(res.triggerPack).toEqual({
-      sourceKind: 'gmail',
-      eventPattern: 'ext:gmail:message.received',
-      planPath: 'plan.md',
-      planSlug: 'email-draft-responder',
+      targetCount: 2,
+      bindingCount: 2,
+      edgeCount: 1,
+      sourceKinds: ['gmail'],
+      planTargets: [{ id: 'draft-reply', path: 'plan.md', slug: 'email-draft-responder' }],
       armed: false,
     });
     expect(invalidated).toBe(1);
@@ -142,9 +177,21 @@ status: draft
       name: 'broken-trigger-pack',
       version: '0.1.0',
       triggerPack: {
-        source: { kind: 'gmail' },
-        plan: { path: 'missing.md', inputSchema: { type: 'object' } },
-        binding: { eventPattern: 'ext:gmail:message.received' },
+        inputs: { type: 'object', properties: {} },
+        targets: [{
+          id: 'missing-plan',
+          kind: 'plan',
+          path: 'missing.md',
+          inputSchema: { type: 'object' },
+        }],
+        bindings: [{
+          id: 'gmail-to-missing-plan',
+          source: { kind: 'external', sourceKind: 'gmail' },
+          target: 'missing-plan',
+          eventPattern: 'ext:gmail:message.received',
+          mapping: { mode: 'payload-context' },
+        }],
+        edges: [],
       },
     });
     await expect(

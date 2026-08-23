@@ -18,14 +18,18 @@ describe('shipped trigger-pack fixture', () => {
     if ('plugin' in result) {
       expect((result.plugin as unknown as { __runtime?: string }).__runtime).toBe('manifest-only');
       expect(result.triggerPack).toMatchObject({
-        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
-        plan: { path: 'plan.md' },
-        binding: {
+        targets: [{ id: 'draft-reply', kind: 'plan', path: 'plan.md' }],
+        bindings: [{
+          id: 'inbound-email-to-draft',
+          source: { kind: 'external', sourceKind: 'gmail', oauthField: 'googleWorkspace' },
+          target: 'draft-reply',
           eventPattern: 'ext:gmail:message.received',
-          stormPolicy: { maxRuns: 5, windowSeconds: 60 },
-        },
+          mapping: { mode: 'payload-context' },
+        }],
+        defaultStormPolicy: { maxRuns: 5, windowSeconds: 60 },
+        edges: [],
       });
-      expect(result.triggerPack).not.toHaveProperty('binding.armed');
+      expect(result.triggerPack?.bindings.every((binding) => !('armed' in binding))).toBe(true);
       expect(result.plugin.configSchema).toMatchObject({
         properties: {
           googleWorkspace: {

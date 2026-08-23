@@ -164,9 +164,21 @@ status: draft
         },
       },
       triggerPack: {
-        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
-        plan: { path: 'plan.md', inputSchema: { type: 'object', properties: {} } },
-        binding: { eventPattern: 'ext:gmail:message.received' },
+        inputs: { type: 'object', properties: {} },
+        targets: [{
+          id: 'draft-reply',
+          kind: 'plan',
+          path: 'plan.md',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        bindings: [{
+          id: 'gmail-to-draft',
+          source: { kind: 'external', sourceKind: 'gmail', oauthField: 'googleWorkspace' },
+          target: 'draft-reply',
+          eventPattern: 'ext:gmail:message.received',
+          mapping: { mode: 'payload-context' },
+        }],
+        edges: [],
       },
     }), 'utf8');
 
@@ -175,9 +187,21 @@ status: draft
     if ('plugin' in r) {
       assert.equal((r.plugin as unknown as { __runtime?: string }).__runtime, 'manifest-only');
       assert.deepEqual(r.triggerPack, {
-        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
-        plan: { path: 'plan.md', inputSchema: { type: 'object', properties: {} } },
-        binding: { eventPattern: 'ext:gmail:message.received' },
+        inputs: { type: 'object', properties: {} },
+        targets: [{
+          id: 'draft-reply',
+          kind: 'plan',
+          path: 'plan.md',
+          inputSchema: { type: 'object', properties: {} },
+        }],
+        bindings: [{
+          id: 'gmail-to-draft',
+          source: { kind: 'external', sourceKind: 'gmail', oauthField: 'googleWorkspace' },
+          target: 'draft-reply',
+          eventPattern: 'ext:gmail:message.received',
+          mapping: { mode: 'payload-context' },
+        }],
+        edges: [],
       });
       assert.deepEqual(r.plugin.triggerPack, r.triggerPack);
     }
@@ -193,9 +217,21 @@ status: draft
       configSchema: { type: 'object', properties: { token: { type: 'string' } } },
       oauth: [{ provider: 'google', scopes: ['gmail.readonly'], fieldName: 'token' }],
       triggerPack: {
-        source: { kind: 'gmail', oauthField: 'token' },
-        plan: { path: 'plan.md', inputSchema: { type: 'object' } },
-        binding: { eventPattern: 'ext:gmail:message.received' },
+        inputs: { type: 'object', properties: {} },
+        targets: [{
+          id: 'draft-reply',
+          kind: 'plan',
+          path: 'plan.md',
+          inputSchema: { type: 'object' },
+        }],
+        bindings: [{
+          id: 'gmail-to-draft',
+          source: { kind: 'external', sourceKind: 'gmail', oauthField: 'token' },
+          target: 'draft-reply',
+          eventPattern: 'ext:gmail:message.received',
+          mapping: { mode: 'payload-context' },
+        }],
+        edges: [],
       },
     }), 'utf8');
     const r = await loadPluginFromDir(dir, 'project');

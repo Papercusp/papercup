@@ -703,8 +703,8 @@ export interface ManifestDependencies {
  *
  * A trigger pack is PURE MANIFEST DATA carried by a normal plugin
  * (`kind:'plugin'`, usually with no entry point). It packages the reusable
- * half of an external workflow: which source/event feeds it, the plan template
- * to instantiate, its declared inputs, and the default storm policy. It is
+ * half of a workflow: plan|recipe targets, single-target bindings, internal
+ * event edges, declared inputs, OAuth requirements, and storm policy. It is
  * deliberately NOT `kind:'pack'`: that discriminator means n>=1 executable
  * code tools and the loader correctly rejects runtime/reaction surfaces there.
  *
@@ -729,8 +729,8 @@ export interface PluginTriggerPackRecipeTarget {
   ref: string;
   /** Optional pinned recipe revision. */
   revision?: number;
-  /** Declared deterministic args used to check complete field mapping. */
-  argsSchema?: Record<string, unknown>;
+  /** Declared deterministic args used to prove complete field mapping. */
+  argsSchema: Record<string, unknown>;
 }
 
 export type PluginTriggerPackTarget = PluginTriggerPackPlanTarget | PluginTriggerPackRecipeTarget;
@@ -777,6 +777,8 @@ export interface PluginTriggerPackBinding {
   retry?: {
     maxAttempts: number;
     backoffSeconds?: number;
+    /** Exhausted deterministic runs are retained and surfaced in Activity. */
+    onExhausted: 'dead-letter';
   };
 }
 
@@ -867,6 +869,31 @@ export function validateTriggerPackDeclaration(manifest: {
       if (!binding.mapping || binding.mapping.mode === 'payload-context') {
         issues.push(`triggerPack recipe binding "${binding.id}" requires deterministic type-match or fields mapping`);
       }
+      if (!binding.retry || binding.retry.onExhausted !== 'dead-letter') {
+        issues.push(`triggerPack recipe binding "${binding.id}" requires an explicit dead-letter retry policy`);
+      }
+      if (binding.mapping?.mode === 'fields') {
+        const args = triggerPackObject(target.argsSchema);
+        const properties = triggerPackObject(args.properties);
+        const required = Array.isArray(args.required)
+          ? args.required.filter((arg): arg is string => typeof arg === 'string')
+          : [];
+        const mapped = Object.keys(binding.mapping.fields ?? {});
+        const missing = required.filter((arg) => !mapped.includes(arg));
+        if (missing.length > 0) {
+          issues.push(
+            `triggerPack recipe binding "${binding.id}" fields mapping is missing required args: ${missing.join(', ')}`,
+          );
+        }
+        const unknown = mapped.filter((arg) => !(arg in properties));
+        if (unknown.length > 0) {
+          issues.push(
+            `triggerPack recipe binding "${binding.id}" fields mapping declares unknown args: ${unknown.join(', ')}`,
+          );
+        }
+      }
+    } else if (binding.retry) {
+      issues.push(`triggerPack plan binding "${binding.id}" must not declare retry policy; plans self-recover through the agent`);
     }
 
     if (binding.mapping?.mode === 'fields' && Object.keys(binding.mapping.fields ?? {}).length === 0) {
@@ -928,6 +955,12 @@ export function validateTriggerPackDeclaration(manifest: {
     }
     if (to && to.source.kind === 'internal' && to.source.event !== edge.event) {
       issues.push(`triggerPack edge event must match internal source event on binding "${edge.to}"`);
+    }
+    if (from && edge.event === 'plan-completed') {
+      const sourceTarget = targetById.get(from.target);
+      if (sourceTarget?.kind !== 'plan') {
+        issues.push(`triggerPack plan-completed edge source "${edge.from}" must target a plan`);
+      }
     }
     incomingInternal.add(edge.to);
     adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge.to]);
