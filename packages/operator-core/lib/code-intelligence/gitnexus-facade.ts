@@ -428,7 +428,15 @@ function applyBudget(a: CodeIntelAnswer, limit: number): CodeIntelAnswer {
 export async function gitnexusFacade(
   op: GitnexusFacadeOp,
   args: GitnexusFacadeArgs = {},
+  dispatch?: GitnexusDispatch | null,
 ): Promise<CodeIntelAnswer> {
+  // WI-40206/D-057: prefer a dispatcher supplied by THIS call over the module
+  // global. The real dispatcher is request-scoped (it closes over the calling
+  // tool's `ctx`, which carries workspace + principal), so a tool handler that
+  // configured the global would publish its own request context to every
+  // concurrent caller. Passing it per call keeps that scoping race-free; the
+  // global remains for tests and for any future boot-time wiring.
+  const activeDispatch = dispatch ?? dispatchImpl;
   const startedAt = Date.now();
   const query = args.name ?? '';
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), MAX_SITES_PER_ANSWER);
@@ -441,14 +449,14 @@ export async function gitnexusFacade(
     });
   }
 
-  if (!dispatchImpl) {
+  if (!activeDispatch) {
     counters.failed += 1;
     return answer(op, query, startedAt, {
       health: 'unknown',
       error:
-        'gitnexus dispatch is not configured in this process ' +
-        '(configureGitnexusDispatch was never called). This is a wiring fault, ' +
-        'not an empty result — do not read it as "no matches".',
+        'gitnexus dispatch is not configured in this process (no dispatcher was ' +
+        'passed to gitnexusFacade and configureGitnexusDispatch was never called). ' +
+        'This is a wiring fault, not an empty result — do not read it as "no matches".',
     });
   }
 
@@ -471,7 +479,7 @@ export async function gitnexusFacade(
       // `direction` does not error — it returns an envelope whose fields are
       // undefined, which is why the default is explicit here rather than left
       // to the server (measured 2026-08-21).
-      const raw = await dispatchImpl('impact', {
+      const raw = await activeDispatch('impact', {
         target: query,
         direction: args.direction ?? 'downstream',
         repo,
@@ -525,7 +533,7 @@ export async function gitnexusFacade(
     }
 
     // symbol | callers | callees | health all read through `context`.
-    const raw = await dispatchImpl('context', {
+    const raw = await activeDispatch('context', {
       ...(op === 'health' ? {} : { name: query }),
       ...(args.kind ? { kind: args.kind } : {}),
       repo,

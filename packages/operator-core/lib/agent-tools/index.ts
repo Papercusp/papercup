@@ -64,6 +64,14 @@ import './lsp/apply';
 import './lsp/astgrep';
 import './lsp/pack';
 
+// Same plan, P-006/D-057: the GitNexus half of that plane. Without this import
+// `gitnexusFacade` has no tool, and `code:run` exposes only `tools.ns.verb` —
+// so the curated graph plane is unreachable from every agent surface and
+// callers silently fall back to the raw, unranked `gitnexus.*` plugin tools.
+// Guarded by ../code-intelligence/gitnexus-facade-reachable.test.ts so dropping
+// this line fails a test rather than quietly restoring the bug.
+import './gitnexus/query';
+
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
 // orchestration-runtime-unification P-009: server-script facade over code:run
