@@ -74,6 +74,24 @@ describe('PersonalVaultSettingsPage', () => {
     expect(screen.getByText(/It does not delete anything/i)).toBeTruthy();
   });
 
+  it('explains how to acquire supported provider archives with official links and formats', async () => {
+    render(<PersonalVaultSettingsPage />);
+    const instructions = (await screen.findByRole('heading', { name: 'How to get an archive' })).parentElement;
+    expect(instructions?.textContent).toContain('choose only Mail, Calendar, and Contacts');
+    expect(instructions?.textContent).toContain('Choose Messages, all time, and JSON');
+    expect(instructions?.textContent).toContain('Settings and privacy → Your account');
+
+    const links = screen.getAllByRole('link');
+    expect(links.find((link) => link.textContent === 'Google Takeout')?.getAttribute('href'))
+      .toBe('https://takeout.google.com/settings/takeout');
+    expect(links.find((link) => link.textContent === 'Export your information guide')?.getAttribute('href'))
+      .toBe('https://www.facebook.com/help/212802592074644');
+    expect(links.find((link) => link.textContent === 'official X archive guide')?.getAttribute('href'))
+      .toBe('https://help.x.com/en/managing-your-account/accessing-your-x-data');
+    expect(links.every((link) => link.getAttribute('target') === '_blank')).toBe(true);
+    expect(links.every((link) => link.getAttribute('rel')?.includes('noopener'))).toBe(true);
+  });
+
   it('previews the plan declaration before the owner can approve it', async () => {
     render(<PersonalVaultSettingsPage />);
     fireEvent.change(await screen.findByLabelText('Plan slug'), { target: { value: 'meeting-prep-brief' } });

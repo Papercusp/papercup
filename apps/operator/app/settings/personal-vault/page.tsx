@@ -49,6 +49,14 @@ interface ApiFailure {
   error?: string;
 }
 
+const ARCHIVE_HELP = {
+  google: 'https://support.google.com/accounts/answer/3024190',
+  googleTakeout: 'https://takeout.google.com/settings/takeout',
+  facebook: 'https://www.facebook.com/help/212802592074644',
+  instagram: 'https://www.facebook.com/help/181231772500920',
+  x: 'https://help.x.com/en/managing-your-account/accessing-your-x-data',
+} as const;
+
 async function responseJson<T>(response: Response): Promise<T> {
   const value = (await response.json().catch(() => ({}))) as T & ApiFailure;
   if (!response.ok || value.ok === false) {
@@ -361,8 +369,62 @@ export default function PersonalVaultSettingsPage() {
         <h2 id="vault-import-heading">Import archives</h2>
         <p className="pc-settings-note">
           Supported: Google Takeout mail (.mbox), Calendar (.ics), Contacts (.vcf), Facebook/Instagram
-          export ZIPs, and X archive ZIP/JSON/JS. Files are parsed on this machine.
+          message exports, and X archive ZIP/JSON/JS. Files are parsed on this machine.
         </p>
+        <div
+          className="pc-settings-note"
+          aria-labelledby="vault-archive-help-heading"
+          style={{ marginTop: 16, padding: 16, border: '1px solid var(--border)', borderRadius: 10 }}
+        >
+          <h3 id="vault-archive-help-heading" style={{ marginTop: 0 }}>How to get an archive</h3>
+          <ol style={{ display: 'grid', gap: 14, marginBottom: 0, paddingLeft: 22 }}>
+            <li>
+              <strong>Gmail, Google Calendar, and Google Contacts:</strong>{' '}
+              open{' '}
+              <a href={ARCHIVE_HELP.googleTakeout} target="_blank" rel="noreferrer noopener">
+                Google Takeout
+              </a>
+              , choose only <em>Mail</em>, <em>Calendar</em>, and <em>Contacts</em>, keep ZIP as the
+              delivery format, create the export, then download every ZIP part to this computer.
+              Google&apos;s{' '}
+              <a href={ARCHIVE_HELP.google} target="_blank" rel="noreferrer noopener">
+                official download guide
+              </a>
+              {' '}explains the export and delivery choices.
+            </li>
+            <li>
+              <strong>Facebook:</strong> follow Meta&apos;s{' '}
+              <a href={ARCHIVE_HELP.facebook} target="_blank" rel="noreferrer noopener">
+                Export your information guide
+              </a>
+              : Settings &amp; privacy → Accounts Center → Your information and permissions → Export
+              your information → Create export → Export to device. Choose <em>Messages</em>, all time,
+              and <em>JSON</em>, then import the downloaded ZIP here. Meta keeps a prepared download
+              available for a limited time.
+            </li>
+            <li>
+              <strong>Instagram:</strong> use the same Accounts Center flow and select the Instagram
+              profile. Choose <em>Messages</em> and <em>JSON</em>; see Meta&apos;s{' '}
+              <a href={ARCHIVE_HELP.instagram} target="_blank" rel="noreferrer noopener">
+                Instagram export guide
+              </a>
+              .
+            </li>
+            <li>
+              <strong>X:</strong> Settings and privacy → Your account → Download an archive of your
+              data → Request archive. When X notifies you, download the ZIP and import it here. See
+              the{' '}
+              <a href={ARCHIVE_HELP.x} target="_blank" rel="noreferrer noopener">
+                official X archive guide
+              </a>
+              .
+            </li>
+          </ol>
+          <p style={{ marginBottom: 0 }}>
+            Archive files can contain highly private information. Keep them on this machine and delete
+            the downloaded copies when you no longer need them.
+          </p>
+        </div>
         <div
           role="button"
           tabIndex={0}
