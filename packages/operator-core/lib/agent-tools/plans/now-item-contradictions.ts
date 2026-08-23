@@ -6,6 +6,8 @@ export interface NowItemContradiction {
   mention: string;
 }
 
+type TerminalStatus = NowItemContradiction['status'];
+
 const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
 const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
@@ -23,11 +25,12 @@ export function detectNowItemContradictions(parsed: Pick<ParsedPlan, 'now' | 'it
   if (!parsed.now) return [];
 
   const nowText = `${parsed.now.state}\n${parsed.now.next}`;
-  const terminalItems = new Map(
-    parsed.items
-      .filter((item) => item.storedStatus === 'done' || item.storedStatus === 'dropped')
-      .map((item) => [item.id, item.storedStatus] as const),
-  );
+  const terminalItems = new Map<string, TerminalStatus>();
+  for (const item of parsed.items) {
+    if (item.storedStatus === 'done' || item.storedStatus === 'dropped') {
+      terminalItems.set(item.id, item.storedStatus);
+    }
+  }
   if (terminalItems.size === 0) return [];
 
   const contradictions: NowItemContradiction[] = [];

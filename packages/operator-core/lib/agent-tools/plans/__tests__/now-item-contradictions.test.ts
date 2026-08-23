@@ -56,6 +56,18 @@ describe('detectNowItemContradictions', () => {
       expect.objectContaining({ id: 'P-001', status: 'done' }),
     ]);
   });
+
+  it('preserves dropped as the terminal status in contradiction evidence', () => {
+    const proposed = parsePlan(
+      CURRENT
+        .replace('- **P-001** `done` Finished item.', '- **P-001** `dropped` Dropped item.')
+        .replace('**Next:** Continue with P-002.', '**Next:** Revisit P-001 before continuing.'),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'dropped' }),
+    ]);
+  });
 });
 
 describe('evaluateSetContent — Now/item contradiction guard', () => {
