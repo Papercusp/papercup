@@ -9,6 +9,12 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { isSessionShapedOwnerId } from '../coordination/dead-session-recipient-guidance';
+import {
+  knownOwnerIdSet,
+  resolveRecipients,
+  resolveRecipientsAgainst,
+} from '../coordination/recipient-resolve';
 import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } from './_shared';
 import {
   decodeSessionCursor,
@@ -18,6 +24,112 @@ import {
 } from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
+
+type TimelineOwnerResolutionFailure = {
+  ok: false;
+  error: 'owner_resolution_unavailable' | 'owner_not_found' | 'owner_ambiguous';
+  owner: string;
+  matches?: string[];
+  message: string;
+};
+
+type TimelineOwnerResolution = { ok: true; ownerId: string } | TimelineOwnerResolutionFailure;
+
+/**
+ * Resolve the display handle accepted by the historical reader to the
+ * canonical owner id used by the timeline tables.
+ *
+ * Full session-shaped ids are intentionally kept verbatim: a historical
+ * timeline must remain queryable after that live session has ended. Short
+ * handles and non-session-shaped ids, however, must resolve against the live
+ * roster before SQL construction; otherwise a valid short handle silently
+ * produces an empty history. `resolveRecipients` is the shared normalization
+ * seam. Its send-path fail-open behavior is retained for an unavailable
+ * roster, so the extra membership check below turns that particular case into
+ * an explicit historical-read error instead of accepting the literal handle.
+ */
+async function resolveTimelineOwner(
+  owner: string,
+  workspaceId?: string | null,
+): Promise<TimelineOwnerResolution> {
+  if (isSessionShapedOwnerId(owner)) return { ok: true, ownerId: owner };
+
+  const resolution = await resolveRecipients([owner], workspaceId);
+  const ambiguous = resolution.ambiguous[0];
+  if (ambiguous) {
+    return {
+      ok: false,
+      error: 'owner_ambiguous',
+      owner,
+      matches: ambiguous.matches,
+      message: `Owner '${owner}' matches more than one live ownerId; pass the full ownerId.`,
+    };
+  }
+  if (resolution.unknown.length > 0 || resolution.resolved.length === 0) {
+    return {
+      ok: false,
+      error: 'owner_not_found',
+      owner,
+      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+    };
+  }
+
+  const resolved = resolution.resolved[0]!;
+  if (resolved !== owner) return { ok: true, ownerId: resolved };
+
+  // resolveRecipients deliberately passes entries through when no roster is
+  // available. A historical reader cannot distinguish that passthrough from
+  // an exact match without checking the shared cached roster itself.
+  const known = await knownOwnerIdSet(workspaceId);
+  if (!known) {
+    return {
+      ok: false,
+      error: 'owner_resolution_unavailable',
+      owner,
+      message:
+        `Cannot resolve owner '${owner}' because the live owner roster is unavailable. ` +
+        'Retry with the full ownerId or after coord:presence is available.',
+    };
+  }
+  const strict = resolveRecipientsAgainst([owner], [...known]);
+  const strictAmbiguous = strict.ambiguous[0];
+  if (strictAmbiguous) {
+    return {
+      ok: false,
+      error: 'owner_ambiguous',
+      owner,
+      matches: strictAmbiguous.matches,
+      message: `Owner '${owner}' matches more than one live ownerId; pass the full ownerId.`,
+    };
+  }
+  if (strict.unknown.length > 0 || strict.resolved.length === 0) {
+    return {
+      ok: false,
+      error: 'owner_not_found',
+      owner,
+      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+    };
+  }
+  return { ok: true, ownerId: strict.resolved[0]! };
+}
+
+function timelineOwnerResolutionError(failure: TimelineOwnerResolutionFailure) {
+  return {
+    isError: true as const,
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          error: failure.error,
+          owner: failure.owner,
+          ...(failure.matches ? { matches: failure.matches } : {}),
+          message: failure.message,
+        }),
+      },
+    ],
+  };
+}
 
 /**
  * Keep the model-facing JSON body below the result door. The timeline can
@@ -435,7 +547,7 @@ export default defineTool({
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({
-    owner: z.string().min(1).max(120).describe("Agent ownerId, or 'self'."),
+    owner: z.string().min(1).max(120).describe("Agent ownerId, short handle, or 'self'."),
     since: z.string().max(40).optional().describe('ISO lower bound (default: 24h ago).'),
     until: z.string().max(40).optional().describe('ISO upper bound (default: now).'),
     limit: z.number().int().min(1).max(300).optional().describe('Max merged entries, 1..300 (default 100).'),
@@ -458,7 +570,13 @@ export default defineTool({
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
-    const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : args.owner;
+    const identity = resolveAgentIdentity(ctx);
+    const requestedOwner = args.owner === 'self' ? (identity.ownerId ?? '') : args.owner;
+    const ownerResolution = args.owner === 'self'
+      ? { ok: true as const, ownerId: requestedOwner }
+      : await resolveTimelineOwner(requestedOwner, workspaceId);
+    if (!ownerResolution.ok) return timelineOwnerResolutionError(ownerResolution);
+    const owner = ownerResolution.ownerId;
     const limit = args.limit ?? 100;
     const kinds = args.kinds?.length ? args.kinds : null;
     const includeAuto = args.include_auto ?? false;

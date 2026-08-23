@@ -1,0 +1,132 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({
+  identity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'ws-test' })),
+  resolveRecipients: vi.fn(),
+  knownOwnerIdSet: vi.fn(),
+  resolveRecipientsAgainst: vi.fn(),
+  sessionSearchEnabled: vi.fn(async () => true),
+  refreshLiveSessionsBeforeRead: vi.fn(async () => ({ attempted: 0, refreshed: 0 })),
+}));
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: h.identity,
+}));
+
+vi.mock('../coordination/recipient-resolve', () => ({
+  resolveRecipients: h.resolveRecipients,
+  knownOwnerIdSet: h.knownOwnerIdSet,
+  resolveRecipientsAgainst: h.resolveRecipientsAgainst,
+}));
+
+vi.mock('./_shared', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  sessionSearchEnabled: h.sessionSearchEnabled,
+  refreshLiveSessionsBeforeRead: h.refreshLiveSessionsBeforeRead,
+}));
+
+const tool = (await import('./timeline')).default;
+
+type HandlerResult = {
+  isError?: boolean;
+  content?: Array<{ text?: string }>;
+};
+
+function errorBody(result: unknown) {
+  const text = (result as HandlerResult).content?.[0]?.text;
+  if (!text) throw new Error('expected a JSON error body');
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+function makeTx() {
+  const tx = Object.assign(vi.fn(async () => [] as unknown[]), {
+    unsafe: vi.fn((value: string) => value),
+    array: vi.fn((value: unknown[]) => value),
+  });
+  return tx;
+}
+
+function run(owner: string, tx = makeTx()) {
+  return (tool as unknown as {
+    handler: (args: unknown, ctx: unknown) => Promise<unknown>;
+  }).handler(
+    { owner, since: '2026-08-23T12:00:00Z', until: '2026-08-23T14:00:00Z' },
+    { workspaceId: 'ws-test', tx },
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.sessionSearchEnabled.mockResolvedValue(true);
+  h.refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 0, refreshed: 0 });
+});
+
+describe('sessions:timeline owner resolution', () => {
+  it('normalizes a unique short owner handle before constructing the history query', async () => {
+    const short = 'su-peer';
+    const full = 'su-peer-12345678-1234-4234-8234-123456789abc';
+    h.resolveRecipients.mockResolvedValue({ resolved: [full], unknown: [], ambiguous: [] });
+    const tx = makeTx();
+
+    await run(short, tx);
+
+    expect(h.resolveRecipients).toHaveBeenCalledWith([short], 'ws-test');
+    expect(h.knownOwnerIdSet).not.toHaveBeenCalled();
+    expect(tx.mock.calls.some((call) => call.slice(1).includes(full))).toBe(true);
+    expect(tx.mock.calls.some((call) => call.slice(1).includes(short))).toBe(false);
+  });
+
+  it('keeps a full session-shaped owner id queryable after the live session ends', async () => {
+    const full = 'su-peer-12345678-1234-4234-8234-123456789abc';
+    const tx = makeTx();
+
+    await run(full, tx);
+
+    expect(h.resolveRecipients).not.toHaveBeenCalled();
+    expect(h.knownOwnerIdSet).not.toHaveBeenCalled();
+    expect(tx.mock.calls.some((call) => call.slice(1).includes(full))).toBe(true);
+  });
+
+  it('refuses an ambiguous short owner handle instead of returning a valid-looking zero', async () => {
+    const short = 'su-peer';
+    const matches = [
+      'su-peer-12345678-1234-4234-8234-123456789abc',
+      'su-peer-87654321-4321-4234-8234-cba987654321',
+    ];
+    h.resolveRecipients.mockResolvedValue({
+      resolved: [],
+      unknown: [],
+      ambiguous: [{ id: short, matches }],
+    });
+
+    const result = await run(short);
+
+    expect((result as HandlerResult).isError).toBe(true);
+    expect(errorBody(result)).toMatchObject({ ok: false, error: 'owner_ambiguous', owner: short, matches });
+  });
+
+  it('refuses an unknown short owner handle instead of querying an empty history', async () => {
+    const short = 'su-missing';
+    h.resolveRecipients.mockResolvedValue({ resolved: [], unknown: [short], ambiguous: [] });
+
+    const result = await run(short);
+
+    expect(errorBody(result)).toMatchObject({ ok: false, error: 'owner_not_found', owner: short });
+    expect((result as HandlerResult).isError).toBe(true);
+  });
+
+  it('reports roster unavailability when recipient resolution had to pass the handle through', async () => {
+    const short = 'su-peer';
+    h.resolveRecipients.mockResolvedValue({ resolved: [short], unknown: [], ambiguous: [] });
+    h.knownOwnerIdSet.mockResolvedValue(null);
+
+    const result = await run(short);
+
+    expect(errorBody(result)).toMatchObject({
+      ok: false,
+      error: 'owner_resolution_unavailable',
+      owner: short,
+    });
+    expect((result as HandlerResult).isError).toBe(true);
+  });
+});
