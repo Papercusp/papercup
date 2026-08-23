@@ -29,6 +29,7 @@ vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstan
 
 import { applyResultDoor } from '../../result-door';
 import type { DoorableResult } from '../../result-door';
+import { writeScratchReference } from '../../scratch-reference';
 import readTool, { MAX_BYTE_PAGE, MIN_PAGE_BYTES, doorSafePageBytes } from './read';
 
 let sandbox: string;
@@ -79,13 +80,26 @@ afterEach(() => {
 });
 
 /** Run the tool, then push its result through the REAL door the way the transport does. */
-async function readThroughDoor(args: Record<string, unknown>) {
-  const res = (await readTool.handler(args as never, { projectDir: sandbox } as never)) as {
+async function readThroughDoor(args: Record<string, unknown>, ctxExtra: Record<string, unknown> = {}) {
+  const res = (await readTool.handler(args as never, { projectDir: sandbox, ...ctxExtra } as never)) as {
     content: Array<{ type: string; text: string }>;
   };
   const doored = applyResultDoor(
     { content: res.content as Array<{ type: 'text'; text: string }> },
     { toolName: 'capability:read', workspaceId: 'ws-1', runId: '99999999-8888-4777-8666-555555555555' },
+  ) as DoorableResult;
+  const text = (doored.content.find((c) => (c as { type?: string }).type === 'text') as { text: string }).text;
+  return { text, parsed: JSON.parse(text) as Record<string, unknown> };
+}
+
+/** Model the outer result door used when capability:read is reached through tools:invoke. */
+async function readThroughNestedInvokeDoor(args: Record<string, unknown>, ctxExtra: Record<string, unknown> = {}) {
+  const res = (await readTool.handler(args as never, { projectDir: sandbox, ...ctxExtra } as never)) as {
+    content: Array<{ type: string; text: string }>;
+  };
+  const doored = applyResultDoor(
+    { content: res.content as Array<{ type: 'text'; text: string }> },
+    { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: '99999999-8888-4777-8666-555555555555' },
   ) as DoorableResult;
   const text = (doored.content.find((c) => (c as { type?: string }).type === 'text') as { text: string }).text;
   return { text, parsed: JSON.parse(text) as Record<string, unknown> };
@@ -139,6 +153,33 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(decoded.length).toBe(parsed.byte_length);
     expect(decoded.toString('base64')).toBe(data);
     expect(decoded.equals(payload(40_000).subarray(0, decoded.length))).toBe(true);
+  });
+
+  it('keeps scratch-reference pages lossless through the outer tools:invoke door', async () => {
+    const referencePath = join(sandbox, 'scratch', 'nested-reference.md');
+    const original = payload(40_000);
+    writeScratchReference({
+      filePath: referencePath,
+      payload: original,
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: original.length }],
+    });
+
+    const { parsed } = await readThroughNestedInvokeDoor(
+      { file_path: referencePath, byte_offset: 0, byte_limit: MAX_BYTE_PAGE },
+      { workspaceId: 'ws-1' },
+    );
+
+    expect(parsed).not.toHaveProperty('_projection');
+    expect(parsed.ok).toBe(true);
+    const data = parsed.data as string;
+    const decoded = Buffer.from(data, 'base64');
+    expect(decoded.length).toBe(parsed.byte_length);
+    expect(decoded.toString('base64')).toBe(data);
+    expect(decoded.equals(original.subarray(0, decoded.length))).toBe(true);
+    expect((parsed.next_cursor as { args: { byte_offset: number } }).args.byte_offset).toBe(decoded.length);
   });
 
   it('reports the page it actually returned, and advances by exactly that', async () => {
