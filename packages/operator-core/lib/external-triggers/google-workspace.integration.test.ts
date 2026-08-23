@@ -45,13 +45,13 @@ beforeEach(async () => {
 });
 
 describe('Google Workspace owned trigger-source provisioning', () => {
-  it('creates Gmail + Calendar once and preserves cursors across re-consent', async () => {
+  it('creates Gmail + Calendar + Contacts once and preserves cursors/preferences across re-consent', async () => {
     const first = await provisionOwnedGoogleWorkspaceSources(sql, {
       workspaceId: WS,
       ownerUserId: userId,
       field: 'owner',
     });
-    expect(first.map((row) => row.kind).sort()).toEqual(['gcal', 'gmail']);
+    expect(first.map((row) => row.kind).sort()).toEqual(['contacts', 'gcal', 'gmail']);
     expect(first.every((row) => row.credentialRef === 'google-workspace:owner')).toBe(true);
 
     const calendar = first.find((row) => row.kind === 'gcal')!;
@@ -61,6 +61,12 @@ describe('Google Workspace owned trigger-source provisioning', () => {
              status = 'degraded',
              last_error = 'transient'
        WHERE workspace_id = ${WS} AND id = ${calendar.id}::uuid`;
+    const contacts = first.find((row) => row.kind === 'contacts')!;
+    await sql`
+      UPDATE harness_shared.trigger_sources
+         SET config = config || '{"capabilityEnabled":false}'::jsonb,
+             status = 'disabled'
+       WHERE workspace_id = ${WS} AND id = ${contacts.id}::uuid`;
 
     const second = await provisionOwnedGoogleWorkspaceSources(sql, {
       workspaceId: WS,
@@ -69,7 +75,11 @@ describe('Google Workspace owned trigger-source provisioning', () => {
     });
     expect(second.map((row) => row.id).sort()).toEqual(first.map((row) => row.id).sort());
     expect(second.every((row) => row.credentialRef === 'google-workspace:owner-reconnected')).toBe(true);
-    expect(second.every((row) => row.status === 'connected')).toBe(true);
+    expect(second.filter((row) => row.kind !== 'contacts').every((row) => row.status === 'connected')).toBe(true);
+    expect(second.find((row) => row.kind === 'contacts')).toMatchObject({
+      status: 'disabled',
+      config: { capabilityEnabled: false },
+    });
     expect(second.find((row) => row.kind === 'gcal')?.cursor).toEqual({ syncToken: 'keep-me' });
 
     const rows = await sql<Array<{ kind: string; count: number }>>`
@@ -79,20 +89,23 @@ describe('Google Workspace owned trigger-source provisioning', () => {
        GROUP BY kind
        ORDER BY kind`;
     expect(rows).toEqual([
+      { kind: 'contacts', count: 1 },
       { kind: 'gcal', count: 1 },
       { kind: 'gmail', count: 1 },
     ]);
 
-    const bindings = await sql<Array<{
-      sourceKind: string;
-      eventPattern: string;
-      eventFilter: Record<string, unknown>;
-      planHarnessSlug: string;
-      planSlug: string;
-      action: Record<string, unknown>;
-      armed: boolean;
-      count: number;
-    }>>`
+    const bindings = await sql<
+      Array<{
+        sourceKind: string;
+        eventPattern: string;
+        eventFilter: Record<string, unknown>;
+        planHarnessSlug: string;
+        planSlug: string;
+        action: Record<string, unknown>;
+        armed: boolean;
+        count: number;
+      }>
+    >`
       SELECT s.kind AS "sourceKind",
              b.event_pattern AS "eventPattern",
              b.event_filter AS "eventFilter",
@@ -107,16 +120,18 @@ describe('Google Workspace owned trigger-source provisioning', () => {
        WHERE b.workspace_id = ${WS}
        GROUP BY s.kind, b.event_pattern, b.event_filter, b.plan_harness_slug,
                 b.plan_slug, b.action, b.armed`;
-    expect(bindings).toEqual([{
-      sourceKind: 'gcal',
-      eventPattern: GOOGLE_CALENDAR_MEETING_PREP_EVENT,
-      eventFilter: { 'attendees.0': { exists: true } },
-      planHarnessSlug: GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
-      planSlug: GOOGLE_CALENDAR_MEETING_PREP_PLAN,
-      action: { type: 'launch-plan' },
-      armed: false,
-      count: 1,
-    }]);
+    expect(bindings).toEqual([
+      {
+        sourceKind: 'gcal',
+        eventPattern: GOOGLE_CALENDAR_MEETING_PREP_EVENT,
+        eventFilter: { 'attendees.0': { exists: true } },
+        planHarnessSlug: GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
+        planSlug: GOOGLE_CALENDAR_MEETING_PREP_PLAN,
+        action: { type: 'launch-plan' },
+        armed: false,
+        count: 1,
+      },
+    ]);
   });
 
   it('serializes concurrent reconnects onto the same disarmed Calendar binding', async () => {

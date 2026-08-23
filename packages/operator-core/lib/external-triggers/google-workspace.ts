@@ -1,9 +1,6 @@
 /** Shared Google Workspace OAuth → owned trigger-source connection seam. */
 import type postgres from 'postgres';
-import {
-  type ExternalTriggerSourceRow,
-  upsertOwnedExternalTriggerSource,
-} from './source-store';
+import { type ExternalTriggerSourceRow, upsertOwnedExternalTriggerSource } from './source-store';
 import { ensureExternalTriggerBinding } from './admin';
 import {
   GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
@@ -14,7 +11,7 @@ import { fsTokenStorage } from '../oauth/storage-fs';
 import { getOAuthToken } from '../oauth/token';
 
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
-export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal'] as const;
+export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal', 'contacts'] as const;
 export const GOOGLE_CALENDAR_MEETING_PREP_HARNESS = 'papercusp';
 export const GOOGLE_CALENDAR_MEETING_PREP_PLAN = 'meeting-prep-brief-2026-08-22';
 export const GOOGLE_CALENDAR_MEETING_PREP_EVENT = 'ext:gcal:event-upcoming';
@@ -76,20 +73,24 @@ export async function resolveGoogleWorkspaceAccessToken(
 ): Promise<string> {
   const field = googleWorkspaceOAuthField(source.credentialRef);
   if (!getProvider('google')) await loadAndRegisterProvidersFromDisk();
-  const token = await getOAuthToken({
-    plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
-    harness: installSlug,
-    storage: fsTokenStorage,
-    resolveProvider: (candidate) => candidate === field ? { provider: 'google' } : null,
-  }, field);
+  const token = await getOAuthToken(
+    {
+      plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+      harness: installSlug,
+      storage: fsTokenStorage,
+      resolveProvider: (candidate) => (candidate === field ? { provider: 'google' } : null),
+    },
+    field,
+  );
   if (!token) throw new Error(`google_workspace_oauth_not_connected:${field}`);
   return token;
 }
 
 /**
- * One OAuth consent backs both provider adapters. They remain separate source
- * rows because canonical event keys and replay cursors are source-kind scoped,
- * while both rows point at the same opaque OAuth credential reference.
+ * One OAuth consent backs every provider surface. They remain separate source
+ * rows because canonical event keys, replay cursors, and enablement are
+ * source-kind scoped, while every row points at the same opaque OAuth
+ * credential reference. The rows are adapter state, not additional consents.
  */
 export async function provisionOwnedGoogleWorkspaceSources(
   sql: postgres.Sql,
@@ -104,14 +105,17 @@ export async function provisionOwnedGoogleWorkspaceSources(
   const credentialRef = googleWorkspaceCredentialRef(input.field);
   const rows: ExternalTriggerSourceRow[] = [];
   for (const kind of GOOGLE_WORKSPACE_SOURCE_KINDS) {
-    rows.push(await upsertOwnedExternalTriggerSource(sql, {
-      workspaceId: input.workspaceId,
-      kind,
-      ownerUserId,
-      credentialRef,
-      status: 'connected',
-      createdBy: input.createdBy ?? `owner:${ownerUserId}`,
-    }));
+    rows.push(
+      await upsertOwnedExternalTriggerSource(sql, {
+        workspaceId: input.workspaceId,
+        kind,
+        ownerUserId,
+        credentialRef,
+        status: 'connected',
+        config: { capabilityEnabled: true },
+        createdBy: input.createdBy ?? `owner:${ownerUserId}`,
+      }),
+    );
   }
   const calendar = rows.find((row) => row.kind === 'gcal');
   if (!calendar) throw new Error('google_workspace_calendar_source_missing');

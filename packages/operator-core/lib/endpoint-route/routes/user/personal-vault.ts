@@ -15,6 +15,7 @@ import { parsePersonalArchive } from '../../../personal-vault/archive-import';
 import {
   disconnectOwnedExternalTriggerSources,
   listOwnedExternalTriggerSources,
+  setOwnedExternalTriggerSourceCapability,
   type OwnedExternalTriggerSourceRow,
 } from '../../../external-triggers/source-store';
 import {
@@ -27,7 +28,16 @@ import {
   FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
   facebookPersonalVaultOAuthField,
 } from '../../../external-triggers/facebook';
-import { getProvider, loadAndRegisterProvidersFromDisk } from '../../../oauth/providers';
+import {
+  GOOGLE_CALENDAR_EVENTS_SCOPE,
+  GOOGLE_CALENDAR_READONLY_SCOPE,
+  GOOGLE_CONTACTS_READONLY_SCOPE,
+  GOOGLE_GMAIL_COMPOSE_SCOPE,
+  GOOGLE_GMAIL_READONLY_SCOPE,
+  GOOGLE_WORKSPACE_SCOPES,
+  getProvider,
+  loadAndRegisterProvidersFromDisk,
+} from '../../../oauth/providers';
 import { fsTokenStorage } from '../../../oauth/storage-fs';
 import {
   isPersonalVaultEnabled,
@@ -58,7 +68,41 @@ interface SafeIntegrationStatus {
   connected: boolean;
   status: 'needs-app-config' | 'available' | 'connected' | 'degraded' | 'error';
   sources: SafeIntegrationSource[];
+  capabilities?: SafeGoogleCapability[];
 }
+
+type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts';
+
+interface SafeGoogleCapability {
+  id: GoogleCapabilityId;
+  sourceKind: 'gmail' | 'gcal' | 'contacts';
+  enabled: boolean;
+  connected: boolean;
+  status: 'needs-app-config' | 'available' | 'connected' | 'disabled' | 'needs-consent' | 'degraded' | 'error';
+  missingScopes: string[];
+}
+
+const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
+  id: GoogleCapabilityId;
+  sourceKind: SafeGoogleCapability['sourceKind'];
+  requiredScopes: readonly string[];
+}> = [
+  {
+    id: 'gmail',
+    sourceKind: 'gmail',
+    requiredScopes: [GOOGLE_GMAIL_READONLY_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE],
+  },
+  {
+    id: 'calendar',
+    sourceKind: 'gcal',
+    requiredScopes: [GOOGLE_CALENDAR_READONLY_SCOPE, GOOGLE_CALENDAR_EVENTS_SCOPE],
+  },
+  {
+    id: 'contacts',
+    sourceKind: 'contacts',
+    requiredScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+  },
+];
 
 function jsonBody<T>(req: Request): Promise<T | null> {
   return req.json().catch(() => null) as Promise<T | null>;
@@ -92,16 +136,17 @@ function safeIntegrationStatus(
   kinds: readonly string[],
 ): SafeIntegrationStatus {
   const sources = owned.filter((source) => kinds.includes(source.kind));
-  const connected = sources.some((source) => source.credentialRef !== null && source.status !== 'disabled');
-  const status = providerLoadFailed || sources.some((source) => source.status === 'error')
-    ? 'error'
-    : sources.some((source) => source.status === 'degraded')
-      ? 'degraded'
-      : connected
-        ? 'connected'
-        : configured
-          ? 'available'
-          : 'needs-app-config';
+  const connected = sources.some((source) => source.credentialRef !== null);
+  const status =
+    providerLoadFailed || sources.some((source) => source.status === 'error')
+      ? 'error'
+      : sources.some((source) => source.status === 'degraded')
+        ? 'degraded'
+        : connected
+          ? 'connected'
+          : configured
+            ? 'available'
+            : 'needs-app-config';
   return {
     provider,
     configured,
@@ -116,6 +161,89 @@ function safeIntegrationStatus(
   };
 }
 
+function scopeList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return [
+      ...new Set(
+        value
+          .filter((scope): scope is string => typeof scope === 'string' && Boolean(scope.trim()))
+          .map((scope) => scope.trim()),
+      ),
+    ];
+  }
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    return scopeList(JSON.parse(value));
+  } catch {
+    return [
+      ...new Set(
+        value
+          .split(/[\s,]+/)
+          .map((scope) => scope.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+}
+
+async function googleGrantedScopes(owned: OwnedExternalTriggerSourceRow[]): Promise<string[]> {
+  const source = owned.find(
+    (candidate) =>
+      GOOGLE_WORKSPACE_SOURCE_KINDS.includes(candidate.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]) &&
+      candidate.credentialRef !== null,
+  );
+  if (!source?.credentialRef) return [];
+  const field = googleWorkspaceOAuthField(source.credentialRef);
+  const config = await fsTokenStorage.read(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp');
+  const stored = scopeList(config[field + '_scopes']);
+  // Older connections predate granted-scope metadata. Their base read scopes
+  // were mandatory, but calendar.events was not, so only the write upgrade is
+  // conservatively reported missing until the next consent round-trip.
+  return stored.length ? stored : [...GOOGLE_WORKSPACE_SCOPES];
+}
+
+function googleCapabilities(
+  configured: boolean,
+  providerLoadFailed: boolean,
+  owned: OwnedExternalTriggerSourceRow[],
+  grantedScopes: string[],
+): SafeGoogleCapability[] {
+  const sources = owned.filter((source) =>
+    GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]),
+  );
+  const sharedConnected = sources.some((source) => source.credentialRef !== null);
+  const granted = new Set(grantedScopes);
+  return GOOGLE_CAPABILITY_DEFS.map((definition) => {
+    const source = sources.find((candidate) => candidate.kind === definition.sourceKind);
+    const enabled = source?.config.capabilityEnabled !== false;
+    const missingScopes =
+      sharedConnected && enabled ? definition.requiredScopes.filter((scope) => !granted.has(scope)) : [];
+    const status: SafeGoogleCapability['status'] = providerLoadFailed
+      ? 'error'
+      : !configured
+        ? 'needs-app-config'
+        : !sharedConnected
+          ? 'available'
+          : !enabled
+            ? 'disabled'
+            : missingScopes.length
+              ? 'needs-consent'
+              : source?.status === 'error'
+                ? 'error'
+                : source?.status === 'degraded'
+                  ? 'degraded'
+                  : 'connected';
+    return {
+      id: definition.id,
+      sourceKind: definition.sourceKind,
+      enabled,
+      connected: sharedConnected && enabled && missingScopes.length === 0,
+      status,
+      missingScopes,
+    };
+  });
+}
+
 async function integrationStatuses(
   workspaceId: string,
   ownerUserId: string,
@@ -127,14 +255,20 @@ async function integrationStatuses(
     providerLoadFailed = true;
   }
   const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, ownerUserId);
+  const googleConfigured = !providerLoadFailed && getProvider('google') !== null;
+  const grantedGoogleScopes = await googleGrantedScopes(owned);
+  const google = safeIntegrationStatus(
+    'google',
+    googleConfigured,
+    providerLoadFailed,
+    owned,
+    GOOGLE_WORKSPACE_SOURCE_KINDS,
+  );
   return {
-    google: safeIntegrationStatus(
-      'google',
-      !providerLoadFailed && getProvider('google') !== null,
-      providerLoadFailed,
-      owned,
-      GOOGLE_WORKSPACE_SOURCE_KINDS,
-    ),
+    google: {
+      ...google,
+      capabilities: googleCapabilities(googleConfigured, providerLoadFailed, owned, grantedGoogleScopes),
+    },
     facebook: safeIntegrationStatus(
       'facebook',
       !providerLoadFailed && getProvider('facebook') !== null,
@@ -147,11 +281,7 @@ async function integrationStatuses(
 
 export function declaredPersonalScopes(raw: Record<string, string | string[]>): string[] {
   const value = raw.personalScopes ?? raw.personal_scopes ?? raw['personal-scopes'];
-  const values = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(',')
-      : [];
+  const values = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
   return [...new Set(values.map((scope) => personalScope(scope)).filter(Boolean))].sort();
 }
 
@@ -173,12 +303,14 @@ async function resolvePlanGrantPreview(
   if (!planSlug) throw new Error('plan_slug_required');
   const { sql } = getOrgPg();
   const harnessFilter = harnessSlug ? sql`AND harness_slug = ${harnessSlug}` : sql``;
-  const rows = await sql<Array<{
-    plan_slug: string;
-    harness_slug: string;
-    template_slug: string | null;
-    content: string;
-  }>>`
+  const rows = await sql<
+    Array<{
+      plan_slug: string;
+      harness_slug: string;
+      template_slug: string | null;
+      content: string;
+    }>
+  >`
     SELECT plan_slug, harness_slug, template_slug, content
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId}
@@ -234,18 +366,16 @@ const disconnectGoogle = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
-    const disconnected = await disconnectOwnedExternalTriggerSources(
-      getOrgPg().sql,
-      workspaceId,
-      user.id,
-      [...GOOGLE_WORKSPACE_SOURCE_KINDS],
-    );
+    const disconnected = await disconnectOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, user.id, [
+      ...GOOGLE_WORKSPACE_SOURCE_KINDS,
+    ]);
     for (const credentialRef of disconnected.credentialRefs) {
       const field = googleWorkspaceOAuthField(credentialRef);
       await fsTokenStorage.update(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp', {
         [field]: null,
         [field + '_refresh']: null,
         [field + '_expires_at']: null,
+        [field + '_scopes']: null,
         [field + '_expired']: true,
       });
     }
@@ -257,6 +387,48 @@ const disconnectGoogle = defineTool({
   },
 });
 
+const setGoogleCapability = defineTool({
+  method: 'PATCH',
+  path: '/user/personal-vault/integrations/google/capabilities',
+  auth: 'loopback',
+  async handler(req) {
+    const body = await jsonBody<{ capability?: unknown; enabled?: unknown }>(req);
+    const definition = GOOGLE_CAPABILITY_DEFS.find((candidate) => candidate.id === body?.capability);
+    if (!definition) {
+      return Response.json({ ok: false, error: 'google_capability_invalid' }, { status: 400 });
+    }
+    if (typeof body?.enabled !== 'boolean') {
+      return Response.json({ ok: false, error: 'enabled_must_be_boolean' }, { status: 400 });
+    }
+    const user = await getSessionUserOrDefault(req.headers);
+    const workspaceId = activeWorkspaceId();
+    const sql = getOrgPg().sql;
+    const owned = await listOwnedExternalTriggerSources(sql, workspaceId, user.id);
+    const credentialRef = owned.find(
+      (source) =>
+        GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]) &&
+        source.credentialRef !== null,
+    )?.credentialRef;
+    if (!credentialRef) {
+      return Response.json({ ok: false, error: 'google_workspace_not_connected' }, { status: 409 });
+    }
+    const source = await setOwnedExternalTriggerSourceCapability(sql, {
+      workspaceId,
+      ownerUserId: user.id,
+      kind: definition.sourceKind,
+      credentialRef,
+      enabled: body.enabled,
+      createdBy: `owner:${user.id}`,
+    });
+    return Response.json({
+      ok: true,
+      capability: definition.id,
+      enabled: body.enabled,
+      source: { kind: source.kind, status: source.status },
+    });
+  },
+});
+
 const disconnectFacebook = defineTool({
   method: 'DELETE',
   path: '/user/personal-vault/integrations/facebook',
@@ -264,12 +436,9 @@ const disconnectFacebook = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
-    const disconnected = await disconnectOwnedExternalTriggerSources(
-      getOrgPg().sql,
-      workspaceId,
-      user.id,
-      [...FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS],
-    );
+    const disconnected = await disconnectOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, user.id, [
+      ...FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
+    ]);
     for (const credentialRef of disconnected.credentialRefs) {
       const field = facebookPersonalVaultOAuthField(credentialRef);
       await fsTokenStorage.update(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp', {
@@ -488,6 +657,7 @@ export default [
   setEnabled,
   purge,
   disconnectGoogle,
+  setGoogleCapability,
   disconnectFacebook,
   archiveImport,
   grants,

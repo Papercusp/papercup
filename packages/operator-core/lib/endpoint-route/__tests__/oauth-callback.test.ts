@@ -82,6 +82,10 @@ vi.mock('../../oauth/state', () => ({
             : {
                 ownerUserId: '22222222-2222-4222-8222-222222222222',
                 workspaceId: 'workspace-1',
+                requestedScopes: JSON.stringify([
+                  'https://www.googleapis.com/auth/gmail.readonly',
+                  'https://www.googleapis.com/auth/calendar.events',
+                ]),
               }),
         },
         claims: {
@@ -96,12 +100,13 @@ vi.mock('../../oauth/state', () => ({
     if (token === 'facebook.valid' || token === 'facebook.missing') {
       return {
         ok: true,
-        privateContext: token === 'facebook.missing'
-          ? {}
-          : {
-              ownerUserId: '22222222-2222-4222-8222-222222222222',
-              workspaceId: 'workspace-1',
-            },
+        privateContext:
+          token === 'facebook.missing'
+            ? {}
+            : {
+                ownerUserId: '22222222-2222-4222-8222-222222222222',
+                workspaceId: 'workspace-1',
+              },
         claims: {
           plugin: 'facebook-personal-vault',
           harness: 'papercusp',
@@ -168,13 +173,9 @@ describe('GET /api/oauth/callback', () => {
   });
 
   it('returns a cancelled Google Workspace consent to Personal Vault settings', async () => {
-    const response = await GET(
-      new Request('http://x/api/oauth/callback?error=access_denied&state=google.valid'),
-    );
+    const response = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.valid'));
     expect(response.status).toBe(307);
-    expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_error=access_denied',
-    );
+    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_error=access_denied');
   });
 
   it('rejects state with bad signature', async () => {
@@ -237,7 +238,7 @@ describe('GET /api/oauth/callback', () => {
     expect(exchangeCode).toHaveBeenCalledWith('authorization-code', { codeVerifier: 'persisted-verifier' });
   });
 
-  it('provisions the owned Gmail and Calendar sources after Google token storage', async () => {
+  it('provisions the owned Workspace capability sources after Google token storage', async () => {
     providers.registerProvider({
       id: 'google',
       config: {
@@ -252,6 +253,7 @@ describe('GET /api/oauth/callback', () => {
         accessToken: 'google-access',
         refreshToken: 'google-refresh',
         expiresAt: Date.now() + 60 * 60 * 1000,
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/calendar.events'],
       }),
       refresh: async () => ({ accessToken: 'unused' }),
     });
@@ -274,9 +276,11 @@ describe('GET /api/oauth/callback', () => {
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
     expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('google-access');
     expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('google-refresh');
-    expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_connected=google-workspace',
-    );
+    expect(cfg['owner-22222222-2222-4222-8222-222222222222_scopes']).toEqual([
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/calendar.events',
+    ]);
+    expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
   });
 
   it('fails closed when a Google Workspace callback lacks server-owned identity context', async () => {
@@ -322,9 +326,7 @@ describe('GET /api/oauth/callback', () => {
       refresh: async () => ({ accessToken: 'facebook-refreshed' }),
     });
 
-    const response = await GET(new Request(
-      'http://x/api/oauth/callback?code=authorization-code&state=facebook.valid',
-    ));
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=facebook.valid'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
       'http://x/settings/personal-vault?oauth_connected=facebook-personal-vault',
@@ -357,9 +359,9 @@ describe('GET /api/oauth/callback', () => {
       refresh: async () => ({ accessToken: 'unused' }),
     });
 
-    const response = await GET(new Request(
-      'http://x/api/oauth/callback?code=authorization-code&state=facebook.missing',
-    ));
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?code=authorization-code&state=facebook.missing'),
+    );
     expect(response.status).toBe(400);
     expect(exchangeCode).not.toHaveBeenCalled();
     expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();

@@ -8,6 +8,7 @@ import {
   listOwnedExternalTriggerSources,
   listPollableExternalTriggerSources,
   requireExternalTriggerSourceOwner,
+  setOwnedExternalTriggerSourceCapability,
   updateExternalTriggerSourceSyncState,
 } from './source-store';
 
@@ -68,16 +69,19 @@ describe('external trigger source ownership', () => {
       )
       RETURNING id`;
 
-    await expect(requireExternalTriggerSourceOwner(sql, WS, rows[0].id))
-      .rejects.toThrow(`external_trigger_source_owner_required:${rows[0].id}`);
+    await expect(requireExternalTriggerSourceOwner(sql, WS, rows[0].id)).rejects.toThrow(
+      `external_trigger_source_owner_required:${rows[0].id}`,
+    );
   });
 
   it('enforces the local-user foreign key at the database boundary', async () => {
-    await expect(createOwnedExternalTriggerSource(sql, {
-      workspaceId: WS,
-      kind: 'gmail',
-      ownerUserId: '00000000-0000-0000-0000-000000000000',
-    })).rejects.toThrow(/trigger_sources_owner_user_id_fkey/);
+    await expect(
+      createOwnedExternalTriggerSource(sql, {
+        workspaceId: WS,
+        kind: 'gmail',
+        ownerUserId: '00000000-0000-0000-0000-000000000000',
+      }),
+    ).rejects.toThrow(/trigger_sources_owner_user_id_fkey/);
   });
 
   it('lists only pollable owned sources and persists cursor/status transitions', async () => {
@@ -116,10 +120,12 @@ describe('external trigger source ownership', () => {
       status: 'connecting',
     });
 
-    await expect(listPollableExternalTriggerSources(sql, WS, 'gcal')).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: pollable.id, kind: 'gcal', status: 'ready' }),
-      expect.objectContaining({ id: recovering.id, kind: 'gcal', status: 'connecting' }),
-    ]));
+    await expect(listPollableExternalTriggerSources(sql, WS, 'gcal')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: pollable.id, kind: 'gcal', status: 'ready' }),
+        expect.objectContaining({ id: recovering.id, kind: 'gcal', status: 'connecting' }),
+      ]),
+    );
 
     const connected = await updateExternalTriggerSourceSyncState(sql, WS, pollable.id, {
       status: 'connected',
@@ -177,8 +183,10 @@ describe('external trigger source ownership', () => {
       expect.objectContaining({ id: calendar.id, kind: 'gcal', ownerUserId: userId }),
       expect.objectContaining({ id: gmail.id, kind: 'gmail', ownerUserId: userId }),
     ]);
-    await expect(disconnectOwnedExternalTriggerSources(sql, WS, userId, ['gmail', 'gcal']))
-      .resolves.toEqual({ sources: 2, credentialRefs: ['google-workspace:owner-user'] });
+    await expect(disconnectOwnedExternalTriggerSources(sql, WS, userId, ['gmail', 'gcal'])).resolves.toEqual({
+      sources: 2,
+      credentialRefs: ['google-workspace:owner-user'],
+    });
 
     const disconnected = await listOwnedExternalTriggerSources(sql, WS, userId);
     expect(disconnected).toEqual([
@@ -187,6 +195,41 @@ describe('external trigger source ownership', () => {
     ]);
     await expect(listPollableExternalTriggerSources(sql, WS, 'gmail')).resolves.toEqual([
       expect.objectContaining({ id: other.id, ownerUserId: otherUsers[0].id }),
+    ]);
+  });
+
+  it('persists a per-surface toggle without clearing the shared credential or deleting the row', async () => {
+    const disabled = await setOwnedExternalTriggerSourceCapability(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      kind: 'contacts',
+      credentialRef: 'google-workspace:owner-user',
+      enabled: false,
+      createdBy: `owner:${userId}`,
+    });
+    expect(disabled).toMatchObject({
+      kind: 'contacts',
+      credentialRef: 'google-workspace:owner-user',
+      status: 'disabled',
+      config: { capabilityEnabled: false },
+    });
+    await expect(listPollableExternalTriggerSources(sql, WS, 'contacts')).resolves.toEqual([]);
+
+    const enabled = await setOwnedExternalTriggerSourceCapability(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      kind: 'contacts',
+      credentialRef: 'google-workspace:owner-user',
+      enabled: true,
+      createdBy: `owner:${userId}`,
+    });
+    expect(enabled).toMatchObject({
+      id: disabled.id,
+      status: 'connected',
+      config: { capabilityEnabled: true },
+    });
+    await expect(listPollableExternalTriggerSources(sql, WS, 'contacts')).resolves.toEqual([
+      expect.objectContaining({ id: disabled.id, credentialRef: 'google-workspace:owner-user' }),
     ]);
   });
 });

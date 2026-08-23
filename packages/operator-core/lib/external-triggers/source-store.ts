@@ -113,7 +113,10 @@ export async function upsertOwnedExternalTriggerSource(
       WHERE owner_user_id IS NOT NULL
     DO UPDATE SET
       credential_ref = EXCLUDED.credential_ref,
-      status = EXCLUDED.status,
+      status = CASE
+                 WHEN trigger_sources.config @> '{"capabilityEnabled":false}'::jsonb THEN 'disabled'
+                 ELSE EXCLUDED.status
+               END,
       last_connected_at = now(),
       last_error = NULL,
       updated_at = now()
@@ -202,6 +205,66 @@ export async function listOwnedExternalTriggerSources(
      WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
        AND owner_user_id = ${required(ownerUserId, 'owner_user_id')}::uuid
      ORDER BY kind, id`;
+}
+
+/**
+ * Toggle one provider surface without revoking the shared OAuth connection.
+ * The durable preference lives on the existing source config row and the
+ * status transition makes every current poller honor it immediately. A source
+ * missing from an older connection is created against the already-owned,
+ * opaque credential reference supplied by the connection-level caller.
+ */
+export async function setOwnedExternalTriggerSourceCapability(
+  sql: postgres.Sql,
+  input: {
+    workspaceId: string;
+    ownerUserId: string;
+    kind: string;
+    credentialRef: string;
+    enabled: boolean;
+    createdBy?: string | null;
+  },
+): Promise<ExternalTriggerSourceRow> {
+  const workspaceId = required(input.workspaceId, 'workspace_id');
+  const ownerUserId = required(input.ownerUserId, 'owner_user_id');
+  const kind = required(input.kind, 'source_kind');
+  const credentialRef = required(input.credentialRef, 'credential_ref');
+  const status = input.enabled ? 'connected' : 'disabled';
+  const config = JSON.stringify({ capabilityEnabled: input.enabled });
+  const rows = await sql<ExternalTriggerSourceRow[]>`
+    INSERT INTO harness_shared.trigger_sources
+      (workspace_id, kind, owner_user_id, credential_ref, status, config,
+       last_connected_at, last_error, created_by)
+    VALUES (
+      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${credentialRef}, ${status},
+      ${config}::text::jsonb, CASE WHEN ${input.enabled} THEN now() ELSE NULL END,
+      NULL, ${input.createdBy?.trim() || null}
+    )
+    ON CONFLICT (workspace_id, kind, owner_user_id)
+      WHERE owner_user_id IS NOT NULL
+    DO UPDATE SET
+      credential_ref = CASE
+                         WHEN trigger_sources.credential_ref IS NULL THEN EXCLUDED.credential_ref
+                         ELSE trigger_sources.credential_ref
+                       END,
+      status = EXCLUDED.status,
+      config = trigger_sources.config || EXCLUDED.config,
+      last_connected_at = CASE
+                            WHEN ${input.enabled} THEN COALESCE(trigger_sources.last_connected_at, now())
+                            ELSE trigger_sources.last_connected_at
+                          END,
+      last_error = NULL,
+      updated_at = now()
+    RETURNING id::text,
+              workspace_id AS "workspaceId",
+              kind,
+              owner_user_id::text AS "ownerUserId",
+              credential_ref AS "credentialRef",
+              status,
+              config,
+              cursor`;
+  if (!rows[0]) throw new Error('external_trigger_source_capability_update_failed');
+  return rows[0];
 }
 
 /**

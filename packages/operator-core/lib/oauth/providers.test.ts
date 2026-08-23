@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CLAUDE_OAUTH_DEFAULTS,
   FACEBOOK_OAUTH_SCOPES,
+  GOOGLE_CALENDAR_EVENTS_SCOPE,
   GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
   GOOGLE_CONTACTS_READONLY_SCOPE,
+  GOOGLE_WORKSPACE_ALLOWED_SCOPES,
   GOOGLE_WORKSPACE_SCOPES,
   compareScopes,
   __resetRegistryForTest,
@@ -92,9 +94,8 @@ describe('Google Workspace Desktop OAuth provider', () => {
       'https://www.googleapis.com/auth/calendar.readonly',
       GOOGLE_CONTACTS_READONLY_SCOPE,
     ]);
-    expect(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT).toBe(
-      'https://people.googleapis.com/v1/people/me/connections',
-    );
+    expect(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT).toBe('https://people.googleapis.com/v1/people/me/connections');
+    expect(GOOGLE_WORKSPACE_ALLOWED_SCOPES).toEqual([...GOOGLE_WORKSPACE_SCOPES, GOOGLE_CALENDAR_EVENTS_SCOPE]);
   });
 
   it('keeps the verifier server-side and sends only its S256 challenge', async () => {
@@ -179,7 +180,8 @@ describe('Meta / Facebook OAuth provider', () => {
     expect(authorize.searchParams.get('scope')?.split(',')).toEqual(FACEBOOK_OAUTH_SCOPES);
     expect(authorize.searchParams.get('state')).toBe('STATE_TOKEN');
 
-    const fetchMock = vi.fn()
+    const fetchMock = vi
+      .fn()
       .mockResolvedValueOnce(Response.json({ access_token: 'short-token', expires_in: 3600 }))
       .mockResolvedValueOnce(Response.json({ access_token: 'long-token', expires_in: 5_184_000 }));
     vi.stubGlobal('fetch', fetchMock);

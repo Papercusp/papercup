@@ -162,6 +162,11 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
 
 /** Scope required by the People API connections resource used for Contacts. */
 export const GOOGLE_CONTACTS_READONLY_SCOPE = 'https://www.googleapis.com/auth/contacts.readonly';
+export const GOOGLE_GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+export const GOOGLE_GMAIL_COMPOSE_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
+export const GOOGLE_CALENDAR_READONLY_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
+/** Optional Calendar write permission; requested only while the Calendar capability is enabled. */
+export const GOOGLE_CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 
 /**
  * Contacts validation must use `connections.list`. The superficially similar
@@ -171,11 +176,13 @@ export const GOOGLE_CONTACTS_READONLY_SCOPE = 'https://www.googleapis.com/auth/c
 export const GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT = 'https://people.googleapis.com/v1/people/me/connections';
 
 export const GOOGLE_WORKSPACE_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/calendar.readonly',
+  GOOGLE_GMAIL_READONLY_SCOPE,
+  GOOGLE_GMAIL_COMPOSE_SCOPE,
+  GOOGLE_CALENDAR_READONLY_SCOPE,
   GOOGLE_CONTACTS_READONLY_SCOPE,
 ] as const;
+
+export const GOOGLE_WORKSPACE_ALLOWED_SCOPES = [...GOOGLE_WORKSPACE_SCOPES, GOOGLE_CALENDAR_EVENTS_SCOPE] as const;
 
 export const GOOGLE_OAUTH_CLIENT_PATH = join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');
 
@@ -219,7 +226,7 @@ export function makeGoogleProvider(config: GoogleDesktopClientConfig): OAuthProv
     id: 'google',
     config: cfg,
     defaultScopes: GOOGLE_WORKSPACE_SCOPES,
-    allowedScopes: GOOGLE_WORKSPACE_SCOPES,
+    allowedScopes: GOOGLE_WORKSPACE_ALLOWED_SCOPES,
     createFlowContext() {
       // 64 base64url characters, within RFC 7636's 43–128 character range.
       return { codeVerifier: b64url(randomBytes(48)) };

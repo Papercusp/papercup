@@ -130,15 +130,17 @@ describe('GET /api/oauth/start', () => {
       ...stubProvider,
       id: 'google',
       defaultScopes: ['scope:mail', 'scope:calendar'],
-      allowedScopes: ['scope:mail', 'scope:calendar'],
+      allowedScopes: ['scope:mail', 'scope:calendar', 'scope:calendar-write'],
       createFlowContext: () => ({ codeVerifier: 'server-only-verifier' }),
       buildAuthorizeUrl,
     });
 
-    const response = await GET(new Request(
-      'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=scope:mail',
-      { headers: { cookie: 'papercusp_session=opaque' } },
-    ));
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=scope:calendar-write',
+        { headers: { cookie: 'papercusp_session=opaque' } },
+      ),
+    );
     expect(response.status).toBe(302);
     expect(authMocks.getSessionUserOrDefault).toHaveBeenCalledTimes(1);
     expect(stateMocks.signState).toHaveBeenCalledWith(
@@ -154,25 +156,27 @@ describe('GET /api/oauth/start', () => {
           ownerUserId: '22222222-2222-4222-8222-222222222222',
           workspaceId: 'workspace-1',
           returnPath: '/settings/personal-vault',
+          requestedScopes: JSON.stringify(['scope:mail', 'scope:calendar', 'scope:calendar-write']),
         },
       },
     );
     expect(buildAuthorizeUrl).toHaveBeenCalledWith(
-      ['scope:mail', 'scope:calendar'],
+      ['scope:mail', 'scope:calendar', 'scope:calendar-write'],
       'test-state-token',
       expect.objectContaining({
         ownerUserId: '22222222-2222-4222-8222-222222222222',
         workspaceId: 'workspace-1',
         returnPath: '/settings/personal-vault',
+        requestedScopes: JSON.stringify(['scope:mail', 'scope:calendar', 'scope:calendar-write']),
       }),
     );
   });
 
   it('rejects a non-Google provider under the reserved Workspace plugin id', async () => {
     registerProvider(stubProvider);
-    const response = await GET(new Request(
-      'http://x/api/oauth/start?provider=github&plugin=google-workspace&harness=papercusp&field=owner',
-    ));
+    const response = await GET(
+      new Request('http://x/api/oauth/start?provider=github&plugin=google-workspace&harness=papercusp&field=owner'),
+    );
     expect(response.status).toBe(400);
     expect(authMocks.getSessionUserOrDefault).not.toHaveBeenCalled();
   });
@@ -187,10 +191,12 @@ describe('GET /api/oauth/start', () => {
       buildAuthorizeUrl,
     });
 
-    const response = await GET(new Request(
-      'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=ignored&scopes=public_profile',
-      { headers: { cookie: 'papercusp_session=opaque' } },
-    ));
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=ignored&scopes=public_profile',
+        { headers: { cookie: 'papercusp_session=opaque' } },
+      ),
+    );
     expect(response.status).toBe(302);
     expect(stateMocks.signState).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -216,9 +222,11 @@ describe('GET /api/oauth/start', () => {
 
   it('rejects a non-Facebook provider under the reserved Facebook Personal Vault plugin id', async () => {
     registerProvider(stubProvider);
-    const response = await GET(new Request(
-      'http://x/api/oauth/start?provider=github&plugin=facebook-personal-vault&harness=papercusp&field=owner',
-    ));
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=github&plugin=facebook-personal-vault&harness=papercusp&field=owner',
+      ),
+    );
     expect(response.status).toBe(400);
     expect(authMocks.getSessionUserOrDefault).not.toHaveBeenCalled();
   });

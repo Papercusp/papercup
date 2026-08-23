@@ -39,15 +39,10 @@ export default defineTool({
     if (!providerId || !plugin || !harness || !requestedField) {
       return Response.json({ ok: false, error: 'provider, plugin, harness, field all required' }, { status: 400 });
     }
-    const connectsGoogleWorkspace =
-      providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
-    const connectsFacebookPersonalVault =
-      providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
+    const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
+    const connectsFacebookPersonalVault = providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
     if (plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN && !connectsGoogleWorkspace) {
-      return Response.json(
-        { ok: false, error: 'google-workspace plugin requires provider google' },
-        { status: 400 },
-      );
+      return Response.json({ ok: false, error: 'google-workspace plugin requires provider google' }, { status: 400 });
     }
     if (plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN && !connectsFacebookPersonalVault) {
       return Response.json(
@@ -77,16 +72,15 @@ export default defineTool({
     // The reserved Workspace connection backs Gmail, Calendar, and Contacts as
     // one consent. A caller-supplied subset must not create source rows that look
     // connected but cannot actually read one of those provider surfaces.
-    const scopes = connectsGoogleWorkspace || connectsFacebookPersonalVault
-      ? [...(provider.defaultScopes ?? [])]
-      : requestedScopes.length > 0
-        ? requestedScopes
-        : [...(provider.defaultScopes ?? [])];
+    const scopes = connectsGoogleWorkspace
+      ? [...new Set([...(provider.defaultScopes ?? []), ...requestedScopes])]
+      : connectsFacebookPersonalVault
+        ? [...(provider.defaultScopes ?? [])]
+        : requestedScopes.length > 0
+          ? requestedScopes
+          : [...(provider.defaultScopes ?? [])];
     if (connectsGoogleWorkspace && scopes.length === 0) {
-      return Response.json(
-        { ok: false, error: 'google-workspace provider has no default scopes' },
-        { status: 500 },
-      );
+      return Response.json({ ok: false, error: 'google-workspace provider has no default scopes' }, { status: 500 });
     }
     if (connectsFacebookPersonalVault && scopes.length === 0) {
       return Response.json(
@@ -96,7 +90,7 @@ export default defineTool({
     }
     const providerHost = new URL(provider.config.authorizeUrl).host;
     let field = requestedField;
-    let privateContext = { ...((await provider.createFlowContext?.()) ?? {}) };
+    let privateContext: Record<string, string> = { ...((await provider.createFlowContext?.()) ?? {}) };
     if (connectsGoogleWorkspace || connectsFacebookPersonalVault) {
       const owner = await getSessionUserOrDefault(req.headers);
       field = 'owner-' + owner.id;
@@ -105,6 +99,7 @@ export default defineTool({
         ownerUserId: owner.id,
         workspaceId: activeWorkspaceId(),
         returnPath: '/settings/personal-vault',
+        ...(connectsGoogleWorkspace ? { requestedScopes: JSON.stringify(scopes) } : {}),
       };
     }
     const state = await signState(

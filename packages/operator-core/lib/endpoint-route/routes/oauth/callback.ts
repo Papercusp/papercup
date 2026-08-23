@@ -41,12 +41,31 @@ function redirectWith(reqUrl: string, path: string, key: string, value: string):
 
 function callbackReturnPath(plugin: string, providerId: string, harness: string): string {
   if (
-    (providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN)
-    || (providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN)
+    (providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN) ||
+    (providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN)
   ) {
     return '/settings/personal-vault';
   }
   return '/harness/' + encodeURIComponent(harness) + '?panel=config';
+}
+
+function requestedScopes(privateContext: Readonly<Record<string, string>> | undefined): string[] {
+  const raw = privateContext?.requestedScopes;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? [
+          ...new Set(
+            parsed
+              .filter((scope): scope is string => typeof scope === 'string' && Boolean(scope.trim()))
+              .map((scope) => scope.trim()),
+          ),
+        ]
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export default defineTool({
@@ -64,11 +83,7 @@ export default defineTool({
       if (state) {
         const verified = await verifyAndConsumeState(state);
         if (verified.ok && verified.claims) {
-          const path = callbackReturnPath(
-            verified.claims.plugin,
-            verified.claims.provider,
-            verified.claims.harness,
-          );
+          const path = callbackReturnPath(verified.claims.plugin, verified.claims.provider, verified.claims.harness);
           return redirectWith(req.url, path, 'oauth_error', errorParam);
         }
       }
@@ -91,8 +106,7 @@ export default defineTool({
     }
 
     const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
-    const connectsFacebookPersonalVault =
-      providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
+    const connectsFacebookPersonalVault = providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
     let googleOwner: { ownerUserId: string; workspaceId: string } | null = null;
     let facebookOwner: { ownerUserId: string; workspaceId: string } | null = null;
     if (connectsGoogleWorkspace) {
@@ -108,9 +122,7 @@ export default defineTool({
     }
     if (connectsFacebookPersonalVault) {
       try {
-        const ownerUserId = assertFacebookPersonalVaultOwnerUserId(
-          verified.privateContext?.ownerUserId,
-        );
+        const ownerUserId = assertFacebookPersonalVaultOwnerUserId(verified.privateContext?.ownerUserId);
         const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
         if (!workspaceId) throw new Error('facebook_personal_vault_workspace_id_required');
         facebookOwner = { ownerUserId, workspaceId };
@@ -131,6 +143,10 @@ export default defineTool({
     const patch: Record<string, unknown> = { [field]: tokens.accessToken };
     if (tokens.refreshToken) patch[`${field}_refresh`] = tokens.refreshToken;
     if (tokens.expiresAt !== undefined) patch[`${field}_expires_at`] = tokens.expiresAt;
+    const grantedScopes = tokens.scopes?.length
+      ? [...new Set(tokens.scopes.map((scope) => scope.trim()).filter(Boolean))]
+      : requestedScopes(verified.privateContext);
+    if (grantedScopes.length) patch[`${field}_scopes`] = grantedScopes;
     patch[`${field}_expired`] = false;
     await fsTokenStorage.update(plugin, harness, patch);
     if (googleOwner) {
