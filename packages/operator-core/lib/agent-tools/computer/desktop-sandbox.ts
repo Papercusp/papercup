@@ -38,7 +38,8 @@
  * while every test stays green.
  */
 import { homedir } from 'node:os';
-import { FLAGS, getFlag } from '@papercusp/flags';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import type { GlTier } from '../../desktop/gl-strategy';
 import { capabilityBwrapWorks, credentialMaskArgs, scrubExecEnv } from '../capability/exec-sandbox';
 
