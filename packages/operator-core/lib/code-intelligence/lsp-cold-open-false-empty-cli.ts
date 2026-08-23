@@ -169,6 +169,64 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── --trace MODE: watch ONE cold open evolve ────────────────────────────
+  // The single-shot trials below answer "did a cold caller get a confident
+  // EMPTY?". They cannot answer "did a cold caller get a confident PARTIAL?",
+  // because a partial is non-empty and every non-empty answer keeps the
+  // client's health by deliberate design (see healthForAnswer). This mode
+  // re-queries the SAME cursor from one cold open and prints the site count
+  // over time, so a count that CLIMBS is direct evidence that an earlier
+  // answer was incomplete while claiming to be healthy.
+  const traceSec = Number(arg('trace', '0'));
+  if (traceSec > 0) {
+    await shutdownAllLspClients();
+    const traceStart = performance.now();
+    const samples: Array<{ ms: number; sites: number; health: string; error: string | null }> = [];
+    if (!asJson) console.log(`# TRACE mode: one cold open, re-queried for ${traceSec}s`);
+    for (;;) {
+      const elapsed = performance.now() - traceStart;
+      if (elapsed > traceSec * 1000) break;
+      const a = await lspQuery(intent, {
+        file: cursor.file,
+        line1: cursor.line1,
+        character: cursor.character,
+        rootPath: cursor.rootPath,
+      });
+      const at = Math.round(performance.now() - traceStart);
+      samples.push({ ms: at, sites: a.sites.length, health: a.freshness.health, error: a.error });
+      if (!asJson) {
+        console.log(
+          `  t=${String(at).padStart(7)}ms  sites=${String(a.sites.length).padStart(4)}  ` +
+            `health=${a.freshness.health.padEnd(8)}  err=${a.error ?? 'none'}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const grew = !!first && !!last && last.sites > first.sites;
+    const out = {
+      side: 'ours',
+      mode: 'trace',
+      ...header,
+      firstSites: first?.sites ?? null,
+      lastSites: last?.sites ?? null,
+      /** True ⇒ the first answer was INCOMPLETE while claiming health. */
+      countClimbed: grew,
+      firstAnswerHealth: first?.health ?? null,
+      samples,
+    };
+    if (asJson) console.log(JSON.stringify(out, null, 2));
+    else {
+      console.log(
+        `# TRACE RESULT: first=${first?.sites} last=${last?.sites} climbed=${grew ? 'YES' : 'no'} ` +
+          `firstHealth=${first?.health}`,
+      );
+    }
+    await shutdownAllLspClients();
+    return;
+  }
+
   const records: TrialRecord[] = [];
   for (let t = 1; t <= trials; t++) {
     // Kill the server so the next query is a genuine cold open.
