@@ -2,10 +2,9 @@
  * Unit test for the `papercusp/no-org-pool-sql-json` ESLint rule (EI-10445).
  *
  * Uses ESLint's built-in `RuleTester` to assert the rule flags `sql.json(x)`
- * ONLY in a file that imports one of the throwing db-org accessors
- * (getOrgPg/getOrgPgApp/getHarnessPg) from @papercusp/db-org — and stays
- * silent for a file using a DIFFERENT pool (e.g. dock-layouts.ts's own fresh
- * postgres() client), where sql.json() is the CORRECT form.
+ * only when the receiver is a SQL client binding derived from one of the
+ * throwing db-org accessors (getOrgPg/getOrgPgApp/getHarnessPg). Unrelated
+ * Response.json()/req.json() calls in the same module must remain valid.
  *
  * WHY IT LIVES HERE and not next to the rule (EI-10445 follow-up): this file
  * and its two siblings previously sat in `tools/eslint-rules/__tests__/`,
@@ -54,6 +53,25 @@ describe('papercusp/no-org-pool-sql-json', () => {
         {
           code: "import { getOrgPg } from '@papercusp/db-org';\nconst { sql } = getOrgPg();\nawait sql\`INSERT INTO t (p) VALUES (${JSON.stringify(x)}::text::jsonb)\`;",
         },
+        // The throwing accessor can coexist with ordinary HTTP JSON helpers.
+        {
+          code:
+            "import { getOrgPg } from '@papercusp/db-org';\n" +
+            "const { sql } = getOrgPg();\n" +
+            "const response = Response.json({ ok: true });\n" +
+            "const body = await req.json();\n" +
+            "void sql; void response; void body;",
+        },
+        // A same-named `sql` binding from another pool is not known to be the
+        // throwing client just because this module imports db-org elsewhere.
+        {
+          code:
+            "import { getOrgPg } from '@papercusp/db-org';\n" +
+            "const { db } = getOrgPg();\n" +
+            "const sql = external.sql;\n" +
+            "sql.json(x);\n" +
+            "void db;",
+        },
       ],
       invalid: [
         {
@@ -66,6 +84,16 @@ describe('papercusp/no-org-pool-sql-json', () => {
         },
         {
           code: "import { getHarnessPg } from '@papercusp/db-org';\nconst sql = getHarnessPg(slug);\nawait sql\`INSERT INTO t (p) VALUES (${sql.json(x)})\`;",
+          errors: [{ messageId: 'throws' }],
+        },
+        {
+          // Direct call-chain form without introducing a local binding.
+          code: "import { getHarnessPg } from '@papercusp/db-org';\nawait getHarnessPg(slug).sql.json(x);",
+          errors: [{ messageId: 'throws' }],
+        },
+        {
+          // Destructured alias form.
+          code: "import { getOrgPg as getAdmin } from '@papercusp/db-org';\nconst { sql: client } = getAdmin();\nclient.json(x);",
           errors: [{ messageId: 'throws' }],
         },
         {

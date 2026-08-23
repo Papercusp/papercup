@@ -41,15 +41,56 @@
 const DB_ORG_PACKAGE = '@papercusp/db-org';
 const THROWING_ACCESSORS = new Set(['getOrgPg', 'getOrgPgApp', 'getHarnessPg']);
 
-/** True for a `sql.json(x)` / `tx.json(x)` / `<anything>.json(x)` call —
- *  mirrors no-bare-jsonb-cast.js's isJsonHelperCall member-expression leg
- *  (this rule intentionally does NOT also match a bare `pgJson(...)` free
- *  function — that helper is a distinct, already-safe wrapper, not the
- *  postgres-js `sql.json` method this rule targets). */
+/** True for a `.json(x)` member call. The receiver is checked separately once
+ *  the complete binding graph is available at `Program:exit` — a file may
+ *  contain both a throwing SQL client and unrelated Response/request objects.
+ */
 function isSqlJsonMemberCall(node) {
   if (node.type !== 'CallExpression') return false;
   const callee = node.callee;
   return callee.type === 'MemberExpression' && callee.property.type === 'Identifier' && callee.property.name === 'json';
+}
+
+function unwrapExpression(node) {
+  let current = node;
+  while (
+    current &&
+    (current.type === 'AwaitExpression' ||
+      current.type === 'ChainExpression' ||
+      current.type === 'ParenthesizedExpression' ||
+      current.type === 'TSAsExpression' ||
+      current.type === 'TSTypeAssertion' ||
+      current.type === 'TSNonNullExpression' ||
+      current.type === 'TypeCastExpression')
+  ) {
+    current = current.type === 'AwaitExpression' ? current.argument : current.expression;
+  }
+  return current;
+}
+
+function staticPropertyName(node) {
+  const property = unwrapExpression(node);
+  if (!property) return null;
+  if (property.type === 'Identifier') return property.name;
+  if (property.type === 'Literal' && typeof property.value === 'string') return property.value;
+  return null;
+}
+
+function bindingIdentifier(node) {
+  const pattern = unwrapExpression(node);
+  if (pattern?.type === 'Identifier') return pattern;
+  if (pattern?.type === 'AssignmentPattern') return bindingIdentifier(pattern.left);
+  return null;
+}
+
+function isMemberNamed(node, name) {
+  const expression = unwrapExpression(node);
+  return (
+    expression &&
+    expression.type === 'MemberExpression' &&
+    !expression.computed &&
+    staticPropertyName(expression.property) === name
+  );
 }
 
 module.exports = {
@@ -66,42 +107,133 @@ module.exports = {
     },
   },
   create(context) {
-    let usesThrowingPool = false;
+    const throwingAccessorBindings = new Set();
+    const dbOrgNamespaceBindings = new Set();
+    const sqlBindings = new Set();
+    const handleBindings = new Set();
     const candidates = []; // sql.json(...)-shaped CallExpression nodes seen during the normal traversal
 
     function checkImportSource(source, specifiers) {
       if (source !== DB_ORG_PACKAGE) return;
-      for (const name of specifiers) {
-        if (THROWING_ACCESSORS.has(name)) {
-          usesThrowingPool = true;
-          return;
+      for (const specifier of specifiers) {
+        if (specifier.kind === 'namespace') {
+          dbOrgNamespaceBindings.add(specifier.local);
+          continue;
         }
+        if (THROWING_ACCESSORS.has(specifier.imported)) {
+          throwingAccessorBindings.add(specifier.local);
+        }
+      }
+    }
+
+    function isThrowingAccessorReference(node) {
+      const reference = unwrapExpression(node);
+      if (!reference) return false;
+      if (reference.type === 'Identifier') return throwingAccessorBindings.has(reference.name);
+      return (
+        reference.type === 'MemberExpression' &&
+        !reference.computed &&
+        reference.object.type === 'Identifier' &&
+        dbOrgNamespaceBindings.has(reference.object.name) &&
+        THROWING_ACCESSORS.has(staticPropertyName(reference.property))
+      );
+    }
+
+    function isThrowingAccessorCall(node) {
+      const call = unwrapExpression(node);
+      return call?.type === 'CallExpression' && isThrowingAccessorReference(call.callee);
+    }
+
+    function isHandleExpression(node) {
+      const expression = unwrapExpression(node);
+      if (!expression) return false;
+      if (expression.type === 'Identifier') return handleBindings.has(expression.name);
+      return isThrowingAccessorCall(expression);
+    }
+
+    function isSqlClientExpression(node) {
+      const expression = unwrapExpression(node);
+      if (!expression) return false;
+      if (expression.type === 'Identifier') return sqlBindings.has(expression.name);
+      return isMemberNamed(expression, 'sql') && isHandleExpression(expression.object);
+    }
+
+    function registerDestructuredBindings(pattern, init) {
+      if (pattern.type !== 'ObjectPattern' || !isThrowingAccessorCall(init)) return;
+      for (const property of pattern.properties) {
+        if (property.type !== 'Property' || property.computed) continue;
+        const importedName = staticPropertyName(property.key);
+        const local = bindingIdentifier(property.value);
+        if (importedName === 'sql' && local) sqlBindings.add(local.name);
+        if (importedName === 'sql' && property.value.type === 'AssignmentPattern') sqlBindings.add(local.name);
+      }
+    }
+
+    function registerVariableBinding(node) {
+      const local = bindingIdentifier(node.id);
+      if (!local) {
+        registerDestructuredBindings(node.id, node.init);
+        return;
+      }
+
+      const init = unwrapExpression(node.init);
+      if (isThrowingAccessorCall(init)) {
+        // All three accessors return a handle object. Its `.sql` property is
+        // tracked below. Keep the direct accessor binding in the SQL set too:
+        // older call sites treat the accessor's direct return as the client,
+        // and the rule must continue to catch that form while handling the
+        // canonical `.sql` member form precisely.
+        handleBindings.add(local.name);
+        sqlBindings.add(local.name);
+        return;
+      }
+      if (isSqlClientExpression(init)) {
+        sqlBindings.add(local.name);
+      }
+    }
+
+    function registerDynamicImport(node) {
+      const init = unwrapExpression(node.init);
+      const importExpression = init?.type === 'ImportExpression' ? init : null;
+      if (!importExpression || importExpression.source.type !== 'Literal' || importExpression.source.value !== DB_ORG_PACKAGE) {
+        return;
+      }
+      if (node.id.type === 'Identifier') {
+        dbOrgNamespaceBindings.add(node.id.name);
+        return;
+      }
+      if (node.id.type !== 'ObjectPattern') return;
+      for (const property of node.id.properties) {
+        if (property.type !== 'Property' || property.computed) continue;
+        const importedName = staticPropertyName(property.key);
+        const local = bindingIdentifier(property.value);
+        if (local && THROWING_ACCESSORS.has(importedName)) throwingAccessorBindings.add(local.name);
       }
     }
 
     return {
       ImportDeclaration(node) {
-        const names = node.specifiers
-          .filter((s) => s.type === 'ImportSpecifier')
-          .map((s) => (s.imported && s.imported.name) || s.local.name);
-        checkImportSource(node.source.value, names);
+        checkImportSource(
+          node.source.value,
+          node.specifiers.map((specifier) => {
+            if (specifier.type === 'ImportNamespaceSpecifier') {
+              return { kind: 'namespace', local: specifier.local.name };
+            }
+            return {
+              kind: 'named',
+              imported: staticPropertyName(specifier.imported),
+              local: specifier.local.name,
+            };
+          }),
+        );
       },
       // `const { getOrgPg } = await import('@papercusp/db-org')` — the
       // dynamic-import destructure form used by a few lazy-loaded call sites
-      // (e.g. system-health/liveness-alarm.ts).
+      // (e.g. system-health/liveness-alarm.ts). Track both destructured
+      // accessors and a namespace-style `const dbOrg = await import(...)`.
       VariableDeclarator(node) {
-        if (
-          node.init &&
-          node.init.type === 'AwaitExpression' &&
-          node.init.argument.type === 'ImportExpression' &&
-          node.init.argument.source.type === 'Literal' &&
-          node.id.type === 'ObjectPattern'
-        ) {
-          const names = node.id.properties
-            .filter((p) => p.type === 'Property' && p.key.type === 'Identifier')
-            .map((p) => p.key.name);
-          checkImportSource(node.init.argument.source.value, names);
-        }
+        registerDynamicImport(node);
+        registerVariableBinding(node);
       },
       // Collected via ESLint's own traversal (not a hand-rolled re-walk) —
       // whether to actually REPORT depends on `usesThrowingPool`, which may
@@ -111,9 +243,9 @@ module.exports = {
         if (isSqlJsonMemberCall(node)) candidates.push(node);
       },
       'Program:exit'() {
-        if (!usesThrowingPool) return;
         const sourceCode = context.getSourceCode ? context.getSourceCode() : context.sourceCode;
         for (const node of candidates) {
+          if (!isSqlClientExpression(node.callee.object)) continue;
           context.report({
             node,
             messageId: 'throws',
