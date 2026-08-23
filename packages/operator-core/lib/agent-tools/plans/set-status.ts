@@ -84,6 +84,7 @@ const itemSpec = z.object({
   onlyIfNotTerminal: z.boolean().optional(),
   onlyIfNotBlocked: z.boolean().optional(),
   onlyIfNoOtherOpenCoverage: z.boolean().optional(),
+  onlyIfNoOtherInFlightCoverage: z.boolean().optional(),
   onlyIfNotCompleted: z.boolean().optional(),
 });
 
@@ -130,6 +131,12 @@ const argsSchema = z
       .describe(
         'Non-destructive TERMINAL flip: when flipping an item to `done` or `dropped`, SKIP it (reported `skipped:"coverage_guard"`, ok:true) if ANOTHER non-terminal work-item is still linked to this plan item (via the `implements` conversion edge, the `relates` coverage edge, or the `payload.plan_item` stamp). Stops ONE work-item closing or dropping from de-queueing a plan item other live work still covers (EI-19972048649686949; WI-38908 — a 1:N lane auto-closed on its first sibling). No effect on a non-terminal status. For AUTOMATED reflections; a human closing/abandoning the item deliberately just omits it.',
       ),
+    onlyIfNoOtherInFlightCoverage: z
+      .boolean()
+      .optional()
+      .describe(
+        'Non-destructive TODO flip: SKIP it (reported `skipped:"in_flight_coverage_guard"`, ok:true) if ANOTHER linked work-item is non-terminal and currently assigned. Protects a parent plan lane when releasing one child is only an ownership event; a current assignee is the authoritative in-flight signal. No effect on other statuses. For AUTOMATED release reflections; a human deliberately returning the lane to `todo` omits it.',
+      ),
     onlyIfNotCompleted: z
       .boolean()
       .optional()
@@ -162,6 +169,10 @@ interface StatusItem {
    *  covers this plan item — for automated reflections cascading a single work-item's
    *  terminal state (WI-38908 widened this from drop-only). See the coverage guard below. */
   onlyIfNoOtherOpenCoverage?: boolean;
+  /** Skip a →todo flip when another linked non-terminal work-item still has a
+   * current assignee. Used by the automated release reflection so releasing a
+   * child cannot reset a held parent plan lane. */
+  onlyIfNoOtherInFlightCoverage?: boolean;
   /** Skip (don't flip) a `done` →`dropped` flip — an automated cascade must never
    *  downgrade finished work. See `completedGuardTrips`. */
   onlyIfNotCompleted?: boolean;
@@ -818,6 +829,47 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   }
 
+  // EI-21233859539099062: releasing ONE linked work-item is an ownership event,
+  // not evidence that the parent lane is free. A plan item can have a released
+  // child plus another non-terminal linked work-item that is still actively held.
+  // Only a CURRENT assignee is treated as in-flight here; a stale progress stamp
+  // without a holder is not enough to keep a plan item out of the pool. This is
+  // opt-in for automated release reflections and intentionally applies only to
+  // the →todo path.
+  //
+  // Best-effort, matching the terminal coverage guard above: a lookup failure is
+  // warned about but does not turn a legitimate release into a hard error.
+  if (it.onlyIfNoOtherInFlightCoverage && it.status === 'todo') {
+    try {
+      const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
+      const stillInFlight = linked.filter(
+        (wi) =>
+          !TERMINAL_WORK_ITEM_STATES.has(wi.state) &&
+          typeof wi.assignee === 'string' &&
+          wi.assignee.trim().length > 0 &&
+          wi.assignee.trim().toLowerCase() !== 'unassigned',
+      );
+      if (stillInFlight.length > 0) {
+        return {
+          ok: true,
+          slug: it.slug,
+          itemId: it.itemId,
+          skipped: 'in_flight_coverage_guard',
+          coveredBy: stillInFlight.map((wi) => wi.id),
+          reason:
+            `left open — ${stillInFlight.length} other linked work-item(s) ` +
+            `(${stillInFlight.map((wi) => wi.id).join(', ')}) still have a current assignee; ` +
+            'releasing this work-item must not reset the held parent plan lane to `todo`',
+        };
+      }
+    } catch (e) {
+      console.warn(
+        `[plans:set-status] in-flight coverage guard ${it.slug}#${it.itemId} failed:`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
     it.slug,
@@ -1311,6 +1363,7 @@ export default defineTool({
           onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
           onlyIfNotBlocked: it.onlyIfNotBlocked ?? args.onlyIfNotBlocked,
           onlyIfNoOtherOpenCoverage: it.onlyIfNoOtherOpenCoverage ?? args.onlyIfNoOtherOpenCoverage,
+          onlyIfNoOtherInFlightCoverage: it.onlyIfNoOtherInFlightCoverage ?? args.onlyIfNoOtherInFlightCoverage,
           onlyIfNotCompleted: it.onlyIfNotCompleted ?? args.onlyIfNotCompleted,
         }))
       : args.itemIds?.length
@@ -1324,6 +1377,7 @@ export default defineTool({
             onlyIfNotTerminal: args.onlyIfNotTerminal,
             onlyIfNotBlocked: args.onlyIfNotBlocked,
             onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
+            onlyIfNoOtherInFlightCoverage: args.onlyIfNoOtherInFlightCoverage,
             onlyIfNotCompleted: args.onlyIfNotCompleted,
           }))
         : [
@@ -1337,6 +1391,7 @@ export default defineTool({
               onlyIfNotTerminal: args.onlyIfNotTerminal,
               onlyIfNotBlocked: args.onlyIfNotBlocked,
               onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
+              onlyIfNoOtherInFlightCoverage: args.onlyIfNoOtherInFlightCoverage,
               onlyIfNotCompleted: args.onlyIfNotCompleted,
             },
           ];

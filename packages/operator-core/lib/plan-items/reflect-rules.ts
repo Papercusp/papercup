@@ -226,7 +226,15 @@ registerReactionRule({
     return !state || !TERMINAL_STATES.has(state);
   },
   fire: 'plans:set-status',
-  args: (e) => ({ ...setStatusArgs(e, 'todo', 'released'), onlyIfNotTerminal: true }),
+  args: (e) => ({
+    ...setStatusArgs(e, 'todo', 'released'),
+    onlyIfNotTerminal: true,
+    // A release is an OWNERSHIP event, not evidence that every linked execution
+    // record has been released. Preserve a plan item still covered by another
+    // non-terminal work-item with a current assignee; set-status performs the
+    // authoritative linked-row read immediately before the flip.
+    onlyIfNoOtherInFlightCoverage: true,
+  }),
   onlyOnSuccess: true,
   source: 'plan-item-reflect',
 });

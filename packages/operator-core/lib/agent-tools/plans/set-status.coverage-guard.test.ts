@@ -21,7 +21,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const reconcileMocks = vi.hoisted(() => ({
-  findAllLinkedWorkItems: vi.fn(async () => [] as Array<{ id: string; state: string }>),
+  findAllLinkedWorkItems: vi.fn(async () => [] as Array<{ id: string; state: string; assignee?: string | null }>),
 }));
 
 vi.mock('../_harness-scope', async (orig) => ({
@@ -251,6 +251,86 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
     expect(b.results[0].newStatus).toBe('dropped');
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('[plans:set-status] coverage guard'),
+      expect.anything(),
+    );
+    warnSpy.mockRestore();
+  });
+});
+
+describe('plans:set-status in-flight coverage guard (EI-21233859539099062)', () => {
+  it('SKIPS a →todo flip when another linked non-terminal work-item is currently assigned', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-parent', state: 'wip', assignee: 'su-parent' },
+      { id: 'WI-released', state: 'open', assignee: null },
+    ]);
+    lockReturnsMutatorValue(new Set(['P-020']), 'wip');
+    const b = await body({
+      slug: 'p020-plan',
+      item: 'P-020',
+      status: 'todo',
+      onlyIfNoOtherInFlightCoverage: true,
+    });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      skipped: 'in_flight_coverage_guard',
+      coveredBy: ['WI-parent'],
+    });
+    expect(b.results[0].reason).toMatch(/held parent plan lane/);
+    expect(lockM).not.toHaveBeenCalled();
+  });
+
+  it('only counts current assignees on non-terminal rows; released or terminal rows do not block', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-free', state: 'open', assignee: null },
+      { id: 'WI-terminal', state: 'done', assignee: 'su-finished' },
+      { id: 'WI-sentinel', state: 'wip', assignee: 'unassigned' },
+    ]);
+    lockReturnsMutatorValue(new Set(['P-020']), 'wip');
+    const b = await body({
+      slug: 'p020-plan',
+      item: 'P-020',
+      status: 'todo',
+      onlyIfNoOtherInFlightCoverage: true,
+    });
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('todo');
+    expect(lockM).toHaveBeenCalled();
+  });
+
+  it('is opt-in and applies only to →todo; other callers do not pay for the linked-row read', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-parent', state: 'wip', assignee: 'su-parent' },
+    ]);
+    lockReturnsMutatorValue(new Set(['P-020']), 'wip');
+    const unguarded = await body({ slug: 'p020-plan', item: 'P-020', status: 'todo' });
+    expect(unguarded.results[0].newStatus).toBe('todo');
+    expect(reconcileMocks.findAllLinkedWorkItems).not.toHaveBeenCalled();
+
+    const terminal = await body({
+      slug: 'p020-plan',
+      item: 'P-020',
+      status: 'done',
+      onlyIfNoOtherInFlightCoverage: true,
+    });
+    expect(terminal.results[0].newStatus).toBe('done');
+    expect(reconcileMocks.findAllLinkedWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('is fail-soft when the linked-row lookup fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    reconcileMocks.findAllLinkedWorkItems.mockRejectedValue(new Error('pg unavailable'));
+    lockReturnsMutatorValue(new Set(['P-020']), 'wip');
+    const b = await body({
+      slug: 'p020-plan',
+      item: 'P-020',
+      status: 'todo',
+      onlyIfNoOtherInFlightCoverage: true,
+    });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('todo');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[plans:set-status] in-flight coverage guard'),
       expect.anything(),
     );
     warnSpy.mockRestore();

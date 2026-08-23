@@ -341,6 +341,7 @@ describe('plan-item-reflect:release', () => {
     expect(args.status).toBe('todo');
     expect(args.onlyIfNotTerminal).toBe(true);
     expect(args.onlyIfNotBlocked).toBe(true);
+    expect(args.onlyIfNoOtherInFlightCoverage).toBe(true);
   });
 
   // A release says "I am no longer holding this" — never "this is unfinished". Any future
@@ -352,6 +353,7 @@ describe('plan-item-reflect:release', () => {
       expect(fires(rule, e), `fires for ${state}`).toBe(true);
       expect(renderArgs(rule, e).onlyIfNotTerminal, `guard present for ${state}`).toBe(true);
       expect(renderArgs(rule, e).onlyIfNotBlocked, `blocked guard present for ${state}`).toBe(true);
+      expect(renderArgs(rule, e).onlyIfNoOtherInFlightCoverage, `in-flight guard present for ${state}`).toBe(true);
     }
   });
 });
