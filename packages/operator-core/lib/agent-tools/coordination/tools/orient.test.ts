@@ -122,6 +122,18 @@ describe('coord:orient args', () => {
     expect((orientTool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
   });
 
+  it('starts bounded post-compaction recovery before composeOrient so the budgets overlap', () => {
+    const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
+    const recoveryStart = source.indexOf('const compactionRecoveryPromise =');
+    const composeStart = source.indexOf('const result = await composeOrient(');
+    const recoveryAwait = source.indexOf('const recovery = compactionRecoveryPromise');
+
+    expect(recoveryStart).toBeGreaterThanOrEqual(0);
+    expect(composeStart).toBeGreaterThan(recoveryStart);
+    expect(source.slice(recoveryStart, composeStart)).toContain('withBoundedTimeout');
+    expect(recoveryAwait).toBeGreaterThan(composeStart);
+  });
+
   it('does not retain the ambient workspace transaction across coordination folds', () => {
     expect((orientTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });

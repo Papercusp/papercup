@@ -2925,6 +2925,38 @@ export default defineTool({
       const { fetchOrientPipeline } = await import('../pipeline-health');
       return fetchOrientPipeline(args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? undefined);
     })().catch(() => null);
+    // compaction-context-loss-2026-07-05 P-002: start the post-compaction
+    // recovery fold BEFORE the sequential composeOrient legs. The recovery is
+    // best-effort and independently bounded, so starting it here overlaps its
+    // self-tail / control / held-item reads with work the orient call already
+    // has to do instead of adding another 15s serial budget to the transport.
+    const compactionRecoveryPromise =
+      args.afterCompaction && ownerId
+        ? (async () => {
+            try {
+              const { buildCompactionRecovery } = await import('../compaction-recovery');
+              // EI-9013: an unscoped su session's ctx.workspaceId is the literal '*' —
+              // passing it (or 'default') straight into the recovery build made the
+              // held-items query + checkpoint reads look under a workspace that holds
+              // no rows. Resolve to the concrete active workspace.
+              const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+              // EI-18162666491500151: bounded — a slow leg inside buildCompactionRecovery
+              // (self-transcript ingest, held-items read, staleness scan) used to hang the
+              // WHOLE orient call for the full 300s MCP tool-idle timeout; now degrades to
+              // `undefined` (recovery omitted, same as the pre-existing catch contract)
+              // within ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS — the WI-3818 bounded-leg
+              // contract every other orient fold already gets.
+              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws), {
+                fallback: undefined,
+                timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
+                label: 'orient:buildCompactionRecovery',
+              });
+              return recoveryResult.value;
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
     const orientInnerCall = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
@@ -3024,6 +3056,10 @@ export default defineTool({
       },
       fleetSummariesFold,
     );
+    // Await the already-running recovery only after composeOrient completes;
+    // this preserves the existing fold output while keeping the two budgets
+    // overlapped rather than serial.
+    const recovery = compactionRecoveryPromise ? await compactionRecoveryPromise : undefined;
     // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
     // disclosure markers this payload carried, so the HUD sessions popup can
     // show a human what THIS agent was actually told about what its reads left
@@ -3146,35 +3182,6 @@ export default defineTool({
       try {
         const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
         captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
-      } catch {
-        /* fail-soft */
-      }
-    }
-    // compaction-context-loss-2026-07-05 P-002: the post-compaction recovery
-    // fold — held-item checkpoints + armed-loop status + the self-recall
-    // pointer (with a self live-tail so it's fresh). Handler-side IO like
-    // ownerPresent/modes; best-effort — never breaks orientation.
-    let recovery: unknown;
-    if (args.afterCompaction && ownerId) {
-      try {
-        const { buildCompactionRecovery } = await import('../compaction-recovery');
-        // EI-9013: an unscoped su session's ctx.workspaceId is the literal '*' —
-        // passing it (or 'default') straight into the recovery build made the
-        // held-items query + checkpoint reads look under a workspace that holds
-        // no rows. Resolve to the concrete active workspace.
-        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        // EI-18162666491500151: bounded — a slow leg inside buildCompactionRecovery
-        // (self-transcript ingest, held-items read, staleness scan) used to hang the
-        // WHOLE orient call for the full 300s MCP tool-idle timeout; now degrades to
-        // `undefined` (recovery omitted, same as the pre-existing catch contract)
-        // within ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS — the WI-3818 bounded-leg
-        // contract every other orient fold already gets.
-        const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws), {
-          fallback: undefined,
-          timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
-          label: 'orient:buildCompactionRecovery',
-        });
-        recovery = recoveryResult.value;
       } catch {
         /* fail-soft */
       }
