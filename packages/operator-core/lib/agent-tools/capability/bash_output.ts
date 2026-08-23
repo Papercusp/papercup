@@ -341,12 +341,14 @@ export async function taskScopeIsActive(
   if (
     row.class !== 'bash-job' ||
     !row.confined ||
-    !row.scopeUnit ||
-    row.scopeUnit !== serviceUnitForTask(row.taskId)
+    !row.scopeUnit
   ) {
     return false;
   }
   try {
+    // Keep malformed or legacy rows fail-soft too: a liveness read must never
+    // turn bad ledger metadata into a handler exception.
+    if (row.scopeUnit !== serviceUnitForTask(row.taskId)) return false;
     const { stdout } = await execFn(
       'systemctl',
       ['--user', 'show', '-p', 'ActiveState', '--value', row.scopeUnit],
@@ -946,7 +948,7 @@ export default defineTool({
                     ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                     recovered_from_ledger: true,
                     ...strandedOutput,
-                  output: recoveredStrandedOutput,
+                    output: recoveredStrandedOutput,
                   }),
                 },
               ],

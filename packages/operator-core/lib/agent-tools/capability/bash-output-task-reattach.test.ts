@@ -6,6 +6,16 @@
  * reuse the existing BashOutput path, and never turn a miss into a second job.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const childProcess = vi.hoisted(() => ({
+  execFile: vi.fn((...args: unknown[]) => {
+    const callback = args[args.length - 1];
+    if (typeof callback === 'function') callback(new Error('systemd probe not configured'));
+  }),
+}));
 import type { TaskRow } from '../../task-manager/types';
 import type { BashJob } from './bash-jobs';
 
@@ -19,6 +29,10 @@ const jobs = vi.hoisted(() => ({
   startBackground: vi.fn(),
 }));
 
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFile: childProcess.execFile,
+}));
 vi.mock('../../task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../task-manager/store')>()),
   getTask: store.getTask,
@@ -91,10 +105,10 @@ function liveJob(): BashJob {
   };
 }
 
-function ctx(workspaceId = 'ws-current') {
+function ctx(workspaceId = 'ws-current', stateDir = '/tmp/task-reattach-state') {
   return {
     workspaceId,
-    stateDir: '/tmp/task-reattach-state',
+    stateDir,
     signal: new AbortController().signal,
     emit: () => {},
     role: 'cup',
@@ -155,6 +169,59 @@ describe('capability:bash_output — durable task attachment', () => {
     });
     expect(payload).not.toHaveProperty('reason', 'tracking_lost_process_alive');
     expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
+  it('recovers a queued service-backed job from ActiveState and preserves its durable tail', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-scope-recovery-'));
+    const output = 'queued behind pc-heavy\n';
+    try {
+      mkdirSync(join(stateDir, 'scratch'), { recursive: true });
+      writeFileSync(join(stateDir, 'scratch', 'bash-bash-carry-1.log'), output);
+      store.getTask.mockResolvedValue(
+        taskRow({
+          pid: null,
+          processIdentity: null,
+          cgroupPath: null,
+          scopeUnit: 'pc-task-carry-1.service',
+        }),
+      );
+      jobs.getJob.mockReturnValue(null);
+      childProcess.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args[args.length - 1] as (error: Error | null, result?: { stdout: string }) => void;
+        callback(null, { stdout: 'active\n' });
+      });
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({
+        ok: true,
+        bash_id: 'bash-carry-1',
+        task_id: 'task-carry-1',
+        status: 'running',
+        running: true,
+        recovered_from_ledger: true,
+        recovered_from_scope: true,
+        liveness_proof: 'systemd_active_state',
+        tracking_lost: true,
+        output_is_tail: true,
+        scope_unit: 'pc-task-carry-1.service',
+        output_tail: output,
+        output,
+        total_bytes_written: Buffer.byteLength(output),
+      });
+      expect(payload.advice).toEqual(expect.stringContaining('queued behind pc-heavy'));
+      expect(childProcess.execFile).toHaveBeenCalledWith(
+        'systemctl',
+        ['--user', 'show', '-p', 'ActiveState', '--value', 'pc-task-carry-1.service'],
+        { timeout: 2_000, maxBuffer: 64 * 1024 },
+        expect.any(Function),
+      );
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('hides a cross-workspace task as unknown and does not touch the job registry', async () => {

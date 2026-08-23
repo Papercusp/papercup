@@ -16,17 +16,19 @@
  * identity (immune to PID reuse) rather than guessing. Pure unit tests — a fake
  * TaskRow + an injected probe function, no PG, no subprocess.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   appendJobDiedMarker,
   confirmedAliveStopAdvice,
   diagnoseFromLedger,
   isLedgerConfirmedUnobservedDeath,
   parseJobLogDiedMarker,
+  taskScopeIsActive,
   terminalStatusFromLedger,
 } from './bash_output';
 import { formatJobLogDiedMarker, formatJobLogEndMarker } from './bash-jobs';
 import type { TaskRow } from '../../task-manager/types';
+import { serviceUnitForTask, scopeUnitForTask } from '../../task-manager/types';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -198,6 +200,62 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
       return { processIdentity: 'linux:boot-abc:1', cgroupPath: '/x', cmdline: 'x' };
     });
     expect(called).toBe(false);
+  });
+});
+
+describe('taskScopeIsActive (EI-21238945235772551)', () => {
+  const taskId = 'tsk0000001';
+  const serviceUnit = serviceUnitForTask(taskId);
+  const base = {
+    taskId,
+    class: 'bash-job' as const,
+    confined: true,
+    scopeUnit: serviceUnit,
+  };
+
+  it.each(['active', 'activating', 'reloading', 'deactivating'])(
+    'accepts systemd ActiveState=%s for the canonical confined bash-job service',
+    async (activeState) => {
+      const exec = vi.fn(async (_file: string, _args: readonly string[], _options: object) => ({
+        stdout: `${activeState}\n`,
+      }));
+
+      await expect(taskScopeIsActive(base, exec)).resolves.toBe(true);
+      expect(exec).toHaveBeenCalledWith(
+        'systemctl',
+        ['--user', 'show', '-p', 'ActiveState', '--value', serviceUnit],
+        { timeout: 2_000, maxBuffer: 64 * 1024 },
+      );
+    },
+  );
+
+  it('rejects an inactive service, a scope-shaped unit, and non-bash or unconfined rows without probing', async () => {
+    const exec = vi.fn(async () => ({ stdout: 'active\n' }));
+
+    await expect(taskScopeIsActive({ ...base, scopeUnit: 'pc-tsk0000001.service' }, exec)).resolves.toBe(true);
+    await expect(taskScopeIsActive({ ...base, scopeUnit: scopeUnitForTask(taskId) }, exec)).resolves.toBe(false);
+    await expect(taskScopeIsActive({ ...base, class: 'agent-session' }, exec)).resolves.toBe(false);
+    await expect(taskScopeIsActive({ ...base, confined: false }, exec)).resolves.toBe(false);
+
+    const inactiveExec = vi.fn(async () => ({ stdout: 'inactive\n' }));
+    await expect(taskScopeIsActive(base, inactiveExec)).resolves.toBe(false);
+    expect(inactiveExec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails soft when systemd is unavailable or the ledger task id is malformed', async () => {
+    const failedExec = vi.fn(async () => {
+      throw new Error('systemctl unavailable');
+    });
+    await expect(taskScopeIsActive(base, failedExec)).resolves.toBe(false);
+
+    await expect(
+      taskScopeIsActive(
+        { ...base, taskId: 'not a valid task id', scopeUnit: 'pc-not a valid task id.service' },
+        failedExec,
+      ),
+    ).resolves.toBe(false);
+    expect(failedExec).toHaveBeenCalledTimes(1);
   });
 });
 
