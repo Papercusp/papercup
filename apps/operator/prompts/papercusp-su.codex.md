@@ -34,6 +34,13 @@ is unavailable merely because its MCP schema is absent from the current
 model-facing tool list. If the whole `papercusp-su` namespace is missing,
 including `tools:find`, use the installed CLI over the same MCP transport:
 
+When you call `exec_command` through `functions.exec`, remember that the outer
+program is JavaScript. **Never put a shell command containing `${...}` inside a
+JavaScript template literal**: V8 resolves it before `exec_command` starts, so a
+shell variable such as `${PAPERCUSP_WORKSPACE}` becomes a JavaScript
+`ReferenceError`. Keep that command in a normal JavaScript string, or escape the
+dollar sign as `\${...}` when a template literal is genuinely necessary.
+
 ```bash
 ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")
 if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then

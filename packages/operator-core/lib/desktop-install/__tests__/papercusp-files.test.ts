@@ -896,6 +896,9 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
       new URL('../../../../../apps/operator/prompts/papercusp-su.codex.md', import.meta.url),
       'utf8',
     );
+    expect(canonicalOverlay).toContain('Never put a shell command containing `${...}` inside a');
+    expect(canonicalOverlay).toContain('V8 resolves it before `exec_command` starts');
+    expect(canonicalOverlay).toContain('Keep that command in a normal JavaScript string');
     expect(canonicalOverlay).toContain('ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")');
     expect(canonicalOverlay).toContain('if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]');
     expect(canonicalOverlay).toContain('ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")');
