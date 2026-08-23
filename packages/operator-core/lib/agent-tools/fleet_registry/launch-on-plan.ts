@@ -481,6 +481,37 @@ const RELAUNCH_SUPPRESS_MS = 300_000;
  *  probe's `since`, covers that shape without materially slowing a real dud. */
 const LATE_VERIFY_RECHECK_TIMEOUT_MS = 30_000;
 
+/**
+ * Keep the response path below the MCP transport budget. The launch transaction
+ * is already durable before this boundary, so a slow verifier can continue in
+ * the detached completion below while the caller gets a safe replay handle.
+ */
+export const LAUNCH_RESPONSE_DEADLINE_MS = 20_000;
+
+export type LaunchResponseRace<T> = { timedOut: false; value: T } | { timedOut: true };
+
+/** Race a launch completion against the caller-facing response budget.
+ *
+ * The operation is intentionally not cancelled when the deadline wins: spawn
+ * and verification have already mutated the durable launch transaction and the
+ * continuation must finish that transaction instead of leaving it ambiguous.
+ */
+export async function raceLaunchResponseWithinBudget<T>(
+  operation: Promise<T>,
+  timeoutMs = LAUNCH_RESPONSE_DEADLINE_MS,
+): Promise<LaunchResponseRace<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const delay = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : LAUNCH_RESPONSE_DEADLINE_MS;
+  const timeout = new Promise<{ timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true }), delay);
+  });
+  try {
+    return await Promise.race([operation.then((value) => ({ timedOut: false as const, value })), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** EI-20361787885323735: how old a slot-holding launch must be before ZERO live members is
  *  read as "the wave it protects is DEAD" rather than "still booting". Presence registration
  *  lands within seconds of psu boot (measured +24s on a 5-member codex wave), so 2 minutes is
@@ -2474,6 +2505,7 @@ export default defineTool({
 
       const placedTotal = remotePlacements.reduce((s, p) => s + p.count, 0);
       const lines: string[] = [];
+    if (completionError) lines.push(`⚠ ${completionError}`);
       const promotionWarning = promotionFailsafeWarning(planSlug!, promotionFailsafe);
       if (promotionWarning) lines.push(promotionWarning);
       lines.push(
@@ -3447,172 +3479,252 @@ export default defineTool({
     // verifier must not consume the call budget before later bounded waves have even
     // been opened (WI-39368). A positive spawn failure still stops NEW waves, while
     // every wave that did open is verified below and reported in the transaction.
-    await runLaunchWavesBeforeVerification(
-      waveIndices,
-      requestedMemberIds,
-      async (waveIndex, indices, ownerIds) => {
-        const wave: FleetLaunchTransaction['waves'][number] = {
-          index: waveIndex,
-          ownerIds: [...ownerIds],
-          state: 'opening',
-        };
-        launchTransaction.waves.push(wave);
-        await persistLaunchTransaction();
-
-        const waveResults = await Promise.all(
-          indices.map((i) =>
-            args.headless
-              ? spawnHeadless({
-                  envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-                  label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-                  logDir: headlessLogDir,
-                })
-              : spawnConsole({
-                  envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-                  label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-                  writeMcpJson: false,
-                  scheme,
-                  allowDesktopBridge: true,
-                  displayOverride: args.display,
-                  preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
-                }),
-          ),
-        );
-        const openedThisWave: string[] = [];
-        waveResults.forEach((result, offset) => {
-          const i = indices[offset];
-          const memberOwnerId = requestedMemberIds[i];
-          if (result.status === 'ok') {
-            openedThisWave.push(memberOwnerId);
-            launchTransaction.openedMemberIds.push(memberOwnerId);
-            opened.push({
-              ownerId: memberOwnerId,
-              terminal: result.terminal,
-              pid: result.pid,
-              display: result.display,
-              desktopEnvResolvedVia: result.desktopEnvResolvedVia,
-              command: memberCommands[i],
-            });
-          } else {
-            failed.push({ ownerId: memberOwnerId, error: result.error, code: result.code });
-            launchTransaction.failed.push({ ownerId: memberOwnerId, phase: 'spawn', reason: result.error });
-          }
-        });
-        wave.openedOwnerIds = openedThisWave;
-        const spawnFailed = waveResults.some((result) => result.status !== 'ok');
-        return {
-          payload: { wave, openedThisWave, spawnFailed },
-          stopAfterSpawn: spawnFailed,
-        };
-      },
-      async ({ payload }) => {
-        const { wave, openedThisWave, spawnFailed } = payload;
-        let waveVerified = false;
-        if (openedThisWave.length > 0) {
-          try {
-            const waveArgs = {
-              workspaceId,
-              launcherOwnerId: ownerId,
-              since: launchRequestedAt,
-              expected: openedThisWave.length,
-              expectedOwnerIds: openedThisWave,
-              expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
-            };
-            let verdict = await verifyFreshLaunchStarted(waveArgs);
-            if (verdict.agentStarted === null) {
-              // EI-20437060078324174: an expired window is the ABSENCE of an
-              // observation, not death — the measured false-negative registered
-              // 5.5s past the first window and went straight on to claim work.
-              // One bounded re-probe BEFORE any gate decision, so a slow boot
-              // verifies here and only a genuinely dark member stays unconfirmed.
-              verdict = await verifyFreshLaunchStarted(waveArgs, {
-                timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
-              });
-            }
-            waveVerified = verdict.agentStarted === true;
-            if (waveVerified) {
-              launchTransaction.verifiedMemberIds.push(...openedThisWave);
-              wave.verifiedOwnerIds = openedThisWave.slice();
-            } else if (verdict.agentStarted === null) {
-              // Still unconfirmed after the re-probe. NOT a failure: no 502, no
-              // failed[] entry — the members are reported as unverified, and the
-              // EI-20497372063255974 resume path re-opens the unopened remainder
-              // once they prove live. Session-level split first: a member whose
-              // session already took a real turn IS verified even when the wave
-              // as a whole is not.
-              const verifiedNow = new Set(
-                verdict.sessions
-                  .filter((s) => s.ownerId != null && s.successfulCalls > 0)
-                  .map((s) => s.ownerId as string),
-              );
-              const confirmed = openedThisWave.filter((id) => verifiedNow.has(id));
-              const pending = openedThisWave.filter((id) => !verifiedNow.has(id));
-              if (confirmed.length > 0) {
-                launchTransaction.verifiedMemberIds.push(...confirmed);
-                wave.verifiedOwnerIds = confirmed.slice();
-              }
-              for (const memberOwnerId of pending) {
-                unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
-              }
-              launchTransaction.unconfirmedMemberIds = [
-                ...(launchTransaction.unconfirmedMemberIds ?? []),
-                ...pending,
-              ];
-            } else {
-              const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
-              for (const memberOwnerId of openedThisWave) {
-                launchTransaction.failed.push({ ownerId: memberOwnerId, phase, reason: verdict.note });
-                failed.push({ ownerId: memberOwnerId, error: verdict.note, code: 502 });
-              }
-            }
-          } catch (e: any) {
-            // The instrument broke — say THAT. A probe fault is not an observation
-            // about the member, so it must not masquerade as a 502 launch failure
-            // (the rule capability:launch-agent already applies to this verifier).
-            for (const memberOwnerId of openedThisWave) {
-              unconfirmed.push({
-                ownerId: memberOwnerId,
-                note:
-                  `⏳ launch verification could not run (${e?.message ?? e}) — the member may be ` +
-                  `fine; this says nothing either way. Verify with coord:presence { owner: '${memberOwnerId}' }.`,
-              });
-            }
-            launchTransaction.unconfirmedMemberIds = [
-              ...(launchTransaction.unconfirmedMemberIds ?? []),
-              ...openedThisWave,
-            ];
-          }
-        }
-
-        // A positive spawn failure still leaves the wave partial; an unconfirmed or
-        // failed verification is likewise reported without being mistaken for a
-        // successful wave. Later waves have already been spawned by this point.
-        if (waveVerified && !spawnFailed && openedThisWave.length === wave.ownerIds.length) {
-          wave.state = 'verified';
-        } else {
-          wave.state = 'partial';
-        }
-        await persistLaunchTransaction();
-      },
-    );
-    if (launchTransaction.verifiedMemberIds.length === transactionRequestedMemberIds.length) {
-      launchTransaction.state = 'verified';
-    } else {
-      launchTransaction.state = 'partial';
-    }
-    await persistLaunchTransaction();
-
-    // The slot was claimed BEFORE spawning (the atomic winner). If the launch opened NOTHING
-    // (every spawn failed), release it so an immediate legitimate retry isn't suppressed for
-    // the whole window; a partial success keeps the claim. Best-effort — never fails the result.
-    if (opened.length === 0) {
+    const completeLaunch = async (): Promise<string | null> => {
       try {
-        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
-      } catch {
-        /* the guard self-heals when the window elapses */
-      }
-    }
+        await runLaunchWavesBeforeVerification(
+          waveIndices,
+          requestedMemberIds,
+          async (waveIndex, indices, ownerIds) => {
+            const wave: FleetLaunchTransaction['waves'][number] = {
+              index: waveIndex,
+              ownerIds: [...ownerIds],
+              state: 'opening',
+            };
+            launchTransaction.waves.push(wave);
+            await persistLaunchTransaction();
 
+            const waveResults = await Promise.all(
+              indices.map((i) =>
+                args.headless
+                  ? spawnHeadless({
+                      envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+                      label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
+                      logDir: headlessLogDir,
+                    })
+                  : spawnConsole({
+                      envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+                      label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
+                      writeMcpJson: false,
+                      scheme,
+                      allowDesktopBridge: true,
+                      displayOverride: args.display,
+                      preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
+                    }),
+              ),
+            );
+            const openedThisWave: string[] = [];
+            waveResults.forEach((result, offset) => {
+              const i = indices[offset];
+              const memberOwnerId = requestedMemberIds[i];
+              if (result.status === 'ok') {
+                openedThisWave.push(memberOwnerId);
+                launchTransaction.openedMemberIds.push(memberOwnerId);
+                opened.push({
+                  ownerId: memberOwnerId,
+                  terminal: result.terminal,
+                  pid: result.pid,
+                  display: result.display,
+                  desktopEnvResolvedVia: result.desktopEnvResolvedVia,
+                  command: memberCommands[i],
+                });
+              } else {
+                failed.push({ ownerId: memberOwnerId, error: result.error, code: result.code });
+                launchTransaction.failed.push({ ownerId: memberOwnerId, phase: 'spawn', reason: result.error });
+              }
+            });
+            wave.openedOwnerIds = openedThisWave;
+            const spawnFailed = waveResults.some((result) => result.status !== 'ok');
+            return {
+              payload: { wave, openedThisWave, spawnFailed },
+              stopAfterSpawn: spawnFailed,
+            };
+          },
+          async ({ payload }) => {
+            const { wave, openedThisWave, spawnFailed } = payload;
+            let waveVerified = false;
+            if (openedThisWave.length > 0) {
+              try {
+                const waveArgs = {
+                  workspaceId,
+                  launcherOwnerId: ownerId,
+                  since: launchRequestedAt,
+                  expected: openedThisWave.length,
+                  expectedOwnerIds: openedThisWave,
+                  expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
+                };
+                let verdict = await verifyFreshLaunchStarted(waveArgs);
+                if (verdict.agentStarted === null) {
+                  // EI-20437060078324174: an expired window is the ABSENCE of an
+                  // observation, not death — the measured false-negative registered
+                  // 5.5s past the first window and went straight on to claim work.
+                  // One bounded re-probe BEFORE any gate decision, so a slow boot
+                  // verifies here and only a genuinely dark member stays unconfirmed.
+                  verdict = await verifyFreshLaunchStarted(waveArgs, {
+                    timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
+                  });
+                }
+                waveVerified = verdict.agentStarted === true;
+                if (waveVerified) {
+                  launchTransaction.verifiedMemberIds.push(...openedThisWave);
+                  wave.verifiedOwnerIds = openedThisWave.slice();
+                } else if (verdict.agentStarted === null) {
+                  // Still unconfirmed after the re-probe. NOT a failure: no 502, no
+                  // failed[] entry — the members are reported as unverified, and the
+                  // EI-20497372063255974 resume path re-opens the unopened remainder
+                  // once they prove live. Session-level split first: a member whose
+                  // session already took a real turn IS verified even when the wave
+                  // as a whole is not.
+                  const verifiedNow = new Set(
+                    verdict.sessions
+                      .filter((s) => s.ownerId != null && s.successfulCalls > 0)
+                      .map((s) => s.ownerId as string),
+                  );
+                  const confirmed = openedThisWave.filter((id) => verifiedNow.has(id));
+                  const pending = openedThisWave.filter((id) => !verifiedNow.has(id));
+                  if (confirmed.length > 0) {
+                    launchTransaction.verifiedMemberIds.push(...confirmed);
+                    wave.verifiedOwnerIds = confirmed.slice();
+                  }
+                  for (const memberOwnerId of pending) {
+                    unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
+                  }
+                  launchTransaction.unconfirmedMemberIds = [
+                    ...(launchTransaction.unconfirmedMemberIds ?? []),
+                    ...pending,
+                  ];
+                } else {
+                  const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
+                  for (const memberOwnerId of openedThisWave) {
+                    launchTransaction.failed.push({ ownerId: memberOwnerId, phase, reason: verdict.note });
+                    failed.push({ ownerId: memberOwnerId, error: verdict.note, code: 502 });
+                  }
+                }
+              } catch (e: any) {
+                // The instrument broke — say THAT. A probe fault is not an observation
+                // about the member, so it must not masquerade as a 502 launch failure
+                // (the rule capability:launch-agent already applies to this verifier).
+                for (const memberOwnerId of openedThisWave) {
+                  unconfirmed.push({
+                    ownerId: memberOwnerId,
+                    note:
+                      `⏳ launch verification could not run (${e?.message ?? e}) — the member may be ` +
+                      `fine; this says nothing either way. Verify with coord:presence { owner: '${memberOwnerId}' }.`,
+                  });
+                }
+                launchTransaction.unconfirmedMemberIds = [
+                  ...(launchTransaction.unconfirmedMemberIds ?? []),
+                  ...openedThisWave,
+                ];
+              }
+            }
+
+            // A positive spawn failure still leaves the wave partial; an unconfirmed or
+            // failed verification is likewise reported without being mistaken for a
+            // successful wave. Later waves have already been spawned by this point.
+            if (waveVerified && !spawnFailed && openedThisWave.length === wave.ownerIds.length) {
+              wave.state = 'verified';
+            } else {
+              wave.state = 'partial';
+            }
+            await persistLaunchTransaction();
+          },
+        );
+        if (launchTransaction.verifiedMemberIds.length === transactionRequestedMemberIds.length) {
+          launchTransaction.state = 'verified';
+        } else {
+          launchTransaction.state = 'partial';
+        }
+        await persistLaunchTransaction();
+
+        // The slot was claimed BEFORE spawning (the atomic winner). If the launch opened NOTHING
+        // (every spawn failed), release it so an immediate legitimate retry isn't suppressed for
+        // the whole window; a partial success keeps the claim. Best-effort — never fails the result.
+        if (opened.length === 0) {
+          try {
+            await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+          } catch {
+            /* the guard self-heals when the window elapses */
+          }
+        }
+        return null;
+      } catch (e: any) {
+        const completionError = `launch completion failed (${e?.message ?? e}) — inspect fleet:status before replaying.`;
+        const verified = new Set(launchTransaction.verifiedMemberIds);
+        const pending = opened.map((member) => member.ownerId).filter((memberOwnerId) => !verified.has(memberOwnerId));
+        const alreadyUnconfirmed = new Set(unconfirmed.map((member) => member.ownerId));
+        for (const memberOwnerId of pending) {
+          if (!alreadyUnconfirmed.has(memberOwnerId)) {
+            unconfirmed.push({ ownerId: memberOwnerId, note: completionError });
+          }
+        }
+        if (pending.length > 0) {
+          launchTransaction.unconfirmedMemberIds = Array.from(
+            new Set([...(launchTransaction.unconfirmedMemberIds ?? []), ...pending]),
+          );
+        }
+        launchTransaction.state = 'partial';
+        launchTransaction.recovery.nextAction = completionError;
+        try {
+          await persistLaunchTransaction();
+        } catch {
+          // The original transaction is still durable; do not turn a completion
+          // bookkeeping failure into an unhandled detached rejection.
+        }
+        if (opened.length === 0) {
+          try {
+            await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+          } catch {
+            /* the guard self-heals when the window elapses */
+          }
+        }
+        return completionError;
+      }
+    };
+    const launchCompletion = completeLaunch();
+    const responseRace = await raceLaunchResponseWithinBudget(launchCompletion);
+    if (responseRace.timedOut) {
+      const completionHandle = {
+        transactionId: launchTransaction.transactionId,
+        fleet: fleetSlug,
+        status: 'pending' as const,
+        nextAction: `fleet:status { fleet: '${fleetSlug}' }`,
+      };
+      return json(
+        {
+          ok: opened.length > 0,
+          fleet: fleetSlug,
+          leaderRole,
+          callerMembership,
+          autoModeEntered: leaderControl?.mode.healthy === true,
+          leaderControl,
+          spawnedLeader,
+          leaderSpawnIgnored: leaderSpawnSkipped,
+          plan: planSlug,
+          harness,
+          agent: effAgent,
+          account: effAccount ?? null,
+          headless: !!args.headless,
+          carry: args.carry ?? 'warm',
+          requested: count,
+          liveMembers,
+          requestedOpenCount,
+          completionPending: true,
+          completionHandle,
+          launchTransaction,
+          opened,
+          failed,
+          unverifiedMembers: unconfirmed.length
+            ? unconfirmed.map((member) => ({ ownerId: member.ownerId, note: member.note }))
+            : null,
+          message:
+            `Launch response bounded at ${LAUNCH_RESPONSE_DEADLINE_MS}ms; transaction ` +
+            `\`${launchTransaction.transactionId}\` continues in the background. ` +
+            `Use ${completionHandle.nextAction} to inspect the durable result before replaying.`,
+        },
+        opened.length === 0,
+      );
+    }
+    const completionError = responseRace.value;
     const lines: string[] = [];
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
     // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
