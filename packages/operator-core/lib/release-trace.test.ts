@@ -77,6 +77,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       lastGreenShortSha: green.slice(0, 9),
       lastGreenAgeMs: 1,
       mainFastForwarded: true,
+      targetIncludedInGreenPin: true,
       deployedBehindGreenPin: 0,
       deployOrigin: 'gate-green',
     },
@@ -303,6 +304,27 @@ describe('buildReleaseTrace', () => {
       deployedSha: newer,
     });
     expect(out.ok).toBe(true);
+  });
+  it('reports green-pin ancestry separately from target presence on main', () => {
+    const newer = 'c'.repeat(40);
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          deployedSha: newer,
+          positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+          verdictProvenance: {
+            ...position().verdictProvenance,
+            lastGreenSha: newer,
+            targetIncludedInGreenPin: false,
+            deployOrigin: 'ahead-of-gate',
+          },
+        }),
+      }),
+    );
+    expect(out.target.presence.inMain).toBe(true);
+    expect(out.greenPin).toMatchObject({ sha: newer, targetIncluded: false });
+    expect(out.testedDeployedParity).toMatchObject({ state: 'target-not-included', ok: false });
+    expect(out.constraints.map((constraint) => constraint.code)).toContain('target-not-green-pinned');
   });
   it('returns one safe green-pin deploy trigger when main is ahead of live', () => {
     const out = buildReleaseTrace(
