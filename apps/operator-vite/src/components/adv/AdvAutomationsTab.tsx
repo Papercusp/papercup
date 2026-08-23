@@ -47,6 +47,19 @@ import { toLandingWorkflow, type NeedsYouItem } from './workflows-landing-model'
 import './adv-automations.css';
 
 type View = 'landing' | 'flow' | 'catalog' | 'activity' | 'sources';
+
+/**
+ * The view bar's tabs, in order. A table rather than a chain of ternaries: the
+ * landing (D-018) makes this five-way, and a 5-deep nested ternary in JSX is the
+ * shape the legibility guard exists to catch.
+ */
+const VIEW_TABS: readonly { readonly id: View; readonly label: string }[] = [
+  { id: 'landing', label: 'Overview' },
+  { id: 'flow', label: 'Flows' },
+  { id: 'catalog', label: 'Catalog' },
+  { id: 'activity', label: 'Activity' },
+  { id: 'sources', label: 'Sources' },
+];
 type FlowFilter = 'all' | 'attention' | 'paused';
 type CreateTriggerKind = 'schedule' | 'external';
 type CreatePlanMode = 'existing' | 'new';
@@ -451,6 +464,25 @@ export default function AdvAutomationsTab() {
   const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
   const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
 
+  /**
+   * The count badge for one view tab. Overview and Flows both count workflows —
+   * a workflow IS a triggered plan (D-013), and the landing is a different
+   * presentation of that same set, not a different population.
+   */
+  const viewCount = (id: View): number => {
+    switch (id) {
+      case 'landing':
+      case 'flow':
+        return flows.length;
+      case 'catalog':
+        return items.length;
+      case 'activity':
+        return activity.length;
+      case 'sources':
+        return sources.length;
+    }
+  };
+
   // Opening a workflow is a DESTINATION, not a row highlight (D-018): the read-only
   // graph + agent chat replaces the tab body, with its own back affordance. A `wfId`
   // that resolves to nothing (stale URL) falls through to the landing rather than
@@ -518,11 +550,11 @@ export default function AdvAutomationsTab() {
 
       <div className="pc-automations__viewbar">
         <nav aria-label="Automation views">
-          {(['flow', 'catalog', 'activity', 'sources'] as const).map((candidate) => (
-            <button key={candidate} type="button" data-active={view === candidate} onClick={() => void setView(candidate)}>
+          {VIEW_TABS.map(({ id, label }) => (
+            <button key={id} type="button" data-active={view === id} onClick={() => void setView(id)}>
               <span className="pc-automations__viewtab-inner">
-                {candidate === 'flow' ? 'Flows' : candidate === 'catalog' ? 'Catalog' : candidate === 'activity' ? 'Activity' : 'Sources'}
-                <span className="pc-automations__viewtab-count">{candidate === 'flow' ? flows.length : candidate === 'catalog' ? items.length : candidate === 'activity' ? activity.length : sources.length}</span>
+                {label}
+                <span className="pc-automations__viewtab-count">{viewCount(id)}</span>
               </span>
             </button>
           ))}
