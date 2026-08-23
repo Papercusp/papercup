@@ -274,6 +274,7 @@ import './mail/send';
 import './calendar/propose';
 import './calendar/update';
 import './chat/reply';
+import './social/post';
 import './social/reply';
 import './chat/post';
 import './memory/remember';
@@ -614,6 +615,12 @@ import './computer/computer';
 import './computer/provision-desktop';
 import './computer/release-desktop';
 import './computer/list-desktops';
+// P-007: the accessibility observation path BESIDE the screenshot path — the desktop's
+// element tree (cheap + semantic) and activation by element ref rather than by pixel.
+// Deliberately separate tools: capability:computer mirrors the canonical Anthropic
+// action vocabulary verbatim so the model's grounding priors fire, and a near-miss of
+// that vocabulary would be worse than an honestly separate surface.
+import './computer/observe';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './dev/service_health';
