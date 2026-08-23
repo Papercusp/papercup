@@ -57,6 +57,7 @@ import {
   setFleetLeader,
   setFleetLaunchTransaction,
   type FleetLaunchTransaction,
+  type FleetHeadcountConfig,
 } from '../../agent-fleets-store';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
@@ -197,6 +198,55 @@ function promotionFailsafeWarning(
  *  GUI fleet-launch row can bound its member-count input against the same number
  *  this tool enforces, without pulling this server module into the renderer. */
 const MAX_MEMBERS = FLEET_MAX_MEMBERS;
+
+export interface PersistedFleetLaunchProfileConflict {
+  field: string;
+  saved: unknown;
+  requested: unknown;
+}
+
+/** Existing fleets recover from their persisted recipe; only placement and
+ * target size may change here. Boot-baked changes use fleet:respawn-member. */
+export function persistedFleetLaunchProfileConflicts(
+  requested: {
+    plan?: string; harness?: string; agent?: string; model?: string;
+    account?: string; carry?: 'warm' | 'cold'; role?: string; brief?: string;
+    launchContext?: string; contextSize?: 'full' | 'trimmed';
+    compactionLimit?: number; extraArgs?: string[];
+    members?: readonly unknown[]; perMemberLaunchContext?: readonly string[];
+  },
+  saved: FleetHeadcountConfig,
+): PersistedFleetLaunchProfileConflict[] {
+  const savedValues: Record<string, unknown> = {
+    plan: saved.plan,
+    harness: saved.harness,
+    agent: saved.agent,
+    model: composeModelSpec(saved.model, saved.effort),
+    account: saved.account,
+    carry: saved.carry,
+    role: saved.role,
+    brief: saved.brief,
+    launchContext: saved.launchContext,
+    contextSize: saved.contextSize,
+    compactionLimit: saved.compactionLimit,
+    extraArgs: saved.extraArgs,
+  };
+  const conflicts: PersistedFleetLaunchProfileConflict[] = [];
+  for (const [field, requestedValue] of Object.entries(requested)) {
+    if (field === 'headless' || field === 'members' || field === 'perMemberLaunchContext' || requestedValue === undefined) continue;
+    const savedValue = savedValues[field];
+    if (JSON.stringify(requestedValue) !== JSON.stringify(savedValue)) {
+      conflicts.push({ field, saved: savedValue, requested: requestedValue });
+    }
+  }
+  if (requested.members?.length) {
+    conflicts.push({ field: 'members', saved: 'fleet-wide persisted profile', requested: `${requested.members.length} member override(s)` });
+  }
+  if (requested.perMemberLaunchContext?.length) {
+    conflicts.push({ field: 'perMemberLaunchContext', saved: saved.launchContext, requested: `${requested.perMemberLaunchContext.length} per-member launch context override(s)` });
+  }
+  return conflicts;
+}
 
 /**
  * `count` is the desired LIVE fleet size, while {@link MAX_MEMBERS} limits the
@@ -1491,6 +1541,14 @@ export default defineTool({
     }
     if (persistedHeadcountProfile) {
       const profile = persistedHeadcountProfile.config;
+      const conflicts = persistedFleetLaunchProfileConflicts(args, profile);
+      if (conflicts.length) {
+        return err(
+          `Saved launch profile conflict for fleet \`${fleetSlug}\`: ${JSON.stringify(conflicts)}. ` +
+            'Recovery/top-up reuses fleet:headcount-target automatically; omit these fields and pass only count/headless. ' +
+            'To deliberately change boot-baked settings, use fleet:respawn-member so the delta is explicit and audited.',
+        );
+      }
       const profileModel = composeModelSpec(profile.model, profile.effort);
       args.count ??= persistedHeadcountProfile.target;
       args.plan ??= profile.plan;

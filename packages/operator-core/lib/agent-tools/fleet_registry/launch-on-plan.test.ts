@@ -38,6 +38,7 @@ import launchOnPlan, {
   computeFleetTopUpWave,
   describeFleetFillOutcome,
   VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
+  persistedFleetLaunchProfileConflicts,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -50,6 +51,39 @@ const base: MemberLaunchOpts = {
   harness: 'papercup',
   plan: 'p-plan',
 };
+
+describe('persisted fleet launch profile recovery guard (D-004)', () => {
+  const saved = {
+    plan: 'byoc-plan',
+    harness: 'papercusp',
+    agent: 'codex' as const,
+    model: 'gpt-5.6-sol',
+    effort: 'high',
+    account: 'default',
+    headless: false,
+    carry: 'warm' as const,
+    contextSize: 'full' as const,
+    compactionLimit: 400_000,
+  };
+
+  it('accepts omission, repeated values, and a headless placement delta', () => {
+    expect(persistedFleetLaunchProfileConflicts({}, saved)).toEqual([]);
+    expect(persistedFleetLaunchProfileConflicts({ headless: true } as never, saved)).toEqual([]);
+    expect(persistedFleetLaunchProfileConflicts({ plan: 'byoc-plan', model: 'gpt-5.6-sol:high' }, saved)).toEqual([]);
+  });
+
+  it('rejects conflicting reconstruction', () => {
+    expect(persistedFleetLaunchProfileConflicts({ account: 'auto' }, saved)).toEqual([
+      { field: 'account', saved: 'default', requested: 'auto' },
+    ]);
+  });
+
+  it('rejects per-member reconstruction against a homogeneous saved profile', () => {
+    expect(persistedFleetLaunchProfileConflicts({ members: [{ model: 'gpt-5.6-sol:high' }] }, saved)).toEqual([
+      { field: 'members', saved: 'fleet-wide persisted profile', requested: '1 member override(s)' },
+    ]);
+  });
+});
 
 describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet into the member launch)', () => {
   it('always includes --fleet=<slug> — never a colour-only, unfleeted member launch', () => {
