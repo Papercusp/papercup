@@ -14,10 +14,18 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   resolveAgentIdentity,
+  deriveFleetMembership,
   SUPERUSER_FALLBACK_CLIENT_ID,
   isEphemeralMcpCallIdentity,
   type AgentIdentity,
 } from '../coordination/identity';
+import {
+  classifyUnknownRecipients,
+  isSessionShapedOwnerId,
+  lookupEndedSessions,
+  roleAddressingGuidance,
+} from '../coordination/dead-session-recipient-guidance';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   claimWorkItem,
@@ -74,6 +82,31 @@ interface ClaimItem {
   force?: boolean;
   ownerOverride?: boolean;
   reason?: string;
+}
+
+/**
+ * A claim-hold's `by` value is durable, but older holds recorded the su SESSION
+ * that created them instead of the standing role that owns the parked work. Once
+ * that session ends, the ordinary "coord:send the holder" advice is impossible
+ * to follow. Reuse coord:send's existing session→role/fleet guidance at the
+ * refusal seam; non-session holder labels stay on the original short path.
+ *
+ * Best-effort by design: guidance enriches a refusal but never decides whether
+ * the claim is allowed. A degraded presence/session lookup must preserve the
+ * durable hold guard and its ordinary coordination hint.
+ */
+async function claimHoldHolderGuidance(identity: AgentIdentity, holder: string | null | undefined): Promise<string | null> {
+  const trimmed = holder?.trim();
+  if (!trimmed || !isSessionShapedOwnerId(trimmed)) return null;
+  try {
+    const [classified, fleetMembership] = await Promise.all([
+      classifyUnknownRecipients([trimmed], (ids) => lookupEndedSessions(ids, identity.workspaceId)),
+      resolvePresenceFleet(identity.ownerId, deriveFleetMembership()),
+    ]);
+    return roleAddressingGuidance(classified, fleetMembership.fleetSlug);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -408,8 +441,15 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     }
     forced = { holder: currentHolder, basis: verdict.basis as ForceReleaseBasis, reason };
   }
+  const claimHoldProvenance = preClaimItem ? readWorkItemClaimHoldProvenance(preClaimItem.payload) : null;
+  const claimHold = claimHoldProvenance?.heldOpen ?? claimHoldProvenance?.parked ?? null;
+  const holderGuidance = await claimHoldHolderGuidance(identity, claimHold?.by);
   const claimHoldRefusal = preClaimItem
-    ? assessClaimHoldGuard(preClaimItem.payload, { force: it.force, ownerOverride: it.ownerOverride })
+    ? assessClaimHoldGuard(preClaimItem.payload, {
+        force: it.force,
+        ownerOverride: it.ownerOverride,
+        holderGuidance,
+      })
     : null;
   if (claimHoldRefusal) {
     return {

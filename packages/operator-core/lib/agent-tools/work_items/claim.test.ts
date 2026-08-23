@@ -7,6 +7,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
+const deadSessionRouting = vi.hoisted(() => ({
+  lookupEndedSessions: vi.fn(async (ids: readonly string[]) =>
+    new Map(ids.map((id) => [id, '2026-08-21T02:22:14.866Z'] as const)),
+  ),
+  resolvePresenceFleet: vi.fn(async () => ({ fleetSlug: 'drain-fleet', fleetRole: 'member' })),
+}));
 const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   notify: vi.fn(),
@@ -19,6 +25,14 @@ vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
+  deriveFleetMembership: () => ({ fleetSlug: 'launch-fleet', fleetRole: 'member' }),
+}));
+vi.mock('../coordination/dead-session-recipient-guidance', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  lookupEndedSessions: deadSessionRouting.lookupEndedSessions,
+}));
+vi.mock('../coordination/presence-fleet', () => ({
+  resolvePresenceFleet: deadSessionRouting.resolvePresenceFleet,
 }));
 // WI-5946: readWorkItemClaimHoldProvenance/looksLikePolicyGate are real dependencies of BOTH
 // claim.ts (the pre-read guard) and claim-hold-guard.ts's assessClaimHoldGuard (mocked at the
@@ -626,6 +640,29 @@ describe('work_items:claim handler (keyed-array)', () => {
       expect(overridden.results[0]).toMatchObject({ ok: true, id: 'WI-SEC' });
       expect(claimM).toHaveBeenCalledWith('WI-SEC', 'me', { harness: undefined, fromHolder: identity.ownerId });
       expect(auditM).toHaveBeenCalledWith('me', 'WI-SEC', expect.objectContaining({ ownerOverride: true }));
+    });
+
+    it('routes a session-shaped dead holder to the durable role and fleet selectors', async () => {
+      const deadHolder = 'su-d3192c05-9dfe-4778-bc29-70c13783bb5d';
+      vi.mocked((await import('../../work-items')).looksLikePolicyGate).mockReturnValue(false);
+      getM.mockResolvedValue({ id: 'WI-DEAD-HOLD', payload: { _claimHold: true } } as never);
+      provenanceM.mockReturnValue({
+        heldOpen: null,
+        parked: { by: deadHolder, reason: 'still triaging', at: '2026-07-26T00:00:00Z' },
+        attributed: true,
+      });
+
+      const b = await body({ id: 'WI-DEAD-HOLD' });
+
+      expect(b.results[0]).toMatchObject({ error: 'claim_hold_blocked', heldBy: deadHolder });
+      expect(deadSessionRouting.lookupEndedSessions).toHaveBeenCalledWith([deadHolder], 'ws-1');
+      expect(deadSessionRouting.resolvePresenceFleet).toHaveBeenCalledWith(
+        'me',
+        { fleetSlug: 'launch-fleet', fleetRole: 'member' },
+      );
+      expect(b.results[0].hint).toMatch(/@role:<slot>/);
+      expect(b.results[0].hint).toMatch(/@fleet-leader:drain-fleet/);
+      expect(claimM).not.toHaveBeenCalled();
     });
 
     it('an unheld item is unaffected by force/ownerOverride being absent (no guard, no audit)', async () => {

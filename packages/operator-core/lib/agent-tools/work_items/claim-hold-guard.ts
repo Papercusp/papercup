@@ -46,11 +46,13 @@ export interface ClaimHoldRefusal {
  */
 export function assessClaimHoldGuard(
   payload: unknown,
-  opts: { force?: boolean; ownerOverride?: boolean },
+  opts: { force?: boolean; ownerOverride?: boolean; holderGuidance?: string | null },
 ): ClaimHoldRefusal | null {
   const provenance = readWorkItemClaimHoldProvenance(payload);
   const prior = provenance.heldOpen ?? provenance.parked;
   if (!prior) return null;
+  const holderGuidance = opts.holderGuidance?.trim();
+  const holderGuidanceSuffix = holderGuidance ? ` ${holderGuidance}` : '';
   const convention: ClaimHoldRefusal['convention'] = provenance.heldOpen
     ? 'held_open (lease)'
     : 'claim_hold (durable park)';
@@ -63,7 +65,8 @@ export function assessClaimHoldGuard(
       hint:
         `held for a policy-tier reason ("${(prior.reason ?? '').slice(0, 160)}") — ` +
         'force:true alone is refused for a policy gate. Pass ownerOverride:true only with genuine owner ' +
-        'sign-off (EI-18672701535825889), or coordinate with the holder/owner instead of claiming past it.',
+        'sign-off (EI-18672701535825889), or coordinate with the holder/owner instead of claiming past it.' +
+        holderGuidanceSuffix,
     };
   }
   if (!opts.force) {
@@ -76,7 +79,8 @@ export function assessClaimHoldGuard(
         `parked out of self-select by ${prior.by}${prior.reason ? ` ("${prior.reason.slice(0, 160)}")` : ''} ` +
         '(WI-5946) — a claim-hold is a deliberate, durable exclusion, not incidental staleness. Coordinate ' +
         'with the holder/leader (coord:send), or pass force:true to claim past it anyway (audited + both ' +
-        'notified). The hold itself is left in place — use work_items:hold_open { clear:true } to lift it.',
+        'notified). The hold itself is left in place — use work_items:hold_open { clear:true } to lift it.' +
+        holderGuidanceSuffix,
     };
   }
   return null;

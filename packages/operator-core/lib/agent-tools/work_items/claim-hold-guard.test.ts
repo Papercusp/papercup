@@ -64,4 +64,13 @@ describe('assessClaimHoldGuard (WI-5946)', () => {
       expect(refusal?.error).toBe('policy_gate_requires_owner_override');
     }
   });
+
+  it('appends durable role/fleet routing guidance when the holder session is dead', () => {
+    const refusal = assessClaimHoldGuard(
+      { _claimHold: true, claim_hold_by: 'su-dead-session', claim_hold_reason: 'still triaging' },
+      { holderGuidance: '🔑 Use `@role:gate-recovery` or `@fleet-leader:drain`.' },
+    );
+    expect(refusal?.hint).toContain('@role:gate-recovery');
+    expect(refusal?.hint).toContain('@fleet-leader:drain');
+  });
 });
