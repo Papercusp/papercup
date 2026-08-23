@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // convention test-file-router.test.ts already uses for the sibling .mjs CLI import.
 import {
   withFsMutex,
+  withFsMutexRead,
   peekFsMutexSync,
   resolveFsMutexLockRoot,
   // @ts-expect-error
@@ -74,6 +75,70 @@ describe('withFsMutex', () => {
 
     expect(maxActive).toBe(1);
     expect(observed).toHaveLength(3);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('allows concurrent readers while a writer still waits for every reader', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    let activeReaders = 0;
+    let maxActiveReaders = 0;
+    let releaseFirstReader!: () => void;
+    const firstReaderReleased = new Promise<void>((resolve) => {
+      releaseFirstReader = resolve;
+    });
+    let firstReaderStarted!: () => void;
+    const firstReaderReady = new Promise<void>((resolve) => {
+      firstReaderStarted = resolve;
+    });
+    let secondReaderStarted!: () => void;
+    const secondReaderReady = new Promise<void>((resolve) => {
+      secondReaderStarted = resolve;
+    });
+
+    const reader = withFsMutexRead(
+      'npm-install',
+      async () => {
+        activeReaders += 1;
+        maxActiveReaders = Math.max(maxActiveReaders, activeReaders);
+        firstReaderStarted();
+        await firstReaderReleased;
+        activeReaders -= 1;
+      },
+      { timeoutMs: 2_000, retryMs: 5 },
+    );
+    await firstReaderReady;
+
+    const secondReader = withFsMutexRead(
+      'npm-install',
+      async () => {
+        activeReaders += 1;
+        maxActiveReaders = Math.max(maxActiveReaders, activeReaders);
+        secondReaderStarted();
+        await new Promise((resolveSleep) => setTimeout(resolveSleep, 30));
+        activeReaders -= 1;
+      },
+      { timeoutMs: 2_000, retryMs: 5 },
+    );
+    await secondReaderReady;
+
+    let writerEntered = false;
+    const writer = withFsMutex(
+      'npm-install',
+      async () => {
+        writerEntered = true;
+        return 'writer';
+      },
+      { timeoutMs: 2_000, retryMs: 5 },
+    );
+
+    expect(maxActiveReaders).toBe(2);
+    expect(writerEntered).toBe(false);
+
+    releaseFirstReader();
+    await expect(Promise.all([reader, secondReader, writer])).resolves.toEqual([undefined, undefined, 'writer']);
+    expect(writerEntered).toBe(true);
     await rm(dir, { recursive: true, force: true });
   });
 
