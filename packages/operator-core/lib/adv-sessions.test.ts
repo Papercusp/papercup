@@ -12,6 +12,8 @@ import {
   isFailedTerminalLaunch,
   fallbackCodexLaunchSpecFromAdvSession,
   readAdvSessionLaunchRecordByOwner,
+  markAdvSessionShutdownAcceptedByOwner,
+  shutdownAcceptedOwnerIds,
   toIsoTimestamp,
   type AdvSessionRow,
 } from './adv-sessions';
@@ -40,6 +42,45 @@ describe('readAdvSessionLaunchRecordByOwner', () => {
     expect(Array.isArray(template)).toBe(true);
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
+  });
+});
+
+describe('accepted session shutdown marker (EI-21266145962856513)', () => {
+  it('marks only the newest still-open row for an owner', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 42 }]);
+    await expect(markAdvSessionShutdownAcceptedByOwner('su-holder')).resolves.toBe(true);
+    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    expect((template as readonly string[]).join(' ')).toContain('shutdown_accepted_at = now()');
+    expect((template as readonly string[]).join(' ')).toContain('ended_at IS NULL');
+    expect((template as readonly string[]).join(' ')).toContain('ORDER BY started_at DESC');
+  });
+
+  it('reads the marker only from each owner\'s newest row', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([
+      { coord_owner_id: 'su-marked', shutdown_accepted_at: '2026-08-23T19:00:00Z' },
+      { coord_owner_id: 'su-live', shutdown_accepted_at: null },
+    ]);
+    await expect(shutdownAcceptedOwnerIds(['su-marked', 'su-live', 'fed:remote'])).resolves.toEqual(
+      new Set(['su-marked']),
+    );
+    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    expect((template as readonly string[]).join(' ')).toContain('DISTINCT ON (coord_owner_id)');
+    expect((template as readonly string[]).join(' ')).toContain('ORDER BY coord_owner_id, started_at DESC');
+  });
+
+  it('clears accepted shutdown across every reactivation and re-anchor path', () => {
+    for (const fn of [
+      'reactivateAdvSession',
+      'claimAdvSessionResume',
+      'reactivateAdvSessionByOwner',
+      'reanchorAdvSessionNativeId',
+      'reanchorAdvSessionNativeIdByOwner',
+    ]) {
+      const from = SOURCE.indexOf('export async function ' + fn);
+      expect(from, fn).toBeGreaterThan(-1);
+      const tail = SOURCE.slice(from, from + 3000);
+      expect(tail, fn).toMatch(/shutdown_accepted_at = NULL/);
+    }
   });
 });
 

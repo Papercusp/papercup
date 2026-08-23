@@ -316,6 +316,25 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // The first `{` in the raw file is the MANIFEST, not the body: the reason a
     // "start at the first brace" fallback returns a well-formed WRONG object.
     expect(spillRawBytes().indexOf('{')).toBeLessThan(cursor.bodyOffsetInFile!);
+
+    // CONTROLS — a permanently-wrong implementation kept beside the real one, so
+    // this test is demonstrably falsifiable rather than merely passing. Both
+    // reproduce the exact original defect; if either ever starts succeeding, the
+    // two offsets have collapsed back into one and the assertions above have
+    // stopped discriminating.
+    //
+    // Control 1: the OLD behaviour — the file-relative offset applied to
+    // capability:read's payload, which is what the cursor's `next` sends you to.
+    expect(() =>
+      JSON.parse(spillBytes().subarray(cursor.bodyOffsetInFile!).toString('utf8')),
+    ).toThrow();
+    // Control 2: the fallback the missing offset forced — "start at the first
+    // brace" in the raw file parses, but yields the MANIFEST, not the result.
+    const firstBrace = JSON.parse(
+      spillRawBytes().subarray(spillRawBytes().indexOf('{')).toString('utf8').split('\n')[0],
+    ) as Record<string, unknown>;
+    expect(firstBrace).toHaveProperty('schemaVersion');
+    expect(firstBrace).not.toHaveProperty('rows');
   });
 
   it('follows the emitted cursor end-to-end through the real capability:read', async () => {

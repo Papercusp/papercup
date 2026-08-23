@@ -28,6 +28,9 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
 }));
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn(async () => null) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
+vi.mock('../../adv-sessions', () => ({
+  markAdvSessionShutdownAcceptedByOwner: vi.fn(async () => true),
+}));
 vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }));
 // Keep the module graph light: transitive imports of the REAL
 // wind-down-disposition module loaded via importOriginal below.
@@ -56,6 +59,7 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 
 import { getLoopStatus } from '../../harness/routines/loop';
 import { shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { markAdvSessionShutdownAcceptedByOwner } from '../../adv-sessions';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -141,6 +145,7 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
   const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typeof vi.fn>;
   const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
   const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<typeof vi.fn>;
+  const markShutdownAcceptedMock = markAdvSessionShutdownAcceptedByOwner as unknown as ReturnType<typeof vi.fn>;
 
   const ACTIVE_GOAL = {
     goalId: 'ship-paid-app-3f9a1c',
@@ -164,6 +169,8 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     getLoopStatusMock.mockResolvedValue(null);
     shutdownViaPtyMock.mockClear();
     shutdownViaPtyMock.mockResolvedValue('sent');
+    markShutdownAcceptedMock.mockClear();
+    markShutdownAcceptedMock.mockResolvedValue(true);
     activeGoalForOwnerMock.mockReset();
     activeGoalForOwnerMock.mockResolvedValue(null);
     applyGoalDispositionMock.mockReset();
@@ -244,6 +251,17 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     expect(got.ok).toBe(true);
     expect(got.result).toBe('sent');
     expect(applyGoalDispositionMock).not.toHaveBeenCalled();
+  });
+
+  it('records the accepted shutdown only after the host acknowledges it', async () => {
+    await run({ reason: 'finished' });
+    expect(markShutdownAcceptedMock).toHaveBeenCalledWith('su-caller-own-id');
+
+    markShutdownAcceptedMock.mockClear();
+    shutdownViaPtyMock.mockResolvedValue('send-failed');
+    const got = await run({ reason: 'transport miss' });
+    expect(got.result).toBe('send-failed');
+    expect(markShutdownAcceptedMock).not.toHaveBeenCalled();
   });
 
   it('flag OFF disables the gate: the goal is never consulted', async () => {

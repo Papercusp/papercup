@@ -57,6 +57,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { markAdvSessionShutdownAcceptedByOwner } from '../../adv-sessions';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -249,6 +250,12 @@ export default defineTool({
           reason: args.reason,
           force: args.force === true,
         });
+    if (result === 'sent') {
+      // The host has positively accepted shutdown, but the child-exit report may
+      // arrive later. Persist the in-between signal so force-release can reclaim
+      // a claim without trusting the lingering loop heartbeat.
+      await markAdvSessionShutdownAcceptedByOwner(identity.ownerId);
+    }
     const ok = result === 'sent';
     return {
       content: [

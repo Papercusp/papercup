@@ -997,12 +997,42 @@ export async function markAdvSessionEnded(
  * an already-ENDED row is touched. Returns true when this call re-activated a
  * row (false = no such ended row — already live, unknown id, or DB error).
  */
+/**
+ * Record the managed host's positive acknowledgement of session:end before
+ * the child exits. This is separate from markAdvSessionEnded because the
+ * force-release guard needs a durable teardown signal during the short
+ * interval where the host has accepted shutdown but the child has not yet
+ * posted its exit. Best-effort like the other lifecycle bookkeeping.
+ */
+export async function markAdvSessionShutdownAcceptedByOwner(coordOwnerId: string): Promise<boolean> {
+  if (!coordOwnerId) return false;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET shutdown_accepted_at = now()
+       WHERE id = (
+         SELECT id FROM harness_shared.adv_sessions
+          WHERE coord_owner_id = ${coordOwnerId}
+            AND ended_at IS NULL
+          ORDER BY started_at DESC
+          LIMIT 1
+       )
+      RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'markAdvSessionShutdownAcceptedByOwner');
+    return false;
+  }
+}
+
 export async function reactivateAdvSession(id: number): Promise<boolean> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
-         SET ended_at = NULL, exit_code = NULL, started_at = now()
+         SET ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
        WHERE id = ${id} AND ended_at IS NOT NULL
       RETURNING id
     `;
@@ -1058,7 +1088,7 @@ export async function claimAdvSessionResume(
   const { sql } = getOrgPg();
   const rows = await sql<{ id: number }[]>`
     UPDATE harness_shared.adv_sessions
-       SET ended_at = NULL, exit_code = NULL, started_at = now()
+       SET ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
      WHERE id = ${id}
        AND (ended_at IS NOT NULL OR started_at < now() - make_interval(secs => ${windowSec}))
     RETURNING id
@@ -1081,7 +1111,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
-         SET ended_at = NULL, exit_code = NULL, started_at = now()
+         SET ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
           WHERE coord_owner_id = ${coordOwnerId} AND ended_at IS NOT NULL
@@ -1127,7 +1157,7 @@ export async function reanchorAdvSessionNativeId(
     // (the 2026-07-18 su-57b6247d 3-successor kill loop).
     const rows = await sql<{ id: number; owner: string | null }[]>`
       UPDATE harness_shared.adv_sessions
-         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now()
+         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
        WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id, coord_owner_id AS owner
     `;
@@ -1162,7 +1192,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
-         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now()
+         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
           WHERE coord_owner_id = ${coordOwnerId}
@@ -1763,6 +1793,36 @@ export async function listRecordedLiveSessions(
  * empty set on any DB error (no owner is downgraded; the reader degrades to
  * heartbeat-only liveness and never over-reports death).
  */
+/**
+ * Batch: which owners' newest tracked session has received an accepted
+ * self-shutdown acknowledgement while it is still open. Positive evidence
+ * only: a marker on an older row cannot authorize a takeover after a newer
+ * row exists, and a failed read returns an empty set so the force guard stays
+ * strict.
+ */
+export async function shutdownAcceptedOwnerIds(coordOwnerIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return new Set();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      coord_owner_id: string;
+      shutdown_accepted_at: string | Date | null;
+    }[]>`
+      SELECT DISTINCT ON (coord_owner_id) coord_owner_id, shutdown_accepted_at
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ANY(${ids}::text[])
+       ORDER BY coord_owner_id, started_at DESC
+    `;
+    return new Set(
+      rows.filter((r) => r.shutdown_accepted_at != null).map((r) => r.coord_owner_id),
+    );
+  } catch (e) {
+    warnUnlessMissingTable(e, 'shutdownAcceptedOwnerIds');
+    return new Set();
+  }
+}
+
 export async function endedRecordedOwnerIds(coordOwnerIds: string[]): Promise<Set<string>> {
   const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
   if (ids.length === 0) return new Set();

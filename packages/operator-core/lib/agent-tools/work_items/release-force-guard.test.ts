@@ -26,6 +26,7 @@ const deps = (over: {
   holderFleet?: string | null;
   leader?: string | null;
   recordedEnded?: boolean;
+  shutdownAccepted?: boolean;
   /** EI-18907586326157984: the shared liveness oracle's verdict for the holder.
    *  Defaults to `null` (no oracle signal — the pre-fix behavior every OTHER test
    *  here relies on) unless a test explicitly exercises the new oracle leg. */
@@ -39,6 +40,8 @@ const deps = (over: {
   getFleet: async () => (over.leader === undefined ? null : { leaderOwnerId: over.leader }),
   endedRecordedOwnerIds: async (owners) =>
     over.recordedEnded ? new Set(owners.filter((owner) => owner === 'su-holder')) : new Set(),
+  shutdownAcceptedOwnerIds: async (owners) =>
+    over.shutdownAccepted ? new Set(owners.filter((owner) => owner === 'su-holder')) : new Set(),
   resolveHolderSessionState: async () => {
     if (over.oracleWakeAttemptMiss !== undefined) {
       return {
@@ -254,6 +257,31 @@ describe('assessForceRelease — oracle leg (EI-18907586326157984)', () => {
     );
     expect(v.allowed).toBe(true);
     expect(v.basis).not.toBe(undefined);
+  });
+});
+
+describe('assessForceRelease — accepted shutdown leg (EI-21266145962856513)', () => {
+  it('accepted session:end overrides a fresh loop heartbeat', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({
+        holder: { heartbeatAt: iso(0), lastActiveAt: iso(0), agentRole: 'su' },
+        shutdownAccepted: true,
+      }),
+    );
+    expect(v).toMatchObject({
+      allowed: true,
+      basis: 'holder-shutdown-accepted',
+      holderLiveness: { live: false, shutdownAccepted: true },
+    });
+  });
+
+  it('a missing accepted-shutdown marker never weakens the existing live-holder guard', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({ holder: { heartbeatAt: iso(0), lastActiveAt: iso(0), agentRole: 'su' } }),
+    );
+    expect(v).toMatchObject({ allowed: false, holderLiveness: { live: true, shutdownAccepted: false } });
   });
 });
 

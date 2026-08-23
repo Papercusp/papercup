@@ -2981,6 +2981,19 @@ export async function setWorkItemState(
         `That typed blocker records the question, asker/time, responsible owner capability, and what unblocks the item.`,
     );
   }
+  if (state === 'needs-human') {
+    // EI-13766: the structured ask is necessary but cannot override the plan,
+    // which is the readiness authority. Dynamic import keeps this canonical
+    // lifecycle writer free of the scheduler module's static work-items cycle.
+    const { planItemNeedsHumanContradiction } = await import('./scheduler/plan-item-lane-guard');
+    const contradiction = await planItemNeedsHumanContradiction(wi);
+    if (contradiction) {
+      throw new Error(
+        `work_item '${id}' → 'needs-human' rejected — ${contradiction.reason}. ` +
+          `Update the linked plan item first; a work-item owner park may not contradict plan readiness truth.`,
+      );
+    }
+  }
   if (!opts.skipCompletionGate && isSettledWorkItemState(state) && isTransportOnlyIdentity(opts.by)) {
     throw new Error(
       `completion-integrity: work_item '${id}' → '${state}' rejected — '${opts.by}' is a transport-only ` +
@@ -4800,17 +4813,19 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * WI-2118 (the P-009 leak): the "reserved plan-lane" self-select EXCLUSION floor for issue-family
  * claims. An issue-family work-item can carry a `payload.plan_item` back-pointer binding it to a
  * plan-item LANE (P-NNN of some plan). When that lane is being ACTIVELY driven — the parent plan is
- * `active`, or the plan-item is under a LIVE lease held by ANOTHER agent — the item belongs to that
- * lane's own dispatch, NOT the general backlog-clearance drain. Without this floor the drain SCOOPS
- * such an item into the shared claim pool; members that know the lane is reserved (its plan's
+ * operationally `started`/`paused`, or an ordinary plan is in a non-executable lifecycle state
+ * (`draft`/`paused`/`active`), or the plan-item is under a LIVE lease held by ANOTHER agent — the
+ * item belongs to that lane's own dispatch, NOT the general backlog-clearance drain. Without this
+ * floor the drain SCOOPS such an item into the shared claim pool; members that know the lane is reserved (its plan's
  * `## Now`) correctly REFUSE + release it, and the scheduler immediately re-serves it — the
  * claim→refuse→re-serve CHURN the owner flagged (WI-2118 was served to 3 different members in
  * minutes). The floor is the durable fix: a reserved-lane item is never offered to self-select at all.
  *
- * SOUND + narrow: it fires ONLY when (a) the linked plan is UNDER EXECUTION — operationally
- * `op_status IN ('started','paused')`, or lifecycle `status='active'` — or (b) a non-lapsed
- * `plan_item_claims` lease is held by a DIFFERENT owner. A plan that was never started and is not
- * lifecycle-active, or a lane whose lease has lapsed with no such plan, is NOT excluded — those
+ * SOUND + narrow: it fires ONLY when (a) the linked plan is under execution — operationally
+ * `op_status IN ('started','paused')` — or is an ordinary plan in a non-executable lifecycle
+ * state (`status IN ('draft','paused','active')`), or (b) a non-lapsed `plan_item_claims` lease is
+ * held by a DIFFERENT owner. An ordinary `ready` plan with NULL/`done` op_status, or a per-run
+ * instance whose lifecycle state is covered only by the template row, is NOT excluded — those
  * items drain normally (no starvation of genuinely-free backlog). A member can still claim a
  * reserved item DIRECTLY by id (the named-claim floor bypass) when it legitimately owns the lane.
  *
@@ -4890,7 +4905,7 @@ export function reservedPlanLaneExclusionSql(
            -- frontmatter status this floor used to read alone. plans:start sets
            -- op_status='started' and deliberately leaves status untouched (it only READS
            -- it, to refuse a terminal plan), so a started plan normally sits at
-           -- status='ready' — which this predicate scored as unreserved.
+           -- status='ready' — which this predicate used to score as unreserved.
            --
            -- Measured on live papercusp 2026-08-03, and the leak was the common case, not
            -- an edge: of 16 op_status='started' plans only 2 were also status='active', and
@@ -4906,12 +4921,14 @@ export function reservedPlanLaneExclusionSql(
            -- other handing the same work out — owner-stopped work reaching an AUTO agent that
            -- has every reason to read a scheduler hand-off as in-scope.
            --
-           -- The status = 'active' leg is RETAINED, not replaced: 199 plans sit at
-           -- status='active' with op_status NULL, and dropping it would newly un-reserve their
-           -- lanes. Union semantics strictly widen reservation, so no lane reserved before this
-           -- change becomes claimable after it. op_status is nullable, but a NULL only makes the
-           -- IN NULL and the row unmatched by EXISTS — i.e. not reserved — which is the intended
-           -- reading for a plan that was never started, not a NULL-poisoned exclusion.
+           -- Ordinary plans in lifecycle draft/paused/active are also reserved: these are
+           -- explicitly non-executable/owner-controlled states, and their plan_item rows must not
+           -- leak into a generic drain while the plan is waiting for approval or paused. A ready
+           -- plan with NULL op_status, and a plan whose operation is done, remain free controls.
+           -- The lifecycle leg is qualified by template_slug IS NULL below so scheduled per-run
+           -- instance plans do not deadlock their own minted work.
+           -- op_status is nullable, but a NULL only makes the IN NULL and the row unmatched by
+           -- EXISTS — the lifecycle leg supplies the ordinary-plan reservation where appropriate.
            --
            -- WI-38258: the lifecycle leg is qualified by "template_slug IS NULL" — i.e. it does
            -- NOT apply to a per-run INSTANCE plan (template@run-token, minted by system:plan-run).
@@ -4937,7 +4954,7 @@ export function reservedPlanLaneExclusionSql(
            -- on the @run- token.
            AND (
              p.op_status IN ('started', 'paused')
-             OR (p.status = 'active' AND p.template_slug IS NULL)
+             OR (p.status IN ('draft', 'paused', 'active') AND p.template_slug IS NULL)
            )
       )
       OR EXISTS (
@@ -4972,7 +4989,8 @@ export function reservedPlanLaneExclusionSql(
       -- opposite directions; the filing near-miss was a 10-agent dispatch.
       --
       -- The legs above do NOT already cover it: they fire only when the plan is under
-      -- execution (op_status started/paused, or lifecycle 'active') or under a live lease.
+      -- execution (op_status started/paused, or ordinary lifecycle draft/paused/active) or under
+      -- a live lease.
       -- A plan that was never started reserves nothing, so its blocked lanes stayed fully
       -- claimable — floor #11 is a mitigation for this bug, not the fix.
       --
@@ -7669,12 +7687,14 @@ export async function commentWorkItem(
   id: string,
   body: string,
   authorId?: string,
-  opts: { harness?: string } = {},
+  opts: { workspaceId?: string; harness?: string } = {},
 ): Promise<ThreadPostRow | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  const workspaceId = opts.workspaceId?.trim() && opts.workspaceId.trim() !== '*' ? opts.workspaceId.trim() : undefined;
+  const harness = opts.harness ?? wi.harness;
   // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
-  if (wi.family === 'issue') return commentIssue(id, body, authorId);
+  if (wi.family === 'issue') return commentIssue(id, body, authorId, { workspaceId, harness });
   // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
   const ref = workItemObjectRef(wi);
   // Durable write (get-or-create thread + add post) in ONE bounded txn: ATOMIC
@@ -7682,12 +7702,17 @@ export async function commentWorkItem(
   // statement_timeout) so a stalled admin-pool query fails fast + typed rather
   // than hanging the MCP call. Mirrors commentIssue. See pg-bounded-txn.ts.
   const post = await boundedOrgTxn(async (tx) => {
-    const txThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const txThreads = new PgThreadStore({
+      ...coordOpts,
+      getSql: () => tx,
+      getWorkspaceId: () => workspaceId ?? activeWorkspaceId(),
+    });
     const thread = await txThreads.getOrCreateThread(ref, {
       thread_id: `work-item-thread-${id}`,
       title: wi.title,
       created_by: authorId ?? undefined,
       created_ts: wi.createdAt,
+      harness_slug: harness ?? undefined,
     });
     return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: nowIso() });
   });

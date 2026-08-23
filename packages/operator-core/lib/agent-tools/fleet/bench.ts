@@ -45,6 +45,9 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { AWAIT_MAX_TIMEOUT_SEC } from '../../events/await/types';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import { getClaimSpecRecord, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
+import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
 
@@ -158,6 +161,40 @@ export function projectBenchRows(
     }));
 }
 
+interface BenchPayloadFilterScope {
+  filter: unknown | null;
+  source: { source: 'cup' | 'fleet'; specId: string; revision: number | null } | null;
+}
+
+/**
+ * Resolve the same claim-spec-derived wake filter used by events:await, but for
+ * the member the leader is staging. A bench is centrally registered by the
+ * leader, so the caller's own spec is the wrong identity here. Keep the probe
+ * bounded and fail-soft: an unavailable spec read must not prevent a member
+ * from being parked, but the response must disclose when it stayed unscoped.
+ */
+async function resolveBenchPayloadFilter(member: string, workspaceId: string | null): Promise<BenchPayloadFilterScope> {
+  const probe = await withBoundedTimeout(
+    getClaimSpecRecord({
+      cupId: member,
+      workspaceId: resolveClaimSpecWorkspace(workspaceId ?? undefined),
+    }),
+    { fallback: null, timeoutMs: 1_500, label: 'fleet-bench:claimSpecFilter' },
+  );
+  const record = probe.value;
+  if (!record || record.source === 'default') return { filter: null, source: null };
+
+  const derived = claimSpecFilterToClaimablePayloadFilter(record.spec.view.filter) ?? null;
+  const harnessLeaf = record.harnessSlug ? { harness: { equals: record.harnessSlug } } : null;
+  const filter = derived && harnessLeaf ? { all: [derived, harnessLeaf] } : (harnessLeaf ?? derived);
+  return {
+    filter,
+    source: filter
+      ? { source: record.source, specId: record.spec.specId, revision: record.revision }
+      : null,
+  };
+}
+
 export default defineTool({
   name: 'fleet:bench',
   profile: 'engineer',
@@ -169,7 +206,9 @@ export default defineTool({
     "was found for that member (a bench miss caught before you ever emit). LIST: " +
     "fleet:bench { list: true } (optionally { fleet }) returns who is benched on YOUR fleet, " +
     "on what key, with what staged leg. Pairs with events:emit's `waiters`/`woken` counts " +
-    "(P-005) for miss-visibility at both stage time and emit time.",
+    "(P-005) for miss-visibility at both stage time and emit time. An exact " +
+    "`work-item:claimable` bench is automatically narrowed to the staged member's claim " +
+    "spec when the payload supports a sound filter.",
   guidance: {
     when:
       "A leader staging a member's NEXT assignment while they wait on something (a watermark, " +
@@ -355,6 +394,12 @@ export default defineTool({
     const eventKey = patternAwait ? expandPatternMacro(args.wakeEvent) : args.wakeEvent;
     if (patternAwait) assertUsablePattern(eventKey);
 
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+    const claimableFilterScope =
+      !patternAwait && eventKey === 'work-item:claimable'
+        ? await resolveBenchPayloadFilter(args.member, workspaceId)
+        : { filter: null, source: null };
+
     const staged = clampText(args.stagedAssignment, LIMITS.ANNOTATION) ?? '';
     const { handle, note: handleNote } = await captureWakeHandleForOwner(args.member);
 
@@ -369,6 +414,7 @@ export default defineTool({
       // omitted deadline must survive a long-lived blocker (and the leader's own
       // session ending); callers can still opt into a timeout when they need one.
       timeoutSec: args.timeout_sec ?? null,
+      payloadFilter: claimableFilterScope.filter,
     });
 
     return {
@@ -383,6 +429,21 @@ export default defineTool({
         registered: handle !== null,
         wake_handle_note: handleNote,
         benched_by: ownerId,
+        ...(claimableFilterScope.source
+          ? {
+              auto_scoped_payload_filter: true,
+              payload_filter: claimableFilterScope.filter,
+              payload_filter_source: claimableFilterScope.source,
+              auto_scoped_payload_filter_advice:
+                'The work-item:claimable bench is narrowed to the staged member\'s claim spec, so unrelated claimable rows will not wake this member.',
+            }
+          : eventKey === 'work-item:claimable'
+            ? {
+                unscoped_claimable_await: true,
+                unscoped_claimable_advice:
+                  'No sound payload filter was available for the staged member\'s claim spec, so this bench is UNSCOPED and may wake on unrelated work-item:claimable emissions.',
+              }
+            : {}),
         // WI-5938: always report WHICH lane state justified the park, so a bench is never
         // just an assertion. 'unknown' is reported honestly rather than rendered as
         // 'drained' — the whole bug class here is a zero-ish reading standing in for a

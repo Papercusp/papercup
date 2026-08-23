@@ -10746,7 +10746,7 @@
           "POST"
         ]
       },
-      "description": "Bench a fleet member as TRACKED, queryable state instead of a hand-written per-member convention. STAGE: fleet:bench { member, wakeEvent, stagedAssignment } captures the member's wake handle and registers the events:await FOR them (note tagged with the staged assignment) — returns `registered:false` immediately if no resumable session was found for that member (a bench miss caught before you ever emit). LIST: fleet:bench { list: true } (optionally { fleet }) returns who is benched on YOUR fleet, on what key, with what staged leg. Pairs with events:emit's `waiters`/`woken` counts (P-005) for miss-visibility at both stage time and emit time.",
+      "description": "Bench a fleet member as TRACKED, queryable state instead of a hand-written per-member convention. STAGE: fleet:bench { member, wakeEvent, stagedAssignment } captures the member's wake handle and registers the events:await FOR them (note tagged with the staged assignment) — returns `registered:false` immediately if no resumable session was found for that member (a bench miss caught before you ever emit). LIST: fleet:bench { list: true } (optionally { fleet }) returns who is benched on YOUR fleet, on what key, with what staged leg. Pairs with events:emit's `waiters`/`woken` counts (P-005) for miss-visibility at both stage time and emit time. An exact `work-item:claimable` bench is automatically narrowed to the staged member's claim spec when the payload supports a sound filter.",
       "capabilities": [
         "coord:write"
       ],

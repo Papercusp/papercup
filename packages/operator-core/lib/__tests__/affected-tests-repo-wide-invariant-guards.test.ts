@@ -81,6 +81,8 @@ const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 const HOST_WORKSPACE = '@papercusp/operator-core';
 const DEPENDENCY_INTEGRITY_SCRIPT = 'lint:dependency-integrity';
 const DEPENDENCY_INTEGRITY_TASK = `${HOST_WORKSPACE} :: ${DEPENDENCY_INTEGRITY_SCRIPT}`;
+const TEST_RUNNABILITY_SCRIPT = 'lint:tests';
+const TEST_RUNNABILITY_TASK = `@papercusp/operator :: ${TEST_RUNNABILITY_SCRIPT}`;
 const GUARD_SCRIPT = 'lint:chunk-safe';
 const GUARD_TASK = `${HOST_WORKSPACE} :: ${GUARD_SCRIPT}`;
 
@@ -171,6 +173,28 @@ describe('affected-tests: dependency-integrity preflight (EI-20863794002653922)'
     expect(command).toContain('--exec-under-lock');
     expect(command).toContain('check-declared-deps-extracted.mjs');
     expect(command).not.toContain('vitest');
+  });
+});
+
+describe('affected-tests: registry-test runnability invariant (EI-15951)', () => {
+  it.each([
+    'tools/perf-test/wdio/specs/smoke.spec.ts',
+    'apps/operator/playwright.config.ts',
+    'libs/test-config/src/vitest-config.ts',
+    '.papercusp/testing-domains.json',
+  ])('attaches lint:tests when %s can change executor coverage', (changedPath) => {
+    expect(dryTasks(changedPath)).toContain(TEST_RUNNABILITY_TASK);
+  });
+
+  it('does not attach the executor audit for an unrelated prose-only change', () => {
+    expect(dryTasks(NON_SOURCE_PATH)).not.toContain(TEST_RUNNABILITY_TASK);
+  });
+
+  it('keeps the selected lint task defined on its host workspace', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(pkg.scripts?.[TEST_RUNNABILITY_SCRIPT]).toBe('tsx scripts/lint-tests.ts');
   });
 });
 

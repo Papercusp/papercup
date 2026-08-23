@@ -43,6 +43,10 @@ vi.mock('../../events/await/store', () => ({
   })),
   listParkedAwaitsForSubscribers: vi.fn(async () => []),
 }));
+vi.mock('../../scheduler/claim-spec-store', () => ({
+  getClaimSpecRecord: vi.fn(async () => null),
+  resolveClaimSpecWorkspace: (workspaceId: string | undefined) => workspaceId,
+}));
 vi.mock('../../fleet/assignments', () => ({
   listFleetAssignments: vi.fn(async () => []),
   groupByAgent: vi.fn((rows: unknown[]) => rows),
@@ -71,6 +75,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { listFleetAssignments, groupByAgent } from '../../fleet/assignments';
 import { deriveFleetMembership } from '../coordination/identity';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
+import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 
 const lane = (claimable: number, matchedByFilter = claimable) => ({
   claimable,
@@ -188,6 +193,42 @@ describe('fleet:bench — stage mode', () => {
       timeoutSec: 600,
     });
     expect(out).toMatchObject({ ok: true, expires_ts: '2030-01-01' });
+  });
+
+  it('narrows a bare work-item:claimable bench to the staged member\'s claim spec and harness', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
+      source: 'fleet',
+      spec: {
+        specId: 'nonp2p-lane',
+        revision: 47,
+        view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change'] } },
+        states: ['open'],
+        limits: {},
+      },
+      revision: 47,
+      updatedBy: 'leader',
+      updatedAt: '2026-08-23T19:00:00.000Z',
+      harnessSlug: 'papercusp',
+      fleetSlug: 'nonp2p-bug-drain-luna-max-20260820',
+    } as never);
+
+    const out = await call({ member: 'su-worker', wakeEvent: 'work-item:claimable', stagedAssignment: 'resume the staged leg' });
+    expect(vi.mocked(getClaimSpecRecord)).toHaveBeenCalledWith({ cupId: 'su-worker', workspaceId: 'ws-x' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      subscriberId: 'su-worker',
+      eventKey: 'work-item:claimable',
+      payloadFilter: {
+        all: [
+          { kind: { in: ['bug', 'change'] } },
+          { harness: { equals: 'papercusp' } },
+        ],
+      },
+    });
+    expect(out).toMatchObject({
+      ok: true,
+      auto_scoped_payload_filter: true,
+      payload_filter_source: { source: 'fleet', specId: 'nonp2p-lane', revision: 47 },
+    });
   });
 
   it('reports a bench miss immediately when no wake handle is found for the member', async () => {

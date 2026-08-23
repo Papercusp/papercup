@@ -432,6 +432,7 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     // 'closed' is a terminal issue-family state → the completion-integrity gate
     // (work-items.ts setWorkItemState) requires a non-empty completionRef.
     const closed = await setStateOne({ id: bugId, state: 'closed', completionRef: 'test: closing bug b' });
+    console.log('DEBUG_CLOSED_RESULT', JSON.stringify(closed));
     // Terminal-state UNIFICATION (work-items.ts): the legacy per-family terminals now
     // normalize onto done/dropped — issue `closed`→`dropped`, and the closed-vs-resolved
     // nuance is preserved in `terminal_reason`, not in `state`. Accepting 'closed' here
