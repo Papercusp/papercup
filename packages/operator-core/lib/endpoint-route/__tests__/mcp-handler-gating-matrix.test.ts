@@ -903,6 +903,23 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
   const invokeCall = (targetArgs: Record<string, unknown>, ws = 'ws-test') =>
     callTool('tools:invoke', { name: 'gatingtest:invoke_target', args: targetArgs }, scoped(ws), { format: 'json' });
 
+  it('forwards a top-level projection into the target call instead of projecting the wrapper', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: {},
+        projection: { pick: ['lines[0]'] },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    expect(invokeProbeSeen).toEqual([{}]);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+  });
+
   it('strips `projection` before the TARGET tool\'s own (closed-shape) validator sees it', async () => {
     const res = await invokeCall({ probe: 'v', projection: { pipe: [{ op: 'head', n: 1 }] } });
     expect(res.isError).not.toBe(true);

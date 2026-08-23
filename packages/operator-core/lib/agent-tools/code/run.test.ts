@@ -1056,8 +1056,27 @@ describe('code:run → inner calls are exempt from the transport hard ceiling (E
   });
 });
 
+// OrchestrateResult.runtimeObservations is REQUIRED on purpose, unlike every optional field
+// beside it: it carries independent runtime evidence (authorizationObservationCount,
+// authorityWideningDetected) that is never derived from the script's return value. A fixture
+// must therefore STATE "nothing was observed" rather than omit the field — an omitted value
+// reads as `undefined` → falsy → "no authority widening detected", which is exactly the silent
+// false-negative the required field exists to prevent. Kept local to the test files on purpose:
+// exporting a shared zero-value from production code would hand every real caller a way to
+// satisfy the type without producing any actual evidence.
+const NO_RUNTIME_OBSERVATIONS = {
+  authorizationObservationCount: 0,
+  authorityWideningDetected: false,
+  midTurnPromptInjectionObservability: 'not-observable',
+} as const;
+
 describe('code:run → mutation echo shaping (WI-1377)', () => {
-  const base = { ok: true as const, summary: { done: true }, logs: [] as string[] };
+  const base = {
+    ok: true as const,
+    summary: { done: true },
+    logs: [] as string[],
+    runtimeObservations: NO_RUNTIME_OBSERVATIONS,
+  };
 
   it('summarizes plannedMutations on a committing run (no full-args echo, so a big batch fits the cap)', () => {
     const shaped = shapeMutationEcho({
@@ -1131,6 +1150,7 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
       error: 'script_timeout after 30000ms',
       logs: [],
       dryRun: false,
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
       plannedMutations: [
         { tool: 'work_items:claim', args: { id: 'WI-1' } },
         { tool: 'work_items:set_state', args: { id: 'WI-1', state: 'in_progress' } },
@@ -1149,6 +1169,7 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
       error: 'script_timeout after 30000ms',
       logs: [],
       dryRun: false,
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
       plannedMutations: [
         { tool: 'coord:send', args: { to: ['agent-1'] } },
         { tool: 'coord:send', args: { to: ['agent-2'] } },
@@ -1178,6 +1199,7 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
       error: 'some thrown error',
       logs: [],
       dryRun: false,
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
       plannedMutations: [],
     }) as Record<string, unknown>;
     expect(shaped.warning).toBeUndefined();
@@ -1244,7 +1266,13 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
 // That is the actual gap, and it is narrower than "code:run has no nested-failure detection":
 // the signal existed, the human-readable pointer to it did not.
 describe('annotateChildFailureWarning — a failed READ-effect child call is named too (WI-7061)', () => {
-  const base = { ok: true as const, summary: { done: true }, logs: [] as string[], dryRun: false };
+  const base = {
+    ok: true as const,
+    summary: { done: true },
+    logs: [] as string[],
+    dryRun: false,
+    runtimeObservations: NO_RUNTIME_OBSERVATIONS,
+  };
 
   it('⭐ names a failed read-effect call even when the script made NO writes at all', () => {
     // The exact shape that used to slip through: zero plannedMutations (so the mutation-echo

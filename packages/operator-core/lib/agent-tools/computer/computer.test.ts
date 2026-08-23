@@ -81,7 +81,12 @@ describe('runComputerAction — capability:computer handler', () => {
     expect((r.content[0] as { data: string }).data).toBe(PNG.toString('base64'));
   });
 
-  it('left_click → drives xdotool with DISPLAY bound, then auto-screenshots', async () => {
+  it('left_click → drives xdotool with DISPLAY bound, then falls back to a screenshot with no a11y bus', async () => {
+    // P-008 / D-012: the post-action observation is no longer an unconditional
+    // screenshot. This seam answers every probe with a PNG, so the a11y bus probe
+    // finds no bus address and `auto` takes its PIXEL fallback — which is the
+    // behaviour asserted here. The full decision table (tree preferred, the three
+    // fallback reasons, the `tree` refusal) lives in action-ledger.test.ts.
     const { exec, calls } = recordingExec();
     __setComputerExecForTests(exec);
     const r = await runComputerAction({ action: 'left_click', coordinate: [400, 300] });
@@ -90,9 +95,10 @@ describe('runComputerAction — capability:computer handler', () => {
     expect(xd?.env).toEqual({ DISPLAY: ':99' }); // bound to the sandbox, never :0
     expect(xd?.args).toEqual(['mousemove', '--sync', '400', '300', 'click', '1']);
 
-    // returns a confirmation + the post-action screenshot the bee reasons over
+    // returns the one-line ledger entry + the post-action screenshot the bee reasons over
     expect(r.content.some((c) => c.type === 'text')).toBe(true);
     expect(r.content.some((c) => c.type === 'image')).toBe(true);
+    expect((r.content[0] as { text: string }).text).toContain('· image · no-bus');
   });
 
   it('cursor_position → text only (no screenshot)', async () => {

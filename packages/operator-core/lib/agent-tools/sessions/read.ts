@@ -9,7 +9,12 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS } from './_shared';
+import {
+  sessionSearchEnabled,
+  disabledResult,
+  SESSION_SOURCE_KINDS,
+  refreshTargetSessionBeforeRead,
+} from './_shared';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -98,6 +103,14 @@ export default defineTool({
         await ingestFileNow(self.filePath); // read-time freshness (D-002)
       } catch { /* the 2-min tick covers it */ }
       selfNote = `resolved self → ${self.sourceKind}:${self.sessionId}`;
+    } else {
+      // Keep the historical/indexed read and archive fall-through unchanged;
+      // the helper refreshes only an active target found in adv_sessions.
+      try {
+        await refreshTargetSessionBeforeRead(ctx.tx, args.source_kind, sessionId);
+      } catch {
+        /* target freshness is best-effort; never make an indexed read fail */
+      }
     }
 
     let lo: number | null = null;

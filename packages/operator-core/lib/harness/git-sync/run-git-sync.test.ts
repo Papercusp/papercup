@@ -1417,6 +1417,32 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     });
   });
 
+  it('EI-21234208817497976: clears an orphaned submodule .git/modules/**/index.lock and publishes the recovered gitlink', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    writeFileSync(join(subRepo, 'sub-stale-lock-recovered.txt'), 'submodule work survived\n');
+
+    // A checked-out submodule has a `.git` file in its worktree; the real index
+    // lives under the superproject's `.git/modules/<path>` directory. Reproduce
+    // the fleet incident at that actual path, not at the superproject index.
+    const subGitDir = git(subRepo, 'rev-parse', '--absolute-git-dir');
+    const lockPath = join(subGitDir, 'index.lock');
+    writeFileSync(lockPath, 'partial index from a dead submodule writer');
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status).toBe('synced');
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git(subOrigin, 'ls-tree', '-r', '--name-only', 'main')).toContain('sub-stale-lock-recovered.txt');
+
+    // The parent must point at the submodule commit that was actually published,
+    // so a fresh clone can resolve the pin rather than receiving a broken gitlink.
+    const subHead = git(subRepo, 'rev-parse', 'HEAD');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(subHead);
+    expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
+  });
+
   it('EI-20611320499473924: attaches a detached submodule to an existing same-tip default branch before committing', async () => {
     const subRepo = join(repo, 'libs/sub');
     // `git submodule update` leaves HEAD detached. Pre-create the default branch at

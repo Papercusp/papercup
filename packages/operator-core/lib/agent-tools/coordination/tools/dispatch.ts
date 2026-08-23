@@ -345,6 +345,7 @@ export async function composeDispatch(
     to?: string[];
     msg_id?: string;
     wake?: {
+      queued?: number;
       woken?: number;
       staged?: number;
       recipient_absent?: boolean;
@@ -361,9 +362,10 @@ export async function composeDispatch(
     args.to;
 
   const wake = r0.wake ?? {};
-  // coord:send's wake.woken is the event engine's matched/queued count; the
-  // detached wake pump has not yet proved that the target executed a turn.
-  const queued = typeof wake.woken === 'number' ? wake.woken : 0;
+  // coord:send's wake.queued is the event engine's matched/queued count; the
+  // detached wake pump has not yet proved that the target executed a turn. The
+  // woken fallback keeps dispatch compatible with older coord:send responses.
+  const queued = typeof wake.queued === 'number' ? wake.queued : typeof wake.woken === 'number' ? wake.woken : 0;
   const woken = 0;
   // EI-5957: a wake STAGES (never delivers) when the target is in MANUAL wake-mode.
   const staged = typeof wake.staged === 'number' ? wake.staged : 0;

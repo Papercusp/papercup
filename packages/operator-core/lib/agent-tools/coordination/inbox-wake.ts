@@ -132,7 +132,11 @@ export interface WakeRecipientsResult {
   targets: string[];
   /** The keys fired (one per target) — for assertions / debugging. */
   keys: string[];
-  /** Total wake awaits actually fired (sum over targets; 0 if none asleep). */
+  /** Total durable wake deliveries matched/queued by the event engine (sum over targets;
+   *  0 if none was listening). The detached wake pump has not run to completion yet. */
+  queued?: number;
+  /** Legacy queue-count alias retained for callers that predate `queued`. Despite its
+   *  name, this is NOT execution-confirmed turn count; it mirrors EmitResult.woken. */
   woken: number;
   /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
    *  primitive) instead of fired — always 0 when everything resolves `auto`
@@ -334,7 +338,7 @@ export async function wakeRecipients(
         break;
     }
   }
-  return { targets, keys, woken, staged, stagedTargets, fanoutCapped, timedOutTargets };
+  return { targets, keys, queued: woken, woken, staged, stagedTargets, fanoutCapped, timedOutTargets };
 }
 
 /**

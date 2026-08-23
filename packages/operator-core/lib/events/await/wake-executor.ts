@@ -1449,7 +1449,7 @@ async function injectPsuHostWake(
   const loopMarker = readLoopDeliveryMarker(d.payload);
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
-  const injectWarm = async (): Promise<WakeOutcome | null> => {
+  const injectWarm = async (useConfirmation = true): Promise<WakeOutcome | null> => {
     // EI-19311270129974785: thread this delivery's own durable id so a retry the
     // CLIENT believes is fresh (its ack-wait timed out, or the host's ack write
     // back failed) is recognized by the host as the SAME delivery it already
@@ -1466,8 +1466,9 @@ async function injectPsuHostWake(
     // only means the detached gate pipeline was queued; it is not proof that a
     // turn started. Keep the durable wake parked until a later retry observes a
     // completed/duplicate outcome. Boolean test stubs retain today's behavior.
-    const confirming =
-      deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    const confirming = useConfirmation
+      ? deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation)
+      : null;
     if (confirming) {
       const result = await confirming(sock, injectMsg);
       if (!result.ok) return null;
@@ -1735,7 +1736,11 @@ async function injectPsuHostWake(
             : 'psu-socket-reset';
       return { kind: 'delivered', channel };
     }
-    // Cold inject missed → warm in place rather than drop the wake.
+    // Cold inject missed → warm in place rather than drop the wake. Deliberately
+    // use the boolean injector here: the confirmation transport just failed, so
+    // retrying that same seam would repeat the miss instead of exercising the
+    // established fail-soft warm fallback.
+    return injectWarm(false);
   }
   return injectWarm();
 }

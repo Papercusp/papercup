@@ -15,16 +15,23 @@ function validManifest(): {
   return {
     kind: 'plugin',
     triggerPack: {
-      source: { kind: 'gmail', oauthField: 'googleWorkspace' },
-      plan: {
+      inputs: { type: 'object', properties: {} },
+      defaultStormPolicy: { maxRuns: 5, windowSeconds: 60 },
+      targets: [{
+        id: 'draft-reply',
+        kind: 'plan',
         path: 'plan.md',
         inputSchema: { type: 'object', properties: { trigger: { type: 'object' } } },
-      },
-      binding: {
+      }],
+      bindings: [{
+        id: 'gmail-to-draft',
+        source: { kind: 'external', sourceKind: 'gmail', oauthField: 'googleWorkspace' },
+        target: 'draft-reply',
         eventPattern: 'ext:gmail:message.received',
         filter: { direction: 'inbound' },
-        stormPolicy: { maxRuns: 5, windowSeconds: 60 },
-      },
+        mapping: { mode: 'payload-context' },
+      }],
+      edges: [],
     },
     configSchema: {
       type: 'object',
@@ -54,7 +61,10 @@ describe('validateTriggerPackDeclaration', () => {
       kind: 'pack',
       triggerPack: {
         ...manifest.triggerPack,
-        binding: { eventPattern: 'ext:slack:mention' },
+        bindings: manifest.triggerPack.bindings.map((binding) => ({
+          ...binding,
+          eventPattern: 'ext:slack:mention',
+        })),
       },
     })).toEqual(expect.arrayContaining([
       expect.stringContaining('kind "plugin"'),
@@ -83,10 +93,100 @@ describe('validateTriggerPackDeclaration', () => {
   it('rejects absolute, traversing, and non-markdown plan paths', () => {
     for (const path of ['/plan.md', '../plan.md', 'plans/../plan.md', 'plan.json', 'plans\\plan.md']) {
       const manifest = validManifest();
-      manifest.triggerPack.plan.path = path;
+      const target = manifest.triggerPack.targets[0];
+      if (target.kind !== 'plan') throw new Error('fixture target must be a plan');
+      target.path = path;
       expect(validateTriggerPackDeclaration(manifest)).toContain(
-        'triggerPack.plan.path must be a safe relative .md path',
+        'triggerPack target "draft-reply" path must be a safe relative .md path',
       );
     }
+  });
+
+  it('validates a multi-target event-stitched graph and complete deterministic mapping', () => {
+    const manifest = validManifest();
+    manifest.triggerPack.targets.push({
+      id: 'record-draft',
+      kind: 'recipe',
+      ref: 'recipes:record-draft',
+      revision: 3,
+      argsSchema: {
+        type: 'object',
+        required: ['messageId', 'draftId'],
+        properties: {
+          messageId: { type: 'string' },
+          draftId: { type: 'string' },
+        },
+      },
+    });
+    manifest.triggerPack.bindings.push({
+      id: 'draft-to-record',
+      source: { kind: 'internal', event: 'plan-completed' },
+      target: 'record-draft',
+      mapping: {
+        mode: 'fields',
+        fields: {
+          messageId: 'trigger.payload.messageId',
+          draftId: 'plan.output.draftId',
+        },
+      },
+      retry: { maxAttempts: 3, backoffSeconds: 10, onExhausted: 'dead-letter' },
+    });
+    manifest.triggerPack.edges.push({
+      from: 'gmail-to-draft',
+      to: 'draft-to-record',
+      event: 'plan-completed',
+      correlation: 'inherit',
+    });
+
+    expect(validateTriggerPackDeclaration(manifest)).toEqual([]);
+
+    const recipeBinding = manifest.triggerPack.bindings[1];
+    if (recipeBinding.mapping?.mode !== 'fields') throw new Error('fixture mapping must use fields');
+    delete recipeBinding.mapping.fields?.draftId;
+    expect(validateTriggerPackDeclaration(manifest)).toContain(
+      'triggerPack recipe binding "draft-to-record" fields mapping is missing required args: draftId',
+    );
+  });
+
+  it('rejects nondeterministic recipe policy, plan retry policy, and cyclic edges', () => {
+    const manifest = validManifest();
+    manifest.triggerPack.targets.push({
+      id: 'record-draft',
+      kind: 'recipe',
+      ref: 'recipes:record-draft',
+      argsSchema: { type: 'object', properties: {} },
+    });
+    manifest.triggerPack.bindings[0].retry = {
+      maxAttempts: 2,
+      onExhausted: 'dead-letter',
+    };
+    manifest.triggerPack.bindings.push({
+      id: 'draft-to-record',
+      source: { kind: 'internal', event: 'binding-run-completed' },
+      target: 'record-draft',
+      mapping: { mode: 'payload-context' },
+    });
+    manifest.triggerPack.edges.push(
+      {
+        from: 'gmail-to-draft',
+        to: 'draft-to-record',
+        event: 'binding-run-completed',
+        correlation: 'inherit',
+      },
+      {
+        from: 'draft-to-record',
+        to: 'gmail-to-draft',
+        event: 'binding-run-completed',
+        correlation: 'inherit',
+      },
+    );
+
+    expect(validateTriggerPackDeclaration(manifest)).toEqual(expect.arrayContaining([
+      expect.stringContaining('plan binding "gmail-to-draft" must not declare retry policy'),
+      expect.stringContaining('recipe binding "draft-to-record" requires deterministic'),
+      expect.stringContaining('recipe binding "draft-to-record" requires an explicit dead-letter retry policy'),
+      expect.stringContaining('edge destination "gmail-to-draft" must declare source.kind "internal"'),
+      expect.stringContaining('acyclic event-stitched graph'),
+    ]));
   });
 });

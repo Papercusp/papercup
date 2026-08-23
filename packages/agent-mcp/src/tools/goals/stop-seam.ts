@@ -103,6 +103,12 @@ export interface GoalStopReport {
    * `unattributedActiveLoops` already exists to prevent.
    */
   modesLeftArmed: string[];
+  /** The standing drain fleet declared by goals:start, when present. */
+  drainFleet?: string | null;
+  /** True when the terminal goal's declared drain fleet is winding down (or absent). */
+  drainFleetWoundDown?: boolean | null;
+  /** A surfaced failure when the terminal goal's declared drain fleet could not be retired. */
+  drainFleetWindDownError?: string | null;
   /**
    * True when the stop is materially incomplete: placement was gated but loops are
    * still burning in scope, or a mode row could not be cleared. Callers should render

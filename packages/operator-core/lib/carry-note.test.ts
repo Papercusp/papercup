@@ -21,6 +21,7 @@ import {
   withCarryNoteChecks,
   normalizeWallEntries,
   normalizeCheckEntries,
+  findVerificationConflict,
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
   rescueTaggedCarryNoteBlob,
@@ -228,6 +229,41 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(rendered).toContain('- ⚠ ');
     expect(rendered).toContain('STILL RUNNING');
     expect(parseCheckLine(rendered)).toEqual(downgraded[0]);
+  });
+
+  it('does not downgrade completed negative measurements that merely mention status vocabulary', () => {
+    const cleanEvidence = [
+      'no in-flight checkpoint/deploy',
+      'checkpointRunInFlight.active=false and deployInFlight.active=false',
+      'pending/backlog 0/511',
+      'Still true and still enforced: write-unverified refusal fires before adapter lookup.',
+    ];
+
+    for (const evidence of cleanEvidence) {
+      expect(findVerificationConflict(evidence), evidence).toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim: 'the negative guard is verified', recheck: 'run the focused probe', verified: evidence }],
+        [],
+        Date.parse('2026-07-19T05:00:00.000Z'),
+      );
+      expect(row?.verified, evidence).toContain(evidence);
+      expect(row, evidence).not.toHaveProperty('contested');
+    }
+  });
+
+  it('still detects affirmative unresolved status phrases', () => {
+    const unresolvedEvidence = [
+      'the service is still running',
+      'the checkpoint is in-flight',
+      'status: pending',
+      'pending final verdict',
+      'the result is unverified',
+      'awaiting final review',
+    ];
+
+    for (const evidence of unresolvedEvidence) {
+      expect(findVerificationConflict(evidence), evidence).not.toBeNull();
+    }
   });
 
   it('renders an explicitly contested row with ⚠ and never upgrades it to ✓', () => {

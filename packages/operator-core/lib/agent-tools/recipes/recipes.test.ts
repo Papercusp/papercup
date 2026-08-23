@@ -28,7 +28,21 @@ const {
   normalizedTrace,
   orgSqlMock,
   resourceSqlMock,
+  NO_RUNTIME_OBSERVATIONS,
 } = vi.hoisted(() => {
+  // OrchestrateResult.runtimeObservations is REQUIRED on purpose, unlike every optional field
+  // beside it: it carries independent runtime evidence (authorizationObservationCount,
+  // authorityWideningDetected) that is never derived from the script's return value. A fixture
+  // must therefore STATE "nothing was observed" rather than omit the field — an omitted value
+  // reads as `undefined` → falsy → "no authority widening detected", which is exactly the
+  // silent false-negative the required field exists to prevent. Defined INSIDE vi.hoisted (and
+  // returned) because vi.hoisted is lifted above module scope: a module-level const referenced
+  // from this factory would be a temporal-dead-zone ReferenceError at runtime.
+  const NO_RUNTIME_OBSERVATIONS = {
+    authorizationObservationCount: 0,
+    authorityWideningDetected: false,
+    midTurnPromptInjectionObservability: 'not-observable',
+  } as const;
   const trace = {
     schemaVersion: 1 as const,
     backend: 'server' as const,
@@ -48,6 +62,7 @@ const {
       summary: { done: true },
       logs: [],
       dryRun: false,
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
       plannedMutations: [],
       callRecords: [],
     })),
@@ -55,6 +70,7 @@ const {
     normalizedTrace: trace,
     orgSqlMock: vi.fn(),
     resourceSqlMock: vi.fn(),
+    NO_RUNTIME_OBSERVATIONS,
   };
 });
 
@@ -475,6 +491,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       summary: { done: true },
       logs: [],
       dryRun: false,
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
       plannedMutations: [],
       partial: false,
       fieldMisses: [
@@ -782,6 +799,7 @@ describe('recipes:run dispatch-wrapper mark (P-012)', () => {
     summary: { done: true },
     logs: [],
     dryRun: false,
+    runtimeObservations: NO_RUNTIME_OBSERVATIONS,
     plannedMutations: [],
     dispatchCount,
   });
@@ -808,12 +826,16 @@ describe('recipes:run dispatch-wrapper mark (P-012)', () => {
     getRecipeMock.mockImplementation(async (_sql: unknown, id: string) => ({ ...RECIPE, id }));
     runOrchestrationMock
       .mockResolvedValueOnce(orchestration(0))
-      // legacy shape: dispatchCount absent entirely — must be read as 0, never guessed
+      // legacy shape: dispatchCount absent entirely — must be read as 0, never guessed.
+      // runtimeObservations is still stated: it is a REQUIRED field, so its absence would be a
+      // type error rather than the "legacy" condition under test, which is specifically about
+      // dispatchCount being optional.
       .mockResolvedValueOnce({
         ok: true,
         summary: {},
         logs: [],
         dryRun: false,
+        runtimeObservations: NO_RUNTIME_OBSERVATIONS,
         plannedMutations: [],
       });
     const metadata = vi.fn();

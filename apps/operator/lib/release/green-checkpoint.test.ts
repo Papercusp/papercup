@@ -4,6 +4,7 @@
  * logic; stub deps for the (heavy) suite run.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   rmSync,
@@ -11,6 +12,7 @@ import {
   readFileSync,
   mkdirSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -128,7 +130,15 @@ import {
   type GreenCheckpointCapacityMode,
 } from "./release-config";
 import { formatFailingFilesLine } from "../../../../scripts/lib/vitest-summary.mjs";
+import {
+  applyPrettierRangeWrites,
+  buildPrettierStdinArgs,
+  characterRangeForLines,
+  REPO_ROOT,
+} from "../../../../scripts/check-format.mjs";
 import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+
+const testRequire = createRequire(import.meta.url);
 
 let repo: string;
 async function commit(
@@ -239,6 +249,65 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
     expect(result).toMatchObject({ green: true, reason: "advanced" });
     expect(calls.some((call) => call.startsWith("setup:"))).toBe(true);
     expect(calls).toContain("runGreen");
+  });
+});
+
+describe("EI-21228180621817003: safe scoped format writes", () => {
+  it("does not publish Prettier's invalid `};)` range result", () => {
+    const source = [
+      'describe("suite", () => {',
+      '  it("first", async () => {',
+      "    // changed",
+      "    const value = await foo();",
+      "  });",
+      "",
+      '  it("second", () => {',
+      "    // changed",
+      "    const other = 2;",
+      "  });",
+      "});",
+      "",
+    ].join("\n");
+    const ranges = [
+      { startLine: 3, endLine: 4 },
+      { startLine: 8, endLine: 9 },
+    ];
+    const prettierCli = testRequire.resolve("prettier/bin/prettier.cjs", {
+      paths: [REPO_ROOT],
+    });
+    const formatRange = (
+      current: string,
+      range: { start: number; end: number },
+    ) => {
+      const result = spawnSync(
+        process.execPath,
+        buildPrettierStdinArgs(prettierCli, "fixture.ts", range),
+        {
+          cwd: REPO_ROOT,
+          encoding: "utf8",
+          input: current,
+        },
+      );
+      if (result.error || result.status !== 0) {
+        throw result.error ?? new Error(result.stderr || "Prettier failed");
+      }
+      return result.stdout;
+    };
+
+    const unsafe = formatRange(
+      source,
+      characterRangeForLines(source, ranges[0]),
+    );
+    expect(unsafe).toContain("};)");
+
+    const formatted = applyPrettierRangeWrites(
+      source,
+      ranges,
+      formatRange,
+      "fixture.ts",
+    );
+    expect(formatted).toBe(source);
+    expect(formatted).not.toContain("};)");
   });
 });
 

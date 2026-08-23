@@ -140,6 +140,8 @@ import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-s
 const WORKSPACE_ID = 'ws-kcut-sidecar';
 const HIVE_HOME = 'kcut-owner-hive';
 const JOINER_SLUG = 'kcut-joined-hive';
+const OWNER_SIBLING_SLUG = 'kcut-owner-member';
+const B_SIBLING_SLUG = 'kcut-joined-member';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -376,6 +378,18 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-kcut-home', 'KCut Owner Home', null, 1, 1)
       `;
+      // The live WI-40905 topology had already admitted B before the owner
+      // revoked it. Seed that same owner-side membership authority explicitly;
+      // without it this repro's owner stays on `membership_miss`, never opens
+      // B's remote log, and handle.revoke(B) cannot exercise session retirement.
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
+           device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idB.userId}, 'kcut-member-b',
+                ${JSON.stringify([{ device_pubkey: idB.devicePubkey }])}::text::jsonb,
+                '{}'::text[], 'verified')
+      `;
       // pot_directory_cache: the VERIFIED owner binding (hivePubkey → ownerDevicePubkey) —
       // the SOLE source D-053's loadHiveOwnerDevicePubkey reads for the bootstrap admit.
       await orgDb.adminSql`
@@ -393,6 +407,8 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
             ...r.projects,
             { slug: HIVE_HOME, path: '/tmp/kcut-owner-hive', harness_kind: 'hive', remote_hive: true },
             { slug: JOINER_SLUG, path: '/tmp/kcut-joiner', hive_slug: HIVE_HOME },
+            { slug: OWNER_SIBLING_SLUG, path: '/tmp/kcut-owner-member', hive_slug: HIVE_HOME },
+            { slug: B_SIBLING_SLUG, path: '/tmp/kcut-joined-member', hive_slug: HIVE_HOME },
           ],
         }),
         WORKSPACE_ID,
@@ -512,9 +528,38 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       bHandle = bPeer.handle;
       bApply ??= buildBApply(bHandle.ownLog.keyHex); // eager so drainB() is safe pre-merge
 
+      // WI-40905's real topology has TWO harness handles per machine on the
+      // same Hive topic (home + member). Keep the siblings' projection paths
+      // inert; their purpose is to reproduce the shared-socket/session shape in
+      // which every handle independently processes the same published revoke.
+      const ownerSibling = await bootViaSidecarHost({
+        root: rootOwner,
+        swarm: swarmOwner,
+        harnessSlug: OWNER_SIBLING_SLUG,
+        binding: hiveBinding,
+        bootExtra: {
+          announceIdentityOverride: idOwner.override,
+          verifyBindingOverride: async (_pk, _login, userId) =>
+            userId === idB.userId ? 'verified' : 'fail',
+          applyOverride: async () => true,
+        },
+      });
+      const bSibling = await bootViaSidecarHost({
+        root: rootB,
+        swarm: swarmB,
+        harnessSlug: B_SIBLING_SLUG,
+        binding: bBinding,
+        bootExtra: {
+          announceIdentityOverride: idB.override,
+          applyOverride: async () => true,
+        },
+      });
+
       expect(owner.handle.swarm, 'owner did not join a swarm').not.toBeNull();
       expect(bPeer.handle.swarm, 'member B did not join a swarm').not.toBeNull();
       expect(owner.handle.swarm!.topicHex).toBe(bPeer.handle.swarm!.topicHex);
+      expect(ownerSibling.handle.swarm!.topicHex).toBe(owner.handle.swarm!.topicHex);
+      expect(bSibling.handle.swarm!.topicHex).toBe(bPeer.handle.swarm!.topicHex);
 
       // ── EPOCH 0: grant epoch-0 keys to {owner, B} + author epoch-0 content, then drain
       //    (the content is ENCRYPTED on the way out under the real epochEncrypt capability). ──
@@ -637,7 +682,17 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         owner.handle.admitted.has(bPeer.handle.ownLog.keyHex),
         'precondition: owner admitted B before the live revoke',
       ).toBe(true);
-      await owner.handle.revoke(idB.devicePubkey);
+      expect(
+        ownerSibling.handle.admitted.has(bPeer.handle.ownLog.keyHex) ||
+          ownerSibling.handle.admitted.has(bSibling.handle.ownLog.keyHex),
+        'precondition: the owner sibling admitted at least one B log before revoke',
+      ).toBe(true);
+      await Promise.all([
+        owner.handle.revoke(idB.devicePubkey),
+        ownerSibling.handle.revoke(idB.devicePubkey),
+        bPeer.handle.revoke(idB.devicePubkey),
+        bSibling.handle.revoke(idB.devicePubkey),
+      ]);
       expect(
         owner.handle.admitted.has(bPeer.handle.ownLog.keyHex),
         'live revoke must remove B from the owner read set',

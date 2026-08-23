@@ -146,7 +146,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["id", "kind", "ref"],
+                "required": ["id", "kind", "ref", "argsSchema"],
                 "properties": {
                   "id": { "type": "string", "minLength": 1 },
                   "kind": { "const": "recipe" },
@@ -232,10 +232,11 @@
               "retry": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["maxAttempts"],
+                "required": ["maxAttempts", "onExhausted"],
                 "properties": {
                   "maxAttempts": { "type": "integer", "minimum": 1 },
-                  "backoffSeconds": { "type": "integer", "minimum": 1 }
+                  "backoffSeconds": { "type": "integer", "minimum": 1 },
+                  "onExhausted": { "const": "dead-letter" }
                 }
               }
             }

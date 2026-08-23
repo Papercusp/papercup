@@ -10,11 +10,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const callerRef = { ownerId: 'su-4c85f9d7-aaaa-bbbb-cccc-ddddeeee0001' };
 
 vi.mock('./_shared', () => ({
-  resolveFleetCaller: vi.fn(() => ({
-    identity: { ownerId: callerRef.ownerId },
-    ownerId: callerRef.ownerId,
-    workspaceId: 'ws-1',
-  })),
+  resolveFleetCaller: vi.fn((ctx: { uiClientId?: string; workspaceId?: string } = {}) => {
+    const ownerId = ctx.uiClientId ?? callerRef.ownerId;
+    return {
+      identity: { ownerId },
+      ownerId,
+      workspaceId: ctx.workspaceId ?? 'ws-1',
+    };
+  }),
 }));
 vi.mock('../../agent-fleets-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
@@ -45,6 +48,7 @@ import {
   applyFleetControl,
   classifyFleetControlInvoker,
   fleetControlCueText,
+  windDownGoalFleet,
 } from './control-core';
 import { getFleet, setFleetControlState, type AgentFleetRecord } from '../../agent-fleets-store';
 import { sendMessage } from '../coordination/messages';
@@ -337,6 +341,34 @@ describe('applyFleetControl', () => {
     getFleetM.mockResolvedValue(fleet({ fleetSlug: 'backend-team', leaderOwnerId: callerRef.ownerId }));
     await applyFleetControl({} as never, 'Backend Team', 'wind-down');
     expect(getFleetM).toHaveBeenCalledWith('ws-1', 'backend-team');
+  });
+
+  it('goal-owned wind-down reuses typed state, release, cue, and leader-watch retirement without the public invoker guard', async () => {
+    getFleetM.mockResolvedValue(fleet({ leaderOwnerId: 'su-goal-agent' }));
+    membersM.mockResolvedValue(['su-goal-agent', 'm-1']);
+
+    const r = await windDownGoalFleet({
+      workspaceId: 'ws-1',
+      fleetSlug: 'backend',
+      goalId: 'goal-1',
+      status: 'killed',
+      actor: 'su-stopper',
+    });
+
+    expect(r).toMatchObject({ ok: true, fleet: 'backend', controlState: 'winding-down' });
+    expect(setControlM).toHaveBeenCalledWith(
+      'ws-1',
+      'backend',
+      {
+        state: 'winding-down',
+        reason: 'goal goal-1 reached killed — standing drain fleet wind-down',
+        by: 'su-stopper',
+      },
+      undefined,
+      'su-goal-agent',
+    );
+    expect((sendM.mock.calls[0][1] as { to: string[] }).to).toEqual(['su-goal-agent', 'm-1']);
+    expect(retireLeaderWatchesM).toHaveBeenCalledWith('su-goal-agent', 'backend');
   });
 
   describe('P-006 auto-drain stamp', () => {

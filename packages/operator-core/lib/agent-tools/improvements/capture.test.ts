@@ -566,6 +566,23 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     }
   });
 
+  it('makes direct-evidence flag placement explicit and keeps the top-level shape invalid', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: { toolFailure?: { description?: string } };
+    };
+    expect(json.properties?.toolFailure?.description).toContain('toolFailure.reproduced');
+    expect(json.properties?.toolFailure?.description).toContain('do not pass them at the top level');
+
+    const misplaced = argsSchema.safeParse({
+      title: 'misplaced reproduced flag',
+      kind: 'bug',
+      reproduced: true,
+      toolFailure: { toolName: 'improvements:capture', message: 'direct reproduction' },
+    });
+    expect(misplaced.success).toBe(false);
+    expect(JSON.stringify(misplaced.success ? [] : misplaced.error!.issues)).toContain('reproduced');
+  });
+
   it('accepts toolFailure without duplicated title/body and rejects a truly empty call (P-002)', () => {
     const shorthand = argsSchema.safeParse({
       toolFailure: {

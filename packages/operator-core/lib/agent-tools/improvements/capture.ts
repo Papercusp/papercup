@@ -473,7 +473,7 @@ export default defineTool({
         toolFailure: suspectedToolFailureSchema
           .optional()
           .describe(
-            'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Set reproduced, clearServerMismatch, or hardInternal only with direct evidence to file claimable work immediately.',
+            'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Put direct-evidence flags inside this object — toolFailure.reproduced, toolFailure.clearServerMismatch, or toolFailure.hardInternal — and do not pass them at the top level. Set them only with direct evidence to file claimable work immediately.',
           ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive

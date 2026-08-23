@@ -165,6 +165,16 @@ export default defineTool({
   // set this (operator/converse.ts, architect/chat.ts, agent_chats/chat.ts,
   // oracle/chat.ts, operator/sentinel-converse.ts all use 600s).
   timeoutSec: 600,
+  // EI-21236181877481513: this handler spends nearly all of its lifetime
+  // blocked in ctx.askUser while the card is visible. It never reads ctx.tx;
+  // holding the MCP dispatcher's ambient workspace transaction across that
+  // human wait lets Postgres's 60s idle_in_transaction_session_timeout kill
+  // the backend. The model then receives the opaque
+  // `write CONNECTION_CLOSED 127.0.0.1:6432`, retries the same visible card,
+  // and leaves the outer conversation in `generating`. Each flag/escalation
+  // helper below owns its own short DB call, so opting out is the correct
+  // transaction boundary rather than widening the database timeout.
+  skipWorkspaceTx: true,
   // Available in both text and voice. Voice users hear fallbackText
   // (announce-only) by default; opt in to spoken answering via
   // voiceAnswerable:true on single-select cards. Plan §C.4.

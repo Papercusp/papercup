@@ -59,6 +59,7 @@ import {
 import { pausePotState, resumePotState } from '../pot/pause-core';
 import { deactivateLoop, loopRoutineName } from '../harness/routines/loop';
 import { setMode } from '../modes/store';
+import { windDownGoalFleet } from '../agent-tools/fleet_registry/control-core';
 import { readGoalHolderRows } from './holder';
 
 /**
@@ -110,6 +111,22 @@ async function countUnattributedActiveLoops(
   return row ? Number(row.n) : 0;
 }
 
+/** The standing drain fleet declared by goals:start, if this goal has one. */
+async function readGoalDrainFleet(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  goalId: string,
+): Promise<string | null> {
+  const [row] = await sql<Array<{ drain_fleet: string | null }>>`
+    SELECT metadata ->> 'drainFleet' AS drain_fleet
+      FROM harness_shared.goals
+     WHERE workspace_id = ${workspaceId}
+       AND id = ${goalId}
+  `;
+  const fleet = row?.drain_fleet?.trim();
+  return fleet || null;
+}
+
 export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopReport> {
   const { sql } = getOrgPg();
   const { goalId, workspaceId, status } = input;
@@ -151,6 +168,36 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
     ? await clearGoalModes(sql, workspaceId, goalId, owners, input.actor ?? null)
     : { modesCleared: [], modesLeftArmed: [] };
 
+  // ── Tier 4: retire the standing drain fleet, but ONLY once the goal is OVER ─
+  // A paused goal must keep its fleet and its GOAL-mode rows so resume can restore
+  // placement and still report the sessions it previously attributed. Terminal
+  // goals, however, must leave no active fleet mission behind to re-wake them.
+  const drainFleet = isTerminalStatus(status)
+    ? await readGoalDrainFleet(sql, workspaceId, goalId)
+    : null;
+  let drainFleetWoundDown: boolean | null = null;
+  let drainFleetWindDownError: string | null = null;
+  if (drainFleet) {
+    try {
+      const result = await windDownGoalFleet({
+        workspaceId,
+        fleetSlug: drainFleet,
+        goalId,
+        status,
+        actor: input.actor ?? null,
+      });
+      // A missing row is already terminal from the fleet's perspective (for
+      // example, a compensating rollback); never turn that into a false alarm.
+      drainFleetWoundDown = result.ok || result.error === 'fleet_not_found';
+      if (!result.ok && result.error !== 'fleet_not_found') {
+        drainFleetWindDownError = result.error ?? result.message ?? 'unknown fleet wind-down failure';
+      }
+    } catch (error) {
+      drainFleetWoundDown = false;
+      drainFleetWindDownError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   // ── The honest gap ─────────────────────────────────────────────────────────
   const unattributedActiveLoops = await countUnattributedActiveLoops(
     sql,
@@ -168,9 +215,16 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
     unattributedActiveLoops,
     modesCleared,
     modesLeftArmed,
+    drainFleet,
+    drainFleetWoundDown,
+    drainFleetWindDownError,
     // Degraded when the stop is materially incomplete: real burn continues in the
-    // goal's own pots, OR a session is still being told this goal is its mission.
-    degraded: unattributedActiveLoops > 0 || modesLeftArmed.length > 0,
+    // goal's own pots, a session is still being told this goal is its mission, OR
+    // the terminal goal's standing fleet could not be retired.
+    degraded:
+      unattributedActiveLoops > 0 ||
+      modesLeftArmed.length > 0 ||
+      drainFleetWoundDown === false,
   };
 }
 

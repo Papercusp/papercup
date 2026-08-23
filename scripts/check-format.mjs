@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import {
   dirname,
@@ -16,6 +22,7 @@ import { fileURLToPath } from "node:url";
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const require = createRequire(import.meta.url);
+const typescript = require("typescript");
 const HUNK_RE = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
 
 function mergeLineRanges(ranges) {
@@ -53,6 +60,44 @@ function lineStartOffsets(source) {
   return offsets;
 }
 
+function lineNumberForOffset(source, offset) {
+  const boundedOffset = Math.min(
+    Math.max(Number.isInteger(offset) ? offset : source.length, 0),
+    source.length,
+  );
+  let line = 1;
+  for (let index = 0; index < boundedOffset; index += 1) {
+    if (source.charCodeAt(index) === 10) line += 1;
+  }
+  return line;
+}
+
+function scriptKindForPath(repoPath) {
+  switch (extname(repoPath).toLowerCase()) {
+    case ".jsx":
+      return typescript.ScriptKind.JSX;
+    case ".tsx":
+      return typescript.ScriptKind.TSX;
+    case ".js":
+    case ".cjs":
+    case ".mjs":
+      return typescript.ScriptKind.JS;
+    default:
+      return typescript.ScriptKind.TS;
+  }
+}
+
+function firstParseDiagnostic(source, repoPath) {
+  const file = typescript.createSourceFile(
+    repoPath,
+    source,
+    typescript.ScriptTarget.Latest,
+    false,
+    scriptKindForPath(repoPath),
+  );
+  return file.parseDiagnostics?.[0] ?? null;
+}
+
 /** Convert a one-based inclusive line range into Prettier character offsets. */
 export function characterRangeForLines(source, range) {
   const offsets = lineStartOffsets(source);
@@ -62,6 +107,62 @@ export function characterRangeForLines(source, range) {
     start: offsets[startLine - 1],
     end: endLine < offsets.length ? offsets[endLine] : source.length,
   };
+}
+
+/**
+ * Apply range formatting without ever publishing an unparseable intermediate.
+ * Prettier may need the enclosing statement's terminator even when the requested
+ * range ends earlier; use its first parse error to expand the range and retry.
+ */
+export function applyPrettierRangeWrites(
+  source,
+  lineRanges,
+  formatRange,
+  repoPath = "fixture.ts",
+) {
+  let current = source;
+
+  for (const lineRange of [...lineRanges].reverse()) {
+    let startLine = Math.max(lineRange.startLine, 1);
+    let endLine = Math.max(lineRange.endLine, startLine);
+    const maxLine = lineStartOffsets(current).length;
+
+    while (true) {
+      const range = characterRangeForLines(current, { startLine, endLine });
+      if (range.end <= range.start) break;
+
+      const candidate = formatRange(current, range);
+      if (typeof candidate !== "string") {
+        throw new Error(`formatter returned a non-string for ${repoPath}`);
+      }
+
+      const diagnostic = firstParseDiagnostic(candidate, repoPath);
+      if (!diagnostic) {
+        current = candidate;
+        break;
+      }
+
+      const diagnosticLine = lineNumberForOffset(candidate, diagnostic.start);
+      if (diagnosticLine < startLine) {
+        startLine = diagnosticLine;
+        continue;
+      }
+      if (diagnosticLine > endLine && endLine < maxLine) {
+        endLine = Math.min(maxLine, diagnosticLine);
+        continue;
+      }
+
+      const message = typescript.flattenDiagnosticMessageText(
+        diagnostic.messageText,
+        " ",
+      );
+      throw new Error(
+        `range formatter produced invalid ${repoPath} near line ${diagnosticLine}: ${message}`,
+      );
+    }
+  }
+
+  return current;
 }
 
 function git(args) {
@@ -186,6 +287,39 @@ export function buildPrettierArgs(cli, repoPath, range, mode = "check") {
   ];
 }
 
+export function buildPrettierStdinArgs(cli, repoPath, range) {
+  return [
+    cli,
+    "--ignore-unknown",
+    "--range-start",
+    String(range.start),
+    "--range-end",
+    String(range.end),
+    "--stdin-filepath",
+    repoPath,
+  ];
+}
+
+function formatRangeWithPrettier(cli, repoPath, source, range) {
+  const result = spawnSync(
+    process.execPath,
+    buildPrettierStdinArgs(cli, repoPath, range),
+    {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      input: source,
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      (result.stderr || `prettier failed for ${repoPath}`).trim(),
+    );
+  }
+  return result.stdout;
+}
+
 export function parseFormatCliArgs(args) {
   const raw = args[0] === "--" ? args.slice(1) : [...args];
   const write = raw[0] === "--write";
@@ -214,23 +348,41 @@ function main() {
       continue;
     }
 
-    // Writes run bottom-up so formatting a later range cannot shift the byte
-    // offsets of an earlier range that has not been processed yet.
-    const orderedRanges =
-      mode === "write" ? [...lineRanges].reverse() : lineRanges;
-    for (const lineRange of orderedRanges) {
+    const runnableRanges = lineRanges.filter((lineRange) => {
       const range = characterRangeForLines(source, lineRange);
-      if (range.end <= range.start) continue;
-      checkedRanges += 1;
-      const result = spawnSync(
-        process.execPath,
-        buildPrettierArgs(prettierCli(), repoPath, range, mode),
-        {
-          cwd: REPO_ROOT,
-          stdio: "inherit",
-        },
-      );
-      if (result.error || result.status !== 0) failedRanges += 1;
+      return range.end > range.start;
+    });
+    checkedRanges += runnableRanges.length;
+
+    if (mode === "write") {
+      try {
+        const formatted = applyPrettierRangeWrites(
+          source,
+          runnableRanges,
+          (current, range) =>
+            formatRangeWithPrettier(prettierCli(), repoPath, current, range),
+          repoPath,
+        );
+        writeFileSync(resolve(REPO_ROOT, repoPath), formatted, "utf8");
+      } catch (error) {
+        failedRanges += 1;
+        console.error(
+          `${label}: ${repoPath}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else {
+      for (const lineRange of runnableRanges) {
+        const range = characterRangeForLines(source, lineRange);
+        const result = spawnSync(
+          process.execPath,
+          buildPrettierCheckArgs(prettierCli(), repoPath, range),
+          {
+            cwd: REPO_ROOT,
+            stdio: "inherit",
+          },
+        );
+        if (result.error || result.status !== 0) failedRanges += 1;
+      }
     }
   }
 

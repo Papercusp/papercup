@@ -215,6 +215,7 @@ export async function resolveOwnerSession(
  * catches the absent case for free, which a wake-mode pre-check would not.
  */
 export type SendDelivery =
+  /** Legacy response shape: old servers called the queue count `woken`. */
   | { kind: 'woken'; count: number }
   | { kind: 'staged' }
   | { kind: 'absent' }
@@ -224,8 +225,12 @@ export type SendDelivery =
 export function deliveryFromSendResponse(body: unknown): SendDelivery {
   const first = (body as { results?: Array<Record<string, unknown>> } | null)?.results?.[0];
   if (!first) return { kind: 'queued' };
-  const wake = first.wake as { woken?: number; staged?: number | boolean } | undefined;
+  const wake = first.wake as { queued?: number; woken?: number; staged?: number | boolean } | undefined;
   if (wake) {
+    // Current coord:send responses distinguish durable queueing from execution.
+    // A queued wake is not a pickup receipt, so keep the UI on the honest warning
+    // banner. The woken fallback is retained only for older server responses.
+    if (typeof wake.queued === 'number') return { kind: 'queued' };
     if (typeof wake.woken === 'number' && wake.woken > 0) return { kind: 'woken', count: wake.woken };
     // A staged wake is the manual-mode case: accepted, held for release.
     if (wake.staged) return { kind: 'staged' };

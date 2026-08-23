@@ -141,6 +141,10 @@ export async function applyFleetControl(
     harness?: string | null;
     /** P-006: pass true only with a live ≥2-machine rig — mirrors scheduler:get_next. */
     rigAvailable?: boolean;
+    /** Internal goal-stop seam: the goal transition already owns this fleet. */
+    skipAuthorization?: boolean;
+    /** Internal callers do not have a session harness fallback. */
+    sessionHarness?: string | null;
   },
 ): Promise<FleetControlResult> {
   const { ownerId, workspaceId, identity } = resolveFleetCaller(ctx);
@@ -165,12 +169,14 @@ export async function applyFleetControl(
   } catch {
     paneKind = classifyAgentPane({ role: null, ownerId }).kind;
   }
-  const invokedAs = classifyFleetControlInvoker({
-    callerOwnerId: ownerId,
-    leaderOwnerId: fleet.leaderOwnerId,
-    paneKind,
-  });
-  if (!invokedAs) {
+  const invokedAs = opts?.skipAuthorization
+    ? 'owner'
+    : classifyFleetControlInvoker({
+        callerOwnerId: ownerId,
+        leaderOwnerId: fleet.leaderOwnerId,
+        paneKind,
+      });
+  if (!opts?.skipAuthorization && !invokedAs) {
     return {
       ok: false,
       error: 'not_authorized',
@@ -190,7 +196,7 @@ export async function applyFleetControl(
   // first — rather than silently changing the fleet's owner as a side effect of a
   // control read. A liveness read failure also fails closed; an unverified leader
   // cannot safely back a leader-authority cue.
-  if (invokedAs !== 'leader') {
+  if (!opts?.skipAuthorization && invokedAs !== 'leader') {
     let leaderIsLive = false;
     let leaderReadFailed = false;
     if (fleet.leaderOwnerId) {
@@ -229,7 +235,10 @@ export async function applyFleetControl(
       fleetSlug: slug,
       ownerId,
       workspaceId,
-      harnessCandidates: [opts?.harness, (ctx as { harnessSlug?: string | null }).harnessSlug],
+      harnessCandidates: [
+        opts?.harness,
+        opts?.sessionHarness ?? (ctx as { harnessSlug?: string | null }).harnessSlug,
+      ],
       rigAvailable: opts?.rigAvailable,
     }).catch(() => null);
     if (stamp) {
@@ -378,4 +387,34 @@ export async function applyFleetControl(
     ...(drainStamp ? { drainStamp } : {}),
     ...(pauseHolds ? { pauseHolds } : {}),
   };
+}
+
+/**
+ * Wind down the standing fleet minted for a goal.
+ *
+ * This is deliberately not routed through the public invoker guard: a terminal
+ * goal transition is the authority that owns the declaration, while the fleet's
+ * recorded leader may already be gone. The actual state/cue/release work stays in
+ * applyFleetControl so goal stops and fleet:wind-down cannot drift apart.
+ */
+export async function windDownGoalFleet(args: {
+  workspaceId: string;
+  fleetSlug: string;
+  goalId: string;
+  status: string;
+  actor?: string | null;
+}): Promise<FleetControlResult> {
+  const controller = args.actor?.trim() || 'goal-stop-fanout';
+  const ctx: ResolveIdentityCtx = {
+    uiClientId: controller,
+    workspaceId: args.workspaceId,
+    isSuperuser: true,
+  };
+  return applyFleetControl(
+    ctx,
+    args.fleetSlug,
+    'wind-down',
+    `goal ${args.goalId} reached ${args.status} — standing drain fleet wind-down`,
+    { skipAuthorization: true, sessionHarness: null },
+  );
 }

@@ -12,6 +12,9 @@ import {
   maybeOrientDedupNudge,
   maybeListFanoutPreempt,
   _resetBatchNudgeState,
+  isPreferredDoor,
+  EXCLUDED_TOOL_NORMS,
+  PREFERRED_DOOR_NORMS,
   BATCH_NUDGE_THRESHOLD,
   FANOUT_DISTINCT_THRESHOLD,
   NUDGE_WINDOW_MS,
@@ -934,5 +937,45 @@ describe('maybeListFanoutPreempt — the guards against a WRONG prediction', () 
         now: 2000,
       }),
     ).toBeNull();
+  });
+});
+
+/** WI-40720. `isPreferredDoor` and the two norm sets are EXPORTED FROM THIS MODULE, so their
+ *  direct classification tests belong here — the wider derivation guards (that every SQL predicate
+ *  interpolates the same set) live in code-run-adoption.test.ts, where the SQL constants are.
+ *
+ *  Why this predicate exists: the door set was hand-copied across nine sites and `orchestrate:run`
+ *  was missing from every one, so preferred-door usage went unmeasured in adoption, in nudge
+ *  conversion, and in the post-door telemetry backfill. Anywhere that used to ask
+ *  `toolName === 'code:run'` must ask this instead. */
+describe('isPreferredDoor — the door classifier the nine hardcoded copies used to each re-implement', () => {
+  it('accepts every door, in both the verb and MCP spellings', () => {
+    for (const norm of PREFERRED_DOOR_NORMS) expect(isPreferredDoor(norm), norm).toBe(true);
+    expect(isPreferredDoor('code:run')).toBe(true);
+    expect(isPreferredDoor('code_run')).toBe(true);
+    expect(isPreferredDoor('recipes:run')).toBe(true);
+    expect(isPreferredDoor('recipes_run')).toBe(true);
+    expect(isPreferredDoor('orchestrate:run')).toBe(true);
+    expect(isPreferredDoor('orchestrate_run')).toBe(true);
+  });
+
+  it('pins orchestrate:run specifically — the door whose absence caused this work', () => {
+    // Not redundant with the loop above: that loop would pass just as happily on a set this
+    // door had been dropped from. This is the regression itself.
+    expect(isPreferredDoor('orchestrate:run')).toBe(true);
+    expect(PREFERRED_DOOR_NORMS.has('orchestraterun')).toBe(true);
+  });
+
+  it('rejects near-misses — normalization strips punctuation, so the risk is over-matching', () => {
+    expect(isPreferredDoor('orchestrate:trace')).toBe(false);
+    expect(isPreferredDoor('recipes:search')).toBe(false);
+    expect(isPreferredDoor('work_items:get')).toBe(false);
+    expect(isPreferredDoor('')).toBe(false);
+  });
+
+  it('never nudges a door at itself — every door is excluded by construction', () => {
+    for (const norm of PREFERRED_DOOR_NORMS) {
+      expect(EXCLUDED_TOOL_NORMS.has(norm), `${norm} is a door but nudgeable`).toBe(true);
+    }
   });
 });

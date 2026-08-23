@@ -25,6 +25,7 @@ type Envelope = {
     summaryCharsPerRow: number;
     next: string;
     stubbed?: { count: number; note: string };
+    singleItemFloor?: string;
   };
 };
 
@@ -86,6 +87,48 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(got.length).toBeLessThan(checkpoint.length);
     expect(got).toMatch(/…\[TRUNCATED \+\d+ chars — re-read with payloadTier:'full'\]$/);
     expect(out._shapeNote?.dropped).toEqual(expect.arrayContaining(["checkpoint(clipped)"]));
+  });
+
+  it("keeps identity on an exact read instead of falling to an id-only stub", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: {
+            id: "WI-1",
+            kind: "bug",
+            family: "issue",
+            harness: "papercusp",
+            state: "open",
+            title: "serializer hold",
+            severity: "critical",
+            origin: "local",
+            assignee: "su-1",
+            summary: "S".repeat(40_000),
+            payload: { giant: "P".repeat(40_000) },
+          },
+          checkpoint: "C".repeat(40_000),
+          holder: {
+            goalRef: "WI-1",
+            goalText: "H".repeat(40_000),
+            assumptions: { keys: ["hold"] },
+            agreement: "sole",
+            competing: [],
+          },
+          lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
+          priorAttempts: { attempts: [{ text: "A".repeat(10_000) }] },
+          threadWindow: { posts: [{ body: "T".repeat(10_000) }] },
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    const result = out.results[0];
+    const workItem = result.workItem as Record<string, unknown>;
+
+    expect(result._stub).toBeUndefined();
+    expect(workItem).toMatchObject({ id: "WI-1", state: "open", assignee: "su-1", title: "serializer hold" });
+    expect(String(result.checkpoint)).toMatch(/TRUNCATED/);
+    expect(out._shapeNote?.singleItemFloor).toMatch(/reduced identity/);
+    expect(out._shapeNote?.stubbed).toBeUndefined();
   });
 
   it("keeps every 'read before acting' warning the tool's returns-contract promises", () => {

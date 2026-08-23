@@ -11,6 +11,8 @@
  * (3) a PG failure is swallowed (never thrown) and logged, matching the rest of
  * this file's telemetry writes.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
@@ -182,5 +184,44 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     ).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('backfillResultDoorOutputRef failed for x:three'));
+  });
+});
+
+/** WI-40720 gap 3. The backfill CONTRACT is exercised above; this pins its CALL SITE, which is the
+ *  half that was actually broken. The handler gated post-door enrichment on a literal
+ *  `toolName === 'code:run'`, so a recipes:run or orchestrate:run call could spill real bytes and
+ *  record no telemetry for them — and the rollout gates then graded a default-on orchestration
+ *  suite on code:run traffic alone. Nothing failed; the numbers were simply about a smaller
+ *  population than they appeared to describe.
+ *
+ *  Asserted against the source because the condition lives in a deep dispatch closure with no
+ *  seam to call directly. That is a real limitation, so the check is written to fail LOUDLY if it
+ *  ever stops measuring: it proves it read a plausible handler before asserting anything about it. */
+describe('WI-40720 gap 3 — the post-door backfill call site is door-general, not code:run-only', () => {
+  const handlerSource = readFileSync(
+    fileURLToPath(new URL('./endpoint-route/routes/transport/_mcp-handler.ts', import.meta.url)),
+    'utf8',
+  );
+
+  it('POSITIVE CONTROL — the guard is actually reading the handler', () => {
+    // An absence claim needs a positive control: if the file moves or is renamed, every
+    // assertion below would pass vacuously on an empty string. Prove the subject is present
+    // FIRST, so a silent miss becomes a loud failure.
+    expect(handlerSource.length).toBeGreaterThan(1000);
+    expect(handlerSource).toContain('backfillResultDoorOutputRef');
+  });
+
+  it('classifies the door with the shared predicate instead of a hardcoded tool name', () => {
+    expect(handlerSource).toContain('isPreferredDoor(toolName)');
+    // The specific regression: the metadata branch must not be keyed to one door again.
+    expect(handlerSource).not.toContain("...(toolName === 'code:run'");
+  });
+
+  it('stamps spillPath, the join key that makes spill resolution measurable', () => {
+    // result-door.ts has always emitted spillPath; the handler dropped it because its inline
+    // type never declared it. A later capability:read records the same path in args_json, so
+    // without this stamp the two halves of a spill round-trip cannot be correlated at all.
+    expect(handlerSource).toContain('spillPath?: string | null;');
+    expect(handlerSource).toContain('doorMeta.spillPath');
   });
 });

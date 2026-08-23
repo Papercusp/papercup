@@ -203,19 +203,38 @@ export type CarryArgRepair = {
  *
  * A carried ✓ is a license for the next wake to skip its re-check, so a false ✓
  * is materially more dangerous than a false ?. Keep this detector deliberately
- * conservative: when the evidence contains one of these phrases, downgrade the
- * row and preserve the evidence as CONTESTED rather than granting confidence.
+ * conservative: downgrade only high-confidence unresolved status phrases. A
+ * substring is not enough: verified evidence may measure a negative state (for
+ * example `no in-flight checkpoint`, `pending/backlog 0/511`, or a
+ * `write-unverified` refusal code) and must remain VERIFIED when that measurement
+ * itself is complete.
  */
 const VERIFICATION_CONFLICT_PATTERNS: ReadonlyArray<RegExp> = [
   /\bstill\s+running\b/i,
-  /\bin[-\s]flight\b/i,
-  /\bpending\b/i,
-  /\boutstanding\b/i,
-  /\bnot\s+verified\b/i,
-  /\bunverified\b/i,
-  /\bawait(?:ing|s)\b/i,
-  /\bnot\s+(?:(?:the|this|a|an|its)\s+)?(?:[a-z][\w-]*\s+){0,5}verdict\b/i,
+  /\b(?:is|are|was|were|remains?|stays?|currently|still)\s+in[-\s]flight\b/i,
+  /\b(?:an?|the|this)\s+in[-\s]flight\s+(?:run|job|deployment|deploy|task|operation|check|test|request|process)\b/i,
+  /\b(?:status|state)\s*[:=]\s*(?:pending|outstanding|awaiting|unverified|in[-\s]flight)\b/i,
+  /\b(?:is|are|was|were|remains?|stays?|currently|still)\s+(?:pending|outstanding|awaiting|unverified|not\s+verified)\b/i,
+  /\b(?:pending|outstanding|awaiting|awaits)\s+(?:the\s+)?(?:final\s+)?(?:verdict|review|approval|response|completion|result|run|job|task|work)\b/i,
+  /\bnot\s+(?:yet\s+)?(?:the\s+)?(?:final\s+)?(?:verdict|review|approval|response|completion|result)\b/i,
 ];
+
+/**
+ * A status token can be present in a completed NEGATIVE measurement rather than
+ * describing an unresolved check. Inspect the short clause before the match and
+ * the common boolean/status suffixes after it before downgrading the evidence.
+ */
+function isNegatedVerificationConflict(text: string, match: RegExpExecArray): boolean {
+  const before = text.slice(Math.max(0, match.index - 120), match.index);
+  const boundary = Math.max(...['.', '!', '?', ';', '\n'].map((mark) => before.lastIndexOf(mark)));
+  const clause = before.slice(boundary + 1).trim();
+  if (/\b(?:no|not|never|without|none|neither|zero|no\s+longer)\s+(?:[\w./:=()-]+\s+){0,6}$/i.test(clause)) {
+    return true;
+  }
+
+  const after = text.slice(match.index + match[0].length);
+  return /^\s*(?:=|:)\s*(?:false|0|null|none|inactive|no)\b/i.test(after);
+}
 
 /** Return the exact contradiction phrase found in verification evidence, if any. */
 export function findVerificationConflict(evidence: string | null | undefined): string | null {
@@ -223,7 +242,7 @@ export function findVerificationConflict(evidence: string | null | undefined): s
   if (!text.trim()) return null;
   for (const pattern of VERIFICATION_CONFLICT_PATTERNS) {
     const match = pattern.exec(text);
-    if (match?.[0]) return match[0];
+    if (match?.[0] && !isNegatedVerificationConflict(text, match)) return match[0];
   }
   return null;
 }

@@ -83,14 +83,22 @@ describe('chat:ask_choice handler', () => {
     expect((r.content[0] as { text: string }).text).toMatch(/no_chat_surface/);
   });
 
-  it('EI-288: sets a long timeoutSec (600s) matching other human-interaction tools, not the framework 60s default', () => {
+  it('keeps the human wait outside both the 60s tool default and the 60s ambient workspace transaction', () => {
     // This tool BLOCKS on a real human clicking a card, which can easily
     // take >60s — without an explicit override the dispatch-stack default
     // (`exec.tool.timeoutSec ?? 60`) fires an abort at 60s while ctx.askUser
     // keeps waiting and eventually resolves anyway, surfacing a spurious
     // "exceeded timeout of 60s (handler returned but signal had aborted)"
     // watchdog error (EI-288: observed 15/25 recent calls before this fix).
-    expect((askChoiceTool as any).timeoutSec).toBe(600);
+    const metadata = askChoiceTool as unknown as {
+      timeoutSec?: number;
+      skipWorkspaceTx?: boolean;
+    };
+    expect(metadata.timeoutSec).toBe(600);
+    // EI-21236181877481513: ctx.askUser can legitimately wait for minutes.
+    // Holding the synthesized workspace tx while it waits makes Postgres kill
+    // that idle transaction at 60s and the brain retry the same card forever.
+    expect(metadata.skipWorkspaceTx).toBe(true);
   });
 
   it('single-select: blocks until user submits; returns picked option', async () => {

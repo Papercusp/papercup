@@ -156,6 +156,15 @@ const THREAD_CAPS = {
   standard: { posts: 10, topics: 24, body: 1200 },
 } as const;
 
+/**
+ * A single exact read must retain enough identity to answer "who owns this and
+ * what state is it in?" even when its diagnostic payload is too large for every
+ * normal ladder rung. Bulk reads may use id-only stubs to preserve correlation;
+ * an exact one-row read has no correlation trade to make, so keep a bounded
+ * checkpoint fragment and the reduced work-item identity instead.
+ */
+const SINGLE_ROW_CHECKPOINT_CAPS = { trimmed: 400, standard: 800 } as const;
+
 type WorkItemsGetTier = keyof typeof FIELD_CAPS;
 type FieldCaps = (typeof FIELD_CAPS)[WorkItemsGetTier];
 type Row = Record<string, unknown>;
@@ -280,6 +289,71 @@ function stubRow(r: Row): Row {
   return {
     id: r.id ?? w.id ?? null,
     _stub: true,
+  };
+}
+
+function compactHolder(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw ?? null;
+  const h = raw as Row;
+  return {
+    ...(h.goalRef !== undefined ? { goalRef: h.goalRef } : {}),
+    ...(h.stale !== undefined ? { stale: h.stale } : {}),
+    ...(h.agreement !== undefined ? { agreement: h.agreement } : {}),
+    ...(Array.isArray(h.competing) ? { competing: h.competing.slice(0, 8) } : {}),
+  };
+}
+
+/**
+ * Preserve the safety-critical identity of a single exact read when the normal
+ * ladder cannot fit its diagnostic fields. This is deliberately not used for
+ * bulk reads: at 100 ids, repeating identity is what would destroy correlation.
+ */
+function compactSingleRow(
+  r: Row,
+  caps: FieldCaps,
+  tier: WorkItemsGetTier,
+  dropped: Set<string>,
+): Row {
+  if (r.ok === false) return r;
+
+  const w = r.workItem as Row | undefined;
+  const checkpoint = r.checkpoint;
+  const checkpointCap = SINGLE_ROW_CHECKPOINT_CAPS[tier];
+  if (typeof checkpoint === "string" && checkpoint.length > checkpointCap) {
+    dropped.add("checkpoint(clipped)");
+  }
+  if (typeof w?.summary === "string") dropped.add("workItem.summary");
+  if (w?.payload !== undefined) dropped.add("workItem.payload");
+  noteDroppedDetail(w ?? {}, dropped);
+
+  for (const field of [
+    "threadWindow",
+    "threadWindowReadFailed",
+    "lifecycle",
+    "priorAttempts",
+    "priorAttemptRefResolution",
+    "citedFacts",
+  ]) {
+    if (r[field] !== undefined) dropped.add(field);
+  }
+
+  return {
+    ok: r.ok ?? true,
+    id: r.id ?? w?.id ?? null,
+    workItem: projectWorkItem(r.workItem, caps, 0, dropped),
+    checkpoint: clip(checkpoint, checkpointCap),
+    checkpointAgeMs: r.checkpointAgeMs ?? null,
+    checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
+    ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+    ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
+    ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
+    ...(r.checkpointBgJobWarning
+      ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) }
+      : {}),
+    ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
+    ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
+    ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
+    ...(r.holder ? { holder: compactHolder(r.holder) } : {}),
   };
 }
 
@@ -598,12 +672,15 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
         : Math.floor(summaryTotal / carryingSummaries);
     const summaryChars = summaryShare >= SUMMARY_USEFUL_MIN_CHARS ? summaryShare : 0;
 
+    const singleItemFloor = rows.length === 1 && fullRows === 0;
     const projected = rows.map((r, i) =>
       i < fullRows
         ? projectRow(r, caps, checkpointChars, summaryChars, dropped)
-        : stubRow(r),
+        : singleItemFloor
+          ? compactSingleRow(r, caps, tier, dropped)
+          : stubRow(r),
     );
-    const stubbedCount = Math.max(0, rows.length - fullRows);
+    const stubbedCount = singleItemFloor ? 0 : Math.max(0, rows.length - fullRows);
     if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);
 
     out = {
@@ -622,6 +699,12 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                       count: stubbedCount,
                       note: "stub rows preserve only id + _stub; re-read an id alone for detail",
                     },
+                  }
+                : {}),
+              ...(singleItemFloor
+                ? {
+                    singleItemFloor:
+                      "Exact single-item reads preserve reduced identity; diagnostic fields were clipped or omitted. Re-read with payloadTier:'full' for the complete record.",
                   }
                 : {}),
               // The generic sentence is not enough when the dropped field is the

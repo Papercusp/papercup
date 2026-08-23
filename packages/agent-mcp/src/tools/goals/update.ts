@@ -79,6 +79,7 @@ export default defineTool({
       '`stop` carries the fan-out report and is NOT symmetric — check its `status` before reading it. ' +
       'STOP arm (paused/killed/achieved): `potsStopped`, `potsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own pots that could NOT be attributed to it and are STILL RUNNING. ' +
       'TERMINAL only (killed/achieved): `modesCleared` — sessions whose GOAL-mode row was retired — and ⚠ `modesLeftArmed`, owner-directed rows the sticky guard REFUSED, so those sessions are still being told this goal is their mission. A pause keeps the rows (resume reads them). ' +
+      'TERMINAL only (killed/achieved): `drainFleet`, `drainFleetWoundDown`, and ⚠ `drainFleetWindDownError` report whether the goal\'s standing drain fleet was put into typed winding-down state. ' +
       'RESUME arm (active): `potsResumed`, `potsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
       '`timeWakeRestored` is always false: the pause DELETES the pot\'s declared time-wake row and its cadence is not reconstructible. ' +
       '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent. ' +
@@ -581,6 +582,11 @@ export default defineTool({
         if (stop.modesLeftArmed.length > 0) {
           degradedReasons.push(
             `goal ${args.status}, but ${stop.modesLeftArmed.length} session(s) could NOT have their GOAL mode retired — the row is owner-directed and this fan-out is not an owner-authority channel, so they are still being told this finished goal is their standing mission (${stop.modesLeftArmed.join(', ')})`,
+          );
+        }
+        if (stop.drainFleetWoundDown === false) {
+          degradedReasons.push(
+            `goal ${args.status}, but its standing drain fleet ${stop.drainFleet ?? '(unrecorded)'} could NOT be put into typed winding-down state${stop.drainFleetWindDownError ? `: ${stop.drainFleetWindDownError}` : ''}`,
           );
         }
       } else {
