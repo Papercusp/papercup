@@ -284,6 +284,11 @@ const HALF_VERIFIED_ROW: SocialPlatformRow = {
   read: { transport: 'outbound-websocket', replay: 'bounded-cursor-window' },
   write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
   limits: {},
+  // P-024: an egress budget is required on every row. This synthetic one is
+  // deliberately per-connection with no fixed host, so it grants nothing — the
+  // write gate under test is about verification, not reachability, and a fixture
+  // that quietly declared a real host would let a later test reach one.
+  egress: { hostPolicy: 'per-connection', apiHosts: [] },
 };
 
 describe('write gate — read-verified does not imply write-verified', () => {
