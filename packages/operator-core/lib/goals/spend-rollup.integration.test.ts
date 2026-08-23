@@ -58,6 +58,19 @@ beforeAll(async () => {
       id text PRIMARY KEY, workspace_id text NOT NULL,
       status text NOT NULL DEFAULT 'active',
       metadata jsonb, budget_cents bigint,
+      -- budget_window_sec: migration 914, the DENOMINATOR for budget_cents
+      -- (work-on-everything-goal-2026-08-23 P-004). NULL = per goal lifetime,
+      -- which is what every row here means and what the pre-P-004 breach rule
+      -- assumed.
+      --
+      -- ⚠ SECOND OCCURRENCE of the drift the tripwires comment below records.
+      -- The pattern is now confirmed, not anecdotal: a hand-rolled fixture is
+      -- schema-complete for the columns the code touches TODAY, so it silently
+      -- falls one behind the moment production SQL reads a new one — and the
+      -- affected-tests selector cannot pick this file from the migration diff,
+      -- because the migration does not touch it. Adding a column to
+      -- harness_shared.goals means auditing this block by hand.
+      budget_window_sec integer,
       -- tripwires: a COLUMN since migration 765, and the one P-004 advances.
       -- This fixture predated the sweep reading it and was silently a column
       -- behind production until that read landed.
