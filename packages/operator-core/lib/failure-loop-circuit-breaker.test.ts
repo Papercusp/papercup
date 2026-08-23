@@ -33,9 +33,7 @@ describe('failure-loop circuit breaker', () => {
     expect(argumentShapeFingerprint({ path: '/a', opts: { n: 1, force: true } })).toBe(
       argumentShapeFingerprint({ opts: { force: false, n: 999 }, path: '/secret' }),
     );
-    expect(argumentShapeFingerprint({ path: '/a' })).not.toBe(
-      argumentShapeFingerprint({ query: '/a' }),
-    );
+    expect(argumentShapeFingerprint({ path: '/a' })).not.toBe(argumentShapeFingerprint({ query: '/a' }));
   });
 
   it('normalizes dispatcher errors and structured handler refusals without prose guessing', () => {
@@ -119,4 +117,3 @@ describe('failure-loop circuit breaker', () => {
     expect(fail(FAILURE_LOOP_DEBOUNCE_MS + 5)).not.toBeNull();
   });
 });
-

@@ -69,22 +69,16 @@ function describeShape(value: unknown, depth: number, seen: Set<object>): string
   seen.add(object);
   try {
     if (Array.isArray(value)) {
-      const samples = value.slice(0, MAX_ARRAY_SAMPLES).map((item) =>
-        describeShape(item, depth + 1, seen),
-      );
+      const samples = value.slice(0, MAX_ARRAY_SAMPLES).map((item) => describeShape(item, depth + 1, seen));
       const unique = [...new Set(samples)].sort();
       const cardinality = value.length === 0 ? 'empty' : value.length === 1 ? 'one' : 'many';
-      return `array:${cardinality}<${unique.join('|')}${
-        value.length > MAX_ARRAY_SAMPLES ? '|…' : ''
-      }>`;
+      return `array:${cardinality}<${unique.join('|')}${value.length > MAX_ARRAY_SAMPLES ? '|…' : ''}>`;
     }
 
     const record = value as Record<string, unknown>;
     const allKeys = Object.keys(record).sort();
     const keys = allKeys.slice(0, MAX_OBJECT_KEYS);
-    const fields = keys.map(
-      (key) => `${JSON.stringify(key)}:${describeShape(record[key], depth + 1, seen)}`,
-    );
+    const fields = keys.map((key) => `${JSON.stringify(key)}:${describeShape(record[key], depth + 1, seen)}`);
     if (allKeys.length > MAX_OBJECT_KEYS) fields.push('…:truncated');
     return `{${fields.join(',')}}`;
   } finally {
@@ -111,8 +105,7 @@ export function failureClassOf(result: DispatchProjectedResult): string | null {
       if (parsed && typeof parsed === 'object') {
         const fields = parsed as Record<string, unknown>;
         const code = [fields.error, fields.reason, fields.code, fields.errorCode].find(
-          (candidate): candidate is string =>
-            typeof candidate === 'string' && candidate.trim().length > 0,
+          (candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0,
         );
         if (code) return `refused:${boundedClass(code)}`;
       }
@@ -195,10 +188,7 @@ export function observeFailureLoop(input: {
 }
 
 /** Drain-once bridge from the settled dispatcher to PostToolBatch context. */
-export function takePendingFailureLoopHint(
-  ownerId: string,
-  now: number = Date.now(),
-): FailureLoopHint | null {
+export function takePendingFailureLoopHint(ownerId: string, now: number = Date.now()): FailureLoopHint | null {
   const hint = pendingByOwner.get(ownerId) ?? null;
   if (!hint) return null;
   pendingByOwner.delete(ownerId);
@@ -224,9 +214,7 @@ function pruneState(now: number): void {
   // Defensive cap only; the normal TTL path is the policy. Evict oldest state
   // first so a hostile owner/tool cardinality burst cannot grow the host.
   const ordered = [...statesByOwner.entries()]
-    .flatMap(([owner, byTool]) =>
-      [...byTool.entries()].map(([tool, state]) => ({ owner, tool, at: state.lastSeenAt })),
-    )
+    .flatMap(([owner, byTool]) => [...byTool.entries()].map(([tool, state]) => ({ owner, tool, at: state.lastSeenAt })))
     .sort((a, b) => a.at - b.at);
   for (const entry of ordered.slice(0, total - MAX_OWNER_TOOL_STATES)) {
     const byTool = statesByOwner.get(entry.owner);
@@ -239,4 +227,3 @@ export function __resetFailureLoopCircuitBreakerForTests(): void {
   statesByOwner.clear();
   pendingByOwner.clear();
 }
-
