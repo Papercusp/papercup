@@ -183,29 +183,72 @@ except Exception as e: print("CONNECT_FAIL",e)`;
     // rather than an explicit bind, and a read-only MOUNT does not block connect() to a
     // socket inode. Pinned here because "read-only mount ⇒ no socket connect" is a very
     // natural wrong assumption, and acting on it would add a pointless rw bind over /run.
+    //
+    // The first version of this test could only ever FAIL, and it failed in the shape of a
+    // real finding — which is the dangerous part. `spawnSync` waits for stdout EOF, not for
+    // `sh` to exit, so a backgrounded listener that INHERITS that pipe blocks the caller for
+    // its whole lifetime: the 15s listener had already exited by the time the connect ran,
+    // its socket inode was still on disk, and connect() to an inode with no listener is
+    // ECONNREFUSED — byte-identical to what a genuinely blocked ro-bind would produce.
+    // Measured: spawnSync blocked 15041ms, test duration 16313ms = 15041 + the 1s sleep +
+    // bwrap. Two rules follow, both enforced below: the child must not hold our stdout, and
+    // a refusal is evidence about the MOUNT only once the listener is proven live FROM THE
+    // HOST. (The sibling xterm test above always had the redirect; this one just omitted it.)
     const probeDir = '/run/user/1000';
     const sock = `${probeDir}/p010-live-probe.sock`;
+    const deadSock = `${probeDir}/p010-live-dead.sock`;
+    const CONNECT = `import socket,sys
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+try:
+    s.connect(sys.argv[1]); print("CONNECT_OK")
+except Exception as e: print("CONNECT_FAIL",e)`;
+    rmSync(sock, { force: true });
+    rmSync(deadSock, { force: true });
     const listener = spawnSync('sh', [
       '-c',
-      `python3 -c 'import socket,os,sys,time,threading
+      `python3 -c 'import socket,sys,threading,time
 p=sys.argv[1]
-try: os.unlink(p)
-except FileNotFoundError: pass
-s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(p); s.listen(1)
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(p); s.listen(8)
 threading.Thread(target=lambda:[s.accept() for _ in iter(int,1)],daemon=True).start()
-time.sleep(15)' ${sock} & echo $!`,
+time.sleep(600)' ${sock} >/dev/null 2>&1 & echo $!`,
     ], { encoding: 'utf8' });
     const pid = Number.parseInt((listener.stdout ?? '').trim(), 10);
     try {
-      spawnSync('sleep', ['1']);
-      const argv = sandboxArgv(
-        ['python3', '-c', 'import socket,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.connect(sys.argv[1])\nprint("CONNECT_OK")', sock],
-        { denyNetwork: true },
-      );
+      // INSTRUMENT CHECK — on the host, outside any sandbox. Until this passes, a refusal
+      // inside the sandbox is a statement about the fixture, not about the mount.
+      let ready = false;
+      for (let i = 0; i < 80; i++) {
+        const probe = spawnSync('python3', ['-c', CONNECT, sock], { encoding: 'utf8' });
+        if ((probe.stdout ?? '').includes('CONNECT_OK')) {
+          ready = true;
+          break;
+        }
+        spawnSync('sleep', ['0.25']);
+      }
+      expect(
+        ready,
+        'listener never became connectable ON THE HOST — the instrument is broken, so the assertion below would be measuring the fixture rather than the read-only root bind',
+      ).toBe(true);
+
+      const argv = sandboxArgv(['python3', '-c', CONNECT, sock], { denyNetwork: true });
       expect(run('bwrap', argv).out).toContain('CONNECT_OK');
+
+      // CONTROL — a socket inode that EXISTS but has nothing listening must read as a
+      // FAILURE through this same path. This is the exact state that produced the original
+      // false red, so pinning it keeps that shape detectable instead of mistakable for a
+      // mount problem; it also refutes a probe that printed CONNECT_OK unconditionally.
+      spawnSync('python3', [
+        '-c',
+        'import socket,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(sys.argv[1])',
+        deadSock,
+      ]);
+      const control = run('bwrap', sandboxArgv(['python3', '-c', CONNECT, deadSock], { denyNetwork: true }));
+      expect(control.out).toContain('CONNECT_FAIL');
+      expect(control.out).not.toContain('CONNECT_OK');
     } finally {
       if (pid > 0) spawnSync('kill', [String(pid)]);
       rmSync(sock, { force: true });
+      rmSync(deadSock, { force: true });
     }
   }, 120_000);
 
