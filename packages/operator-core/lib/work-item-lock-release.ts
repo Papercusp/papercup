@@ -13,6 +13,8 @@ import { ensureBootstrap, getTxPool, readQueue, tryRelease } from './agent-tools
 export interface ReclaimWorkItemLocksParams {
   ownerId: string | null | undefined;
   paths: readonly string[] | null | undefined;
+  /** The reclaimed work-item id; new lock rows are matched by this durable ref. */
+  goalRef?: string | null | undefined;
 }
 
 export interface ReclaimWorkItemLockRelease {
@@ -34,6 +36,7 @@ type ActiveLock = {
   lock_id: string;
   owner: string;
   path: string;
+  goal_ref: string | null;
 };
 
 /** Keep only concrete, non-blank paths and preserve their declaration order. */
@@ -61,7 +64,8 @@ export async function releaseReclaimedWorkItemLocks(
   if (!ownerId) return { releases: [], failures: 0, skipped: 'missing-owner' };
 
   const paths = normalizeReclaimPaths(params.paths);
-  if (paths.length === 0) return { releases: [], failures: 0, skipped: 'no-paths' };
+  const goalRef = typeof params.goalRef === 'string' ? params.goalRef.trim() : '';
+  if (paths.length === 0 && !goalRef) return { releases: [], failures: 0, skipped: 'no-paths' };
   const targetPaths = new Set(paths);
 
   let activeLocks: ActiveLock[];
@@ -76,13 +80,19 @@ export async function releaseReclaimedWorkItemLocks(
     return { releases: [], failures: 1, skipped: null };
   }
 
+  // New rows are selected by owner + goal_ref, so a pathless work-item reclaim
+  // cannot strand its locks or touch another concurrent item held by the same
+  // owner. Legacy NULL rows retain the declared-path fallback only.
   // A single locks:acquire may own several paths under one lock_id. Grouping is
   // required so tryRelease can delete only the declared subset, not the whole
   // lock set; including the domain prevents cross-tree UUID collisions in the
   // diagnostic snapshot.
   const groups = new Map<string, { coordinationDomain: string; lockId: string; paths: string[] }>();
   for (const row of activeLocks) {
-    if (row.owner !== ownerId || !targetPaths.has(row.path)) continue;
+    if (row.owner !== ownerId) continue;
+    const matchesGoal = Boolean(goalRef) && row.goal_ref === goalRef;
+    const matchesLegacyPath = row.goal_ref == null && targetPaths.has(row.path);
+    if (!matchesGoal && !matchesLegacyPath) continue;
     const key = `${row.coordination_domain}\0${row.lock_id}`;
     const group = groups.get(key) ?? {
       coordinationDomain: row.coordination_domain,
