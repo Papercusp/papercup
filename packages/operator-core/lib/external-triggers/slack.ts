@@ -35,7 +35,15 @@ export const SLACK_APP_MANIFEST_TEMPLATE = {
   },
   oauth_config: {
     scopes: {
-      bot: ['app_mentions:read', 'channels:history', 'groups:history', 'im:history', 'mpim:history', 'commands'],
+      bot: [
+        'app_mentions:read',
+        'channels:history',
+        'groups:history',
+        'im:history',
+        'mpim:history',
+        'commands',
+        'chat:write',
+      ],
     },
   },
   settings: {

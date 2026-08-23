@@ -27,13 +27,16 @@ function source(overrides: Partial<ExternalTriggerSourceRow> = {}): ExternalTrig
 }
 
 describe('Slack external-trigger adapter', () => {
-  it('ships a Socket Mode manifest with the exact event and history scopes', () => {
+  it('ships a Socket Mode manifest with the event, history, command, and reply scopes', () => {
     expect(SLACK_APP_MANIFEST_TEMPLATE.settings).toMatchObject({
       socket_mode_enabled: true,
       event_subscriptions: { bot_events: ['app_mention', 'message.im'] },
     });
     expect(SLACK_APP_MANIFEST_TEMPLATE.oauth_config.scopes.bot).toEqual(expect.arrayContaining([
       'app_mentions:read', 'channels:history', 'groups:history', 'im:history', 'mpim:history', 'commands',
+      // The flagship below calls chat.postMessage; without this the canonical
+      // generated app can ingest a mention but fails its reply with missing_scope.
+      'chat:write',
     ]));
   });
 
