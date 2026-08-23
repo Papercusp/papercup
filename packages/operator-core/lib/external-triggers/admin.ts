@@ -39,8 +39,15 @@ export interface CreatedExternalTriggerSource {
 
 export interface CreateExternalTriggerBindingInput {
   sourceId: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  /** Plan target — required unless `goalId` is given (exactly one target, migration 921). */
+  planHarnessSlug?: string | null;
+  planSlug?: string | null;
+  /**
+   * Goal target (work-on-everything-goal-2026-08-23 P-020): the binding's
+   * matches ACTIVATE this goal (action type `start-goal`, dispatched through
+   * `startGoalById`) instead of launching a plan.
+   */
+  goalId?: string | null;
   eventPattern: string;
   eventFilter?: Record<string, unknown>;
   stormPolicy?: Record<string, unknown>;
@@ -51,8 +58,10 @@ export interface CreatedExternalTriggerBinding {
   id: string;
   sourceId: string;
   sourceKind: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  /** Null on a goal-targeted binding (exactly one of plan / goal, migration 921). */
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
@@ -571,8 +580,8 @@ export async function loadExternalTriggerRunVisibilities(
   return rows.map(mapRunVisibility);
 }
 
-function required(value: string, field: string): string {
-  const normalized = value.trim();
+function required(value: string | null | undefined, field: string): string {
+  const normalized = value?.trim() ?? '';
   if (!normalized) throw new Error(`external_trigger_${field}_required`);
   return normalized;
 }
@@ -634,8 +643,14 @@ export async function createExternalTriggerBinding(
 ): Promise<CreatedExternalTriggerBinding> {
   const ws = required(workspaceId, 'workspace_id');
   const sourceId = required(input.sourceId, 'source_id');
-  const planHarnessSlug = required(input.planHarnessSlug, 'plan_harness_slug');
-  const planSlug = required(input.planSlug, 'plan_slug');
+  const goalId = input.goalId?.trim() || null;
+  // Exactly one target (mirrors migration 921's CHECK, refused here so the
+  // caller gets a named error instead of a constraint violation).
+  const planGiven = Boolean(input.planSlug?.trim() || input.planHarnessSlug?.trim());
+  if (goalId && planGiven) throw new Error('external_trigger_binding_both_targets');
+  if (!goalId && !planGiven) throw new Error('external_trigger_binding_no_target');
+  const planHarnessSlug = goalId ? null : required(input.planHarnessSlug, 'plan_harness_slug');
+  const planSlug = goalId ? null : required(input.planSlug, 'plan_slug');
   const eventPattern = required(input.eventPattern, 'event_pattern');
   const sources = await sql<Array<{ kind: string }>>`
     SELECT kind FROM harness_shared.trigger_sources
@@ -646,17 +661,26 @@ export async function createExternalTriggerBinding(
   if (!eventPattern.startsWith(expectedPrefix)) {
     throw new Error(`external_trigger_pattern_source_mismatch:${expectedPrefix}`);
   }
-  const plans = await sql<Array<{ exists: boolean }>>`
-    SELECT EXISTS (
-      SELECT 1 FROM harness_shared.harness_plans
-       WHERE workspace_id = ${ws}
-         AND harness_slug = ${planHarnessSlug}
-         AND plan_slug = ${planSlug}
-    ) AS exists`;
-  if (!plans[0]?.exists) throw new Error(`external_trigger_unknown_plan:${planHarnessSlug}/${planSlug}`);
+  if (goalId) {
+    const goals = await sql<Array<{ exists: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM harness_shared.goals
+         WHERE workspace_id = ${ws} AND id = ${goalId}
+      ) AS exists`;
+    if (!goals[0]?.exists) throw new Error(`external_trigger_unknown_goal:${goalId}`);
+  } else {
+    const plans = await sql<Array<{ exists: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM harness_shared.harness_plans
+         WHERE workspace_id = ${ws}
+           AND harness_slug = ${planHarnessSlug}
+           AND plan_slug = ${planSlug}
+      ) AS exists`;
+    if (!plans[0]?.exists) throw new Error(`external_trigger_unknown_plan:${planHarnessSlug}/${planSlug}`);
+  }
 
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
-  const action = JSON.stringify({ type: 'launch-plan' });
+  const action = JSON.stringify({ type: goalId ? 'start-goal' : 'launch-plan' });
   // A binding with no explicit storm policy is UNBOUNDED under the landed
   // default (parseStormPolicy yields maxRuns:null). That is tolerable for mail,
   // where volume is bounded by how fast humans write, and unsafe for social,
@@ -678,10 +702,10 @@ export async function createExternalTriggerBinding(
     >
   >`
     INSERT INTO harness_shared.trigger_bindings
-      (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+      (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id, event_pattern,
        event_filter, action, armed, storm_policy, created_by)
     VALUES (
-      ${ws}, ${sourceId}::uuid, ${planHarnessSlug}, ${planSlug}, ${eventPattern},
+      ${ws}, ${sourceId}::uuid, ${planHarnessSlug}, ${planSlug}, ${goalId}, ${eventPattern},
       ${eventFilter}::text::jsonb, ${action}::text::jsonb, FALSE,
       ${stormPolicyJson}::text::jsonb, ${input.createdBy?.trim() || null}
     )
@@ -689,6 +713,7 @@ export async function createExternalTriggerBinding(
               source_id::text AS "sourceId",
               plan_harness_slug AS "planHarnessSlug",
               plan_slug AS "planSlug",
+              goal_id AS "goalId",
               event_pattern AS "eventPattern",
               event_filter AS "eventFilter",
               action,
@@ -724,6 +749,10 @@ export async function ensureExternalTriggerBinding(
 ): Promise<CreatedExternalTriggerBinding> {
   const ws = required(workspaceId, 'workspace_id');
   const sourceId = required(input.sourceId, 'source_id');
+  // Plan-only by design: this door serves connection-time provisioning of the
+  // built-in plan bindings. A goal binding has no such provisioning caller —
+  // use createExternalTriggerBinding directly (P-020).
+  if (input.goalId?.trim()) throw new Error('external_trigger_goal_binding_ensure_unsupported');
   const planHarnessSlug = required(input.planHarnessSlug, 'plan_harness_slug');
   const planSlug = required(input.planSlug, 'plan_slug');
   const eventPattern = required(input.eventPattern, 'event_pattern');
@@ -753,6 +782,7 @@ export async function ensureExternalTriggerBinding(
              s.kind AS "sourceKind",
              b.plan_harness_slug AS "planHarnessSlug",
              b.plan_slug AS "planSlug",
+             b.goal_id AS "goalId",
              b.event_pattern AS "eventPattern",
              b.event_filter AS "eventFilter",
              b.action,
