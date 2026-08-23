@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 802,
+  "count": 803,
   "tools": [
     {
       "name": "ablation:report",
@@ -13795,6 +13795,40 @@
       }
     },
     {
+      "name": "inbox:bulk-run-act",
+      "http": {
+        "path": "/api/agent-tools/inbox/bulk-run-act",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Take ONE terminal action for a BULK RESOLVE run. This is the only verb allowed to create an `auto_resolved` outcome: it locks the run row as a revocable authority token, re-validates that the item still offers the terminal action, dispatches through the exact same shared action map as the Inbox button, writes the REQUIRED attention-triage audit row, records the item outcome, and recomputes counters before releasing the lock. If the owner Stop won first, the action callback is never entered.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "You have direct evidence for one item and will take a terminal action on the owner's behalf. Call once per action; use inbox:bulk-run-report only for recommended/skipped/failed records.",
+        "notWhen": "The option only navigates (discuss/answer/open/chat/view-log), the item no longer offers it, or you only want to recommend it for owner review."
+      }
+    },
+    {
       "name": "inbox:bulk-run-manifest",
       "http": {
         "path": "/api/agent-tools/inbox/bulk-run-manifest",
@@ -13836,7 +13870,7 @@
           "POST"
         ]
       },
-      "description": "Report per-item outcomes for a BULK RESOLVE run. `auto_resolved` = you took the terminal action (rationale REQUIRED — it is the audit note for something done on the owner's behalf, and an attention_triage record is written alongside it); `recommended` = pre-select an option for the owner's review list with a ≤2-sentence why; `skipped` / `failed` = record the reason, never a blank. An `actionId` that the item does not actually offer, or that only opens a sub-surface (discuss/answer/open/chat/view-log), is REJECTED for that item alone — the rest still land. Re-reporting the same item overwrites it (that is the intended path when a consulted asker answers late); the run counters are derived from the rows, never incremented, so it cannot double-count.",
+      "description": "Report non-action outcomes for a BULK RESOLVE run: `recommended` = pre-select an option for the owner's review list with a ≤2-sentence why; `skipped` / `failed` = record the reason, never a blank. This verb CANNOT claim `auto_resolved`; terminal effects must go through inbox:bulk-run-act so run authority, dispatch, audit, outcome and counters are serialized. An `actionId` that the item does not actually offer is rejected for that item alone — the rest still land. Re-reporting the same item overwrites it; counters are derived from rows, never incremented.",
       "capabilities": [
         "coord:write"
       ],
