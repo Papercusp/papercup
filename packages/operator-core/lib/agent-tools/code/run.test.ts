@@ -623,6 +623,11 @@ describe('code:run → similarRecipes result shaping', () => {
         title: 'Captured recipe',
         description: 'Captured during the test',
         script: 'return { delivered: true };',
+        // null on both = a legacy recipe with no versioned runtime-input contract, which is
+        // exactly what a capture-time fixture is. Stated rather than omitted: both fields are
+        // required on CodeRecipeRow, and `null` is their documented "legacy" value.
+        bindingSchema: null,
+        capabilityManifest: null,
         potSlug: 'alpha',
         authorRole: 'su',
         toolsUsed: [],
