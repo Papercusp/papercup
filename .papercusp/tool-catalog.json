@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 796,
+  "count": 798,
   "tools": [
     {
       "name": "ablation:report",
@@ -25965,6 +25965,39 @@
       }
     },
     {
+      "name": "social:read",
+      "http": {
+        "path": "/api/agent-tools/social/read",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read one social post the owner already has, by its canonical postId (\"<platform>:<id>\"). Returns the text, author, audience and whether replying is currently possible. Scoped to the owner's own vault, so an id that is not theirs simply is not found.",
+      "capabilities": [
+        "search:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need the full text of a post before answering it, or to confirm what a postId actually refers to.",
+        "notWhen": "Finding a post you cannot already name — that is social:search, which also mints the postId this takes.",
+        "chaining": "social:search → postId → social:read → social:reply. Check `replyable.allowed` before drafting: some platforms are readable but not yet writable."
+      }
+    },
+    {
       "name": "social:reply",
       "http": {
         "path": "/api/agent-tools/social/reply",
@@ -25992,9 +26025,42 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner asks you to answer a specific post. Locate it with personal:search and pass the returned canonical ref as postId.",
+        "when": "The owner asks you to answer a specific post. Locate it with social:search and pass the postId it returns, verbatim.",
         "notWhen": "Posting something NEW, or to a community rather than a thread — that is social:post, which checks the destination. Not for email (mail:reply) or Slack (chat:reply).",
-        "chaining": "personal:search → postId → social:reply. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it."
+        "chaining": "social:search → postId → social:reply. Never assemble a postId from a platform and an id yourself. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it."
+      }
+    },
+    {
+      "name": "social:search",
+      "http": {
+        "path": "/api/agent-tools/social/search",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Search the owner's social posts across every connected platform at once. Each hit carries a ready-to-use canonical postId — pass it to social:read or social:reply UNCHANGED; never build one yourself from the platform and id.",
+      "capabilities": [
+        "search:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Grounding a reply in prior context, or locating the post the owner is referring to.",
+        "notWhen": "Mail, calendar or contacts context — that is personal:search. General workspace memory is memory:search.",
+        "chaining": "social:search → take a hit's postId verbatim → social:read / social:reply. Read `skipped` before reporting nothing was found, and `scopesSearched` for which platforms were actually covered."
       }
     },
     {

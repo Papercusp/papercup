@@ -304,9 +304,13 @@ export interface A11yNode {
  */
 function parseSentinelPayload(stdout: string): Record<string, unknown> | null {
   const lines = (stdout ?? '').split('\n');
-  // Scan from the END: the sentinel line is the last thing printed, and a GTK app
-  // can emit warnings AFTER it that happen to contain the sentinel in a quoted
-  // error string.
+  // Scan from the END, and take the LAST sentinel line. Both programs print theirs as
+  // the final thing they do, while the toolkit's own chatter (Gtk-CRITICAL, a11y bus
+  // warnings) is emitted BEFORE it, during init — so the last one is ours.
+  //
+  // The honest limit: anything printing a quoted sentinel AFTER us would win. Nothing
+  // does, because our programs exit immediately afterwards, and preferring the last
+  // line is what makes init noise harmless — which is the failure that actually occurs.
   for (let i = lines.length - 1; i >= 0; i--) {
     const at = lines[i]!.indexOf(ATSPI_SENTINEL);
     if (at < 0) continue;

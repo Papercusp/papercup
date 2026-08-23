@@ -69,7 +69,7 @@ const ZERO_COUNTS = (): DagFrontierCounts => ({
 /**
  * Classify one plan item's disposition. Precedence (highest first):
  *   terminal (done / dropped) > claimed (a live holder) > wip (in-flight but
- *   unclaimed) > blocked (unsatisfied deps) > ready (todo, deps met — the
+ *   unclaimed) > blocked (sticky status or unsatisfied deps) > ready (todo, deps met — the
  *   frontier the spawner admits from). Pure.
  */
 export function classifyDagItem(item: DagFrontierItem, claimedBy: string | null): DagItemStatus {
@@ -78,6 +78,10 @@ export function classifyDagItem(item: DagFrontierItem, claimedBy: string | null)
   if (s === 'dropped') return 'dropped';
   if (claimedBy) return 'claimed';
   if (s === 'wip') return 'wip';
+  // A plan item can be canonically blocked by an external/sticky gate even when
+  // its dependency list is satisfied. Preserve that effective status instead of
+  // treating the item as a placeable frontier row.
+  if (s === 'blocked') return 'blocked';
   const unresolved = item.unresolvedBlockers ?? [];
   if (unresolved.length > 0) return 'blocked';
   return 'ready';

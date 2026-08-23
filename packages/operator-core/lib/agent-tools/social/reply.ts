@@ -15,11 +15,11 @@ export default defineTool({
   description:
     'Reply to one social post the owner already has, named by its canonical postId ("<platform>:<id>"). You supply TEXT ONLY: the server resolves the account, thread, credential and audience from the stored post, so this tool cannot redirect a reply, choose which identity speaks, or widen who sees it.',
   guidance: {
-    when: 'The owner asks you to answer a specific post. Locate it with personal:search and pass the returned canonical ref as postId.',
+    when: 'The owner asks you to answer a specific post. Locate it with social:search and pass the postId it returns, verbatim.',
     notWhen:
       'Posting something NEW, or to a community rather than a thread — that is social:post, which checks the destination. Not for email (mail:reply) or Slack (chat:reply).',
     chaining:
-      'personal:search → postId → social:reply. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it.',
+      'social:search → postId → social:reply. Never assemble a postId from a platform and an id yourself. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it.',
   },
   args: z
     .object({

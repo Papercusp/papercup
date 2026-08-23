@@ -13,6 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  collectSocialHits,
   mintSocialPostRef,
   platformIdForScope,
   selectGrantedSocialScopes,
@@ -21,6 +22,7 @@ import {
   SocialSearchNotGranted,
   searchSocialPosts,
 } from './social-read';
+import type { PersonalSearchResult } from '../personal-vault/types';
 import { formatSocialPostRef, parseSocialPostRef } from './social';
 import { listSocialPlatforms } from '../external-triggers/social/platform-registry';
 
@@ -214,6 +216,27 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
   const workspaceId = 'ws-test';
   const userId = '00000000-0000-0000-0000-000000000001';
 
+  /** A store row with only the fields the mapping reads; the rest are inert defaults. */
+  function storeRow(over: Partial<PersonalSearchResult>): PersonalSearchResult {
+    return {
+      id: 'row-1',
+      source: 'reddit',
+      scopeKey: 'personal:reddit',
+      kind: 'social-post',
+      externalId: 't3_abc123',
+      occurredAt: '2026-08-23T00:00:00.000Z',
+      participants: [],
+      participantIds: [],
+      title: '',
+      snippet: '',
+      metadata: {},
+      score: 1,
+      lexicalRank: 1,
+      vectorRank: null,
+      ...over,
+    };
+  }
+
   /** A stand-in for the store call, so the scoping contract is testable without a database. */
   function fakeSql(rows: unknown[]) {
     const calls: unknown[][] = [];
@@ -234,6 +257,59 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
         grantedScopes: ['personal:gmail', 'personal:calendar'],
       }),
     ).rejects.toBeInstanceOf(SocialSearchNotGranted);
+  });
+
+  it('mints a usable ref for every returned hit', () => {
+    const { hits, skipped } = collectSocialHits([
+      storeRow({ source: 'reddit', externalId: 't3_abc123', title: 'On rails' }),
+      storeRow({ source: 'mastodon', externalId: '109999', title: 'Federated' }),
+    ]);
+    expect(skipped).toEqual([]);
+    expect(hits.map((h) => h.postId)).toEqual(['reddit:t3_abc123', 'mastodon:109999']);
+    // The contract an agent depends on: the ref it received parses back to the
+    // row it was shown, so it can be passed onward untouched.
+    for (const hit of hits) {
+      expect(parseSocialPostRef(hit.postId).platform).toBe(hit.platform);
+    }
+  });
+
+  it('COUNTS unmintable rows by reason instead of silently dropping them', () => {
+    // A search that quietly discards matches is indistinguishable from one that
+    // found nothing — and that difference is what an agent concludes the owner
+    // never posted about it from.
+    const { hits, skipped } = collectSocialHits([
+      storeRow({ source: 'reddit', externalId: 't3_ok' }),
+      storeRow({ source: 'gmail', externalId: '18f2a1b9c' }),
+      storeRow({ source: 'reddit', externalId: null }),
+      storeRow({ source: 'reddit', externalId: '  t3_padded' }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(new Map(skipped.map((s) => [s.reason, s.count]))).toEqual(
+      new Map([
+        ['not-a-social-platform', 1],
+        ['external-id-missing', 1],
+        ['ref-does-not-round-trip', 1],
+      ]),
+    );
+  });
+
+  it('carries the reply verdict onto each hit', () => {
+    const { hits } = collectSocialHits([
+      storeRow({ source: 'bluesky', externalId: 'at://did:plc:x/app.bsky.feed.post/1' }),
+    ]);
+    expect(hits[0]?.replyable.allowed).toBe(false);
+    expect(hits[0]?.replyable.reason).toBe('write-unverified');
+  });
+
+  it('reads the author from the payload, falling back to the participants', () => {
+    const [withHandle] = collectSocialHits([
+      storeRow({ source: 'reddit', externalId: 't3_a', metadata: { authorHandle: '@ada' } }),
+    ]).hits;
+    expect(withHandle?.author).toBe('@ada');
+    const [withParticipant] = collectSocialHits([
+      storeRow({ source: 'reddit', externalId: 't3_b', participants: ['grace'] }),
+    ]).hits;
+    expect(withParticipant?.author).toBe('grace');
   });
 
   it('REFUSES a platform filter that reaches outside the grant', async () => {

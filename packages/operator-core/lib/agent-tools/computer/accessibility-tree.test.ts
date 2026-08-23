@@ -22,6 +22,7 @@ import {
   actionCommand,
   parseA11yBusAddress,
   parseWalkerOutput,
+  parseA11yActionOutput,
   screenBoundsAreTrustworthy,
   ATSPI_ACTION_JS,
   HOST_BUS_ENV_KEYS,
@@ -109,6 +110,53 @@ describe('parseWalkerOutput', () => {
       `${ATSPI_SENTINEL}{"ok":true,"init":0,"apps":2,"nodes":[]}`,
     ].join('\n');
     expect(parseWalkerOutput(out)?.apps).toBe(2);
+  });
+});
+
+// WI-40906 — the walk and the activation programs print the SAME sentinel with
+// DIFFERENT payloads. Parsing one with the other's parser type-checks behind a cast and
+// is silently always-wrong: `computer:click_element` used parseWalkerOutput, which
+// requires a `nodes` array an action payload never has, so it returned null for every
+// successful activation and the tool reported failure unconditionally. These assert the
+// two are mutually exclusive, which is the property that makes the confusion impossible
+// rather than merely fixed at one call site.
+describe('parseA11yActionOutput', () => {
+  const ACTION = '@@ATSPI@@{"ok":true,"role":"push button","name":"Cancel","performed":"click","result":true}';
+  const WALK = '@@ATSPI@@{"apps":1,"nodes":[{"p":"0","r":"application","n":"a"}]}';
+
+  it('parses a real activation payload', () => {
+    expect(parseA11yActionOutput(ACTION)).toMatchObject({ ok: true, performed: 'click', name: 'Cancel' });
+  });
+
+  it('parses a FAILED activation rather than treating it as unparseable', () => {
+    // ok:false is a real answer carrying the reason; conflating it with "no sentinel"
+    // would throw away the only diagnostic the program emits.
+    expect(parseA11yActionOutput('@@ATSPI@@{"ok":false,"error":"no such ref"}')).toMatchObject({
+      ok: false,
+      error: 'no such ref',
+    });
+  });
+
+  it('REFUSES a walk payload', () => {
+    expect(parseA11yActionOutput(WALK)).toBeNull();
+  });
+
+  it('and parseWalkerOutput REFUSES an action payload', () => {
+    // The direction that actually shipped broken.
+    expect(parseWalkerOutput(ACTION)).toBeNull();
+  });
+
+  it('returns null when there is no sentinel at all', () => {
+    expect(parseA11yActionOutput('Gtk-CRITICAL **: some warning\n')).toBeNull();
+  });
+
+  it('reads past toolkit noise printed BEFORE the result', () => {
+    // The failure that actually occurs: GTK chatters during init, then our program
+    // prints its sentinel last. Taking the LAST sentinel line is what makes that
+    // harmless — the documented trade-off is that anything printing a quoted sentinel
+    // after us would win, which nothing does because the program then exits.
+    const out = `Gtk-CRITICAL **: cannot open display\nsome other noise\n${ACTION}\n`;
+    expect(parseA11yActionOutput(out)).toMatchObject({ ok: true, performed: 'click' });
   });
 });
 

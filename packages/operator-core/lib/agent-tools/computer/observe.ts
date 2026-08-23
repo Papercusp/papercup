@@ -28,6 +28,7 @@ import {
   findByRef,
   parseA11yBusAddress,
   parseWalkerOutput,
+  parseA11yActionOutput,
   renderA11yTree,
   screenBoundsAreTrustworthy,
   walkerCommand,

@@ -45,6 +45,7 @@ import {
   isInteractive,
   parseA11yBusAddress,
   parseWalkerOutput,
+  parseA11yActionOutput,
   renderA11yTree,
   screenBoundsAreTrustworthy,
   walkerCommand,
@@ -238,7 +239,10 @@ describe.skipIf(!LIVE)('accessibility observation — live', () => {
 
     const cmd = actionCommand(d.display, bus, cancel[0]!.ref, 'click');
     const res = run(cmd.bin, cmd.args, cmd.env);
-    const acted = parseWalkerOutput(res.out) as unknown as { ok?: boolean; performed?: string; error?: string } | null;
+    // Not parseWalkerOutput: the two programs share a sentinel but not a shape, and
+    // reaching for the walk parser here is exactly the bug this test caught (it needs
+    // a `nodes` array, so it returns null for every successful activation).
+    const acted = parseA11yActionOutput(res.out);
     // eslint-disable-next-line no-console
     console.log(`[P-007] activate #${cancel[0]!.ref} "${cancel[0]!.name}" -> ${JSON.stringify(acted)}`);
     expect(acted?.ok, `activation failed: ${acted?.error ?? res.err.slice(0, 300)}`).toBe(true);

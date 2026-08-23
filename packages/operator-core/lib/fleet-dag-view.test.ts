@@ -33,6 +33,9 @@ describe('classifyDagItem — per-item disposition precedence', () => {
   it('wip (in-flight, unclaimed) over blocked/ready', () => {
     expect(classifyDagItem({ id: 'A', effectiveStatus: 'wip', unresolvedBlockers: ['B'] }, null)).toBe('wip');
   });
+  it('canonical blocked status stays blocked even when dependencies are satisfied', () => {
+    expect(classifyDagItem({ id: 'A', effectiveStatus: 'blocked', unresolvedBlockers: [] }, null)).toBe('blocked');
+  });
   it('unresolved blockers ⇒ blocked; none ⇒ ready (the frontier)', () => {
     expect(classifyDagItem({ id: 'A', effectiveStatus: 'todo', unresolvedBlockers: ['B'] }, null)).toBe('blocked');
     expect(classifyDagItem({ id: 'A', effectiveStatus: 'todo', unresolvedBlockers: [] }, null)).toBe('ready');
