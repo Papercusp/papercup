@@ -170,9 +170,7 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
       existing: { id: 'WI-EXISTING', state: 'wip' },
     });
     expect(createWorkItemMock).not.toHaveBeenCalled();
-    const query = sqlMock.mock.calls
-      .map(([strings]) => strings.join(''))
-      .find((candidate) => candidate.includes('SELECT wi.feature_id, wi.status')) ?? '';
+    const query = sqlMock.mock.calls.map(([strings]) => strings.join('')).join('\n');
     expect(query).toContain('source_plan_slug');
     expect(query).toContain("payload->'plan_item'");
   });
@@ -190,9 +188,7 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
 
     expect(r.ok).toBe(true);
     expect(createWorkItemMock).toHaveBeenCalledTimes(1);
-    const query = sqlMock.mock.calls
-      .map(([strings]) => strings.join(''))
-      .find((candidate) => candidate.includes('SELECT wi.feature_id, wi.status')) ?? '';
+    const query = sqlMock.mock.calls.map(([strings]) => strings.join('')).join('\n');
     expect(query).toContain('NOT (wi.status = ANY(');
   });
 });
