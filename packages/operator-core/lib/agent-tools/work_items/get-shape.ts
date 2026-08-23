@@ -242,6 +242,9 @@ function projectWorkItem(
     state: w.state ?? null,
     title: clip(w.title, caps.title),
     severity: w.severity ?? null,
+    // Provenance is part of the reduced identity: callers need to know whether a
+    // locally impossible mutation will be refused before acting on this row.
+    origin: w.origin ?? null,
     // P-004 / EI-21045022565500932: lifecycle terminality and completion authority are
     // orthogonal. Keep the authority verdict in the reduced identity projection so a
     // trimmed read cannot turn a verified terminal close into an apparent evidence gap.
@@ -630,7 +633,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
                 dropped.has("workItem.summary")
                   ? "⚠ The SUMMARY was dropped — you have this item's TITLE and no sentence of its body. A title is a LABEL: do not act on it. Re-read before deciding anything. "
                   : ""
-              }Fields above were dropped or clipped to fit the '${tier}' payload tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
+              }Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
             },
           }
         : {}),
