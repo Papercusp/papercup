@@ -154,12 +154,15 @@ describe('InstagramCommentsAdapter — P-003 conformance', () => {
     expect(report.failures.map((f) => `${f.check}: ${f.detail}`).join(' || ')).toBe('');
   });
 
-  it('passes the kit with a SMALL cap, where the window overflows constantly', async () => {
-    // The adapter now reports loss on most passes. That must not make it
-    // non-conformant: declaring a known gap is correct behaviour, and the kit
-    // should still see a coherent adapter.
+  it('CONTROL: under a cap TIGHTER than the kit publishes, the kit FAILS it — and is right to', async () => {
+    // This started as an assertion that the kit still passes under a small cap.
+    // It does not, and the kit is correct: with a cap of 2 and 3 comments
+    // published, the adapter genuinely cannot deliver the third. Keeping the
+    // inverted assertion is worth more than deleting the case, because it pins
+    // the boundary — conformance is not "the adapter tried its best", it is
+    // "every published event arrived", and a capped provider can violate that.
     const report = await runSocialAdapterConformance(harness({ maxPerQuery: 2 }));
-    expect(report.failures.map((f) => `${f.check}: ${f.detail}`).join(' || ')).toBe('');
+    expect(report.failures.map((f) => f.check)).toContain('cold-start');
   });
 });
 
@@ -224,15 +227,47 @@ describe('capped, unpageable window (D-031)', () => {
     expect(instagramWindowOverflowed(short, ancient, 5)).toBe(false);
   });
 
-  it('a COLD START never reports loss, by definition rather than by luck', async () => {
-    // With no watermark there is nothing to have fallen behind. A full first
-    // page is the documented starting position, not a gap.
+  it('a COLD START with more history than the cap DOES report loss', async () => {
+    // I first wrote this test asserting the opposite — that a cold start is
+    // exempt "by definition", since with no watermark there is no gap to bridge.
+    // The conformance kit falsified it: with 20 comments and a cap of 3, the
+    // adapter reaches 3 and the other 17 are exactly as unreachable as any
+    // mid-stream overflow. The exemption confused INTENT (we meant to start
+    // recent) with DATA (we cannot see the rest), and it would have declared the
+    // worst case healthy.
     const world = makeWorld({ maxPerQuery: 3 });
     publishComments(world, 20);
     const { result } = await drain(newAdapter(world), null);
 
     expect(result.path).toBe('cold-start');
+    expect(result.lossRisk?.occurrences).toBe(1);
+    expect(result.lossRisk?.detail).toContain('truncated at the cap');
+  });
+
+  it('a cold start SHORTER than the cap reports nothing — the exemption was over-broad, not wrong-headed', async () => {
+    // The half of the original reasoning that survives: when the account's whole
+    // history fits in one window, a first read really is complete.
+    const world = makeWorld({ maxPerQuery: 10 });
+    publishComments(world, 4);
+    const { result } = await drain(newAdapter(world), null);
+
+    expect(result.path).toBe('cold-start');
     expect(result.lossRisk).toBeUndefined();
+  });
+
+  it('the two cases give DIFFERENT explanations, because the remedies differ', async () => {
+    const cold = makeWorld({ maxPerQuery: 3 });
+    publishComments(cold, 9);
+    const coldStart = await drain(newAdapter(cold), null);
+
+    const warm = makeWorld({ maxPerQuery: 3 });
+    publishComments(warm, 1);
+    const first = await drain(newAdapter(warm), null);
+    publishComments(warm, 9);
+    const overflow = await drain(newAdapter(warm), first.result.cursor);
+
+    expect(coldStart.result.lossRisk?.detail).toContain('watched-from-now');
+    expect(overflow.result.lossRisk?.detail).toContain('Poll more often');
   });
 
   it('counts loss PER MEDIA, so one busy thread does not hide behind a quiet one', async () => {

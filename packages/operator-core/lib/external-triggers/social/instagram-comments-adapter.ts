@@ -123,17 +123,23 @@ export function normalizeInstagramComment(
     occurredAt: comment.timestamp ?? null,
     dedupeKey: instagramCommentDedupeKey(comment),
     payload: {
-      platform: 'instagram',
-      kind: instagramCommentEventName(comment),
+      // The canonical `social-post` field names (D-004), not Instagram's. An
+      // OPTIONAL field the vendor did not give us is OMITTED rather than set to
+      // null: the schema types `url` as a string, so a null would be a schema
+      // violation dressed up as completeness — and the conformance kit's payload
+      // check catches exactly that.
       id: comment.id,
       text: comment.text ?? '',
-      authorHandle: comment.username ?? null,
-      createdAt: comment.timestamp ?? null,
-      inReplyTo: comment.parent_id ?? null,
+      occurredAt: comment.timestamp,
+      ...(comment.username ? { author: comment.username } : {}),
+      ...(comment.parent_id ? { replyToId: comment.parent_id } : {}),
+      // Platform-specific extras ride alongside (the datatype allows them) so a
+      // plan can act on them without a second fetch.
+      platform: 'instagram',
+      kind: instagramCommentEventName(comment),
       subjectId: mediaId,
-      url: null,
-      metrics: typeof comment.like_count === 'number' ? { likes: comment.like_count } : {},
-      hidden: comment.hidden === true,
+      ...(typeof comment.like_count === 'number' ? { likeCount: comment.like_count } : {}),
+      ...(comment.hidden === true ? { hidden: true } : {}),
     },
   };
 }
@@ -244,21 +250,33 @@ export class InstagramCommentsAdapter implements SocialAdapter {
       cursor,
       emitted,
       ...this.declarePath(hadStoredCursor, hadStoredCursor && stored === null),
-      ...(overflows > 0 ? { lossRisk: this.declareLoss(overflows, overflowed) } : {}),
+      ...(overflows > 0 ? { lossRisk: this.declareLoss(overflows, overflowed, stored === null) } : {}),
     };
   }
 
-  private declareLoss(occurrences: number, mediaIds: readonly string[]): SocialLossRisk {
+  private declareLoss(
+    occurrences: number,
+    mediaIds: readonly string[],
+    coldStart: boolean,
+  ): SocialLossRisk {
     const shown = mediaIds.slice(0, 5).join(', ');
     const more = mediaIds.length > 5 ? ` (+${mediaIds.length - 5} more)` : '';
+    // The condition is the same in both cases and the remedy is not, so the
+    // caller is told which one it is rather than left to infer it from `path`.
+    const because = coldStart
+      ? `history was truncated at the cap on first read: everything older than the newest ${this.maxPerQuery} was never reachable`
+      : `the oldest comment on the page is still newer than the stored watermark, so comments between the two fell off the end`;
+    const remedy = coldStart
+      ? 'This is a bounded start, not a regression — but it is a real gap, so treat the account as watched-from-now rather than fully read.'
+      : 'Poll more often, or narrow the watch window.';
     return {
       kind: 'capped-window-overflow',
       occurrences,
       detail:
-        `${occurrences} media returned a full ${this.maxPerQuery}-comment page whose oldest comment is still newer than the ` +
-        `stored watermark, so comments between the two are unreachable: the edge documents no paging and ` +
-        `"Comments cannot be filtered by timestamp". Poll more often, or narrow the watch window. Media: ${shown}${more}. ` +
-        `(Graph ${INSTAGRAM_GRAPH_VERSION}, reverse-chronological: ${instagramIsReverseChronological(INSTAGRAM_GRAPH_VERSION)})`,
+        `${occurrences} media returned a full ${this.maxPerQuery}-comment page and ${because}. The edge documents no ` +
+        `paging and states "Comments cannot be filtered by timestamp", so the gap is permanent. ${remedy} ` +
+        `Media: ${shown}${more}. (Graph ${INSTAGRAM_GRAPH_VERSION}, reverse-chronological: ` +
+        `${instagramIsReverseChronological(INSTAGRAM_GRAPH_VERSION)})`,
     };
   }
 

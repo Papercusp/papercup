@@ -430,17 +430,29 @@ export function instagramAdvanceWatermark(
  * or when its oldest item is at or older than the watermark (the window bridged
  * the gap). Both are the safe answers, and both are common.
  *
- * A cold start cannot overflow BY DEFINITION rather than by luck: with no
- * watermark there is no gap to bridge, so a full first page is simply the newest
- * 50 — which is the documented, accepted starting position, not a loss.
+ * ⚠ A COLD START IS NOT EXEMPT, and an earlier version of this function said it
+ * was. The reasoning was that with no watermark there is no gap to bridge, so a
+ * full first page is "simply the newest 50 — the accepted starting position".
+ * That confuses INTENT with DATA. If the account already has 200 comments, a
+ * capped first read reaches 50 of them and the other 150 are as unreachable as
+ * any mid-stream overflow: same cap, same absent paging, same permanence. The
+ * conformance kit caught it — under a small cap it observed the adapter
+ * under-delivering on cold start, which is precisely the case the exemption
+ * would have declared healthy.
+ *
+ * So a FULL page reports the condition either way. What differs is only the
+ * explanation a caller gets, which is why the caller is told which case it is.
  */
 export function instagramWindowOverflowed(
   page: readonly { id: string; timestamp: string }[],
   stored: InstagramWatermark | null,
   maxPerQuery: number = INSTAGRAM_COMMENTS_MAX_PER_QUERY,
 ): boolean {
-  if (stored === null) return false;
   if (page.length < maxPerQuery) return false;
+  // Cold start: a full page means history was truncated at the cap. There is no
+  // watermark to compare against, and none is needed — the page being full IS
+  // the evidence.
+  if (stored === null) return true;
 
   const mark = instagramInstantMs(stored.watermark);
   if (mark === null) return false;
