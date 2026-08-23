@@ -39,7 +39,7 @@ const contractMigration = join(
   'libs',
   'db',
   'sql',
-  '897-code-recipe-contract.sql.DRAFT',
+  '897-code-recipe-contract.sql',
 );
 
 /** A throwaway 768-dim embedding (the store only round-trips presence, not value). */
@@ -50,9 +50,8 @@ describe('code_recipes store (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    // Migration 897 remains deliberately unarmed while its consumers land.
-    // Apply the exact draft in this isolated database so store coverage and the
-    // production DDL cannot drift while the live shared DB stays untouched.
+    // Migration 897 is armed. Re-apply its idempotent DDL in this isolated
+    // database so store coverage remains bound to the production migration.
     await db.adminSql.unsafe(readFileSync(contractMigration, 'utf8')).simple();
   }, 120_000);
 
