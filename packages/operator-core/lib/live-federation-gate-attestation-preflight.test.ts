@@ -49,10 +49,17 @@ const MATRIX_PATH = join(
   'bin',
   'two-instance-content-matrix-smoke.sh',
 );
+const FROM_REPO_PATH = join(
+  ROOT,
+  'papercusp-desktop',
+  'bin',
+  'two-instance-hive-from-repo-smoke.sh',
+);
 const gate = readFileSync(GATE_PATH, 'utf8');
 const federationAsserts = readFileSync(FEDERATION_ASSERTS_PATH, 'utf8');
 const localMatrix = readFileSync(LOCAL_MATRIX_PATH, 'utf8');
 const matrix = readFileSync(MATRIX_PATH, 'utf8');
+const fromRepo = readFileSync(FROM_REPO_PATH, 'utf8');
 
 function extractFnFrom(source: string, name: string): string {
   const match = source.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?\\n\\}$`, 'm'));
@@ -204,6 +211,18 @@ describe('live-federation gate attestation write preflight', () => {
     expect(federationAsserts).toContain('probeGistWriteCapability(token)');
     expect(matrix).toContain('preflight_attestation "$P_A_USER" "$A_TOKEN"');
     expect(matrix).toContain('preflight_attestation "$P_B_USER" "$B_TOKEN"');
+  });
+
+  it('pins from-repo preflight and launch to distinct durable account roots', () => {
+    expect(fromRepo).toContain('A_IDENTITY_DIR="${PAPERCUSP_FROM_REPO_IDENTITY_DIR_A:-$MACHINE_IDENTITY_DIR/$P_A_USER}"');
+    expect(fromRepo).toContain('B_IDENTITY_DIR="${PAPERCUSP_FROM_REPO_IDENTITY_DIR_B:-$MACHINE_IDENTITY_DIR/$P_B_USER}"');
+    expect(fromRepo).toContain('A_IDENTITY_DIR="$(readlink -m -- "$A_IDENTITY_DIR")"');
+    expect(fromRepo).toContain('B_IDENTITY_DIR="$(readlink -m -- "$B_IDENTITY_DIR")"');
+    expect(fromRepo).toContain('[ "$A_IDENTITY_DIR" != "$B_IDENTITY_DIR" ]');
+    expect(fromRepo).toContain('fed_preflight_attestation_account "$P_A_USER" "$A_TOKEN" "$DESKTOP_DIR/.." "$A_IDENTITY_DIR"');
+    expect(fromRepo).toContain('fed_preflight_attestation_account "$P_B_USER" "$B_TOKEN" "$DESKTOP_DIR/.." "$B_IDENTITY_DIR"');
+    expect(fromRepo).toContain('PAPERCUSP_IDENTITY_DIR="$A_IDENTITY_DIR"');
+    expect(fromRepo).toContain('PAPERCUSP_IDENTITY_DIR="$B_IDENTITY_DIR"');
   });
 
   it('deduplicates email_unverified against the active owner wall, including needs-human', () => {
