@@ -511,20 +511,20 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
 
 /** Learning's arming teaching links now open the full-width Automations catalog.
  * The middle pane no longer owns a duplicate Agents/System automation catalog. */
-export const ARMING_AUTOMATIONS_TAB = "automations";
+export const ARMING_WORKFLOWS_TAB = "workflows";
 
 function useOpenArming(): () => void {
   const [, setDestination] = useQueryStates({
     tab: parseAsString,
-    autoView: parseAsString,
-    autoFilter: parseAsString,
+    wfView: parseAsString,
+    wfFilter: parseAsString,
   });
   return useCallback(
     () =>
       void setDestination({
-        tab: ARMING_AUTOMATIONS_TAB,
-        autoView: "catalog",
-        autoFilter: "ai",
+        tab: ARMING_WORKFLOWS_TAB,
+        wfView: "catalog",
+        wfFilter: "ai",
       }),
     [setDestination],
   );

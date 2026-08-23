@@ -256,7 +256,7 @@ const wakeArg = z
   })
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when the caller has verified a durable backstop will re-dispatch a miss — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Don't stop at woken alone: a target in manual wake-mode STAGES the wake (queued for owner review, NOT delivered) and also reports woken:0, the same scalar as a dead miss — read `wakeOutcome` ('delivered'/'partial-staged'/'staged-manual-mode'/'missed') to tell them apart. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when the caller has verified a durable backstop will re-dispatch a miss — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify `queued>0`, then confirm pickup separately) or coord:handoff. The response's `queued` count is durable wake delivery queued, NOT proof that a turn executed; `woken` stays 0 until an execution-confirming handshake exists. Read `wakeOutcome` ('queued'/'partial-staged'/'staged-manual-mode'/'missed'/'unknown') and `pickupConfirmed` to distinguish queueing from pickup. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
   );
 
 const wakeOnReplyArg = z
@@ -400,7 +400,8 @@ const noBodyRefsArg = z
   );
 
 /** P-013 (fleet-leadership-continuity): the SIDE EFFECT this directive requires.
- *  `woken:1` proves a session woke; `expects`/`expectsReply` proves they answered.
+ *  `queued:1` proves a durable wake delivery was queued; it does not prove a session
+ *  started a turn. `expects`/`expectsReply` proves they answered.
  *  Neither proves the instruction was carried out — and the party who would answer
  *  is the party whose compliance is in question. Naming the effect here lets it be
  *  DERIVED afterwards from the ledger that records it (directive-effect.ts), with
@@ -416,7 +417,7 @@ const expectEffectArg = z
   .strict()
   .optional()
   .describe(
-    "SAFETY-CRITICAL directives only: name the SIDE EFFECT the instruction requires — { kind:'checkpoint'|'claim-release'|'terminal', itemId } — and it is verified from the ledger afterwards instead of taken on the recipient's word. `woken:1` only proves a session woke. Read the verdict on fleet:leader-brief (`directives`).",
+    "SAFETY-CRITICAL directives only: name the SIDE EFFECT the instruction requires — { kind:'checkpoint'|'claim-release'|'terminal', itemId } — and it is verified from the ledger afterwards instead of taken on the recipient's word. `queued:1` only proves a durable wake delivery was queued; it does not prove a session woke. Read the verdict on fleet:leader-brief (`directives`).",
   );
 
 /** agent-report-cards-2026-07-17 P-001 / D-004: a DELIBERATELY loose shape —
@@ -1135,7 +1136,12 @@ async function sendOne(
   let replyWake:
     | {
         target: string;
+        /** Durable wake deliveries matched/queued; not execution-confirmed. */
+        queued: number;
+        /** Execution-confirmed turn pickups. The current wake substrate has no receipt, so 0. */
         woken: number;
+        /** False until a later checkpoint/activity observation proves pickup. */
+        pickupConfirmed?: boolean;
         foldedIntoDirectedWake?: boolean;
         suppressed?: boolean;
         suppressionReason?: string;
@@ -1164,7 +1170,9 @@ async function sendOne(
           // malformed/unknown markers follow the ordinary reply-wake path.
           replyWake = {
             target: originalFrom,
+            queued: 0,
             woken: 0,
+            pickupConfirmed: false,
             suppressed: true,
             suppressionReason: 'expected_lifecycle_ack',
           };
@@ -1181,7 +1189,13 @@ async function sendOne(
           // inject-only send (wakeMode null), or a reply whose original sender is NOT a
           // recipient of this message, still needs the reply-wake.
           if (wakeMode != null && env.to.includes(originalFrom)) {
-            replyWake = { target: originalFrom, woken: 0, foldedIntoDirectedWake: true };
+            replyWake = {
+              target: originalFrom,
+              queued: 0,
+              woken: 0,
+              pickupConfirmed: false,
+              foldedIntoDirectedWake: true,
+            };
           } else {
             const fan = await wakeRecipients([originalFrom], {
               summary: msg.summary,
@@ -1192,7 +1206,8 @@ async function sendOne(
               // recover an id they were already delivered the content of.
               payload: { msg_id: env.msg_id },
             });
-            replyWake = { target: originalFrom, woken: fan.woken };
+            const queued = fan.queued ?? fan.woken;
+            replyWake = { target: originalFrom, queued, woken: 0, pickupConfirmed: false };
           }
         }
       }
@@ -1266,22 +1281,28 @@ async function sendOne(
     | {
         mode: 'required' | 'optimistic';
         targets: string[];
+        /** Durable wake deliveries matched/queued; not execution-confirmed. */
+        queued: number;
+        /** Execution-confirmed turn pickups. The current wake substrate has no receipt, so 0. */
         woken: number;
+        /** False until a later checkpoint/activity observation proves pickup. */
+        pickupConfirmed: boolean;
         staged?: number;
         /** EI-19965318428068990: an explicit, non-numeric discriminant so a caller reading
-         *  ONLY `woken` (the field the persona/docs teach to check) cannot conflate a STAGED
+         *  ONLY `queued` (the durable delivery count) cannot conflate a STAGED
          *  wake (manual wake-mode — the target is alive and wakeable, but the wake was queued
-         *  for owner review instead of firing) with a genuine miss (`woken:0` is the SAME
-         *  scalar for both). 'delivered' = every target fired (staged===0); 'partial-staged' =
-         *  a mixed multi-target send, some delivered and some staged; 'staged-manual-mode' =
-         *  nothing delivered, everything staged (the case the finding calls out — do NOT read
+         *  for owner review instead of firing) with a genuine miss (`queued:0` is the SAME
+         *  scalar for both). 'queued' = every target has a durable wake queued (staged===0);
+         *  'partial-staged' = a mixed multi-target send, some queued and some staged;
+         *  'staged-manual-mode' = nothing queued, everything staged (the case the finding calls out — do NOT read
          *  this as "target unreachable": release the staged wake or flip the target to auto,
-         *  per `note`); 'missed' = staged===0 AND woken===0 — the pre-existing miss path
+         *  per `note`); 'missed' = staged===0 AND queued===0 — the pre-existing miss path
          *  (`recipient_absent`/`recipient_dead`/`recipient_remote`/`recipient_dormant_scheduled`
-         *  already disambiguate further within this case); 'unknown' means the local wake
+         *  already disambiguate further within this case); 'queued' means the durable wake
+         *  delivery was queued but turn pickup is not confirmed; 'unknown' means the local wake
          *  deadline elapsed before the fire result arrived, so the underlying wake may still
          *  complete and the sender MUST verify pickup rather than treating it as absent. */
-        wakeOutcome?: 'delivered' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown';
+        wakeOutcome?: 'queued' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown';
         /** EI-5957: the ownerIds whose wake STAGED (manual wake-mode) — named so a
          *  leader-steering send surfaces WHO didn't get the directive, alongside `note`. */
         stagedTargets?: string[];
@@ -1342,11 +1363,12 @@ async function sendOne(
           : {}),
       },
     });
-    wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
+    const queued = fan.queued ?? fan.woken;
+    wake = { mode: wakeMode, targets: fan.targets, queued, woken: 0, pickupConfirmed: false };
     if (fan.staged > 0) wake.staged = fan.staged;
     if (fan.timedOutTargets?.length) wake.timedOutTargets = fan.timedOutTargets;
     // EI-19965318428068990: compute the explicit discriminant BEFORE the staged-note /
-    // missed-classification branches below — it depends only on the woken/staged/targets
+    // missed-classification branches below — it depends only on the queued/staged/targets
     // counts already known here, and every branch after this point only adds detail, never
     // changes which of these buckets applies. `fan.targets.length === 0` (every addressee
     // was non-wakeable, e.g. '*'/'human' only) is left unset — there was nothing to wake,
@@ -1355,11 +1377,11 @@ async function sendOne(
       wake.wakeOutcome =
         fan.timedOutTargets?.length
           ? 'unknown'
-          : fan.woken > 0 && fan.staged === 0
-            ? 'delivered'
-            : fan.woken > 0 && fan.staged > 0
+          : queued > 0 && fan.staged === 0
+            ? 'queued'
+            : queued > 0 && fan.staged > 0
               ? 'partial-staged'
-              : fan.woken === 0 && fan.staged > 0
+              : queued === 0 && fan.staged > 0
                 ? 'staged-manual-mode'
                 : 'missed';
     }
@@ -1382,7 +1404,7 @@ async function sendOne(
       wake.note = wake.note ? `${wake.note} ${timeoutNote}` : timeoutNote;
     }
     const missed =
-      fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
+      fan.targets.length > 0 && queued === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
     if (missed) {
       // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'
       // miss is loud UNLESS the caller consciously declared a durable backstop
@@ -1498,7 +1520,7 @@ async function sendOne(
         // OPTIMISTIC + a declared backstop → silence is consciously claimed. Soft note that
         // NAMES the backstop (no recipient_absent), so it's auditable but not a loud miss.
         wake.note =
-          `optimistic wake reached no live session (woken:0) — relying on the declared backstop: ` +
+          `optimistic wake reached no live session (queued:0) — relying on the declared backstop: ` +
           `"${msg.backstop}". If that backstop will NOT actually re-dispatch, this was NOT picked up — ` +
           "use wake:'required' or coord:handoff instead.";
       }
@@ -1525,7 +1547,7 @@ async function sendOne(
         note:
           `injected to ${report.idle.join(', ')} — no live session is watching their inbox, so this send does NOT ` +
           'wake them (seen on their next natural turn, if any). To hand off live work that must be picked up now, ' +
-          "re-send with wake:'required' and verify pickup (woken / recipient_absent).",
+          "re-send with wake:'required' and verify pickup (queued / pickupConfirmed / recipient_absent).",
       };
     }
   }
@@ -1563,7 +1585,7 @@ async function sendOne(
             ...msg.expectEffect,
             verifiedFrom: env.ts,
             verdict: 'pending' as const,
-            note: 'woken:1 is DELIVERY, not compliance. Read the derived verdict on fleet:leader-brief → members[].directives.',
+            note: 'queued:1 is DELIVERY QUEUEING, not compliance. Read the derived verdict on fleet:leader-brief → members[].directives.',
           },
         }
       : {}),
@@ -1592,7 +1614,7 @@ async function sendOne(
     // WI-37972: the durable coord row keeps the full body, but a normal
     // recipient `coord:inbox` read may clip it before the recipient can act.
     // Surface the same authored-vs-visible accounting on the SENDER result so
-    // `ok:true`/`wakeOutcome:'delivered'` cannot be mistaken for "the whole
+    // `ok:true`/`wakeOutcome:'queued'` cannot be mistaken for "the whole
     // decision text was readable". The one-entry cap is the documented maximum
     // for a default full-tier inbox read; a crowded page can use the smaller
     // `bodyCrowdedPageCap`. The full text remains addressable via coord:read.

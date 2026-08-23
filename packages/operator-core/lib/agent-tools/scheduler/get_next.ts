@@ -332,6 +332,34 @@ function concurrencyBlockedRefusal(concurrency: {
 }
 
 /**
+ * EI-21238986333755666: a declared plan is a control-plane scope, not merely presence
+ * decoration. A non-fleet caller with no authored claim spec must not fall through to
+ * DEFAULT_CLAIM_SPEC, because that spec ranges over the whole harness and can atomically
+ * claim an unrelated plan's work. Keep this refusal distinct from a drained/wind-down miss:
+ * no claim was attempted and the caller needs a spec, not an idle-loop stand-down.
+ */
+export function planScopeMissingRefusal(planSlug: string) {
+  return {
+    ok: false as const,
+    error: 'plan_scope_missing' as const,
+    reason: 'declared_plan_without_claim_spec' as const,
+    retryable: true as const,
+    noClaim: true as const,
+    windDown: false as const,
+    recoverable: true as const,
+    declaredPlanSlug: planSlug,
+    claimSpecSource: 'default' as const,
+    message:
+      `caller declares plan '${planSlug}' but has no per-bee or inherited claim spec; ` +
+      'scheduler:get_next is blocked before claim so DEFAULT_CLAIM_SPEC cannot widen the pull to unrelated work.',
+    recovery: {
+      tool: 'scheduler:set_claim_spec',
+      args: { cupId: 'you', plan: planSlug },
+    },
+  };
+}
+
+/**
  * WI-4413: build the self-explaining miss. Two layers:
  *  1. AGGREGATE — the POOL/READY split from diagnoseClaimNextMiss (already the source of truth
  *     shared with the claim itself). Distinguishes "genuinely drained, idling is correct" from
@@ -651,7 +679,7 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
+    "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a declared plan and without a spec uses warned default ordering, while a plan-bound caller fails closed. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
   guidance: {
     when: 'A self-pulling cup or su fleet member pulls from the Mug/leader spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.',
     notWhen:
@@ -800,6 +828,10 @@ export default defineTool({
           reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
         }
       | {
+          kind: 'plan-scope-missing';
+          planSlug: string;
+        }
+      | {
           kind: 'ready';
           reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
           specOn: boolean;
@@ -871,6 +903,25 @@ export default defineTool({
         // preference, so the kill-switch may disable scheduler steering but cannot widen a
         // member into the generic backlog.
         const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
+        // EI-21238986333755666: coord:declare-intent persists currentPlanSlug even for a
+        // non-fleet caller, but the old default-spec path ignored it and let DEFAULT_CLAIM_SPEC
+        // claim any harness row. Read the declaration and effective spec source in this bounded
+        // preflight, then fail closed before getNextForBee whenever the effective pull would be
+        // generic. An unreadable presence/spec read is deliberately fail-open here — without
+        // positive evidence of a declared plan or a disabled spec path, do not invent a false
+        // control-plane block for an otherwise valid solo pull.
+        if (!reconciliation.scope) {
+          const presence = await getPresence(ident.ownerId).catch(() => null);
+          const declaredPlanSlug = presence?.currentPlanSlug?.trim() || null;
+          if (declaredPlanSlug) {
+            const record = await getClaimSpecRecord({
+              cupId: ident.ownerId,
+              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+            }).catch(() => null);
+            const effectiveDefault = !specOn || record?.source === 'default';
+            if (effectiveDefault) return { kind: 'plan-scope-missing', planSlug: declaredPlanSlug };
+          }
+        }
         // P-015: authoritative lock-plane snapshot, holders only and excluding this
         // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
         // a pathological lock storm cannot inflate a claim request without bound.
@@ -944,6 +995,16 @@ export default defineTool({
           {
             type: 'text' as const,
             text: JSON.stringify(fleetLeaderUnavailableRefusal(preflightState.reconciliation.scope!)),
+          },
+        ],
+      };
+    }
+    if (preflightState.kind === 'plan-scope-missing') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(planScopeMissingRefusal(preflightState.planSlug)),
           },
         ],
       };

@@ -320,7 +320,15 @@ type ScopeActiveExec = (
   options: { timeout?: number; maxBuffer?: number },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
-const execFileAsync = promisify(execFile) as unknown as ScopeActiveExec;
+let scopeExecFile: ScopeActiveExec | null = null;
+function runScopeActiveExec(
+  file: string,
+  args: readonly string[],
+  options: { timeout?: number; maxBuffer?: number },
+): Promise<{ stdout: string; stderr?: string }> {
+  if (!scopeExecFile) scopeExecFile = promisify(execFile) as unknown as ScopeActiveExec;
+  return scopeExecFile(file, args, options);
+}
 const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
 
 /**
@@ -336,7 +344,7 @@ const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', '
  */
 export async function taskScopeIsActive(
   row: Pick<TaskRow, 'taskId' | 'class' | 'confined' | 'scopeUnit'>,
-  execFn: ScopeActiveExec = execFileAsync,
+  execFn: ScopeActiveExec = runScopeActiveExec,
 ): Promise<boolean> {
   if (
     row.class !== 'bash-job' ||

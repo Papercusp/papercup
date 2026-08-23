@@ -9,7 +9,7 @@ import {
   filterAutomationItems,
   nextFutureAutomationAt,
   type BuildAutomationModelInput,
-} from './automations-model';
+} from './workflows-model';
 
 const NOW = Date.parse('2026-08-22T20:00:00.000Z');
 

@@ -40,7 +40,7 @@ import {
   type AutomationOccurrenceRow,
   type AutomationPlanRow,
   type AutomationScheduleRow,
-} from './automations-model';
+} from './workflows-model';
 import WorkflowsLanding from './WorkflowsLanding';
 import WorkflowDetailView from './WorkflowDetailView';
 import { toLandingWorkflow, type NeedsYouItem } from './workflows-landing-model';
@@ -195,26 +195,26 @@ function durationLabel(ms: number | null): string {
   return `${minutes}m ${seconds % 60}s`;
 }
 
-export default function AdvAutomationsTab() {
+export default function AdvWorkflowsTab() {
   const resolvedHarnessSlug = useResolvedHarnessSlug();
   const [view, setView] = useQueryState(
-    'autoView',
+    'wfView',
     parseAsStringEnum<View>(['landing', 'flow', 'catalog', 'activity', 'sources']).withDefault('landing'),
   );
   const [flowFilter, setFlowFilter] = useQueryState(
-    'autoFlowFilter',
+    'wfFlowFilter',
     parseAsStringEnum<FlowFilter>(['all', 'attention', 'paused']).withDefault('all'),
   );
   const [filter, setFilter] = useQueryState(
-    'autoFilter',
+    'wfFilter',
     parseAsStringEnum<AutomationFilter>(['all', 'triggered', 'ai', 'system', 'paused']).withDefault('all'),
   );
-  const [selectedId, setSelectedId] = useQueryState('autoId', parseAsString);
+  const [selectedId, setSelectedId] = useQueryState('wfSelId', parseAsString);
   // The opened workflow's read-only graph + agent chat (D-016/D-018). Distinct from
-  // `autoId`, which is the catalog/flow list selection — opening a workflow is a
+  // `wfSelId`, which is the catalog/flow list selection — opening a workflow is a
   // different destination, not a different row highlight.
   const [wfId, setWfId] = useQueryState('wfId', parseAsString);
-  const [query, setQuery] = useQueryState('autoQ', parseAsString.withDefault(''));
+  const [query, setQuery] = useQueryState('wfQ', parseAsString.withDefault(''));
   const [, setAdvTab] = useQueryState('tab', parseAsString);
   const [, setCalendarPlan] = useQueryState('calPlan', parseAsString);
   const { confirm, element: confirmElement } = useConfirmDialog();

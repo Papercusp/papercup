@@ -98,12 +98,12 @@ vi.mock('@/app/harness/useConfirmDialog', () => ({ useConfirmDialog: () => ({ co
 vi.mock('./ScheduleEditor', () => ({ runScheduleTool: H.runTool }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-import AdvAutomationsTab from './AdvAutomationsTab';
+import AdvWorkflowsTab from './AdvWorkflowsTab';
 
 function renderTab(searchParams?: Record<string, string>) {
   return render(
     <NuqsTestingAdapter searchParams={searchParams}>
-      <AdvAutomationsTab />
+      <AdvWorkflowsTab />
     </NuqsTestingAdapter>,
   );
 }
@@ -116,7 +116,7 @@ function renderTab(searchParams?: Record<string, string>) {
  * workflow names, which makes that race resolve to a false match.
  */
 function renderTabOnFlows() {
-  return renderTab({ autoView: 'flow' });
+  return renderTab({ wfView: 'flow' });
 }
 
 beforeEach(() => {
@@ -140,7 +140,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe('<AdvAutomationsTab>', () => {
+describe('<AdvWorkflowsTab>', () => {
   it('lands on the Workflows landing Blend rather than the flow rows (D-018)', async () => {
     renderTab();
     expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();

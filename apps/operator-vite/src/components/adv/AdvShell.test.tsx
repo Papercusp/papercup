@@ -271,7 +271,7 @@ describe('AdvShell — strip + header', () => {
     expect(document.querySelector('button.pc-advshell__tabnav--right')).toBeTruthy();
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'hud' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'automations' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'workflows' })).toBeTruthy();
     // 'harnesses' is the Work tab and sits right of HUD on the strip (owner ask
     // 2026-07-26); its old "working" label is gone.
     expect(screen.getByRole('tab', { name: 'work' })).toBeTruthy();
@@ -313,7 +313,7 @@ describe('AdvShell — strip + header', () => {
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
     // Automations, Work, and Learning are workspace-level, so they survive
     // the All-Pots filter alongside Overview + HUD.
-    expect(tabs).toEqual(['overview', 'hud', 'automations', 'work', 'learning']);
+    expect(tabs).toEqual(['overview', 'hud', 'workflows', 'work', 'learning']);
   });
 
   it('keeps a per-pot tab pinned (no snap to Overview) under All scope — reachable via More, and the trigger reads active', async () => {
@@ -363,7 +363,7 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
     expect(items).not.toContain('Work');
     expect(items).not.toContain('Working');
     expect(items).not.toContain('Learning');
-    expect(items).not.toContain('Automations');
+    expect(items).not.toContain('Workflows');
   });
 
   it('is type-to-filter searchable: typing narrows to matching sections', async () => {

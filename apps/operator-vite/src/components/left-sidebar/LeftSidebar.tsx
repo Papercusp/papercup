@@ -189,7 +189,7 @@ const TABS = [
   // (🎯 Goals sat HERE, between Kettle and Agents, from 2026-08-07 to 2026-08-09.
   // Removed on owner directive — see the note above the imports. The HUD's Goals
   // tab is the one goals surface now.)
-  { id: 'pulse', label: (_t: BoundLexicon) => 'Pulse', icon: Activity, tip: (_t: BoundLexicon) => 'Workspace pulse — live agents, system warnings, handoffs, and shortcuts to the full Automations, HUD, and Health tabs', render: (a: boolean) => <WorkspacePulseTab active={a} /> },
+  { id: 'pulse', label: (_t: BoundLexicon) => 'Pulse', icon: Activity, tip: (_t: BoundLexicon) => 'Workspace pulse — live agents, system warnings, handoffs, and shortcuts to the full Workflows, HUD, and Health tabs', render: (a: boolean) => <WorkspacePulseTab active={a} /> },
   // 💬 Conversations sits LAST (owner ask 2026-07-25). Appending rather than
   // inserting keeps the owner-set order of every tab before it untouched — the
   // order is pinned by a test precisely so a later addition can't quietly

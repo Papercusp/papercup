@@ -24894,7 +24894,7 @@
           "POST"
         ]
       },
-      "description": "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
+      "description": "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a declared plan and without a spec uses warned default ordering, while a plan-bound caller fails closed. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
       "capabilities": [
         "work_items:write"
       ],

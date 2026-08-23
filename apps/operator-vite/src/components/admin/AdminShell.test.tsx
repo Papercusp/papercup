@@ -17,6 +17,7 @@ import type { ReactNode } from 'react';
 // mock spreads the rest props so Radix's asChild Tabs.Trigger attributes
 // (role="tab", aria-selected, data-state) land on the anchor.
 let mockPathname = '/admin/run';
+let mockTriggersEnabled = true;
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
     to,
@@ -31,11 +32,15 @@ vi.mock('@tanstack/react-router', () => ({
   // selector and hands back the pathname directly (sibling idiom).
   useRouterState: () => mockPathname,
 }));
+vi.mock('@/lib/flag-hooks', () => ({
+  useFlag: () => mockTriggersEnabled,
+}));
 
 import AdminShell from './AdminShell';
 
 beforeEach(() => {
   mockPathname = '/admin/run';
+  mockTriggersEnabled = true;
 });
 
 afterEach(() => cleanup());
@@ -45,6 +50,7 @@ afterEach(() => cleanup());
 const TAB_HREFS = [
   '/admin/run',
   '/admin/features',
+  '/admin/triggers',
   '/admin/recipes',
   '/admin/git',
   '/admin/dogfood-substrate',
@@ -95,9 +101,23 @@ describe('AdminShell', () => {
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual(TAB_HREFS);
 
     // Static (non-lexicon) labels render verbatim.
-    for (const label of ['Run', 'Features', 'Recipes', 'Git', 'Substrate', 'DBOS', 'Schedules']) {
+    for (const label of ['Run', 'Features', 'Triggers', 'Recipes', 'Git', 'Substrate', 'DBOS', 'Schedules']) {
       expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
+  });
+
+  it('hides the Triggers tab when the external-triggers kill-switch is off', () => {
+    mockTriggersEnabled = false;
+    render(
+      <AdminShell>
+        <div />
+      </AdminShell>,
+    );
+
+    expect(screen.queryByRole('tab', { name: 'Triggers' })).toBeNull();
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('href'))).toEqual(
+      TAB_HREFS.filter((href) => href !== '/admin/triggers'),
+    );
   });
 
   it('selects the tab whose href matches the pathname exactly', () => {
@@ -121,6 +141,18 @@ describe('AdminShell', () => {
     );
 
     expect(screen.getByRole('tab', { name: 'Git', selected: true })).toBeTruthy();
+    expect(selectedTabs()).toHaveLength(1);
+  });
+
+  it('selects the Triggers tab on its route and child paths', () => {
+    mockPathname = '/admin/triggers/runs';
+    render(
+      <AdminShell>
+        <div />
+      </AdminShell>,
+    );
+
+    expect(screen.getByRole('tab', { name: 'Triggers', selected: true })).toBeTruthy();
     expect(selectedTabs()).toHaveLength(1);
   });
 

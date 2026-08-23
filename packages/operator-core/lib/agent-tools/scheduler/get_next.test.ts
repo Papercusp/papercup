@@ -15,6 +15,13 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
+const getClaimSpecRecordM = vi.hoisted(() => vi.fn(async () => ({
+  source: 'default' as const,
+  spec: { specId: 'default', revision: 0 },
+  revision: null,
+  updatedBy: null,
+  updatedAt: null,
+})));
 const getSessionBriefM = vi.hoisted(() => vi.fn(async () => null as {
   workspaceId?: string | null;
   harnessSlug?: string | null;
@@ -86,7 +93,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
-  return { ...actual, getNextForBee: getNextM };
+  return { ...actual, getNextForBee: getNextM, getClaimSpecRecord: getClaimSpecRecordM };
 });
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   reconcileFleetScopeClaims: reconcileFleetScopeClaimsM,
@@ -168,6 +175,15 @@ beforeEach(() => {
   }));
   getFlagM.mockResolvedValue(true);
   liveLockedPathsM.mockImplementation(async () => []);
+  getPresenceM.mockResolvedValue(null);
+  writePresenceM.mockResolvedValue(undefined);
+  getClaimSpecRecordM.mockResolvedValue({
+    source: 'default',
+    spec: { specId: 'default', revision: 0 },
+    revision: null,
+    updatedBy: null,
+    updatedAt: null,
+  });
   workItemClaimLeaseEnabledM.mockReturnValue(false);
   leaseClaimedWorkItemM.mockResolvedValue(true);
   releaseWorkItemM.mockResolvedValue(undefined);
@@ -414,6 +430,61 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
     };
     diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+    getNextM.mockResolvedValue(null);
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(getNextM).toHaveBeenCalledOnce();
+  });
+});
+
+describe('scheduler:get_next declared-plan boundary (EI-21238986333755666)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'default',
+      spec: { specId: 'default', revision: 0 },
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim', title: 'Unrelated work' } });
+    getPresenceM.mockResolvedValue({ currentPlanSlug: 'active-control-plan' });
+  });
+
+  it('fails closed before getNextForBee when a non-fleet caller declares a plan but has only the default spec', async () => {
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'plan_scope_missing',
+      reason: 'declared_plan_without_claim_spec',
+      noClaim: true,
+      windDown: false,
+      recoverable: true,
+      declaredPlanSlug: 'active-control-plan',
+      claimSpecSource: 'default',
+    });
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('allows a declared-plan caller whose explicit per-bee spec supplies the scope', async () => {
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: { specId: 'active-control-plan-lane', revision: 2 },
+      revision: 2,
+      updatedBy: 'leader',
+      updatedAt: new Date().toISOString(),
+    });
     getNextM.mockResolvedValue(null);
 
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
@@ -755,6 +826,13 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
   // agent on every claim: strictly worse than the stale intent it set out to fix.
   it('CARRIES the existing currentPlanSlug — a claim must never wipe the declared plan', async () => {
     getPresenceM.mockResolvedValue({ intent: 'something older', currentPlanSlug: 'my-plan-slug' });
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: { specId: 'my-plan-lane', revision: 1 },
+      revision: 1,
+      updatedBy: 'leader',
+      updatedAt: new Date().toISOString(),
+    });
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
     expect(writePresenceM.mock.calls[0]![1]).toMatchObject({ currentPlanSlug: 'my-plan-slug' });
   });

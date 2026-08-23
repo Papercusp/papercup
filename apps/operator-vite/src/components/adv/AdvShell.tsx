@@ -60,7 +60,7 @@ import './adv-header-pills.css';
 // 'brainstorm' removed 2026-07-13 (quick-panel-saved-prompts P-010): the brainstorm
 // surface lives in the Quick Panel popup's Brainstorm tab now (owner ask). Old
 // ?tab=brainstorm deep links fall back to 'overview' via the enum parser.
-const ADV_TAB_IDS = ['overview', 'hud', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'automations', 'calendar', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'hud', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -89,11 +89,11 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'hud', label: 'HUD', icon: Gauge, accent: CATEGORICAL.teal300.hex, accentRgb: CATEGORICAL.teal300.rgb },
   // (Brainstorm tab removed — it lives in the Quick Panel popup now; P-010.)
   { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
-  // Automations — one workspace-wide identity and control surface for triggered
+  // Workflows — one workspace-wide identity and control surface for triggered
   // plans, AI routines, and deterministic system tasks. Replaces the fragmented
   // Agents/System/Spend middle-pane catalogs; live agent attention remains HUD
   // and system health remains Health.
-  { id: 'automations', label: 'Automations', icon: Workflow, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
+  { id: 'workflows', label: 'Workflows', icon: Workflow, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
   // Calendar — the schedulable time-surface for scheduled/recurring plans
   // (scheduled-recurring-plans-2026-06-16 P-019). Next to Create (D-001: no separate
   // routines tab — plans are just optionally-scheduled). Workspace-scoped (aggregates
@@ -144,7 +144,7 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   // per-pot view — it stays visible under "All Pots".
   'hud',
   'plans',
-  'automations',
+  'workflows',
   // Calendar aggregates every pot's scheduled-plan occurrences, not one pot
   // (scheduled-recurring-plans-2026-06-16 P-019), so it stays visible under "All Pots".
   'calendar',
@@ -179,7 +179,7 @@ export function visibleAdvTabs(allMode: boolean): typeof ADV_TABS {
 export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
   'hud',
-  'automations',
+  'workflows',
   // Work (id 'harnesses') promoted to the visible strip, immediately right of
   // HUD (owner ask 2026-07-26: "pull it out of MORE as a main tab to put next
   // to HUD") — pulled out of the More menu's Work group, which now holds only

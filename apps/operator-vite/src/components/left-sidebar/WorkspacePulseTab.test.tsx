@@ -23,7 +23,7 @@ import WorkspacePulseTab from './WorkspacePulseTab';
 afterEach(cleanup);
 
 describe('<WorkspacePulseTab>', () => {
-  it('shows only live agents, health attention, preserved operational surfaces, and Automations navigation', async () => {
+  it('shows only live agents, health attention, preserved operational surfaces, and Workflows navigation', async () => {
     const onUrlUpdate = vi.fn();
     render(<NuqsTestingAdapter onUrlUpdate={onUrlUpdate}><WorkspacePulseTab active /></NuqsTestingAdapter>);
     expect(screen.getByText('1 running')).toBeTruthy();
@@ -34,9 +34,9 @@ describe('<WorkspacePulseTab>', () => {
     expect(screen.getByTestId('ask-agent')).toBeTruthy();
     expect(screen.getByTestId('federation')).toBeTruthy();
     expect(screen.getByTestId('peer-roster')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Open Automations/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Open Workflows/ }));
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const last = onUrlUpdate.mock.calls.at(-1)?.[0]?.queryString ?? '';
-    expect(last).toContain('tab=automations');
+    expect(last).toContain('tab=workflows');
   });
 });

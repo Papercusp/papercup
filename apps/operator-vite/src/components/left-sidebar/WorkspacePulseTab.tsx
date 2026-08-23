@@ -102,10 +102,10 @@ export default function WorkspacePulseTab({ active }: { active: boolean }) {
 
       <div className="pclsb-pulse__rule">
         <strong>No automation catalog lives here.</strong>
-        <span>Schedules, controls, sources, run history, and spend are consolidated in the full-width Automations tab.</span>
+        <span>Schedules, controls, sources, run history, and spend are consolidated in the full-width Workflows tab.</span>
       </div>
-      <button className="pclsb-pulse__open" type="button" onClick={() => void setTab('automations')}>
-        <span className="pclsb-pulse__open-layout"><Workflow size={14} aria-hidden /> Open Automations <ChevronRight size={13} aria-hidden /></span>
+      <button className="pclsb-pulse__open" type="button" onClick={() => void setTab('workflows')}>
+        <span className="pclsb-pulse__open-layout"><Workflow size={14} aria-hidden /> Open Workflows <ChevronRight size={13} aria-hidden /></span>
       </button>
       <style>{PULSE_CSS}</style>
     </div>

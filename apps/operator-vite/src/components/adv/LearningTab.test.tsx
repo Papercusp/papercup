@@ -730,7 +730,7 @@ const setTestingFlag = (on: boolean) =>
     evaluatedAt: Date.now(),
     source: "override",
   });
-import LearningTab, { ARMING_AUTOMATIONS_TAB } from "./LearningTab";
+import LearningTab, { ARMING_WORKFLOWS_TAB } from "./LearningTab";
 
 beforeEach(() => {
   // Flags are a MODULE-level store, so an armed flag would leak into every later
@@ -740,8 +740,8 @@ beforeEach(() => {
   nuqsState.lview = "improvements";
   nuqsState.lane = "all";
   nuqsState.tab = null;
-  nuqsState.autoView = null;
-  nuqsState.autoFilter = null;
+  nuqsState.wfView = null;
+  nuqsState.wfFilter = null;
   nuqsState.grade = null;
   nuqsState.irail = null;
   nuqsState.lsrc = null;
@@ -2475,10 +2475,10 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // The banner renders its own "Open Arming" — scope to the empty state, or
     // this asserts the wrong button (they share a hook, not a call site).
     fireEvent.click(within(empty).getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.tab).toBe(ARMING_AUTOMATIONS_TAB);
+    expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
     expect(nuqsState.tab).toBe("automations");
-    expect(nuqsState.autoView).toBe("catalog");
-    expect(nuqsState.autoFilter).toBe("ai");
+    expect(nuqsState.wfView).toBe("catalog");
+    expect(nuqsState.wfFilter).toBe("ai");
   });
 
   it("3b. withholds the teaching copy when the list is empty because of a FILTER", () => {
@@ -3220,10 +3220,10 @@ describe("LearningTab — P-009 first-run orientation", () => {
   it("the banner's Open Arming deep-links to the full-width Automations AI catalog", () => {
     render(<LearningTab />);
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.tab).toBe(ARMING_AUTOMATIONS_TAB);
+    expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
     expect(nuqsState.tab).toBe("automations");
-    expect(nuqsState.autoView).toBe("catalog");
-    expect(nuqsState.autoFilter).toBe("ai");
+    expect(nuqsState.wfView).toBe("catalog");
+    expect(nuqsState.wfFilter).toBe("ai");
   });
 
   it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {

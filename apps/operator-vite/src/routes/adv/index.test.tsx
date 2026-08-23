@@ -39,7 +39,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
-    'overview', 'hud', 'automations', 'conversations', 'learning', 'harnesses', 'health', 'frames',
+    'overview', 'hud', 'workflows', 'conversations', 'learning', 'harnesses', 'health', 'frames',
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings', 'history',
     'docs', 'git', 'stats', 'testing',
   ].map((id) => ({ id })),
@@ -76,7 +76,7 @@ vi.mock('../../components/adv/LearningTab', () => ({ default: () => <div data-te
 vi.mock('../../components/adv/AdvFramesTab', () => ({ default: () => <div data-testid="tab-frames" /> }));
 vi.mock('../../components/adv/AdvEvalsTab', () => ({ default: () => <div data-testid="tab-evals" /> }));
 vi.mock('../../components/adv/ScheduledCalendarTab', () => ({ default: () => <div data-testid="tab-calendar" /> }));
-vi.mock('../../components/adv/AdvAutomationsTab', () => ({ default: () => <div data-testid="tab-automations" /> }));
+vi.mock('../../components/adv/AdvWorkflowsTab', () => ({ default: () => <div data-testid="tab-workflows" /> }));
 vi.mock('../../components/adv/HealthTab', () => ({ default: () => <div data-testid="tab-health" /> }));
 vi.mock('../../components/adv/AdvHistoryTab', () => ({ default: () => <div data-testid="tab-history" /> }));
 vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
@@ -109,7 +109,7 @@ describe('/adv tab router', () => {
     // HUD is a first-class tab (owner ask 2026-07-25) — /adv/HUD redirects here.
     // It is also where the pot cluster + status pills moved (owner ask 2026-07-27).
     { tab: 'hud', child: 'tab-hud', bar: true, pills: true },
-    { tab: 'automations', child: 'tab-automations', bar: false, pills: false },
+    { tab: 'workflows', child: 'tab-workflows', bar: false, pills: false },
     { tab: 'conversations', child: 'tab-conversations', bar: false, pills: false },
     { tab: 'learning', child: 'tab-learning', bar: true, pills: false },
     // Label renamed Working → Work (owner ask 2026-07-26); id stays 'harnesses'.
