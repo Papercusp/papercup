@@ -151,6 +151,19 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     });
   }
 
+  seedSnapshot(name: string, hostId: string, status: GcpSnapshotObservation['status'] = 'READY'): void {
+    this.snapshots.set(name, {
+      name,
+      status,
+      labels: {
+        'papercusp-host-id': hostId,
+        'papercusp-managed': 'true',
+        'papercusp-workspace-id': 'workspace-gcp-1',
+      },
+      observedAt: NOW,
+    });
+  }
+
   rewriteDisk(name: string, patch: Partial<GcpDiskObservation>): void {
     const current = this.disks.get(name);
     if (!current) throw new Error(`fake GCP disk '${name}' is absent`);
@@ -614,6 +627,75 @@ describe('GCP workspace-host provider planning', () => {
       context(),
     );
     expect(destroy.steps.map((step) => step.resourceKind)).toEqual(['vm', 'disk']);
+  });
+
+  it('restores a managed READY snapshot into a distinct encrypted disk and replacement host', async () => {
+    const { client, provider } = providerAndClient();
+    client.seedSnapshot('pc-host-gcp-1-q3', 'host-gcp-1');
+    const sourceHost: WorkspaceHostRef = {
+      hostId: 'host-gcp-1',
+      target: 'gcp',
+      resources: [
+        {
+          target: 'gcp',
+          kind: 'disk',
+          providerId: 'pc-host-gcp-1-data',
+          parentProviderId: 'papercusp-dev-123',
+          zone: 'us-central1-a',
+          maxApplyAttempts: 3,
+        },
+      ],
+    };
+    const recovered = desired();
+    recovered.hostId = 'host-gcp-recovered';
+    recovered.provider = {
+      ...recovered.provider,
+      network: {
+        mode: 'managed',
+        networkName: 'pc-host-gcp-recovered-net',
+        subnetworkName: 'pc-host-gcp-recovered-subnet',
+        firewallName: 'pc-host-gcp-recovered-iap',
+        ipCidrRange: '10.132.13.0/24',
+      },
+      instanceName: 'pc-host-gcp-recovered-vm',
+      dataDiskName: 'pc-host-gcp-recovered-data',
+    };
+    const snapshotKey =
+      'projects/papercusp-dev-123/locations/us-central1/keyRings/workspaces/cryptoKeys/snapshot-source';
+    const plan = await provider.plan(
+      {
+        action: 'restore',
+        operationId: 'restore-1',
+        idempotencyKey: 'restore-1',
+        host: sourceHost,
+        snapshot: {
+          target: 'gcp',
+          providerId: 'projects/papercusp-dev-123/global/snapshots/pc-host-gcp-1-q3',
+          hostId: sourceHost.hostId,
+          encryptionKeyRef: snapshotKey,
+        },
+        desired: recovered,
+      },
+      context(),
+    );
+
+    expect(provider.capabilities.lifecycle.restore).toBe(true);
+    expect(plan.hostId).toBe(recovered.hostId);
+    expect(plan.steps.every(({ action, destructive }) => action === 'restore' && destructive === false)).toBe(true);
+    const disk = (
+      plan.steps.find(({ id }) => id === 'create-data-disk')!.input as unknown as {
+        request: GcpDiskInsertInput;
+      }
+    ).request;
+    expect(disk).toMatchObject({
+      name: 'pc-host-gcp-recovered-data',
+      sourceSnapshot: 'projects/papercusp-dev-123/global/snapshots/pc-host-gcp-1-q3',
+      sourceSnapshotEncryptionKey: { kmsKeyName: snapshotKey },
+      diskEncryptionKey: { kmsKeyName: expect.any(String) },
+      labels: { 'papercusp-host-id': recovered.hostId },
+    });
+    expect(plan.steps.map(({ id }) => id)).not.toContain('delete-data-disk');
+    expect(plan.steps.map(({ id }) => id)).not.toContain('delete-instance');
   });
 
   it('fails closed for unencrypted data, cross-project ambiguity, and implicit live clients', async () => {

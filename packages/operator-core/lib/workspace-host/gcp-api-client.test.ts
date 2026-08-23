@@ -262,6 +262,10 @@ describe('ADC-backed GCP workspace-host API client', () => {
       sizeGb: 120,
       type: 'pd-ssd',
       labels: { 'papercusp-managed': 'true' },
+      sourceSnapshot: `projects/${PROJECT}/global/snapshots/pc-host-source-q3`,
+      sourceSnapshotEncryptionKey: {
+        kmsKeyName: `projects/${PROJECT}/locations/${REGION}/keyRings/workspaces/cryptoKeys/snapshot-source`,
+      },
     };
     const instance: GcpInstanceInsertInput = {
       name: 'pc-host-vm',
@@ -331,7 +335,13 @@ describe('ADC-backed GCP workspace-host API client', () => {
 
     expect(diskOperation).toMatchObject({ projectId: PROJECT, scope: 'zone', location: ZONE, requestId: REQUEST_ID });
     const diskCall = calls.find(({ url }) => url.includes(`/zones/${ZONE}/disks?`))!;
-    expect(JSON.parse(String(diskCall.init?.body))).toMatchObject({ type: `zones/${ZONE}/diskTypes/pd-ssd` });
+    expect(JSON.parse(String(diskCall.init?.body))).toMatchObject({
+      type: `zones/${ZONE}/diskTypes/pd-ssd`,
+      sourceSnapshot: `projects/${PROJECT}/global/snapshots/pc-host-source-q3`,
+      sourceSnapshotEncryptionKey: {
+        kmsKeyName: `projects/${PROJECT}/locations/${REGION}/keyRings/workspaces/cryptoKeys/snapshot-source`,
+      },
+    });
     expect(JSON.parse(String(diskCall.init?.body))).not.toHaveProperty('zone');
     const subnetCall = calls.find(({ url }) => url.includes('/subnetworks?'))!;
     expect(JSON.parse(String(subnetCall.init?.body))).toMatchObject({ network: 'global/networks/pc-host-net' });
