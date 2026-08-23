@@ -1,8 +1,6 @@
-import { defineConfig } from 'vitest/config';
+import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
+import { mergeConfig } from 'vitest/config';
 
-export default defineConfig({
-  test: {
-    globals: true,
-    environment: 'node',
-  },
+export default mergeConfig(defineVitestConfig({ layer: 'unit' }), {
+  test: { globals: true },
 });
