@@ -25,7 +25,7 @@ import {
   type OutlinePayload,
 } from '@papercusp/docs-engine';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
-import { engineeringAdapter } from './_engineering-adapter';
+import { engineeringAdapter, getEngineeringAdapterRevision } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
 
 const cache = new RunCache<OutlinePayload>();
@@ -266,7 +266,12 @@ export default defineTool({
     }
     ctxAny.metadata?.({ surface: resolved.surface, ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}) });
 
-    const hit = cache.get(ctxAny, resolved.scope);
+    // docs:author invalidates the shared engineering adapter after a canonical PG
+    // write. Include its revision in this per-run cache key so an outline fetched
+    // earlier in the same run cannot hide the newly authored page.
+    const cacheScope =
+      resolved.surface === 'engineering' ? `${resolved.scope}:${getEngineeringAdapterRevision()}` : resolved.scope;
+    const hit = cache.get(ctxAny, cacheScope);
     if (hit) {
       return {
         content: [
@@ -287,7 +292,7 @@ export default defineTool({
       ...(ctxAny.signal && { signal: ctxAny.signal }),
       ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
     });
-    cache.set(ctxAny, payload, resolved.scope);
+    cache.set(ctxAny, payload, cacheScope);
     return {
       content: [
         {
@@ -302,4 +307,3 @@ export default defineTool({
     };
   },
 });
-

@@ -541,14 +541,18 @@ export default defineTool({
     try {
       await fs.mkdir(dirname(abs), { recursive: true });
       await fs.writeFile(abs, applyProjectionBanner(content, docId), 'utf8');
-      if (harnessRes.engineering) invalidateEngineeringAdapter();
     } catch (e) {
       projected = false;
       warnings.push(
         `the doc is saved (Postgres is canonical) but its .mdx projection failed to write (${(e as Error).message}) — ` +
-          `run: node --import tsx scripts/project-authored-docs.ts --write`,
+        `run: node --import tsx scripts/project-authored-docs.ts --write`,
       );
     }
+
+    // PG is canonical even when the filesystem projection failed or landed in a
+    // different checkout. Invalidate the shared overlay in both cases so the
+    // read surfaces see this write immediately.
+    if (harnessRes.engineering) invalidateEngineeringAdapter();
 
     // ── The search index ───────────────────────────────────────────────────────────
     // EI-20459861068197195: docs:search reads harness_shared.doc_sections, which is a
@@ -560,7 +564,7 @@ export default defineTool({
     // Ordering matters: this must follow invalidateEngineeringAdapter() above, or the
     // adapter re-indexes the bytes it memoized before the write. Fail-open — the doc
     // is already canonical, so a stale index is a warning, never a failed author.
-    if (projected && harnessRes.engineering) {
+    if (harnessRes.engineering) {
       const refreshed = await refreshDocPageSections(engineeringAdapter, docId.replace(/\.mdx$/, ''));
       if (!refreshed.ok) {
         warnings.push(

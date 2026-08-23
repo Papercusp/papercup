@@ -149,7 +149,22 @@ function implementsLinkScopes(workspaceIds?: readonly string[]): string[] {
  *  coord_links edge written at conversion; src is an issue-family id or a
  *  harness-qualified feature ref ('<harness>#<id>'). Unions both workspaces the
  *  implements-link plane is split across (see implementsLinkScopes) — a single-tenant
- *  read here would be blind to whichever family lives in the other workspace. */
+ *  read here would be blind to whichever family lives in the other workspace.
+ *
+ *  A plan item can accumulate SEVERAL implements edges over its life (a conversion
+ *  that was later dropped, then a re-pickup). Newest-first is only a tie-break:
+ *  the LIVE execution record is preferred over a terminal one regardless of edge
+ *  age, and the newest extant record is returned only when every candidate is
+ *  terminal.
+ *
+ *  EI-21213528544407590: this used to return the newest extant edge unconditionally.
+ *  On P-028 the newest edge pointed at a DROPPED WI-40495 while the older edge pointed
+ *  at the still-open WI-40489 doing the actual work, so the terminal record masked the
+ *  live one: convertPlanItem's resume branch (which only resumes a NON-terminal record)
+ *  was skipped and it minted a duplicate execution record (WI-40781) for a plan item
+ *  that already had one. Preferring the live record is also what plan-item-release
+ *  wants — releasing the lane should target the record still holding it, not a
+ *  dropped predecessor. */
 export async function findImplementingWorkItem(
   planSlug: string,
   itemId: string,
@@ -165,20 +180,22 @@ export async function findImplementingWorkItem(
        AND dst_kind = ${PLAN_ITEM_KIND}
        AND dst_ref = ${planItemRef(planSlug, itemId)}
      ORDER BY created_at DESC`;
+  // Newest-first scan; first NON-TERMINAL wins, newest terminal is the fallback.
+  let newestTerminal: WorkItem | null = null;
   for (const r of rows) {
+    let wi: WorkItem | null = null;
     if (r.src_kind === 'issue') {
-      const wi = await getWorkItem(r.src_ref);
-      if (wi) return wi;
+      wi = await getWorkItem(r.src_ref);
     } else if (r.src_kind === 'feature') {
       // featureRef '<harness>#<id>' (issue-blocks-merge).
       const i = r.src_ref.indexOf('#');
-      if (i > 0) {
-        const wi = await getWorkItem(r.src_ref.slice(i + 1), r.src_ref.slice(0, i));
-        if (wi) return wi;
-      }
+      if (i > 0) wi = await getWorkItem(r.src_ref.slice(i + 1), r.src_ref.slice(0, i));
     }
+    if (!wi) continue;
+    if (!TERMINAL_WORK_ITEM_STATES.has(wi.state)) return wi;
+    newestTerminal ??= wi;
   }
-  return null;
+  return newestTerminal;
 }
 
 /**
