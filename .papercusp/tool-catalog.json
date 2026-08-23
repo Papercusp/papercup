@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 810,
+  "count": 813,
   "tools": [
     {
       "name": "ablation:report",
@@ -12500,6 +12500,36 @@
       }
     },
     {
+      "name": "goals:set-property",
+      "http": {
+        "path": "/api/agent-tools/goals/set-property",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Write ONE typed property value on a goal (P-023). The property must be DECLARED in the goal's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance is derived from the caller, never self-declared); expectedVersion is a CAS guard (0 = no explicit value yet — a 'stale' refusal means re-read and retry). Emits a property_changed delta event the owning agent's next orient folds.",
+      "capabilities": [
+        "goals:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Changing a declared property's VALUE on a goal — the owner steering surface and the agent's own typed state updates both land here.",
+        "notWhen": "DECLARING properties — that is the property_schema document, set at creation (goals:create / goals:start { propertySchema }). Free-form goal fields (title, body, criterion) — goals:update. Plan properties — plans:set-property.",
+        "chaining": "goals:get { id, detail:'full' } (read property_schema + properties incl. each version) → goals:set-property { goalId, property, value, expectedVersion } → on 'stale', re-read and retry with the reported actualVersion."
+      }
+    },
+    {
       "name": "goals:set-schedule",
       "http": {
         "path": "/api/agent-tools/goals/set-schedule",
@@ -19438,6 +19468,36 @@
       }
     },
     {
+      "name": "plans:get-properties",
+      "http": {
+        "path": "/api/agent-tools/plans/get-properties",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a plan's typed property surface (P-023): { propertySchema, properties, effective }. `properties` carries each stored value's envelope (value, version, provenance, edited_at, edited_by) — `version` is what plans:set-property's CAS guard needs; `effective` is the per-declared-property value (stored, else the declaration default). Read-only.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Rendering or acting on a plan's typed properties — the read before a set-property write (it supplies the CAS version).",
+        "notWhen": "Writing a value — plans:set-property. Declaring properties — plans:new { propertySchema }. Input schemas — plans:get-input-schema.",
+        "chaining": "plans:get-properties { slug } → plans:set-property { slug, property, value, expectedVersion }."
+      }
+    },
+    {
       "name": "plans:get-spec-evidence",
       "http": {
         "path": "/api/agent-tools/plans/get-spec-evidence",
@@ -21430,6 +21490,36 @@
         "when": "User drags a started plan to a new position in the Plans rail, or explicitly asks \"do plan A before plan B\".",
         "notWhen": "For pausing a plan, use plans:pause. For the run lifecycle, use plans:set-run-status.",
         "chaining": "plans:list to see started plans and their current priorities."
+      }
+    },
+    {
+      "name": "plans:set-property",
+      "http": {
+        "path": "/api/agent-tools/plans/set-property",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Write ONE typed property value on a plan (P-023). The property must be DECLARED in the plan's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance derived from the caller); expectedVersion is a CAS guard (0 = no explicit value yet — 'stale' means re-read and retry). Emits a property_changed delta event on the plan-events rail.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Changing a declared property's VALUE on a plan — owner steering and agent typed-state updates.",
+        "notWhen": "DECLARING properties — plans:new { propertySchema } at creation. Plan content/frontmatter — plans:set-content / set-frontmatter-field. Item status — plans:set-status. Goal properties — goals:set-property.",
+        "chaining": "plans:get-properties { slug } (declarations + values + per-property versions) → plans:set-property { slug, property, value, expectedVersion } → on 'stale', re-read and retry."
       }
     },
     {
