@@ -298,11 +298,12 @@ markers ~3.5 min apart, no re-freeze):
   log), payload = `coord:receipt` fed_events self-identifying
   `machine:dev-box-linux`, `delivered:true`.
 
-> **Do NOT use `probe:emit` / `harness_shared.federation_probes` hop-advance as
-> the live-federation discriminant (WI-3962).** `probe:emit` only stamps the
-> `federation_probes` side-table and `probe:record-hop` was never wired into the
-> real pipeline stages, so a probe stalls at `captured` forever regardless of
-> actual health — an unconditional false-NO-GO. Read live federation health from
+> **`probe:emit` / `probe:get` prove local capture only — never use an `acked`
+> receipt as the live-federation discriminant (WI-3962).** The former post-capture
+> hop fields and `probe:record-hop` surface were removed: they had no real
+> pipeline writers and made every probe an unconditional false-NO-GO. `acked`
+> now means exactly “the correctly stamped declaration was captured locally”;
+> `refused` records why capture could not start. Read live federation health from
 > fresh `origin='remote'` `coord_event_log` rows + `substrate_merge_cursor`
 > advancement, as above.
 

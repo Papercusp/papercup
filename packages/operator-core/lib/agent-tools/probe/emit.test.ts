@@ -1,5 +1,5 @@
 /**
- * emit.test.ts — probe:emit declares ONLY arguments it can actually honour.
+ * emit.test.ts — captured-only probe tool-surface guards.
  *
  * WI-35901: probe:emit used to declare an `expectedHops` argument that was
  * accepted, echoed back as `hopsExpected`, and then silently dropped — it was
@@ -8,13 +8,9 @@
  * who narrowed at emit and then read with `probe:get { probeKey }` got exactly
  * the false "stalled" verdict the argument claimed to prevent.
  *
- * Resolved by deleting the argument (route (b)) rather than persisting it:
- * nothing records the later hops in the first place (WI-3962 — zero
- * recordProbeHop callers, and the merged/memberGuard/projected hops are observed
- * on the RECEIVER, whose local federation_probes has no row for the key), so a
- * per-probe declaration of which of six hops to expect would be scaffolding for
- * an observation plane that is not wired. Narrowing is a READ-time concern and
- * lives on probe:get, which implements it correctly.
+ * WI-3962 removed the dead post-capture observation plane entirely. Both tools
+ * now expose only arguments they can honor: emit accepts harnessSlug and get
+ * accepts probeKey. No expected-hop narrowing or manual record-hop seam remains.
  *
  * What this guards: re-adding a decorative argument to probe:emit. The failure
  * being prevented is not "a wrong value" but "an argument that silently does
@@ -24,6 +20,9 @@
  * In-tree (operator-core, pure — no DB).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/probe/emit.test.ts
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 // Import-time isolation only: keep this in the pure lane by stopping the store
@@ -48,6 +47,7 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => (
 
 const emitTool = (await import('./emit')).default;
 const getTool = (await import('./get')).default;
+const PROBE_DIR = dirname(fileURLToPath(import.meta.url));
 
 const argKeys = (tool: { args: unknown }): string[] => {
   const shape = (tool.args as { shape?: Record<string, unknown> }).shape;
@@ -76,10 +76,13 @@ describe('probe:emit argument surface (WI-35901)', () => {
     expect(argKeys(emitTool).sort()).toEqual(['harnessSlug']);
   });
 
-  it('keeps the read-time narrowing on probe:get, which is where it actually works', () => {
-    // The other half of WI-35901: emit losing the argument is only correct
-    // because get still has one. If this ever fails, narrowing has no home at
-    // all and the verdict silently reads never-expected hops as stalled.
-    expect(argKeys(getTool)).toContain('expectedHops');
+  it('keeps probe:get read-only and free of synthetic hop controls', () => {
+    expect(argKeys(getTool)).toEqual(['probeKey']);
+  });
+
+  it('does not register or retain the retired probe:record-hop tool', () => {
+    expect(existsSync(join(PROBE_DIR, 'record-hop.ts'))).toBe(false);
+    const agentToolsIndex = readFileSync(join(PROBE_DIR, '..', 'index.ts'), 'utf8');
+    expect(agentToolsIndex).not.toContain("./probe/record-hop");
   });
 });
