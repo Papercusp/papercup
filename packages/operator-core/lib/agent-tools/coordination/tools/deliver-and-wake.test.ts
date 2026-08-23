@@ -40,11 +40,7 @@ const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
 // the report without PG. Default: a roster of su-bee-1/2/3 (so they aren't treated
 // as federated) and zero active watchers (so a plain send reports them idle).
 const listActiveAwaitsForKey = vi.fn(async (_key: string) => [] as unknown[]);
-const listPresence = vi.fn(async () => [
-  { ownerId: 'su-bee-1' },
-  { ownerId: 'su-bee-2' },
-  { ownerId: 'su-bee-3' },
-]);
+const listPresence = vi.fn(async () => [{ ownerId: 'su-bee-1' }, { ownerId: 'su-bee-2' }, { ownerId: 'su-bee-3' }]);
 // coord:await-inbox composes the registration internals directly — stub them so
 // the unit test needs no PG / no real sweeper.
 const registerAwait = vi.fn(async (input: { eventKey: string; once?: boolean; minSleepSec?: number | null }) => ({
@@ -157,8 +153,7 @@ vi.mock('../presence', async () => ({
   /* DERIVED from the same fixture list rather than a second hand-written one, so
      the single-record getter can never disagree with listPresence() about who
      exists — a divergence the oracle would read as real state. */
-  getPresence: async (ownerId: string) =>
-    (await listPresence()).find((r) => r.ownerId === ownerId) ?? null,
+  getPresence: async (ownerId: string) => (await listPresence()).find((r) => r.ownerId === ownerId) ?? null,
 }));
 vi.mock('../../../events/await/handle', () => ({
   captureWakeHandleForOwner: () => captureWakeHandleForOwner(),
@@ -194,8 +189,7 @@ import awaitInbox from './await-inbox';
 import { COORD_INBOX_WAKE_PREFIX, inboxWakeKey, ownerFromInboxWakeKey } from '../inbox-wake';
 
 const ctx = { uiClientId: 'su-self', isSuperuser: true, workspaceId: 'ws' } as never;
-const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
-  tool.args.parse(x) as T;
+const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T => tool.args.parse(x) as T;
 const out = (res: unknown) => {
   const r = res as { data?: any; content?: Array<{ text: string }> };
   // Bulk tools return { data: envelope }; non-bulk / guard paths return raw { content }.
@@ -229,11 +223,7 @@ describe('coord:send', () => {
     listActiveAwaitsForKey.mockReset();
     listActiveAwaitsForKey.mockResolvedValue([]);
     listPresence.mockReset();
-    listPresence.mockResolvedValue([
-      { ownerId: 'su-bee-1' },
-      { ownerId: 'su-bee-2' },
-      { ownerId: 'su-bee-3' },
-    ]);
+    listPresence.mockResolvedValue([{ ownerId: 'su-bee-1' }, { ownerId: 'su-bee-2' }, { ownerId: 'su-bee-3' }]);
     // EI-5957: default every recipient to `auto` (fire) unless a test opts into
     // `manual` (stage); reset the staging spy between tests.
     resolveWakeMode.mockReset();
@@ -317,7 +307,12 @@ describe('coord:send', () => {
     // wake half: ONE emit per recipient, each on that recipient's OWN key.
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
     expect(keys).toEqual([inboxWakeKey('su-bee-1'), inboxWakeKey('su-bee-2')]);
-    expect(send1(res).wake).toMatchObject({ targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
+    expect(send1(res).wake).toMatchObject({
+      targets: ['su-bee-1', 'su-bee-2'],
+      queued: 2,
+      woken: 0,
+      pickupConfirmed: false,
+    });
   });
 
   it('NEVER fires a broadcast key — "*" and "human" are not wakeable (P-042)', async () => {
@@ -326,7 +321,7 @@ describe('coord:send', () => {
       ctx,
     );
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
-    // only the concrete agent is woken; '*'/'human' are skipped
+    // only the concrete agent is queued for a wake; '*'/'human' are skipped
     expect(keys).toEqual([inboxWakeKey('su-bee-3')]);
     expect(keys).not.toContain('*');
     expect(keys.some((k) => k.includes('*'))).toBe(false);
@@ -338,7 +333,7 @@ describe('coord:send', () => {
       ctx,
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
-    expect(send1(res).wake).toMatchObject({ targets: [], woken: 0 });
+    expect(send1(res).wake).toMatchObject({ targets: [], queued: 0, woken: 0, pickupConfirmed: false });
     // No live targets ⇒ NOT a wake-into-the-void: the warning is gated on
     // targets.length > 0 (a broadcast that wakes no one is by design, not a gap).
     expect(send1(res).wake.warning).toBeUndefined();
@@ -367,6 +362,7 @@ describe('coord:send', () => {
     const { wake } = send1(res);
     expect(wake.mode).toBe('required');
     expect(wake.targets).toEqual(['su-bee-1']);
+    expect(wake.queued).toBe(0);
     expect(wake.woken).toBe(0);
     expect(wake.recipient_absent).toBe(true);
     expect(typeof wake.note).toBe('string');
@@ -390,6 +386,7 @@ describe('coord:send', () => {
       expect(wake).toMatchObject({
         mode: 'required',
         targets: ['su-bee-1'],
+        queued: 0,
         woken: 0,
         wakeOutcome: 'unknown',
         timedOutTargets: ['su-bee-1'],
@@ -432,7 +429,13 @@ describe('coord:send', () => {
     const res = await coordSend.handler(
       // Backstop declared → optimistic miss is SILENT (no recipient_absent).
       // Without a backstop the code now reports the miss loudly (recipient_absent:true).
-      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none', wake: 'optimistic', backstop: 'test delivery sweep re-dispatches' }),
+      parse(coordSend, {
+        to: ['su-bee-1'],
+        summary: 'fyi',
+        expects: 'none',
+        wake: 'optimistic',
+        backstop: 'test delivery sweep re-dispatches',
+      }),
       ctx,
     );
     const { wake } = send1(res);
@@ -442,14 +445,27 @@ describe('coord:send', () => {
     expect(await log.readLines('messages')).toHaveLength(1);
   });
 
-  it("wake:'required' that DOES wake returns NO recipient_absent (woken>0 control)", async () => {
-    // default mock returns woken:1 per emit → two targets ⇒ woken:2.
+  it("wake:'required' that QUEUES a delivery returns NO recipient_absent (queued>0 control)", async () => {
+    // default mock returns woken:1 per emit (the event-engine queue count) → two targets ⇒ queued:2.
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
+      parse(coordSend, {
+        to: ['su-bee-1', 'su-bee-2'],
+        summary: 'go',
+        expects: 'action',
+        ...ACTION_BODY,
+        wake: 'required',
+      }),
       ctx,
     );
     const { wake } = send1(res);
-    expect(wake).toMatchObject({ mode: 'required', targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
+    expect(wake).toMatchObject({
+      mode: 'required',
+      targets: ['su-bee-1', 'su-bee-2'],
+      queued: 2,
+      woken: 0,
+      pickupConfirmed: false,
+      wakeOutcome: 'queued',
+    });
     expect(wake.recipient_absent).toBeUndefined();
   });
 
@@ -460,13 +476,20 @@ describe('coord:send', () => {
     // never got the directive. The fix surfaces it LOUDLY.
     resolveWakeMode.mockResolvedValue('manual');
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', expects: 'action', ...ACTION_BODY, wake: 'required' }),
+      parse(coordSend, {
+        to: ['su-bee-1'],
+        summary: 'stand down',
+        expects: 'action',
+        ...ACTION_BODY,
+        wake: 'required',
+      }),
       ctx,
     );
     // it STAGED, not fired: no wake emitted, the pending-wake was recorded
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
     expect(stagePendingWake).toHaveBeenCalledTimes(1);
     const { wake } = send1(res);
+    expect(wake.queued).toBe(0);
     expect(wake.woken).toBe(0);
     expect(wake.staged).toBe(1);
     expect(wake.stagedTargets).toEqual(['su-bee-1']); // names WHO didn't get it
@@ -484,11 +507,15 @@ describe('coord:send', () => {
   it('EI-5957: a MIXED batch (one auto, one manual) fires the auto wake AND stages+warns the manual one', async () => {
     // su-bee-1 auto (fires), su-bee-2 manual (stages). The auto path is untouched;
     // the staged one is named + warned even though a peer was woken.
-    resolveWakeMode.mockImplementation(async (ownerId: string) =>
-      ownerId === 'su-bee-2' ? 'manual' : 'auto',
-    );
+    resolveWakeMode.mockImplementation(async (ownerId: string) => (ownerId === 'su-bee-2' ? 'manual' : 'auto'));
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
+      parse(coordSend, {
+        to: ['su-bee-1', 'su-bee-2'],
+        summary: 'go',
+        expects: 'action',
+        ...ACTION_BODY,
+        wake: 'required',
+      }),
       ctx,
     );
     // only the auto target's key fired
@@ -496,11 +523,12 @@ describe('coord:send', () => {
     expect(keys).toEqual([inboxWakeKey('su-bee-1')]);
     expect(stagePendingWake).toHaveBeenCalledTimes(1);
     const { wake } = send1(res);
-    expect(wake.woken).toBe(1); // the auto peer woke
+    expect(wake.queued).toBe(1); // the auto peer's durable wake delivery was queued
+    expect(wake.woken).toBe(0); // no execution receipt exists yet
     expect(wake.staged).toBe(1);
     expect(wake.stagedTargets).toEqual(['su-bee-2']);
     expect(wake.note).toMatch(/STAGED/);
-    expect(wake.recipient_absent).toBeUndefined(); // woken>0 ⇒ not a missed wake
+    expect(wake.recipient_absent).toBeUndefined(); // queued>0 ⇒ not a missed wake
   });
 
   it("broadcast-only with wake:'required' is EXEMPT from recipient_absent (P-005 — '*' was never wakeable)", async () => {
@@ -550,7 +578,7 @@ describe('coord:await-inbox (D-005 idle annotation over the always-armed watch)'
     startAwaitSweeper.mockClear();
   });
 
-  it('refreshes the STANDING wake watch on the caller\'s OWN inbox-wake key (via the always-arm upsert)', async () => {
+  it("refreshes the STANDING wake watch on the caller's OWN inbox-wake key (via the always-arm upsert)", async () => {
     const res = await awaitInbox.handler(parse(awaitInbox, { note: 'drained' }), ctx);
     expect(startAwaitSweeper).toHaveBeenCalled();
     // D-005: routes through armInboxWake → upsertInboxWakeAwait (the idempotent

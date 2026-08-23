@@ -67,9 +67,7 @@ vi.mock('../recipient-resolve', () => ({
   // Match production: '*'/'human'/''/@-prefixed all bypass concrete-recipient
   // resolution (EI-6874 — audience selectors like @fleet:/@topic: must NOT be
   // treated as concrete ids to resolve against the roster).
-  isSelectorOrWildcard: vi.fn(
-    (id: string) => id === '*' || id === 'human' || id === '' || id.startsWith('@'),
-  ),
+  isSelectorOrWildcard: vi.fn((id: string) => id === '*' || id === 'human' || id === '' || id.startsWith('@')),
   resolveRecipients: vi.fn(),
   // P-007: remote session ids empty by default (single-box behavior unchanged)
   remoteSessionOwnerIds: vi.fn(async () => new Set<string>()),
@@ -83,9 +81,7 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }))
 // stamping semantics are covered by ref-hydrate.test.ts; here every key just
 // stamps as undeclared.
 vi.mock('../ref-hydrate-resolve', () => ({
-  resolveGateRefStamps: vi.fn(async (keys: string[]) =>
-    keys.map((k) => ({ key: k, status: 'undeclared' })),
-  ),
+  resolveGateRefStamps: vi.fn(async (keys: string[]) => keys.map((k) => ({ key: k, status: 'undeclared' }))),
 }));
 // P-001 (cross-machine-coord-parity): the workspace shared-Hive scope resolver.
 // Default 'none' = today's local-only behavior for un-scoped senders.
@@ -178,9 +174,9 @@ const envelope = (over: Partial<Envelope> & Pick<Envelope, 'msg_id' | 'from' | '
 });
 
 type Out = { data: any };
-const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
 const bodyWithCtx = async (args: unknown, ctx: unknown) =>
-  (((await tool.handler(args as never, ctx as never)) as Out).data);
+  ((await tool.handler(args as never, ctx as never)) as Out).data;
 
 it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
   expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
@@ -308,7 +304,13 @@ describe('coord:send handler (bulk keyed-array)', () => {
 
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM).toHaveBeenCalledWith(['bee-1'], expect.anything());
-    expect(b.results[0].wake).toMatchObject({ mode: 'required', woken: 1, wakeOutcome: 'delivered' });
+    expect(b.results[0].wake).toMatchObject({
+      mode: 'required',
+      queued: 1,
+      woken: 0,
+      pickupConfirmed: false,
+      wakeOutcome: 'queued',
+    });
     expect(b.results[1].wake).toBeUndefined();
   });
 
@@ -326,7 +328,12 @@ describe('coord:send handler (bulk keyed-array)', () => {
     });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, to: ['bee-1'], msg_id: 'm1' });
-    expect(b.results[1]).toMatchObject({ ok: false, to: ['ghost'], error: 'unknown_recipient', unknown_recipients: ['ghost'] });
+    expect(b.results[1]).toMatchObject({
+      ok: false,
+      to: ['ghost'],
+      error: 'unknown_recipient',
+      unknown_recipients: ['ghost'],
+    });
     // the bad message was NOT sent (the good one was)
     expect(sendM).toHaveBeenCalledTimes(1);
   });
@@ -384,7 +391,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.note).not.toMatch(/not running|re-spawned/i);
   });
 
-  it("WI-5994: a MIXED miss (one dead, one dormant-scheduled) reports both truthfully, never conflated", async () => {
+  it('WI-5994: a MIXED miss (one dead, one dormant-scheduled) reports both truthfully, never conflated', async () => {
     wakeM.mockResolvedValueOnce({
       targets: ['dead-bee', 'loopy-bee'],
       keys: [],
@@ -434,32 +441,36 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.note).toMatch(/declared backstop/i);
   });
 
-  it('FF#3: a miss forces the missed addressee\'s FRESH sessionState into the result', async () => {
+  it("FF#3: a miss forces the missed addressee's FRESH sessionState into the result", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
-    livenessM.mockResolvedValueOnce([
-      { ownerId: 'ghost-bee', sessionState: 'ended', wakeable: false },
-    ] as never);
+    livenessM.mockResolvedValueOnce([{ ownerId: 'ghost-bee', sessionState: 'ended', wakeable: false }] as never);
     const b = await body({ to: ['ghost-bee'], summary: 'x', wake: 'required' });
     expect(b.results[0].wake.recipient_liveness).toEqual([
       { ownerId: 'ghost-bee', sessionState: 'ended', wakeable: false },
     ]);
   });
 
-  it("wake:'optimistic' that WOKE someone (woken:1) carries no miss note", async () => {
+  it("wake:'optimistic' that QUEUED a durable delivery does not claim pickup", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'optimistic' });
-    expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 1 });
+    expect(b.results[0].wake).toMatchObject({
+      mode: 'optimistic',
+      queued: 1,
+      woken: 0,
+      pickupConfirmed: false,
+      wakeOutcome: 'queued',
+    });
     expect(b.results[0].wake.note).toBeUndefined();
   });
 
-  // EI-19965318428068990: `wakeOutcome` is the explicit discriminant a caller can read
-  // WITHOUT falling into the woken:0-means-either-thing trap the finding describes —
-  // a STAGED (manual wake-mode) target and a genuinely DEAD one both report woken:0.
+  // EI-19965318428068990 / EI-21229705630055249: `wakeOutcome` is the explicit
+  // discriminant a caller can read WITHOUT treating the event engine's queue count
+  // as proof that a detached wake pump consumed a turn.
   describe('wakeOutcome (EI-19965318428068990)', () => {
-    it("fully delivered (woken>0, staged:0) → wakeOutcome:'delivered'", async () => {
+    it("durable delivery queued (queued>0, staged:0) → wakeOutcome:'queued', not 'delivered'", async () => {
       wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
       const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'required' });
-      expect(b.results[0].wake).toMatchObject({ woken: 1, wakeOutcome: 'delivered' });
+      expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 0, pickupConfirmed: false, wakeOutcome: 'queued' });
       expect(b.results[0].wake.staged).toBeUndefined();
     });
 
@@ -482,7 +493,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
       expect(b.results[0].wake.recipient_absent).toBeUndefined();
     });
 
-    it("mixed multi-target send (one delivered, one staged) → wakeOutcome:'partial-staged'", async () => {
+    it("mixed multi-target send (one queued, one staged) → wakeOutcome:'partial-staged'", async () => {
       wakeM.mockResolvedValueOnce({
         targets: ['live-bee', 'manual-bee'],
         keys: [],
@@ -491,7 +502,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
         stagedTargets: ['manual-bee'],
       } as never);
       const b = await body({ to: ['live-bee', 'manual-bee'], summary: 'fyi', wake: 'required' });
-      expect(b.results[0].wake).toMatchObject({ woken: 1, staged: 1, wakeOutcome: 'partial-staged' });
+      expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 0, staged: 1, wakeOutcome: 'partial-staged' });
     });
 
     it("a genuine dead-recipient miss (woken:0, staged:0) → wakeOutcome:'missed', distinguishable from staged", async () => {
@@ -500,6 +511,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
       const b = await body({ to: ['dead-bee'], summary: 'fyi', wake: 'required' });
       expect(b.results[0].wake.staged).toBeUndefined();
       expect(b.results[0].wake).toMatchObject({
+        queued: 0,
         woken: 0,
         wakeOutcome: 'missed',
         recipient_absent: true,
@@ -654,11 +666,19 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('a reply to an opted-in directed message fires an optimistic wake to the ORIGINAL sender', async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
-    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    mockResolvedOnceTyped(wakeM, {
+      targets: ['peer'],
+      keys: [],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    });
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 0, pickupConfirmed: false });
   });
 
   it('expected lifecycle ack marker preserves the ack reply but suppresses only its reply-wake', async () => {
@@ -678,7 +698,9 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toEqual({
       target: 'peer',
+      queued: 0,
       woken: 0,
+      pickupConfirmed: false,
       suppressed: true,
       suppressionReason: 'expected_lifecycle_ack',
     });
@@ -695,13 +717,18 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
         expectedLifecycleAck: { kind: 'fleet-wind-down', fleet: '' },
       }),
     );
-    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    mockResolvedOnceTyped(wakeM, {
+      targets: ['peer'],
+      keys: [],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    });
     const b = await body({ to: ['peer'], summary: 'ordinary reply', related_msg_id: 'malformed-cue' });
-    expect(wakeM).toHaveBeenCalledExactlyOnceWith(
-      ['peer'],
-      expect.objectContaining({ payload: { msg_id: 'm1' } }),
-    );
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
+    expect(wakeM).toHaveBeenCalledExactlyOnceWith(['peer'], expect.objectContaining({ payload: { msg_id: 'm1' } }));
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 0, pickupConfirmed: false });
     expect(b.results[0].replyWake?.suppressed).toBeUndefined();
   });
 
@@ -728,8 +755,14 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
     // Reported as folded (observable dedup), not fired.
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 0, foldedIntoDirectedWake: true });
-    expect(b.results[0].wake).toMatchObject({ woken: 1 });
+    expect(b.results[0].replyWake).toMatchObject({
+      target: 'peer',
+      queued: 0,
+      woken: 0,
+      pickupConfirmed: false,
+      foldedIntoDirectedWake: true,
+    });
+    expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 0, pickupConfirmed: false, wakeOutcome: 'queued' });
   });
 
   it('EI-14760: a wake:true reply whose original sender is a THIRD party still fires the reply-wake (two distinct fans)', async () => {
@@ -747,7 +780,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0].replyWake?.foldedIntoDirectedWake).toBeUndefined();
   });
 
-  it('EI-18663224517726594: a directed wake:true send carries the new message\'s OWN msg_id in the wake payload — a woken recipient can thread its reply without a separate coord:inbox round-trip', async () => {
+  it("EI-18663224517726594: a directed wake:true send carries the new message's OWN msg_id in the wake payload — a woken recipient can thread its reply without a separate coord:inbox round-trip", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['bee-1'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['bee-1'], summary: 'please review X', wake: 'required' });
     expect(wakeM).toHaveBeenCalledTimes(1);
@@ -755,7 +788,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(opts.payload).toEqual({ msg_id: b.results[0].msg_id });
   });
 
-  it('EI-18663224517726594: the reply-wake fan (waking the ORIGINAL sender when a third party replies) also carries the reply\'s own msg_id', async () => {
+  it("EI-18663224517726594: the reply-wake fan (waking the ORIGINAL sender when a third party replies) also carries the reply's own msg_id", async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValueOnce({ targets: ['asker'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
@@ -817,10 +850,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     mockResolvedOnceTyped(resolveRefM, {
       status: 'ambiguous',
       msgId: 'mt',
-      candidates: [
-        'mt-a-0000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        'mt-b-0000-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      ],
+      candidates: ['mt-a-0000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'mt-b-0000-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
     });
 
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'mt' });
@@ -842,10 +872,18 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('WI-5072: a RESOLVED related_msg_id is fetched ONCE — validation result is reused by the reply-wake', async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
-    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    mockResolvedOnceTyped(wakeM, {
+      targets: ['peer'],
+      keys: [],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    });
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(b.results[0].ok).toBe(true);
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 0, pickupConfirmed: false });
     expect(getByIdM).toHaveBeenCalledTimes(1); // one lookup, not two
   });
 
@@ -885,7 +923,11 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] }));
     mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['some-other-ghost'], ambiguous: [] });
     const b = await body({ to: ['some-other-ghost'], summary: 'hi', related_msg_id: 'orig' });
-    expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['some-other-ghost'] });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'unknown_recipient',
+      unknown_recipients: ['some-other-ghost'],
+    });
     // EI-20232430036029410: when a related reply cannot be delivered to the
     // concrete recipient, the refusal must teach the durable coord:ack path
     // instead of leaving the agent to rediscover it from the dead session.
@@ -907,7 +949,11 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
       ambiguous: [],
     });
     const b = await body({ to: ['bee-1', 'bee-2', 'fabricated-ghost'], summary: 'hi all' });
-    expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['fabricated-ghost'] });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'unknown_recipient',
+      unknown_recipients: ['fabricated-ghost'],
+    });
     expect(b.results[0].message).toMatch(/2 OTHER, VALID recipient/);
     expect(b.results[0].message).toMatch(/items:\[/);
     expect(sendM).not.toHaveBeenCalled(); // nothing sent — including to bee-1/bee-2
@@ -1010,7 +1056,7 @@ describe('coord:send expectEffect — DELIVERED vs ACTED-ON (P-013)', () => {
     expect(opts.extra?.expectEffect).toBeUndefined();
   });
 
-  it("echoes the expectation as `pending` — it must NEVER report compliance at send time", async () => {
+  it('echoes the expectation as `pending` — it must NEVER report compliance at send time', async () => {
     const res = (await body({
       to: ['bee-1'],
       summary: 'terminal it',
@@ -1020,7 +1066,7 @@ describe('coord:send expectEffect — DELIVERED vs ACTED-ON (P-013)', () => {
     expect(echoed?.verdict).toBe('pending');
     // The honesty rail: the send result is the one place an agent is most likely to
     // mistake delivery for compliance, so it says so in words.
-    expect(echoed?.note).toMatch(/woken:1 is DELIVERY, not compliance/);
+    expect(echoed?.note).toMatch(/queued:1 is DELIVERY QUEUEING, not compliance/);
   });
 
   // The refusal of an unrecognised `kind` is a SCHEMA property, and this file calls
@@ -1030,7 +1076,7 @@ describe('coord:send expectEffect — DELIVERED vs ACTED-ON (P-013)', () => {
 });
 
 describe('coord:send zero-recipient audience (EI-6874)', () => {
-  it("an EXPLICIT @fleet: selector resolving to ZERO live members → ok:false zero_recipients, NOT a silent ok:true", async () => {
+  it('an EXPLICIT @fleet: selector resolving to ZERO live members → ok:false zero_recipients, NOT a silent ok:true', async () => {
     // The incident: a leader's drain order to @fleet:p2p-dist resolved to 0 members
     // (all launched with fleetSlug:null) and returned a silent ok:true, so the leader
     // sat ~3h awaiting acks nobody could send. sendMessage expands the selector to the
@@ -1263,7 +1309,13 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a required-wake miss on a REMOTE-homed recipient reports recipient_remote (not dead) with the federation note', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
     remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now()]]) as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+    wakeM.mockResolvedValueOnce({
+      targets: ['su-remote-1'],
+      keys: [],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+    } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never); // no local watcher — but it is REMOTE
     const b = await body({ to: ['su-remote-1'], summary: 'cross-machine ping', wake: 'required' });
     expect(b.results[0].wake.recipient_remote).toEqual(['su-remote-1']);
@@ -1275,7 +1327,13 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a remote-homed recipient on a NON-federated send gets the loud scope hint (it will never arrive)', async () => {
     // no shared hive → the send stays local, but the recipient is remote-only
     remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now()]]) as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+    wakeM.mockResolvedValueOnce({
+      targets: ['su-remote-1'],
+      keys: [],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+    } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
     const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
     expect(b.results[0].federated).toBe(false);
@@ -1285,7 +1343,13 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a STALE remote beat is reported as probably-gone (P-010) — treat like dead unless the receipt arrives', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
     remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now() - 30 * 60 * 1000]]) as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+    wakeM.mockResolvedValueOnce({
+      targets: ['su-remote-1'],
+      keys: [],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+    } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
     const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
     expect(b.results[0].wake.recipient_remote_stale).toEqual(['su-remote-1']);
@@ -1298,8 +1362,7 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
   // to its own fleet so it can NEVER reach a peer leader outside that fleet. The
   // fleet SLUG is resolved from fetchPresenceFleet (the JOIN), the source the old
   // getPresence().fleetSlug read failed to hit — making this a prod no-op until now.
-  const fleetOf = (slug: string, role = 'leader') =>
-    new Map([['me', { fleetSlug: slug, fleetRole: role }]]);
+  const fleetOf = (slug: string, role = 'leader') => new Map([['me', { fleetSlug: slug, fleetRole: role }]]);
 
   it("auto-scopes a fleet leader's bare ['*'] to @fleet:<slug> — cannot reach a peer leader outside its fleet", async () => {
     fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
@@ -1338,7 +1401,7 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
     expect(sendM.mock.calls[0][1].extra?.allHiveBroadcast).toBeUndefined();
   });
 
-  it('honors [\'*\'] verbatim for a hive-queen sender (mug/kettle) with allHive:true — its authority IS hive-wide', async () => {
+  it("honors ['*'] verbatim for a hive-queen sender (mug/kettle) with allHive:true — its authority IS hive-wide", async () => {
     // A mug/kettle's cueAuthority stamp is scope:'hive-wide' (resolveCueAuthority),
     // never 'fleet-members' — the EI-9501 guard only fires on a fleet-scoped stamp,
     // so a genuine hive-queen broadcast is unaffected.
@@ -1681,9 +1744,9 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
   });
 
   it('ACCEPTS the minimum section array — the shape is forced, the authored fields are not', () => {
-    expect(
-      tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }).success,
-    ).toBe(true);
+    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }).success).toBe(
+      true,
+    );
   });
 
   it("REQUIRES a body for 'action'/'answer' — so `summary` cannot become the new string escape hatch", () => {
@@ -1718,15 +1781,13 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
   );
 
   it('EXEMPTS a broadcast from forYouBecause — "why YOU specifically" is not well-formed for `*`', () => {
-    expect(
-      tool.args.safeParse({ to: ['*'], summary: 'hi', expects: 'action', body: [{ text: 'x' }] }).success,
-    ).toBe(true);
+    expect(tool.args.safeParse({ to: ['*'], summary: 'hi', expects: 'action', body: [{ text: 'x' }] }).success).toBe(
+      true,
+    );
   });
 
   it('enforces the same rules on the items[] axis, not just the shorthand', () => {
-    expect(
-      tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action' }] }).success,
-    ).toBe(false);
+    expect(tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action' }] }).success).toBe(false);
     expect(
       tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action', body: 'prose' }] }).success,
     ).toBe(false);
@@ -1768,10 +1829,9 @@ describe('coord:send `expects` gate (P-017 b#1 — required-with-explicit-none, 
         ? { body: [{ text: 'why', forYouBecause: { relation: 'owns' as const, note: 'yours' } }] }
         : {};
     for (const expects of ['ack', 'answer', 'action', 'none'] as const) {
-      expect(
-        tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, ...bodyFor(expects) }).success,
-        expects,
-      ).toBe(true);
+      expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects, ...bodyFor(expects) }).success, expects).toBe(
+        true,
+      );
       expect(
         tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects, ...bodyFor(expects) }] }).success,
         `items:${expects}`,
@@ -1860,9 +1920,9 @@ describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
   it('the report shape parses through the tool arg schema (single + items axes)', () => {
     const report = { title: 'Fleet update', plans: [{ title: 'lane', items: [{ text: 'x', status: 'done' }] }] };
     expect(tool.args.safeParse({ to: ['human'], summary: 'hi', expects: 'none', report }).success).toBe(true);
-    expect(
-      tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', expects: 'none', report }] }).success,
-    ).toBe(true);
+    expect(tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', expects: 'none', report }] }).success).toBe(
+      true,
+    );
   });
 });
 
@@ -1902,9 +1962,7 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
   });
 
   it('is NOT a caller argument — an authored `basedOn` is refused by the schema (D-002)', () => {
-    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', basedOn: trace }).success).toBe(
-      false,
-    );
+    expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', basedOn: trace }).success).toBe(false);
   });
 
   it('never fails a send when the derivation itself blows up', async () => {
@@ -1914,9 +1972,7 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
   });
 
   it('stamps an additive mismatch when completion names an unread artifact', async () => {
-    mockResolvedTyped(basedOnM, [
-      { ref: 'plan:unrelated-plan', via: 'plans:get', readAt: '2026-07-27T12:00:00.000Z' },
-    ]);
+    mockResolvedTyped(basedOnM, [{ ref: 'plan:unrelated-plan', via: 'plans:get', readAt: '2026-07-27T12:00:00.000Z' }]);
     await body({
       to: ['bee-1'],
       summary: 'completed plan:shipped-feature',
@@ -1944,14 +2000,10 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
  * thing that was actually wrong for five days.
  */
 describe('premiseStamps — the resolved half of `premises`, stamped at send', () => {
-  const withPremises = [
-    { text: 'the substance', premises: ['WI-6502#completion', 'plan-x#D-001'] },
-  ];
+  const withPremises = [{ text: 'the substance', premises: ['WI-6502#completion', 'plan-x#D-001'] }];
 
   it('resolves the cited refs and rides the envelope the send seam persists', async () => {
-    const stamps = [
-      { ref: 'WI-6502#completion', kind: 'work-item-completion', invalidatable: true, status: 'broken' },
-    ];
+    const stamps = [{ ref: 'WI-6502#completion', kind: 'work-item-completion', invalidatable: true, status: 'broken' }];
     premiseM.mockResolvedValue(stamps as never);
     await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: withPremises });
 
