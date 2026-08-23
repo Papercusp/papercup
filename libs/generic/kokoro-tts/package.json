@@ -17,6 +17,7 @@
     "phonemizer": "^1.2.1"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "vitest": "^4.1.4"
   }
 }

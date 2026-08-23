@@ -19,6 +19,7 @@
     "ajv": "^8.0.0"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "vitest": "^4.1.4"
   }
 }
