@@ -659,6 +659,104 @@
    session board's colours verbatim (see .hud__col--needs-you / --blocked). */
 .hud__col--done .hud__col-h { color: var(--fg-mute); }
 
+/* ── the H2 weighted Plans board (plan-visibility-revamp-2026-08-23 P-006) ── */
+/* D-004: width follows attention — needs-you wide, working widest (its cards
+   carry the most content), blocked narrow, Ready/Done collapsed to 46px count
+   rails. The fr weights are the mockup's (HudH2.dc.html); the minmax floors
+   keep the three card columns readable on a narrow window, where the base
+   grid's overflow-x:auto takes over exactly as it does unweighted. When a
+   column is FOCUSED the inline `gridTemplateColumns: 1fr` override outranks
+   this rule, so expansion needs no weighted-specific case. */
+.hud__cols--weighted {
+  grid-template-columns:
+    minmax(220px, 1.35fr) minmax(260px, 2fr) minmax(180px, 1fr) 46px 46px;
+}
+
+/* The collapsed Ready/Done rail — a real button into the same column focus the
+   segment strip drives. Same WebKitGTK caveat as .hud__count: the button
+   resets to display:block and the column flex lives on the inner span. */
+.hud__railcol {
+  display: inline-block;
+  padding: 9px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--fg-mute);
+  cursor: pointer;
+  font: inherit;
+  min-height: 0;
+}
+.hud__railcol:hover {
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.hud__railcol-b {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+}
+.hud__railcol-n {
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+/* Vertical label, read bottom-up (rotate(180deg) on vertical-rl), matching the
+   mockup. No letter-spacing — nonzero tracking is not an approved app-UI
+   primitive (see the .hud__col-h note above); weight carries the label. */
+.hud__railcol-lbl {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+/* The labeled segmented filter strip replacing the bare count chips (P-006).
+   One bordered group, segments separated by inner borders; the active segment
+   carries the same translucent accent fill as .hud__count[aria-pressed], the
+   hot (needs-you > 0) segment the same warn treatment as .hud__count--hot. */
+.hud__seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.hud__seg-btn {
+  display: inline-block;
+  padding: 4px 11px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-mute);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.hud__seg-btn:last-child { border-right: 0; }
+.hud__seg-btn:hover { color: var(--fg); }
+.hud__seg-btn[aria-pressed='true'] {
+  background: rgb(from var(--accent) r g b / 0.14);
+  color: var(--fg);
+}
+.hud__seg-btn b {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.hud__seg-btn--hot { color: var(--warn); }
+.hud__seg-btn--hot b { color: var(--warn); }
+.hud__seg-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* The sort picker, far right of the entity control row (P-006/D-004). */
+.hud__sortpick-box { max-width: 150px; }
+
 /* The card's secondary "why" line — a plan's next action, a work item's state.
    Dimmer than the title above it, which is what carries the scan. */
 .hud__entity-why {

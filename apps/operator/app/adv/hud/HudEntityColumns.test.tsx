@@ -26,14 +26,35 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import HudEntityColumns from './HudEntityColumns';
 import {
   buildGoalBoard,
+  buildPlanBoard,
   buildWorkItemBoard,
   goalsTruncationNotice,
+  type HudPlanInput,
   type HudWorkItemInput,
 } from './hud-entity-board';
 import type { HudAsk } from './hud-board-model';
 
 vi.mock('@/app/harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+/* The sort picker is a real Combobox; only its Radix Popover is stubbed, the
+   same way HudBoard.test.tsx (and Combobox's own suite) do it. */
+vi.mock('@/app/harness/Popover', () => ({
+  Popover: ({
+    open,
+    anchor,
+    children,
+  }: {
+    open: boolean;
+    anchor: React.ReactNode;
+    children: React.ReactNode;
+  }) => (
+    <div>
+      {anchor}
+      {open ? <div data-testid="popover-panel">{children}</div> : null}
+    </div>
+  ),
 }));
 
 afterEach(cleanup);
@@ -498,5 +519,141 @@ describe('the goal board', () => {
   it('renders NO notice when nothing is hidden — paired control for the above', () => {
     goalCols([{ id: 'g1', title: 'Ship the thing', status: 'active' }], goalsTruncationNotice(4, 4));
     expect(document.body.textContent).not.toContain('Showing');
+  });
+});
+
+describe('the H2 weighted Plans board (plan-visibility-revamp-2026-08-23 P-006)', () => {
+  const NOW_W = Date.parse('2026-08-23T12:00:00.000Z');
+
+  function wplan(over: Partial<HudPlanInput> = {}): HudPlanInput {
+    return {
+      slug: 'a-plan',
+      title: 'A plan',
+      status: 'active',
+      updated: '2026-08-23T11:00:00.000Z',
+      harnessSlug: 'papercusp',
+      itemCounts: {},
+      ...over,
+    };
+  }
+
+  /** One plan per column: needs-you, working, blocked, ready, done. */
+  function fiveColumnBoard() {
+    return buildPlanBoard(
+      [
+        wplan({ slug: 'ask-plan', itemCounts: { 'needs-human': 1 } }),
+        wplan({ slug: 'wip-plan', itemCounts: { wip: 1 } }),
+        wplan({ slug: 'stuck-plan', itemCounts: { blocked: 1 } }),
+        wplan({ slug: 'queued-plan', itemCounts: { todo: 1 } }),
+        wplan({ slug: 'done-plan', itemCounts: { done: 2 } }),
+      ],
+      { nowMs: NOW_W },
+    );
+  }
+
+  function weightedCols(over: Partial<React.ComponentProps<typeof HudEntityColumns>> = {}) {
+    const onFocusColumn = vi.fn();
+    const onSort = vi.fn();
+    render(
+      <HudEntityColumns
+        board={fiveColumnBoard()}
+        focusColumn={null}
+        onFocusColumn={onFocusColumn}
+        query=""
+        onQuery={() => {}}
+        loading={false}
+        error={null}
+        emptyLabel="No plans."
+        noun="plans"
+        weighted
+        sort="last-work"
+        onSort={onSort}
+        {...over}
+      />,
+    );
+    return { onFocusColumn, onSort };
+  }
+
+  it('replaces the bare count chips with the labeled segmented strip', () => {
+    weightedCols();
+    const strip = screen.getByRole('group', { name: 'Filter plans by column' });
+    expect(strip).toBeTruthy();
+    // Labeled segments with counts — "Needs you 1", not the chips' "1 needs you".
+    expect(screen.getByRole('button', { name: 'All 5' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Needs you 1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Working 1' })).toBeTruthy();
+    // The chip strip is genuinely REPLACED, not rendered alongside.
+    expect(document.querySelector('.hud__counts')).toBeNull();
+  });
+
+  it('drives the same column focus from the segments, with All clearing it', () => {
+    const { onFocusColumn } = weightedCols();
+    fireEvent.click(screen.getByRole('button', { name: 'Needs you 1' }));
+    expect(onFocusColumn).toHaveBeenCalledWith('needs-you');
+    fireEvent.click(screen.getByRole('button', { name: 'All 5' }));
+    expect(onFocusColumn).toHaveBeenCalledWith(null);
+  });
+
+  it('collapses Ready and Done to count rails and keeps the card columns expanded', () => {
+    weightedCols();
+    // The rails are buttons whose accessible name carries the count…
+    expect(screen.getByRole('button', { name: 'Show Ready (1)' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show Done (1)' })).toBeTruthy();
+    // …and the collapsed columns render no card section, while the three
+    // attention columns keep theirs.
+    expect(screen.queryByRole('region', { name: 'Ready' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Done' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Needs you' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Working' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Blocked' })).toBeTruthy();
+  });
+
+  it('expands a rail through the existing column focus on click', () => {
+    const { onFocusColumn } = weightedCols();
+    fireEvent.click(screen.getByRole('button', { name: 'Show Done (1)' }));
+    expect(onFocusColumn).toHaveBeenCalledWith('done');
+  });
+
+  it('renders a focused rail column as a full column — the rail is gone', () => {
+    weightedCols({ focusColumn: 'done' });
+    expect(screen.getByRole('region', { name: 'Done' })).toBeTruthy();
+    expect(document.body.textContent).toContain('done-plan');
+    expect(screen.queryByRole('button', { name: 'Show Done (1)' })).toBeNull();
+  });
+
+  it('marks the weighted grid so the CSS can weight the columns', () => {
+    weightedCols();
+    expect(document.querySelector('.hud__cols--weighted')).toBeTruthy();
+  });
+
+  it('renders the sort picker showing the picked axis', () => {
+    weightedCols();
+    expect(screen.getByTestId('hud-entity-sort')).toBeTruthy();
+    // The Combobox displays the selected option's label.
+    expect((screen.getByTestId('hud-entity-sort') as HTMLInputElement).value).toBe('Last work');
+  });
+
+  it('grows none of this on an unweighted board — the other tabs are untouched', () => {
+    render(
+      <HudEntityColumns
+        board={fiveColumnBoard()}
+        focusColumn={null}
+        onFocusColumn={() => {}}
+        query=""
+        onQuery={() => {}}
+        loading={false}
+        error={null}
+        emptyLabel="No plans."
+        noun="plans"
+      />,
+    );
+    expect(document.querySelector('.hud__seg')).toBeNull();
+    expect(document.querySelector('.hud__cols--weighted')).toBeNull();
+    expect(document.querySelector('.hud__railcol')).toBeNull();
+    expect(screen.queryByTestId('hud-entity-sort')).toBeNull();
+    expect(document.querySelector('.hud__counts')).toBeTruthy();
+    // All five columns render as full card sections.
+    expect(screen.getByRole('region', { name: 'Ready' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Done' })).toBeTruthy();
   });
 });

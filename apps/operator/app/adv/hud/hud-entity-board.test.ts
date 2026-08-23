@@ -624,31 +624,78 @@ describe('buildPlanBoard', () => {
     expect(board.columns.find((c) => c.id === 'blocked')!.cards[0].reason).toBe('1 blocked · 3 todo');
   });
 
-  it('sorts needs-you OLDEST first and every other column NEWEST first', () => {
-    const older = '2026-07-20T00:00:00.000Z';
-    const newer = '2026-07-26T00:00:00.000Z';
-    const attention = buildPlanBoard(
+  /* D-004 (plan-visibility-revamp-2026-08-23 P-006): the sort picker REPLACED
+     this board's fixed ordering. The previous rule — needs-you oldest first,
+     every other column newest first by ✎ updated — still governs the goals and
+     work-items boards via sortKeyFor; on the Plans board the picked axis
+     orders EVERY column uniformly, needs-you included. */
+  it('orders by ⚒ last work under the DEFAULT sort, sinking never-worked plans', () => {
+    const board = buildPlanBoard(
       [
-        plan({ slug: 'new-ask', updated: newer, itemCounts: { 'needs-human': 1 } }),
-        plan({ slug: 'old-ask', updated: older, itemCounts: { 'needs-human': 1 } }),
+        plan({ slug: 'never-worked', updated: '2026-07-26T17:59:00.000Z', itemCounts: { todo: 1 } }),
+        plan({ slug: 'worked-earlier', lastWorkAtMs: NOW - 7_200_000, itemCounts: { todo: 1 } }),
+        plan({ slug: 'worked-just-now', lastWorkAtMs: NOW - 60_000, itemCounts: { todo: 1 } }),
       ],
       { nowMs: NOW },
     );
-    expect(attention.columns.find((c) => c.id === 'needs-you')!.cards.map((c) => c.id)).toEqual([
-      'old-ask',
-      'new-ask',
+    // The freshest ✎ edit in the set belongs to `never-worked`, and it STILL
+    // sinks: an edit is not work, and under the ⚒ axis a plan nobody has run a
+    // work item on has no recency to claim.
+    expect(board.columns.find((c) => c.id === 'ready')!.cards.map((c) => c.id)).toEqual([
+      'worked-just-now',
+      'worked-earlier',
+      'never-worked',
     ]);
+  });
 
-    const queue = buildPlanBoard(
+  it('applies the picked sort to needs-you too — no column is exempt (D-004)', () => {
+    const board = buildPlanBoard(
       [
-        plan({ slug: 'old-todo', updated: older, itemCounts: { todo: 1 } }),
-        plan({ slug: 'new-todo', updated: newer, itemCounts: { todo: 1 } }),
+        plan({ slug: 'stale-work', lastWorkAtMs: NOW - 7_200_000, itemCounts: { 'needs-human': 1 } }),
+        plan({ slug: 'fresh-work', lastWorkAtMs: NOW - 60_000, itemCounts: { 'needs-human': 1 } }),
       ],
       { nowMs: NOW },
     );
-    expect(queue.columns.find((c) => c.id === 'ready')!.cards.map((c) => c.id)).toEqual([
-      'new-todo',
-      'old-todo',
+    expect(board.columns.find((c) => c.id === 'needs-you')!.cards.map((c) => c.id)).toEqual([
+      'fresh-work',
+      'stale-work',
+    ]);
+  });
+
+  it('orders by ✎ updated under last-edit, sinking undated plans', () => {
+    const board = buildPlanBoard(
+      [
+        plan({ slug: 'undated', updated: null, lastWorkAtMs: NOW - 1_000, itemCounts: { todo: 1 } }),
+        plan({ slug: 'edited-earlier', updated: '2026-07-20T00:00:00.000Z', itemCounts: { todo: 1 } }),
+        plan({ slug: 'edited-recently', updated: '2026-07-26T00:00:00.000Z', itemCounts: { todo: 1 } }),
+      ],
+      { nowMs: NOW, sort: 'last-edit' },
+    );
+    // `undated` carries the freshest ⚒ in the set and still sinks: the picked
+    // axis is ✎, and a recent ⚒ is not evidence of a recent edit.
+    expect(board.columns.find((c) => c.id === 'ready')!.cards.map((c) => c.id)).toEqual([
+      'edited-recently',
+      'edited-earlier',
+      'undated',
+    ]);
+  });
+
+  it('degrades to the fetch order when NO plan carries the picked axis', () => {
+    // The join feed answering empty (or not yet) leaves every sortKey at the
+    // sink value; the sort is stable, so the caller's order passes through
+    // rather than being scrambled by a half-loaded join.
+    const board = buildPlanBoard(
+      [
+        plan({ slug: 'first', itemCounts: { todo: 1 } }),
+        plan({ slug: 'second', itemCounts: { todo: 1 } }),
+        plan({ slug: 'third', itemCounts: { todo: 1 } }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(board.columns.find((c) => c.id === 'ready')!.cards.map((c) => c.id)).toEqual([
+      'first',
+      'second',
+      'third',
     ]);
   });
 

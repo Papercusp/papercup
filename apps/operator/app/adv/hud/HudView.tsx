@@ -95,12 +95,15 @@ import {
   buildPlanBoard,
   buildWorkItemBoard,
   HUD_DEFAULT_TAB,
+  HUD_DEFAULT_PLAN_SORT,
   HUD_ENTITY_COLUMNS,
+  HUD_PLAN_SORTS,
   HUD_TABS,
   HUD_WORK_ITEM_FETCH_STATES,
   rollUpStateCounts,
   type HudEntityColumnId,
   type HudGoalInput,
+  type HudPlanInput,
   type HudTabId,
   type HudWorkItemInput,
 } from './hud-entity-board';
@@ -263,6 +266,15 @@ export default function HudView({
   const [entityQuery, setEntityQuery] = useQueryState(
     'hudq',
     parseAsString.withDefault(''),
+  );
+  /* `hudpsort` — the Plans board's sort axis (plan-visibility-revamp-2026-08-23
+     P-006, D-004: "add a sort picker (default: last work)"). Its own param, not
+     folded into `hudq`/`hudecol`, because it is a third independent control; in
+     the URL per the nuqs rule — which ordering the board is in is exactly the
+     state an agent reads back through ui:get_state. */
+  const [planSort, setPlanSort] = useQueryState(
+    'hudpsort',
+    parseAsStringLiteral(HUD_PLAN_SORTS).withDefault(HUD_DEFAULT_PLAN_SORT),
   );
   /* `hudgoal` — the SELECTED goal (goal-mode-2026-08-07 P-020). A goal id, or
      null for none. It is what the Goals tab highlights and what P-021's detail
@@ -626,13 +638,45 @@ export default function HudView({
     harness_slugs: scopedHarnessSlugs ?? undefined,
     enabled: scopeReady,
   });
+  /* ⚒ last-work per plan — the SAME `planWorkActivity.list` feed PlansPane
+     already joins by slug for its sidebar timestamps (P-001), reused here as
+     the default sort axis (P-006/D-004: "sort picker (default: last work)").
+     Gated on the tab because the HUD lands on Sessions; when the left sidebar
+     is open too, useSyncQuery dedupes the read on ['sync', name, args].
+
+     ⚠ The workspace fallback mirrors the goals query below: the `workspaceId`
+     PROP is nullable, and an omitted workspace is the WI-5125 shape (a
+     healthy-looking answer about the wrong tenant). */
+  const browserWorkspaceId = useWorkspaceId();
+  const activityWorkspaceId = workspaceId ?? browserWorkspaceId;
+  const planWorkActivity = useSyncQuery<{ slug?: string; lastWorkAtMs?: number }>({
+    queryName: 'planWorkActivity.list',
+    args: { workspaceId: activityWorkspaceId },
+    enabled: tab === 'plans' && scopeReady,
+  });
+  const planInputs = useMemo((): HudPlanInput[] => {
+    const rows = (planList.data?.plans ?? []) as HudPlanInput[];
+    const bySlug = new Map<string, number>();
+    for (const r of planWorkActivity.data ?? []) {
+      if (typeof r?.slug === 'string' && r.slug && typeof r.lastWorkAtMs === 'number') {
+        bySlug.set(r.slug, r.lastWorkAtMs);
+      }
+    }
+    /* Feed not answered yet (or genuinely empty): hand the rows through
+       untouched. Every plan then has no ⚒ key, so the last-work sort degrades
+       to the fetch order instead of fabricating an ordering from a half-loaded
+       join — and re-running this memo when the feed lands re-sorts honestly. */
+    if (bySlug.size === 0) return rows;
+    return rows.map((p) => ({ ...p, lastWorkAtMs: bySlug.get(p.slug) ?? null }));
+  }, [planList.data, planWorkActivity.data]);
   const planBoard = useMemo(
     () =>
-      buildPlanBoard(planList.data?.plans ?? [], {
+      buildPlanBoard(planInputs, {
         nowMs,
         query: entityQuery,
+        sort: planSort,
       }),
-    [planList.data, nowMs, entityQuery],
+    [planInputs, nowMs, entityQuery, planSort],
   );
 
   /* ── Goals tab (goal-mode-2026-08-07 P-020) ────────────────────────────── */
@@ -648,8 +692,9 @@ export default function HudView({
   // rejected or coerced to the `'default'` tenant — i.e. exactly the failure the
   // paragraph above is guarding against, reintroduced by the guard's own call
   // site. Fall back to the host-injected browser workspace, which is what the
-  // rest of the SPA resolves against.
-  const browserWorkspaceId = useWorkspaceId();
+  // rest of the SPA resolves against. (`browserWorkspaceId` is declared up in
+  // the Plans-tab section, which needed the same fallback first — one hook call
+  // serves both.)
   const goalWorkspaceId = workspaceId ?? browserWorkspaceId;
   const goalsQuery = useSyncQuery<{
     goals: HudGoalInput[];
@@ -995,6 +1040,11 @@ export default function HudView({
         emptyLabel="No plans in this workspace yet."
         noun="plans"
         onOpenCard={onOpenPlanCard}
+        /* The H2 weighted board (P-006/D-004) — Plans tab only: the goals and
+           work-items boards keep the unweighted grid and bare count chips. */
+        weighted
+        sort={planSort}
+        onSort={(s) => void setPlanSort(s)}
       />
     ) : tab === 'items' ? (
       <HudEntityColumns

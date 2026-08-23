@@ -31,15 +31,39 @@
 import { memo, type ReactNode } from 'react';
 import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Combobox, type ComboboxOption } from '@/app/harness/Combobox';
 import { formatAge, type HudBadge } from './hud-board-model';
 import HudSearchBox from './HudSearchBox';
 import {
   HUD_ENTITY_COLUMNS,
   HUD_ENTITY_COLUMN_LABEL,
+  HUD_PLAN_SORTS,
+  HUD_PLAN_SORT_LABEL,
   type HudEntityBoard,
   type HudEntityCard,
   type HudEntityColumnId,
+  type HudPlanSort,
 } from './hud-entity-board';
+
+/**
+ * The two columns the WEIGHTED board collapses to count rails
+ * (plan-visibility-revamp-2026-08-23 P-006, D-004): Ready and Done are the
+ * populations you consult, not the ones that need attention, so they trade
+ * their card lists for a 46px count rail that expands (via the existing
+ * column-focus mechanism) on click. A Set, not two `id ===` checks, so the
+ * render sites below cannot drift from each other.
+ */
+const WEIGHTED_RAIL_COLUMNS: ReadonlySet<HudEntityColumnId> = new Set(['ready', 'done']);
+
+/** The sort picker's rows — static, so they are built once at module scope. */
+const PLAN_SORT_OPTIONS: ComboboxOption[] = HUD_PLAN_SORTS.map((s) => ({
+  value: s,
+  label: HUD_PLAN_SORT_LABEL[s],
+  detail:
+    s === 'last-work'
+      ? '⚒ most recent work-item activity first'
+      : '✎ most recent plan edit first',
+}));
 
 const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
   neutral: '',
@@ -269,6 +293,31 @@ export interface HudEntityColumnsProps {
    * boards with no action grow no wrapper.
    */
   renderCardAction?: (card: HudEntityCard) => ReactNode;
+  /**
+   * The H2 weighted layout (plan-visibility-revamp-2026-08-23 P-006, D-004:
+   * "keep the five-column kanban but weight widths by attention"). Supplied by
+   * the Plans tab only. When set:
+   *
+   *   - the grid weights its columns 1.35fr / 2fr / 1fr (needs-you wide,
+   *     working widest, blocked narrow) with Ready + Done as fixed 46px rails;
+   *   - Ready and Done render as collapsed COUNT RAILS — a vertical label and
+   *     the true count — that expand through the existing column-focus
+   *     mechanism on click (so `hudecol` deep links keep working unchanged);
+   *   - the bare count chips become the labeled segmented filter strip, with an
+   *     explicit "All" segment clearing the focus.
+   *
+   * Omitted ⇒ the board renders exactly as before, so the Goals and Work-items
+   * tabs are untouched by this variant.
+   */
+  weighted?: boolean;
+  /**
+   * The sort picker (D-004: "add a sort picker (default: last work)"). Rendered
+   * only when BOTH are supplied; the picked value must be the same one the
+   * caller passed to `buildPlanBoard`, or the control would claim an ordering
+   * the cards don't have.
+   */
+  sort?: HudPlanSort;
+  onSort?: (sort: HudPlanSort) => void;
 }
 
 export default function HudEntityColumns({
@@ -284,6 +333,9 @@ export default function HudEntityColumns({
   notice = null,
   onOpenCard,
   renderCardAction,
+  weighted = false,
+  sort,
+  onSort,
 }: HudEntityColumnsProps) {
   const visibleColumns = focusColumn
     ? board.columns.filter((c) => c.id === focusColumn)
@@ -305,26 +357,64 @@ export default function HudEntityColumns({
   return (
     <>
       <div className="hud__top hud__top--entity">
-        <div className="hud__counts">
-          {HUD_ENTITY_COLUMNS.map((id) => {
-            const n = board.counts[id];
-            const hot = id === 'needs-you' && n > 0;
-            return (
-              <Tooltip key={id} label={`Show only ${HUD_ENTITY_COLUMN_LABEL[id]}`}>
+        {weighted ? (
+          /* The labeled segmented filter strip (P-006, D-004: "replace the bare
+             count chips with a labeled segmented filter strip"). Same state, same
+             writes as the chips it replaces — every segment drives the existing
+             column focus — plus an explicit "All" segment, because a strip whose
+             only cleared state is re-clicking the active segment makes "show me
+             everything" an invisible affordance. */
+          <div className="hud__seg" role="group" aria-label={`Filter ${noun} by column`}>
+            <button
+              type="button"
+              className="hud__seg-btn"
+              aria-pressed={focusColumn === null}
+              onClick={() => onFocusColumn(null)}
+            >
+              <span className="hud__seg-row">
+                All <b>{board.total}</b>
+              </span>
+            </button>
+            {HUD_ENTITY_COLUMNS.map((id) => {
+              const n = board.counts[id];
+              const hot = id === 'needs-you' && n > 0;
+              return (
                 <button
+                  key={id}
                   type="button"
-                  className={`hud__count${hot ? ' hud__count--hot' : ''}`}
+                  className={`hud__seg-btn${hot ? ' hud__seg-btn--hot' : ''}`}
                   aria-pressed={focusColumn === id}
                   onClick={() => onFocusColumn(focusColumn === id ? null : id)}
                 >
-                  <span className="hud__count-row">
-                    <b>{n}</b> {HUD_ENTITY_COLUMN_LABEL[id].toLowerCase()}
+                  <span className="hud__seg-row">
+                    {HUD_ENTITY_COLUMN_LABEL[id]} <b>{n}</b>
                   </span>
                 </button>
-              </Tooltip>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="hud__counts">
+            {HUD_ENTITY_COLUMNS.map((id) => {
+              const n = board.counts[id];
+              const hot = id === 'needs-you' && n > 0;
+              return (
+                <Tooltip key={id} label={`Show only ${HUD_ENTITY_COLUMN_LABEL[id]}`}>
+                  <button
+                    type="button"
+                    className={`hud__count${hot ? ' hud__count--hot' : ''}`}
+                    aria-pressed={focusColumn === id}
+                    onClick={() => onFocusColumn(focusColumn === id ? null : id)}
+                  >
+                    <span className="hud__count-row">
+                      <b>{n}</b> {HUD_ENTITY_COLUMN_LABEL[id].toLowerCase()}
+                    </span>
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+        )}
 
         {/* A workspace this size carries ~900 plans and ~1800 work items, so
             search is not a nicety — without it the board is a wall. It filters
@@ -339,6 +429,22 @@ export default function HudEntityColumns({
         />
 
         <span className="hud__spacer" />
+
+        {/* The sort picker (P-006, D-004 — default: last work). Far right of the
+            row, mirroring the mockup; rendered only when the caller actually
+            sorts by it, so the other entity tabs grow no control that lies. */}
+        {sort && onSort ? (
+          <span className="hud__sortpick">
+            <Combobox
+              ariaLabel={`Sort ${noun}`}
+              triggerClassName="hud__sortpick-box"
+              testId="hud-entity-sort"
+              value={sort}
+              options={PLAN_SORT_OPTIONS}
+              onChange={(v) => onSort(v as HudPlanSort)}
+            />
+          </span>
+        ) : null}
       </div>
 
       {/* Outside the branch below on purpose: a caveat about what could not be
@@ -356,8 +462,39 @@ export default function HudEntityColumns({
       ) : !hasCards ? (
         <p className="hud__state">{query.trim() ? `No ${noun} match “${query.trim()}”.` : emptyLabel}</p>
       ) : (
-        <div className="hud__cols" style={focusColumn ? { gridTemplateColumns: '1fr' } : undefined}>
-          {visibleColumns.map((c) => (
+        <div
+          className={`hud__cols${weighted ? ' hud__cols--weighted' : ''}`}
+          style={focusColumn ? { gridTemplateColumns: '1fr' } : undefined}
+        >
+          {visibleColumns.map((c) => {
+            /* Ready + Done collapse to COUNT RAILS on the weighted board (P-006)
+               — but only while nothing is focused: a focused rail column IS the
+               expansion, rendered by the ordinary branch below at full width, so
+               deep links to ?hudecol=done keep working with zero extra state.
+               The rail is a real <button> into the same onFocusColumn the strip
+               and chips drive; its accessible name carries the count because the
+               vertical label alone reads as decoration to a screen reader. */
+            if (weighted && !focusColumn && WEIGHTED_RAIL_COLUMNS.has(c.id)) {
+              const n = board.counts[c.id];
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`hud__railcol hud__col--${c.id}`}
+                  aria-label={`Show ${c.label} (${n})`}
+                  onClick={() => onFocusColumn(c.id)}
+                >
+                  {/* Column flex on the inner span, never the <button> — the
+                      same WebKitGTK anonymous-box collapse documented on
+                      .hud__count in hud.css. */}
+                  <span className="hud__railcol-b">
+                    <span className="hud__railcol-n">{n}</span>
+                    <span className="hud__railcol-lbl">{c.label}</span>
+                  </span>
+                </button>
+              );
+            }
+            return (
             /* WI-6668: the per-SECTION boundary. Anything the column's own
                render touches (its header, its counts, a card the row boundary
                could not reach) degrades THIS column to a retryable notice and
@@ -400,7 +537,8 @@ export default function HudEntityColumns({
                 </div>
               </section>
             </SectionBoundary>
-          ))}
+            );
+          })}
         </div>
       )}
     </>
