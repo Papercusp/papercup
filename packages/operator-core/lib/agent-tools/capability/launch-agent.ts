@@ -137,7 +137,8 @@ export default defineTool({
   capability: 'capability:terminal',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  args: z.object({
+  args: (() => {
+    const base = z.object({
     brief: z
       .string()
       .min(1)
@@ -249,7 +250,29 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.'),
-  }),
+    });
+    // Keep the fresh/source distinction in the published schema. The handler
+    // already rejects `plan` with a resume or successor, but leaving all three
+    // fields optional here makes callers discover that rule only after dispatch.
+    return z.union([
+      base.extend({
+        resume: z
+          .never()
+          .optional()
+          .describe('Only valid for a source launch without `plan`; put new direction in `brief` when resuming.'),
+        successor: z
+          .never()
+          .optional()
+          .describe('Only valid for a source launch without `plan`; use `plan` only for a fresh launch.'),
+      }),
+      base.extend({
+        plan: z
+          .never()
+          .optional()
+          .describe('Only valid for a FRESH launch; resumed and successor sessions keep their own context.'),
+      }),
+    ]);
+  })(),
   async handler(args, ctx) {
     // Internal direct-handler seam used only by fleet:respawn-member after the
     // canonical saved profile has been resolved. It is deliberately absent

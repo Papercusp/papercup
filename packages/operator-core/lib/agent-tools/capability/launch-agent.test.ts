@@ -266,6 +266,23 @@ describe('launch-tool routing guidance', () => {
   });
 });
 
+describe('published launch args schema', () => {
+  it('rejects plan with resume or successor before handler dispatch', () => {
+    expect(
+      launchAgent.args.safeParse({ plan: 'p', resume: { agentId: 'su-a1a71' } }).success,
+    ).toBe(false);
+    expect(
+      launchAgent.args.safeParse({ plan: 'p', successor: { agentId: 'su-a1a71' } }).success,
+    ).toBe(false);
+  });
+
+  it('keeps the individual fresh and source shapes valid', () => {
+    expect(launchAgent.args.safeParse({ plan: 'p' }).success).toBe(true);
+    expect(launchAgent.args.safeParse({ resume: { agentId: 'su-a1a71' } }).success).toBe(true);
+    expect(launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' } }).success).toBe(true);
+  });
+});
+
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   it('launches a visible agent whose FIRST TURN is the brief', async () => {
     const res = await launchAgent.handler({ brief: 'audit the release script' }, ctx);
@@ -778,7 +795,7 @@ describe('resume + fork (D-004/D-007)', () => {
   });
 
   it('rejects plan + resume (a resumed session keeps its own context)', async () => {
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, plan: 'p' }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, plan: 'p' } as never, ctx);
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('`plan` is for a FRESH launch');
   });
