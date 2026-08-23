@@ -34,11 +34,25 @@ import {
 } from '../../../feature-deps';
 import { defineTool } from '@papercusp/agent-mcp';
 import { trackDetached } from '../../../detached-imports';
+import { normalizeTakenBy } from '../../../sync/hyperbee/projections/harness-features';
 
 // F-001, PROJ-sheets, DIR-D-001 — verbatim from legacy.
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 const dbcFor = (slug: string) => getLegacyClient(slug);
+
+/**
+ * Capture the holder of a feature before the legacy PATCH writer clears it.
+ *
+ * The post-write `getWorkItem` read is intentionally truthful (a terminal item
+ * is unclaimed), so the settled-event fanout needs this pre-write value to
+ * resolve the holder's fleet and fire `fleet:item-completed`.
+ */
+export function priorFeatureAssignee(
+  existing: { taken_by?: string | null; assignee?: string | null },
+): string | null {
+  return normalizeTakenBy(existing.taken_by ?? existing.assignee ?? null);
+}
 
 /**
  * Pure provenance writer (R8-A testability split).
@@ -403,7 +417,7 @@ const updateFeature = defineTool({
           // Force the unified success terminal `done` (was the legacy `passed`) so the settled
           // events fire even if the consolidated read hasn't projected the write yet — `done` is
           // in SETTLED_STATES.feature (frontier-readiness.TERMINAL_STATUSES).
-          await m.emitWorkItemSettledEvents({ ...wi, state: 'done' });
+          await m.emitWorkItemSettledEvents({ ...wi, state: 'done' }, { priorAssignee });
         })
         .catch(() => {});
     }
