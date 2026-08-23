@@ -230,7 +230,17 @@ export type AttentionKind =
   | 'improvement'
   | 'standing-approval'
   | 'conversation'
-  | 'scout-grade';
+  | 'scout-grade'
+  // owner-inbox-single-pane P-005 folded owner-gate channels. These have
+  // shipped on the server wire since P-005; omitting them here made the
+  // decoupled client mirror a type lie and forced consumers to cast around
+  // rows the UI already receives in production.
+  | 'work-item-needs-human'
+  | 'owner-wall'
+  | 'dark-flag-ratification'
+  | 'blocked-session'
+  | 'work-item-blocked'
+  | 'decision-owed';
 
 export type AttentionActionId =
   | 'chat'

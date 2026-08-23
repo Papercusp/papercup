@@ -161,15 +161,16 @@ function searchHaystack(i: AttentionItem): string {
  * popup. Kept conservative: an owner-wall ref that is not a WI/EI/F id falls
  * back to the full Queue rather than guessing a destination. */
 function attentionWorkItemId(i: AttentionItem): string | null {
-  switch (i.ref.kind) {
+  const ref = i.ref as Record<string, unknown>;
+  switch (ref.kind) {
     case 'work-item-needs-human':
     case 'work-item-blocked':
-      return i.ref.workItemId;
+      return typeof ref.workItemId === 'string' ? ref.workItemId : null;
     case 'improvement':
-      return i.ref.issueId;
+      return typeof ref.issueId === 'string' ? ref.issueId : null;
     case 'owner-wall':
-      return i.ref.wallRef && /^(?:WI|EI|F)-\d+$/i.test(i.ref.wallRef)
-        ? i.ref.wallRef.toUpperCase()
+      return typeof ref.wallRef === 'string' && /^(?:WI|EI|F)-\d+$/i.test(ref.wallRef)
+        ? ref.wallRef.toUpperCase()
         : null;
     default:
       return null;

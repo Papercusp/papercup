@@ -28,6 +28,8 @@ import {
   riskTierIsDecision,
   untriaged,
 } from './types';
+import { classifyReadActionability, type ReadActionability } from '../agent-tools/coordination/liveness-oracle';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 const CHAT: AttentionAction = { id: 'chat', label: 'Chat' };
 /** Open a work-item-scoped conversation with the item's owning agent (D-004).
@@ -664,6 +666,16 @@ export interface WorkItemNeedsHumanInput {
  */
 export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): AttentionItem {
   const tier: AttentionTier = 'decision';
+  const actions: AttentionAction[] = i.ownerAgentId
+    ? [
+        { id: 'answer', label: 'Answer', primary: true },
+        { id: 'open', label: i.harnessSlug ? 'Open work item' : 'Open source' },
+        DISCUSS,
+      ]
+    : [
+        { id: 'open', label: i.harnessSlug ? 'Open work item' : 'Open source', primary: true },
+        DISCUSS,
+      ];
   return {
     id: `work-item-needs-human:${i.workItemId}`,
     kind: 'work-item-needs-human',
@@ -695,7 +707,7 @@ export function workItemNeedsHumanToAttention(i: WorkItemNeedsHumanInput): Atten
     ownerAgentId: i.ownerAgentId ?? null,
     ownerLabel: i.ownerLabel ?? null,
     ...untriaged(),
-    actions: [{ id: 'open', label: 'Open', primary: true }, DISCUSS],
+    actions,
     ref: { kind: 'work-item-needs-human', workItemId: i.workItemId, itemKind: i.itemKind },
   };
 }
@@ -778,8 +790,62 @@ export interface OwnerWallInput {
   ref?: string | null;
   waitingHours?: number | null;
   /** Mirrors coord:walls' liveness join: `stranded` = the raising agent's
-   *  session is gone, so answering alone will not resume the work. */
-  status: 'waiting' | 'stranded' | 'unknown';
+   *  session is gone, so answering alone will not resume the work. `stale`
+   *  means the session is draining and is not currently actionable. */
+  status: 'waiting' | 'stale' | 'stranded' | 'unknown';
+  /** Shared read-time verdict. Older callers may provide only `status`; the
+   *  adapter keeps that shape as a compatibility fallback. */
+  actionability?: ReadActionability;
+  livenessState?: SessionState | null;
+}
+
+/**
+ * Owner-facing queues must not infer "needs the human" from the existence of
+ * a row. A live/parked/recorded owner can still receive an answer; draining,
+ * ended, and suspect owners cannot; a missing verdict is deliberately
+ * unknown. The latter two categories remain visible as Alerts so the stale
+ * source is diagnosable without inflating the Decisions/Needs-you count.
+ */
+function ownerGateActionability(
+  actionability: ReadActionability | undefined,
+  livenessState: SessionState | null | undefined,
+  status: OwnerWallInput['status'],
+): ReadActionability {
+  if (actionability != null) return actionability;
+  if (livenessState != null) return classifyReadActionability(livenessState);
+  if (status === 'waiting') return 'actionable';
+  if (status === 'stale' || status === 'stranded') return 'non-actionable';
+  return 'unknown';
+}
+
+function ownerGateStatus(
+  actionability: ReadActionability,
+  livenessState: SessionState | null | undefined,
+  fallback: OwnerWallInput['status'],
+): 'waiting' | 'stale' | 'stranded' | 'unknown' {
+  if (actionability === 'actionable') return 'waiting';
+  if (livenessState === 'draining' || fallback === 'stale') return 'stale';
+  if (
+    livenessState === 'ended' ||
+    livenessState === 'suspect' ||
+    fallback === 'stranded'
+  ) {
+    return 'stranded';
+  }
+  return 'unknown';
+}
+
+function livenessStatusNote(status: 'waiting' | 'stale' | 'stranded' | 'unknown'): string {
+  if (status === 'stale') {
+    return '\n\n⚠ STALE — the raising session is draining and is not currently actionable; recheck its liveness before answering.';
+  }
+  if (status === 'stranded') {
+    return '\n\n⚠ STRANDED — the raising agent\'s session has died. Answering alone will not resume this work; it also needs a respawn.';
+  }
+  if (status === 'unknown') {
+    return '\n\n⚠ LIVENESS UNKNOWN — this row is retained for diagnosis but is not counted as waiting on the owner.';
+  }
+  return '';
 }
 
 /**
@@ -791,13 +857,28 @@ export interface OwnerWallInput {
  * owner must respawn the agent, not just answer.
  */
 export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
-  const tier: AttentionTier = 'decision';
+  const actionability = ownerGateActionability(w.actionability, w.livenessState, w.status);
+  const projectedStatus = ownerGateStatus(actionability, w.livenessState, w.status);
+  const tier: AttentionTier = actionability === 'actionable' ? 'decision' : 'alert';
   const idPart = w.ref ?? w.ownerId ?? w.claim;
-  const strandedNote =
-    w.status === 'stranded'
-      ? '\n\n⚠ STRANDED — the raising agent\'s session has died. Answering alone will not resume this work; it also needs a respawn.'
-      : '';
   const hours = w.waitingHours ?? 0;
+  const workItemSource =
+    w.source === 'work-item' && w.ref && /^(?:WI|EI|F)-\d+$/i.test(w.ref);
+  const actions: AttentionAction[] =
+    actionability === 'actionable' && w.ownerId
+      ? [
+          { id: 'answer', label: 'Answer', primary: true },
+          { id: 'message-owner', label: 'Open agent session' },
+          DISCUSS,
+        ]
+      : workItemSource
+        ? [
+            { id: 'open', label: w.harnessSlug ? 'Open work item' : 'Open source', primary: true },
+            DISCUSS,
+          ]
+        : w.ownerId
+          ? [{ id: 'message-owner', label: 'Open agent session', primary: true }, DISCUSS]
+          : [DISCUSS];
   return {
     id: `owner-wall:${w.source}:${idPart}`,
     kind: 'owner-wall',
@@ -807,15 +888,15 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
     planSlug: null,
     itemRef: null,
     title: clip(w.claim),
-    body: `${w.claim}${w.recheck ? `\n\nRecheck: ${w.recheck}` : ''}${strandedNote}`,
-    status: w.status,
+    body: `${w.claim}${w.recheck ? `\n\nRecheck: ${w.recheck}` : ''}${livenessStatusNote(projectedStatus)}`,
+    status: projectedStatus,
     importance: hours >= 4 ? 'urgent' : hours >= 1 ? 'high' : 'normal',
     tier,
     needsHuman: needsHumanForTier(tier),
     ownerAgentId: w.ownerId,
     ownerLabel: null,
     ...untriaged(),
-    actions: [MESSAGE_OWNER, DISCUSS],
+    actions,
     ref: { kind: 'owner-wall', wallSource: w.source, wallOwnerId: w.ownerId, wallRef: w.ref ?? null },
   };
 }
@@ -876,6 +957,10 @@ export interface BlockedSessionInput {
   ownerAgentId?: string | null;
   harnessSlug?: string | null;
   waitingHours?: number | null;
+  /** The same shared liveness verdict used by coord:walls. Missing data is
+   *  unknown and therefore must not become a human decision by default. */
+  actionability?: ReadActionability;
+  livenessState?: SessionState | null;
 }
 
 /**
@@ -889,9 +974,14 @@ export interface BlockedSessionInput {
  * first-class ask.
  */
 export function blockedSessionToAttention(g: BlockedSessionInput): AttentionItem {
-  const tier: AttentionTier = 'decision';
+  const actionability = g.actionability ?? classifyReadActionability(g.livenessState);
+  const projectedStatus = ownerGateStatus(actionability, g.livenessState, 'unknown');
+  const tier: AttentionTier = actionability === 'actionable' ? 'decision' : 'alert';
   const label = g.gateKind === 'permission_wait' ? 'permission prompt' : 'question';
   const hours = g.waitingHours ?? 0;
+  const body =
+    (g.question ?? '').trim() ||
+    `A ${g.client} session (${g.sessionId}) is sitting on an unanswered ${label} — its client hook could not mirror this as a structured ask (D-002 capability matrix).`;
   return {
     id: `blocked-session:${g.client}:${g.sessionId}:${g.refId}`,
     kind: 'blocked-session',
@@ -901,10 +991,8 @@ export function blockedSessionToAttention(g: BlockedSessionInput): AttentionItem
     planSlug: null,
     itemRef: null,
     title: clip(g.question) || `${g.client} session blocked on a ${label}`,
-    body:
-      (g.question ?? '').trim() ||
-      `A ${g.client} session (${g.sessionId}) is sitting on an unanswered ${label} — its client hook could not mirror this as a structured ask (D-002 capability matrix).`,
-    status: `blocked (${g.client})`,
+    body: `${body}${livenessStatusNote(projectedStatus)}`,
+    status: `${projectedStatus === 'waiting' ? 'blocked' : projectedStatus} (${g.client})`,
     importance: hours >= 1 ? 'high' : 'normal',
     tier,
     needsHuman: needsHumanForTier(tier),

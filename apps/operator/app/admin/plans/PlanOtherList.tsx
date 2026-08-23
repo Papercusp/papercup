@@ -63,6 +63,12 @@ export const KIND_LABEL: Record<AttentionKind, string> = {
   'standing-approval': 'approval',
   conversation: 'question',
   'scout-grade': 'grade',
+  'work-item-needs-human': 'work item',
+  'owner-wall': 'owner wall',
+  'dark-flag-ratification': 'ratification',
+  'blocked-session': 'session',
+  'work-item-blocked': 'blocked work',
+  'decision-owed': 'decision owed',
 };
 
 // A1 grouping helpers (byAuthorizer / whyLine / planSections / DisplaySection)

@@ -479,12 +479,19 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(a.status).toBe('needs-human (bug)');
     expect(a.id).toBe('work-item-needs-human:WI-9001');
     expect(a.ownerAgentId).toBe('su-abc');
+    expect(a.actions.map((action) => [action.id, action.label, action.primary ?? false])).toEqual([
+      ['answer', 'Answer', true],
+      ['open', 'Open work item', false],
+      ['discuss', 'Discuss', false],
+    ]);
     expect(a.ref).toEqual({ kind: 'work-item-needs-human', workItemId: 'WI-9001', itemKind: 'bug' });
   });
 
   it('work-item-needs-human: falls back to title as body when body is blank', () => {
     const a = workItemNeedsHumanToAttention({ workItemId: 'F-1', itemKind: 'feature', title: 'ship it' });
     expect(a.body).toBe('ship it');
+    expect(a.actions.map((action) => action.label)).toEqual(['Open source', 'Discuss']);
+    expect(a.actions[0]?.primary).toBe(true);
   });
 
   /* WI-6597 — itemRef was hardcoded null here, which made the HUD Work-items
@@ -525,6 +532,11 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(waiting.importance).toBe('urgent'); // >= 4h
     expect(waiting.body).toContain('Recheck: accounts:status');
     expect(waiting.body).not.toContain('STRANDED');
+    expect(waiting.actions.map((action) => action.label)).toEqual([
+      'Answer',
+      'Open agent session',
+      'Discuss',
+    ]);
 
     const stranded = ownerWallToAttention({
       source: 'work-item',
@@ -536,6 +548,7 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     });
     expect(stranded.importance).toBe('normal'); // < 1h
     expect(stranded.body).toContain('STRANDED');
+    expect(stranded.actions.map((action) => action.label)).toEqual(['Open source', 'Discuss']);
     expect(stranded.ref).toEqual({ kind: 'owner-wall', wallSource: 'work-item', wallOwnerId: 'su-xyz', wallRef: 'WI-42' });
   });
 
@@ -559,6 +572,8 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
       gateKind: 'ask',
       question: 'should I proceed with the migration?',
       waitingHours: 2,
+      actionability: 'actionable',
+      livenessState: 'live',
     });
     expect(withQuestion.kind).toBe('blocked-session');
     expect(withQuestion.category).toBe('escalations');
@@ -567,7 +582,14 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(withQuestion.importance).toBe('high');
     expect(withQuestion.id).toBe('blocked-session:codex:sess-1:ref-1');
 
-    const noQuestion = blockedSessionToAttention({ sessionId: 'sess-2', client: 'codex', refId: 'ref-2', gateKind: 'permission_wait' });
+    const noQuestion = blockedSessionToAttention({
+      sessionId: 'sess-2',
+      client: 'codex',
+      refId: 'ref-2',
+      gateKind: 'permission_wait',
+      actionability: 'actionable',
+      livenessState: 'live',
+    });
     expect(noQuestion.title).toContain('permission prompt');
     expect(noQuestion.body).toContain('D-002 capability matrix');
   });
@@ -575,9 +597,23 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
   it('all four: id is kind-prefixed, ref.kind matches, needsHuman === (tier === decision), category set', () => {
     const items: AttentionItem[] = [
       workItemNeedsHumanToAttention({ workItemId: 'WI-1', itemKind: 'chunk', title: 't' }),
-      ownerWallToAttention({ source: 'work-item', ownerId: null, claim: 'c', status: 'unknown' }),
+      ownerWallToAttention({
+        source: 'work-item',
+        ownerId: 'su-live',
+        claim: 'c',
+        status: 'waiting',
+        actionability: 'actionable',
+        livenessState: 'live',
+      }),
       darkFlagRatificationToAttention({ flagKey: 'k' }),
-      blockedSessionToAttention({ sessionId: 's', client: 'omp', refId: 'r', gateKind: 'ask' }),
+      blockedSessionToAttention({
+        sessionId: 's',
+        client: 'omp',
+        refId: 'r',
+        gateKind: 'ask',
+        actionability: 'actionable',
+        livenessState: 'live',
+      }),
     ];
     for (const it of items) {
       expect(it.id.startsWith(`${it.kind}:`)).toBe(true);
