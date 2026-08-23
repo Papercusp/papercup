@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
@@ -25,6 +26,16 @@ import {
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
+
+describe('ptool bootstrap dependencies', () => {
+  it('declares the MCP SDK directly in the operator workspace', () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    );
+
+    expect(packageJson.dependencies?.['@modelcontextprotocol/sdk']).toBe('^1.29.0');
+  });
+});
 
 describe('ptool MCP identity binding', () => {
   it('carries the live PAPERCUSP_SID as the MCP client query parameter', () => {
