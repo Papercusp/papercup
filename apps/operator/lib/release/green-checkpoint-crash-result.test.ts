@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCrashCheckpointResult } from './green-checkpoint';
+import {
+  buildCrashCheckpointResult,
+  buildTerminalFailureCheckpointResult,
+} from './green-checkpoint';
 
 /**
  * EI-18850448565330905 — a green-checkpoint run that dies inside a non-test leg (a
@@ -82,5 +85,40 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
     // which downstream `?? null` coercions would then read as an ordinary missing field).
     expect(parsed.green).toBeNull();
     expect('green' in parsed).toBe(true);
+  });
+});
+
+describe('WI-40916 / EI-212278: materialization admission refusal is not a code red', () => {
+  const refusal = new Error(
+    'bash /repo/scripts/pc-heavy.sh --exclusive-all-slots -- bash setup-release-checkout.sh ' +
+      'exited 75: [pc-heavy] REFUSED materialization after 900s: only 13/16 heavy slots drained',
+  );
+
+  it('classifies the exact bounded drain refusal as infra-inconclusive', () => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: 'abc123',
+      error: refusal,
+      runId: 'run-materializing',
+    });
+    expect(r.green).toBeNull();
+    expect(r.advanced).toBe(false);
+    expect(r.reason).toBe('infra-inconclusive');
+    expect(r.crashed).toBeUndefined();
+    expect(r.summary).toContain('No code verdict was rendered');
+    expect(r.summary).toContain('13/16 heavy slots drained');
+  });
+
+  it.each([
+    ['wrong mode', 'pc-heavy.sh npm test exited 75: [pc-heavy] REFUSED materialization'],
+    ['wrong exit', 'pc-heavy.sh --exclusive-all-slots exited 1: [pc-heavy] REFUSED materialization'],
+    ['missing marker', 'pc-heavy.sh --exclusive-all-slots exited 75: unknown failure'],
+  ])('keeps an unknown crash counting when the signature is incomplete: %s', (_label, message) => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: 'abc123',
+      error: new Error(message),
+      runId: 'run-generic',
+    });
+    expect(r.reason).toBe('not-green');
+    expect(r.crashed).toBe(true);
   });
 });

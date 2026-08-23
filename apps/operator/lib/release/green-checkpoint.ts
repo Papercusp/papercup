@@ -831,6 +831,48 @@ export function buildCrashCheckpointResult(opts: {
   };
 }
 
+/**
+ * WI-40916 / EI-212278 — distinguish a deliberate pc-heavy materialization
+ * admission refusal from an unknown checkpoint crash.
+ *
+ * `scripts/pc-heavy.sh --exclusive-all-slots` exits 75 when pre-existing heavy
+ * holders do not drain within its bounded wait. No candidate file has been
+ * checked at that point, so treating the exception as `reason: not-green`
+ * fabricates a code-red verdict and increments the red streak. Keep generic
+ * crashes loud/counting via `buildCrashCheckpointResult`; only the wrapper's
+ * exact mode + exit + refusal marker receives the existing infra-inconclusive
+ * no-verdict classification.
+ */
+export function buildTerminalFailureCheckpointResult(opts: {
+  candidate: string;
+  error: unknown;
+  runId: string;
+}): CheckpointResult {
+  const detail =
+    opts.error instanceof Error
+      ? (opts.error.stack ?? opts.error.message)
+      : String(opts.error);
+  const materializationDeferred =
+    detail.includes('pc-heavy.sh --exclusive-all-slots') &&
+    detail.includes('exited 75') &&
+    detail.includes('[pc-heavy] REFUSED materialization');
+
+  if (!materializationDeferred) return buildCrashCheckpointResult(opts);
+
+  return {
+    advanced: false,
+    candidate: opts.candidate,
+    from: null,
+    green: null,
+    reason: 'infra-inconclusive',
+    runId: opts.runId,
+    summary:
+      'green-checkpoint deferred before the suite: pc-heavy could not drain pre-existing ' +
+      'heavy holders for isolated dependency materialization. No code verdict was rendered; ' +
+      `the next run retries after the admission window clears. ${detail}`,
+  };
+}
+
 function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -13100,7 +13142,7 @@ if (require.main === module) {
       /* best-effort — keep the fallback candidate above */
     }
     await emitResult(
-      buildCrashCheckpointResult({ candidate, error: e, runId }),
+      buildTerminalFailureCheckpointResult({ candidate, error: e, runId }),
     );
   };
 
