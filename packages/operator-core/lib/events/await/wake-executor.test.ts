@@ -2108,6 +2108,47 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       ...over,
     });
 
+  it('eligible cold wake with an exited session and no psu host parks instead of rehydrating the predecessor transcript', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const getLoopCarryNoteFn = vi.fn(async () => '## Next action\nresume the wiring');
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload() }),
+      coldDeps({
+        findPsuHost: vi.fn(() => null) as never,
+        alive: vi.fn(() => false),
+        spawnDetached,
+        getLoopCarryNoteFn,
+      }),
+    );
+
+    expect(out).toEqual({
+      kind: 'park',
+      reason: 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary',
+    });
+    expect(spawnDetached).not.toHaveBeenCalled();
+    expect(getLoopCarryNoteFn).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      ownerId: 'su-abc',
+      workspaceId: 'ws',
+    });
+  });
+
+  it('no-host exited wake keeps the legacy resume fallback when cold auto is disabled', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload() }),
+      coldDeps({
+        findPsuHost: vi.fn(() => null) as never,
+        coldAutoEnabled: vi.fn(async () => false),
+        alive: vi.fn(() => false),
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnDetached).toHaveBeenCalledTimes(1);
+  });
+
   it('cold-armed + enabled + carry-note → RESET-CONTEXT inject (channel psu-socket-reset, data = the carry-note WRAPPED with the re-checkpoint mandate, not the warm turn)', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const out = await executeWake(

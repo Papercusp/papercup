@@ -1741,6 +1741,45 @@ async function injectPsuHostWakeWithReverify(
   return null;
 }
 
+/**
+ * An explicitly cold loop wake has a context-boundary invariant: if its live
+ * psu host is unavailable, do not fall through to `resume-headless`, because
+ * that command rehydrates the predecessor transcript. Keep the check scoped
+ * to the same three cold preconditions as the host-inject path (harness marker,
+ * master gate, and a non-empty carry-note); disabled or unanchored cold wakes
+ * retain the legacy warm resume fallback.
+ */
+async function coldWakeRequiresPsuHost(d: DeliveryWork, deps: ExecuteWakeDeps): Promise<boolean> {
+  const marker = readLoopDeliveryMarker(d.payload);
+  if (!marker?.harness || marker.carry !== 'cold') return false;
+
+  let coldEnabled = false;
+  try {
+    coldEnabled = await (deps.coldAutoEnabled ?? (async () => false))();
+  } catch {
+    return false;
+  }
+  if (!coldEnabled) return false;
+
+  let carryNote: string | null = null;
+  try {
+    const ref = {
+      harness: marker.harness,
+      ownerId: d.subscriberId,
+      workspaceId: d.workspaceId,
+    };
+    if (deps.getLoopCarryNoteFn) {
+      carryNote = await deps.getLoopCarryNoteFn(ref);
+    } else {
+      carryNote = (await (deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta)(ref)).note;
+    }
+  } catch {
+    return false;
+  }
+
+  return decideColdWake({ payload: marker, coldEnabled, carryNote }).cold;
+}
+
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
   const getSession = deps.getSession ?? getAdvSession;
@@ -2031,6 +2070,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // No pid recorded but presence is fresh — the session is (very likely)
       // still open somewhere we can't see. Never concurrent-resume it; park.
       return { kind: 'park', reason: 'no recorded pid but presence is fresh — parking to avoid a concurrent resume of a live session' };
+    }
+
+    // A cold wake cannot safely use Channel 2: `resume-headless` restores the
+    // predecessor transcript, defeating the fresh-context contract. The host
+    // ladder has already had its bounded attempts above; park until a host is
+    // available rather than silently reopening the old context. This is only
+    // active for an eligible explicit-cold wake; warm/disabled/unanchored wakes
+    // preserve the normal resume fallback below.
+    if (await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps)) {
+      return {
+        kind: 'park',
+        reason: 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary',
+      };
     }
 
     // Fresh-per-wake cutover for the Hive Queen (queen-brief-cache-assembly
