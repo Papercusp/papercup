@@ -358,6 +358,65 @@ describe('verifyAttestation', () => {
     vi.unstubAllGlobals();
   });
 
+  it('ensureAttestationGist: follows pagination to find an aged binding without creating', async () => {
+    const { ensureAttestationGist } = await import('./attest');
+    const { pubkeyBase64, body } = makeFakeGistResponse();
+    const filename = attestationGistFilename(pubkeyBase64);
+    const nextPage = 'https://api.github.com/gists?per_page=100&page=2';
+    const validGist = {
+      id: 'g-aged',
+      owner: { id: 12345 },
+      files: { [filename]: { content: JSON.stringify(body, null, 2) } },
+    };
+
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      void init;
+      if (url === 'https://api.github.com/gists?per_page=100') {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === 'link' ? `<${nextPage}>; rel="next"` : null,
+          },
+          json: async () => [],
+        };
+      }
+      if (url === nextPage) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => [{ id: 'g-aged', files: { [filename]: {} } }],
+        };
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => validGist };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const id = await ensureAttestationGist({
+      keychainId: 'unused-on-paginated-find-path',
+      pubkeyBase64,
+      deviceLabel: 'test',
+      githubUserId: 12345,
+      githubLogin: 'testuser',
+      token: 'tok',
+    });
+
+    expect(id).toBe('g-aged');
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.github.com/gists?per_page=100',
+      nextPage,
+      'https://api.github.com/gists/g-aged',
+    ]);
+    expect(
+      fetchMock.mock.calls.some(
+        (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+      ),
+    ).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it('ensureAttestationGist: refuses to create when gist listing is rate-limited', async () => {
     const { ensureAttestationGist, clearAttestationQuotaGuards } = await import('./attest');
     clearAttestationQuotaGuards();

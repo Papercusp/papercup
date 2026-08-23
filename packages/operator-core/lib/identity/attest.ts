@@ -230,6 +230,82 @@ export interface CreateAttestationGistResult {
   body: AttestationGistBody;
 }
 
+type AttestationGistListEntry = {
+  id?: string;
+  files?: Record<string, unknown> | null;
+};
+
+function nextGistPageUrl(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+
+  for (const link of linkHeader.split(',')) {
+    const match = link.match(/<([^>]+)>\s*;\s*rel=(?:"([^"]+)"|([^\s]+))/i);
+    const rel = match?.[2] ?? match?.[3];
+    if (match?.[1] && rel?.split(/\s+/).includes('next')) return match[1];
+  }
+
+  return null;
+}
+
+async function listAttestationGists(token: string): Promise<AttestationGistListEntry[]> {
+  const headers = {
+    Authorization: 'token ' + token,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  const gists: AttestationGistListEntry[] = [];
+  const seenPages = new Set<string>();
+  let pageUrl: string | null = 'https://api.github.com/gists?per_page=100';
+
+  while (pageUrl) {
+    if (seenPages.has(pageUrl)) {
+      throw new Error(
+        'ensureAttestationGist: gist listing pagination repeated a page — refusing to create a duplicate binding',
+      );
+    }
+    seenPages.add(pageUrl);
+
+    let resp: Response;
+    try {
+      resp = await fetch(pageUrl, { headers });
+    } catch (err) {
+      throw new Error(
+        'ensureAttestationGist: gist listing failed (' + String(err) +
+          ') — refusing to create a duplicate binding',
+      );
+    }
+
+    if (!resp.ok) {
+      // The list path must arm the same cooldown that protects verification.
+      armRateLimitCooldown(resp);
+      throw new Error(
+        'ensureAttestationGist: gist listing refused (HTTP ' + resp.status +
+          ') — refusing to create a duplicate binding',
+      );
+    }
+
+    let page: unknown;
+    try {
+      page = await resp.json();
+    } catch (err) {
+      throw new Error(
+        'ensureAttestationGist: gist listing response was invalid (' + String(err) +
+          ') — refusing to create a duplicate binding',
+      );
+    }
+    if (!Array.isArray(page)) {
+      throw new Error(
+        'ensureAttestationGist: gist listing response was not an array — refusing to create a duplicate binding',
+      );
+    }
+
+    gists.push(...(page as AttestationGistListEntry[]));
+    pageUrl = nextGistPageUrl(resp.headers?.get('link') ?? null);
+  }
+
+  return gists;
+}
+
 /**
  * Create the GitHub Gist that constitutes this device's attestation.
  * The gist is public (GitHub requires auth for gist creation, but the
@@ -430,35 +506,7 @@ export async function ensureAttestationGist(
     );
   }
 
-  let resp: Response;
-  try {
-    resp = await fetch('https://api.github.com/gists?per_page=100', {
-      headers: {
-        Authorization: 'token ' + input.token,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-  } catch (err) {
-    throw new Error(
-      'ensureAttestationGist: gist listing failed (' + String(err) +
-        ') — refusing to create a duplicate binding',
-    );
-  }
-
-  if (!resp.ok) {
-    // The list path must arm the same cooldown that protects verification.
-    armRateLimitCooldown(resp);
-    throw new Error(
-      'ensureAttestationGist: gist listing refused (HTTP ' + resp.status +
-        ') — refusing to create a duplicate binding',
-    );
-  }
-
-  const gists = (await resp.json()) as Array<{
-    id?: string;
-    files?: Record<string, unknown> | null;
-  }>;
+  const gists = await listAttestationGists(input.token);
   for (const g of gists) {
     if (!g.id || !g.files || !(expectedFilename in g.files)) continue;
     // A candidate with this deterministic filename is evidence that a binding
