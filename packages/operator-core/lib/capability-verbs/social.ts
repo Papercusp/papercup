@@ -780,6 +780,24 @@ export interface SocialWriteAdapter {
   delete?(request: SocialDeleteRequest, context: OutboundContext): Promise<SocialDeleteOutcome>;
 }
 
+/**
+ * A write adapter that is statically known to implement `reply`.
+ *
+ * Exists because `reply` became optional in P-021 for LinkedIn's sake, and a
+ * factory returning the plain `SocialWriteAdapter` would then widen every
+ * reply-implementing adapter to "might not have it" — pushing `!` assertions
+ * into callers that have no doubt at all. Annotating the factory instead keeps
+ * the proof where the knowledge is: an adapter that implements reply SAYS so in
+ * its return type, and LinkedIn's simply does not make the claim.
+ *
+ * Prefer this over a non-null assertion at the call site: `!` silences the
+ * checker everywhere it is written, whereas this keeps a genuinely reply-less
+ * adapter a compile error if someone ever assigns one here.
+ */
+export type SocialReplyCapableAdapter = SocialWriteAdapter & {
+  reply: NonNullable<SocialWriteAdapter['reply']>;
+};
+
 export interface SocialDeleteRequest {
   ref: SocialPostRef;
   /** Platform-native handle for the post, derived from the STORED row. */

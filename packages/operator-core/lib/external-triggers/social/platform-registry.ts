@@ -1135,8 +1135,27 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
       // "Standard rate limits are not published in documentation" — they are
       // visible only in the Developer Portal Analytics tab, and only for
       // endpoints already called at least once that day.
-      assumedDailyFloor: 150,
-      windowSeconds: 86_400,
+      // TWO NON-FUNGIBLE BUDGETS (D-020), not one pool: burning the member
+      // allowance does not touch the application allowance and vice versa, so a
+      // single scalar would misreport both. The member bucket is the binding
+      // one for a single owner — it is ~667x smaller — which is what a storm
+      // policy must ration against.
+      buckets: {
+        member: {
+          appliesTo: 'a single member per application, resetting midnight UTC',
+          perDay: 150,
+          unit: 'calls',
+          verbs: ['post', 'delete'],
+          notes:
+            'The binding limit for one owner. Note this counts REQUESTS, not posts: a create is one call, so an adapter that also polled would spend the same 150.',
+        },
+        application: {
+          appliesTo: 'the whole application across all members, resetting midnight UTC',
+          perDay: 100_000,
+          unit: 'calls',
+          verbs: ['post', 'delete'],
+        },
+      },
       notes:
         'Member 150 requests/day, Application 100,000 requests/day, both resetting at midnight UTC. The member limit is the binding one for a single owner, so it is the floor here. ⚠ ZERO API-SIDE OBSERVABILITY: no response header reports quota or usage, and unlike Threads there is no limits ENDPOINT either, so observedPeakUsagePct can never become non-null and this floor is permanent. The only feedback loop is an email alert at 75% of quota — application-level only, explicitly not real-time ("delay of approximately 1-2 hours"), and therefore useless to the adapter. Throttling surfaces as HTTP 429, which is also returned "in rare cases ... as part of infrastructure protection", so a 429 is not proof the daily cap was reached. SECOND, INDEPENDENT THROTTLE: comment creation carries a "short term 1 minute rate limit" (429 "Comment create throttled: creation rate limit exceeded for member") — LinkedIn must not be modelled as daily-only, even though this adapter does not comment today.',
     },
