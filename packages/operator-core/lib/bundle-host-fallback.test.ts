@@ -72,6 +72,18 @@ afterEach(() => {
 });
 
 describe('bundle-host.sh last-known-good fallback', () => {
+  it('enters the install-safe mutex before resolving bundle dependencies', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    const guardIdx = src.indexOf('--exec-under-lock');
+    const commonInputsIdx = src.indexOf('source "$SCRIPT_DIR/bundle-host-common.sh"');
+    const esbuildIdx = src.indexOf('npx --yes esbuild@0.25.0');
+
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(src).toContain('PAPERCUSP_INSTALL_MUTEX_HELD');
+    expect(guardIdx).toBeLessThan(commonInputsIdx);
+    expect(guardIdx).toBeLessThan(esbuildIdx);
+  });
+
   it(
     'STARTS on the previous bundle when the tree is momentarily broken, and says so loudly',
     () => {

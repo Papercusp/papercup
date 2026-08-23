@@ -56,6 +56,19 @@ set -euo pipefail
 # a restart afterwards silently runs the STALE bundle
 # (internal-docs/agent-insights/bg-host-runs-stale-routine-code.md again).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# EI-21252421327077269: install:safe serializes WRITERS, but a systemd restart
+# could still run this dependency reader while npm was replacing node_modules.
+# That produced a half-extracted @modelcontextprotocol/sdk package and made the
+# host crash-loop on missing rocksdb-native. Re-enter the script through the
+# existing repo-keyed install mutex before sourcing bundle inputs or invoking
+# esbuild. The wrapper marks its child so this branch runs exactly once.
+if [[ "${PAPERCUSP_INSTALL_MUTEX_HELD:-0}" != "1" ]]; then
+  exec node "$REPO_ROOT/scripts/npm-install-safe.mjs" \
+    --repo-root "$REPO_ROOT" --exec-under-lock -- "$SCRIPT_DIR/bundle-host.sh" "$@"
+fi
+
 cd "$SCRIPT_DIR/.."
 
 ENTRY="${1:-bin/hono-host.ts}"
