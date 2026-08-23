@@ -152,6 +152,11 @@ import {
   persistReExecSafePermissions,
   persistDefaultClaudeAuthSettings,
   fetchWithResilience,
+  formatApiFailureMessage,
+  proxyOverloadRetryDelayMs,
+  isRetryableMcpProxyOverload,
+  MCP_PROXY_OVERLOAD_MAX_ATTEMPTS,
+  MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS,
   resolveFallbackOperatorTargets,
   resolveOperatorUrl,
   resolveOperatorTarget,
@@ -8510,6 +8515,93 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
     source: "dev-default",
     startedAt: null,
   };
+
+  it("formats a final proxy overload with detail and retry guidance", () => {
+    expect(
+      formatApiFailureMessage(
+        {
+          error: "mcp_proxy_overloaded",
+          detail: "proxy already has 192 request(s) in flight — shed before forwarding",
+          retryAfterSec: 2,
+        },
+        429,
+        "/api/adv/sessions/resumable",
+      ),
+    ).toBe(
+      "mcp_proxy_overloaded — proxy already has 192 request(s) in flight — shed before forwarding — retry in 2s",
+    );
+  });
+
+  it("recognizes only a Retry-After-marked 429 as proxy overload", () => {
+    expect(
+      isRetryableMcpProxyOverload({
+        status: 429,
+        headers: new Headers({ "retry-after": "2" }),
+      }),
+    ).toBe(true);
+    expect(isRetryableMcpProxyOverload({ status: 429, headers: new Headers() })).toBe(false);
+    expect(isRetryableMcpProxyOverload({ status: 503, headers: new Headers({ "retry-after": "2" }) })).toBe(false);
+    expect(proxyOverloadRetryDelayMs("2")).toBe(2_000);
+    expect(proxyOverloadRetryDelayMs("99")).toBe(5_000);
+    expect(proxyOverloadRetryDelayMs("garbage")).toBe(1_000);
+  });
+
+  it("retries a proxy overload on Retry-After and returns once admission recovers", async () => {
+    const clock = fakeClock();
+    let n = 0;
+    const fetchImpl = async () => {
+      n += 1;
+      if (n < 3) {
+        return {
+          status: 429,
+          headers: new Headers({ "retry-after": "2" }),
+          body: null,
+        } as unknown as Response;
+      }
+      return { status: 200, ok: true } as unknown as Response;
+    };
+    const res = await fetchWithResilience(
+      "http://op/api/adv/sessions/resumable",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        target: devTarget,
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(n).toBe(3);
+    expect(clock.now()).toBe(4_000);
+  });
+
+  it("bounds repeated proxy overloads by five total attempts and twenty seconds", async () => {
+    const clock = fakeClock();
+    let n = 0;
+    const fetchImpl = async () => {
+      n += 1;
+      return {
+        status: 429,
+        headers: new Headers({ "retry-after": "20" }),
+        body: null,
+      } as unknown as Response;
+    };
+    const res = await fetchWithResilience(
+      "http://op/api/adv/sessions/resumable",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        target: devTarget,
+      },
+    );
+    expect(res.status).toBe(429);
+    expect(n).toBe(MCP_PROXY_OVERLOAD_MAX_ATTEMPTS);
+    expect(clock.now()).toBeLessThanOrEqual(MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS);
+  });
 
   it("rides through a recycle: retries a connection failure on a backoff and returns once the host is back", async () => {
     const clock = fakeClock();
