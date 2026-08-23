@@ -121,6 +121,37 @@ export async function setPlanRunStatus(
   });
 }
 
+/**
+ * Persist the values a completing run PUBLISHED (P-026 / D-017, mig 908).
+ *
+ * Kept beside `insertPlanRun`/`setPlanRunStatus` rather than in the tool, so every
+ * `plan_runs` write goes through this one module. The VALIDATION deliberately does not
+ * live here — `evaluatePublishOutputs` (plan-outputs.ts) owns that and is pure, so this
+ * function is reached only with values already checked against the plan's promise.
+ *
+ * Returns false when no row matched (an unknown or out-of-scope run id), so the caller
+ * can report a miss instead of reporting a silent success on a write that touched
+ * nothing.
+ */
+export async function setPlanRunOutputs(
+  runId: number,
+  outputs: Record<string, unknown>,
+): Promise<boolean> {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
+    // jsonb bound as `${JSON.stringify(x)}::text::jsonb` — the operator's postgres-js
+    // client throws on sql.json / bare-object jsonb params
+    // (agent-insights/postgres-js-jsonb-binding).
+    const rows = await tx<{ id: number }[]>`
+      UPDATE harness_shared.plan_runs
+         SET outputs = ${JSON.stringify(outputs)}::text::jsonb,
+             updated_at = ${Date.now()}
+       WHERE id = ${runId}
+       RETURNING id
+    `;
+    return rows.length > 0;
+  });
+}
+
 /** A `running` run untouched this long is orphaned — the process that
  *  owned its turn is gone (no live turn outlives the ~10-min tool
  *  timeout). The sweep transitions it to `failed`. */
