@@ -12,6 +12,12 @@ import type {
 import { Table, type TableColumn } from "@/app/harness/Table";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { useFlag } from "@/lib/flag-hooks";
+import {
+  TriggerBindingCard,
+  formatTriggerTime as formatTime,
+  numberFromPolicy,
+} from "./TriggerBindingCard";
+import { fetchTriggerAdminSnapshot, patchTriggerAdmin } from "./trigger-admin-api";
 import "./triggers.css";
 
 type View = "bindings" | "sources" | "runs";
@@ -22,25 +28,6 @@ const VIEW_LABELS: Record<View, string> = {
   sources: "Sources",
   runs: "Recent runs",
 };
-
-function numberFromPolicy(
-  policy: Record<string, unknown>,
-  camel: string,
-  snake: string,
-): number | null {
-  const value = policy[camel] ?? policy[snake];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function formatTime(value: string | null): string {
-  if (!value) return "never";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function compactJson(value: Record<string, unknown>): string {
-  return Object.keys(value).length === 0 ? "none" : JSON.stringify(value);
-}
 
 const RUN_COLUMNS = [
   {
@@ -105,14 +92,7 @@ export default function TriggersClient() {
     if (!flagEnabled) return;
     setState("loading");
     try {
-      const response = await fetch("/api/admin/triggers", {
-        cache: "no-store",
-      });
-      const body = (await response.json()) as ExternalTriggerAdminSnapshot & {
-        detail?: string;
-      };
-      if (!response.ok)
-        throw new Error(body.detail ?? `HTTP ${response.status}`);
+      const body = await fetchTriggerAdminSnapshot();
       setPayload(body);
       setState("ok");
       setError("");
@@ -149,23 +129,7 @@ export default function TriggersClient() {
     setWindowSeconds(String(window ?? 60));
   }, [selectedBinding]);
 
-  const patch = useCallback(async (body: Record<string, unknown>) => {
-    const response = await fetch("/api/admin/triggers", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = (await response.json()) as {
-      ok?: boolean;
-      error?: string;
-      detail?: string;
-    };
-    if (!response.ok || result.ok !== true) {
-      throw new Error(
-        result.detail ?? result.error ?? `HTTP ${response.status}`,
-      );
-    }
-  }, []);
+  const patch = useCallback((body: Record<string, unknown>) => patchTriggerAdmin(body), []);
 
   const setArmed = useCallback(
     async (binding: ExternalTriggerBindingAdminRow, armed: boolean) => {
@@ -324,82 +288,15 @@ export default function TriggersClient() {
               {payload.bindings.length === 0 && (
                 <Empty message="No trigger bindings yet. Create one with the triggers agent verbs; it will start off." />
               )}
-              {payload.bindings.map((binding) => {
-                const policyMax = numberFromPolicy(
-                  binding.stormPolicy,
-                  "maxRuns",
-                  "max_runs",
-                );
-                const policyWindow =
-                  numberFromPolicy(
-                    binding.stormPolicy,
-                    "windowSeconds",
-                    "window_seconds",
-                  ) ?? 60;
-                return (
-                  <article
-                    key={binding.id}
-                    className={`tr-card${binding.armed ? "" : " muted"}`}
-                  >
-                    <div className="tr-card-main">
-                      <div className="tr-card-heading">
-                        <code>{binding.eventPattern}</code>
-                        <span className="tr-badge">{binding.sourceKind}</span>
-                        <span
-                          className={`tr-badge status-${binding.sourceStatus}`}
-                        >
-                          {binding.sourceStatus}
-                        </span>
-                      </div>
-                      <div className="tr-meta">
-                        → {binding.planHarnessSlug}/{binding.planSlug}
-                      </div>
-                      <div className="tr-meta">
-                        filter: {compactJson(binding.eventFilter)}
-                      </div>
-                      <div className="tr-meta">
-                        storm:{" "}
-                        {policyMax === null
-                          ? "unbounded"
-                          : `${policyMax} run${policyMax === 1 ? "" : "s"}`}{" "}
-                        / {policyWindow}s
-                      </div>
-                      <div className="tr-meta">
-                        last run:{" "}
-                        {binding.lastRun
-                          ? `${binding.lastRun.status} · ${formatTime(binding.lastRun.triggeredAt)}`
-                          : "never"}
-                        {binding.lastRun?.error
-                          ? ` · ${binding.lastRun.error}`
-                          : ""}
-                      </div>
-                    </div>
-                    <div className="tr-card-actions">
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={binding.armed}
-                        aria-label={`${binding.armed ? "Disarm" : "Arm"} ${binding.eventPattern}`}
-                        className={`tr-switch${binding.armed ? " on" : ""}`}
-                        disabled={busy !== null}
-                        onClick={() => void setArmed(binding, !binding.armed)}
-                      >
-                        <span />
-                      </button>
-                      <strong className={binding.armed ? "tr-good" : ""}>
-                        {binding.armed ? "Armed" : "Off"}
-                      </strong>
-                      <button
-                        type="button"
-                        className="tr-link"
-                        onClick={() => void setSelectedBindingId(binding.id)}
-                      >
-                        Storm policy
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
+              {payload.bindings.map((binding) => (
+                <TriggerBindingCard
+                  key={binding.id}
+                  binding={binding}
+                  busy={busy !== null}
+                  onSetArmed={(row, armed) => void setArmed(row, armed)}
+                  onStormPolicy={(row) => void setSelectedBindingId(row.id)}
+                />
+              ))}
             </section>
           )}
 

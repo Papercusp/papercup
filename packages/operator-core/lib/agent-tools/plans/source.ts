@@ -1010,6 +1010,7 @@ export async function listPlanIndexRows(
                     AND tb.plan_harness_slug = harness_plans.harness_slug
                     AND tb.plan_slug = harness_plans.plan_slug
                     AND tb.action->>'type' = 'launch-plan'
+                    AND tb.detached_at IS NULL
                ) AS has_external_trigger
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -1139,6 +1140,7 @@ export async function listPlanIndexRowsForWorkspace(
                     AND tb.plan_harness_slug = harness_plans.harness_slug
                     AND tb.plan_slug = harness_plans.plan_slug
                     AND tb.action->>'type' = 'launch-plan'
+                    AND tb.detached_at IS NULL
                ) AS has_external_trigger
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}

@@ -8,6 +8,8 @@
  */
 import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
+import type { PlanSchedule } from '../agent-tools/plans/source';
+import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -125,6 +127,20 @@ export interface ExternalTriggerAdminSnapshot {
   recentRuns: ExternalTriggerRunAdminRow[];
 }
 
+/** Per-plan schedule/manual state folded into the existing trigger admin read. */
+export interface ExternalTriggerPlanAdminSnapshot {
+  harnessSlug: string;
+  planSlug: string;
+  schedule: PlanSchedule | null;
+  scheduleActive: boolean;
+  scheduledAt: string | null;
+  expiresAt: string | null;
+  tzid: string | null;
+  lastFire: string | null;
+  nextFire: string | null;
+  manualSource: 'input-schema' | 'template' | null;
+}
+
 interface SourceDbRow {
   id: string;
   kind: string;
@@ -174,6 +190,23 @@ interface RunDbRow {
   completedAt: Date | string | null;
   planRunRef: string | null;
   error: string | null;
+}
+
+interface PlanTriggerDbRow {
+  harnessSlug: string;
+  planSlug: string;
+  schedule: PlanSchedule | null;
+  scheduleActive: boolean;
+  scheduledAt: Date | string | null;
+  expiresAt: Date | string | null;
+  tzid: string | null;
+  template: string | null;
+  hasInputSchema: boolean;
+}
+
+interface RoutineFireDbRow {
+  lastFire: Date | string | null;
+  nextFire: Date | string | null;
 }
 
 function iso(value: Date | string | null): string | null {
@@ -371,6 +404,7 @@ export async function ensureExternalTriggerBinding(
          AND b.event_pattern = ${eventPattern}
          AND b.event_filter = ${eventFilter}::text::jsonb
          AND b.action = ${action}::text::jsonb
+         AND b.detached_at IS NULL
        ORDER BY b.created_at, b.id
        LIMIT 1`;
     if (rows[0]) {
@@ -417,7 +451,9 @@ export async function loadExternalTriggerAdminSnapshot(
              )::int AS "failedDeliveries24h"
         FROM harness_shared.trigger_sources s
         LEFT JOIN harness_shared.trigger_bindings b
-          ON b.workspace_id = s.workspace_id AND b.source_id = s.id
+          ON b.workspace_id = s.workspace_id
+         AND b.source_id = s.id
+         AND b.detached_at IS NULL
         LEFT JOIN harness_shared.trigger_deliveries d
           ON d.workspace_id = s.workspace_id AND d.source_id = s.id
        WHERE s.workspace_id = ${workspaceId}
@@ -454,6 +490,7 @@ export async function loadExternalTriggerAdminSnapshot(
            LIMIT 1
         ) lr ON TRUE
        WHERE b.workspace_id = ${workspaceId}
+         AND b.detached_at IS NULL
        ORDER BY b.created_at, b.id`,
     sql<RunDbRow[]>`
       SELECT tr.id::text,
@@ -544,6 +581,57 @@ export async function loadExternalTriggerAdminSnapshot(
   };
 }
 
+/** Read the schedule/manual half of one plan's unified trigger model. */
+export async function loadExternalTriggerPlanAdminSnapshot(
+  sql: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  planSlug: string,
+): Promise<ExternalTriggerPlanAdminSnapshot | null> {
+  const ws = required(workspaceId, 'workspace_id');
+  const harness = required(harnessSlug, 'plan_harness_slug');
+  const plan = required(planSlug, 'plan_slug');
+  const [planRows, routineRows] = await Promise.all([
+    sql<PlanTriggerDbRow[]>`
+      SELECT harness_slug AS "harnessSlug",
+             plan_slug AS "planSlug",
+             schedule,
+             schedule_active AS "scheduleActive",
+             scheduled_at AS "scheduledAt",
+             expires_at AS "expiresAt",
+             tzid,
+             template,
+             (input_schema IS NOT NULL) AS "hasInputSchema"
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${ws}
+         AND harness_slug = ${harness}
+         AND plan_slug = ${plan}
+       LIMIT 1`,
+    sql<RoutineFireDbRow[]>`
+      SELECT last_fired_at AS "lastFire", next_fire_at AS "nextFire"
+        FROM harness_shared.routines
+       WHERE workspace_id = ${ws}
+         AND install_slug = ${harness}
+         AND name = ${planScheduleRoutineName(plan)}
+       LIMIT 1`,
+  ]);
+  const row = planRows[0];
+  if (!row) return null;
+  const routine = routineRows[0];
+  return {
+    harnessSlug: row.harnessSlug,
+    planSlug: row.planSlug,
+    schedule: row.schedule,
+    scheduleActive: row.scheduleActive,
+    scheduledAt: iso(row.scheduledAt),
+    expiresAt: iso(row.expiresAt),
+    tzid: row.tzid,
+    lastFire: iso(routine?.lastFire ?? null),
+    nextFire: iso(routine?.nextFire ?? null),
+    manualSource: row.hasInputSchema ? 'input-schema' : row.template ? 'template' : null,
+  };
+}
+
 export async function setExternalTriggerBindingArmed(
   sql: postgres.Sql,
   workspaceId: string,
@@ -554,9 +642,53 @@ export async function setExternalTriggerBindingArmed(
     UPDATE harness_shared.trigger_bindings
        SET armed = ${armed}, updated_at = now()
      WHERE workspace_id = ${workspaceId} AND id = ${id}::uuid
+       AND detached_at IS NULL
      RETURNING id::text, armed, updated_at AS "updatedAt"`;
   if (!rows[0]) return null;
   return { ...rows[0], updatedAt: iso(rows[0].updatedAt) as string };
+}
+
+/**
+ * Soft-detach a binding: stop execution immediately while preserving every run
+ * that references the binding. Repeating the detach is an idempotent miss.
+ */
+export async function detachExternalTriggerBinding(
+  sql: postgres.Sql,
+  workspaceId: string,
+  id: string,
+): Promise<{ id: string; detachedAt: string; updatedAt: string } | null> {
+  return sql.begin(async (tx) => {
+    const rows = await tx<
+      Array<{ id: string; detachedAt: Date | string; updatedAt: Date | string }>
+    >`
+      UPDATE harness_shared.trigger_bindings
+         SET armed = FALSE,
+             detached_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${workspaceId}
+         AND id = ${id}::uuid
+         AND detached_at IS NULL
+       RETURNING id::text,
+                 detached_at AS "detachedAt",
+                 updated_at AS "updatedAt"`;
+    if (!rows[0]) return null;
+    // A detached binding must not leave queued work that can still launch later.
+    // Running attempts are allowed to settle; only not-yet-started rows cancel.
+    await tx`
+      UPDATE harness_shared.trigger_runs
+         SET status = 'cancelled',
+             completed_at = now(),
+             updated_at = now(),
+             error = COALESCE(error, 'binding detached before dispatch')
+       WHERE workspace_id = ${workspaceId}
+         AND binding_id = ${id}::uuid
+         AND status = 'pending'`;
+    return {
+      id: rows[0].id,
+      detachedAt: iso(rows[0].detachedAt) as string,
+      updatedAt: iso(rows[0].updatedAt) as string,
+    };
+  });
 }
 
 export async function updateExternalTriggerBindingStormPolicy(
@@ -584,6 +716,7 @@ export async function updateExternalTriggerBindingStormPolicy(
        SET storm_policy = ${JSON.stringify(stormPolicy)}::text::jsonb,
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND id = ${id}::uuid
+       AND detached_at IS NULL
      RETURNING id::text, storm_policy AS "stormPolicy", updated_at AS "updatedAt"`;
   if (!rows[0]) return null;
   return { ...rows[0], updatedAt: iso(rows[0].updatedAt) as string };

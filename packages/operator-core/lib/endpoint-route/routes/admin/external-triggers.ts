@@ -7,8 +7,11 @@ import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { getSessionUserOrDefault } from '../../../auth';
 import {
+  createExternalTriggerBinding,
+  detachExternalTriggerBinding,
   disabledExternalTriggerAdminSnapshot,
   loadExternalTriggerAdminSnapshot,
+  loadExternalTriggerPlanAdminSnapshot,
   setExternalTriggerBindingArmed,
   updateExternalTriggerBindingStormPolicy,
 } from '../../../external-triggers/admin';
@@ -21,6 +24,25 @@ import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 
 const mutationSchema = z.discriminatedUnion('op', [
+  z
+    .object({
+      op: z.literal('attach-external'),
+      sourceId: z.string().uuid(),
+      planHarnessSlug: z.string().min(1).max(120),
+      planSlug: z.string().min(1).max(240),
+      eventPattern: z.string().min(1).max(500),
+      eventFilter: z.record(z.string(), z.unknown()).default({}),
+      maxRuns: z.number().int().positive().max(1_000_000).nullable().default(null),
+      windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).default(60),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('detach-external'),
+      id: z.string().uuid(),
+      confirm: z.boolean().optional(),
+    })
+    .strict(),
   z
     .object({
       op: z.literal('set-armed'),
@@ -51,12 +73,31 @@ const read = defineTool({
   method: 'GET',
   path: '/admin/triggers',
   auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
-  async handler(): Promise<Response> {
+  async handler(req): Promise<Response> {
     if (!(await enabled('admin:triggers:read'))) {
       return Response.json(disabledExternalTriggerAdminSnapshot());
     }
     const { sql } = getOrgPg();
-    return Response.json(await loadExternalTriggerAdminSnapshot(sql, activeWorkspaceId()));
+    const workspaceId = activeWorkspaceId();
+    const url = new URL(req.url);
+    const planSlug = url.searchParams.get('planSlug')?.trim() ?? '';
+    const planHarnessSlug = url.searchParams.get('planHarnessSlug')?.trim() ?? '';
+    if ((planSlug && !planHarnessSlug) || (!planSlug && planHarnessSlug)) {
+      return Response.json(
+        { ok: false, error: 'bad_request', detail: 'planSlug and planHarnessSlug must be supplied together' },
+        { status: 400 },
+      );
+    }
+    const [snapshot, plan] = await Promise.all([
+      loadExternalTriggerAdminSnapshot(sql, workspaceId),
+      planSlug
+        ? loadExternalTriggerPlanAdminSnapshot(sql, workspaceId, planHarnessSlug, planSlug)
+        : Promise.resolve(null),
+    ]);
+    if (planSlug && !plan) {
+      return Response.json({ ok: false, error: 'plan_not_found' }, { status: 404 });
+    }
+    return Response.json({ ...snapshot, ...(plan ? { plan } : {}) });
   },
 });
 
@@ -94,6 +135,48 @@ const mutate = defineTool({
 
     const { sql } = getOrgPg();
     const workspaceId = activeWorkspaceId();
+    if (parsed.data.op === 'attach-external') {
+      const user = await getSessionUserOrDefault(req.headers);
+      try {
+        const binding = await createExternalTriggerBinding(sql, workspaceId, {
+          sourceId: parsed.data.sourceId,
+          planHarnessSlug: parsed.data.planHarnessSlug,
+          planSlug: parsed.data.planSlug,
+          eventPattern: parsed.data.eventPattern,
+          eventFilter: parsed.data.eventFilter,
+          stormPolicy: {
+            ...(parsed.data.maxRuns === null ? {} : { maxRuns: parsed.data.maxRuns }),
+            windowSeconds: parsed.data.windowSeconds,
+          },
+          createdBy: `owner:${user.id}`,
+        });
+        void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
+        void notifySyncInvalidate('plans.list', undefined).catch(() => {});
+        return Response.json({ ok: true, binding });
+      } catch (error) {
+        return Response.json(
+          { ok: false, error: 'attach_failed', detail: error instanceof Error ? error.message : String(error) },
+          { status: 400 },
+        );
+      }
+    }
+    if (parsed.data.op === 'detach-external') {
+      if (parsed.data.confirm !== true) {
+        return Response.json(
+          {
+            ok: false,
+            error: 'owner_confirmation_required',
+            detail: 'detaching a trigger binding requires an explicit owner confirmation',
+          },
+          { status: 409 },
+        );
+      }
+      const binding = await detachExternalTriggerBinding(sql, workspaceId, parsed.data.id);
+      if (!binding) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
+      void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
+      void notifySyncInvalidate('plans.list', undefined).catch(() => {});
+      return Response.json({ ok: true, binding });
+    }
     if (parsed.data.op === 'set-armed') {
       if (parsed.data.confirm !== true) {
         return Response.json(

@@ -155,6 +155,7 @@ async function loadBindingForUpdate(tx: Db, workspaceId: string, id: string): Pr
            storm_policy AS "stormPolicy"
       FROM harness_shared.trigger_bindings
      WHERE workspace_id = ${workspaceId} AND id = ${id}
+       AND detached_at IS NULL
      FOR UPDATE`;
   return rows[0] ?? null;
 }
@@ -282,6 +283,7 @@ export async function queueExternalTriggerBindings(
      WHERE workspace_id = ${event.workspaceId}
        AND source_id = ${event.sourceId}
        AND armed = TRUE
+       AND detached_at IS NULL
      ORDER BY created_at, id`;
 
   const result: BindingEnqueueResult = {
@@ -323,6 +325,10 @@ async function claimPendingTriggerRuns(
     WITH candidates AS (
       SELECT tr.workspace_id, tr.id
         FROM harness_shared.trigger_runs tr
+        JOIN harness_shared.trigger_bindings binding
+          ON binding.workspace_id = tr.workspace_id
+         AND binding.id = tr.binding_id
+         AND binding.detached_at IS NULL
        WHERE tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
          AND (
            tr.status IN ('pending', 'failed')
@@ -350,7 +356,9 @@ async function claimPendingTriggerRuns(
            c.attempts
       FROM claimed c
       JOIN harness_shared.trigger_bindings b
-        ON b.workspace_id = c.workspace_id AND b.id = c.binding_id
+        ON b.workspace_id = c.workspace_id
+       AND b.id = c.binding_id
+       AND b.detached_at IS NULL
      ORDER BY c.triggered_at, c.id`);
 }
 

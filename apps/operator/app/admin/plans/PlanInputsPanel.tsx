@@ -43,6 +43,8 @@ export interface PlanInputsPanelProps {
   refreshToken?: number;
   /** Fired after a successful save so the caller can re-enable/retry a start. */
   onSaved?: () => void;
+  /** Shares the server-owned readiness verdict with a containing start dialog. */
+  onReadinessChange?: (ready: boolean) => void;
 }
 
 type FieldKind = 'string' | 'enum' | 'number' | 'boolean' | 'string-array' | 'json';
@@ -118,6 +120,7 @@ export default function PlanInputsPanel({
   harnessSlug,
   refreshToken = 0,
   onSaved,
+  onReadinessChange,
 }: PlanInputsPanelProps) {
   const [info, setInfo] = useState<PlanInputSchemaInfo | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -166,6 +169,11 @@ export default function PlanInputsPanel({
   );
   const requiredSet = useMemo(() => new Set(info?.required ?? []), [info]);
   const missingSet = useMemo(() => new Set(info?.missing ?? []), [info]);
+
+  useEffect(() => {
+    onReadinessChange?.(info?.ready === true);
+    return () => onReadinessChange?.(false);
+  }, [info?.ready, onReadinessChange]);
 
   const onSave = useCallback(async () => {
     if (!info || saving) return;

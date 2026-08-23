@@ -1793,6 +1793,25 @@ export interface JsonSchemaObject {
   [k: string]: unknown;
 }
 
+export interface PlanScheduleSpec {
+  kind: 'rrule' | 'cron';
+  rrule?: string;
+  cron?: string;
+  dtstart?: string;
+  tzid?: string;
+  concurrency?: 'queue' | 'skip' | 'cancel-prev';
+  catchup?: 'skip-old' | 'run-all-backlog';
+  costCapCents?: number;
+}
+
+export type PlanTriggerMutationResult = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  results?: Array<{ ok: boolean; error?: string; detail?: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+};
+
 export type PlanInputsResult = PlanInputSchemaInfo | { ok: false; slug?: string; error: string };
 
 /**
@@ -1839,6 +1858,61 @@ export function savePlanInputs(
   return postJson<WriteResult<{ slug: string; version?: number }>>('set-template-data', {
     slug,
     data,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
+}
+
+/** Author or clear the schedule. Authoring never arms it. */
+export function authorPlanSchedule(
+  slug: string,
+  args: {
+    schedule: PlanScheduleSpec | null;
+    scheduledAt?: string | null;
+    expiresAt?: string | null;
+    tzid?: string | null;
+  },
+  harnessSlug?: string | null,
+) {
+  return postJson<PlanTriggerMutationResult>('set-schedule', {
+    slug,
+    ...args,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
+}
+
+export function armPlanSchedule(slug: string, harnessSlug?: string | null) {
+  return postJson<PlanTriggerMutationResult>('arm-schedule', {
+    slug,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
+}
+
+export function disarmPlanSchedule(slug: string, harnessSlug?: string | null) {
+  return postJson<PlanTriggerMutationResult>('disarm-schedule', {
+    slug,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
+}
+
+export function setPlanInputSchema(
+  slug: string,
+  schema: JsonSchemaObject | null,
+  harnessSlug?: string | null,
+) {
+  return postJson<PlanTriggerMutationResult>('set-input-schema', {
+    slug,
+    schema,
+    rationale: schema === null ? 'detach manual trigger' : 'attach manual trigger',
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
+}
+
+export function clearPlanTemplateTrigger(slug: string, harnessSlug?: string | null) {
+  return postJson<PlanTriggerMutationResult>('set-frontmatter-field', {
+    slug,
+    key: 'template',
+    value: null,
+    rationale: 'detach manual trigger',
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });
 }
