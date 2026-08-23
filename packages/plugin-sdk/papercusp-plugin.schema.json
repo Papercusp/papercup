@@ -190,8 +190,10 @@
                     }
                   },
                   {
+                    "deprecated": true,
                     "type": "object",
                     "additionalProperties": false,
+                    "description": "Deprecated and rejected by trigger-pack semantic validation: trigger packs do not consume schedules. Use a manual binding and arm the instantiated plan with plans:set-schedule followed by plans:arm-schedule.",
                     "required": ["kind", "scheduleRef"],
                     "properties": {
                       "kind": { "const": "schedule" },

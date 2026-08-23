@@ -54,6 +54,20 @@ describe('validateTriggerPackDeclaration', () => {
     expect(validateTriggerPackDeclaration(validManifest())).toEqual([]);
   });
 
+  it('rejects the unsupported schedule source with the supported cadence route', () => {
+    const manifest = validManifest();
+    manifest.triggerPack.bindings[0] = {
+      ...manifest.triggerPack.bindings[0],
+      // Keep the legacy shape in the test so the semantic guard remains a
+      // useful error for callers that bypass or precede schema validation.
+      source: { kind: 'schedule', scheduleRef: 'crosspost-cadence' } as never,
+    };
+
+    expect(validateTriggerPackDeclaration(manifest)).toContain(
+      'triggerPack binding "gmail-to-draft" declares source kind "schedule", which has no runtime consumer — arm the cadence on the instantiated plan with plans:set-schedule + plans:arm-schedule',
+    );
+  });
+
   it('rejects code-tool kind:pack and a source/event family mismatch', () => {
     const manifest = validManifest();
     expect(validateTriggerPackDeclaration({
