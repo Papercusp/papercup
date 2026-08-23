@@ -6,6 +6,7 @@
  * where the fields land and that a guard failure never breaks the result.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
 
 const {
   pgReadQueryMock,
@@ -48,6 +49,38 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
+  it('publishes SQL and relation description as mutually exclusive input alternatives', () => {
+    expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1' }).success).toBe(true);
+    expect(pgQueryTool.args.safeParse({ describe: 'harness_shared.tool_invocations' }).success).toBe(true);
+    expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1', describe: 'harness_shared.tool_invocations' }).success).toBe(false);
+    expect(pgQueryTool.args.safeParse({}).success).toBe(false);
+
+    const json = z.toJSONSchema(pgQueryTool.args as never) as {
+      anyOf?: Array<{
+        required?: string[];
+        properties?: Record<string, { not?: unknown }>;
+      }>;
+      oneOf?: Array<{
+        required?: string[];
+        properties?: Record<string, { not?: unknown }>;
+      }>;
+    };
+    const branches = json.anyOf ?? json.oneOf ?? [];
+    expect(branches).toHaveLength(2);
+    expect(branches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          required: expect.arrayContaining(['sql']),
+          properties: expect.objectContaining({ describe: expect.objectContaining({ not: expect.anything() }) }),
+        }),
+        expect.objectContaining({
+          required: expect.arrayContaining(['describe']),
+          properties: expect.objectContaining({ sql: expect.objectContaining({ not: expect.anything() }) }),
+        }),
+      ]),
+    );
+  });
+
   it('does not retain an ambient workspace transaction while using the admin read pool', () => {
     expect((pgQueryTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });

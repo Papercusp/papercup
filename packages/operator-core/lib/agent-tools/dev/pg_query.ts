@@ -123,43 +123,74 @@ export default defineTool({
   // parseable result that the caller can inspect or project.
   skipResultDoor: 'programmatic-caller',
   agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker'],
-  args: z.object({
-    sql: z
-      .string()
-      .min(1)
-      .optional()
-      .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements.'),
-    describe: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'Instead of running SQL, describe a relation: columns, indexes and constraints — the psql `\\d schema.table` equivalent. Accepts a bare table name, or a `*`/glob pattern to LIST matching relations.',
-      ),
-    maxRows: z
-      .number()
-      .int()
-      .positive()
-      .max(PG_READ_QUERY_HARD_MAX_ROWS)
-      .optional()
-      .describe(`Max rows returned (default ${PG_READ_QUERY_DEFAULT_MAX_ROWS}).`),
-    timeoutMs: z
-      .number()
-      .int()
-      .positive()
-      .max(30000)
-      .optional()
-      .describe(
-        'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
-      ),
-    allowUnscoped: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        'Explicitly allow a filtered read of a tenant-scoped table without a workspace_id/harness_slug predicate. Use only for deliberate cross-tenant analysis; the response retains the tenant-scope advisory.',
-      ),
-  }),
+  // Keep the SQL and relation-description intents representable in the published
+  // JSON Schema. A refinement would enforce the rule at runtime while still
+  // advertising both fields as optional, which is exactly how callers ended up
+  // sending both and only learning about the conflict after dispatch.
+  args: z.union([
+    z.object({
+      sql: z
+        .string()
+        .min(1)
+        .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements.'),
+      describe: z.never().optional().describe('Only valid for relation-description calls; omit it when passing `sql`.'),
+      maxRows: z
+        .number()
+        .int()
+        .positive()
+        .max(PG_READ_QUERY_HARD_MAX_ROWS)
+        .optional()
+        .describe(`Max rows returned (default ${PG_READ_QUERY_DEFAULT_MAX_ROWS}).`),
+      timeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .max(30000)
+        .optional()
+        .describe(
+          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
+        ),
+      allowUnscoped: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Explicitly allow a filtered read of a tenant-scoped table without a workspace_id/harness_slug predicate. Use only for deliberate cross-tenant analysis; the response retains the tenant-scope advisory.',
+        ),
+    }),
+    z.object({
+      sql: z.never().optional().describe('Only valid for SQL calls; omit it when passing `describe`.'),
+      describe: z
+        .string()
+        .min(1)
+        .describe(
+          'Instead of running SQL, describe a relation: columns, indexes and constraints — the psql `\\d schema.table` equivalent. Accepts a bare table name, or a `*`/glob pattern to LIST matching relations.',
+        ),
+      maxRows: z
+        .number()
+        .int()
+        .positive()
+        .max(PG_READ_QUERY_HARD_MAX_ROWS)
+        .optional()
+        .describe(`Max rows returned (default ${PG_READ_QUERY_DEFAULT_MAX_ROWS}).`),
+      timeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .max(30000)
+        .optional()
+        .describe(
+          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
+        ),
+      allowUnscoped: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Explicitly allow a filtered read of a tenant-scoped table without a workspace_id/harness_slug predicate. Use only for deliberate cross-tenant analysis; the response retains the tenant-scope advisory.',
+        ),
+    }),
+  ]),
   async handler(args, ctx) {
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
     // SQL form, so it cannot ride through pgReadQuery's statement path at all.
