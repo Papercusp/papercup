@@ -114,7 +114,7 @@ export const NAMED_VIEWS: Readonly<Record<string, Readonly<Record<string, NamedV
         ],
       }),
       monitor: Object.freeze({
-        version: 2,
+        version: 3,
         purpose:
           'Lean live monitor: loop wake source, assignment/liveness summary, inbox pressure, and current lock generation.',
         budgetChars: 2800,
@@ -127,8 +127,10 @@ export const NAMED_VIEWS: Readonly<Record<string, Readonly<Record<string, NamedV
           'me.agents[].sessionState',
           'me.agents[].selfWake',
           'me.agents[].verdict',
-          'me.agents[].claims',
-          'me.agents[].doing',
+          'me.agents[].claims[].id',
+          'me.agents[].claims[].status',
+          'me.agents[].doing.id',
+          'me.agents[].doing.status',
           'me.agents[].isSelf',
           'inbox.summary',
           'codexLocks.lockMode',
