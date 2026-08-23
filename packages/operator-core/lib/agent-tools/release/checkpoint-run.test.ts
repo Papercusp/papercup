@@ -70,6 +70,12 @@ const NO_CONTAINMENT = vi.fn(async () => ({
 beforeEach(() => {
   vi.resetModules();
   NO_CONTAINMENT.mockClear();
+  // afterEach removes per-case migration overrides. Reinstall the hermetic
+  // default after every reset so test 2 onward never falls through to the live
+  // dev PG and turns pending hosted-schema migrations into unrelated failures.
+  vi.doMock('../../db-boot-migrate', () => ({
+    applyPendingMigrationsNow: vi.fn(async () => ({ applied: 0, failed: [] })),
+  }));
   // afterEach removes per-case authority overrides; reinstall the ordinary
   // no-serializer baseline before every import so later tests never open live PG.
   vi.doMock('../../release/checkpoint-serializer-authority', () => ({
