@@ -223,6 +223,32 @@ describe('interactive PTY capability family', () => {
     expect(mocks.getTask).toHaveBeenCalledTimes(3);
   });
 
+  it('reattaches after a client carry-respawn and makes screen-read retries idempotent', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    const durableTask = { ...mocks.state.task };
+    const durableHandle = mocks.state.handle;
+
+    // A carry-respawn creates a fresh client context but leaves the server-side
+    // ledger row and PTY bridge alive. The durable task id is the only state the
+    // successor needs; no process-local PTY id crosses the model-facing seam.
+    const resumedCtx = ctx('su-a');
+    mocks.state.task = durableTask;
+    mocks.state.handle = durableHandle;
+    const first = await ptyReadScreenTool.handler({ task_id: 'mptysession001' }, resumedCtx);
+    const retry = await ptyReadScreenTool.handler({ task_id: 'mptysession001' }, resumedCtx);
+
+    expect(first).toEqual(retry);
+    expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
+    expect(mocks.getTask).toHaveBeenCalledTimes(2);
+    expect(mocks.getScreenSerialization).toHaveBeenCalledTimes(2);
+    expect(mocks.getScreenSerialization).toHaveBeenNthCalledWith(
+      1,
+      'pty-local-1',
+      expect.objectContaining({ principalId: 'su-a' }),
+    );
+    expect(JSON.stringify(first)).not.toContain('pty-local-1');
+  });
+
   it('collapses cross-owner and malformed task rows to the same unknown_task_id result', async () => {
     await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
 

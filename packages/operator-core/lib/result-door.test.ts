@@ -22,6 +22,8 @@ import {
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
 } from './result-door';
+import { applyResultProjection } from './result-projection/apply';
+import { parseProjection } from './result-projection/parse';
 import { parseScratchReference } from './scratch-reference';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -438,6 +440,79 @@ describe('applyResultDoor', () => {
       });
       expect(JSON.stringify(aggregate)).not.toContain('turn-7');
       expect(readSpill('ws-1', 'plans:get', RUN_ID)).toContain('m'.repeat(100));
+    });
+
+    it('bounds a 35K fan-out cohort and writes every aggregate overflow as a distinct spill', () => {
+      const results = Array.from({ length: 7 }, (_, index) =>
+        applyResultDoor(
+          {
+            content: [
+              {
+                type: 'text' as const,
+                text: `${index}:` + String(index).repeat(4_998),
+              },
+            ],
+          },
+          {
+            toolName: 'plans:get',
+            workspaceId: 'ws-1',
+            runId: RUN_ID,
+            aggregateScope: beginResultDoorAggregate({
+              sessionKey: 'owner-35k',
+              outputGroupId: 'turn-35k',
+            }),
+          },
+        ),
+      );
+
+      expect(results.reduce((sum, result) => sum + Number(
+        (result._meta as { resultDoor?: { aggregate?: { sourceBytes?: number } } } | undefined)
+          ?.resultDoor?.aggregate?.sourceBytes ?? 5_000,
+      ), 0)).toBe(35_000);
+      const spilled = results.filter((result) =>
+        (result._meta as { resultDoor?: { reason?: string } } | undefined)?.resultDoor?.reason ===
+        'aggregate-output-budget-exceeded',
+      );
+      expect(spilled).toHaveLength(5);
+      expect(results.slice(0, 2).every((result) => result.content[0]?.type === 'text')).toBe(true);
+
+      const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'plans:get', RUN_ID);
+      const spillFiles = readdirSync(spillDir);
+      expect(spillFiles).toHaveLength(5);
+      const spillPayloads = spillFiles.map((file) => {
+        const parsed = parseScratchReference(readFileSync(join(spillDir, file)));
+        expect(parsed).not.toBeNull();
+        return parsed!.payload.toString('utf8');
+      });
+      for (const index of [2, 3, 4, 5, 6]) {
+        expect(spillPayloads.some((payload) => payload.includes(`${index}:${String(index).repeat(100)}`))).toBe(true);
+      }
+    });
+
+    it('re-applies the hard door when a projection footer expands an otherwise fitting result', () => {
+      const raw = {
+        content: [{ type: 'text' as const, text: 'p'.repeat(BUDGET_CHARS - 10) }],
+      };
+      const direct = applyResultDoor(raw, {
+        toolName: 'plans:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666666',
+      });
+      expect(direct).toBe(raw);
+
+      const parsed = parseProjection({ pipe: [{ op: 'head', n: 1 }] });
+      if (!parsed.ok) throw new Error(parsed.error);
+      const projected = applyResultProjection(raw, parsed.spec, { toolName: 'plans:get', effect: 'read' });
+      expect(measureResultContextBytes(projected)).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(projected, {
+        toolName: 'plans:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666666',
+      });
+      expect((doored._meta as { resultDoor?: { truncated?: boolean } }).resultDoor?.truncated).toBe(true);
+      expect(measureResultContextBytes(doored)).toBeLessThan(measureResultContextBytes(projected));
+      expect(readSpill('ws-1', 'plans:get', '22222222-3333-4444-8555-666666666666')).toContain('[projection:');
     });
 
     it('keeps separate explicit turns independent', () => {
