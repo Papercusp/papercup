@@ -188,6 +188,17 @@ export function isEpisodicRunInFlight(activeState: string | undefined): boolean 
 }
 
 /**
+ * A systemd transition is neither a failure nor proof of a recovered process.
+ *
+ * Type=simple services sit in `activating` with MainPID=0 while ExecStartPre runs. The
+ * reconciler still treats these states as not-down so it does not fight systemd with a second
+ * restart, but it must hold the previous verdict until a terminal state is observed.
+ */
+export function isSystemdTransitioning(activeState: string | undefined): boolean {
+  return activeState === 'activating' || activeState === 'reloading' || activeState === 'deactivating';
+}
+
+/**
  * WI-5378: is this unit's persisted enablement an INTENTIONAL pause? `disabled` (`systemctl
  * --user disable`) and `masked` (`systemctl --user mask`) both mean "a human/agent explicitly
  * told systemd not to run this" — as opposed to `enabled`/`static`/`linked`/`generated`/etc,
@@ -359,6 +370,8 @@ export type ReconcileAction =
       firstObservation?: boolean;
     }
   | { kind: 'recovered'; unit: string } // transition down -> healthy, damping reset
+  /** A persistent unit is transitioning; no terminal liveness verdict exists yet. */
+  | { kind: 'waiting-transition'; unit: string }
   /** EI-20474047462811254: an EPISODIC unit's run is in flight — no verdict this tick, so the
    *  previous up/down state is HELD unchanged and nothing is notified. Distinct from 'healthy'
    *  precisely so it can never be read as evidence the unit is fine. */
@@ -413,10 +426,19 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
   // a run that FAILS re-confirms the existing down state silently (no duplicate page), and a
   // run that SUCCEEDS emits exactly one `recovered` — at the moment the evidence exists.
   //
-  // Gated on `episodic` on purpose: for a PERSISTENT unit `activating` is a mid-restart blip on
-  // a continuously-running service, where the existing not-down semantics are already correct.
-  if (entry.episodic && isEpisodicRunInFlight(status?.active)) {
-    return { action: { kind: 'run-in-flight', unit: entry.name }, nextState: state };
+  // The same hold applies to PERSISTENT units: `activating` is a mid-restart transition, not
+  // proof of a recovered process. It remains not-down so the reconciler does not fight systemd
+  // with a second restart, but the previous verdict is held until a terminal state is observed.
+  // Episodic transitions retain the distinct `run-in-flight` action so their run-level semantics
+  // remain explicit.
+  if (isSystemdTransitioning(status?.active)) {
+    return {
+      action:
+        entry.episodic && isEpisodicRunInFlight(status?.active)
+          ? { kind: 'run-in-flight', unit: entry.name }
+          : { kind: 'waiting-transition', unit: entry.name },
+      nextState: state,
+    };
   }
 
   const down = isUnitDown(status, { episodic: entry.episodic });
@@ -933,7 +955,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // Detection is INDEPENDENT of FLAGS.supervisorAutoRestart: when systemd (not us) is doing the
     // restarting, paging on the loop must still happen. Only evaluated while the unit currently
     // reads healthy — a unit we can see DOWN is already owned by the decide → restart → give-up path.
-    if (entry.autoRestart && !isUnitDown(status, { episodic: entry.episodic })) {
+    if (entry.autoRestart && !isUnitDown(status, { episodic: entry.episodic }) && !isSystemdTransitioning(status?.active)) {
       const loop = checkSilentCrashLoop(show?.nRestarts, state.nRestartsObs, state.silentLoopEscalated, now);
       state.nRestartsObs = loop.nextObs;
       state.silentLoopEscalated = loop.nextEscalated;
@@ -984,7 +1006,8 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       // with a weaker broadcast — so it is observed for the identical reason. Omitting it here
       // would have silently changed pause-clock behaviour for the one unit that carries the flag.
       action.kind === 'run-succeeded' ||
-      action.kind === 'run-in-flight'
+      action.kind === 'run-in-flight' ||
+      action.kind === 'waiting-transition'
     ) {
       observedThisTick.push(entry.unit);
     }
