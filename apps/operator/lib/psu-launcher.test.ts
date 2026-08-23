@@ -1,13 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync, lstatSync, realpathSync, readlinkSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  existsSync,
+  symlinkSync,
+  lstatSync,
+  realpathSync,
+  readlinkSync,
+} from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   codexContextConfigArgs,
   codexContextConfigToml,
-} from '../../../packages/operator-core/lib/model-context-budget.mjs';
+} from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
   PSU_HELP_TEXT,
@@ -122,6 +134,7 @@ import {
   finalizeFreshSuArgs,
   tagKickoffProvenance,
   resolveKickoffText,
+  scriptedOmpSetupEnv,
   finalizeFreshRoleArgs,
   resumeKickoffText,
   agentInvalidForRole,
@@ -197,16 +210,19 @@ import {
   LIVE_HOST_IDLE_THRESHOLD_MS,
   startSupervisorBeat,
   spawnInherit,
-} from '../scripts/psu-launcher.mjs';
-import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
-import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
-import { ownerDesktopNotifyDenyFlag } from '@papercusp/orchestrator/owner-desktop-notify-deny';
-import { ACCOUNT_HEADER, OWNER_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+} from "../scripts/psu-launcher.mjs";
+import { nativeSchedulerDenyFlag } from "@papercusp/orchestrator/native-scheduler-deny";
+import { noSubagentToolsDenyFlag } from "@papercusp/orchestrator/no-subagent-deny";
+import { ownerDesktopNotifyDenyFlag } from "@papercusp/orchestrator/owner-desktop-notify-deny";
+import {
+  ACCOUNT_HEADER,
+  OWNER_HEADER,
+} from "@papercusp/operator-core/lib/inference-gateway/gateway";
 // P-042: the registry half of the launch-mode seam asserted at the bottom of
 // this file — psu's parser is a hand-maintained literal that cannot see it.
-import { LAUNCHABLE_MODE_IDS } from '@papercusp/operator-core/lib/modes/registry';
-import { GATEWAY_CLIENT_AUTH_TOKEN as SERVER_GATEWAY_CLIENT_AUTH_TOKEN } from '@papercusp/operator-core/lib/inference-gateway/spawn-env';
-import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
+import { LAUNCHABLE_MODE_IDS } from "@papercusp/operator-core/lib/modes/registry";
+import { GATEWAY_CLIENT_AUTH_TOKEN as SERVER_GATEWAY_CLIENT_AUTH_TOKEN } from "@papercusp/operator-core/lib/inference-gateway/spawn-env";
+import { fleetSlugFromName as storeFleetSlugFromName } from "@papercusp/operator-core/lib/agent-fleets-store";
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
 // tool boundary carries its own copy). The parity suite below pins them value-for-value.
 import {
@@ -225,189 +241,229 @@ import {
   SU_CONTEXT_TOKEN_ESTIMATES,
   SU_CONTEXT_DEFAULT,
   composeLaunchModelSpec,
-} from '@papercusp/operator-core/lib/agent-config-constants';
+} from "@papercusp/operator-core/lib/agent-config-constants";
 // EI-7138: the operator-core TS TWIN of suWrapperExtraArgs's model:effort → CLI-flag mapping
 // (same psu-launcher.mjs / operator-core import-boundary constraint as WI-1993 above — the
 // mapping is duplicated by necessity, not oversight). The parity suite below pins them
 // value-for-value so a fix landed in one (the codex effort-drop, found 2026-07-03) can never
 // again silently miss the other.
-import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once';
+import { applyRoleModel } from "@papercusp/operator-core/lib/harness-invoke-once";
 // weak-model-tool-tier: the canonical core spine — psu-launcher.mjs carries an
 // inlined copy because it is a plain node script with no TS imports. The drift
 // guard below keeps the OMP seed exactly aligned with every other trimmed client.
-import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+import { CORE_MCP_TOOL_NAMES } from "@papercusp/orchestrator";
 
-describe('normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed psu in 0.4s)', () => {
+describe("normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed psu in 0.4s)", () => {
   const noWarn = { warn: () => {} };
 
-  it('strips a trailing /api/mcp — the shape that made every operator call 404', () => {
+  it("strips a trailing /api/mcp — the shape that made every operator call 404", () => {
     // Reproduced with a one-variable control: the bare base launched cleanly
     // (exit 0), this value died `not_found` in 0.4s, closing its terminal window.
-    expect(normalizeOperatorBaseUrl('http://127.0.0.1:3070/api/mcp', noWarn)).toBe('http://127.0.0.1:3070');
-    expect(normalizeOperatorBaseUrl('http://localhost:3070/api/mcp/', noWarn)).toBe('http://localhost:3070');
+    expect(
+      normalizeOperatorBaseUrl("http://127.0.0.1:3070/api/mcp", noWarn),
+    ).toBe("http://127.0.0.1:3070");
+    expect(
+      normalizeOperatorBaseUrl("http://localhost:3070/api/mcp/", noWarn),
+    ).toBe("http://localhost:3070");
   });
 
-  it('drops the signed query that rides on the agent MCP url', () => {
+  it("drops the signed query that rides on the agent MCP url", () => {
     // The suffixed form in the wild is the agent MCP url, whose ?sid=… addresses
     // /api/mcp specifically — carrying it onto a base is misleading, not merely
     // redundant.
-    expect(normalizeOperatorBaseUrl('http://127.0.0.1:9071/api/mcp?sid=abc&x=1', noWarn)).toBe('http://127.0.0.1:9071');
+    expect(
+      normalizeOperatorBaseUrl(
+        "http://127.0.0.1:9071/api/mcp?sid=abc&x=1",
+        noWarn,
+      ),
+    ).toBe("http://127.0.0.1:9071");
   });
 
-  it('WARNS when it rewrites, naming the variable and both urls', () => {
+  it("WARNS when it rewrites, naming the variable and both urls", () => {
     // A silent rewrite would hide the misconfiguration from whoever must fix the
     // exporting environment — the rewrite keeps psu alive, the warning fixes the cause.
     const warnings: string[] = [];
-    normalizeOperatorBaseUrl('http://localhost:3070/api/mcp', { warn: (m: string) => warnings.push(m) });
+    normalizeOperatorBaseUrl("http://localhost:3070/api/mcp", {
+      warn: (m: string) => warnings.push(m),
+    });
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('PAPERCUSP_OPERATOR_URL');
-    expect(warnings[0]).toContain('http://localhost:3070/api/mcp');
-    expect(warnings[0]).toContain('BARE BASE');
+    expect(warnings[0]).toContain("PAPERCUSP_OPERATOR_URL");
+    expect(warnings[0]).toContain("http://localhost:3070/api/mcp");
+    expect(warnings[0]).toContain("BARE BASE");
   });
 
-  it('leaves an already-correct base alone, silently', () => {
+  it("leaves an already-correct base alone, silently", () => {
     const warnings: string[] = [];
     const w = { warn: (m: string) => warnings.push(m) };
-    expect(normalizeOperatorBaseUrl('http://127.0.0.1:9071', w)).toBe('http://127.0.0.1:9071');
-    expect(normalizeOperatorBaseUrl('http://localhost:3070/', w)).toBe('http://localhost:3070');
+    expect(normalizeOperatorBaseUrl("http://127.0.0.1:9071", w)).toBe(
+      "http://127.0.0.1:9071",
+    );
+    expect(normalizeOperatorBaseUrl("http://localhost:3070/", w)).toBe(
+      "http://localhost:3070",
+    );
     expect(warnings).toEqual([]);
   });
 
-  it('does NOT strip a path that merely CONTAINS api/mcp', () => {
+  it("does NOT strip a path that merely CONTAINS api/mcp", () => {
     // Only a TRAILING segment is unambiguous — a base can never legitimately end
     // in the path about to be appended. Anything else is a real path, not a mistake.
-    expect(normalizeOperatorBaseUrl('http://host/api/mcp/proxy', noWarn)).toBe('http://host/api/mcp/proxy');
-    expect(normalizeOperatorBaseUrl('http://host/mcp', noWarn)).toBe('http://host/mcp');
+    expect(normalizeOperatorBaseUrl("http://host/api/mcp/proxy", noWarn)).toBe(
+      "http://host/api/mcp/proxy",
+    );
+    expect(normalizeOperatorBaseUrl("http://host/mcp", noWarn)).toBe(
+      "http://host/mcp",
+    );
   });
 
-  it('returns junk untouched rather than silently inventing a url', () => {
+  it("returns junk untouched rather than silently inventing a url", () => {
     // The connection path reports an unusable value far better than a rewrite that
     // guesses — and a non-string must not throw here.
-    expect(normalizeOperatorBaseUrl('not a url', noWarn)).toBe('not a url');
-    expect(normalizeOperatorBaseUrl('', noWarn)).toBe('');
+    expect(normalizeOperatorBaseUrl("not a url", noWarn)).toBe("not a url");
+    expect(normalizeOperatorBaseUrl("", noWarn)).toBe("");
     expect(normalizeOperatorBaseUrl(undefined as any, noWarn)).toBe(undefined);
   });
 
-  it('resolveOperatorTarget applies it to the env override branch', () => {
+  it("resolveOperatorTarget applies it to the env override branch", () => {
     // The env branch was the ONLY one that could return a path-suffixed url; every
     // other branch already returns a bare base.
     const t = resolveOperatorTarget({
       env: {
-        NODE_ENV: 'test',
-        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp',
-        PAPERCUSP_MCP_PROXY: '0',
+        NODE_ENV: "test",
+        PAPERCUSP_OPERATOR_URL: "http://localhost:3070/api/mcp",
+        PAPERCUSP_MCP_PROXY: "0",
       },
-      home: '/nonexistent-home-for-this-test',
+      home: "/nonexistent-home-for-this-test",
       probe: () => false,
       warn: () => {},
     });
-    expect(t.url).toBe('http://localhost:3070');
-    expect(t.source).toBe('env');
+    expect(t.url).toBe("http://localhost:3070");
+    expect(t.source).toBe("env");
   });
 });
 
-describe('classifyLiveHostActivity (EI-20289007209260909 — process-alive husk diagnosis)', () => {
-  const now = Date.parse('2026-08-12T23:00:00.000Z');
+describe("classifyLiveHostActivity (EI-20289007209260909 — process-alive husk diagnosis)", () => {
+  const now = Date.parse("2026-08-12T23:00:00.000Z");
 
-  it('treats recent headless activity as active', () => {
+  it("treats recent headless activity as active", () => {
     expect(
       classifyLiveHostActivity(
         { bridgeTty: false, lastActivityAt: now - 5 * 60_000 },
         { now, idleThresholdMs: 30 * 60_000 },
       ),
-    ).toEqual({ state: 'active', lastActivityAt: now - 5 * 60_000, idleMs: 5 * 60_000 });
+    ).toEqual({
+      state: "active",
+      lastActivityAt: now - 5 * 60_000,
+      idleMs: 5 * 60_000,
+    });
   });
 
-  it('calls a stale headless host abandoned, while retaining the measured age', () => {
+  it("calls a stale headless host abandoned, while retaining the measured age", () => {
     const lastActivityAt = now - 31 * 60_000;
     expect(
       classifyLiveHostActivity(
         { bridgeTty: false, lastActivityAt },
         { now, idleThresholdMs: 30 * 60_000 },
       ),
-    ).toEqual({ state: 'abandoned', lastActivityAt, idleMs: 31 * 60_000 });
+    ).toEqual({ state: "abandoned", lastActivityAt, idleMs: 31 * 60_000 });
   });
 
-  it('only calls a stale bridged host idle, never abandoned', () => {
+  it("only calls a stale bridged host idle, never abandoned", () => {
     const lastActivityAt = now - 31 * 60_000;
     expect(
       classifyLiveHostActivity(
         { bridgeTty: true, lastActivityAt },
         { now, idleThresholdMs: 30 * 60_000 },
       ),
-    ).toEqual({ state: 'idle', lastActivityAt, idleMs: 31 * 60_000 });
+    ).toEqual({ state: "idle", lastActivityAt, idleMs: 31 * 60_000 });
   });
 
-  it('falls back to the newest input/output sample and stays unknown when unmeasured', () => {
+  it("falls back to the newest input/output sample and stays unknown when unmeasured", () => {
     expect(
       classifyLiveHostActivity(
-        { bridgeTty: false, lastOutputAt: now - 40 * 60_000, lastInputAt: now - 2 * 60_000 },
+        {
+          bridgeTty: false,
+          lastOutputAt: now - 40 * 60_000,
+          lastInputAt: now - 2 * 60_000,
+        },
         { now, idleThresholdMs: 30 * 60_000 },
       ),
-    ).toMatchObject({ state: 'active', lastActivityAt: now - 2 * 60_000, idleMs: 2 * 60_000 });
+    ).toMatchObject({
+      state: "active",
+      lastActivityAt: now - 2 * 60_000,
+      idleMs: 2 * 60_000,
+    });
     expect(classifyLiveHostActivity({ bridgeTty: false }, { now })).toEqual({
-      state: 'unknown',
+      state: "unknown",
       lastActivityAt: null,
       idleMs: null,
     });
   });
 
-  it('keeps a positive default threshold so the guard never treats every live host as stale', () => {
+  it("keeps a positive default threshold so the guard never treats every live host as stale", () => {
     expect(LIVE_HOST_IDLE_THRESHOLD_MS).toBeGreaterThan(0);
   });
 });
 
-describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-install)', () => {
-  it('AGENT_LABELS names all three backends', () => {
+describe("backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-install)", () => {
+  it("AGENT_LABELS names all three backends", () => {
     expect(AGENT_LABELS.claude).toMatch(/Claude/);
     expect(AGENT_LABELS.codex).toMatch(/Codex/);
     expect(AGENT_LABELS.omp).toMatch(/oh-my-pi/);
   });
 
-  it('whichBin returns null for a binary that cannot exist', () => {
-    expect(whichBin('definitely-not-a-real-binary-xyz-123')).toBeNull();
+  it("whichBin returns null for a binary that cannot exist", () => {
+    expect(whichBin("definitely-not-a-real-binary-xyz-123")).toBeNull();
   });
 
-  it('wellKnownBackendBin finds a bin the setup flow installed under a known path', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-wk-'));
+  it("wellKnownBackendBin finds a bin the setup flow installed under a known path", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-wk-"));
     try {
       // omp installer target on unix: ~/.local/bin/omp
-      mkdirSync(join(home, '.local', 'bin'), { recursive: true });
-      writeFileSync(join(home, '.local', 'bin', 'omp'), '#!/bin/sh\n');
-      expect(wellKnownBackendBin('omp', { home, env: { NODE_ENV: 'test' } })).toBe(join(home, '.local/bin/omp'));
+      mkdirSync(join(home, ".local", "bin"), { recursive: true });
+      writeFileSync(join(home, ".local", "bin", "omp"), "#!/bin/sh\n");
+      expect(
+        wellKnownBackendBin("omp", { home, env: { NODE_ENV: "test" } }),
+      ).toBe(join(home, ".local/bin/omp"));
       // codex installer target: ~/.papercusp/runtime/node_modules/.bin/codex
-      mkdirSync(join(home, '.papercusp', 'runtime', 'node_modules', '.bin'), { recursive: true });
-      writeFileSync(join(home, '.papercusp', 'runtime', 'node_modules', '.bin', 'codex'), '');
-      expect(wellKnownBackendBin('codex', { home, env: { NODE_ENV: 'test' } })).toBe(
-        join(home, '.papercusp/runtime/node_modules/.bin/codex'),
+      mkdirSync(join(home, ".papercusp", "runtime", "node_modules", ".bin"), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(home, ".papercusp", "runtime", "node_modules", ".bin", "codex"),
+        "",
       );
+      expect(
+        wellKnownBackendBin("codex", { home, env: { NODE_ENV: "test" } }),
+      ).toBe(join(home, ".papercusp/runtime/node_modules/.bin/codex"));
       // nothing installed → null
-      expect(wellKnownBackendBin('claude', { home, env: { NODE_ENV: 'test' } })).toBeNull();
+      expect(
+        wellKnownBackendBin("claude", { home, env: { NODE_ENV: "test" } }),
+      ).toBeNull();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('wellKnownBackendBin honors %USERPROFILE% for the Windows omp path', () => {
-    const winHome = mkdtempSync(join(tmpdir(), 'psu-win-'));
+  it("wellKnownBackendBin honors %USERPROFILE% for the Windows omp path", () => {
+    const winHome = mkdtempSync(join(tmpdir(), "psu-win-"));
     try {
-      mkdirSync(join(winHome, '.papercusp', 'bin'), { recursive: true });
-      writeFileSync(join(winHome, '.papercusp', 'bin', 'omp.exe'), '');
+      mkdirSync(join(winHome, ".papercusp", "bin"), { recursive: true });
+      writeFileSync(join(winHome, ".papercusp", "bin", "omp.exe"), "");
       // home has no omp; USERPROFILE does → resolves via the winHome candidate.
       // `platform: 'win32'` is REQUIRED, not decoration: %USERPROFILE% is a
       // Windows concept and the shared resolver gates those candidates behind
       // the platform, so a POSIX-defaulted call correctly never looks there.
       // (WI-37920: this case previously passed only because the pre-shared list
       // probed a winHome path unconditionally, on every OS.)
-      const home = mkdtempSync(join(tmpdir(), 'psu-home-'));
+      const home = mkdtempSync(join(tmpdir(), "psu-home-"));
       try {
         expect(
-          wellKnownBackendBin('omp', {
+          wellKnownBackendBin("omp", {
             home,
-            env: { NODE_ENV: 'test', USERPROFILE: winHome },
-            platform: 'win32',
+            env: { NODE_ENV: "test", USERPROFILE: winHome },
+            platform: "win32",
           }),
-        ).toBe(join(winHome, '.papercusp', 'bin', 'omp.exe'));
+        ).toBe(join(winHome, ".papercusp", "bin", "omp.exe"));
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -417,119 +473,180 @@ describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
   });
 });
 
-describe('tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)', () => {
+describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)", () => {
   let provDir: string;
   beforeEach(() => {
-    provDir = mkdtempSync(join(tmpdir(), 'kickoff-prov-'));
+    provDir = mkdtempSync(join(tmpdir(), "kickoff-prov-"));
   });
   afterEach(() => {
     rmSync(provDir, { recursive: true, force: true });
   });
-  const envFor = (): NodeJS.ProcessEnv => ({ NODE_ENV: 'test', PAPERCUSP_TURN_PROVENANCE_DIR: provDir });
+  const envFor = (): NodeJS.ProcessEnv => ({
+    NODE_ENV: "test",
+    PAPERCUSP_TURN_PROVENANCE_DIR: provDir,
+  });
 
-  it('prefixes the fleet-kickoff envelope and writes the ledger row FIRST (lockstep JSONL shape)', () => {
-    const tagged = tagKickoffProvenance('Begin: advance this plan.', 'su-kick-1', envFor(), 1_760_000_000_000);
-    expect(tagged).toMatch(/^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: advance this plan\.$/);
-    const raw = readFileSync(join(provDir, 'su-kick-1.jsonl'), 'utf8').trim();
+  it("prefixes the fleet-kickoff envelope and writes the ledger row FIRST (lockstep JSONL shape)", () => {
+    const tagged = tagKickoffProvenance(
+      "Begin: advance this plan.",
+      "su-kick-1",
+      envFor(),
+      1_760_000_000_000,
+    );
+    expect(tagged).toMatch(
+      /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: advance this plan\.$/,
+    );
+    const raw = readFileSync(join(provDir, "su-kick-1.jsonl"), "utf8").trim();
     const row = JSON.parse(raw);
-    expect(row).toMatchObject({ sid: 'su-kick-1', origin: 'fleet-kickoff', ts: 1_760_000_000_000 });
+    expect(row).toMatchObject({
+      sid: "su-kick-1",
+      origin: "fleet-kickoff",
+      ts: 1_760_000_000_000,
+    });
     expect(row.nonce).toMatch(/^[a-f0-9]{16}$/);
     expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(tagged).toContain(row.nonce); // the typed envelope references the ledger row
   });
 
-  it('no sid (interactive/untracked launch) → untagged text, no ledger write', () => {
-    expect(tagKickoffProvenance('hello', null, envFor())).toBe('hello');
-    expect(existsSync(join(provDir, 'unknown.jsonl'))).toBe(false);
+  it("no sid (interactive/untracked launch) → untagged text, no ledger write", () => {
+    expect(tagKickoffProvenance("hello", null, envFor())).toBe("hello");
+    expect(existsSync(join(provDir, "unknown.jsonl"))).toBe(false);
   });
 
-  it('fail-soft: an unwritable ledger dir still returns the untagged text (never a broken launch)', () => {
+  it("fail-soft: an unwritable ledger dir still returns the untagged text (never a broken launch)", () => {
     // ⚠ NEVER '/proc/…' here: node 25's recursive mkdirSync retries /proc's
     // EPERM forever (wedged every gate for hours on 2026-07-11). A plain file
     // as the path's parent throws ENOTDIR instantly instead.
-    const plainFile = join(provDir, 'plain-file');
-    writeFileSync(plainFile, 'x');
+    const plainFile = join(provDir, "plain-file");
+    writeFileSync(plainFile, "x");
     const env: NodeJS.ProcessEnv = {
-      NODE_ENV: 'test',
-      PAPERCUSP_TURN_PROVENANCE_DIR: join(plainFile, 'sub'),
+      NODE_ENV: "test",
+      PAPERCUSP_TURN_PROVENANCE_DIR: join(plainFile, "sub"),
     };
-    expect(tagKickoffProvenance('hello', 'su-kick-2', env)).toBe('hello');
+    expect(tagKickoffProvenance("hello", "su-kick-2", env)).toBe("hello");
   });
 
-  it('sanitizes the sid into the ledger filename', () => {
-    tagKickoffProvenance('x', 'su/../evil id', envFor());
-    expect(existsSync(join(provDir, 'su_.._evil_id.jsonl'))).toBe(true);
+  it("sanitizes the sid into the ledger filename", () => {
+    tagKickoffProvenance("x", "su/../evil id", envFor());
+    expect(existsSync(join(provDir, "su_.._evil_id.jsonl"))).toBe(true);
   });
 });
 
-describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
+describe("kickoffPositionalArgs (EI-5503 plan auto-kickoff)", () => {
   const KICK =
-    'Begin: advance this plan. Read the `## Now` block, pick up the next actionable item, and work it.';
-  it('seeds the kickoff for a scripted (--no-picker) plan launch', () => {
-    const res = { kickoffPrompt: KICK, planSlug: 'p' };
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x', '--plan=p']);
+    "Begin: advance this plan. Read the `## Now` block, pick up the next actionable item, and work it.";
+  it("seeds the kickoff for a scripted (--no-picker) plan launch", () => {
+    const res = { kickoffPrompt: KICK, planSlug: "p" };
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=x",
+      "--plan=p",
+    ]);
     expect(kickoffPositionalArgs(res, args)).toEqual([KICK]);
   });
-  it('is empty for an interactive picker launch (picker !== false)', () => {
-    const res = { kickoffPrompt: KICK, planSlug: 'p' };
+  it("is empty for an interactive picker launch (picker !== false)", () => {
+    const res = { kickoffPrompt: KICK, planSlug: "p" };
     expect(kickoffPositionalArgs(res, parseArgs([]))).toEqual([]);
   });
-  it('is empty when --no-kickoff opts out', () => {
-    const res = { kickoffPrompt: KICK, planSlug: 'p' };
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x', '--plan=p', '--no-kickoff']);
+  it("is empty when --no-kickoff opts out", () => {
+    const res = { kickoffPrompt: KICK, planSlug: "p" };
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=x",
+      "--plan=p",
+      "--no-kickoff",
+    ]);
     expect((args as { kickoff?: boolean }).kickoff).toBe(false);
     expect(kickoffPositionalArgs(res, args)).toEqual([]);
   });
-  it('is empty when the server supplied no kickoff (no plan bound)', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x']);
+  it("is empty when the server supplied no kickoff (no plan bound)", () => {
+    const args = parseArgs(["--no-picker", "--agent=claude", "--harness=x"]);
     expect(kickoffPositionalArgs({ kickoffPrompt: null }, args)).toEqual([]);
     expect(kickoffPositionalArgs({}, args)).toEqual([]);
   });
-  it('default parse has no kickoff key (so the gate treats it as enabled)', () => {
+  it("default parse has no kickoff key (so the gate treats it as enabled)", () => {
     expect((parseArgs([]) as { kickoff?: boolean }).kickoff).toBeUndefined();
   });
 
   // Free-form --kickoff (the general, plan-independent first-turn seam used by the
   // desktop tutorial's docs-agent launcher).
-  it('a free-form --kickoff seeds the first turn with NO plan bound', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=answer this: what is a pot?']);
-    expect(args.kickoffPromptText).toBe('answer this: what is a pot?');
-    expect(kickoffPositionalArgs({}, args)).toEqual(['answer this: what is a pot?']);
+  it("a free-form --kickoff seeds the first turn with NO plan bound", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--kickoff=answer this: what is a pot?",
+    ]);
+    expect(args.kickoffPromptText).toBe("answer this: what is a pot?");
+    expect(kickoffPositionalArgs({}, args)).toEqual([
+      "answer this: what is a pot?",
+    ]);
   });
-  it('--kickoff wins over the server plan-derived kickoff', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=my question']);
-    expect(kickoffPositionalArgs({ kickoffPrompt: KICK, planSlug: 'p' }, args)).toEqual(['my question']);
-  });
-  it('--kickoff still respects --no-picker (interactive picker → empty) and --no-kickoff', () => {
-    expect(kickoffPositionalArgs({}, parseArgs(['--agent=claude', '--kickoff=q']))).toEqual([]); // picker launch
+  it("--kickoff wins over the server plan-derived kickoff", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--kickoff=my question",
+    ]);
     expect(
-      kickoffPositionalArgs({}, parseArgs(['--no-picker', '--agent=claude', '--kickoff=q', '--no-kickoff'])),
+      kickoffPositionalArgs({ kickoffPrompt: KICK, planSlug: "p" }, args),
+    ).toEqual(["my question"]);
+  });
+  it("--kickoff still respects --no-picker (interactive picker → empty) and --no-kickoff", () => {
+    expect(
+      kickoffPositionalArgs({}, parseArgs(["--agent=claude", "--kickoff=q"])),
+    ).toEqual([]); // picker launch
+    expect(
+      kickoffPositionalArgs(
+        {},
+        parseArgs([
+          "--no-picker",
+          "--agent=claude",
+          "--kickoff=q",
+          "--no-kickoff",
+        ]),
+      ),
     ).toEqual([]);
   });
 });
 
-describe('routeFreshKickoff (EI-20339142329504181 OMP startup barrier)', () => {
-  const KICK = 'Begin: advance the admitted work item.';
+describe("routeFreshKickoff (EI-20339142329504181 OMP startup barrier)", () => {
+  const KICK = "Begin: advance the admitted work item.";
 
-  it('keeps the interactive setup reminder on the routed kickoff result', () => {
-    const src = readFileSync(join(__dirname, '..', 'scripts', 'psu-launcher.mjs'), 'utf8');
-    const reminderBlock = src.slice(
-      src.indexOf('// Owner batch #5: right before the TUI takes over the terminal'),
-      src.indexOf("// codex's superuser bearer is baked into its per-session config.toml"),
+  it("keeps the interactive setup reminder on the routed kickoff result", () => {
+    const src = readFileSync(
+      join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+      "utf8",
     );
-    expect(reminderBlock).toContain('!kickoff.kickoffSeeded');
-    expect(reminderBlock).not.toContain('kickoffArgs');
+    const reminderBlock = src.slice(
+      src.indexOf(
+        "// Owner batch #5: right before the TUI takes over the terminal",
+      ),
+      src.indexOf(
+        "// codex's superuser bearer is baked into its per-session config.toml",
+      ),
+    );
+    expect(reminderBlock).toContain("!kickoff.kickoffSeeded");
+    expect(reminderBlock).not.toContain("kickoffArgs");
   });
 
-  it('routes a fresh OMP kickoff through the managed pty instead of argv', () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), 'omp-kickoff-prov-'));
+  it("routes a fresh OMP kickoff through the managed pty instead of argv", () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), "omp-kickoff-prov-"));
     try {
-      const args = parseArgs(['--no-picker', '--agent=omp', '--plan=p']);
+      const args = parseArgs(["--no-picker", "--agent=omp", "--plan=p"]);
       const result = routeFreshKickoff(
-        'omp',
-        { kickoffPrompt: KICK, planSlug: 'p', envelopeEnv: { PAPERCUSP_SID: 'omp-1' } },
+        "omp",
+        {
+          kickoffPrompt: KICK,
+          planSlug: "p",
+          envelopeEnv: { PAPERCUSP_SID: "omp-1" },
+        },
         args,
-        { PAPERCUSP_SID: 'omp-1', PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir },
+        {
+          PAPERCUSP_SID: "omp-1",
+          PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+        },
       );
 
       expect(result.positionalArgs).toEqual([]);
@@ -542,51 +659,123 @@ describe('routeFreshKickoff (EI-20339142329504181 OMP startup barrier)', () => {
     }
   });
 
-  it('keeps Claude and Codex fresh kickoffs on their positional argv seam', () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), 'native-kickoff-prov-'));
+  it("keeps Claude and Codex fresh kickoffs on their positional argv seam", () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), "native-kickoff-prov-"));
     try {
-      const args = parseArgs(['--no-picker', '--agent=claude', '--plan=p']);
-      for (const backend of ['claude', 'codex']) {
+      const args = parseArgs(["--no-picker", "--agent=claude", "--plan=p"]);
+      for (const backend of ["claude", "codex"]) {
         const result = routeFreshKickoff(
           backend,
-          { kickoffPrompt: KICK, planSlug: 'p', envelopeEnv: { PAPERCUSP_SID: `${backend}-1` } },
+          {
+            kickoffPrompt: KICK,
+            planSlug: "p",
+            envelopeEnv: { PAPERCUSP_SID: `${backend}-1` },
+          },
           args,
           { PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir },
         );
         expect(result.managedKickoff).toBeNull();
         expect(result.positionalArgs).toHaveLength(1);
-        expect(result.positionalArgs[0]).toMatch(/Begin: advance the admitted work item\.$/);
+        expect(result.positionalArgs[0]).toMatch(
+          /Begin: advance the admitted work item\.$/,
+        );
       }
     } finally {
       rmSync(provenanceDir, { recursive: true, force: true });
     }
   });
 
-  it('does not create a managed kickoff for picker, no-kickoff, or absent-kickoff launches', () => {
-    const res = { kickoffPrompt: KICK, planSlug: 'p', envelopeEnv: { PAPERCUSP_SID: 'omp-1' } };
-    expect(routeFreshKickoff('omp', res, parseArgs(['--agent=omp']), {})).toEqual({
-      positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
+  it("does not create a managed kickoff for picker, no-kickoff, or absent-kickoff launches", () => {
+    const res = {
+      kickoffPrompt: KICK,
+      planSlug: "p",
+      envelopeEnv: { PAPERCUSP_SID: "omp-1" },
+    };
+    expect(
+      routeFreshKickoff("omp", res, parseArgs(["--agent=omp"]), {}),
+    ).toEqual({
+      positionalArgs: [],
+      managedKickoff: null,
+      kickoffSeeded: false,
     });
-    expect(routeFreshKickoff('omp', res, parseArgs(['--no-picker', '--agent=omp', '--no-kickoff']), {})).toEqual({
-      positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
+    expect(
+      routeFreshKickoff(
+        "omp",
+        res,
+        parseArgs(["--no-picker", "--agent=omp", "--no-kickoff"]),
+        {},
+      ),
+    ).toEqual({
+      positionalArgs: [],
+      managedKickoff: null,
+      kickoffSeeded: false,
     });
-    expect(routeFreshKickoff('omp', { envelopeEnv: { PAPERCUSP_SID: 'omp-1' } }, parseArgs(['--no-picker', '--agent=omp']), {})).toEqual({
-      positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
+    expect(
+      routeFreshKickoff(
+        "omp",
+        { envelopeEnv: { PAPERCUSP_SID: "omp-1" } },
+        parseArgs(["--no-picker", "--agent=omp"]),
+        {},
+      ),
+    ).toEqual({
+      positionalArgs: [],
+      managedKickoff: null,
+      kickoffSeeded: false,
     });
   });
 });
 
-describe('finalizeFreshSuArgs (fresh SU kickoff reaches the backend)', () => {
-  const KICK = 'Begin: pull one admitted non-P2P bug.';
+describe("scriptedOmpSetupEnv (headless OMP kickoff reaches the composer)", () => {
+  it("skips first-run setup for scripted OMP sessions", () => {
+    expect(
+      scriptedOmpSetupEnv("omp", parseArgs(["--no-picker", "--agent=omp"]), {}),
+    ).toEqual({
+      OMP_SKIP_SETUP: "1",
+    });
+  });
 
-  it('appends the tagged first turn after every Codex/Claude launch flag', () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), 'su-native-kickoff-prov-'));
+  it("keeps the setup wizard for interactive OMP and every non-OMP backend", () => {
+    expect(scriptedOmpSetupEnv("omp", parseArgs(["--agent=omp"]), {})).toEqual(
+      {},
+    );
+    expect(
+      scriptedOmpSetupEnv(
+        "claude",
+        parseArgs(["--no-picker", "--agent=claude"]),
+        {},
+      ),
+    ).toEqual({});
+    expect(
+      scriptedOmpSetupEnv(
+        "codex",
+        parseArgs(["--no-picker", "--agent=codex"]),
+        {},
+      ),
+    ).toEqual({});
+  });
+
+  it("preserves an explicit OMP_SKIP_SETUP override", () => {
+    expect(
+      scriptedOmpSetupEnv("omp", parseArgs(["--no-picker", "--agent=omp"]), {
+        OMP_SKIP_SETUP: "0",
+      }),
+    ).toEqual({});
+  });
+});
+
+describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
+  const KICK = "Begin: pull one admitted non-P2P bug.";
+
+  it("appends the tagged first turn after every Codex/Claude launch flag", () => {
+    const provenanceDir = mkdtempSync(
+      join(tmpdir(), "su-native-kickoff-prov-"),
+    );
     try {
-      for (const backend of ['claude', 'codex']) {
-        const args = parseArgs(['--no-picker', `--agent=${backend}`]);
+      for (const backend of ["claude", "codex"]) {
+        const args = parseArgs(["--no-picker", `--agent=${backend}`]);
         const result = finalizeFreshSuArgs(
           backend,
-          ['--flag=value'],
+          ["--flag=value"],
           { envelopeEnv: { PAPERCUSP_SID: `${backend}-fresh-1` } },
           args,
           {
@@ -597,7 +786,7 @@ describe('finalizeFreshSuArgs (fresh SU kickoff reaches the backend)', () => {
 
         expect(result.kickoffSeeded).toBe(true);
         expect(result.kickoff).toBeNull();
-        expect(result.args.slice(0, -1)).toEqual(['--flag=value']);
+        expect(result.args.slice(0, -1)).toEqual(["--flag=value"]);
         expect(result.args.at(-1)).toMatch(
           /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: pull one admitted non-P2P bug\.$/,
         );
@@ -607,21 +796,21 @@ describe('finalizeFreshSuArgs (fresh SU kickoff reaches the backend)', () => {
     }
   });
 
-  it('keeps OMP argv unchanged and returns its managed-pty kickoff', () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), 'su-omp-kickoff-prov-'));
+  it("keeps OMP argv unchanged and returns its managed-pty kickoff", () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), "su-omp-kickoff-prov-"));
     try {
       const result = finalizeFreshSuArgs(
-        'omp',
-        ['--extension', '/tmp/coord-hook.ts'],
-        { envelopeEnv: { PAPERCUSP_SID: 'omp-fresh-1' } },
-        parseArgs(['--no-picker', '--agent=omp']),
+        "omp",
+        ["--extension", "/tmp/coord-hook.ts"],
+        { envelopeEnv: { PAPERCUSP_SID: "omp-fresh-1" } },
+        parseArgs(["--no-picker", "--agent=omp"]),
         {
           PAPERCUSP_KICKOFF_PROMPT: KICK,
           PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
         },
       );
 
-      expect(result.args).toEqual(['--extension', '/tmp/coord-hook.ts']);
+      expect(result.args).toEqual(["--extension", "/tmp/coord-hook.ts"]);
       expect(result.kickoffSeeded).toBe(true);
       expect(result.kickoff).toMatch(
         /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: pull one admitted non-P2P bug\.$/,
@@ -635,29 +824,43 @@ describe('finalizeFreshSuArgs (fresh SU kickoff reaches the backend)', () => {
 // resolveKickoffText — the SPAWN-SAFE env fallback the desktop docs-agent launcher
 // relies on (a free-form question rides PAPERCUSP_KICKOFF_PROMPT, not a --kickoff arg,
 // so it survives buildConsoleOneliner's greeting escaping instead of breaking the shell).
-describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
-  it('falls back to PAPERCUSP_KICKOFF_PROMPT when no --kickoff flag was parsed', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--label=docs-tutor']);
+describe("resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)", () => {
+  it("falls back to PAPERCUSP_KICKOFF_PROMPT when no --kickoff flag was parsed", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--label=docs-tutor",
+    ]);
     expect(args.kickoffPromptText).toBeNull();
     const env: NodeJS.ProcessEnv = {
-      NODE_ENV: 'test',
+      NODE_ENV: "test",
       PAPERCUSP_KICKOFF_PROMPT: "what's a pot?\nline two",
     };
     expect(resolveKickoffText(args, env)).toBe("what's a pot?\nline two");
     // and it actually seeds the first turn once threaded through kickoffPositionalArgs
-    expect(kickoffPositionalArgs({}, { ...args, kickoffPromptText: resolveKickoffText(args, env) })).toEqual([
-      "what's a pot?\nline two",
+    expect(
+      kickoffPositionalArgs(
+        {},
+        { ...args, kickoffPromptText: resolveKickoffText(args, env) },
+      ),
+    ).toEqual(["what's a pot?\nline two"]);
+  });
+  it("an explicit --kickoff flag wins over the env var", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--kickoff=flag wins",
     ]);
+    expect(
+      resolveKickoffText(args, {
+        NODE_ENV: "test",
+        PAPERCUSP_KICKOFF_PROMPT: "env loses",
+      }),
+    ).toBe("flag wins");
   });
-  it('an explicit --kickoff flag wins over the env var', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=flag wins']);
-    expect(resolveKickoffText(args, { NODE_ENV: 'test', PAPERCUSP_KICKOFF_PROMPT: 'env loses' })).toBe(
-      'flag wins',
-    );
-  });
-  it('returns null when neither the flag nor the env var is set', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude']);
-    expect(resolveKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
+  it("returns null when neither the flag nor the env var is set", () => {
+    const args = parseArgs(["--no-picker", "--agent=claude"]);
+    expect(resolveKickoffText(args, { NODE_ENV: "test" })).toBeNull();
   });
 });
 
@@ -665,51 +868,85 @@ describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
 // P-011/D-008). A resumed session has no positional-prompt seam and is unreachable
 // through the roster (its presence rows were reaped at death), so this text is handed
 // to the managed-pty host, which injects it once the child settles at its prompt.
-describe('resumeKickoffText (P-011: the first turn of a scripted resume/fork)', () => {
-  it('takes the --kickoff flag on a scripted resume', () => {
-    const args = parseArgs(['--no-picker', '--resume=sid-1', '--account=default', '--kickoff=carry on']);
-    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBe('carry on');
+describe("resumeKickoffText (P-011: the first turn of a scripted resume/fork)", () => {
+  it("takes the --kickoff flag on a scripted resume", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--resume=sid-1",
+      "--account=default",
+      "--kickoff=carry on",
+    ]);
+    expect(resumeKickoffText(args, { NODE_ENV: "test" })).toBe("carry on");
   });
 
-  it('takes the spawn-safe PAPERCUSP_KICKOFF_PROMPT env when no flag was passed', () => {
-    const args = parseArgs(['--no-picker', '--resume=sid-1']);
+  it("takes the spawn-safe PAPERCUSP_KICKOFF_PROMPT env when no flag was passed", () => {
+    const args = parseArgs(["--no-picker", "--resume=sid-1"]);
     expect(
-      resumeKickoffText(args, { NODE_ENV: 'test', PAPERCUSP_KICKOFF_PROMPT: 'multi\nline brief' }),
-    ).toBe('multi\nline brief');
+      resumeKickoffText(args, {
+        NODE_ENV: "test",
+        PAPERCUSP_KICKOFF_PROMPT: "multi\nline brief",
+      }),
+    ).toBe("multi\nline brief");
   });
 
-  it('does NOT seed an interactive (picker) resume — a human opens at an empty prompt', () => {
-    const args = parseArgs(['--resume=sid-1', '--kickoff=q']);
-    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
+  it("does NOT seed an interactive (picker) resume — a human opens at an empty prompt", () => {
+    const args = parseArgs(["--resume=sid-1", "--kickoff=q"]);
+    expect(resumeKickoffText(args, { NODE_ENV: "test" })).toBeNull();
   });
 
-  it('honors --no-kickoff', () => {
-    const args = parseArgs(['--no-picker', '--resume=sid-1', '--kickoff=q', '--no-kickoff']);
-    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
+  it("honors --no-kickoff", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--resume=sid-1",
+      "--kickoff=q",
+      "--no-kickoff",
+    ]);
+    expect(resumeKickoffText(args, { NODE_ENV: "test" })).toBeNull();
   });
 
-  it('is null when nothing asked for a kickoff (a resume opens idle, as before)', () => {
-    expect(resumeKickoffText(parseArgs(['--no-picker', '--resume=sid-1']), { NODE_ENV: 'test' })).toBeNull();
+  it("is null when nothing asked for a kickoff (a resume opens idle, as before)", () => {
+    expect(
+      resumeKickoffText(parseArgs(["--no-picker", "--resume=sid-1"]), {
+        NODE_ENV: "test",
+      }),
+    ).toBeNull();
   });
 
-  it('never falls back to a server plan kickoff — a resume does no bootstrap POST', () => {
+  it("never falls back to a server plan kickoff — a resume does no bootstrap POST", () => {
     // kickoffPositionalArgs' res.kickoffPrompt leg must not leak into the resume path.
-    const planKickoff = 'Begin: advance this plan';
-    const args = parseArgs(['--no-picker', '--resume=sid-1']);
-    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
-    expect(kickoffPositionalArgs({ kickoffPrompt: planKickoff, planSlug: 'p' }, args)).toEqual([planKickoff]);
+    const planKickoff = "Begin: advance this plan";
+    const args = parseArgs(["--no-picker", "--resume=sid-1"]);
+    expect(resumeKickoffText(args, { NODE_ENV: "test" })).toBeNull();
+    expect(
+      kickoffPositionalArgs(
+        { kickoffPrompt: planKickoff, planSlug: "p" },
+        args,
+      ),
+    ).toEqual([planKickoff]);
   });
 });
 
-describe('parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak guard)', () => {
+describe("parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak guard)", () => {
   let dir: string;
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'psu-park-')); });
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "psu-park-"));
+  });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
-  const mcp = () => join(dir, '.mcp.json');
-  const parked = () => join(dir, '.mcp.json.su-parked');
+  const mcp = () => join(dir, ".mcp.json");
+  const parked = () => join(dir, ".mcp.json.su-parked");
 
-  it('parks a role-scoped .mcp.json (signed role= URL) and removes the original', () => {
-    writeFileSync(mcp(), JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: 'http://127.0.0.1:9071/api/mcp?workspace=ws&role=planner&sig=abc&exp=1' } } }));
+  it("parks a role-scoped .mcp.json (signed role= URL) and removes the original", () => {
+    writeFileSync(
+      mcp(),
+      JSON.stringify({
+        mcpServers: {
+          papercusp: {
+            type: "http",
+            url: "http://127.0.0.1:9071/api/mcp?workspace=ws&role=planner&sig=abc&exp=1",
+          },
+        },
+      }),
+    );
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
     expect(existsSync(mcp())).toBe(false);
     expect(existsSync(parked())).toBe(true);
@@ -724,56 +961,81 @@ describe('parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak g
   // needs a co-located .mcp.json at all (user-level / per-session config covers it), so any
   // shape is parked unconditionally.
   it('parks a superuser-scoped .mcp.json too (EI-10388 — a stale "papercusp" server merges its full catalog onto the seeded "papercusp-su" one)', () => {
-    writeFileSync(mcp(), JSON.stringify({ mcpServers: { 'papercusp-su': { type: 'http', url: 'http://localhost:3070/api/mcp?superuser=1&client=x' } } }));
+    writeFileSync(
+      mcp(),
+      JSON.stringify({
+        mcpServers: {
+          "papercusp-su": {
+            type: "http",
+            url: "http://localhost:3070/api/mcp?superuser=1&client=x",
+          },
+        },
+      }),
+    );
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
     expect(existsSync(mcp())).toBe(false);
     expect(existsSync(parked())).toBe(true);
   });
 
-  it('no-op when there is no .mcp.json', () => {
+  it("no-op when there is no .mcp.json", () => {
     expect(parkRoleScopedMcpJson(dir)).toBe(null);
   });
 
-  it('overwrites a stale prior park instead of failing', () => {
-    writeFileSync(parked(), 'STALE');
-    writeFileSync(mcp(), JSON.stringify({ mcpServers: { p: { url: 'http://h/api/mcp?role=sentinel&sig=z' } } }));
+  it("overwrites a stale prior park instead of failing", () => {
+    writeFileSync(parked(), "STALE");
+    writeFileSync(
+      mcp(),
+      JSON.stringify({
+        mcpServers: { p: { url: "http://h/api/mcp?role=sentinel&sig=z" } },
+      }),
+    );
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
     expect(existsSync(mcp())).toBe(false);
   });
 
   // EI-10388: classification by content is gone — ANY existing .mcp.json is parked
   // unconditionally, including one we can't even parse (it was never safely usable anyway).
-  it('parks an unparseable .mcp.json too (never throws)', () => {
-    writeFileSync(mcp(), 'not json{');
+  it("parks an unparseable .mcp.json too (never throws)", () => {
+    writeFileSync(mcp(), "not json{");
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
     expect(existsSync(mcp())).toBe(false);
     expect(existsSync(parked())).toBe(true);
   });
 });
 
-describe('ompDefaultModelAdvisory (P-004 first-turn overflow guard)', () => {
+describe("ompDefaultModelAdvisory (P-004 first-turn overflow guard)", () => {
   let home: string;
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-cfg-')); mkdirSync(join(home, '.omp', 'agent'), { recursive: true }); });
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-cfg-"));
+    mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+  });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
-  const writeCfg = (s: string) => writeFileSync(join(home, '.omp', 'agent', 'config.yml'), s);
+  const writeCfg = (s: string) =>
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), s);
 
-  it('advises when the default role is a local ollama model', () => {
-    writeCfg('modelRoles:\n  default: ollama/ornith:fast\n  slow: anthropic/claude-opus-4-6:high\n');
+  it("advises when the default role is a local ollama model", () => {
+    writeCfg(
+      "modelRoles:\n  default: ollama/ornith:fast\n  slow: anthropic/claude-opus-4-6:high\n",
+    );
     expect(ompDefaultModelAdvisory(home)).toMatch(/ollama\/ornith:fast/);
   });
-  it('no advisory when the default is a gateway/anthropic model', () => {
-    writeCfg('modelRoles:\n  default: papercusp-gateway/claude-sonnet-4-6\n');
+  it("no advisory when the default is a gateway/anthropic model", () => {
+    writeCfg("modelRoles:\n  default: papercusp-gateway/claude-sonnet-4-6\n");
     expect(ompDefaultModelAdvisory(home)).toBe(null);
   });
-  it('no advisory when config.yml is absent', () => {
-    rmSync(join(home, '.omp', 'agent', 'config.yml'), { force: true });
+  it("no advisory when config.yml is absent", () => {
+    rmSync(join(home, ".omp", "agent", "config.yml"), { force: true });
     expect(ompDefaultModelAdvisory(home)).toBe(null);
   });
 });
 
-describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal picker prompt)', () => {
-  it('offers exactly Native/Full/Trimmed with the flag values, Native ⇒ null', () => {
-    expect(SU_CONTEXT_CHOICES.map((c) => c.value)).toEqual([null, 'full', 'trimmed']);
+describe("SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal picker prompt)", () => {
+  it("offers exactly Native/Full/Trimmed with the flag values, Native ⇒ null", () => {
+    expect(SU_CONTEXT_CHOICES.map((c) => c.value)).toEqual([
+      null,
+      "full",
+      "trimmed",
+    ]);
     // The Native option maps to null so the picker emits NO --context-size flag —
     // a byte-identical launch to the pre-feature behavior (the key non-regression).
     const native = SU_CONTEXT_CHOICES[0];
@@ -786,204 +1048,268 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
   // names belong to the operator-core TS twins (imported below for the WI-6321
   // parity suite) and reading them here tested the wrong module — see the note on
   // the import block.
-  it('labels embed the token estimates, in parity with the operator UI', () => {
-    const full = SU_CONTEXT_CHOICES.find((c) => c.value === 'full')!;
-    const trimmed = SU_CONTEXT_CHOICES.find((c) => c.value === 'trimmed')!;
+  it("labels embed the token estimates, in parity with the operator UI", () => {
+    const full = SU_CONTEXT_CHOICES.find((c) => c.value === "full")!;
+    const trimmed = SU_CONTEXT_CHOICES.find((c) => c.value === "trimmed")!;
     expect(full.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.full);
     expect(trimmed.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
     // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
     // Re-measured 2026-07-02 post-Phase-3: 60.1k sonnet-fleet / ~76k power boot
     // (the P-018 '~83k' was pre-Phase-3, full persona).
-    expect(PSU_SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~70k' });
+    expect(PSU_SU_CONTEXT_TOKEN_ESTIMATES).toEqual({
+      full: "~180k",
+      trimmed: "~70k",
+    });
   });
 
-  it('picker values are a subset of the --context-size flag values parseArgs accepts', () => {
+  it("picker values are a subset of the --context-size flag values parseArgs accepts", () => {
     // Guards drift between the interactive picker and the flag path: every non-null
     // picker value must be a value parseArgs(--context-size=…) yields.
     for (const c of SU_CONTEXT_CHOICES) {
       if (c.value === null) continue;
-      expect(parseArgs([`--context-size=${c.value}`]).contextSize).toBe(c.value);
+      expect(parseArgs([`--context-size=${c.value}`]).contextSize).toBe(
+        c.value,
+      );
     }
   });
 
-  it('defaults the picker selection to Trimmed, not Native or Full', () => {
+  it("defaults the picker selection to Trimmed, not Native or Full", () => {
     // The tool catalogue the picker highlights by default: neither the full
     // up-front catalog nor each client's native (no-flag) behavior, but the
     // trimmed core-spine + native-soft-trim variant.
-    expect(PSU_SU_CONTEXT_DEFAULT).toBe('trimmed');
-    expect(SU_CONTEXT_CHOICES.some((c) => c.value === PSU_SU_CONTEXT_DEFAULT)).toBe(true);
-    const defaultChoice = SU_CONTEXT_CHOICES.find((c) => c.value === PSU_SU_CONTEXT_DEFAULT)!;
+    expect(PSU_SU_CONTEXT_DEFAULT).toBe("trimmed");
+    expect(
+      SU_CONTEXT_CHOICES.some((c) => c.value === PSU_SU_CONTEXT_DEFAULT),
+    ).toBe(true);
+    const defaultChoice = SU_CONTEXT_CHOICES.find(
+      (c) => c.value === PSU_SU_CONTEXT_DEFAULT,
+    )!;
     expect(defaultChoice.name).toMatch(/trimmed/i);
     expect(defaultChoice.name).toMatch(/default/i);
   });
 });
 
-describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-session config)', () => {
+describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-session config)", () => {
   let home: string;
   const AGENT_CFG = [
-    'agent:',
-    '  discoveryMode: mcp-only',
-    'tools:',
-    '  discoveryMode: true',
-    'modelRoles:',
-    '  default: papercusp-gateway/claude-sonnet-4-6',
-    '',
-  ].join('\n');
+    "agent:",
+    "  discoveryMode: mcp-only",
+    "tools:",
+    "  discoveryMode: true",
+    "modelRoles:",
+    "  default: papercusp-gateway/claude-sonnet-4-6",
+    "",
+  ].join("\n");
   const MCP_JSON = JSON.stringify({
     mcpServers: {
-      'papercusp-su': {
-        type: 'http',
-        url: 'http://localhost:3070/api/mcp?superuser=1&client=abc',
-        headers: { Authorization: 'Bearer SECRET' },
+      "papercusp-su": {
+        type: "http",
+        url: "http://localhost:3070/api/mcp?superuser=1&client=abc",
+        headers: { Authorization: "Bearer SECRET" },
       },
     },
   });
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'psu-ompcfg-'));
-    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), AGENT_CFG);
-    writeFileSync(join(home, '.omp', 'agent', 'auth.json'), '{"token":"AUTHSECRET"}');
-    writeFileSync(join(home, '.omp', 'agent', 'models.yml'), 'providers:\n  ollama:\n    baseUrl: http://127.0.0.1:11435/v1\n');
-    writeFileSync(join(home, '.omp', 'agent', 'models.db'), 'BINARYREGISTRY');
-    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), MCP_JSON);
+    home = mkdtempSync(join(tmpdir(), "psu-ompcfg-"));
+    mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), AGENT_CFG);
+    writeFileSync(
+      join(home, ".omp", "agent", "auth.json"),
+      '{"token":"AUTHSECRET"}',
+    );
+    writeFileSync(
+      join(home, ".omp", "agent", "models.yml"),
+      "providers:\n  ollama:\n    baseUrl: http://127.0.0.1:11435/v1\n",
+    );
+    writeFileSync(join(home, ".omp", "agent", "models.db"), "BINARYREGISTRY");
+    writeFileSync(join(home, ".omp", "agent", "mcp.json"), MCP_JSON);
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   // ⚠ HOME-RELATIVE — OMP joins PI_CONFIG_DIR onto homedir(); an absolute value would double.
-  const relDir = (id: string) => join('.papercusp', 'su-omp-homes', `session-${id}`);
-  const agentPath = (id: string, f: string) => join(home, relDir(id), 'agent', f);
+  const relDir = (id: string) =>
+    join(".papercusp", "su-omp-homes", `session-${id}`);
+  const agentPath = (id: string, f: string) =>
+    join(home, relDir(id), "agent", f);
 
-  it('returns a HOME-RELATIVE path (not absolute — OMP joins PI_CONFIG_DIR onto $HOME)', () => {
-    const dir = writeOmpSessionConfigDir('sess1', {}, home);
-    expect(dir).toBe(relDir('sess1'));
-    expect(dir!.startsWith('/')).toBe(false); // relative, so join(home, dir) resolves correctly
+  it("returns a HOME-RELATIVE path (not absolute — OMP joins PI_CONFIG_DIR onto $HOME)", () => {
+    const dir = writeOmpSessionConfigDir("sess1", {}, home);
+    expect(dir).toBe(relDir("sess1"));
+    expect(dir!.startsWith("/")).toBe(false); // relative, so join(home, dir) resolves correctly
   });
 
   it("full mode (discoveryOff) flips discoveryMode OFF, preserving modelRoles", () => {
-    const dir = writeOmpSessionConfigDir('sess1', { discoveryOff: true }, home);
-    const written = readFileSync(join(home, dir!, 'agent', 'config.yml'), 'utf8');
-    expect(written).toContain('discoveryMode: off');
-    expect(written).toContain('discoveryMode: false');
-    expect(written).not.toContain('discoveryMode: mcp-only');
-    expect(written).toContain('default: papercusp-gateway/claude-sonnet-4-6');
+    const dir = writeOmpSessionConfigDir("sess1", { discoveryOff: true }, home);
+    const written = readFileSync(
+      join(home, dir!, "agent", "config.yml"),
+      "utf8",
+    );
+    expect(written).toContain("discoveryMode: off");
+    expect(written).toContain("discoveryMode: false");
+    expect(written).not.toContain("discoveryMode: mcp-only");
+    expect(written).toContain("default: papercusp-gateway/claude-sonnet-4-6");
   });
 
-  it('default (no opts) leaves discovery untouched (config copied, eval-off block appended)', () => {
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toContain('discoveryMode: mcp-only'); // unchanged
-    expect(written).toContain('discoveryMode: true');
+  it("default (no opts) leaves discovery untouched (config copied, eval-off block appended)", () => {
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain("discoveryMode: mcp-only"); // unchanged
+    expect(written).toContain("discoveryMode: true");
   });
 
-  it('disables the eval builtin (py/js/rb/jl → false) in the per-session config (WI-2382 scoping fix)', () => {
+  it("disables the eval builtin (py/js/rb/jl → false) in the per-session config (WI-2382 scoping fix)", () => {
     // AGENT_CFG has NO eval: block — the surgery must APPEND a canonical all-off one so the weak
     // local model can never doom-loop on eval. This replaces the former GLOBAL omp-config disable.
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toContain('eval:');
-    for (const lang of ['py', 'js', 'rb', 'jl']) {
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain("eval:");
+    for (const lang of ["py", "js", "rb", "jl"]) {
       expect(written).toMatch(new RegExp(`\\n\\s+${lang}:\\s*false`));
     }
   });
 
-  it('does NOT mutate the user’s global ~/.omp config (eval stays as the user set it)', () => {
+  it("does NOT mutate the user’s global ~/.omp config (eval stays as the user set it)", () => {
     // The scoping guarantee the owner asked for: a user’s own DIRECT (non-psu) omp keeps eval.
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const globalCfg = readFileSync(join(home, '.omp', 'agent', 'config.yml'), 'utf8');
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const globalCfg = readFileSync(
+      join(home, ".omp", "agent", "config.yml"),
+      "utf8",
+    );
     expect(globalCfg).toBe(AGENT_CFG); // untouched — no eval: block injected into the global
-    expect(globalCfg).not.toContain('eval:');
+    expect(globalCfg).not.toContain("eval:");
   });
 
-  it('FLIPS an inherited eval:on block to off (remove-then-append, no duplicate key)', () => {
+  it("FLIPS an inherited eval:on block to off (remove-then-append, no duplicate key)", () => {
     // A user who had eval ENABLED globally: the copy must still come out disabled, exactly once.
     const withEval =
-      AGENT_CFG + 'eval:\n  py: true\n  js: true\n  rb: true\n  jl: true\n';
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withEval);
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+      AGENT_CFG + "eval:\n  py: true\n  js: true\n  rb: true\n  jl: true\n";
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), withEval);
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect((written.match(/^eval:/gm) ?? []).length).toBe(1); // exactly one eval: block
     expect(written).not.toMatch(/\n\s+py:\s*true/); // no leftover on-value
     expect(written).toMatch(/\n\s+py:\s*false/);
   });
 
-  it('disables automatic provider retries for a LOCAL-model session and removes inherited retry policy (WI-5047)', () => {
+  it("disables automatic provider retries for a LOCAL-model session and removes inherited retry policy (WI-5047)", () => {
     const withRetry =
-      AGENT_CFG.replace('papercusp-gateway/claude-sonnet-4-6', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh') +
-      'retry:\n  enabled: true\n  maxRetries: 10\n  modelFallback: true\n' +
-      'retry.baseDelayMs: 123\n';
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withRetry);
-    writeOmpSessionConfigDir('sess1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+      AGENT_CFG.replace(
+        "papercusp-gateway/claude-sonnet-4-6",
+        "ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh",
+      ) +
+      "retry:\n  enabled: true\n  maxRetries: 10\n  modelFallback: true\n" +
+      "retry.baseDelayMs: 123\n";
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), withRetry);
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh" },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect((written.match(/^retry:/gm) ?? []).length).toBe(1);
     expect(written).toMatch(/^retry:\n\s+enabled:\s*false$/m);
-    expect(written).not.toContain('maxRetries');
-    expect(written).not.toContain('modelFallback');
-    expect(written).not.toContain('retry.baseDelayMs');
+    expect(written).not.toContain("maxRetries");
+    expect(written).not.toContain("modelFallback");
+    expect(written).not.toContain("retry.baseDelayMs");
   });
 
-  it('preserves the inherited retry policy for a HOSTED-model session (WI-5047 scope guard)', () => {
-    const withRetry = AGENT_CFG + 'retry:\n  enabled: true\n  maxRetries: 7\n  modelFallback: true\n';
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withRetry);
-    writeOmpSessionConfigDir('sess1', { model: 'anthropic/claude-opus-4-8' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+  it("preserves the inherited retry policy for a HOSTED-model session (WI-5047 scope guard)", () => {
+    const withRetry =
+      AGENT_CFG +
+      "retry:\n  enabled: true\n  maxRetries: 7\n  modelFallback: true\n";
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), withRetry);
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "anthropic/claude-opus-4-8" },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect((written.match(/^retry:/gm) ?? []).length).toBe(1);
-    expect(written).toMatch(/^retry:\n\s+enabled:\s*true\n\s+maxRetries:\s*7\n\s+modelFallback:\s*true$/m);
+    expect(written).toMatch(
+      /^retry:\n\s+enabled:\s*true\n\s+maxRetries:\s*7\n\s+modelFallback:\s*true$/m,
+    );
     expect(written).not.toMatch(/^retry:\n\s+enabled:\s*false$/m);
   });
 
-  it('seeds shake@70 compaction for a LOCAL-model session; no endpoint without an owner (P-001, P-022)', () => {
+  it("seeds shake@70 compaction for a LOCAL-model session; no endpoint without an owner (P-001, P-022)", () => {
     // The ornith overflow (2026-07-13): default snapcompact + all-default thresholds on a
     // text-only 204K local window → image archives, summarizer 429 self-starvation, HTTP 400.
     // P-022: shake is mechanical (no LLM call), so a clientId-less session gets NO
     // remoteEndpoint — nothing would call it, and it would be the plain-LLM lane if it did.
-    writeOmpSessionConfigDir('sess1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M" },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect(written).toMatch(/^compaction:$/m);
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
     expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
-    expect(written).not.toContain('remoteEndpoint');
+    expect(written).not.toContain("remoteEndpoint");
   });
 
-  it('P-022: EVERY hosted omp model gets the forced papercusp block — gateway-routed and direct alike (native strategies retired)', () => {
-    writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+  it("P-022: EVERY hosted omp model gets the forced papercusp block — gateway-routed and direct alike (native strategies retired)", () => {
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "papercusp-gateway/claude-sonnet-4-6" },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect(written).toMatch(/^compaction:$/m);
     expect(written).toMatch(/\n\s+strategy:\s*shake/); // no clientId ⇒ mechanical
     expect(written).toMatch(/\n\s+thresholdPercent:\s*\d+/);
-    expect(written).not.toContain('remoteEndpoint');
+    expect(written).not.toContain("remoteEndpoint");
     // Direct (non-gateway) hosted model: same forced block — omp's native
     // strategies are retired everywhere, and shake introduces no gateway dependency.
-    writeOmpSessionConfigDir('sess2', { model: 'anthropic/claude-opus-4-8' }, home);
-    const direct = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
+    writeOmpSessionConfigDir(
+      "sess2",
+      { model: "anthropic/claude-opus-4-8" },
+      home,
+    );
+    const direct = readFileSync(agentPath("sess2", "config.yml"), "utf8");
     expect(direct).toMatch(/^compaction:$/m);
     expect(direct).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('remoteEndpoint injection PRESERVES an inherited compaction block for a gateway model (no duplicate keys)', () => {
-    const withCompaction = AGENT_CFG + 'compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n  remoteEndpoint: "http://old:1/x"\n';
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withCompaction);
-    writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+  it("remoteEndpoint injection PRESERVES an inherited compaction block for a gateway model (no duplicate keys)", () => {
+    const withCompaction =
+      AGENT_CFG +
+      'compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n  remoteEndpoint: "http://old:1/x"\n';
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), withCompaction);
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "papercusp-gateway/claude-sonnet-4-6" },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     // P-022: the inherited native block is REPLACED wholesale, never merged — one
     // block, snapcompact and the stale endpoint both gone.
     expect((written.match(/^compaction:/gm) ?? []).length).toBe(1);
-    expect(written).not.toContain('http://old:1/x');
-    expect(written).not.toContain('snapcompact');
+    expect(written).not.toContain("http://old:1/x");
+    expect(written).not.toContain("snapcompact");
     expect(written).toMatch(/\n\s+strategy:\s*shake/); // no clientId ⇒ mechanical, no endpoint
-    expect(written).not.toContain('remoteEndpoint');
+    expect(written).not.toContain("remoteEndpoint");
   });
 
-  it('remoteEndpoint honors PAPERCUSP_GATEWAY_PORT (launcher port rule, default 8788) — endpoint rides with a carry owner (P-022)', () => {
+  it("remoteEndpoint honors PAPERCUSP_GATEWAY_PORT (launcher port rule, default 8788) — endpoint rides with a carry owner (P-022)", () => {
     const saved = process.env.PAPERCUSP_GATEWAY_PORT;
     try {
-      process.env.PAPERCUSP_GATEWAY_PORT = '8797';
-      writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-port-1' }, home);
-      expect(readFileSync(agentPath('sess1', 'config.yml'), 'utf8')).toContain(
+      process.env.PAPERCUSP_GATEWAY_PORT = "8797";
+      writeOmpSessionConfigDir(
+        "sess1",
+        { model: "ollama/ornith", clientId: "su-port-1" },
+        home,
+      );
+      expect(readFileSync(agentPath("sess1", "config.yml"), "utf8")).toContain(
         'remoteEndpoint: "http://127.0.0.1:8797/maintenance/summarize?carryOwner=su-port-1"',
       );
       delete process.env.PAPERCUSP_GATEWAY_PORT;
-      writeOmpSessionConfigDir('sess2', { model: 'ollama/ornith', clientId: 'su-port-2' }, home);
-      expect(readFileSync(agentPath('sess2', 'config.yml'), 'utf8')).toContain(
+      writeOmpSessionConfigDir(
+        "sess2",
+        { model: "ollama/ornith", clientId: "su-port-2" },
+        home,
+      );
+      expect(readFileSync(agentPath("sess2", "config.yml"), "utf8")).toContain(
         'remoteEndpoint: "http://127.0.0.1:8788/maintenance/summarize?carryOwner=su-port-2"',
       );
     } finally {
@@ -992,464 +1318,674 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     }
   });
 
-  it('carry opt-in appends ?carryOwner=<clientId>&carryWindow=<backendWindow> + flips the weak-model strategy to context-full (deterministic-context-carry P-017, WI-4845)', () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
-    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-1', backendWindow: 204800, carryCompaction: true }, home);
+  it("carry opt-in appends ?carryOwner=<clientId>&carryWindow=<backendWindow> + flips the weak-model strategy to context-full (deterministic-context-carry P-017, WI-4845)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {}); // the informational door line
+    writeOmpSessionConfigDir(
+      "sess1",
+      {
+        model: "ollama/ornith",
+        clientId: "su-carry-1",
+        backendWindow: 204800,
+        carryCompaction: true,
+      },
+      home,
+    );
     err.mockRestore();
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect(written).toMatch(
       /\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-1&carryWindow=204800"/,
     );
     // The mechanical shake never calls remoteEndpoint — an opted-in session must run an
     // LLM-capable strategy so the compaction actually reaches the gateway's carry branch.
     expect(written).toMatch(/\n\s+strategy:\s*context-full/);
-    expect(written).not.toContain('strategy: shake');
+    expect(written).not.toContain("strategy: shake");
     expect(written).toMatch(/\n\s+thresholdPercent:\s*\d+/); // threshold seeding unchanged
   });
 
-  it('interactive:true appends &carryInteractive=1 so the gateway residual sampler gets the truthful bit (P-019, D-010)', () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("interactive:true appends &carryInteractive=1 so the gateway residual sampler gets the truthful bit (P-019, D-010)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
     writeOmpSessionConfigDir(
-      'sess1',
-      { model: 'ollama/ornith', clientId: 'su-carry-i', backendWindow: 204800, carryCompaction: true, interactive: true },
+      "sess1",
+      {
+        model: "ollama/ornith",
+        clientId: "su-carry-i",
+        backendWindow: 204800,
+        carryCompaction: true,
+        interactive: true,
+      },
       home,
     );
     err.mockRestore();
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toContain('/maintenance/summarize?carryOwner=su-carry-i&carryWindow=204800&carryInteractive=1');
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain(
+      "/maintenance/summarize?carryOwner=su-carry-i&carryWindow=204800&carryInteractive=1",
+    );
   });
 
-  it('interactive defaults FALSE — a headless/piped launch omits carryInteractive (its boundaries are graded by P-020 drills, not sampled)', () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("interactive defaults FALSE — a headless/piped launch omits carryInteractive (its boundaries are graded by P-020 drills, not sampled)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
     writeOmpSessionConfigDir(
-      'sess1',
-      { model: 'ollama/ornith', clientId: 'su-carry-h', backendWindow: 204800, carryCompaction: true },
+      "sess1",
+      {
+        model: "ollama/ornith",
+        clientId: "su-carry-h",
+        backendWindow: 204800,
+        carryCompaction: true,
+      },
       home,
     );
     err.mockRestore();
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toContain('carryOwner=su-carry-h');
-    expect(written).not.toContain('carryInteractive');
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain("carryOwner=su-carry-h");
+    expect(written).not.toContain("carryInteractive");
   });
 
-  it('no clientId ⇒ mechanical shake with NO endpoint line — no gateway hard-dependency, no plain-LLM lane (P-022)', () => {
-    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', carryCompaction: true }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).not.toContain('remoteEndpoint');
-    expect(written).not.toContain('carryOwner');
+  it("no clientId ⇒ mechanical shake with NO endpoint line — no gateway hard-dependency, no plain-LLM lane (P-022)", () => {
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "ollama/ornith", carryCompaction: true },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).not.toContain("remoteEndpoint");
+    expect(written).not.toContain("carryOwner");
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('P-022: a gateway-routed hosted model gets the FORCED carry block too (context-full + carryOwner; no probed window ⇒ no carryWindow) — supersedes the P-001 preserve decision', () => {
-    writeOmpSessionConfigDir('sess1', { model: 'papercusp-gateway/claude-sonnet-4-6', clientId: 'su-carry-2', carryCompaction: true }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toMatch(/\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-2"/);
-    expect(written).not.toContain('carryWindow');
+  it("P-022: a gateway-routed hosted model gets the FORCED carry block too (context-full + carryOwner; no probed window ⇒ no carryWindow) — supersedes the P-001 preserve decision", () => {
+    writeOmpSessionConfigDir(
+      "sess1",
+      {
+        model: "papercusp-gateway/claude-sonnet-4-6",
+        clientId: "su-carry-2",
+        carryCompaction: true,
+      },
+      home,
+    );
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toMatch(
+      /\n\s+remoteEndpoint:\s*"http:\/\/127\.0\.0\.1:\d+\/maintenance\/summarize\?carryOwner=su-carry-2"/,
+    );
+    expect(written).not.toContain("carryWindow");
     expect(written).toMatch(/\n\s+strategy:\s*context-full/);
-    expect(written).not.toContain('strategy: shake');
+    expect(written).not.toContain("strategy: shake");
   });
 
-  it('carry defaults ON for an owned session: params are present and weak-model strategy reaches the carry endpoint', () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
-    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-3', backendWindow: 204800 }, home);
+  it("carry defaults ON for an owned session: params are present and weak-model strategy reaches the carry endpoint", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {}); // the informational door line
+    writeOmpSessionConfigDir(
+      "sess1",
+      { model: "ollama/ornith", clientId: "su-carry-3", backendWindow: 204800 },
+      home,
+    );
     err.mockRestore();
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).toContain('/maintenance/summarize?carryOwner=su-carry-3&carryWindow=204800');
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).toContain(
+      "/maintenance/summarize?carryOwner=su-carry-3&carryWindow=204800",
+    );
     expect(written).toMatch(/\n\s+strategy:\s*context-full/);
   });
 
-  it('P-022: the old PAPERCUSP_OMP_CARRY_COMPACTION=0 opt-out is RETIRED — carry still applies with the env set', () => {
+  it("P-022: the old PAPERCUSP_OMP_CARRY_COMPACTION=0 opt-out is RETIRED — carry still applies with the env set", () => {
     const saved = process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
     try {
-      process.env.PAPERCUSP_OMP_CARRY_COMPACTION = '0';
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
-      writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith', clientId: 'su-carry-off', backendWindow: 204800 }, home);
+      process.env.PAPERCUSP_OMP_CARRY_COMPACTION = "0";
+      const err = vi.spyOn(console, "error").mockImplementation(() => {}); // the informational door line
+      writeOmpSessionConfigDir(
+        "sess1",
+        {
+          model: "ollama/ornith",
+          clientId: "su-carry-off",
+          backendWindow: 204800,
+        },
+        home,
+      );
       err.mockRestore();
-      const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-      expect(written).toContain('carryOwner=su-carry-off');
+      const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+      expect(written).toContain("carryOwner=su-carry-off");
       expect(written).toMatch(/\n\s+strategy:\s*context-full/);
     } finally {
-      if (saved === undefined) delete process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
+      if (saved === undefined)
+        delete process.env.PAPERCUSP_OMP_CARRY_COMPACTION;
       else process.env.PAPERCUSP_OMP_CARRY_COMPACTION = saved;
     }
   });
 
-  it('falls back to the config.yml modelRoles.default when no model opt is passed', () => {
+  it("falls back to the config.yml modelRoles.default when no model opt is passed", () => {
     // AGENT_CFG's default is a gateway-routed hosted model; with no clientId the
     // forced block is the mechanical shake (P-022 — no endpoint without an owner)…
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const gwWritten = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(gwWritten).not.toContain('/maintenance/summarize');
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const gwWritten = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(gwWritten).not.toContain("/maintenance/summarize");
     expect(gwWritten).toMatch(/\n\s+strategy:\s*shake/);
     // …and a LOCAL default (the incident box's actual config) seeds shake even with model omitted.
     writeFileSync(
-      join(home, '.omp', 'agent', 'config.yml'),
-      AGENT_CFG.replace('papercusp-gateway/claude-sonnet-4-6', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh'),
+      join(home, ".omp", "agent", "config.yml"),
+      AGENT_CFG.replace(
+        "papercusp-gateway/claude-sonnet-4-6",
+        "ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh",
+      ),
     );
-    writeOmpSessionConfigDir('sess2', {}, home);
-    const written = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
+    writeOmpSessionConfigDir("sess2", {}, home);
+    const written = readFileSync(agentPath("sess2", "config.yml"), "utf8");
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('REPLACES an inherited compaction block for EVERY omp session (remove-then-append, no duplicate key) — hosted models included (P-022)', () => {
-    const withCompaction = AGENT_CFG + 'compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n';
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withCompaction);
-    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+  it("REPLACES an inherited compaction block for EVERY omp session (remove-then-append, no duplicate key) — hosted models included (P-022)", () => {
+    const withCompaction =
+      AGENT_CFG +
+      "compaction:\n  strategy: snapcompact\n  thresholdPercent: 90\n";
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), withCompaction);
+    writeOmpSessionConfigDir("sess1", { model: "ollama/ornith" }, home);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
     expect((written.match(/^compaction:/gm) ?? []).length).toBe(1);
-    expect(written).not.toContain('snapcompact');
+    expect(written).not.toContain("snapcompact");
     expect(written).toMatch(/\n\s+thresholdPercent:\s*70/);
     // P-022: a direct-API hosted model no longer keeps the inherited native
     // strategy — snapcompact is stripped and the mechanical shake rules.
-    writeOmpSessionConfigDir('sess2', { model: 'anthropic/claude-opus-4-8' }, home);
-    const hosted = readFileSync(agentPath('sess2', 'config.yml'), 'utf8');
-    expect(hosted).not.toContain('snapcompact');
+    writeOmpSessionConfigDir(
+      "sess2",
+      { model: "anthropic/claude-opus-4-8" },
+      home,
+    );
+    const hosted = readFileSync(agentPath("sess2", "config.yml"), "utf8");
+    expect(hosted).not.toContain("snapcompact");
     expect((hosted.match(/^compaction:/gm) ?? []).length).toBe(1);
     expect(hosted).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('strips flat dotted compaction.* keys too (both spellings are valid omp settings)', () => {
-    const withFlat = AGENT_CFG + 'compaction.strategy: snapcompact\ncompaction.thresholdPercent: 95\n';
-    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withFlat);
-    writeOmpSessionConfigDir('sess1', { model: 'ollama/ornith' }, home);
-    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
-    expect(written).not.toContain('snapcompact');
-    expect(written).not.toContain('compaction.thresholdPercent');
+  it("strips flat dotted compaction.* keys too (both spellings are valid omp settings)", () => {
+    const withFlat =
+      AGENT_CFG +
+      "compaction.strategy: snapcompact\ncompaction.thresholdPercent: 95\n";
+    writeFileSync(join(home, ".omp", "agent", "config.yml"), withFlat);
+    writeOmpSessionConfigDir("sess1", { model: "ollama/ornith" }, home);
+    const written = readFileSync(agentPath("sess1", "config.yml"), "utf8");
+    expect(written).not.toContain("snapcompact");
+    expect(written).not.toContain("compaction.thresholdPercent");
     expect(written).toMatch(/\n\s+strategy:\s*shake/);
   });
 
-  it('carries the faithful model registry + auth so model resolution survives relocation', () => {
-    writeOmpSessionConfigDir('sess1', {}, home);
-    expect(readFileSync(agentPath('sess1', 'auth.json'), 'utf8')).toBe('{"token":"AUTHSECRET"}');
-    expect(existsSync(agentPath('sess1', 'models.yml'))).toBe(true);
-    expect(readFileSync(agentPath('sess1', 'models.db'), 'utf8')).toBe('BINARYREGISTRY');
+  it("carries the faithful model registry + auth so model resolution survives relocation", () => {
+    writeOmpSessionConfigDir("sess1", {}, home);
+    expect(readFileSync(agentPath("sess1", "auth.json"), "utf8")).toBe(
+      '{"token":"AUTHSECRET"}',
+    );
+    expect(existsSync(agentPath("sess1", "models.yml"))).toBe(true);
+    expect(readFileSync(agentPath("sess1", "models.db"), "utf8")).toBe(
+      "BINARYREGISTRY",
+    );
   });
 
   // xai-oauth (and other modern OMP logins) live in agent.db auth_credentials —
   // not legacy auth.json. Without this symlink, psu→omp sessions boot with an
   // empty credential store and Grok vanishes from /model even though bare omp works.
-  it('symlinks agent.db so OAuth providers (xai-oauth etc.) survive PI_CONFIG_DIR relocation', () => {
-    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'OAUTH_DB_BYTES');
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const dst = agentPath('sess1', 'agent.db');
+  it("symlinks agent.db so OAuth providers (xai-oauth etc.) survive PI_CONFIG_DIR relocation", () => {
+    writeFileSync(join(home, ".omp", "agent", "agent.db"), "OAUTH_DB_BYTES");
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const dst = agentPath("sess1", "agent.db");
     expect(lstatSync(dst).isSymbolicLink()).toBe(true);
-    expect(realpathSync(dst)).toBe(realpathSync(join(home, '.omp', 'agent', 'agent.db')));
-    expect(readFileSync(dst, 'utf8')).toBe('OAUTH_DB_BYTES');
+    expect(realpathSync(dst)).toBe(
+      realpathSync(join(home, ".omp", "agent", "agent.db")),
+    );
+    expect(readFileSync(dst, "utf8")).toBe("OAUTH_DB_BYTES");
   });
 
-  it('does not fail when global agent.db is missing (degrades to OMP native auth error)', () => {
+  it("does not fail when global agent.db is missing (degrades to OMP native auth error)", () => {
     // beforeEach seeds no agent.db — seed must still succeed for models/mcp.
-    const dir = writeOmpSessionConfigDir('sess1', {}, home);
-    expect(dir).toBe(relDir('sess1'));
-    expect(existsSync(agentPath('sess1', 'agent.db'))).toBe(false);
-    expect(existsSync(agentPath('sess1', 'mcp.json'))).toBe(true);
+    const dir = writeOmpSessionConfigDir("sess1", {}, home);
+    expect(dir).toBe(relDir("sess1"));
+    expect(existsSync(agentPath("sess1", "agent.db"))).toBe(false);
+    expect(existsSync(agentPath("sess1", "mcp.json"))).toBe(true);
   });
 
-  it('replaces a stale non-symlink agent.db (pre-fix empty session db) with a symlink', () => {
-    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'GLOBAL_OAUTH');
-    const pre = join(home, relDir('sess1'), 'agent');
+  it("replaces a stale non-symlink agent.db (pre-fix empty session db) with a symlink", () => {
+    writeFileSync(join(home, ".omp", "agent", "agent.db"), "GLOBAL_OAUTH");
+    const pre = join(home, relDir("sess1"), "agent");
     mkdirSync(pre, { recursive: true });
-    writeFileSync(join(pre, 'agent.db'), ''); // empty real file as a broken prior psu session
-    writeFileSync(join(pre, 'agent.db-wal'), 'STALE_WAL');
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const dst = agentPath('sess1', 'agent.db');
+    writeFileSync(join(pre, "agent.db"), ""); // empty real file as a broken prior psu session
+    writeFileSync(join(pre, "agent.db-wal"), "STALE_WAL");
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const dst = agentPath("sess1", "agent.db");
     expect(lstatSync(dst).isSymbolicLink()).toBe(true);
-    expect(readFileSync(dst, 'utf8')).toBe('GLOBAL_OAUTH');
-    expect(existsSync(agentPath('sess1', 'agent.db-wal'))).toBe(false);
+    expect(readFileSync(dst, "utf8")).toBe("GLOBAL_OAUTH");
+    expect(existsSync(agentPath("sess1", "agent.db-wal"))).toBe(false);
   });
 
-  it('linkOmpAgentDb is a no-op when already correctly linked', () => {
-    writeFileSync(join(home, '.omp', 'agent', 'agent.db'), 'OAUTH');
-    const dstAgent = join(home, 'dst-agent');
+  it("linkOmpAgentDb is a no-op when already correctly linked", () => {
+    writeFileSync(join(home, ".omp", "agent", "agent.db"), "OAUTH");
+    const dstAgent = join(home, "dst-agent");
     mkdirSync(dstAgent, { recursive: true });
-    linkOmpAgentDb(join(home, '.omp', 'agent'), dstAgent);
-    const before = lstatSync(join(dstAgent, 'agent.db'));
-    linkOmpAgentDb(join(home, '.omp', 'agent'), dstAgent);
-    const after = lstatSync(join(dstAgent, 'agent.db'));
+    linkOmpAgentDb(join(home, ".omp", "agent"), dstAgent);
+    const before = lstatSync(join(dstAgent, "agent.db"));
+    linkOmpAgentDb(join(home, ".omp", "agent"), dstAgent);
+    const after = lstatSync(join(dstAgent, "agent.db"));
     expect(after.isSymbolicLink()).toBe(true);
     expect(after.ino).toBe(before.ino);
   });
 
-  it('carries mcp.json so the relocated session keeps papercusp-su (the old full-mode bug)', () => {
-    writeOmpSessionConfigDir('sess1', {}, home);
-    const mcp = JSON.parse(readFileSync(agentPath('sess1', 'mcp.json'), 'utf8'));
-    expect(mcp.mcpServers['papercusp-su'].url).toContain('/api/mcp?superuser=1');
-    expect(mcp.mcpServers['papercusp-su'].url).not.toContain('tools='); // no trim without the opt
+  it("carries mcp.json so the relocated session keeps papercusp-su (the old full-mode bug)", () => {
+    writeOmpSessionConfigDir("sess1", {}, home);
+    const mcp = JSON.parse(
+      readFileSync(agentPath("sess1", "mcp.json"), "utf8"),
+    );
+    expect(mcp.mcpServers["papercusp-su"].url).toContain(
+      "/api/mcp?superuser=1",
+    );
+    expect(mcp.mcpServers["papercusp-su"].url).not.toContain("tools="); // no trim without the opt
   });
 
-  it('trimmed mode keeps only papercusp-su plus optional context7 MCP servers (P-032 recurrence guard)', () => {
+  it("trimmed mode keeps only papercusp-su plus optional context7 MCP servers (P-032 recurrence guard)", () => {
     const globalMcp = {
       mcpServers: {
-        'papercusp-su': JSON.parse(MCP_JSON).mcpServers['papercusp-su'],
-        context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
-        'playwright-chromium': { command: 'npx', args: ['playwright-mcp'] },
-        github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' },
-        'cloudflare-docs': { type: 'http', url: 'https://docs.mcp.cloudflare.com/mcp' },
+        "papercusp-su": JSON.parse(MCP_JSON).mcpServers["papercusp-su"],
+        context7: { command: "npx", args: ["-y", "@upstash/context7-mcp"] },
+        "playwright-chromium": { command: "npx", args: ["playwright-mcp"] },
+        github: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
+        "cloudflare-docs": {
+          type: "http",
+          url: "https://docs.mcp.cloudflare.com/mcp",
+        },
       },
     };
-    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), JSON.stringify(globalMcp));
+    writeFileSync(
+      join(home, ".omp", "agent", "mcp.json"),
+      JSON.stringify(globalMcp),
+    );
 
-    writeOmpSessionConfigDir('sess1', { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES }, home);
+    writeOmpSessionConfigDir(
+      "sess1",
+      { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES },
+      home,
+    );
 
-    const written = JSON.parse(readFileSync(agentPath('sess1', 'mcp.json'), 'utf8'));
-    expect(Object.keys(written.mcpServers)).toEqual(['papercusp-su', 'context7']);
-    expect(new URL(written.mcpServers['papercusp-su'].url).searchParams.get('tools')!.split(','))
-      .toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
-    expect(JSON.parse(readFileSync(join(home, '.omp', 'agent', 'mcp.json'), 'utf8'))).toEqual(globalMcp);
+    const written = JSON.parse(
+      readFileSync(agentPath("sess1", "mcp.json"), "utf8"),
+    );
+    expect(Object.keys(written.mcpServers)).toEqual([
+      "papercusp-su",
+      "context7",
+    ]);
+    expect(
+      new URL(written.mcpServers["papercusp-su"].url).searchParams
+        .get("tools")!
+        .split(","),
+    ).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(
+      JSON.parse(readFileSync(join(home, ".omp", "agent", "mcp.json"), "utf8")),
+    ).toEqual(globalMcp);
   });
 
-  it('full mode preserves the complete user-selected MCP server map', () => {
+  it("full mode preserves the complete user-selected MCP server map", () => {
     const globalMcp = {
       mcpServers: {
-        'papercusp-su': JSON.parse(MCP_JSON).mcpServers['papercusp-su'],
-        'playwright-chromium': { command: 'npx', args: ['playwright-mcp'] },
-        github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' },
+        "papercusp-su": JSON.parse(MCP_JSON).mcpServers["papercusp-su"],
+        "playwright-chromium": { command: "npx", args: ["playwright-mcp"] },
+        github: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
       },
     };
-    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), JSON.stringify(globalMcp));
+    writeFileSync(
+      join(home, ".omp", "agent", "mcp.json"),
+      JSON.stringify(globalMcp),
+    );
 
-    writeOmpSessionConfigDir('sess1', { discoveryOff: true }, home);
+    writeOmpSessionConfigDir("sess1", { discoveryOff: true }, home);
 
-    const written = JSON.parse(readFileSync(agentPath('sess1', 'mcp.json'), 'utf8'));
-    expect(Object.keys(written.mcpServers)).toEqual(Object.keys(globalMcp.mcpServers));
+    const written = JSON.parse(
+      readFileSync(agentPath("sess1", "mcp.json"), "utf8"),
+    );
+    expect(Object.keys(written.mcpServers)).toEqual(
+      Object.keys(globalMcp.mcpServers),
+    );
   });
 
-  it('weak trim (toolsAllowlist) rewrites the papercusp-su URL with ?tools=<core>', () => {
-    const dir = writeOmpSessionConfigDir('sess1', { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES }, home);
-    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
-    const url = new URL(mcp.mcpServers['papercusp-su'].url);
+  it("weak trim (toolsAllowlist) rewrites the papercusp-su URL with ?tools=<core>", () => {
+    const dir = writeOmpSessionConfigDir(
+      "sess1",
+      { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES },
+      home,
+    );
+    const mcp = JSON.parse(
+      readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"),
+    );
+    const url = new URL(mcp.mcpServers["papercusp-su"].url);
     // The server decodes the param and splits on comma → the exact core list.
-    expect(url.searchParams.get('tools')!.split(',')).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(url.searchParams.get("tools")!.split(",")).toEqual([
+      ...OMP_CORE_MCP_TOOL_NAMES,
+    ]);
     // Existing params + auth header survive untouched.
-    expect(url.searchParams.get('superuser')).toBe('1');
-    expect(mcp.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer SECRET');
+    expect(url.searchParams.get("superuser")).toBe("1");
+    expect(mcp.mcpServers["papercusp-su"].headers.Authorization).toBe(
+      "Bearer SECRET",
+    );
   });
 
-  it('WI-1866: clientId stamps the per-session coord ownerId as ?client=, overriding the baked per-machine id', () => {
+  it("WI-1866: clientId stamps the per-session coord ownerId as ?client=, overriding the baked per-machine id", () => {
     // The user-level template bakes ONE per-machine client id, and omp cannot env-expand the
     // SID at connect (unlike claude's ${PAPERCUSP_SID} url) — so without this override every
     // omp session on the box collapsed into a single shared in-band coord identity (shared
     // claims, void member-vs-member claim conflicts, wakes to the visible id black-holing).
-    const dir = writeOmpSessionConfigDir('sess1', { clientId: 'su-638fab72-65c7-4dec-b45b-3acb5552d350' }, home);
-    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
-    const url = new URL(mcp.mcpServers['papercusp-su'].url);
-    expect(url.searchParams.get('client')).toBe('su-638fab72-65c7-4dec-b45b-3acb5552d350');
-    expect(url.searchParams.get('superuser')).toBe('1'); // rest of the query survives
+    const dir = writeOmpSessionConfigDir(
+      "sess1",
+      { clientId: "su-638fab72-65c7-4dec-b45b-3acb5552d350" },
+      home,
+    );
+    const mcp = JSON.parse(
+      readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"),
+    );
+    const url = new URL(mcp.mcpServers["papercusp-su"].url);
+    expect(url.searchParams.get("client")).toBe(
+      "su-638fab72-65c7-4dec-b45b-3acb5552d350",
+    );
+    expect(url.searchParams.get("superuser")).toBe("1"); // rest of the query survives
   });
 
-  it('WI-1866: without clientId the baked client param is left untouched (no regression)', () => {
-    const dir = writeOmpSessionConfigDir('sess1', {}, home);
-    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
-    const url = new URL(mcp.mcpServers['papercusp-su'].url);
-    expect(url.searchParams.get('client')).toBe('abc');
+  it("WI-1866: without clientId the baked client param is left untouched (no regression)", () => {
+    const dir = writeOmpSessionConfigDir("sess1", {}, home);
+    const mcp = JSON.parse(
+      readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"),
+    );
+    const url = new URL(mcp.mcpServers["papercusp-su"].url);
+    expect(url.searchParams.get("client")).toBe("abc");
   });
 
-  it('rewrites the papercusp server ORIGIN to the launcher-resolved operator URL (P-030)', () => {
+  it("rewrites the papercusp server ORIGIN to the launcher-resolved operator URL (P-030)", () => {
     // The user-level mcp.json pins :3070; a session launched with
     // PAPERCUSP_OPERATOR_URL (or riding the resilient proxy) must have its COPY
     // follow the launcher's operator, or the member talks to a different host.
-    const dir = writeOmpSessionConfigDir('sess1', { operatorUrl: 'http://localhost:3170' }, home);
-    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
-    const url = new URL(mcp.mcpServers['papercusp-su'].url);
-    expect(url.origin).toBe('http://localhost:3170');
-    expect(url.pathname).toBe('/api/mcp');
-    expect(url.searchParams.get('superuser')).toBe('1'); // query survives the origin swap
-    expect(mcp.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer SECRET');
+    const dir = writeOmpSessionConfigDir(
+      "sess1",
+      { operatorUrl: "http://localhost:3170" },
+      home,
+    );
+    const mcp = JSON.parse(
+      readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"),
+    );
+    const url = new URL(mcp.mcpServers["papercusp-su"].url);
+    expect(url.origin).toBe("http://localhost:3170");
+    expect(url.pathname).toBe("/api/mcp");
+    expect(url.searchParams.get("superuser")).toBe("1"); // query survives the origin swap
+    expect(mcp.mcpServers["papercusp-su"].headers.Authorization).toBe(
+      "Bearer SECRET",
+    );
   });
 
-  it('returns null for a falsy sessionId (no dir written)', () => {
-    expect(writeOmpSessionConfigDir('', {}, home)).toBeNull();
+  it("returns null for a falsy sessionId (no dir written)", () => {
+    expect(writeOmpSessionConfigDir("", {}, home)).toBeNull();
     expect(writeOmpSessionConfigDir(null, {}, home)).toBeNull();
     expect(writeOmpSessionConfigDir(undefined, {}, home)).toBeNull();
   });
 
-  it('returns null when the global OMP config is missing (falls back to native default)', () => {
-    const emptyHome = mkdtempSync(join(tmpdir(), 'psu-noomp-'));
+  it("returns null when the global OMP config is missing (falls back to native default)", () => {
+    const emptyHome = mkdtempSync(join(tmpdir(), "psu-noomp-"));
     try {
-      expect(writeOmpSessionConfigDir('sess3', {}, emptyHome)).toBeNull();
-      expect(existsSync(join(emptyHome, '.papercusp', 'su-omp-homes'))).toBe(false);
+      expect(writeOmpSessionConfigDir("sess3", {}, emptyHome)).toBeNull();
+      expect(existsSync(join(emptyHome, ".papercusp", "su-omp-homes"))).toBe(
+        false,
+      );
     } finally {
       rmSync(emptyHome, { recursive: true, force: true });
     }
   });
 });
 
-const processEnv = (values: Record<string, string>): NodeJS.ProcessEnv => values as NodeJS.ProcessEnv;
+const processEnv = (values: Record<string, string>): NodeJS.ProcessEnv =>
+  values as NodeJS.ProcessEnv;
 
-describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape hatch)', () => {
-  it('returns the full spine when the env var is unset/empty', () => {
-    expect(ompCoreToolNames(processEnv({}))).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
-    expect(ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: '' }))).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+describe("ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape hatch)", () => {
+  it("returns the full spine when the env var is unset/empty", () => {
+    expect(ompCoreToolNames(processEnv({}))).toEqual([
+      ...OMP_CORE_MCP_TOOL_NAMES,
+    ]);
+    expect(
+      ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: "" })),
+    ).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
   });
 
-  it('drops the named tools (comma-separated, whitespace-tolerant), keeping the rest in order', () => {
+  it("drops the named tools (comma-separated, whitespace-tolerant), keeping the rest in order", () => {
     // (work_items:update left the spine in the 2026-07-05 rebalance — exclude two tools
     // that ARE in the spine so the length-2 assertion stays meaningful.)
-    const kept = ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'work_items:set_state, coord:glance' }));
-    expect(kept).not.toContain('work_items:set_state');
-    expect(kept).not.toContain('coord:glance');
+    const kept = ompCoreToolNames(
+      processEnv({
+        PAPERCUSP_OMP_TOOLS_EXCLUDE: "work_items:set_state, coord:glance",
+      }),
+    );
+    expect(kept).not.toContain("work_items:set_state");
+    expect(kept).not.toContain("coord:glance");
     expect(kept.length).toBe(OMP_CORE_MCP_TOOL_NAMES.length - 2);
     expect(kept[0]).toBe(OMP_CORE_MCP_TOOL_NAMES[0]); // order preserved
   });
 
-  it('ignores names not in the spine (no-op, no error)', () => {
-    expect(ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'not:a-tool' }))).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+  it("ignores names not in the spine (no-op, no error)", () => {
+    expect(
+      ompCoreToolNames(
+        processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: "not:a-tool" }),
+      ),
+    ).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
   });
 });
 
-describe('claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Claude only)', () => {
-  it('is the spine plus the manual lock verbs, deduped', () => {
+describe("claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Claude only)", () => {
+  it("is the spine plus the manual lock verbs, deduped", () => {
     const seed = claudeSeedToolNames(processEnv({}));
     for (const n of OMP_CORE_MCP_TOOL_NAMES) expect(seed).toContain(n);
     for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(seed).toContain(n);
     expect(new Set(seed).size).toBe(seed.length);
   });
 
-  it('every Claude-only extra stays OUT of the weak-model OMP spine', () => {
+  it("every Claude-only extra stays OUT of the weak-model OMP spine", () => {
     // Covers the 2026-07-05 locks:* misuse cut AND the WI-37534 additions: a small local
     // model should not be handed a state plane or a background-job runner.
-    for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(ompCoreToolNames({})).not.toContain(n);
+    for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES)
+      expect(ompCoreToolNames({})).not.toContain(n);
   });
 
-  it('seeds the CLAUDE-only prompt-mandated verbs (WI-37534)', () => {
+  it("seeds the CLAUDE-only prompt-mandated verbs (WI-37534)", () => {
     // Regression guard. Each of these is REQUIRED by documentation the agent must follow
     // (root CLAUDE.md's volatile-value re-read rule and its long-jobs rule), while Claude's
     // native ToolSearch indexes ONLY the advertised subset — so an unseeded name answers
     // "No matching deferred tools found", which reads as "this tool does not exist".
     // Measured before the fix: 68/111/119 tools:invoke fallback reaches per 14d.
     const seed = claudeSeedToolNames(processEnv({}));
-    for (const n of ['state:read', 'capability:bash', 'capability:bash_output']) {
+    for (const n of [
+      "state:read",
+      "capability:bash",
+      "capability:bash_output",
+    ]) {
       expect(seed).toContain(n);
     }
   });
 
-  it('never seeds capability:bash without its reader (a bash_id nobody can read)', () => {
+  it("never seeds capability:bash without its reader (a bash_id nobody can read)", () => {
     // These two are inseparable: the long-jobs rule says launch with
     // capability:bash { run_in_background: true } and read with capability:bash_output.
     // Seeding only the launcher strands every background job, which is exactly why
     // bash_output out-reached bash (119 vs 111) before the fix.
     const seed = claudeSeedToolNames(processEnv({}));
-    expect(seed.includes('capability:bash')).toBe(seed.includes('capability:bash_output'));
-  });
-
-  it('honors the spine exclude escape hatch without touching the lock extras', () => {
-    const seed = claudeSeedToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'coord:glance' }));
-    expect(seed).not.toContain('coord:glance');
-    expect(seed).toContain('locks:acquire');
-  });
-});
-
-describe('applyOmpMcpUrlParams (stamp caller backend/model — fleet-launch-agent-inheritance-2026-07-03)', () => {
-  const mk = (url: string) => JSON.stringify({ mcpServers: { 'papercusp-su': { url } } });
-  const urlOf = (json: string) => new URL(JSON.parse(json).mcpServers['papercusp-su'].url);
-
-  it('stamps agent + model onto a papercusp /api/mcp url', () => {
-    const out = applyOmpMcpUrlParams(mk('http://127.0.0.1:3070/api/mcp?superuser=1&client=x'), {
-      agent: 'omp',
-      model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
-    });
-    const u = urlOf(out);
-    expect(u.searchParams.get('agent')).toBe('omp');
-    expect(u.searchParams.get('model')).toBe('ollama-cc/maxwell1500/ornith-35b:IQ3_M');
-    // pre-existing params survive
-    expect(u.searchParams.get('superuser')).toBe('1');
-    expect(u.searchParams.get('client')).toBe('x');
-  });
-
-  it('omits empty/undefined params (no bare &model=)', () => {
-    const u = urlOf(applyOmpMcpUrlParams(mk('http://127.0.0.1:3070/api/mcp?superuser=1'), { agent: 'omp', model: undefined }));
-    expect(u.searchParams.get('agent')).toBe('omp');
-    expect(u.searchParams.has('model')).toBe(false);
-  });
-
-  it('leaves non-papercusp server urls untouched', () => {
-    const src = mk('http://example.com/other');
-    expect(JSON.parse(applyOmpMcpUrlParams(src, { agent: 'omp' })).mcpServers['papercusp-su'].url).toBe(
-      'http://example.com/other',
+    expect(seed.includes("capability:bash")).toBe(
+      seed.includes("capability:bash_output"),
     );
   });
 
-  it('returns the input unchanged on invalid JSON', () => {
-    expect(applyOmpMcpUrlParams('not json', { agent: 'omp' })).toBe('not json');
+  it("honors the spine exclude escape hatch without touching the lock extras", () => {
+    const seed = claudeSeedToolNames(
+      processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: "coord:glance" }),
+    );
+    expect(seed).not.toContain("coord:glance");
+    expect(seed).toContain("locks:acquire");
   });
 });
 
-describe('applyOmpOperatorOrigin (P-030 — member mcp.json follows the launcher operator)', () => {
-  it('swaps the origin of a papercusp /api/mcp url, preserving path + query verbatim', () => {
+describe("applyOmpMcpUrlParams (stamp caller backend/model — fleet-launch-agent-inheritance-2026-07-03)", () => {
+  const mk = (url: string) =>
+    JSON.stringify({ mcpServers: { "papercusp-su": { url } } });
+  const urlOf = (json: string) =>
+    new URL(JSON.parse(json).mcpServers["papercusp-su"].url);
+
+  it("stamps agent + model onto a papercusp /api/mcp url", () => {
+    const out = applyOmpMcpUrlParams(
+      mk("http://127.0.0.1:3070/api/mcp?superuser=1&client=x"),
+      {
+        agent: "omp",
+        model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+      },
+    );
+    const u = urlOf(out);
+    expect(u.searchParams.get("agent")).toBe("omp");
+    expect(u.searchParams.get("model")).toBe(
+      "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+    );
+    // pre-existing params survive
+    expect(u.searchParams.get("superuser")).toBe("1");
+    expect(u.searchParams.get("client")).toBe("x");
+  });
+
+  it("omits empty/undefined params (no bare &model=)", () => {
+    const u = urlOf(
+      applyOmpMcpUrlParams(mk("http://127.0.0.1:3070/api/mcp?superuser=1"), {
+        agent: "omp",
+        model: undefined,
+      }),
+    );
+    expect(u.searchParams.get("agent")).toBe("omp");
+    expect(u.searchParams.has("model")).toBe(false);
+  });
+
+  it("leaves non-papercusp server urls untouched", () => {
+    const src = mk("http://example.com/other");
+    expect(
+      JSON.parse(applyOmpMcpUrlParams(src, { agent: "omp" })).mcpServers[
+        "papercusp-su"
+      ].url,
+    ).toBe("http://example.com/other");
+  });
+
+  it("returns the input unchanged on invalid JSON", () => {
+    expect(applyOmpMcpUrlParams("not json", { agent: "omp" })).toBe("not json");
+  });
+});
+
+describe("applyOmpOperatorOrigin (P-030 — member mcp.json follows the launcher operator)", () => {
+  it("swaps the origin of a papercusp /api/mcp url, preserving path + query verbatim", () => {
     const src = JSON.stringify({
-      mcpServers: { 'papercusp-su': { url: 'http://localhost:3070/api/mcp?superuser=1&client=x&tools=a%3Ab', headers: { Authorization: 'Bearer S' } } },
+      mcpServers: {
+        "papercusp-su": {
+          url: "http://localhost:3070/api/mcp?superuser=1&client=x&tools=a%3Ab",
+          headers: { Authorization: "Bearer S" },
+        },
+      },
     });
-    const out = JSON.parse(applyOmpOperatorOrigin(src, 'http://127.0.0.1:9071'));
-    expect(out.mcpServers['papercusp-su'].url).toBe('http://127.0.0.1:9071/api/mcp?superuser=1&client=x&tools=a%3Ab');
-    expect(out.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer S');
+    const out = JSON.parse(
+      applyOmpOperatorOrigin(src, "http://127.0.0.1:9071"),
+    );
+    expect(out.mcpServers["papercusp-su"].url).toBe(
+      "http://127.0.0.1:9071/api/mcp?superuser=1&client=x&tools=a%3Ab",
+    );
+    expect(out.mcpServers["papercusp-su"].headers.Authorization).toBe(
+      "Bearer S",
+    );
   });
 
-  it('leaves non-papercusp server URLs untouched', () => {
-    const src = JSON.stringify({ mcpServers: { other: { url: 'http://example.com/mcp' } } });
-    const out = JSON.parse(applyOmpOperatorOrigin(src, 'http://localhost:3170'));
-    expect(out.mcpServers.other.url).toBe('http://example.com/mcp');
+  it("leaves non-papercusp server URLs untouched", () => {
+    const src = JSON.stringify({
+      mcpServers: { other: { url: "http://example.com/mcp" } },
+    });
+    const out = JSON.parse(
+      applyOmpOperatorOrigin(src, "http://localhost:3170"),
+    );
+    expect(out.mcpServers.other.url).toBe("http://example.com/mcp");
   });
 
-  it('returns the input unchanged on unparseable json or a bad operator url', () => {
-    expect(applyOmpOperatorOrigin('not json', 'http://localhost:3170')).toBe('not json');
-    const src = JSON.stringify({ mcpServers: { p: { url: 'http://localhost:3070/api/mcp' } } });
-    expect(applyOmpOperatorOrigin(src, 'not-a-url')).toBe(src);
-  });
-});
-
-describe('applyOmpToolsAllowlist (weak-model-tool-tier — mcp.json URL trim)', () => {
-  it('appends ?tools= to a papercusp /api/mcp url, encoded so the server decodes it back', () => {
-    const src = JSON.stringify({ mcpServers: { 'papercusp-su': { url: 'http://localhost:3070/api/mcp?superuser=1&client=x' } } });
-    const out = JSON.parse(applyOmpToolsAllowlist(src, ['coord:orient', 'tools:find']));
-    const url = new URL(out.mcpServers['papercusp-su'].url);
-    expect(url.searchParams.get('tools')!.split(',')).toEqual(['coord:orient', 'tools:find']);
-  });
-
-  it('is idempotent — never double-appends tools= if one is already present', () => {
-    const src = JSON.stringify({ mcpServers: { p: { url: 'http://localhost:3070/api/mcp?tools=a:b' } } });
-    const out = JSON.parse(applyOmpToolsAllowlist(src, ['coord:orient']));
-    expect(out.mcpServers.p.url).toBe('http://localhost:3070/api/mcp?tools=a:b'); // untouched
-  });
-
-  it('leaves a non-papercusp server URL untouched', () => {
-    const src = JSON.stringify({ mcpServers: { other: { url: 'http://example.com/mcp' } } });
-    const out = JSON.parse(applyOmpToolsAllowlist(src, ['coord:orient']));
-    expect(out.mcpServers.other.url).toBe('http://example.com/mcp');
-  });
-
-  it('returns the input unchanged on unparseable JSON', () => {
-    expect(applyOmpToolsAllowlist('not json{', ['coord:orient'])).toBe('not json{');
+  it("returns the input unchanged on unparseable json or a bad operator url", () => {
+    expect(applyOmpOperatorOrigin("not json", "http://localhost:3170")).toBe(
+      "not json",
+    );
+    const src = JSON.stringify({
+      mcpServers: { p: { url: "http://localhost:3070/api/mcp" } },
+    });
+    expect(applyOmpOperatorOrigin(src, "not-a-url")).toBe(src);
   });
 });
 
-describe('isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)', () => {
-  it('classifies local-provider models as weak, hosted as not-weak, unknown as not-weak (safe)', () => {
-    expect(isWeakOmpModel('ollama/maxwell1500/ornith-35b:IQ3_M:xhigh')).toBe(true);
-    expect(isWeakOmpModel('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe(true); // the incident model — was frontier before P-001
-    expect(isWeakOmpModel('OLLAMA/ornith')).toBe(true); // case-insensitive
-    expect(isWeakOmpModel('lmstudio/foo')).toBe(true);
-    expect(isWeakOmpModel('anthropic/claude-opus-4-8')).toBe(false);
-    expect(isWeakOmpModel('papercusp-gateway/claude-sonnet-4-6')).toBe(false);
-    expect(isWeakOmpModel('')).toBe(false);
+describe("applyOmpToolsAllowlist (weak-model-tool-tier — mcp.json URL trim)", () => {
+  it("appends ?tools= to a papercusp /api/mcp url, encoded so the server decodes it back", () => {
+    const src = JSON.stringify({
+      mcpServers: {
+        "papercusp-su": {
+          url: "http://localhost:3070/api/mcp?superuser=1&client=x",
+        },
+      },
+    });
+    const out = JSON.parse(
+      applyOmpToolsAllowlist(src, ["coord:orient", "tools:find"]),
+    );
+    const url = new URL(out.mcpServers["papercusp-su"].url);
+    expect(url.searchParams.get("tools")!.split(",")).toEqual([
+      "coord:orient",
+      "tools:find",
+    ]);
+  });
+
+  it("is idempotent — never double-appends tools= if one is already present", () => {
+    const src = JSON.stringify({
+      mcpServers: { p: { url: "http://localhost:3070/api/mcp?tools=a:b" } },
+    });
+    const out = JSON.parse(applyOmpToolsAllowlist(src, ["coord:orient"]));
+    expect(out.mcpServers.p.url).toBe(
+      "http://localhost:3070/api/mcp?tools=a:b",
+    ); // untouched
+  });
+
+  it("leaves a non-papercusp server URL untouched", () => {
+    const src = JSON.stringify({
+      mcpServers: { other: { url: "http://example.com/mcp" } },
+    });
+    const out = JSON.parse(applyOmpToolsAllowlist(src, ["coord:orient"]));
+    expect(out.mcpServers.other.url).toBe("http://example.com/mcp");
+  });
+
+  it("returns the input unchanged on unparseable JSON", () => {
+    expect(applyOmpToolsAllowlist("not json{", ["coord:orient"])).toBe(
+      "not json{",
+    );
+  });
+});
+
+describe("isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)", () => {
+  it("classifies local-provider models as weak, hosted as not-weak, unknown as not-weak (safe)", () => {
+    expect(isWeakOmpModel("ollama/maxwell1500/ornith-35b:IQ3_M:xhigh")).toBe(
+      true,
+    );
+    expect(isWeakOmpModel("ollama-cc/maxwell1500/ornith-35b:IQ3_M")).toBe(true); // the incident model — was frontier before P-001
+    expect(isWeakOmpModel("OLLAMA/ornith")).toBe(true); // case-insensitive
+    expect(isWeakOmpModel("lmstudio/foo")).toBe(true);
+    expect(isWeakOmpModel("anthropic/claude-opus-4-8")).toBe(false);
+    expect(isWeakOmpModel("papercusp-gateway/claude-sonnet-4-6")).toBe(false);
+    expect(isWeakOmpModel("")).toBe(false);
     expect(isWeakOmpModel(null)).toBe(false);
     expect(isWeakOmpModel(undefined)).toBe(false);
   });
 
-  it('ompDefaultModel reads config.yml modelRoles.default (or null)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-ompdef-'));
+  it("ompDefaultModel reads config.yml modelRoles.default (or null)", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-ompdef-"));
     try {
-      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
-      writeFileSync(join(home, '.omp', 'agent', 'config.yml'), 'modelRoles:\n  default: ollama/ornith:fast\n');
-      expect(ompDefaultModel(home)).toBe('ollama/ornith:fast');
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(
+        join(home, ".omp", "agent", "config.yml"),
+        "modelRoles:\n  default: ollama/ornith:fast\n",
+      );
+      expect(ompDefaultModel(home)).toBe("ollama/ornith:fast");
       expect(isWeakOmpModel(ompDefaultModel(home))).toBe(true);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-    expect(ompDefaultModel(mkdtempSync(join(tmpdir(), 'psu-noomp2-')))).toBeNull();
+    expect(
+      ompDefaultModel(mkdtempSync(join(tmpdir(), "psu-noomp2-"))),
+    ).toBeNull();
   });
 });
 
-describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
+describe("OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)", () => {
   // psu-launcher.mjs is a plain node script with no TS imports, so it inlines the spine.
   // It is the inlined omp/weak-model copy of the canonical orchestrator CORE spine.
   // Any drift fails the build — edit the orchestrator source, then mirror here.
@@ -1457,88 +1993,103 @@ describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
   // became a no-op in the 2026-07-05 demand-evidence rebalance, which cut the granular
   // lock tools from the CANONICAL list too: hooks auto-lock every Edit/Write on all
   // clients. The not-contains guard stays so they can't silently creep back into either.)
-  const LOCK_TOOLS = ['locks:acquire_granular', 'locks:release_granular'];
+  const LOCK_TOOLS = ["locks:acquire_granular", "locks:release_granular"];
 
-  it('carries no manual granular lock tools (auto-acquired on Edit/Write via hooks, both spines)', () => {
+  it("carries no manual granular lock tools (auto-acquired on Edit/Write via hooks, both spines)", () => {
     for (const t of LOCK_TOOLS) {
       expect([...OMP_CORE_MCP_TOOL_NAMES]).not.toContain(t);
       expect([...CORE_MCP_TOOL_NAMES]).not.toContain(t);
     }
   });
 
-  it('includes fleet:launch-on-plan so every trimmed routing-gate client can execute the fleet route', () => {
-    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('fleet:launch-on-plan');
-    expect([...CORE_MCP_TOOL_NAMES]).toContain('fleet:launch-on-plan');
+  it("includes fleet:launch-on-plan so every trimmed routing-gate client can execute the fleet route", () => {
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("fleet:launch-on-plan");
+    expect([...CORE_MCP_TOOL_NAMES]).toContain("fleet:launch-on-plan");
   });
 
-  it('seeds work_items:release for worker handoffs instead of relying on deferred discovery', () => {
+  it("seeds work_items:release for worker handoffs instead of relying on deferred discovery", () => {
     // EI-8588: release existed server-side, but seeded worker/fleet surfaces omitted it,
     // so a member trying to return a misclaimed item could not discover/call the flat
     // MCP tool reliably from the trimmed surface.
-    expect([...CORE_MCP_TOOL_NAMES]).toContain('work_items:release');
-    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('work_items:release');
+    expect([...CORE_MCP_TOOL_NAMES]).toContain("work_items:release");
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("work_items:release");
   });
 
-  it('is identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved', () => {
+  it("is identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved", () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toEqual([...CORE_MCP_TOOL_NAMES]);
   });
 });
 
-describe('applyGithubTokenEnv (GitHub MCP plugin token)', () => {
-  const ghResult = (status: number, stdout: string): import('node:child_process').SpawnSyncReturns<string> => ({
+describe("applyGithubTokenEnv (GitHub MCP plugin token)", () => {
+  const ghResult = (
+    status: number,
+    stdout: string,
+  ): import("node:child_process").SpawnSyncReturns<string> => ({
     pid: 0,
     output: [stdout],
     stdout,
-    stderr: '',
+    stderr: "",
     status,
     signal: null,
   });
 
-  it('exports the gh token into env when unset', () => {
+  it("exports the gh token into env when unset", () => {
     const env: Record<string, string> = {};
-    applyGithubTokenEnv(env, { runGh: () => ghResult(0, 'gho_abc123\n') });
-    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('gho_abc123');
+    applyGithubTokenEnv(env, { runGh: () => ghResult(0, "gho_abc123\n") });
+    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("gho_abc123");
   });
-  it('leaves an already-set token untouched', () => {
-    const env: Record<string, string> = { GITHUB_PERSONAL_ACCESS_TOKEN: 'preset' };
-    applyGithubTokenEnv(env, { runGh: () => ghResult(0, 'gho_other') });
-    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('preset');
+  it("leaves an already-set token untouched", () => {
+    const env: Record<string, string> = {
+      GITHUB_PERSONAL_ACCESS_TOKEN: "preset",
+    };
+    applyGithubTokenEnv(env, { runGh: () => ghResult(0, "gho_other") });
+    expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("preset");
   });
-  it('fail-soft when gh errors or is logged out (env unchanged)', () => {
+  it("fail-soft when gh errors or is logged out (env unchanged)", () => {
     const env: Record<string, string> = {};
-    applyGithubTokenEnv(env, { runGh: () => ghResult(1, '') });
+    applyGithubTokenEnv(env, { runGh: () => ghResult(1, "") });
     expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
-    applyGithubTokenEnv(env, { runGh: () => { throw new Error('no gh'); } });
+    applyGithubTokenEnv(env, {
+      runGh: () => {
+        throw new Error("no gh");
+      },
+    });
     expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
   });
 });
 
-describe('psu-launcher arg parsing', () => {
-  it('recognizes --help and -h as terminal parser results without warning', () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+describe("psu-launcher arg parsing", () => {
+  it("recognizes --help and -h as terminal parser results without warning", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      expect(parseArgs(['--help', '--model=not-a-real-model'])).toMatchObject({ help: true });
-      expect(parseArgs(['-h'])).toMatchObject({ help: true });
+      expect(parseArgs(["--help", "--model=not-a-real-model"])).toMatchObject({
+        help: true,
+      });
+      expect(parseArgs(["-h"])).toMatchObject({ help: true });
       expect(spy).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('runs --help without entering the picker or launch flow', () => {
-    const launcher = join(__dirname, '..', 'scripts', 'psu-launcher.mjs');
-    const result = spawnSync(process.execPath, [launcher, '--help', '--model=not-a-real-model'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      timeout: 10_000,
-    });
+  it("runs --help without entering the picker or launch flow", () => {
+    const launcher = join(__dirname, "..", "scripts", "psu-launcher.mjs");
+    const result = spawnSync(
+      process.execPath,
+      [launcher, "--help", "--model=not-a-real-model"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(PSU_HELP_TEXT);
-    expect(result.stderr).not.toContain('unrecognized flag');
+    expect(result.stderr).not.toContain("unrecognized flag");
   });
 
-  it('defaults to the interactive picker', () => {
+  it("defaults to the interactive picker", () => {
     expect(parseArgs([])).toEqual({
       picker: true,
       resume: false,
@@ -1591,46 +2142,57 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('parses --allow-subagents / --no-subagents (owner mandate 2026-07-02); defaults null (⇒ deny)', () => {
+  it("parses --allow-subagents / --no-subagents (owner mandate 2026-07-02); defaults null (⇒ deny)", () => {
     expect(parseArgs([]).allowSubagents).toBeNull();
-    expect(parseArgs(['--allow-subagents']).allowSubagents).toBe(true);
-    expect(parseArgs(['--no-subagents']).allowSubagents).toBe(false);
+    expect(parseArgs(["--allow-subagents"]).allowSubagents).toBe(true);
+    expect(parseArgs(["--no-subagents"]).allowSubagents).toBe(false);
   });
 
-  it('parses --headless (headless-fleet-launch P-001); defaults false and implies --no-picker', () => {
+  it("parses --headless (headless-fleet-launch P-001); defaults false and implies --no-picker", () => {
     expect(parseArgs([]).headless).toBe(false);
     expect(parseArgs([]).picker).toBe(true);
-    const a = parseArgs(['--headless', '--agent=claude', '--harness=x', '--plan=p']);
+    const a = parseArgs([
+      "--headless",
+      "--agent=claude",
+      "--harness=x",
+      "--plan=p",
+    ]);
     expect(a.headless).toBe(true);
     // No terminal to prompt at — headless forces the scripted (non-picker) path.
     expect(a.picker).toBe(false);
   });
 
-  it('parses retired --brain as a tombstoned flag, not a backend-specific capability', () => {
-    expect(parseArgs(['--brain']).brain).toBe(true);
+  it("parses retired --brain as a tombstoned flag, not a backend-specific capability", () => {
+    expect(parseArgs(["--brain"]).brain).toBe(true);
     expect(parseArgs([]).brain).toBe(false);
-    const both = parseArgs(['--brain', '--model=opus']);
+    const both = parseArgs(["--brain", "--model=opus"]);
     expect(both.brain).toBe(true);
     // opus is a default-1M family → parseArgs normalizes the spec to carry [1m]
     // (owner directive 2026-07-02; see the normalizeModelSpec suite below).
-    expect(both.model).toBe('opus[1m]');
+    expect(both.model).toBe("opus[1m]");
     expect(BRAIN_TOMBSTONE_MESSAGE).toMatch(/operator\/sentinel converse/i);
   });
 
-  it('parses the scripting-escape flags', () => {
+  it("parses the scripting-escape flags", () => {
     expect(
-      parseArgs(['--no-picker', '--agent=claude', '--workspace=ws1', '--harness=papercup', '--plan=my-plan']),
+      parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--workspace=ws1",
+        "--harness=papercup",
+        "--plan=my-plan",
+      ]),
     ).toEqual({
       picker: false,
       resume: false,
       resumeId: null,
       fork: false,
-      agent: 'claude',
+      agent: "claude",
       role: null,
       feature: null,
-      workspace: 'ws1',
-      harness: 'papercup',
-      plan: 'my-plan',
+      workspace: "ws1",
+      harness: "papercup",
+      plan: "my-plan",
       noPlan: false,
       model: null,
       resumeSession: null,
@@ -1665,207 +2227,271 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('parses --resume (picker mode — no id)', () => {
-    const a = parseArgs(['--resume']);
+  it("parses --resume (picker mode — no id)", () => {
+    const a = parseArgs(["--resume"]);
     expect(a.resume).toBe(true);
     expect(a.resumeId).toBeNull();
   });
 
-  it('parses --resume=<id> (direct, skip picker)', () => {
-    const a = parseArgs(['--resume=42']);
+  it("parses --resume=<id> (direct, skip picker)", () => {
+    const a = parseArgs(["--resume=42"]);
     expect(a.resume).toBe(true);
-    expect(a.resumeId).toBe('42');
+    expect(a.resumeId).toBe("42");
   });
 
-  it('parses a bare positional id after --resume', () => {
-    const a = parseArgs(['--resume', '57']);
+  it("parses a bare positional id after --resume", () => {
+    const a = parseArgs(["--resume", "57"]);
     expect(a.resume).toBe(true);
-    expect(a.resumeId).toBe('57');
+    expect(a.resumeId).toBe("57");
   });
 
-  it('parses --no-plan', () => {
-    expect(parseArgs(['--no-picker', '--agent=omp', '--harness=x', '--no-plan']).noPlan).toBe(true);
+  it("parses --no-plan", () => {
+    expect(
+      parseArgs(["--no-picker", "--agent=omp", "--harness=x", "--no-plan"])
+        .noPlan,
+    ).toBe(true);
   });
 
-  it('parses --account (psu-account-chooser; both = and space forms; default null)', () => {
+  it("parses --account (psu-account-chooser; both = and space forms; default null)", () => {
     expect(parseArgs([]).account).toBeNull();
-    expect(parseArgs(['--account=aviynw6']).account).toBe('aviynw6');
-    expect(parseArgs(['--account', 'aviynw6']).account).toBe('aviynw6');
+    expect(parseArgs(["--account=aviynw6"]).account).toBe("aviynw6");
+    expect(parseArgs(["--account", "aviynw6"]).account).toBe("aviynw6");
     // Composable with the other launch flags + the `--` passthrough is untouched.
-    const a = parseArgs(['--no-picker', '--agent=claude', '--account', 'avi-storewolf', '--', '--verbose']);
-    expect(a.account).toBe('avi-storewolf');
-    expect(a.agent).toBe('claude');
-    expect(a.passthrough).toEqual(['--verbose']);
+    const a = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--account",
+      "avi-storewolf",
+      "--",
+      "--verbose",
+    ]);
+    expect(a.account).toBe("avi-storewolf");
+    expect(a.agent).toBe("claude");
+    expect(a.passthrough).toEqual(["--verbose"]);
   });
 
-  it('parses --profile (P-023); defaults to null', () => {
-    expect(parseArgs(['--profile=power']).profile).toBe('power');
-    expect(parseArgs(['--agent=claude']).profile).toBeNull();
+  it("parses --profile (P-023); defaults to null", () => {
+    expect(parseArgs(["--profile=power"]).profile).toBe("power");
+    expect(parseArgs(["--agent=claude"]).profile).toBeNull();
   });
 
-  it('EI-181: accepts the space-separated form of --role/--agent/--workspace/--feature/--harness/--plan (repro: `psu --role operator` used to silently resolve to null)', () => {
-    expect(parseArgs(['--role', 'operator']).role).toBe('operator');
-    expect(parseArgs(['--agent', 'claude']).agent).toBe('claude');
-    expect(parseArgs(['--workspace', 'ws1']).workspace).toBe('ws1');
-    expect(parseArgs(['--feature', 'F-123']).feature).toBe('F-123');
-    expect(parseArgs(['--harness', 'papercusp']).harness).toBe('papercusp');
-    expect(parseArgs(['--plan', 'my-plan']).plan).toBe('my-plan');
+  it("EI-181: accepts the space-separated form of --role/--agent/--workspace/--feature/--harness/--plan (repro: `psu --role operator` used to silently resolve to null)", () => {
+    expect(parseArgs(["--role", "operator"]).role).toBe("operator");
+    expect(parseArgs(["--agent", "claude"]).agent).toBe("claude");
+    expect(parseArgs(["--workspace", "ws1"]).workspace).toBe("ws1");
+    expect(parseArgs(["--feature", "F-123"]).feature).toBe("F-123");
+    expect(parseArgs(["--harness", "papercusp"]).harness).toBe("papercusp");
+    expect(parseArgs(["--plan", "my-plan"]).plan).toBe("my-plan");
     // The exact repro from the item body — the space form must be equivalent to `=`.
-    const spaceForm = parseArgs(['--no-picker', '--role', 'operator', '--agent=claude']);
-    const eqForm = parseArgs(['--no-picker', '--role=operator', '--agent=claude']);
+    const spaceForm = parseArgs([
+      "--no-picker",
+      "--role",
+      "operator",
+      "--agent=claude",
+    ]);
+    const eqForm = parseArgs([
+      "--no-picker",
+      "--role=operator",
+      "--agent=claude",
+    ]);
     expect(spaceForm.role).toBe(eqForm.role);
-    expect(spaceForm.role).toBe('operator');
+    expect(spaceForm.role).toBe("operator");
     // Composes with the `--` passthrough — the value is consumed, not treated as a flag.
-    const withPassthrough = parseArgs(['--role', 'operator', '--', '--verbose']);
-    expect(withPassthrough.role).toBe('operator');
-    expect(withPassthrough.passthrough).toEqual(['--verbose']);
+    const withPassthrough = parseArgs([
+      "--role",
+      "operator",
+      "--",
+      "--verbose",
+    ]);
+    expect(withPassthrough.role).toBe("operator");
+    expect(withPassthrough.passthrough).toEqual(["--verbose"]);
   });
 
-  it('EI-181: warns (never throws) on a genuinely unrecognized `--` flag instead of silently dropping it', () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("EI-181: warns (never throws) on a genuinely unrecognized `--` flag instead of silently dropping it", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const a = parseArgs(['--no-picker', '--agent=claude', '--totally-not-a-real-flag']);
-      expect(a.agent).toBe('claude'); // the rest of the parse is unaffected
+      const a = parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--totally-not-a-real-flag",
+      ]);
+      expect(a.agent).toBe("claude"); // the rest of the parse is unaffected
       expect(spy).toHaveBeenCalledTimes(1);
-      expect(spy.mock.calls[0][0]).toContain('--totally-not-a-real-flag');
+      expect(spy.mock.calls[0][0]).toContain("--totally-not-a-real-flag");
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('parses --context-size (WI-1282 su-context-size-variants); defaults to null', () => {
-    expect(parseArgs(['--context-size=trimmed']).contextSize).toBe('trimmed');
-    expect(parseArgs(['--context-size=full']).contextSize).toBe('full');
-    expect(parseArgs(['--agent=claude']).contextSize).toBeNull();
+  it("parses --context-size (WI-1282 su-context-size-variants); defaults to null", () => {
+    expect(parseArgs(["--context-size=trimmed"]).contextSize).toBe("trimmed");
+    expect(parseArgs(["--context-size=full"]).contextSize).toBe("full");
+    expect(parseArgs(["--agent=claude"]).contextSize).toBeNull();
   });
 
-  it('parses --yes / -y (untracked-resume confirm bypass); defaults false', () => {
-    expect(parseArgs(['--resume=x', '--yes']).yes).toBe(true);
-    expect(parseArgs(['--resume=x', '-y']).yes).toBe(true);
-    expect(parseArgs(['--resume=x']).yes).toBe(false);
+  it("parses --yes / -y (untracked-resume confirm bypass); defaults false", () => {
+    expect(parseArgs(["--resume=x", "--yes"]).yes).toBe(true);
+    expect(parseArgs(["--resume=x", "-y"]).yes).toBe(true);
+    expect(parseArgs(["--resume=x"]).yes).toBe(false);
   });
 
-  it('parses --add-dir (space + = forms, repeatable); defaults to []', () => {
+  it("parses --add-dir (space + = forms, repeatable); defaults to []", () => {
     expect(parseArgs([]).addDir).toEqual([]);
-    expect(parseArgs(['--add-dir', '/tmp/a']).addDir).toEqual(['/tmp/a']);
-    expect(parseArgs(['--add-dir=/tmp/b']).addDir).toEqual(['/tmp/b']);
+    expect(parseArgs(["--add-dir", "/tmp/a"]).addDir).toEqual(["/tmp/a"]);
+    expect(parseArgs(["--add-dir=/tmp/b"]).addDir).toEqual(["/tmp/b"]);
     // Repeatable, both forms intermixed.
-    expect(parseArgs(['--add-dir', '/x', '--add-dir=/y', '--add-dir', '/z']).addDir).toEqual(['/x', '/y', '/z']);
+    expect(
+      parseArgs(["--add-dir", "/x", "--add-dir=/y", "--add-dir", "/z"]).addDir,
+    ).toEqual(["/x", "/y", "/z"]);
     // An empty `--add-dir=` contributes nothing.
-    expect(parseArgs(['--add-dir=']).addDir).toEqual([]);
+    expect(parseArgs(["--add-dir="]).addDir).toEqual([]);
   });
 
-  it('a value after --add-dir is taken verbatim, not parsed as a psu flag', () => {
+  it("a value after --add-dir is taken verbatim, not parsed as a psu flag", () => {
     // The space-form value is consumed as the dir even if it looks flag-ish.
-    const a = parseArgs(['--add-dir', '--no-plan']);
-    expect(a.addDir).toEqual(['--no-plan']);
+    const a = parseArgs(["--add-dir", "--no-plan"]);
+    expect(a.addDir).toEqual(["--no-plan"]);
     expect(a.noPlan).toBe(false);
   });
 
-  it('--add-dir before `--` is psu-parsed; after `--` it is verbatim passthrough', () => {
-    const a = parseArgs(['--add-dir', '/early', '--', '--add-dir', '/late']);
-    expect(a.addDir).toEqual(['/early']);
-    expect(a.passthrough).toEqual(['--add-dir', '/late']);
+  it("--add-dir before `--` is psu-parsed; after `--` it is verbatim passthrough", () => {
+    const a = parseArgs(["--add-dir", "/early", "--", "--add-dir", "/late"]);
+    expect(a.addDir).toEqual(["/early"]);
+    expect(a.passthrough).toEqual(["--add-dir", "/late"]);
   });
 
-  it('parses --auto / --no-auto (fleet-auto-mode WI-1356); defaults null', () => {
+  it("parses --auto / --no-auto (fleet-auto-mode WI-1356); defaults null", () => {
     expect(parseArgs([]).auto).toBeNull();
-    expect(parseArgs(['--auto']).auto).toBe(true);
-    expect(parseArgs(['--no-auto']).auto).toBe(false);
+    expect(parseArgs(["--auto"]).auto).toBe(true);
+    expect(parseArgs(["--no-auto"]).auto).toBe(false);
     // last one wins if both are (nonsensically) passed
-    expect(parseArgs(['--auto', '--no-auto']).auto).toBe(false);
+    expect(parseArgs(["--auto", "--no-auto"]).auto).toBe(false);
   });
 
-  it('parses --mode=drain; REFUSES any other mode loudly (drain-mode P-003)', () => {
+  it("parses --mode=drain; REFUSES any other mode loudly (drain-mode P-003)", () => {
     expect(parseArgs([]).mode).toBeNull();
-    expect(parseArgs(['--mode=drain']).mode).toBe('drain');
+    expect(parseArgs(["--mode=drain"]).mode).toBe("drain");
     // A typo'd mode must fail the launch, not silently launch a plain session.
-    expect(() => parseArgs(['--mode=burndown'])).toThrow(/not recognized/);
-    expect(() => parseArgs(['--mode='])).toThrow(/not recognized/);
+    expect(() => parseArgs(["--mode=burndown"])).toThrow(/not recognized/);
+    expect(() => parseArgs(["--mode="])).toThrow(/not recognized/);
   });
 
-  it('parses and bounds the propagated DRAIN subject/instructions payload', () => {
+  it("parses and bounds the propagated DRAIN subject/instructions payload", () => {
     const args = parseArgs([
-      '--mode=drain',
-      '--mode-subject=  bug-drain  ',
-      '--mode-instructions=  checkpoint incidental defects  ',
-      '--mode-owner-directed',
+      "--mode=drain",
+      "--mode-subject=  bug-drain  ",
+      "--mode-instructions=  checkpoint incidental defects  ",
+      "--mode-owner-directed",
     ]);
-    expect(args.modeSubject).toBe('  bug-drain  ');
-    expect(args.modeInstructions).toBe('  checkpoint incidental defects  ');
+    expect(args.modeSubject).toBe("  bug-drain  ");
+    expect(args.modeInstructions).toBe("  checkpoint incidental defects  ");
     expect(args.modeOwnerDirected).toBe(true);
     expect(launchModeFromArgs(args)).toEqual({
-      mode: 'drain',
-      subject: 'bug-drain',
-      instructions: 'checkpoint incidental defects',
+      mode: "drain",
+      subject: "bug-drain",
+      instructions: "checkpoint incidental defects",
       ownerDirected: true,
     });
     expect(
       launchModeFromArgs({
-        mode: 'drain',
-        modeSubject: ` ${'s'.repeat(240)} `,
-        modeInstructions: ` ${'i'.repeat(540)} `,
+        mode: "drain",
+        modeSubject: ` ${"s".repeat(240)} `,
+        modeInstructions: ` ${"i".repeat(540)} `,
       }),
     ).toEqual({
-      mode: 'drain',
-      subject: 's'.repeat(200),
-      instructions: 'i'.repeat(500),
+      mode: "drain",
+      subject: "s".repeat(200),
+      instructions: "i".repeat(500),
       ownerDirected: false,
     });
   });
 
-  it('drain-mode P-003: DRAIN implies AUTO — effectiveAutoMode true even against --no-auto', () => {
-    expect(effectiveAutoMode(parseArgs(['--mode=drain']))).toBe(true);
+  it("drain-mode P-003: DRAIN implies AUTO — effectiveAutoMode true even against --no-auto", () => {
+    expect(effectiveAutoMode(parseArgs(["--mode=drain"]))).toBe(true);
     // Not overridable: a non-auto drain is a contradiction.
-    expect(effectiveAutoMode(parseArgs(['--mode=drain', '--no-auto']))).toBe(true);
+    expect(effectiveAutoMode(parseArgs(["--mode=drain", "--no-auto"]))).toBe(
+      true,
+    );
     // Baseline unchanged without the flag.
-    expect(effectiveAutoMode(parseArgs(['--no-auto']))).toBe(false);
+    expect(effectiveAutoMode(parseArgs(["--no-auto"]))).toBe(false);
     expect(effectiveAutoMode(parseArgs([]))).toBe(false);
   });
 
-  it('parses --fork / --fork-session (resume-time branch); defaults false', () => {
-    expect(parseArgs(['--resume=42', '--fork']).fork).toBe(true);
-    expect(parseArgs(['--resume=42', '--fork-session']).fork).toBe(true);
-    expect(parseArgs(['--resume=42']).fork).toBe(false);
+  it("parses --fork / --fork-session (resume-time branch); defaults false", () => {
+    expect(parseArgs(["--resume=42", "--fork"]).fork).toBe(true);
+    expect(parseArgs(["--resume=42", "--fork-session"]).fork).toBe(true);
+    expect(parseArgs(["--resume=42"]).fork).toBe(false);
   });
 
-  it('collects everything after a literal `--` as verbatim passthrough', () => {
-    const a = parseArgs(['--resume=42', '--', '--add-dir', '/tmp', '--foo=bar']);
+  it("collects everything after a literal `--` as verbatim passthrough", () => {
+    const a = parseArgs([
+      "--resume=42",
+      "--",
+      "--add-dir",
+      "/tmp",
+      "--foo=bar",
+    ]);
     expect(a.resume).toBe(true);
-    expect(a.resumeId).toBe('42');
-    expect(a.passthrough).toEqual(['--add-dir', '/tmp', '--foo=bar']);
+    expect(a.resumeId).toBe("42");
+    expect(a.passthrough).toEqual(["--add-dir", "/tmp", "--foo=bar"]);
   });
 
-  it('does NOT parse psu flags that appear after `--` — they are forwarded', () => {
+  it("does NOT parse psu flags that appear after `--` — they are forwarded", () => {
     // `--no-picker` past the `--` is the backend CLI's to interpret, not psu's.
-    const a = parseArgs(['--resume=42', '--', '--no-picker']);
+    const a = parseArgs(["--resume=42", "--", "--no-picker"]);
     expect(a.picker).toBe(true);
-    expect(a.passthrough).toEqual(['--no-picker']);
+    expect(a.passthrough).toEqual(["--no-picker"]);
   });
 
-  it('resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)', () => {
-    expect(resumeArgsFor({ agent: 'claude', cwd: '/x' })).toEqual({
-      bin: 'claude',
+  it("resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)", () => {
+    expect(resumeArgsFor({ agent: "claude", cwd: "/x" })).toEqual({
+      bin: "claude",
       // Subagent deny is re-armed by DEFAULT on every claude resume (owner mandate 2026-07-02).
-      args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG],
+      args: [
+        "--continue",
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+        NO_SUBAGENTS_DENY_FLAG,
+        OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      ],
     });
     // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
     // `--no-lsp` is present because omp CLI flags do NOT persist into a resume,
     // so the native-lsp gate must be re-applied every time (P-023/D-015). With
     // no model spec the tier term fails closed — see the dedicated block below.
-    expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' })).toEqual({
-      bin: 'omp',
-      args: ['-r', 'thr-1', '--approval-mode', 'yolo', '--no-lsp'],
+    expect(
+      resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }),
+    ).toEqual({
+      bin: "omp",
+      args: ["-r", "thr-1", "--approval-mode", "yolo", "--no-lsp"],
     });
-    expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: null }, { coordExtPath: '/h/.papercusp/papercusp-coord.ts' })).toEqual({
-      bin: 'omp',
-      args: ['-c', '--approval-mode', 'yolo', '-e', '/h/.papercusp/papercusp-coord.ts', '--no-lsp'],
+    expect(
+      resumeArgsFor(
+        { agent: "omp", cwd: "/x", ompThreadId: null },
+        { coordExtPath: "/h/.papercusp/papercusp-coord.ts" },
+      ),
+    ).toEqual({
+      bin: "omp",
+      args: [
+        "-c",
+        "--approval-mode",
+        "yolo",
+        "-e",
+        "/h/.papercusp/papercusp-coord.ts",
+        "--no-lsp",
+      ],
     });
-    expect(resumeArgsFor({ agent: 'codex', cwd: '/x' })).toEqual({
-      bin: 'codex',
-      args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', '--last'],
+    expect(resumeArgsFor({ agent: "codex", cwd: "/x" })).toEqual({
+      bin: "codex",
+      args: [
+        "--dangerously-bypass-hook-trust",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "resume",
+        "--last",
+      ],
     });
-    expect(() => resumeArgsFor({ agent: 'gemini', cwd: '/x' })).toThrow();
+    expect(() => resumeArgsFor({ agent: "gemini", cwd: "/x" })).toThrow();
   });
 
   /**
@@ -1881,7 +2507,7 @@ describe('psu-launcher arg parsing', () => {
    * reverted — unlike the structural guards in omp-native-lsp-gate.test.ts,
    * which can only read the launcher's source.
    */
-  describe('resumeArgsFor re-applies the omp native-lsp gate (P-023)', () => {
+  describe("resumeArgsFor re-applies the omp native-lsp gate (P-023)", () => {
     // psu-launcher.mjs is untyped JS, so TS infers resumeArgsFor's options as
     // `{ model?: null }` from its `model = null` default — a string spec, which
     // is the real runtime contract, does not fit. Cast once at the boundary
@@ -1889,614 +2515,965 @@ describe('psu-launcher arg parsing', () => {
     // baseline gate and a green-checkpoint leg, so new errors in this file fail
     // the gate even though the file carries a large recorded baseline.
     type ResumeOpts = Parameters<typeof resumeArgsFor>[1];
-    const withModel = (model: string | null) => ({ model }) as unknown as ResumeOpts;
+    const withModel = (model: string | null) =>
+      ({ model }) as unknown as ResumeOpts;
 
     const resumeOmp = (model: string | null) =>
-      resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' }, withModel(model)).args;
+      resumeArgsFor(
+        { agent: "omp", cwd: "/x", ompThreadId: "thr-1" },
+        withModel(model),
+      ).args;
 
-    it('a LOCAL model STRIPS the builtin — the case the hole exposed', () => {
-      for (const model of ['ornith', 'ollama/llama3', 'ornith:fast', 'ornith[1m]']) {
-        expect(resumeOmp(model)).toContain('--no-lsp');
+    it("a LOCAL model STRIPS the builtin — the case the hole exposed", () => {
+      for (const model of [
+        "ornith",
+        "ollama/llama3",
+        "ornith:fast",
+        "ornith[1m]",
+      ]) {
+        expect(resumeOmp(model)).toContain("--no-lsp");
       }
     });
 
-    it('an UNKNOWN model strips too — omp would fall back to its local default', () => {
+    it("an UNKNOWN model strips too — omp would fall back to its local default", () => {
       // Fail-closed. `psu --resume` without an explicit --model is the common
       // case, and "we were not told" is not evidence the model is safe.
-      expect(resumeOmp(null)).toContain('--no-lsp');
+      expect(resumeOmp(null)).toContain("--no-lsp");
     });
 
-    it('a CLOUD model KEEPS it — proving the gate can also say yes', () => {
+    it("a CLOUD model KEEPS it — proving the gate can also say yes", () => {
       // Without this the block above would pass just as well against a branch
       // that hard-coded '--no-lsp' unconditionally, which is not the contract.
-      for (const model of ['sonnet:medium', 'gpt-5.5:high', 'fable[1m]']) {
-        expect(resumeOmp(model)).not.toContain('--no-lsp');
+      for (const model of ["sonnet:medium", "gpt-5.5:high", "fable[1m]"]) {
+        expect(resumeOmp(model)).not.toContain("--no-lsp");
       }
     });
 
-    it('non-omp resumes never carry the flag — the builtin is omp-only', () => {
+    it("non-omp resumes never carry the flag — the builtin is omp-only", () => {
       expect(
-        resumeArgsFor({ agent: 'claude', cwd: '/x' }, withModel('ornith')).args,
-      ).not.toContain('--no-lsp');
+        resumeArgsFor({ agent: "claude", cwd: "/x" }, withModel("ornith")).args,
+      ).not.toContain("--no-lsp");
       expect(
-        resumeArgsFor({ agent: 'codex', cwd: '/x' }, withModel('ornith')).args,
-      ).not.toContain('--no-lsp');
+        resumeArgsFor({ agent: "codex", cwd: "/x" }, withModel("ornith")).args,
+      ).not.toContain("--no-lsp");
     });
   });
 
-  it('resumeArgsFor uses precise resume-by-id when a native sessionId is known', () => {
+  it("resumeArgsFor uses precise resume-by-id when a native sessionId is known", () => {
     // Store-found (untracked) sessions carry the agent's native id → resume EXACTLY it.
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+    expect(
+      resumeArgsFor({ agent: "claude", sessionId: "uuid-1" }).args,
+    ).toEqual([
+      "--resume",
+      "uuid-1",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
-    expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', 'uuid-2',
-    ]);
+    expect(resumeArgsFor({ agent: "codex", sessionId: "uuid-2" }).args).toEqual(
+      [
+        "--dangerously-bypass-hook-trust",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "resume",
+        "uuid-2",
+      ],
+    );
   });
 
-  it('resumeArgsFor appends --fork-session for a claude fork (branch, leave the original)', () => {
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { fork: true }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session',
+  it("resumeArgsFor appends --fork-session for a claude fork (branch, leave the original)", () => {
+    expect(
+      resumeArgsFor({ agent: "claude", sessionId: "uuid-1" }, { fork: true })
+        .args,
+    ).toEqual([
+      "--resume",
+      "uuid-1",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      "--fork-session",
     ]);
     // Fork also composes with the most-recent (--continue) resume.
-    expect(resumeArgsFor({ agent: 'claude' }, { fork: true }).args).toEqual([
-      '--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session',
+    expect(resumeArgsFor({ agent: "claude" }, { fork: true }).args).toEqual([
+      "--continue",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      "--fork-session",
     ]);
   });
 
-  it('resumeArgsFor maps Codex --fork to native codex fork, and still refuses OMP', () => {
-    expect(() => resumeArgsFor({ agent: 'omp', ompThreadId: 't' }, { fork: true })).toThrow(/launch-context/);
-    expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }, { fork: true }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'fork', 'uuid-2',
+  it("resumeArgsFor maps Codex --fork to native codex fork, and still refuses OMP", () => {
+    expect(() =>
+      resumeArgsFor({ agent: "omp", ompThreadId: "t" }, { fork: true }),
+    ).toThrow(/launch-context/);
+    expect(
+      resumeArgsFor({ agent: "codex", sessionId: "uuid-2" }, { fork: true })
+        .args,
+    ).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "fork",
+      "uuid-2",
     ]);
-    expect(resumeArgsFor({ agent: 'codex' }, { fork: true }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'fork', '--last',
+    expect(resumeArgsFor({ agent: "codex" }, { fork: true }).args).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "fork",
+      "--last",
     ]);
   });
 
-  it('forkUnsupportedMessage documents the safe non-native fallback for OMP', () => {
-    expect(forkUnsupportedMessage('omp')).toContain('psu --agent=omp --launch-context=<brief.md>');
-    expect(forkUnsupportedMessage('omp')).toContain('will not silently append');
+  it("forkUnsupportedMessage documents the safe non-native fallback for OMP", () => {
+    expect(forkUnsupportedMessage("omp")).toContain(
+      "psu --agent=omp --launch-context=<brief.md>",
+    );
+    expect(forkUnsupportedMessage("omp")).toContain("will not silently append");
   });
 
-  it('resumeArgsFor forces the fork id via --session-id ONLY alongside --fork-session (tracked fork)', () => {
+  it("resumeArgsFor forces the fork id via --session-id ONLY alongside --fork-session (tracked fork)", () => {
     // The plain --session-id/--resume conflict is lifted by --fork-session, so the
     // trio is valid — this is how launchTrackedFork pins the fork to a psu-minted id.
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'forked' }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session', '--session-id', 'forked',
+    expect(
+      resumeArgsFor(
+        { agent: "claude", sessionId: "orig" },
+        { fork: true, forkSessionId: "forked" },
+      ).args,
+    ).toEqual([
+      "--resume",
+      "orig",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      "--fork-session",
+      "--session-id",
+      "forked",
     ]);
     // forkSessionId WITHOUT fork is ignored (no --fork-session ⇒ --session-id would conflict with --resume).
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { forkSessionId: 'forked' }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+    expect(
+      resumeArgsFor(
+        { agent: "claude", sessionId: "orig" },
+        { forkSessionId: "forked" },
+      ).args,
+    ).toEqual([
+      "--resume",
+      "orig",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
 
-  it('addDirArgs maps to each backend native flag (claude/codex), [] for omp; uses the greed-safe = form', () => {
-    expect(addDirArgs('claude', ['/a', '/b'])).toEqual(['--add-dir=/a', '--add-dir=/b']);
-    expect(addDirArgs('codex', ['/a'])).toEqual(['--add-dir=/a']);
-    expect(addDirArgs('omp', ['/a'])).toEqual([]); // omp has no --add-dir
-    expect(addDirArgs('claude', [])).toEqual([]);
-    expect(addDirArgs('gemini', ['/a'])).toEqual([]); // unknown backend
+  it("addDirArgs maps to each backend native flag (claude/codex), [] for omp; uses the greed-safe = form", () => {
+    expect(addDirArgs("claude", ["/a", "/b"])).toEqual([
+      "--add-dir=/a",
+      "--add-dir=/b",
+    ]);
+    expect(addDirArgs("codex", ["/a"])).toEqual(["--add-dir=/a"]);
+    expect(addDirArgs("omp", ["/a"])).toEqual([]); // omp has no --add-dir
+    expect(addDirArgs("claude", [])).toEqual([]);
+    expect(addDirArgs("gemini", ["/a"])).toEqual([]); // unknown backend
   });
 
-  it('resumeArgsFor threads --add-dir into each backend at the right position', () => {
+  it("resumeArgsFor threads --add-dir into each backend at the right position", () => {
     // claude: appended after the resume/permission flags.
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
-      '--resume', 'u', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--add-dir=/d',
+    expect(
+      resumeArgsFor({ agent: "claude", sessionId: "u" }, { addDir: ["/d"] })
+        .args,
+    ).toEqual([
+      "--resume",
+      "u",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      "--add-dir=/d",
     ]);
     // claude fork: --add-dir comes after the fork flags.
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'f', addDir: ['/d'] }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--fork-session', '--session-id', 'f', '--add-dir=/d',
+    expect(
+      resumeArgsFor(
+        { agent: "claude", sessionId: "orig" },
+        { fork: true, forkSessionId: "f", addDir: ["/d"] },
+      ).args,
+    ).toEqual([
+      "--resume",
+      "orig",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      "--fork-session",
+      "--session-id",
+      "f",
+      "--add-dir=/d",
     ]);
     // codex: --add-dir is a TOP-LEVEL option, so it must precede the `resume` subcommand.
-    expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--add-dir=/d', 'resume', 'u',
+    expect(
+      resumeArgsFor({ agent: "codex", sessionId: "u" }, { addDir: ["/d"] })
+        .args,
+    ).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--add-dir=/d",
+      "resume",
+      "u",
     ]);
-    expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true, addDir: ['/d'] }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--add-dir=/d', 'fork', 'u',
+    expect(
+      resumeArgsFor(
+        { agent: "codex", sessionId: "u" },
+        { fork: true, addDir: ["/d"] },
+      ).args,
+    ).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--add-dir=/d",
+      "fork",
+      "u",
     ]);
   });
 
-  it('forkBootstrapBody carries the original workspace/plan + cwd, harness null, agent claude', () => {
+  it("forkBootstrapBody carries the original workspace/plan + cwd, harness null, agent claude", () => {
     expect(
-      forkBootstrapBody({ agent: 'claude', sessionId: 'orig', coordOwnerId: 'su-1', id: 7, workspaceId: 'ws9', planSlug: 'my-plan', cwd: '/repo' }),
-    ).toEqual({ agent: 'claude', workspace: 'ws9', harness_slug: null, plan_slug: 'my-plan', cwd: '/repo' });
+      forkBootstrapBody({
+        agent: "claude",
+        sessionId: "orig",
+        coordOwnerId: "su-1",
+        id: 7,
+        workspaceId: "ws9",
+        planSlug: "my-plan",
+        cwd: "/repo",
+      }),
+    ).toEqual({
+      agent: "claude",
+      workspace: "ws9",
+      harness_slug: null,
+      plan_slug: "my-plan",
+      cwd: "/repo",
+    });
     // Missing optional fields collapse to null.
-    expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' })).toEqual({
-      agent: 'claude', workspace: null, harness_slug: null, plan_slug: null, cwd: '/repo',
+    expect(forkBootstrapBody({ agent: "claude", cwd: "/repo" })).toEqual({
+      agent: "claude",
+      workspace: null,
+      harness_slug: null,
+      plan_slug: null,
+      cwd: "/repo",
     });
   });
 
-  it('forkBootstrapBody folds a chosen account so the server re-pins the gateway (byte-identical when omitted)', () => {
+  it("forkBootstrapBody folds a chosen account so the server re-pins the gateway (byte-identical when omitted)", () => {
     // A tracked fork mints a fresh session, so the account pin is resolved
     // server-side (resolveAccountPin) — the launcher only forwards the chosen id.
-    expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, 'aviynw6')).toEqual({
-      agent: 'claude', workspace: null, harness_slug: null, plan_slug: null, cwd: '/repo', account: 'aviynw6',
+    expect(
+      forkBootstrapBody({ agent: "claude", cwd: "/repo" }, "aviynw6"),
+    ).toEqual({
+      agent: "claude",
+      workspace: null,
+      harness_slug: null,
+      plan_slug: null,
+      cwd: "/repo",
+      account: "aviynw6",
     });
     // No account → NO `account` key at all (byte-identical to the pre-account body).
-    expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' }, null)).not.toHaveProperty('account');
+    expect(
+      forkBootstrapBody({ agent: "claude", cwd: "/repo" }, null),
+    ).not.toHaveProperty("account");
   });
 
-  it('fork fallback preserves the complete route decision for config-carried backends', () => {
-    expect(forkFallbackAccountRoute({
-      mode: 'pin',
-      id: 'codex-main',
-      provider: 'codex',
-      env: { PAPERCUSP_ACCOUNT_ID: 'codex-main' },
-      notice: 'pinned',
-    })).toMatchObject({
-      mode: 'pin',
-      id: 'codex-main',
-      provider: 'codex',
-      env: { PAPERCUSP_ACCOUNT_ID: 'codex-main' },
+  it("fork fallback preserves the complete route decision for config-carried backends", () => {
+    expect(
+      forkFallbackAccountRoute({
+        mode: "pin",
+        id: "codex-main",
+        provider: "codex",
+        env: { PAPERCUSP_ACCOUNT_ID: "codex-main" },
+        notice: "pinned",
+      }),
+    ).toMatchObject({
+      mode: "pin",
+      id: "codex-main",
+      provider: "codex",
+      env: { PAPERCUSP_ACCOUNT_ID: "codex-main" },
     });
-    expect(forkFallbackAccountRoute({ mode: 'auto', forward: 'auto', env: {}, notice: null }))
-      .toMatchObject({ mode: 'auto', forward: 'auto', env: {} });
-    expect(forkFallbackAccountRoute({ mode: 'default', id: null, env: defaultAccountEnv(), notice: null }))
-      .toMatchObject({ mode: 'default', id: null, env: defaultAccountEnv() });
+    expect(
+      forkFallbackAccountRoute({
+        mode: "auto",
+        forward: "auto",
+        env: {},
+        notice: null,
+      }),
+    ).toMatchObject({ mode: "auto", forward: "auto", env: {} });
+    expect(
+      forkFallbackAccountRoute({
+        mode: "default",
+        id: null,
+        env: defaultAccountEnv(),
+        notice: null,
+      }),
+    ).toMatchObject({ mode: "default", id: null, env: defaultAccountEnv() });
   });
 
-  it('freshSuBootstrapBody forwards launch_context so Codex can fold it into AGENTS.md', () => {
+  it("freshSuBootstrapBody forwards launch_context so Codex can fold it into AGENTS.md", () => {
     const body = freshSuBootstrapBody(
-      { agent: 'codex', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      { profile: 'engineer', account: 'codex-main', launchContext: '/tmp/kickoff.md' },
+      { agent: "codex", workspace: "ws1", harness: "h1", plan: "p1" },
+      {
+        profile: "engineer",
+        account: "codex-main",
+        launchContext: "/tmp/kickoff.md",
+      },
     );
     expect(body).toMatchObject({
-      agent: 'codex',
-      workspace: 'ws1',
-      harness_slug: 'h1',
-      plan_slug: 'p1',
-      profile: 'engineer',
-      account: 'codex-main',
-      launch_context: '/tmp/kickoff.md',
+      agent: "codex",
+      workspace: "ws1",
+      harness_slug: "h1",
+      plan_slug: "p1",
+      profile: "engineer",
+      account: "codex-main",
+      launch_context: "/tmp/kickoff.md",
     });
   });
 
-  it('freshSuBootstrapBody forwards --label so bootstrap-su stamps adv_sessions.label (docs-agent reuse)', () => {
+  it("freshSuBootstrapBody forwards --label so bootstrap-su stamps adv_sessions.label (docs-agent reuse)", () => {
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: null, plan: null },
-      { label: 'docs-tutor' },
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
+      { label: "docs-tutor" },
     );
-    expect(body.label).toBe('docs-tutor');
+    expect(body.label).toBe("docs-tutor");
     // omitted when not passed (no null noise on the wire)
-    const noLabel = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, {});
-    expect('label' in noLabel).toBe(false);
+    const noLabel = freshSuBootstrapBody(
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
+      {},
+    );
+    expect("label" in noLabel).toBe(false);
   });
 
-  it('launchesOnSuTier/suRoleFor route ONLY su + the allow-listed roles to the su flow (EI-996)', () => {
+  it("launchesOnSuTier/suRoleFor route ONLY su + the allow-listed roles to the su flow (EI-996)", () => {
     // This predicate is the privilege boundary: a role it admits launches with
     // the SUPERUSER MCP tier instead of a role-scoped one. Everything not on the
     // list must still go to roleFlow.
-    expect(launchesOnSuTier('su')).toBe(true);
-    expect(launchesOnSuTier('planner')).toBe(true);
-    for (const role of ['worker', 'scoper', 'reviewer', 'architect', 'validator', 'documenter']) {
-      expect(launchesOnSuTier(role), `${role} must NOT get the su tier`).toBe(false);
+    expect(launchesOnSuTier("su")).toBe(true);
+    expect(launchesOnSuTier("planner")).toBe(true);
+    for (const role of [
+      "worker",
+      "scoper",
+      "reviewer",
+      "architect",
+      "validator",
+      "documenter",
+    ]) {
+      expect(launchesOnSuTier(role), `${role} must NOT get the su tier`).toBe(
+        false,
+      );
       expect(suRoleFor(role)).toBeNull();
     }
     // 'su' takes the same path but carries NO addendum — it is not a su-tier ROLE.
-    expect(suRoleFor('su')).toBeNull();
-    expect(suRoleFor('planner')).toBe('planner');
+    expect(suRoleFor("su")).toBeNull();
+    expect(suRoleFor("planner")).toBe("planner");
   });
 
-  it('freshSuBootstrapBody forwards a su-tier role NAME as su_role, never addendum prose (EI-996)', () => {
+  it("freshSuBootstrapBody forwards a su-tier role NAME as su_role, never addendum prose (EI-996)", () => {
     // Owner ask 2026-06-17: a planner should be a full su agent + a few role
     // lines. The launcher sends the NAME; bootstrap-su resolves the text from
     // prompts/su-role-planner.addendum.md. The wire must never carry the prose
     // itself — this endpoint mints a SUPERUSER-tier prompt, so a free-text field
     // would be an open prompt-injection surface for any loopback caller.
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: null, plan: null },
-      { suRole: 'planner' },
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
+      { suRole: "planner" },
     );
-    expect(body.su_role).toBe('planner');
-    expect('role_addendum' in body).toBe(false);
+    expect(body.su_role).toBe("planner");
+    expect("role_addendum" in body).toBe(false);
     // A plain su launch stays byte-identical on the wire — no null noise.
     const plainSu = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: null, plan: null },
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
       { suRole: null },
     );
-    expect('su_role' in plainSu).toBe(false);
+    expect("su_role" in plainSu).toBe(false);
   });
 
-  it('freshSuBootstrapBody forwards --owner-id so bootstrap-su pre-pins the coord owner (WI-5002/EI-13277 programmatic-spawner contract)', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--no-plan', '--headless', '--yes', '--owner-id=su-sweep-cell-r1-abc123']);
-    expect(args.ownerId).toBe('su-sweep-cell-r1-abc123');
-    const body = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, args);
-    expect(body.owner_id).toBe('su-sweep-cell-r1-abc123');
-    expect(body.launch_argv).toContain('--owner-id=su-sweep-cell-r1-abc123');
-    // omitted when not passed (no null noise on the wire; server mints as today)
-    const noOwner = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, parseArgs(['--no-picker', '--agent=claude', '--no-plan']));
-    expect('owner_id' in noOwner).toBe(false);
-  });
-
-  it('freshSuBootstrapBody records the reconstructed psu launch_argv (WI-1343)', () => {
+  it("freshSuBootstrapBody forwards --owner-id so bootstrap-su pre-pins the coord owner (WI-5002/EI-13277 programmatic-spawner contract)", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--no-plan",
+      "--headless",
+      "--yes",
+      "--owner-id=su-sweep-cell-r1-abc123",
+    ]);
+    expect(args.ownerId).toBe("su-sweep-cell-r1-abc123");
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
+      args,
     );
-    expect(body.launch_argv).toEqual(['psu', '--no-picker', '--agent=claude', '--workspace=ws1', '--harness=h1', '--plan=p1']);
+    expect(body.owner_id).toBe("su-sweep-cell-r1-abc123");
+    expect(body.launch_argv).toContain("--owner-id=su-sweep-cell-r1-abc123");
+    // omitted when not passed (no null noise on the wire; server mints as today)
+    const noOwner = freshSuBootstrapBody(
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
+      parseArgs(["--no-picker", "--agent=claude", "--no-plan"]),
+    );
+    expect("owner_id" in noOwner).toBe(false);
   });
 
-  it('freshSuBootstrapBody sets auto:true for a --fleet launch, and threads --fleet into launch_argv (WI-1343/WI-1356)', () => {
+  it("freshSuBootstrapBody records the reconstructed psu launch_argv (WI-1343)", () => {
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: null },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--no-plan', '--fleet=shared-hive-testing']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs(["--no-picker", "--agent=claude", "--harness=h1", "--plan=p1"]),
+    );
+    expect(body.launch_argv).toEqual([
+      "psu",
+      "--no-picker",
+      "--agent=claude",
+      "--workspace=ws1",
+      "--harness=h1",
+      "--plan=p1",
+    ]);
+  });
+
+  it("freshSuBootstrapBody sets auto:true for a --fleet launch, and threads --fleet into launch_argv (WI-1343/WI-1356)", () => {
+    const body = freshSuBootstrapBody(
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: null },
+      parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--harness=h1",
+        "--no-plan",
+        "--fleet=shared-hive-testing",
+      ]),
     );
     expect(body.auto).toBe(true);
-    expect(body.launch_argv).toContain('--fleet=shared-hive-testing');
-    expect(body.launch_argv).toContain('--auto');
-    expect(body.launch_argv).toContain('--no-plan');
+    expect(body.launch_argv).toContain("--fleet=shared-hive-testing");
+    expect(body.launch_argv).toContain("--auto");
+    expect(body.launch_argv).toContain("--no-plan");
   });
 
-  it('freshSuBootstrapBody forwards explicit --carry to bootstrap and records it (EI-21220636391634536)', () => {
+  it("freshSuBootstrapBody forwards explicit --carry to bootstrap and records it (EI-21220636391634536)", () => {
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=f1', '--carry=cold']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--harness=h1",
+        "--plan=p1",
+        "--fleet=f1",
+        "--carry=cold",
+      ]),
     );
-    expect(body.carry).toBe('cold');
-    expect(body.launch_argv).toContain('--carry=cold');
+    expect(body.carry).toBe("cold");
+    expect(body.launch_argv).toContain("--carry=cold");
 
     const plain = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs(["--no-picker", "--agent=claude", "--harness=h1", "--plan=p1"]),
     );
-    expect(plain).not.toHaveProperty('carry');
+    expect(plain).not.toHaveProperty("carry");
   });
 
-  it('freshSuBootstrapBody omits auto for a non-fleet launch, and honours --no-auto on a fleet launch (WI-1356)', () => {
+  it("freshSuBootstrapBody omits auto for a non-fleet launch, and honours --no-auto on a fleet launch (WI-1356)", () => {
     const plain = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs(["--no-picker", "--agent=claude", "--harness=h1", "--plan=p1"]),
     );
-    expect(plain).not.toHaveProperty('auto');
-    expect(plain.launch_argv).not.toContain('--auto');
+    expect(plain).not.toHaveProperty("auto");
+    expect(plain.launch_argv).not.toContain("--auto");
 
     const optedOut = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=x', '--no-auto']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--harness=h1",
+        "--plan=p1",
+        "--fleet=x",
+        "--no-auto",
+      ]),
     );
-    expect(optedOut).not.toHaveProperty('auto');
+    expect(optedOut).not.toHaveProperty("auto");
   });
 
-  it('drain-mode P-003: freshSuBootstrapBody forwards mode:drain + auto:true, and records --mode= in launch_argv', () => {
+  it("drain-mode P-003: freshSuBootstrapBody forwards mode:drain + auto:true, and records --mode= in launch_argv", () => {
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--mode=drain']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--harness=h1",
+        "--plan=p1",
+        "--mode=drain",
+      ]),
     );
-    expect(body.mode).toBe('drain');
+    expect(body.mode).toBe("drain");
     expect(body.auto).toBe(true); // DRAIN implies AUTO — server double-enforces
-    expect(body.launch_argv).toContain('--mode=drain');
-    expect(body.launch_argv).toContain('--auto');
+    expect(body.launch_argv).toContain("--mode=drain");
+    expect(body.launch_argv).toContain("--auto");
 
     // No mode ⇒ the field is absent (byte-identical pre-drain body).
     const plain = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs(["--no-picker", "--agent=claude", "--harness=h1", "--plan=p1"]),
     );
-    expect(plain).not.toHaveProperty('mode');
+    expect(plain).not.toHaveProperty("mode");
   });
 
-  it('propagates bounded DRAIN scope fields through fresh argv/body and tracked fork body', () => {
+  it("propagates bounded DRAIN scope fields through fresh argv/body and tracked fork body", () => {
     const args = parseArgs([
-      '--no-picker',
-      '--agent=claude',
-      '--harness=h1',
-      '--plan=p1',
-      '--mode=drain',
-      '--mode-subject=bug-drain',
-      '--mode-instructions=checkpoint incidental defects',
-      '--mode-owner-directed',
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--plan=p1",
+      "--mode=drain",
+      "--mode-subject=bug-drain",
+      "--mode-instructions=checkpoint incidental defects",
+      "--mode-owner-directed",
     ]);
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
       args,
     );
     expect(body).toMatchObject({
-      mode: 'drain',
-      mode_subject: 'bug-drain',
-      mode_instructions: 'checkpoint incidental defects',
+      mode: "drain",
+      mode_subject: "bug-drain",
+      mode_instructions: "checkpoint incidental defects",
       mode_owner_directed: true,
     });
-    expect(body.launch_argv).toEqual(expect.arrayContaining([
-      '--mode=drain',
-      '--mode-subject=bug-drain',
-      '--mode-instructions=checkpoint incidental defects',
-      '--mode-owner-directed',
-    ]));
+    expect(body.launch_argv).toEqual(
+      expect.arrayContaining([
+        "--mode=drain",
+        "--mode-subject=bug-drain",
+        "--mode-instructions=checkpoint incidental defects",
+        "--mode-owner-directed",
+      ]),
+    );
     expect(
       forkBootstrapBody(
-        { agent: 'claude', workspaceId: 'ws1', planSlug: 'p1', cwd: '/repo' },
+        { agent: "claude", workspaceId: "ws1", planSlug: "p1", cwd: "/repo" },
         null,
         launchModeFromArgs(args),
       ),
     ).toMatchObject({
-      mode: 'drain',
-      mode_subject: 'bug-drain',
-      mode_instructions: 'checkpoint incidental defects',
+      mode: "drain",
+      mode_subject: "bug-drain",
+      mode_instructions: "checkpoint incidental defects",
       mode_owner_directed: true,
     });
   });
 
-  it('agent-allocation P-005: parseArgs takes --seat=<ref>; freshSuBootstrapBody forwards seat + records --seat= in launch_argv', () => {
+  it("agent-allocation P-005: parseArgs takes --seat=<ref>; freshSuBootstrapBody forwards seat + records --seat= in launch_argv", () => {
     // The missing client leg P-006 caught live (2026-07-03): fleet:launch-on-plan
     // emitted --seat=<ref> but parseArgs dropped it, so bootstrap-su never saw
     // body.seat and consumeSeatAtBoot (mig 487) never recorded — the seat cap
     // was delegated but unenforced.
     expect(parseArgs([]).seat).toBeNull();
-    expect(parseArgs(['--seat=haiku:low:AUTO']).seat).toBe('haiku:low:AUTO');
+    expect(parseArgs(["--seat=haiku:low:AUTO"]).seat).toBe("haiku:low:AUTO");
     const body = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=f1', '--seat=haiku:low:AUTO']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs([
+        "--no-picker",
+        "--agent=claude",
+        "--harness=h1",
+        "--plan=p1",
+        "--fleet=f1",
+        "--seat=haiku:low:AUTO",
+      ]),
     );
-    expect(body.seat).toBe('haiku:low:AUTO');
-    expect(body.launch_argv).toContain('--seat=haiku:low:AUTO');
+    expect(body.seat).toBe("haiku:low:AUTO");
+    expect(body.launch_argv).toContain("--seat=haiku:low:AUTO");
 
     // No seat ⇒ the field is absent (byte-identical non-seat body).
     const plain2 = freshSuBootstrapBody(
-      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
-      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      parseArgs(["--no-picker", "--agent=claude", "--harness=h1", "--plan=p1"]),
     );
-    expect(plain2).not.toHaveProperty('seat');
+    expect(plain2).not.toHaveProperty("seat");
   });
 
-  it('roleBootstrapBody folds a chosen account into role launches', () => {
+  it("roleBootstrapBody folds a chosen account into role launches", () => {
     expect(
-      roleBootstrapBody({ role: 'worker', agent: 'codex', workspace: 'ws1', harness: 'h1', feature: 'F-001', plan: null, account: 'codex-main' }),
+      roleBootstrapBody({
+        role: "worker",
+        agent: "codex",
+        workspace: "ws1",
+        harness: "h1",
+        feature: "F-001",
+        plan: null,
+        account: "codex-main",
+      }),
     ).toEqual({
-      role: 'worker',
-      agent: 'codex',
-      workspace: 'ws1',
-      harness_slug: 'h1',
-      feature: 'F-001',
+      role: "worker",
+      agent: "codex",
+      workspace: "ws1",
+      harness_slug: "h1",
+      feature: "F-001",
       plan: null,
-      account: 'codex-main',
+      account: "codex-main",
     });
-    expect(roleBootstrapBody({ role: 'worker', agent: 'codex', workspace: 'ws1', harness: 'h1', feature: 'F-001', plan: null })).not.toHaveProperty('account');
+    expect(
+      roleBootstrapBody({
+        role: "worker",
+        agent: "codex",
+        workspace: "ws1",
+        harness: "h1",
+        feature: "F-001",
+        plan: null,
+      }),
+    ).not.toHaveProperty("account");
   });
 
-  it('forkSeedPaths points at the projects/ subtree of each config dir', () => {
-    expect(forkSeedPaths('/orig/cfg', '/fork/cfg')).toEqual({
-      src: '/orig/cfg/projects',
-      dst: '/fork/cfg/projects',
+  it("forkSeedPaths points at the projects/ subtree of each config dir", () => {
+    expect(forkSeedPaths("/orig/cfg", "/fork/cfg")).toEqual({
+      src: "/orig/cfg/projects",
+      dst: "/fork/cfg/projects",
     });
   });
 
-  it('resumeEnvFor: identity + workspace + harness scope SURVIVE a tracked resume', () => {
+  it("resumeEnvFor: identity + workspace + harness scope SURVIVE a tracked resume", () => {
     // coordOwnerId is re-exported as PAPERCUSP_SID (wake-executor semantics —
     // a fresh SID orphaned the old one's locks/awaits and detached the adv
     // row); workspaceId rides out as PAPERCUSP_WORKSPACE so the MCP url/header
     // carriers re-scope the resumed session. Harness scope comes from the
     // resolved launch spec on the resumable row, not from ambient env.
     expect(
-      resumeEnvFor({ agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1', harnessSlug: 'papercusp' }),
+      resumeEnvFor({
+        agent: "claude",
+        id: 7,
+        coordOwnerId: "su-abc",
+        workspaceId: "ws1",
+        harnessSlug: "papercusp",
+      }),
     ).toEqual({
-      PAPERCUSP_AGENT: 'claude',
-      PAPERCUSP_SID: 'su-abc',
-      PAPERCUSP_WORKSPACE: 'ws1',
-      PAPERCUSP_HARNESS_SLUG: 'papercusp',
-      PAPERCUSP_ADV_SESSION_ID: '7',
+      PAPERCUSP_AGENT: "claude",
+      PAPERCUSP_SID: "su-abc",
+      PAPERCUSP_WORKSPACE: "ws1",
+      PAPERCUSP_HARNESS_SLUG: "papercusp",
+      PAPERCUSP_ADV_SESSION_ID: "7",
     });
   });
 
-  it('resumeEnvFor: untracked sessions (no adv row) mint a fresh SID and omit absent fields', () => {
-    expect(resumeEnvFor({ agent: 'omp' }, { mintSid: () => 'su-fresh' })).toEqual({
-      PAPERCUSP_AGENT: 'omp',
-      PAPERCUSP_SID: 'su-fresh',
+  it("resumeEnvFor: untracked sessions (no adv row) mint a fresh SID and omit absent fields", () => {
+    expect(
+      resumeEnvFor({ agent: "omp" }, { mintSid: () => "su-fresh" }),
+    ).toEqual({
+      PAPERCUSP_AGENT: "omp",
+      PAPERCUSP_SID: "su-fresh",
     });
   });
 
-  it('ompTrackedResumeEnv restores both the tracked config root and overriding agent dir', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-omp-resume-'));
+  it("ompTrackedResumeEnv restores both the tracked config root and overriding agent dir", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-omp-resume-"));
     try {
-      const root = join(home, '.papercusp', 'su-omp-homes', 'session-12601');
-      mkdirSync(join(root, 'agent'), { recursive: true });
-      expect(ompTrackedResumeEnv({ agent: 'omp', id: 12601 }, { home })).toEqual({
-        PI_CONFIG_DIR: join('.papercusp', 'su-omp-homes', 'session-12601'),
-        PI_CODING_AGENT_DIR: join(root, 'agent'),
+      const root = join(home, ".papercusp", "su-omp-homes", "session-12601");
+      mkdirSync(join(root, "agent"), { recursive: true });
+      expect(
+        ompTrackedResumeEnv({ agent: "omp", id: 12601 }, { home }),
+      ).toEqual({
+        PI_CONFIG_DIR: join(".papercusp", "su-omp-homes", "session-12601"),
+        PI_CODING_AGENT_DIR: join(root, "agent"),
       });
-      expect(ompTrackedResumeEnv({ agent: 'omp', id: 999 }, { home })).toEqual({});
-      expect(ompTrackedResumeEnv({ agent: 'codex', id: 12601 }, { home })).toEqual({});
+      expect(ompTrackedResumeEnv({ agent: "omp", id: 999 }, { home })).toEqual(
+        {},
+      );
+      expect(
+        ompTrackedResumeEnv({ agent: "codex", id: 12601 }, { home }),
+      ).toEqual({});
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('ompTrackedResumeEnv re-heals a stale empty agent.db to the global OAuth store', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-omp-resume-heal-'));
+  it("ompTrackedResumeEnv re-heals a stale empty agent.db to the global OAuth store", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-omp-resume-heal-"));
     try {
-      const globalAgent = join(home, '.omp', 'agent');
-      const root = join(home, '.papercusp', 'su-omp-homes', 'session-42');
+      const globalAgent = join(home, ".omp", "agent");
+      const root = join(home, ".papercusp", "su-omp-homes", "session-42");
       mkdirSync(globalAgent, { recursive: true });
-      mkdirSync(join(root, 'agent'), { recursive: true });
-      writeFileSync(join(globalAgent, 'agent.db'), 'GLOBAL_XAI_OAUTH');
-      writeFileSync(join(root, 'agent', 'agent.db'), ''); // pre-fix empty real file
-      ompTrackedResumeEnv({ agent: 'omp', id: 42 }, { home });
-      const dst = join(root, 'agent', 'agent.db');
+      mkdirSync(join(root, "agent"), { recursive: true });
+      writeFileSync(join(globalAgent, "agent.db"), "GLOBAL_XAI_OAUTH");
+      writeFileSync(join(root, "agent", "agent.db"), ""); // pre-fix empty real file
+      ompTrackedResumeEnv({ agent: "omp", id: 42 }, { home });
+      const dst = join(root, "agent", "agent.db");
       expect(lstatSync(dst).isSymbolicLink()).toBe(true);
-      expect(readFileSync(dst, 'utf8')).toBe('GLOBAL_XAI_OAUTH');
+      expect(readFileSync(dst, "utf8")).toBe("GLOBAL_XAI_OAUTH");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('OMP Anthropic resume route transitions replace auto/pin config and restore direct config on default', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-omp-route-'));
+  it("OMP Anthropic resume route transitions replace auto/pin config and restore direct config on default", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-omp-route-"));
     try {
-      const globalAgent = join(home, '.omp', 'agent');
-      const sessionAgent = join(home, '.papercusp', 'su-omp-homes', 'session-7', 'agent');
+      const globalAgent = join(home, ".omp", "agent");
+      const sessionAgent = join(
+        home,
+        ".papercusp",
+        "su-omp-homes",
+        "session-7",
+        "agent",
+      );
       mkdirSync(globalAgent, { recursive: true });
       mkdirSync(sessionAgent, { recursive: true });
-      writeFileSync(join(globalAgent, 'models.yml'), 'providers:\n  anthropic:\n    models: []\n');
-      const session = { agent: 'omp', id: 7, coordOwnerId: 'su-omp', ompThreadId: 'thr' };
+      writeFileSync(
+        join(globalAgent, "models.yml"),
+        "providers:\n  anthropic:\n    models: []\n",
+      );
+      const session = {
+        agent: "omp",
+        id: 7,
+        coordOwnerId: "su-omp",
+        ompThreadId: "thr",
+      };
       const env = ompTrackedResumeEnv(session, { home });
 
       const autoModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'auto', provider: 'claude' },
-        model: 'claude-bridge/claude-opus-4-8:high',
+        accountRoute: { mode: "auto", provider: "claude" },
+        model: "claude-bridge/claude-opus-4-8:high",
         home,
       });
-      expect(autoModel).toBe('papercusp-gateway/claude-opus-4-8');
-      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).not.toContain('x-papercusp-account');
+      expect(autoModel).toBe("papercusp-gateway/claude-opus-4-8");
+      expect(
+        readFileSync(join(sessionAgent, "models.yml"), "utf8"),
+      ).not.toContain("x-papercusp-account");
 
       const pinModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'pin', id: 'acct-7', provider: 'claude' },
+        accountRoute: { mode: "pin", id: "acct-7", provider: "claude" },
         model: autoModel,
         home,
       });
-      expect(pinModel).toBe('papercusp-gateway/claude-opus-4-8');
-      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toContain('"x-papercusp-account": "acct-7"');
+      expect(pinModel).toBe("papercusp-gateway/claude-opus-4-8");
+      expect(readFileSync(join(sessionAgent, "models.yml"), "utf8")).toContain(
+        '"x-papercusp-account": "acct-7"',
+      );
 
       const directModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'default' },
+        accountRoute: { mode: "default" },
         model: pinModel,
         home,
       });
-      expect(directModel).toBe('anthropic/claude-opus-4-8');
-      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toBe('providers:\n  anthropic:\n    models: []\n');
-      expect(ompDirectModelForRoute('ollama/ornith')).toBe('ollama/ornith');
+      expect(directModel).toBe("anthropic/claude-opus-4-8");
+      expect(readFileSync(join(sessionAgent, "models.yml"), "utf8")).toBe(
+        "providers:\n  anthropic:\n    models: []\n",
+      );
+      expect(ompDirectModelForRoute("ollama/ornith")).toBe("ollama/ornith");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('OMP OpenAI resume routes use the Codex pool/OpenAI wire and restore a direct OpenAI selector', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-omp-openai-route-'));
+  it("OMP OpenAI resume routes use the Codex pool/OpenAI wire and restore a direct OpenAI selector", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-omp-openai-route-"));
     try {
-      const globalAgent = join(home, '.omp', 'agent');
-      const sessionAgent = join(home, '.papercusp', 'su-omp-homes', 'session-8', 'agent');
+      const globalAgent = join(home, ".omp", "agent");
+      const sessionAgent = join(
+        home,
+        ".papercusp",
+        "su-omp-homes",
+        "session-8",
+        "agent",
+      );
       mkdirSync(globalAgent, { recursive: true });
       mkdirSync(sessionAgent, { recursive: true });
-      writeFileSync(join(globalAgent, 'models.yml'), 'providers:\n  openai:\n    models: []\n');
-      const session = { agent: 'omp', id: 8, coordOwnerId: 'su-omp-openai', ompThreadId: 'thr-openai' };
+      writeFileSync(
+        join(globalAgent, "models.yml"),
+        "providers:\n  openai:\n    models: []\n",
+      );
+      const session = {
+        agent: "omp",
+        id: 8,
+        coordOwnerId: "su-omp-openai",
+        ompThreadId: "thr-openai",
+      };
       const env = ompTrackedResumeEnv(session, { home });
 
       const autoModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'auto', provider: 'codex' },
-        model: 'openai-codex/gpt-5.6-terra:xhigh',
+        accountRoute: { mode: "auto", provider: "codex" },
+        model: "openai-codex/gpt-5.6-terra:xhigh",
         home,
       });
-      expect(autoModel).toBe('papercusp-gateway/gpt-5.6-terra');
-      const gatewayConfig = readFileSync(join(sessionAgent, 'models.yml'), 'utf8');
+      expect(autoModel).toBe("papercusp-gateway/gpt-5.6-terra");
+      const gatewayConfig = readFileSync(
+        join(sessionAgent, "models.yml"),
+        "utf8",
+      );
       expect(gatewayConfig).toContain('baseUrl: "http://127.0.0.1:8788/v1"');
-      expect(gatewayConfig).toContain('api: openai-responses');
+      expect(gatewayConfig).toContain("api: openai-responses");
 
       const directModel = applyOmpResumeAccountRoute({
         session,
         env,
-        accountRoute: { mode: 'default' },
+        accountRoute: { mode: "default" },
         model: autoModel,
         home,
       });
-      expect(directModel).toBe('openai/gpt-5.6-terra');
-      expect(readFileSync(join(sessionAgent, 'models.yml'), 'utf8')).toBe('providers:\n  openai:\n    models: []\n');
+      expect(directModel).toBe("openai/gpt-5.6-terra");
+      expect(readFileSync(join(sessionAgent, "models.yml"), "utf8")).toBe(
+        "providers:\n  openai:\n    models: []\n",
+      );
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('OMP resume gateway routes reject incompatible providers and mismatched account pools', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-omp-incompatible-route-'));
+  it("OMP resume gateway routes reject incompatible providers and mismatched account pools", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-omp-incompatible-route-"));
     try {
-      const globalAgent = join(home, '.omp', 'agent');
-      const sessionAgent = join(home, '.papercusp', 'su-omp-homes', 'session-9', 'agent');
+      const globalAgent = join(home, ".omp", "agent");
+      const sessionAgent = join(
+        home,
+        ".papercusp",
+        "su-omp-homes",
+        "session-9",
+        "agent",
+      );
       mkdirSync(globalAgent, { recursive: true });
       mkdirSync(sessionAgent, { recursive: true });
-      writeFileSync(join(globalAgent, 'models.yml'), 'providers: {}\n');
-      const session = { agent: 'omp', id: 9, coordOwnerId: 'su-omp-reject', ompThreadId: 'thr-reject' };
+      writeFileSync(join(globalAgent, "models.yml"), "providers: {}\n");
+      const session = {
+        agent: "omp",
+        id: 9,
+        coordOwnerId: "su-omp-reject",
+        ompThreadId: "thr-reject",
+      };
       const env = ompTrackedResumeEnv(session, { home });
 
-      expect(() => applyOmpResumeAccountRoute({
-        session,
-        env,
-        accountRoute: { mode: 'auto', provider: 'claude' },
-        model: 'amazon-bedrock/anthropic.claude-opus-4-8',
-        home,
-      })).toThrow(/not compatible.*refusing model substitution/i);
-      expect(() => applyOmpResumeAccountRoute({
-        session,
-        env,
-        accountRoute: { mode: 'pin', id: 'claude-main', provider: 'claude' },
-        model: 'openai-codex/gpt-5.6-terra',
-        home,
-      })).toThrow(/requires codex accounts.*resolved claude/i);
-      expect(() => ompDirectModelForRoute('papercusp-gateway/unknown-local-model'))
-        .toThrow(/cannot be restored.*refusing model substitution/i);
+      expect(() =>
+        applyOmpResumeAccountRoute({
+          session,
+          env,
+          accountRoute: { mode: "auto", provider: "claude" },
+          model: "amazon-bedrock/anthropic.claude-opus-4-8",
+          home,
+        }),
+      ).toThrow(/not compatible.*refusing model substitution/i);
+      expect(() =>
+        applyOmpResumeAccountRoute({
+          session,
+          env,
+          accountRoute: { mode: "pin", id: "claude-main", provider: "claude" },
+          model: "openai-codex/gpt-5.6-terra",
+          home,
+        }),
+      ).toThrow(/requires codex accounts.*resolved claude/i);
+      expect(() =>
+        ompDirectModelForRoute("papercusp-gateway/unknown-local-model"),
+      ).toThrow(/cannot be restored.*refusing model substitution/i);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('resumeEnvFor: a FORK takes a fresh coord identity + no adv-row link (concurrent-safe)', () => {
+  it("resumeEnvFor: a FORK takes a fresh coord identity + no adv-row link (concurrent-safe)", () => {
     // Even though the source IS a tracked row (coordOwnerId + id present), the fork
     // must NOT inherit its SID or adv id — otherwise it would collide on the still-
     // live original's locks/presence/wakes. Workspace scope still carries over.
     expect(
       resumeEnvFor(
-        { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1', harnessSlug: 'papercusp' },
-        { mintSid: () => 'su-fork', fork: true },
+        {
+          agent: "claude",
+          id: 7,
+          coordOwnerId: "su-abc",
+          workspaceId: "ws1",
+          harnessSlug: "papercusp",
+        },
+        { mintSid: () => "su-fork", fork: true },
       ),
     ).toEqual({
-      PAPERCUSP_AGENT: 'claude',
-      PAPERCUSP_SID: 'su-fork',
-      PAPERCUSP_WORKSPACE: 'ws1',
-      PAPERCUSP_HARNESS_SLUG: 'papercusp',
+      PAPERCUSP_AGENT: "claude",
+      PAPERCUSP_SID: "su-fork",
+      PAPERCUSP_WORKSPACE: "ws1",
+      PAPERCUSP_HARNESS_SLUG: "papercusp",
     });
   });
 
-  it('resumeAccountPlan: --account is honored in ANY mode (no prompt)', () => {
+  it("resumeAccountPlan: --account is honored in ANY mode (no prompt)", () => {
     // The pin is spawn-env only and dropped on resume; an explicit flag re-applies
     // it directly — both interactive and scripting (--no-picker) modes.
-    expect(resumeAccountPlan({ account: 'aviynw6', picker: true })).toEqual({ source: 'flag', account: 'aviynw6', prompt: false });
-    expect(resumeAccountPlan({ account: 'aviynw6', picker: false })).toEqual({ source: 'flag', account: 'aviynw6', prompt: false });
-  });
-
-  it('resumeAccountPlan: interactive resume PROMPTS; scripting (--no-picker) does NOT (option 1)', () => {
-    expect(resumeAccountPlan({ account: null, picker: true })).toEqual({ source: 'prompt', account: null, prompt: true });
-    // --no-picker: no surprise prompt in scripts → default credential (byte-identical resume).
-    expect(resumeAccountPlan({ account: null, picker: false })).toEqual({ source: 'none', account: null, prompt: false });
-  });
-
-  it('chooseResumeAccount: explicit Claude --account=default stamps the force-system-login envelope without consulting the gateway', async () => {
-    await expect(
-      chooseResumeAccount(
-        { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-default' },
-        { account: 'default', picker: false },
-      ),
-    ).resolves.toEqual({
-      mode: 'default',
-      id: null,
-      env: defaultAccountEnv(),
-      notice: 'using the default system account (inference gateway skipped).',
+    expect(resumeAccountPlan({ account: "aviynw6", picker: true })).toEqual({
+      source: "flag",
+      account: "aviynw6",
+      prompt: false,
+    });
+    expect(resumeAccountPlan({ account: "aviynw6", picker: false })).toEqual({
+      source: "flag",
+      account: "aviynw6",
+      prompt: false,
     });
   });
 
-  it('chooseResumeAccount: a scripted resume with no account flag also uses the system-login envelope', async () => {
+  it("resumeAccountPlan: interactive resume PROMPTS; scripting (--no-picker) does NOT (option 1)", () => {
+    expect(resumeAccountPlan({ account: null, picker: true })).toEqual({
+      source: "prompt",
+      account: null,
+      prompt: true,
+    });
+    // --no-picker: no surprise prompt in scripts → default credential (byte-identical resume).
+    expect(resumeAccountPlan({ account: null, picker: false })).toEqual({
+      source: "none",
+      account: null,
+      prompt: false,
+    });
+  });
+
+  it("chooseResumeAccount: explicit Claude --account=default stamps the force-system-login envelope without consulting the gateway", async () => {
     await expect(
       chooseResumeAccount(
-        { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-default' },
+        {
+          agent: "claude",
+          workspaceId: "ws1",
+          coordOwnerId: "su-resume-default",
+        },
+        { account: "default", picker: false },
+      ),
+    ).resolves.toEqual({
+      mode: "default",
+      id: null,
+      env: defaultAccountEnv(),
+      notice: "using the default system account (inference gateway skipped).",
+    });
+  });
+
+  it("chooseResumeAccount: a scripted resume with no account flag also uses the system-login envelope", async () => {
+    await expect(
+      chooseResumeAccount(
+        {
+          agent: "claude",
+          workspaceId: "ws1",
+          coordOwnerId: "su-resume-default",
+        },
         { account: null, picker: false },
       ),
     ).resolves.toEqual({
-      mode: 'default',
+      mode: "default",
       id: null,
       env: defaultAccountEnv(),
       notice: null,
     });
   });
 
-  const withAccountChoices = async (accounts: Record<string, unknown>, run: () => Promise<unknown>) => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+  const withAccountChoices = async (
+    accounts: Record<string, unknown>,
+    run: () => Promise<unknown>,
+  ) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ accounts }), {
         status: 200,
-        headers: { 'content-type': 'application/json' },
+        headers: { "content-type": "application/json" },
       }),
     );
     try {
@@ -2506,155 +3483,298 @@ describe('psu-launcher arg parsing', () => {
     }
   };
 
-  it('chooseResumeAccount: explicit auto fails closed when the gateway route is unavailable', async () => {
+  it("chooseResumeAccount: explicit auto fails closed when the gateway route is unavailable", async () => {
     await expect(
       withAccountChoices(
-        { gatewayOn: false, pool: [], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+        {
+          gatewayOn: false,
+          pool: [],
+          forcedAccounts: [],
+          excludeAccounts: [],
+          provider: "claude",
+        },
         () =>
           chooseResumeAccount(
-            { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-auto' },
-            { account: 'auto', picker: false },
+            {
+              agent: "claude",
+              workspaceId: "ws1",
+              coordOwnerId: "su-resume-auto",
+            },
+            { account: "auto", picker: false },
           ),
       ),
     ).rejects.toThrow(/refusing to fall back to the default system login/i);
   });
 
-  it('chooseResumeAccount: an invalid named pin fails closed instead of returning the default marker', async () => {
+  it("chooseResumeAccount: an invalid named pin fails closed instead of returning the default marker", async () => {
     await expect(
       withAccountChoices(
-        { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+        {
+          gatewayOn: true,
+          pool: ["allowed"],
+          forcedAccounts: [],
+          excludeAccounts: [],
+          provider: "claude",
+        },
         () =>
           chooseResumeAccount(
-            { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-pin' },
-            { account: 'not-allowed', picker: false },
+            {
+              agent: "claude",
+              workspaceId: "ws1",
+              coordOwnerId: "su-resume-pin",
+            },
+            { account: "not-allowed", picker: false },
           ),
       ),
     ).rejects.toThrow(/not an allowed pool account.*refusing to fall back/i);
   });
 
-  it('chooseResumeAccount: OMP Claude auto remains an explicit config-carried gateway route', async () => {
-    await expect(withAccountChoices(
-      { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
-      () => chooseResumeAccount(
-        { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp' },
-        { account: 'auto', picker: false, model: 'claude-bridge/claude-opus-4-8:high' },
+  it("chooseResumeAccount: OMP Claude auto remains an explicit config-carried gateway route", async () => {
+    await expect(
+      withAccountChoices(
+        {
+          gatewayOn: true,
+          pool: ["allowed"],
+          forcedAccounts: [],
+          excludeAccounts: [],
+          provider: "claude",
+        },
+        () =>
+          chooseResumeAccount(
+            { agent: "omp", workspaceId: "ws1", coordOwnerId: "su-resume-omp" },
+            {
+              account: "auto",
+              picker: false,
+              model: "claude-bridge/claude-opus-4-8:high",
+            },
+          ),
       ),
-    )).resolves.toMatchObject({ mode: 'auto', auto: true, forward: 'auto', provider: 'claude', env: {} });
+    ).resolves.toMatchObject({
+      mode: "auto",
+      auto: true,
+      forward: "auto",
+      provider: "claude",
+      env: {},
+    });
   });
 
-  it('chooseResumeAccount: OMP OpenAI auto resolves against the Codex account pool', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
-        accounts: { gatewayOn: true, pool: ['codex-main'], forcedAccounts: [], excludeAccounts: [], provider: 'codex' },
-      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  it("chooseResumeAccount: OMP OpenAI auto resolves against the Codex account pool", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          accounts: {
+            gatewayOn: true,
+            pool: ["codex-main"],
+            forcedAccounts: [],
+            excludeAccounts: [],
+            provider: "codex",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
     );
     try {
-      await expect(chooseResumeAccount(
-        { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp-openai' },
-        { account: 'auto', picker: false, model: 'openai-codex/gpt-5.6-terra:xhigh' },
-      )).resolves.toMatchObject({ mode: 'auto', auto: true, forward: 'auto', provider: 'codex', env: {} });
-      expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('agent=codex');
+      await expect(
+        chooseResumeAccount(
+          {
+            agent: "omp",
+            workspaceId: "ws1",
+            coordOwnerId: "su-resume-omp-openai",
+          },
+          {
+            account: "auto",
+            picker: false,
+            model: "openai-codex/gpt-5.6-terra:xhigh",
+          },
+        ),
+      ).resolves.toMatchObject({
+        mode: "auto",
+        auto: true,
+        forward: "auto",
+        provider: "codex",
+        env: {},
+      });
+      expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("agent=codex");
     } finally {
       fetchSpy.mockRestore();
     }
   });
 
-  it('chooseResumeAccount: OMP explicit gateway routes fail closed on incompatible or mismatched providers', async () => {
-    await expect(chooseResumeAccount(
-      { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp-foreign' },
-      { account: 'auto', picker: false, model: 'google-vertex/claude-opus-4-8' },
-    )).rejects.toThrow(/not compatible.*refusing model substitution/i);
-
-    await expect(withAccountChoices(
-      { gatewayOn: true, pool: ['claude-main'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
-      () => chooseResumeAccount(
-        { agent: 'omp', workspaceId: 'ws1', coordOwnerId: 'su-resume-omp-mismatch' },
-        { account: 'claude-main', picker: false, model: 'openai-codex/gpt-5.6-terra' },
+  it("chooseResumeAccount: OMP explicit gateway routes fail closed on incompatible or mismatched providers", async () => {
+    await expect(
+      chooseResumeAccount(
+        {
+          agent: "omp",
+          workspaceId: "ws1",
+          coordOwnerId: "su-resume-omp-foreign",
+        },
+        {
+          account: "auto",
+          picker: false,
+          model: "google-vertex/claude-opus-4-8",
+        },
       ),
-    )).rejects.toThrow(/claude account.*requires codex accounts.*refusing/i);
+    ).rejects.toThrow(/not compatible.*refusing model substitution/i);
+
+    await expect(
+      withAccountChoices(
+        {
+          gatewayOn: true,
+          pool: ["claude-main"],
+          forcedAccounts: [],
+          excludeAccounts: [],
+          provider: "claude",
+        },
+        () =>
+          chooseResumeAccount(
+            {
+              agent: "omp",
+              workspaceId: "ws1",
+              coordOwnerId: "su-resume-omp-mismatch",
+            },
+            {
+              account: "claude-main",
+              picker: false,
+              model: "openai-codex/gpt-5.6-terra",
+            },
+          ),
+      ),
+    ).rejects.toThrow(/claude account.*requires codex accounts.*refusing/i);
   });
 
-  it('chooseResumeAccount: valid Claude auto remains gateway-only and never carries the default marker', async () => {
+  it("chooseResumeAccount: valid Claude auto remains gateway-only and never carries the default marker", async () => {
     const resolved = await withAccountChoices(
-      { gatewayOn: true, pool: ['allowed'], forcedAccounts: [], excludeAccounts: [], provider: 'claude' },
+      {
+        gatewayOn: true,
+        pool: ["allowed"],
+        forcedAccounts: [],
+        excludeAccounts: [],
+        provider: "claude",
+      },
       () =>
         chooseResumeAccount(
-          { agent: 'claude', workspaceId: 'ws1', coordOwnerId: 'su-resume-auto' },
-          { account: 'auto', picker: false },
+          {
+            agent: "claude",
+            workspaceId: "ws1",
+            coordOwnerId: "su-resume-auto",
+          },
+          { account: "auto", picker: false },
         ),
     );
     expect(resolved).toMatchObject({
       auto: true,
-      forward: 'auto',
+      forward: "auto",
       env: {
         ANTHROPIC_BASE_URL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:/),
         ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
       },
     });
-    expect((resolved as { env: Record<string, string> }).env[ACCOUNT_ROUTING_MODE_ENV]).toBe('auto');
+    expect(
+      (resolved as { env: Record<string, string> }).env[
+        ACCOUNT_ROUTING_MODE_ENV
+      ],
+    ).toBe("auto");
   });
 
-  it('buildResumeEnv: resumed psu sessions always carry the agent-session marker', () => {
-    const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
+  it("buildResumeEnv: resumed psu sessions always carry the agent-session marker", () => {
+    const session = {
+      agent: "claude",
+      id: 7,
+      coordOwnerId: "su-abc",
+      workspaceId: "ws1",
+    };
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
-      PAPERCUSP_AGENT_SESSION: '1',
-      DISABLE_AUTO_COMPACT: '1',
-      DISABLE_COMPACT: '1',
+      PAPERCUSP_AGENT_SESSION: "1",
+      DISABLE_AUTO_COMPACT: "1",
+      DISABLE_COMPACT: "1",
     });
   });
 
-  it('buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only', () => {
+  it("buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only", () => {
     // A resume spawns a NEW CLI process — without the stamp a resumed Claude
     // session silently regains native auto-compact + /compact (the fresh-launch
     // paths already carry it; this pins the resume path).
-    const claude = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
-    expect(buildResumeEnv(claude)).toMatchObject({ DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' });
+    const claude = {
+      agent: "claude",
+      id: 7,
+      coordOwnerId: "su-abc",
+      workspaceId: "ws1",
+    };
+    expect(buildResumeEnv(claude)).toMatchObject({
+      DISABLE_AUTO_COMPACT: "1",
+      DISABLE_COMPACT: "1",
+    });
     // OMP compaction is papercusp-owned via its relocated per-session config,
     // not CC envs — no stamp for non-claude agents.
-    const omp = { agent: 'omp', id: 8, coordOwnerId: 'su-def', workspaceId: 'ws1' };
+    const omp = {
+      agent: "omp",
+      id: 8,
+      coordOwnerId: "su-def",
+      workspaceId: "ws1",
+    };
     const env = buildResumeEnv(omp) as Record<string, string>;
     expect(env.DISABLE_AUTO_COMPACT).toBeUndefined();
     expect(env.DISABLE_COMPACT).toBeUndefined();
   });
 
-  it('buildResumeEnv: account env LAYERS onto the resume identity/scope and marker', () => {
-    const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
+  it("buildResumeEnv: account env LAYERS onto the resume identity/scope and marker", () => {
+    const session = {
+      agent: "claude",
+      id: 7,
+      coordOwnerId: "su-abc",
+      workspaceId: "ws1",
+    };
     // No account → identity/scope exactly match resumeEnvFor; psu still adds
     // the marker that arms hook-level guards for Claude too (WI-3071).
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
-      PAPERCUSP_AGENT_SESSION: '1',
-      DISABLE_AUTO_COMPACT: '1',
-      DISABLE_COMPACT: '1',
+      PAPERCUSP_AGENT_SESSION: "1",
+      DISABLE_AUTO_COMPACT: "1",
+      DISABLE_COMPACT: "1",
     });
     // A resolved account env folds on top (the gateway pin the resume would otherwise lose).
     expect(
       buildResumeEnv(session, {
-        accountEnv: { env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', ANTHROPIC_CUSTOM_HEADERS: 'anthropic-account-id: aviynw6', PAPERCUSP_ACCOUNT_ID: 'aviynw6' }, notice: 'pinned' },
+        accountEnv: {
+          env: {
+            ANTHROPIC_BASE_URL: "http://127.0.0.1:8788",
+            ANTHROPIC_CUSTOM_HEADERS: "anthropic-account-id: aviynw6",
+            PAPERCUSP_ACCOUNT_ID: "aviynw6",
+          },
+          notice: "pinned",
+        },
       }),
     ).toEqual({
-      PAPERCUSP_AGENT: 'claude',
-      PAPERCUSP_SID: 'su-abc',
-      PAPERCUSP_WORKSPACE: 'ws1',
-      PAPERCUSP_ADV_SESSION_ID: '7',
-      PAPERCUSP_AGENT_SESSION: '1',
-      DISABLE_AUTO_COMPACT: '1',
-      DISABLE_COMPACT: '1',
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
-      ANTHROPIC_CUSTOM_HEADERS: 'anthropic-account-id: aviynw6',
-      PAPERCUSP_ACCOUNT_ID: 'aviynw6',
+      PAPERCUSP_AGENT: "claude",
+      PAPERCUSP_SID: "su-abc",
+      PAPERCUSP_WORKSPACE: "ws1",
+      PAPERCUSP_ADV_SESSION_ID: "7",
+      PAPERCUSP_AGENT_SESSION: "1",
+      DISABLE_AUTO_COMPACT: "1",
+      DISABLE_COMPACT: "1",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:8788",
+      ANTHROPIC_CUSTOM_HEADERS: "anthropic-account-id: aviynw6",
+      PAPERCUSP_ACCOUNT_ID: "aviynw6",
     });
   });
 
-  it('buildResumeEnv: the brain path still carries the agent-session marker alongside the account env', () => {
-    const session = { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' };
-    const env = buildResumeEnv(session, { brain: true, accountEnv: { env: { PAPERCUSP_ACCOUNT_ID: 'avi' }, notice: null } });
-    expect(env.PAPERCUSP_AGENT_SESSION).toBe('1');
-    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('avi');
+  it("buildResumeEnv: the brain path still carries the agent-session marker alongside the account env", () => {
+    const session = {
+      agent: "claude",
+      id: 7,
+      coordOwnerId: "su-abc",
+      workspaceId: "ws1",
+    };
+    const env = buildResumeEnv(session, {
+      brain: true,
+      accountEnv: { env: { PAPERCUSP_ACCOUNT_ID: "avi" }, notice: null },
+    });
+    expect(env.PAPERCUSP_AGENT_SESSION).toBe("1");
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe("avi");
   });
 
-  it('trackedForkEnvelopeEnv: a TRACKED --fork ALWAYS carries the agent-session marker (WI-3071 regression)', () => {
+  it("trackedForkEnvelopeEnv: a TRACKED --fork ALWAYS carries the agent-session marker (WI-3071 regression)", () => {
     // bootstrap-su (server-side) never sets PAPERCUSP_AGENT_SESSION — launchTrackedFork
     // used to spread its envelopeEnv verbatim, so a forked su session ran UNMARKED and
     // invisible to the destructive shared-tree git guard (pretooluse-bash-resource-gate.sh
@@ -2662,79 +3782,102 @@ describe('psu-launcher arg parsing', () => {
     // native-scheduler lockout. `git stash` executed unblocked on the shared staging tree
     // from a forked session on 2026-07-05 as a direct result.
     const bootstrapEnvelopeEnv = {
-      CLAUDE_CONFIG_DIR: '/home/x/.papercusp/su-claude-homes/session-9',
-      PAPERCUSP_SID: 'su-forked',
-      PAPERCUSP_WORKSPACE: 'ws1',
+      CLAUDE_CONFIG_DIR: "/home/x/.papercusp/su-claude-homes/session-9",
+      PAPERCUSP_SID: "su-forked",
+      PAPERCUSP_WORKSPACE: "ws1",
     };
     expect(trackedForkEnvelopeEnv(bootstrapEnvelopeEnv)).toEqual({
       ...bootstrapEnvelopeEnv,
-      PAPERCUSP_AGENT_SESSION: '1',
+      PAPERCUSP_AGENT_SESSION: "1",
       // P-022: a fork is a new CLI process — the native-compaction retirement is
       // re-stamped here just like fresh launches and resumes.
-      DISABLE_AUTO_COMPACT: '1',
-      DISABLE_COMPACT: '1',
+      DISABLE_AUTO_COMPACT: "1",
+      DISABLE_COMPACT: "1",
     });
     // Never trust the server envelope's own claim — the marker is asserted
     // client-side even if bootstrap-su starts sending something under the key.
-    expect(trackedForkEnvelopeEnv({ ...bootstrapEnvelopeEnv, PAPERCUSP_AGENT_SESSION: '0' })).toMatchObject({
-      PAPERCUSP_AGENT_SESSION: '1',
+    expect(
+      trackedForkEnvelopeEnv({
+        ...bootstrapEnvelopeEnv,
+        PAPERCUSP_AGENT_SESSION: "0",
+      }),
+    ).toMatchObject({
+      PAPERCUSP_AGENT_SESSION: "1",
     });
   });
 
-  it('GATEWAY_ACCOUNT_HEADER stays in LOCKSTEP with the server ACCOUNT_HEADER (gateway.ts)', () => {
+  it("GATEWAY_ACCOUNT_HEADER stays in LOCKSTEP with the server ACCOUNT_HEADER (gateway.ts)", () => {
     // The launcher builds the pin env client-side; the header it sets MUST match the one the gateway
     // routes on, or the pin silently no-ops (the 2026-06-19 "routes to the default account" bug).
     expect(GATEWAY_ACCOUNT_HEADER).toBe(ACCOUNT_HEADER);
   });
 
-  it('GATEWAY_OWNER_HEADER stays in LOCKSTEP with the server OWNER_HEADER (gateway.ts, WI-4402)', () => {
+  it("GATEWAY_OWNER_HEADER stays in LOCKSTEP with the server OWNER_HEADER (gateway.ts, WI-4402)", () => {
     // Same reasoning as the account-header lockstep test above: if this drifts from the gateway's
     // OWNER_HEADER, a resumed session's identity header silently stops reaching accounts:pin's
     // ownerPinMap lookup — the exact WI-4402 bug (the header was simply never SENT at all).
     expect(GATEWAY_OWNER_HEADER).toBe(OWNER_HEADER);
   });
 
-  it('GATEWAY_CLIENT_AUTH_TOKEN stays in LOCKSTEP with server gatewaySpawnEnv', () => {
+  it("GATEWAY_CLIENT_AUTH_TOKEN stays in LOCKSTEP with server gatewaySpawnEnv", () => {
     expect(GATEWAY_CLIENT_AUTH_TOKEN).toBe(SERVER_GATEWAY_CLIENT_AUTH_TOKEN);
   });
 
-  it('gatewayPinEnv: mirrors the complete server gatewaySpawnEnv route', () => {
-    const env = gatewayPinEnv('aviynw');
+  it("gatewayPinEnv: mirrors the complete server gatewaySpawnEnv route", () => {
+    const env = gatewayPinEnv("aviynw");
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw`);
-    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw');
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe("aviynw");
   });
 
-  it('gatewayPinEnv: WI-4402 — omitted ownerId is byte-identical to today (no identity header)', () => {
+  it("gatewayPinEnv: WI-4402 — omitted ownerId is byte-identical to today (no identity header)", () => {
     // Backward-compat guard: every EXISTING caller (and this file's other tests) calls gatewayPinEnv
     // with no 3rd arg — the resume path must not silently start sending a header nobody asked for.
-    const env = gatewayPinEnv('aviynw', 'claude');
+    const env = gatewayPinEnv("aviynw", "claude");
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw`);
   });
 
-  it('gatewayPinEnv: WI-4402 — a provided ownerId ALSO carries the session-identity header, so accounts:pin can reach this resumed session', () => {
-    const env = gatewayPinEnv('aviynw', 'claude', 'su-71ef850a-owner');
-    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw\n${OWNER_HEADER}: su-71ef850a-owner`);
+  it("gatewayPinEnv: WI-4402 — a provided ownerId ALSO carries the session-identity header, so accounts:pin can reach this resumed session", () => {
+    const env = gatewayPinEnv("aviynw", "claude", "su-71ef850a-owner");
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(
+      `${ACCOUNT_HEADER}: aviynw\n${OWNER_HEADER}: su-71ef850a-owner`,
+    );
   });
 
-  it('gatewayPinEnv: codex pins are config-file based and only carry the account id in env (ownerId ignored — codex has no ANTHROPIC_CUSTOM_HEADERS path)', () => {
-    expect(gatewayPinEnv('codex-main', 'codex')).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
-    expect(gatewayPinEnv('codex-main', 'codex', 'su-owner')).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+  it("gatewayPinEnv: codex pins are config-file based and only carry the account id in env (ownerId ignored — codex has no ANTHROPIC_CUSTOM_HEADERS path)", () => {
+    expect(gatewayPinEnv("codex-main", "codex")).toEqual({
+      PAPERCUSP_ACCOUNT_ID: "codex-main",
+    });
+    expect(gatewayPinEnv("codex-main", "codex", "su-owner")).toEqual({
+      PAPERCUSP_ACCOUNT_ID: "codex-main",
+    });
   });
 
-  it('accountRoutingMode: the ONE --account value classifies into the 3 explicit routing modes', () => {
+  it("accountRoutingMode: the ONE --account value classifies into the 3 explicit routing modes", () => {
     // account-routing-3-options (owner, 2026-06-30): default / auto / pin — mirrors the server's
     // resolveAccountPin keyword handling (kept in lockstep). Case-insensitive + trimmed.
-    for (const v of [undefined, null, '', '  ', 'default', 'DEFAULT', ' none ', 'system', 'System'])
-      expect(accountRoutingMode(v)).toBe('default');
-    for (const v of ['auto', 'AUTO', ' gateway ', 'Gateway']) expect(accountRoutingMode(v)).toBe('auto');
+    for (const v of [
+      undefined,
+      null,
+      "",
+      "  ",
+      "default",
+      "DEFAULT",
+      " none ",
+      "system",
+      "System",
+    ])
+      expect(accountRoutingMode(v)).toBe("default");
+    for (const v of ["auto", "AUTO", " gateway ", "Gateway"])
+      expect(accountRoutingMode(v)).toBe("auto");
     // Anything else is a specific pool account id → pin.
-    for (const v of ['aviynw6', 'codex-main', 'team-pool-3']) expect(accountRoutingMode(v)).toBe('pin');
+    for (const v of ["aviynw6", "codex-main", "team-pool-3"])
+      expect(accountRoutingMode(v)).toBe("pin");
   });
 
-  it('gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)', () => {
-    const env = gatewayAutoEnv('claude');
+  it("gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)", () => {
+    const env = gatewayAutoEnv("claude");
     // Base URL points at the localhost gateway; crucially NO account header + NO PAPERCUSP_ACCOUNT_ID,
     // so the gateway active()/drain-selects an available account and fails over (vs gatewayPinEnv).
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -2743,141 +3886,172 @@ describe('psu-launcher arg parsing', () => {
     expect(env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
   });
 
-  it('gatewayAutoEnv: non-claude providers get {} (auto-routing wired for claude only — matches resolveAccountPin)', () => {
-    expect(gatewayAutoEnv('codex')).toEqual({});
-    expect(gatewayAutoEnv('omp')).toEqual({});
+  it("gatewayAutoEnv: non-claude providers get {} (auto-routing wired for claude only — matches resolveAccountPin)", () => {
+    expect(gatewayAutoEnv("codex")).toEqual({});
+    expect(gatewayAutoEnv("omp")).toEqual({});
   });
 
-  it('gatewayAutoEnv: WI-4402 — omitted ownerId is byte-identical to today (no identity header)', () => {
-    expect(gatewayAutoEnv('claude').ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  it("gatewayAutoEnv: WI-4402 — omitted ownerId is byte-identical to today (no identity header)", () => {
+    expect(gatewayAutoEnv("claude").ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
   });
 
-  it('gatewayAutoEnv: WI-4402 — a provided ownerId carries ONLY the session-identity header (still no account pin — the point of auto)', () => {
-    const env = gatewayAutoEnv('claude', 'su-71ef850a-owner');
-    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${OWNER_HEADER}: su-71ef850a-owner`);
+  it("gatewayAutoEnv: WI-4402 — a provided ownerId carries ONLY the session-identity header (still no account pin — the point of auto)", () => {
+    const env = gatewayAutoEnv("claude", "su-71ef850a-owner");
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(
+      `${OWNER_HEADER}: su-71ef850a-owner`,
+    );
     expect(env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
   });
 
-  it('gatewayAutoEnv: WI-4402 — ownerId is ignored for non-claude providers ({} either way)', () => {
-    expect(gatewayAutoEnv('codex', 'su-owner')).toEqual({});
+  it("gatewayAutoEnv: WI-4402 — ownerId is ignored for non-claude providers ({} either way)", () => {
+    expect(gatewayAutoEnv("codex", "su-owner")).toEqual({});
   });
 
-  it('sanitizeInheritedEnv: default is gateway-free while explicit auto/pin overlays restore the complete route (WI-5052)', () => {
+  it("sanitizeInheritedEnv: default is gateway-free while explicit auto/pin overlays restore the complete route (WI-5052)", () => {
     const contaminatedParent = {
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:8788",
       ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
       ANTHROPIC_CUSTOM_HEADERS: `${ACCOUNT_HEADER}: inherited-account`,
-      PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788',
-      PAPERCUSP_ACCOUNT_ID: 'inherited-account',
-      PAPERCUSP_CODEX_GATEWAY: '1',
-      [ACCOUNT_ROUTING_MODE_ENV]: 'default',
-      CLAUDE_CODE_OAUTH_TOKEN: 'direct-system-oauth',
-      KEEP_ME: 'yes',
+      PAPERCUSP_ANTHROPIC_URL: "http://127.0.0.1:8788",
+      PAPERCUSP_ACCOUNT_ID: "inherited-account",
+      PAPERCUSP_CODEX_GATEWAY: "1",
+      [ACCOUNT_ROUTING_MODE_ENV]: "default",
+      CLAUDE_CODE_OAUTH_TOKEN: "direct-system-oauth",
+      KEEP_ME: "yes",
     };
     const clean = sanitizeInheritedEnv(contaminatedParent);
-    expect(clean).toEqual({ KEEP_ME: 'yes' });
+    expect(clean).toEqual({ KEEP_ME: "yes" });
 
     const defaultEnv = { ...clean };
-    expect(defaultEnv).not.toHaveProperty('ANTHROPIC_BASE_URL');
-    expect(defaultEnv).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
-    expect(defaultEnv).not.toHaveProperty('PAPERCUSP_ACCOUNT_ID');
+    expect(defaultEnv).not.toHaveProperty("ANTHROPIC_BASE_URL");
+    expect(defaultEnv).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+    expect(defaultEnv).not.toHaveProperty("PAPERCUSP_ACCOUNT_ID");
 
-    const autoEnv = { ...clean, ...gatewayAutoEnv('claude', 'su-auto') };
+    const autoEnv = { ...clean, ...gatewayAutoEnv("claude", "su-auto") };
     expect(autoEnv.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(autoEnv.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
     expect(autoEnv.ANTHROPIC_CUSTOM_HEADERS).toBe(`${OWNER_HEADER}: su-auto`);
-    expect(autoEnv).not.toHaveProperty('PAPERCUSP_ACCOUNT_ID');
+    expect(autoEnv).not.toHaveProperty("PAPERCUSP_ACCOUNT_ID");
 
-    const pinEnv = { ...clean, ...gatewayPinEnv('acct-pin', 'claude', 'su-pin') };
+    const pinEnv = {
+      ...clean,
+      ...gatewayPinEnv("acct-pin", "claude", "su-pin"),
+    };
     expect(pinEnv.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(pinEnv.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
-    expect(pinEnv.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: acct-pin\n${OWNER_HEADER}: su-pin`);
-    expect(pinEnv.PAPERCUSP_ACCOUNT_ID).toBe('acct-pin');
+    expect(pinEnv.ANTHROPIC_CUSTOM_HEADERS).toBe(
+      `${ACCOUNT_HEADER}: acct-pin\n${OWNER_HEADER}: su-pin`,
+    );
+    expect(pinEnv.PAPERCUSP_ACCOUNT_ID).toBe("acct-pin");
   });
 
-  it('sanitizeInheritedEnv strips direct/provider credentials so only the explicit route overlay can re-add auth', () => {
-    expect(sanitizeInheritedEnv({
-      ANTHROPIC_AUTH_TOKEN: 'user-direct-token',
-      CLAUDE_CODE_USE_BEDROCK: '1',
-      ANTHROPIC_BEDROCK_BASE_URL: 'https://bedrock.invalid',
-    })).toEqual({});
+  it("sanitizeInheritedEnv strips direct/provider credentials so only the explicit route overlay can re-add auth", () => {
+    expect(
+      sanitizeInheritedEnv({
+        ANTHROPIC_AUTH_TOKEN: "user-direct-token",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.invalid",
+      }),
+    ).toEqual({});
   });
 
-  it('sanitizeInheritedEnv strips the spawner claude session-identity markers (child-session transcript suppression, WI-5002)', () => {
+  it("sanitizeInheritedEnv strips the spawner claude session-identity markers (child-session transcript suppression, WI-5002)", () => {
     // CLAUDE_CODE_CHILD_SESSION=1 inherited from a spawning claude session makes
     // the launched psu claude treat itself as a child session and silently skip
     // transcript persistence (live-bisected 2026-07-17). The whole ancestry
     // family must be re-derived by the child, never inherited.
-    expect(sanitizeInheritedEnv({
-      CLAUDECODE: '1',
-      CLAUDE_CODE_SESSION_ID: 'aaaa-bbbb',
-      CLAUDE_CODE_CHILD_SESSION: '1',
-      CLAUDE_CODE_BRIDGE_SESSION_ID: 'cccc',
-      CLAUDE_CODE_ENTRYPOINT: 'cli',
-      CLAUDE_CODE_EXECPATH: '/versions/2.1.211',
-      CLAUDE_CONFIG_DIR: '/home/u/.papercusp/session-claude/su-spawner',
-      KEEP_ME: 'v',
-    })).toEqual({ KEEP_ME: 'v' });
+    expect(
+      sanitizeInheritedEnv({
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "aaaa-bbbb",
+        CLAUDE_CODE_CHILD_SESSION: "1",
+        CLAUDE_CODE_BRIDGE_SESSION_ID: "cccc",
+        CLAUDE_CODE_ENTRYPOINT: "cli",
+        CLAUDE_CODE_EXECPATH: "/versions/2.1.211",
+        CLAUDE_CONFIG_DIR: "/home/u/.papercusp/session-claude/su-spawner",
+        KEEP_ME: "v",
+      }),
+    ).toEqual({ KEEP_ME: "v" });
   });
 
-  it('applyCodexDiagnosticEnv stamps the deterministic core/TUI filter and replaces inherited RUST_LOG', () => {
-    const env = { RUST_LOG: 'debug', KEEP_ME: 'v' };
-    expect(applyCodexDiagnosticEnv(env, 'codex')).toEqual({
+  it("applyCodexDiagnosticEnv stamps the deterministic core/TUI filter and replaces inherited RUST_LOG", () => {
+    const env = { RUST_LOG: "debug", KEEP_ME: "v" };
+    expect(applyCodexDiagnosticEnv(env, "codex")).toEqual({
       RUST_LOG: CODEX_DIAGNOSTIC_RUST_LOG,
-      KEEP_ME: 'v',
+      KEEP_ME: "v",
     });
   });
 
-  it('applyCodexDiagnosticEnv leaves non-Codex launches unchanged', () => {
-    const env = { RUST_LOG: 'debug', KEEP_ME: 'v' };
-    expect(applyCodexDiagnosticEnv(env, 'claude')).toEqual(env);
+  it("applyCodexDiagnosticEnv leaves non-Codex launches unchanged", () => {
+    const env = { RUST_LOG: "debug", KEEP_ME: "v" };
+    expect(applyCodexDiagnosticEnv(env, "claude")).toEqual(env);
   });
 
-  it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {
+  it("codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin", () => {
     const current = [
-      '# existing config',
-      'project_doc_max_bytes = 0',
-      '',
-      '[features]',
-      'memory_tool = false',
-      '',
-      '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
-      '[model_providers.papercusp-codex-gateway]',
+      "# existing config",
+      "project_doc_max_bytes = 0",
+      "",
+      "[features]",
+      "memory_tool = false",
+      "",
+      "# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER",
+      "[model_providers.papercusp-codex-gateway]",
       'http_headers = { "x-papercusp-account" = "old" }',
-      '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
-      '',
-    ].join('\n');
-    const next = codexGatewayConfigPatch(current, 'codex-main');
-    expect(next.indexOf('model_provider = "papercusp-codex-gateway"')).toBeLessThan(next.indexOf('[features]'));
+      "# END PAPERCUSP_CODEX_GATEWAY_PROVIDER",
+      "",
+    ].join("\n");
+    const next = codexGatewayConfigPatch(current, "codex-main");
+    expect(
+      next.indexOf('model_provider = "papercusp-codex-gateway"'),
+    ).toBeLessThan(next.indexOf("[features]"));
     expect(next).toContain('base_url = "http://127.0.0.1:8788/v1"');
-    expect(next).toContain('http_headers = { "x-papercusp-account" = "codex-main" }');
+    expect(next).toContain(
+      'http_headers = { "x-papercusp-account" = "codex-main" }',
+    );
     expect(next).not.toContain('"old"');
 
-    const auto = codexGatewayConfigPatch(next, null, { gatewayOn: true, ownerId: 'su-codex' });
+    const auto = codexGatewayConfigPatch(next, null, {
+      gatewayOn: true,
+      ownerId: "su-codex",
+    });
     expect(auto).toContain('model_provider = "papercusp-codex-gateway"');
     expect(auto).toContain('"x-papercusp-owner" = "su-codex"');
-    expect(auto).not.toContain('x-papercusp-account');
+    expect(auto).not.toContain("x-papercusp-account");
 
     const direct = codexGatewayConfigPatch(auto);
-    expect(direct).toContain('# existing config');
-    expect(direct).not.toContain('PAPERCUSP_CODEX_GATEWAY');
-    expect(direct).not.toContain('papercusp-codex-gateway');
+    expect(direct).toContain("# existing config");
+    expect(direct).not.toContain("PAPERCUSP_CODEX_GATEWAY");
+    expect(direct).not.toContain("papercusp-codex-gateway");
   });
 
-  it('accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)', () => {
-    const base = { gatewayOn: true, pool: ['aviynw', 'aviynw2'], excludeAccounts: [], forcedAccounts: [] };
-    expect(accountPinnable(base, 'aviynw')).toBe(true);
-    expect(accountPinnable({ ...base, gatewayOn: false }, 'aviynw')).toBe(false); // gateway off → no pin
-    expect(accountPinnable(base, 'not-in-pool')).toBe(false);
-    expect(accountPinnable({ ...base, excludeAccounts: ['aviynw'] }, 'aviynw')).toBe(false);
-    expect(accountPinnable({ ...base, forcedAccounts: ['aviynw2'] }, 'aviynw')).toBe(false); // outside allow-list
-    expect(accountPinnable({ ...base, forcedAccounts: ['aviynw'] }, 'aviynw')).toBe(true);
+  it("accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)", () => {
+    const base = {
+      gatewayOn: true,
+      pool: ["aviynw", "aviynw2"],
+      excludeAccounts: [],
+      forcedAccounts: [],
+    };
+    expect(accountPinnable(base, "aviynw")).toBe(true);
+    expect(accountPinnable({ ...base, gatewayOn: false }, "aviynw")).toBe(
+      false,
+    ); // gateway off → no pin
+    expect(accountPinnable(base, "not-in-pool")).toBe(false);
+    expect(
+      accountPinnable({ ...base, excludeAccounts: ["aviynw"] }, "aviynw"),
+    ).toBe(false);
+    expect(
+      accountPinnable({ ...base, forcedAccounts: ["aviynw2"] }, "aviynw"),
+    ).toBe(false); // outside allow-list
+    expect(
+      accountPinnable({ ...base, forcedAccounts: ["aviynw"] }, "aviynw"),
+    ).toBe(true);
     expect(accountPinnable(base, null)).toBe(false);
-    expect(accountPinnable(null, 'aviynw')).toBe(false);
+    expect(accountPinnable(null, "aviynw")).toBe(false);
   });
 
-  it('accountPickerChoices offers gateway auto for both Claude and Codex pools', () => {
-    for (const provider of ['claude', 'codex']) {
+  it("accountPickerChoices offers gateway auto for both Claude and Codex pools", () => {
+    for (const provider of ["claude", "codex"]) {
       const choices = accountPickerChoices({
         gatewayOn: true,
         pool: [`${provider}-main`],
@@ -2885,14 +4059,25 @@ describe('psu-launcher arg parsing', () => {
         forcedAccounts: [],
         provider,
       });
-      expect(choices.map((choice) => choice.value)).toEqual(['system', 'auto', `${provider}-main`]);
+      expect(choices.map((choice) => choice.value)).toEqual([
+        "system",
+        "auto",
+        `${provider}-main`,
+      ]);
     }
   });
 
-  it('accountPickerChoices omits auto without a usable supported-provider pool', () => {
-    expect(accountPickerChoices({ pool: [], provider: 'codex' }).map((choice) => choice.value)).toEqual(['system']);
-    expect(accountPickerChoices({ pool: ['omp-main'], provider: 'omp' }).map((choice) => choice.value))
-      .toEqual(['system', 'omp-main']);
+  it("accountPickerChoices omits auto without a usable supported-provider pool", () => {
+    expect(
+      accountPickerChoices({ pool: [], provider: "codex" }).map(
+        (choice) => choice.value,
+      ),
+    ).toEqual(["system"]);
+    expect(
+      accountPickerChoices({ pool: ["omp-main"], provider: "omp" }).map(
+        (choice) => choice.value,
+      ),
+    ).toEqual(["system", "omp-main"]);
   });
 
   it('accountPickerChoices: the default row carries the LITERAL system escape hatch, never null/""', () => {
@@ -2901,61 +4086,97 @@ describe('psu-launcher arg parsing', () => {
     // Only `none`/`system` is guaranteed to stay on the machine's own login, so the row that
     // PROMISES "skip the inference gateway" must send exactly that. A null here is the 2026-08-19
     // silent misroute (su-254aa2e1 picked `default` and launched on the pool via :8788).
-    const row = accountPickerChoices({ gatewayOn: true, pool: ['aviynw8'], provider: 'claude' })[0];
-    expect(row.value).toBe('system');
-    expect(accountRoutingMode(row.value)).toBe('default'); // …and the client still reads it as "skip the gateway"
-    expect(row.name).toContain('skip the inference gateway');
+    const row = accountPickerChoices({
+      gatewayOn: true,
+      pool: ["aviynw8"],
+      provider: "claude",
+    })[0];
+    expect(row.value).toBe("system");
+    expect(accountRoutingMode(row.value)).toBe("default"); // …and the client still reads it as "skip the gateway"
+    expect(row.name).toContain("skip the inference gateway");
   });
 
-  it('accountProviderFromChoices: explicit null provider fails closed instead of falling back from the agent', () => {
-    expect(accountProviderFromChoices({ provider: 'claude' }, 'codex')).toBe('claude');
-    expect(accountProviderFromChoices({ provider: 'codex' }, 'claude')).toBe('codex');
-    expect(accountProviderFromChoices({ provider: null }, 'codex')).toBeNull();
-    expect(accountProviderFromChoices({}, 'codex')).toBe('codex');
+  it("accountProviderFromChoices: explicit null provider fails closed instead of falling back from the agent", () => {
+    expect(accountProviderFromChoices({ provider: "claude" }, "codex")).toBe(
+      "claude",
+    );
+    expect(accountProviderFromChoices({ provider: "codex" }, "claude")).toBe(
+      "codex",
+    );
+    expect(accountProviderFromChoices({ provider: null }, "codex")).toBeNull();
+    expect(accountProviderFromChoices({}, "codex")).toBe("codex");
   });
 
-  it('planValue maps the NO_PLAN sentinel + empties to null', () => {
+  it("planValue maps the NO_PLAN sentinel + empties to null", () => {
     expect(planValue(NO_PLAN)).toBeNull();
-    expect(planValue('')).toBeNull();
+    expect(planValue("")).toBeNull();
     expect(planValue(null)).toBeNull();
-    expect(planValue('real-plan')).toBe('real-plan');
+    expect(planValue("real-plan")).toBe("real-plan");
   });
 
-  it('selectionsFromArgs resolves --no-plan to a null plan + passes workspace', () => {
+  it("selectionsFromArgs resolves --no-plan to a null plan + passes workspace", () => {
     expect(
-      selectionsFromArgs({ agent: 'omp', workspace: 'ws1', harness: 'papercup', plan: null, noPlan: true }),
+      selectionsFromArgs({
+        agent: "omp",
+        workspace: "ws1",
+        harness: "papercup",
+        plan: null,
+        noPlan: true,
+      }),
     ).toEqual({
-      agent: 'omp',
-      workspace: 'ws1',
-      harness: 'papercup',
+      agent: "omp",
+      workspace: "ws1",
+      harness: "papercup",
       plan: null,
     });
   });
 
-  it('selectionsFromArgs keeps --plan when --no-plan is absent; null workspace when omitted', () => {
-    expect(selectionsFromArgs({ agent: 'codex', workspace: null, harness: null, plan: 'p', noPlan: false })).toEqual({
-      agent: 'codex',
+  it("selectionsFromArgs keeps --plan when --no-plan is absent; null workspace when omitted", () => {
+    expect(
+      selectionsFromArgs({
+        agent: "codex",
+        workspace: null,
+        harness: null,
+        plan: "p",
+        noPlan: false,
+      }),
+    ).toEqual({
+      agent: "codex",
       workspace: null,
       harness: null,
-      plan: 'p',
+      plan: "p",
     });
   });
 
-  it('selectionsFromArgs rejects an unknown agent', () => {
-    expect(() => selectionsFromArgs({ agent: 'gemini', harness: 'x', plan: null, noPlan: false })).toThrow();
+  it("selectionsFromArgs rejects an unknown agent", () => {
+    expect(() =>
+      selectionsFromArgs({
+        agent: "gemini",
+        harness: "x",
+        plan: null,
+        noPlan: false,
+      }),
+    ).toThrow();
   });
 
-  it('AGENTS lists exactly the three kinds', () => {
-    expect(AGENTS).toEqual(['claude', 'omp', 'codex']);
+  it("AGENTS lists exactly the three kinds", () => {
+    expect(AGENTS).toEqual(["claude", "omp", "codex"]);
   });
 
-  it('presetsFromArgs: all flags preselect everything (no prompts needed)', () => {
-    const p = presetsFromArgs(parseArgs(['--agent=claude', '--workspace=ws2', '--harness=papercup', '--plan=p']));
+  it("presetsFromArgs: all flags preselect everything (no prompts needed)", () => {
+    const p = presetsFromArgs(
+      parseArgs([
+        "--agent=claude",
+        "--workspace=ws2",
+        "--harness=papercup",
+        "--plan=p",
+      ]),
+    );
     expect(p).toMatchObject({
-      agent: 'claude',
-      workspace: 'ws2',
-      harness: 'papercup',
-      plan: 'p',
+      agent: "claude",
+      workspace: "ws2",
+      harness: "papercup",
+      plan: "p",
       needAgent: false,
       needWorkspace: false,
       needHarness: false,
@@ -2963,7 +4184,7 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('presetsFromArgs: no flags → everything needs a prompt', () => {
+  it("presetsFromArgs: no flags → everything needs a prompt", () => {
     const p = presetsFromArgs(parseArgs([]));
     expect(p).toMatchObject({
       agent: null,
@@ -2977,10 +4198,10 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('presetsFromArgs: partial preselect (agent + workspace) prompts only for harness + plan', () => {
-    const p = presetsFromArgs(parseArgs(['--agent=omp', '--workspace=ws2']));
-    expect(p.agent).toBe('omp');
-    expect(p.workspace).toBe('ws2');
+  it("presetsFromArgs: partial preselect (agent + workspace) prompts only for harness + plan", () => {
+    const p = presetsFromArgs(parseArgs(["--agent=omp", "--workspace=ws2"]));
+    expect(p.agent).toBe("omp");
+    expect(p.workspace).toBe("ws2");
     expect(p.needAgent).toBe(false);
     expect(p.needWorkspace).toBe(false);
     expect(p.needHarness).toBe(true);
@@ -2988,19 +4209,24 @@ describe('psu-launcher arg parsing', () => {
   });
 
   it('presetsFromArgs: --no-plan preselects "no plan" (no plan prompt)', () => {
-    const p = presetsFromArgs(parseArgs(['--agent=claude', '--no-plan']));
+    const p = presetsFromArgs(parseArgs(["--agent=claude", "--no-plan"]));
     expect(p.plan).toBeNull();
     expect(p.needPlan).toBe(false);
   });
 
-  it('presetsFromArgs: rejects a bad --agent', () => {
-    expect(() => presetsFromArgs(parseArgs(['--agent=gemini']))).toThrow();
+  it("presetsFromArgs: rejects a bad --agent", () => {
+    expect(() => presetsFromArgs(parseArgs(["--agent=gemini"]))).toThrow();
   });
 
-  it('parses --role and --feature', () => {
-    const a = parseArgs(['--role=worker', '--feature=F-001', '--harness=papercup', '--agent=claude']);
-    expect(a.role).toBe('worker');
-    expect(a.feature).toBe('F-001');
+  it("parses --role and --feature", () => {
+    const a = parseArgs([
+      "--role=worker",
+      "--feature=F-001",
+      "--harness=papercup",
+      "--agent=claude",
+    ]);
+    expect(a.role).toBe("worker");
+    expect(a.feature).toBe("F-001");
   });
 });
 
@@ -3017,112 +4243,143 @@ describe('psu-launcher arg parsing', () => {
  * The safety invariant itself (a local model never gets the builtin) lives
  * server-side and is pinned in omp-native-lsp-gate.test.ts.
  */
-describe('ompLspArgs (omp native lsp builtin)', () => {
-  it('strips the builtin by default — absent/false/undefined all mean strip', () => {
-    expect(ompLspArgs(undefined)).toEqual(['--no-lsp']);
-    expect(ompLspArgs(false)).toEqual(['--no-lsp']);
+describe("ompLspArgs (omp native lsp builtin)", () => {
+  it("strips the builtin by default — absent/false/undefined all mean strip", () => {
+    expect(ompLspArgs(undefined)).toEqual(["--no-lsp"]);
+    expect(ompLspArgs(false)).toEqual(["--no-lsp"]);
   });
 
-  it('keeps the builtin only on an explicit boolean true', () => {
+  it("keeps the builtin only on an explicit boolean true", () => {
     expect(ompLspArgs(true)).toEqual([]);
   });
 
-  it('does not truthy-coerce — a stray string never opens the gate', () => {
+  it("does not truthy-coerce — a stray string never opens the gate", () => {
     // The value arrives from an env comparison, so anything non-boolean
     // reaching here is a bug; it must fail closed rather than open.
-    expect(ompLspArgs('1' as unknown as boolean)).toEqual(['--no-lsp']);
-    expect(ompLspArgs(1 as unknown as boolean)).toEqual(['--no-lsp']);
+    expect(ompLspArgs("1" as unknown as boolean)).toEqual(["--no-lsp"]);
+    expect(ompLspArgs(1 as unknown as boolean)).toEqual(["--no-lsp"]);
   });
 
-  it('BOTH omp branches honour it — role and su were separate literals', () => {
-    const role = roleLaunchArgs('omp', { promptFile: '/p.md', allowNativeLsp: true });
-    const su = suLaunchArgs('omp', { promptFile: '/p.md', allowNativeLsp: true });
-    expect(role.args).not.toContain('--no-lsp');
-    expect(su.args).not.toContain('--no-lsp');
+  it("BOTH omp branches honour it — role and su were separate literals", () => {
+    const role = roleLaunchArgs("omp", {
+      promptFile: "/p.md",
+      allowNativeLsp: true,
+    });
+    const su = suLaunchArgs("omp", {
+      promptFile: "/p.md",
+      allowNativeLsp: true,
+    });
+    expect(role.args).not.toContain("--no-lsp");
+    expect(su.args).not.toContain("--no-lsp");
 
     // CONTROL: the same two calls WITHOUT the allow still strip. Without this
     // the assertions above would pass against a build that dropped `--no-lsp`
     // unconditionally — the regression this feature could plausibly cause.
-    expect(roleLaunchArgs('omp', { promptFile: '/p.md' }).args).toContain('--no-lsp');
-    expect(suLaunchArgs('omp', { promptFile: '/p.md' }).args).toContain('--no-lsp');
+    expect(roleLaunchArgs("omp", { promptFile: "/p.md" }).args).toContain(
+      "--no-lsp",
+    );
+    expect(suLaunchArgs("omp", { promptFile: "/p.md" }).args).toContain(
+      "--no-lsp",
+    );
   });
 
-  it('never emits --no-lsp on non-omp backends (it is an omp flag)', () => {
-    for (const backend of ['claude', 'codex']) {
-      expect(suLaunchArgs(backend, { promptFile: '/p.md' }).args).not.toContain('--no-lsp');
+  it("never emits --no-lsp on non-omp backends (it is an omp flag)", () => {
+    for (const backend of ["claude", "codex"]) {
+      expect(suLaunchArgs(backend, { promptFile: "/p.md" }).args).not.toContain(
+        "--no-lsp",
+      );
       expect(
-        suLaunchArgs(backend, { promptFile: '/p.md', allowNativeLsp: true }).args,
-      ).not.toContain('--no-lsp');
+        suLaunchArgs(backend, { promptFile: "/p.md", allowNativeLsp: true })
+          .args,
+      ).not.toContain("--no-lsp");
     }
   });
 });
 
-describe('roleLaunchArgs (interactive role session)', () => {
-  const files = { promptFile: '/lc/session-7.md', mcpJsonPath: '/proj/.mcp.json' };
+describe("roleLaunchArgs (interactive role session)", () => {
+  const files = {
+    promptFile: "/lc/session-7.md",
+    mcpJsonPath: "/proj/.mcp.json",
+  };
 
-  it('EI-204995: a scripted headless role receives the env kickoff as its final tagged positional turn', () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), 'role-kickoff-prov-'));
+  it("EI-204995: a scripted headless role receives the env kickoff as its final tagged positional turn", () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), "role-kickoff-prov-"));
     try {
       const parsed = parseArgs([
-        '--no-picker',
-        '--agent=claude',
-        '--headless',
-        '--role=judge',
-        '--add-dir=/evidence',
-        '--',
-        '--effort',
-        'high',
+        "--no-picker",
+        "--agent=claude",
+        "--headless",
+        "--role=judge",
+        "--add-dir=/evidence",
+        "--",
+        "--effort",
+        "high",
       ]);
       const env = {
-        PAPERCUSP_KICKOFF_PROMPT: 'Grade the frozen acceptance evidence.',
-        PAPERCUSP_SID: 'role-judge-1',
+        PAPERCUSP_KICKOFF_PROMPT: "Grade the frozen acceptance evidence.",
+        PAPERCUSP_SID: "role-judge-1",
         PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
       };
       const result = finalizeFreshRoleArgs(
-        'claude',
-        ['--permission-mode', 'bypassPermissions'],
-        { envelopeEnv: { PAPERCUSP_SID: 'role-judge-1' } },
+        "claude",
+        ["--permission-mode", "bypassPermissions"],
+        { envelopeEnv: { PAPERCUSP_SID: "role-judge-1" } },
         parsed,
         env,
       );
 
       expect(result.kickoffSeeded).toBe(true);
       expect(result.args.slice(0, -1)).toEqual([
-        '--permission-mode', 'bypassPermissions',
-        '--add-dir=/evidence',
-        '--effort', 'high',
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir=/evidence",
+        "--effort",
+        "high",
       ]);
       expect(result.args.at(-1)).toMatch(
         /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nGrade the frozen acceptance evidence\.$/,
       );
-      const rows = readFileSync(join(provenanceDir, 'role-judge-1.jsonl'), 'utf8').trim().split('\n');
+      const rows = readFileSync(
+        join(provenanceDir, "role-judge-1.jsonl"),
+        "utf8",
+      )
+        .trim()
+        .split("\n");
       expect(JSON.parse(rows.at(-1)!)).toMatchObject({
-        sid: 'role-judge-1',
-        origin: 'fleet-kickoff',
+        sid: "role-judge-1",
+        origin: "fleet-kickoff",
       });
     } finally {
       rmSync(provenanceDir, { recursive: true, force: true });
     }
   });
 
-  it('routes a scripted headless OMP role kickoff to the managed pty, not argv', () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), 'role-omp-kickoff-prov-'));
+  it("routes a scripted headless OMP role kickoff to the managed pty, not argv", () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), "role-omp-kickoff-prov-"));
     try {
-      const parsed = parseArgs(['--no-picker', '--agent=omp', '--headless', '--role=judge']);
+      const parsed = parseArgs([
+        "--no-picker",
+        "--agent=omp",
+        "--headless",
+        "--role=judge",
+      ]);
       const result = finalizeFreshRoleArgs(
-        'omp',
-        ['--extension', '/home/user/.papercusp-coord.ts'],
-        { envelopeEnv: { PAPERCUSP_SID: 'role-omp-1' } },
+        "omp",
+        ["--extension", "/home/user/.papercusp-coord.ts"],
+        { envelopeEnv: { PAPERCUSP_SID: "role-omp-1" } },
         parsed,
         {
-          PAPERCUSP_KICKOFF_PROMPT: 'Grade the frozen acceptance evidence.',
-          PAPERCUSP_SID: 'role-omp-1',
+          PAPERCUSP_KICKOFF_PROMPT: "Grade the frozen acceptance evidence.",
+          PAPERCUSP_SID: "role-omp-1",
           PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
         },
       );
 
       expect(result.kickoffSeeded).toBe(true);
-      expect(result.args).toEqual(['--extension', '/home/user/.papercusp-coord.ts']);
+      expect(result.args).toEqual([
+        "--extension",
+        "/home/user/.papercusp-coord.ts",
+      ]);
       expect(result.kickoff).toMatch(
         /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nGrade the frozen acceptance evidence\.$/,
       );
@@ -3131,89 +4388,132 @@ describe('roleLaunchArgs (interactive role session)', () => {
     }
   });
 
-  it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms, scheduler lockout, no-subagent-fanout', () => {
-    const { bin, args } = roleLaunchArgs('claude', files);
-    expect(bin).toBe('claude');
+  it("claude: raw claude, role prompt, strict role-scoped MCP, skip perms, scheduler lockout, no-subagent-fanout", () => {
+    const { bin, args } = roleLaunchArgs("claude", files);
+    expect(bin).toBe("claude");
     expect(args).toEqual([
-      '--dangerously-skip-permissions',
-      '--append-system-prompt-file', '/lc/session-7.md',
-      '--mcp-config', '/proj/.mcp.json',
-      '--strict-mcp-config',
-      '--permission-mode', 'bypassPermissions',
+      "--dangerously-skip-permissions",
+      "--append-system-prompt-file",
+      "/lc/session-7.md",
+      "--mcp-config",
+      "/proj/.mcp.json",
+      "--strict-mcp-config",
+      "--permission-mode",
+      "bypassPermissions",
       NATIVE_SCHEDULER_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
 
-  it('the scheduler lockout literal stays in LOCKSTEP with the canonical TS module (native-scheduler-lockout P-005)', () => {
+  it("the scheduler lockout literal stays in LOCKSTEP with the canonical TS module (native-scheduler-lockout P-005)", () => {
     // psu-launcher.mjs is a plain-node script that can't import TS, so it
     // duplicates the rendered flag; this pins the copy to the source of truth.
     expect(NATIVE_SCHEDULER_DENY_FLAG).toBe(nativeSchedulerDenyFlag());
   });
 
-  it('the scheduler lockout is one `=` token (the variadic space form would eat following args)', () => {
-    expect(NATIVE_SCHEDULER_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
+  it("the scheduler lockout is one `=` token (the variadic space form would eat following args)", () => {
+    expect(NATIVE_SCHEDULER_DENY_FLAG.startsWith("--disallowedTools=")).toBe(
+      true,
+    );
     expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
   });
 
-  it('the owner-desktop notify-send lockout stays in LOCKSTEP with the canonical TS module (owner directive 2026-07-14)', () => {
+  it("the owner-desktop notify-send lockout stays in LOCKSTEP with the canonical TS module (owner directive 2026-07-14)", () => {
     expect(OWNER_DESKTOP_NOTIFY_DENY_FLAG).toBe(ownerDesktopNotifyDenyFlag());
-    expect(OWNER_DESKTOP_NOTIFY_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
+    expect(
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG.startsWith("--disallowedTools="),
+    ).toBe(true);
     expect(/\s/.test(OWNER_DESKTOP_NOTIFY_DENY_FLAG)).toBe(false);
   });
 
-  it('the notify-send lockout is UNCONDITIONAL on every claude launch shape — su + role + resume, even with allowSubagents:true', () => {
-    expect(roleLaunchArgs('claude', files).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
-    expect(suLaunchArgs('claude', { promptFile: '/p.md' }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
-    expect(suLaunchArgs('claude', { promptFile: '/p.md', allowSubagents: true }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
-    expect(resumeArgsFor({ agent: 'claude', cwd: '/x' }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
-    expect(resumeArgsFor({ agent: 'claude', cwd: '/x' }, { allowSubagents: true }).args).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
+  it("the notify-send lockout is UNCONDITIONAL on every claude launch shape — su + role + resume, even with allowSubagents:true", () => {
+    expect(roleLaunchArgs("claude", files).args).toContain(
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+    );
+    expect(suLaunchArgs("claude", { promptFile: "/p.md" }).args).toContain(
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+    );
+    expect(
+      suLaunchArgs("claude", { promptFile: "/p.md", allowSubagents: true })
+        .args,
+    ).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
+    expect(resumeArgsFor({ agent: "claude", cwd: "/x" }).args).toContain(
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+    );
+    expect(
+      resumeArgsFor({ agent: "claude", cwd: "/x" }, { allowSubagents: true })
+        .args,
+    ).toContain(OWNER_DESKTOP_NOTIFY_DENY_FLAG);
   });
 
-  it('the no-subagent-fanout deny carries Task + Agent + Workflow (no-subagent-deny.ts)', () => {
+  it("the no-subagent-fanout deny carries Task + Agent + Workflow (no-subagent-deny.ts)", () => {
     // psu-launcher.mjs duplicates the rendered flag from the canonical TS source
     // (same lockstep pattern as the scheduler-deny flag above).
     expect(NO_SUBAGENTS_DENY_FLAG).toBe(noSubagentToolsDenyFlag());
-    expect(NO_SUBAGENTS_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
+    expect(NO_SUBAGENTS_DENY_FLAG.startsWith("--disallowedTools=")).toBe(true);
     expect(/\s/.test(NO_SUBAGENTS_DENY_FLAG)).toBe(false);
-    expect(NO_SUBAGENTS_DENY_FLAG).toContain('Task');
-    expect(NO_SUBAGENTS_DENY_FLAG).toContain('Agent');
+    expect(NO_SUBAGENTS_DENY_FLAG).toContain("Task");
+    expect(NO_SUBAGENTS_DENY_FLAG).toContain("Agent");
     // Workflow: the separate multi-agent orchestration tool that slipped the deny
     // (a subagents-denied psu --resume session still fanned out through it).
-    expect(NO_SUBAGENTS_DENY_FLAG).toContain('Workflow');
+    expect(NO_SUBAGENTS_DENY_FLAG).toContain("Workflow");
   });
 
-  it('role sessions DENY subagent fanout by DEFAULT; allowSubagents:true opts in (owner mandate 2026-07-02)', () => {
-    expect(roleLaunchArgs('claude', files).args).toContain(NO_SUBAGENTS_DENY_FLAG);
-    expect(roleLaunchArgs('claude', { ...files, replaceClaudeBase: true }).args).toContain(NO_SUBAGENTS_DENY_FLAG);
-    expect(roleLaunchArgs('claude', { ...files, allowSubagents: true }).args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
+  it("role sessions DENY subagent fanout by DEFAULT; allowSubagents:true opts in (owner mandate 2026-07-02)", () => {
+    expect(roleLaunchArgs("claude", files).args).toContain(
+      NO_SUBAGENTS_DENY_FLAG,
+    );
+    expect(
+      roleLaunchArgs("claude", { ...files, replaceClaudeBase: true }).args,
+    ).toContain(NO_SUBAGENTS_DENY_FLAG);
+    expect(
+      roleLaunchArgs("claude", { ...files, allowSubagents: true }).args,
+    ).not.toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
-  describe('subagentGatewayRiskNotice (EI-3294)', () => {
-    it('warns ONLY for claude + allowSubagents + the default (non-gateway) account route', () => {
+  describe("subagentGatewayRiskNotice (EI-3294)", () => {
+    it("warns ONLY for claude + allowSubagents + the default (non-gateway) account route", () => {
       expect(
-        subagentGatewayRiskNotice('claude', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }),
+        subagentGatewayRiskNotice("claude", true, {
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: "default",
+        }),
       ).toMatch(/EI-3294/);
     });
 
-    it('stays silent when subagents are not enabled', () => {
-      expect(subagentGatewayRiskNotice('claude', false, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' })).toBeNull();
-      expect(subagentGatewayRiskNotice('claude', null, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' })).toBeNull();
-    });
-
-    it('stays silent once the route is gateway-routed (auto or a pinned account) — the whole point is it sidesteps the risk', () => {
-      expect(subagentGatewayRiskNotice('claude', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' })).toBeNull();
-      expect(subagentGatewayRiskNotice('claude', true, {})).toBeNull();
-      expect(subagentGatewayRiskNotice('claude', true, undefined)).toBeNull();
-    });
-
-    it('stays silent for non-claude backends (subagent deny/allow is claude-only)', () => {
+    it("stays silent when subagents are not enabled", () => {
       expect(
-        subagentGatewayRiskNotice('omp', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }),
+        subagentGatewayRiskNotice("claude", false, {
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: "default",
+        }),
       ).toBeNull();
       expect(
-        subagentGatewayRiskNotice('codex', true, { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }),
+        subagentGatewayRiskNotice("claude", null, {
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: "default",
+        }),
+      ).toBeNull();
+    });
+
+    it("stays silent once the route is gateway-routed (auto or a pinned account) — the whole point is it sidesteps the risk", () => {
+      expect(
+        subagentGatewayRiskNotice("claude", true, {
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: "auto",
+        }),
+      ).toBeNull();
+      expect(subagentGatewayRiskNotice("claude", true, {})).toBeNull();
+      expect(subagentGatewayRiskNotice("claude", true, undefined)).toBeNull();
+    });
+
+    it("stays silent for non-claude backends (subagent deny/allow is claude-only)", () => {
+      expect(
+        subagentGatewayRiskNotice("omp", true, {
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: "default",
+        }),
+      ).toBeNull();
+      expect(
+        subagentGatewayRiskNotice("codex", true, {
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: "default",
+        }),
       ).toBeNull();
     });
   });
@@ -3221,133 +4521,198 @@ describe('roleLaunchArgs (interactive role session)', () => {
   // P-019/D-007 (voice-public-release-readiness-2026-07-12): role sessions silently
   // DROPPED --model (env-only PAPERCUSP_MODEL) — the "fast" sonnet pane launched on
   // the box's saved default (Opus). Pin the claude branch to emit real model argv.
-  it('claude: --model spec becomes real argv with effort split (was silently dropped — voice pane ran Opus)', () => {
-    const { args } = roleLaunchArgs('claude', { ...files, model: 'sonnet:medium' });
-    const modelAt = args.indexOf('--model');
+  it("claude: --model spec becomes real argv with effort split (was silently dropped — voice pane ran Opus)", () => {
+    const { args } = roleLaunchArgs("claude", {
+      ...files,
+      model: "sonnet:medium",
+    });
+    const modelAt = args.indexOf("--model");
     expect(modelAt).toBeGreaterThan(-1);
-    expect(args.slice(modelAt, modelAt + 4)).toEqual(['--model', 'sonnet', '--effort', 'medium']);
-  });
-
-  it('claude: bare model spec passes through verbatim; no model ⇒ no --model/--effort argv', () => {
-    const bare = roleLaunchArgs('claude', { ...files, model: 'claude-sonnet-5' });
-    const at = bare.args.indexOf('--model');
-    expect(bare.args.slice(at, at + 2)).toEqual(['--model', 'claude-sonnet-5']);
-    expect(bare.args).not.toContain('--effort');
-
-    const none = roleLaunchArgs('claude', files);
-    expect(none.args).not.toContain('--model');
-    expect(none.args).not.toContain('--effort');
-  });
-
-  it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
-    const { bin, args } = roleLaunchArgs('omp', files);
-    expect(bin).toBe('omp');
-    expect(args).toEqual(['--approval-mode', 'yolo', '--no-lsp', '--append-system-prompt', '/lc/session-7.md']);
-  });
-
-  it('omp: keeps the native lsp builtin when the server-resolved gate allows it (P-021/D-013)', () => {
-    const { args } = roleLaunchArgs('omp', { ...files, allowNativeLsp: true });
-    expect(args).not.toContain('--no-lsp');
-    expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
-  });
-
-  it('omp: loads the coordination extension (-e) when a coordExtPath is supplied (lock + activity bridge)', () => {
-    const { args } = roleLaunchArgs('omp', { ...files, coordExtPath: '/h/.papercusp/papercusp-coord.ts' });
-    expect(args).toEqual([
-      '--approval-mode', 'yolo',
-      '--no-lsp',
-      '--append-system-prompt', '/lc/session-7.md',
-      '-e', '/h/.papercusp/papercusp-coord.ts',
+    expect(args.slice(modelAt, modelAt + 4)).toEqual([
+      "--model",
+      "sonnet",
+      "--effort",
+      "medium",
     ]);
   });
 
-  it('omp: omits -e when no coordExtPath is supplied', () => {
-    const { args } = roleLaunchArgs('omp', files);
-    expect(args).not.toContain('-e');
+  it("claude: bare model spec passes through verbatim; no model ⇒ no --model/--effort argv", () => {
+    const bare = roleLaunchArgs("claude", {
+      ...files,
+      model: "claude-sonnet-5",
+    });
+    const at = bare.args.indexOf("--model");
+    expect(bare.args.slice(at, at + 2)).toEqual(["--model", "claude-sonnet-5"]);
+    expect(bare.args).not.toContain("--effort");
+
+    const none = roleLaunchArgs("claude", files);
+    expect(none.args).not.toContain("--model");
+    expect(none.args).not.toContain("--effort");
   });
 
-  it('omp: --model spec becomes native model argv', () => {
-    const { args } = roleLaunchArgs('omp', { ...files, model: 'sonnet:high' });
-    const modelAt = args.indexOf('--model');
-    expect(args.slice(modelAt, modelAt + 2)).toEqual(['--model', 'sonnet:high']);
+  it("omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)", () => {
+    const { bin, args } = roleLaunchArgs("omp", files);
+    expect(bin).toBe("omp");
+    expect(args).toEqual([
+      "--approval-mode",
+      "yolo",
+      "--no-lsp",
+      "--append-system-prompt",
+      "/lc/session-7.md",
+    ]);
   });
 
-  it('codex: raw codex, hook-trust + approvals/sandbox bypass (CODEX_HOME via envelopeEnv)', () => {
-    const { bin, args } = roleLaunchArgs('codex', files);
-    expect(bin).toBe('codex');
-    expect(args).toEqual(['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox']);
+  it("omp: keeps the native lsp builtin when the server-resolved gate allows it (P-021/D-013)", () => {
+    const { args } = roleLaunchArgs("omp", { ...files, allowNativeLsp: true });
+    expect(args).not.toContain("--no-lsp");
+    expect(args).toEqual([
+      "--approval-mode",
+      "yolo",
+      "--append-system-prompt",
+      "/lc/session-7.md",
+    ]);
   });
 
-  it('codex: --model spec becomes model and reasoning-effort argv', () => {
-    const { args } = roleLaunchArgs('codex', { ...files, model: 'gpt-5:high' });
-    expect(args.slice(-4)).toEqual(['-m', 'gpt-5', '-c', 'model_reasoning_effort="high"']);
+  it("omp: loads the coordination extension (-e) when a coordExtPath is supplied (lock + activity bridge)", () => {
+    const { args } = roleLaunchArgs("omp", {
+      ...files,
+      coordExtPath: "/h/.papercusp/papercusp-coord.ts",
+    });
+    expect(args).toEqual([
+      "--approval-mode",
+      "yolo",
+      "--no-lsp",
+      "--append-system-prompt",
+      "/lc/session-7.md",
+      "-e",
+      "/h/.papercusp/papercusp-coord.ts",
+    ]);
   });
 
-  it('unknown backend: throws', () => {
-    expect(() => roleLaunchArgs('gemini', files)).toThrow();
+  it("omp: omits -e when no coordExtPath is supplied", () => {
+    const { args } = roleLaunchArgs("omp", files);
+    expect(args).not.toContain("-e");
+  });
+
+  it("omp: --model spec becomes native model argv", () => {
+    const { args } = roleLaunchArgs("omp", { ...files, model: "sonnet:high" });
+    const modelAt = args.indexOf("--model");
+    expect(args.slice(modelAt, modelAt + 2)).toEqual([
+      "--model",
+      "sonnet:high",
+    ]);
+  });
+
+  it("codex: raw codex, hook-trust + approvals/sandbox bypass (CODEX_HOME via envelopeEnv)", () => {
+    const { bin, args } = roleLaunchArgs("codex", files);
+    expect(bin).toBe("codex");
+    expect(args).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+  });
+
+  it("codex: --model spec becomes model and reasoning-effort argv", () => {
+    const { args } = roleLaunchArgs("codex", { ...files, model: "gpt-5:high" });
+    expect(args.slice(-4)).toEqual([
+      "-m",
+      "gpt-5",
+      "-c",
+      'model_reasoning_effort="high"',
+    ]);
+  });
+
+  it("unknown backend: throws", () => {
+    expect(() => roleLaunchArgs("gemini", files)).toThrow();
   });
 
   // domain-generic-agent-personas-2026-06-17 P-014: REPLACE_CLAUDE_BASE (default-off) — coherent
   // with suLaunchArgs so flipping the flag replaces the base for interactive role sessions too.
-  it('replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)', () => {
-    expect(roleLaunchArgs('claude', files).args).toContain('--append-system-prompt-file');
-    expect(roleLaunchArgs('claude', files).args).not.toContain('--system-prompt-file');
-    expect(roleLaunchArgs('omp', files).args).toContain('--append-system-prompt');
-    expect(roleLaunchArgs('omp', files).args).not.toContain('--system-prompt');
+  it("replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)", () => {
+    expect(roleLaunchArgs("claude", files).args).toContain(
+      "--append-system-prompt-file",
+    );
+    expect(roleLaunchArgs("claude", files).args).not.toContain(
+      "--system-prompt-file",
+    );
+    expect(roleLaunchArgs("omp", files).args).toContain(
+      "--append-system-prompt",
+    );
+    expect(roleLaunchArgs("omp", files).args).not.toContain("--system-prompt");
   });
 
-  it('replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic), MCP + lockout intact', () => {
-    const { args } = roleLaunchArgs('claude', { ...files, replaceClaudeBase: true });
+  it("replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic), MCP + lockout intact", () => {
+    const { args } = roleLaunchArgs("claude", {
+      ...files,
+      replaceClaudeBase: true,
+    });
     expect(args).toEqual([
-      '--dangerously-skip-permissions',
-      '--system-prompt-file', '/lc/session-7.md',
-      '--exclude-dynamic-system-prompt-sections',
-      '--mcp-config', '/proj/.mcp.json',
-      '--strict-mcp-config',
-      '--permission-mode', 'bypassPermissions',
+      "--dangerously-skip-permissions",
+      "--system-prompt-file",
+      "/lc/session-7.md",
+      "--exclude-dynamic-system-prompt-sections",
+      "--mcp-config",
+      "/proj/.mcp.json",
+      "--strict-mcp-config",
+      "--permission-mode",
+      "bypassPermissions",
       NATIVE_SCHEDULER_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
     ]);
-    expect(args).not.toContain('--append-system-prompt-file');
+    expect(args).not.toContain("--append-system-prompt-file");
   });
 
-  it('replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append', () => {
-    const { args } = roleLaunchArgs('omp', { ...files, coordExtPath: '/h/coord.ts', replaceClaudeBase: true });
+  it("replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append", () => {
+    const { args } = roleLaunchArgs("omp", {
+      ...files,
+      coordExtPath: "/h/coord.ts",
+      replaceClaudeBase: true,
+    });
     expect(args).toEqual([
-      '--approval-mode', 'yolo',
-      '--no-lsp',
-      '--system-prompt', '/lc/session-7.md',
-      '-e', '/h/coord.ts',
+      "--approval-mode",
+      "yolo",
+      "--no-lsp",
+      "--system-prompt",
+      "/lc/session-7.md",
+      "-e",
+      "/h/coord.ts",
     ]);
   });
 
-  it('replaceClaudeBase ON: codex is a no-op (CODEX_HOME AGENTS.md is already the whole prompt)', () => {
-    expect(roleLaunchArgs('codex', { ...files, replaceClaudeBase: true }).args).toEqual([
-      '--dangerously-bypass-hook-trust',
-      '--dangerously-bypass-approvals-and-sandbox',
+  it("replaceClaudeBase ON: codex is a no-op (CODEX_HOME AGENTS.md is already the whole prompt)", () => {
+    expect(
+      roleLaunchArgs("codex", { ...files, replaceClaudeBase: true }).args,
+    ).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
     ]);
   });
 
-  it('agentInvalidForRole accepts claude/omp/codex', () => {
-    expect(agentInvalidForRole('claude')).toBe(false);
-    expect(agentInvalidForRole('omp')).toBe(false);
-    expect(agentInvalidForRole('codex')).toBe(false);
+  it("agentInvalidForRole accepts claude/omp/codex", () => {
+    expect(agentInvalidForRole("claude")).toBe(false);
+    expect(agentInvalidForRole("omp")).toBe(false);
+    expect(agentInvalidForRole("codex")).toBe(false);
     expect(agentInvalidForRole(null)).toBe(true);
-    expect(agentInvalidForRole('gemini')).toBe(true);
+    expect(agentInvalidForRole("gemini")).toBe(true);
   });
 });
 
-describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () => {
-  const files = { promptFile: '/lc/session-9.md', coordExtPath: '/home/u/.papercusp/papercusp-coord.ts' };
+describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () => {
+  const files = {
+    promptFile: "/lc/session-9.md",
+    coordExtPath: "/home/u/.papercusp/papercusp-coord.ts",
+  };
 
-  it('claude: playbook prompt + skip-perms, NO --mcp-config (papercusp-su is user-level)', () => {
-    const { bin, args } = suLaunchArgs('claude', files);
-    expect(bin).toBe('claude');
+  it("claude: playbook prompt + skip-perms, NO --mcp-config (papercusp-su is user-level)", () => {
+    const { bin, args } = suLaunchArgs("claude", files);
+    expect(bin).toBe("claude");
     expect(args).toEqual([
-      '--dangerously-skip-permissions',
-      '--append-system-prompt-file', '/lc/session-9.md',
-      '--permission-mode', 'bypassPermissions',
+      "--dangerously-skip-permissions",
+      "--append-system-prompt-file",
+      "/lc/session-9.md",
+      "--permission-mode",
+      "bypassPermissions",
       // Subagent deny is DEFAULT-ON as of the 2026-07-02 owner mandate.
       NO_SUBAGENTS_DENY_FLAG,
       // notify-send lockout is unconditional — su sessions included (2026-07-14).
@@ -3355,203 +4720,263 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
     ]);
     // su relies on the user-level papercusp-su MCP (no per-launch --mcp-config),
     // so the user's full toolkit loads (D-005) and the server isn't doubled.
-    expect(args).not.toContain('--mcp-config');
-    expect(args).not.toContain('--strict-mcp-config');
+    expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("--strict-mcp-config");
   });
 
-  it('claude su: the HUMAN session keeps native SCHEDULERS — NO scheduler-lockout flag (native-scheduler-lockout D-003)', () => {
-    const { args } = suLaunchArgs('claude', files);
+  it("claude su: the HUMAN session keeps native SCHEDULERS — NO scheduler-lockout flag (native-scheduler-lockout D-003)", () => {
+    const { args } = suLaunchArgs("claude", files);
     // D-003 for SCHEDULERS still holds — assert the scheduler-deny specifically, NOT
     // the mere presence of a --disallowedTools token: the subagent deny is now
     // default-ON (owner mandate 2026-07-02) and adds its own --disallowedTools.
     expect(args).not.toContain(NATIVE_SCHEDULER_DENY_FLAG);
   });
 
-  it('claude su: DENIES the subagent tool by DEFAULT (owner mandate 2026-07-02 — inverted the D-003 carve-out)', () => {
-    const { args } = suLaunchArgs('claude', files);
+  it("claude su: DENIES the subagent tool by DEFAULT (owner mandate 2026-07-02 — inverted the D-003 carve-out)", () => {
+    const { args } = suLaunchArgs("claude", files);
     expect(args).toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
-  it('claude su: allowSubagents:true opts the human session back IN to the subagent tool (owner mandate 2026-07-02)', () => {
-    const { args } = suLaunchArgs('claude', { ...files, allowSubagents: true });
+  it("claude su: allowSubagents:true opts the human session back IN to the subagent tool (owner mandate 2026-07-02)", () => {
+    const { args } = suLaunchArgs("claude", { ...files, allowSubagents: true });
     expect(args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
-  it('omp: yolo + playbook prompt + coordination extension (-e, P-021)', () => {
-    const { bin, args } = suLaunchArgs('omp', files);
-    expect(bin).toBe('omp');
+  it("omp: yolo + playbook prompt + coordination extension (-e, P-021)", () => {
+    const { bin, args } = suLaunchArgs("omp", files);
+    expect(bin).toBe("omp");
     expect(args).toEqual([
-      '--approval-mode', 'yolo',
-      '--no-lsp',
-      '--append-system-prompt', '/lc/session-9.md',
-      '-e', '/home/u/.papercusp/papercusp-coord.ts',
+      "--approval-mode",
+      "yolo",
+      "--no-lsp",
+      "--append-system-prompt",
+      "/lc/session-9.md",
+      "-e",
+      "/home/u/.papercusp/papercusp-coord.ts",
     ]);
   });
 
-  it('omp: omits -e when no coordExtPath is supplied', () => {
-    const { args } = suLaunchArgs('omp', { promptFile: '/lc/s.md' });
-    expect(args).toEqual(['--approval-mode', 'yolo', '--no-lsp', '--append-system-prompt', '/lc/s.md']);
-    expect(args).not.toContain('-e');
+  it("omp: omits -e when no coordExtPath is supplied", () => {
+    const { args } = suLaunchArgs("omp", { promptFile: "/lc/s.md" });
+    expect(args).toEqual([
+      "--approval-mode",
+      "yolo",
+      "--no-lsp",
+      "--append-system-prompt",
+      "/lc/s.md",
+    ]);
+    expect(args).not.toContain("-e");
   });
 
-  it('codex: hook-trust + approvals/sandbox bypass (CODEX_HOME minted server-side, P-030)', () => {
-    const { bin, args } = suLaunchArgs('codex', files);
-    expect(bin).toBe('codex');
-    expect(args).toEqual(['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox']);
+  it("codex: hook-trust + approvals/sandbox bypass (CODEX_HOME minted server-side, P-030)", () => {
+    const { bin, args } = suLaunchArgs("codex", files);
+    expect(bin).toBe("codex");
+    expect(args).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
   });
 
-  it('claude: forces --session-id when a nativeSessionId is supplied (resume-by-uuid correlation)', () => {
-    const { args } = suLaunchArgs('claude', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9' });
+  it("claude: forces --session-id when a nativeSessionId is supplied (resume-by-uuid correlation)", () => {
+    const { args } = suLaunchArgs("claude", {
+      promptFile: "/lc/s.md",
+      nativeSessionId: "uuid-9",
+    });
     // --session-id sits between the appended prompt and the permission mode; it
     // makes `psu --resume uuid-9` match the tracked adv row + resume the EXACT session.
     expect(args).toEqual([
-      '--dangerously-skip-permissions',
-      '--append-system-prompt-file', '/lc/s.md',
-      '--session-id', 'uuid-9',
-      '--permission-mode', 'bypassPermissions',
+      "--dangerously-skip-permissions",
+      "--append-system-prompt-file",
+      "/lc/s.md",
+      "--session-id",
+      "uuid-9",
+      "--permission-mode",
+      "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
 
-  it('claude: omits --session-id when no nativeSessionId is given', () => {
-    expect(suLaunchArgs('claude', { promptFile: '/lc/s.md' }).args).not.toContain('--session-id');
+  it("claude: omits --session-id when no nativeSessionId is given", () => {
+    expect(
+      suLaunchArgs("claude", { promptFile: "/lc/s.md" }).args,
+    ).not.toContain("--session-id");
   });
 
-  it('omp/codex: ignore nativeSessionId (no forced session id on those backends)', () => {
-    expect(suLaunchArgs('omp', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9' }).args).not.toContain('--session-id');
-    expect(suLaunchArgs('codex', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9' }).args).not.toContain('--session-id');
+  it("omp/codex: ignore nativeSessionId (no forced session id on those backends)", () => {
+    expect(
+      suLaunchArgs("omp", { promptFile: "/lc/s.md", nativeSessionId: "uuid-9" })
+        .args,
+    ).not.toContain("--session-id");
+    expect(
+      suLaunchArgs("codex", {
+        promptFile: "/lc/s.md",
+        nativeSessionId: "uuid-9",
+      }).args,
+    ).not.toContain("--session-id");
   });
 
-  it('unknown backend: throws', () => {
-    expect(() => suLaunchArgs('gemini', files)).toThrow();
+  it("unknown backend: throws", () => {
+    expect(() => suLaunchArgs("gemini", files)).toThrow();
   });
 
   // domain-generic-agent-personas-2026-06-17 P-014: REPLACE_CLAUDE_BASE (default-off).
-  it('replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)', () => {
-    expect(suLaunchArgs('claude', files).args).toContain('--append-system-prompt-file');
-    expect(suLaunchArgs('claude', files).args).not.toContain('--system-prompt-file');
-    expect(suLaunchArgs('claude', files).args).not.toContain('--exclude-dynamic-system-prompt-sections');
-    expect(suLaunchArgs('omp', files).args).toContain('--append-system-prompt');
-    expect(suLaunchArgs('omp', files).args).not.toContain('--system-prompt');
+  it("replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)", () => {
+    expect(suLaunchArgs("claude", files).args).toContain(
+      "--append-system-prompt-file",
+    );
+    expect(suLaunchArgs("claude", files).args).not.toContain(
+      "--system-prompt-file",
+    );
+    expect(suLaunchArgs("claude", files).args).not.toContain(
+      "--exclude-dynamic-system-prompt-sections",
+    );
+    expect(suLaunchArgs("omp", files).args).toContain("--append-system-prompt");
+    expect(suLaunchArgs("omp", files).args).not.toContain("--system-prompt");
   });
 
-  it('replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic)', () => {
-    const { args } = suLaunchArgs('claude', { ...files, replaceClaudeBase: true });
+  it("replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic)", () => {
+    const { args } = suLaunchArgs("claude", {
+      ...files,
+      replaceClaudeBase: true,
+    });
     expect(args).toEqual([
-      '--dangerously-skip-permissions',
-      '--system-prompt-file', '/lc/session-9.md',
-      '--exclude-dynamic-system-prompt-sections',
-      '--permission-mode', 'bypassPermissions',
+      "--dangerously-skip-permissions",
+      "--system-prompt-file",
+      "/lc/session-9.md",
+      "--exclude-dynamic-system-prompt-sections",
+      "--permission-mode",
+      "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
-    expect(args).not.toContain('--append-system-prompt-file');
+    expect(args).not.toContain("--append-system-prompt-file");
   });
 
-  it('replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append', () => {
-    const { args } = suLaunchArgs('omp', { ...files, replaceClaudeBase: true });
+  it("replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append", () => {
+    const { args } = suLaunchArgs("omp", { ...files, replaceClaudeBase: true });
     expect(args).toEqual([
-      '--approval-mode', 'yolo',
-      '--no-lsp',
-      '--system-prompt', '/lc/session-9.md',
-      '-e', '/home/u/.papercusp/papercusp-coord.ts',
+      "--approval-mode",
+      "yolo",
+      "--no-lsp",
+      "--system-prompt",
+      "/lc/session-9.md",
+      "-e",
+      "/home/u/.papercusp/papercusp-coord.ts",
     ]);
-    expect(args).not.toContain('--append-system-prompt');
+    expect(args).not.toContain("--append-system-prompt");
   });
 
-  it('replaceClaudeBase ON: codex is a no-op (AGENTS.md is already the whole prompt — no Claude base)', () => {
-    expect(suLaunchArgs('codex', { ...files, replaceClaudeBase: true }).args).toEqual([
-      '--dangerously-bypass-hook-trust',
-      '--dangerously-bypass-approvals-and-sandbox',
+  it("replaceClaudeBase ON: codex is a no-op (AGENTS.md is already the whole prompt — no Claude base)", () => {
+    expect(
+      suLaunchArgs("codex", { ...files, replaceClaudeBase: true }).args,
+    ).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
     ]);
   });
 
-  it('replaceClaudeBase ON: claude still forces --session-id when given', () => {
-    const { args } = suLaunchArgs('claude', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9', replaceClaudeBase: true });
+  it("replaceClaudeBase ON: claude still forces --session-id when given", () => {
+    const { args } = suLaunchArgs("claude", {
+      promptFile: "/lc/s.md",
+      nativeSessionId: "uuid-9",
+      replaceClaudeBase: true,
+    });
     expect(args).toEqual([
-      '--dangerously-skip-permissions',
-      '--system-prompt-file', '/lc/s.md',
-      '--exclude-dynamic-system-prompt-sections',
-      '--session-id', 'uuid-9',
-      '--permission-mode', 'bypassPermissions',
+      "--dangerously-skip-permissions",
+      "--system-prompt-file",
+      "/lc/s.md",
+      "--exclude-dynamic-system-prompt-sections",
+      "--session-id",
+      "uuid-9",
+      "--permission-mode",
+      "bypassPermissions",
       NO_SUBAGENTS_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
   });
 });
 
-describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-02)', () => {
-  it('injects [1m] for a bare opus/fable spec', () => {
-    expect(normalizeModelSpec('opus')).toBe('opus[1m]');
-    expect(normalizeModelSpec('claude-fable-5')).toBe('claude-fable-5[1m]');
-    expect(normalizeModelSpec('fable')).toBe('fable[1m]');
+describe("normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-02)", () => {
+  it("injects [1m] for a bare opus/fable spec", () => {
+    expect(normalizeModelSpec("opus")).toBe("opus[1m]");
+    expect(normalizeModelSpec("claude-fable-5")).toBe("claude-fable-5[1m]");
+    expect(normalizeModelSpec("fable")).toBe("fable[1m]");
   });
-  it('inserts [1m] BEFORE a recognized :effort suffix (so effort still splits out)', () => {
-    expect(normalizeModelSpec('claude-fable-5:xhigh')).toBe('claude-fable-5[1m]:xhigh');
-    expect(normalizeModelSpec('opus:high')).toBe('opus[1m]:high');
-    expect(normalizeModelSpec('opus:max')).toBe('opus[1m]:max');
+  it("inserts [1m] BEFORE a recognized :effort suffix (so effort still splits out)", () => {
+    expect(normalizeModelSpec("claude-fable-5:xhigh")).toBe(
+      "claude-fable-5[1m]:xhigh",
+    );
+    expect(normalizeModelSpec("opus:high")).toBe("opus[1m]:high");
+    expect(normalizeModelSpec("opus:max")).toBe("opus[1m]:max");
   });
-  it('is idempotent — a spec already carrying [1m] is unchanged', () => {
-    expect(normalizeModelSpec('opus[1m]')).toBe('opus[1m]');
-    expect(normalizeModelSpec('claude-fable-5[1m]:xhigh')).toBe('claude-fable-5[1m]:xhigh');
+  it("is idempotent — a spec already carrying [1m] is unchanged", () => {
+    expect(normalizeModelSpec("opus[1m]")).toBe("opus[1m]");
+    expect(normalizeModelSpec("claude-fable-5[1m]:xhigh")).toBe(
+      "claude-fable-5[1m]:xhigh",
+    );
   });
-  it('injects [1m] for the sonnet-5 family too (its native 1M default is statsig-gated OFF — the marker is the only reliable path); no-op for non-1M families and empty specs', () => {
-    expect(normalizeModelSpec('sonnet')).toBe('sonnet[1m]');
-    expect(normalizeModelSpec('sonnet:high')).toBe('sonnet[1m]:high');
-    expect(normalizeModelSpec('claude-sonnet-5:high')).toBe('claude-sonnet-5[1m]:high');
-    expect(normalizeModelSpec('haiku')).toBe('haiku');
-    expect(normalizeModelSpec('')).toBe('');
+  it("injects [1m] for the sonnet-5 family too (its native 1M default is statsig-gated OFF — the marker is the only reliable path); no-op for non-1M families and empty specs", () => {
+    expect(normalizeModelSpec("sonnet")).toBe("sonnet[1m]");
+    expect(normalizeModelSpec("sonnet:high")).toBe("sonnet[1m]:high");
+    expect(normalizeModelSpec("claude-sonnet-5:high")).toBe(
+      "claude-sonnet-5[1m]:high",
+    );
+    expect(normalizeModelSpec("haiku")).toBe("haiku");
+    expect(normalizeModelSpec("")).toBe("");
     expect(normalizeModelSpec(undefined)).toBeUndefined();
     expect(normalizeModelSpec(null)).toBeNull();
   });
-  it('a non-effort `:` segment is treated as part of the id (marker appended at end)', () => {
+  it("a non-effort `:` segment is treated as part of the id (marker appended at end)", () => {
     // A bedrock-style id whose tail is not an effort level: [1m] appends, not mid-string.
-    expect(normalizeModelSpec('opus-v2:0')).toBe('opus-v2:0[1m]');
+    expect(normalizeModelSpec("opus-v2:0")).toBe("opus-v2:0[1m]");
   });
-  it('parseArgs applies it — a fleet opus/fable launch spec lands normalized', () => {
-    expect(parseArgs(['--model=claude-fable-5:xhigh']).model).toBe('claude-fable-5[1m]:xhigh');
-    expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
-    expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet[1m]:high');
+  it("parseArgs applies it — a fleet opus/fable launch spec lands normalized", () => {
+    expect(parseArgs(["--model=claude-fable-5:xhigh"]).model).toBe(
+      "claude-fable-5[1m]:xhigh",
+    );
+    expect(parseArgs(["--model=opus:max"]).model).toBe("opus[1m]:max");
+    expect(parseArgs(["--model=sonnet:high"]).model).toBe("sonnet[1m]:high");
   });
 });
 
-describe('composeResumeModelSpec + resume model menu (WI-4889 — menu, not free-text)', () => {
-  it('composes base + effort into the psu spec', () => {
-    expect(composeResumeModelSpec('sol', 'xhigh')).toBe('sol:xhigh'); // codex, open-set, no [1m]
-    expect(composeResumeModelSpec('opus', 'high')).toBe('opus[1m]:high'); // 1M family → [1m] before effort
-    expect(composeResumeModelSpec('sonnet', 'max')).toBe('sonnet[1m]:max');
+describe("composeResumeModelSpec + resume model menu (WI-4889 — menu, not free-text)", () => {
+  it("composes base + effort into the psu spec", () => {
+    expect(composeResumeModelSpec("sol", "xhigh")).toBe("sol:xhigh"); // codex, open-set, no [1m]
+    expect(composeResumeModelSpec("opus", "high")).toBe("opus[1m]:high"); // 1M family → [1m] before effort
+    expect(composeResumeModelSpec("sonnet", "max")).toBe("sonnet[1m]:max");
   });
-  it('a blank effort drops the suffix (model default)', () => {
-    expect(composeResumeModelSpec('haiku', '')).toBe('haiku'); // haiku is not a 1M family → no marker
-    expect(composeResumeModelSpec('fable', '')).toBe('fable[1m]'); // 1M family still normalizes
-    expect(composeResumeModelSpec('sol', '')).toBe('sol');
+  it("a blank effort drops the suffix (model default)", () => {
+    expect(composeResumeModelSpec("haiku", "")).toBe("haiku"); // haiku is not a 1M family → no marker
+    expect(composeResumeModelSpec("fable", "")).toBe("fable[1m]"); // 1M family still normalizes
+    expect(composeResumeModelSpec("sol", "")).toBe("sol");
   });
-  it('an empty / null / whitespace model → null (agent default)', () => {
-    expect(composeResumeModelSpec('', 'high')).toBeNull();
-    expect(composeResumeModelSpec(null, 'high')).toBeNull();
-    expect(composeResumeModelSpec(undefined, '')).toBeNull();
-    expect(composeResumeModelSpec('   ', 'high')).toBeNull();
+  it("an empty / null / whitespace model → null (agent default)", () => {
+    expect(composeResumeModelSpec("", "high")).toBeNull();
+    expect(composeResumeModelSpec(null, "high")).toBeNull();
+    expect(composeResumeModelSpec(undefined, "")).toBeNull();
+    expect(composeResumeModelSpec("   ", "high")).toBeNull();
   });
-  it('every base-model value is a lowercase alias validateModelSpec accepts, and includes sol', () => {
+  it("every base-model value is a lowercase alias validateModelSpec accepts, and includes sol", () => {
     const values = RESUME_MODEL_MENU.map((c) => c.value);
-    expect(values).toContain('sol');
+    expect(values).toContain("sol");
     for (const v of values) {
       expect(v, v).toBe(v.toLowerCase());
       expect(validateModelSpec(v).ok, v).toBe(true);
     }
   });
-  it('effort values are a subset of the recognized efforts (+ the empty default)', () => {
-    const allowed = new Set(['', 'low', 'medium', 'high', 'xhigh', 'max']);
-    for (const c of RESUME_EFFORT_MENU) expect(allowed.has(c.value), c.value).toBe(true);
-    expect(RESUME_EFFORT_MENU.map((c) => c.value)).toContain(''); // the model-default row
+  it("effort values are a subset of the recognized efforts (+ the empty default)", () => {
+    const allowed = new Set(["", "low", "medium", "high", "xhigh", "max"]);
+    for (const c of RESUME_EFFORT_MENU)
+      expect(allowed.has(c.value), c.value).toBe(true);
+    expect(RESUME_EFFORT_MENU.map((c) => c.value)).toContain(""); // the model-default row
   });
-  it('menu base + effort compose to a spec validateModelSpec still accepts', () => {
+  it("menu base + effort compose to a spec validateModelSpec still accepts", () => {
     // The menu can only ever produce specs the launcher would accept from --model.
     for (const m of RESUME_MODEL_MENU) {
       for (const e of RESUME_EFFORT_MENU) {
         const spec = composeResumeModelSpec(m.value, e.value);
-        expect(spec, `${m.value}:${e.value || '(default)'}`).toBeTruthy();
+        expect(spec, `${m.value}:${e.value || "(default)"}`).toBeTruthy();
         expect(validateModelSpec(String(spec)).ok, String(spec)).toBe(true);
       }
     }
@@ -3566,7 +4991,7 @@ describe('composeResumeModelSpec + resume model menu (WI-4889 — menu, not free
 // and a 3-entry effort list missing xhigh/max. The launcher now derives from the
 // operator-core twins; THIS suite is what makes the twins trustworthy — it fails
 // the build the moment psu's menu and the UI's source of truth diverge.
-describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)', () => {
+describe("CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)", () => {
   // psu-launcher.mjs ships no type declarations (it is exec'd directly by node),
   // so anything imported from it lands as `any`. Naming the row shape here keeps
   // these assertions from adding yet more implicit-any noise to this file.
@@ -3574,11 +4999,13 @@ describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)'
   const psuModels = RESUME_MODEL_MENU as PsuMenuRow[];
   const psuEffortRows = RESUME_EFFORT_MENU as PsuMenuRow[];
 
-  it('CLOUD_MODEL_MENU carries EXACTLY psu\'s base models, in the same order', () => {
-    expect(CLOUD_MODEL_MENU.map((c) => c.value)).toEqual(psuModels.map((c) => c.value));
+  it("CLOUD_MODEL_MENU carries EXACTLY psu's base models, in the same order", () => {
+    expect(CLOUD_MODEL_MENU.map((c) => c.value)).toEqual(
+      psuModels.map((c) => c.value),
+    );
   });
 
-  it('each twin row keeps psu\'s backend tag — a codex model can never be mislabelled claude', () => {
+  it("each twin row keeps psu's backend tag — a codex model can never be mislabelled claude", () => {
     for (const row of CLOUD_MODEL_MENU) {
       const psuRow = psuModels.find((c) => c.value === row.value);
       expect(psuRow, `no psu row for ${row.value}`).toBeTruthy();
@@ -3595,7 +5022,7 @@ describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)'
     }
   });
 
-  it('every twin value is a spec validateModelSpec accepts (bare and with every effort)', () => {
+  it("every twin value is a spec validateModelSpec accepts (bare and with every effort)", () => {
     for (const row of CLOUD_MODEL_MENU) {
       expect(validateModelSpec(row.value).ok, row.value).toBe(true);
       for (const effort of MODEL_EFFORT_LEVELS) {
@@ -3607,16 +5034,18 @@ describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)'
     }
   });
 
-  it('MODEL_EFFORT_LEVELS is exactly psu\'s effort menu minus the empty model-default row', () => {
-    const psuEfforts = psuEffortRows.map((c) => c.value).filter((v) => v !== '');
+  it("MODEL_EFFORT_LEVELS is exactly psu's effort menu minus the empty model-default row", () => {
+    const psuEfforts = psuEffortRows
+      .map((c) => c.value)
+      .filter((v) => v !== "");
     expect([...MODEL_EFFORT_LEVELS]).toEqual(psuEfforts);
     // the two the launcher was missing, pinned explicitly so a regression names itself
-    expect([...MODEL_EFFORT_LEVELS]).toContain('xhigh');
-    expect([...MODEL_EFFORT_LEVELS]).toContain('max');
+    expect([...MODEL_EFFORT_LEVELS]).toContain("xhigh");
+    expect([...MODEL_EFFORT_LEVELS]).toContain("max");
   });
 });
 
-describe('SU_CONTEXT_SIZES / composeLaunchModelSpec ↔ psu parity (WI-6321)', () => {
+describe("SU_CONTEXT_SIZES / composeLaunchModelSpec ↔ psu parity (WI-6321)", () => {
   // Owner ask 2026-07-27: the GUI "should share the same code for getting the
   // options". The fleet + account lists are genuinely shared at RUNTIME (both psu
   // and the GUI read /api/agent-mcp/console/bootstrap-su/options), so there is no
@@ -3624,14 +5053,14 @@ describe('SU_CONTEXT_SIZES / composeLaunchModelSpec ↔ psu parity (WI-6321)', (
   // psu-launcher.mjs cannot be imported by the browser bundle — so they are pinned
   // here, exactly as WI-6300 pinned the model/effort menus.
 
-  it('SU_CONTEXT_SIZES is exactly psu\'s context-size choices minus the no-flag Native row', () => {
+  it("SU_CONTEXT_SIZES is exactly psu's context-size choices minus the no-flag Native row", () => {
     const psuValues = (SU_CONTEXT_CHOICES as Array<{ value: string | null }>)
       .map((c) => c.value)
       .filter((v): v is string => v !== null);
     expect([...SU_CONTEXT_SIZES]).toEqual(psuValues);
   });
 
-  it('the token estimates shown beside each variant match psu\'s own', () => {
+  it("the token estimates shown beside each variant match psu's own", () => {
     for (const size of SU_CONTEXT_SIZES) {
       expect(SU_CONTEXT_TOKEN_ESTIMATES[size], size).toBe(
         (PSU_SU_CONTEXT_TOKEN_ESTIMATES as Record<string, string>)[size],
@@ -3639,11 +5068,11 @@ describe('SU_CONTEXT_SIZES / composeLaunchModelSpec ↔ psu parity (WI-6321)', (
     }
   });
 
-  it('the GUI default matches psu\'s picker default — the same launch either way', () => {
+  it("the GUI default matches psu's picker default — the same launch either way", () => {
     expect(SU_CONTEXT_DEFAULT).toBe(PSU_SU_CONTEXT_DEFAULT);
   });
 
-  it('composeLaunchModelSpec produces specs psu itself accepts, for every model×effort', () => {
+  it("composeLaunchModelSpec produces specs psu itself accepts, for every model×effort", () => {
     for (const row of CLOUD_MODEL_MENU) {
       for (const effort of MODEL_EFFORT_LEVELS) {
         const spec = composeLaunchModelSpec(row.value, effort)!;
@@ -3653,254 +5082,381 @@ describe('SU_CONTEXT_SIZES / composeLaunchModelSpec ↔ psu parity (WI-6321)', (
     }
   });
 
-  it('REFUSES an effort with no model instead of silently dropping it (the GUI bug)', () => {
+  it("REFUSES an effort with no model instead of silently dropping it (the GUI bug)", () => {
     // The old private copy in NewSessionLauncher returned the (empty) model and
     // discarded the effort, so a human who picked "xhigh" got the backend default
     // and was never told. psu has no standalone effort flag — there is nowhere for
     // it to go, so this must be an error, not a quiet no-op.
-    expect(() => composeLaunchModelSpec('', 'xhigh')).toThrow(/needs a model/);
-    expect(() => composeLaunchModelSpec(undefined, 'max')).toThrow(/needs a model/);
+    expect(() => composeLaunchModelSpec("", "xhigh")).toThrow(/needs a model/);
+    expect(() => composeLaunchModelSpec(undefined, "max")).toThrow(
+      /needs a model/,
+    );
   });
 
-  it('replaces an effort tail already on the spec rather than doubling it', () => {
-    expect(composeLaunchModelSpec('fable:low', 'max')).toBe('fable:max');
+  it("replaces an effort tail already on the spec rather than doubling it", () => {
+    expect(composeLaunchModelSpec("fable:low", "max")).toBe("fable:max");
   });
 
   it('leaves a non-effort colon suffix alone (bedrock ids end in ":0")', () => {
     // Non-vacuity guard on the peel: ':0' is part of the model id, not an effort.
-    expect(composeLaunchModelSpec('anthropic.claude-v2:0', 'high')).toBe('anthropic.claude-v2:0:high');
+    expect(composeLaunchModelSpec("anthropic.claude-v2:0", "high")).toBe(
+      "anthropic.claude-v2:0:high",
+    );
   });
 
-  it('an unrecognized effort is refused, naming what psu accepts', () => {
-    expect(() => composeLaunchModelSpec('fable', 'turbo')).toThrow(/low\|medium\|high\|xhigh\|max/);
+  it("an unrecognized effort is refused, naming what psu accepts", () => {
+    expect(() => composeLaunchModelSpec("fable", "turbo")).toThrow(
+      /low\|medium\|high\|xhigh\|max/,
+    );
   });
 });
 
-describe('resumeModelMenuFor — the resume menu is scoped to the session backend (WI-4891)', () => {
-  it('a claude session is offered ONLY claude-family models (never sol/luna/terra)', () => {
-    const values = resumeModelMenuFor('claude').map((c) => c.value);
-    expect(values).toEqual(['opus', 'sonnet', 'fable', 'haiku']);
-    for (const v of values) expect(cloudModelBackendHint(v), v).toBe('claude');
+describe("resumeModelMenuFor — the resume menu is scoped to the session backend (WI-4891)", () => {
+  it("a claude session is offered ONLY claude-family models (never sol/luna/terra)", () => {
+    const values = resumeModelMenuFor("claude").map((c) => c.value);
+    expect(values).toEqual(["opus", "sonnet", "fable", "haiku"]);
+    for (const v of values) expect(cloudModelBackendHint(v), v).toBe("claude");
   });
-  it('a codex session is offered ONLY codex-family models (never opus/sonnet/…)', () => {
-    const values = resumeModelMenuFor('codex').map((c) => c.value);
-    expect(values).toEqual(['sol', 'luna', 'terra']);
-    for (const v of values) expect(cloudModelBackendHint(v), v).toBe('codex');
+  it("a codex session is offered ONLY codex-family models (never opus/sonnet/…)", () => {
+    const values = resumeModelMenuFor("codex").map((c) => c.value);
+    expect(values).toEqual(["sol", "luna", "terra"]);
+    for (const v of values) expect(cloudModelBackendHint(v), v).toBe("codex");
   });
-  it('an omp session gets an EMPTY menu (falls through to the free-text spec — omp vocabulary is open)', () => {
-    expect(resumeModelMenuFor('omp')).toEqual([]);
+  it("an omp session gets an EMPTY menu (falls through to the free-text spec — omp vocabulary is open)", () => {
+    expect(resumeModelMenuFor("omp")).toEqual([]);
   });
-  it('the crux: every offered row PAIRS with the session backend — no cross-backend model is ever offered', () => {
-    for (const agent of ['claude', 'codex', 'omp'] as const) {
+  it("the crux: every offered row PAIRS with the session backend — no cross-backend model is ever offered", () => {
+    for (const agent of ["claude", "codex", "omp"] as const) {
       for (const row of resumeModelMenuFor(agent)) {
         // validateAgentModelPair is exactly the guard resumeArgsFor's launch would hit.
-        expect(validateAgentModelPair(agent, row.value).ok, `${agent} ⟵ ${row.value}`).toBe(true);
+        expect(
+          validateAgentModelPair(agent, row.value).ok,
+          `${agent} ⟵ ${row.value}`,
+        ).toBe(true);
       }
     }
   });
-  it('rows are stripped to the inquirer {name,value} shape (no leaked backend tag)', () => {
-    for (const row of resumeModelMenuFor('claude')) {
-      expect(Object.keys(row).sort()).toEqual(['name', 'value']);
+  it("rows are stripped to the inquirer {name,value} shape (no leaked backend tag)", () => {
+    for (const row of resumeModelMenuFor("claude")) {
+      expect(Object.keys(row).sort()).toEqual(["name", "value"]);
     }
   });
 });
 
-describe('cross-backend resume target + protocol-v1 launcher contract', () => {
+describe("cross-backend resume target + protocol-v1 launcher contract", () => {
   const source = {
     id: 42,
-    agent: 'claude',
+    agent: "claude",
     role: null,
-    workspaceId: 'papercusp-workspace',
-    cwd: '/repo',
-    planSlug: 'the-plan',
+    workspaceId: "papercusp-workspace",
+    cwd: "/repo",
+    planSlug: "the-plan",
   };
 
-  it('keeps same-backend selections on the native path byte-for-byte', () => {
-    expect(resolveResumeTarget(source, { agent: 'claude', model: 'opus[1m]:high' })).toEqual({
-      operation: 'native',
-      sourceAgent: 'claude',
-      targetAgent: 'claude',
-      provider: 'anthropic',
-      modelSpec: 'opus[1m]:high',
+  it("keeps same-backend selections on the native path byte-for-byte", () => {
+    expect(
+      resolveResumeTarget(source, { agent: "claude", model: "opus[1m]:high" }),
+    ).toEqual({
+      operation: "native",
+      sourceAgent: "claude",
+      targetAgent: "claude",
+      provider: "anthropic",
+      modelSpec: "opus[1m]:high",
     });
   });
 
-  it('infers Codex from a cloud model alias and makes the operation an explicit port', () => {
-    expect(resolveResumeTarget(source, { model: 'sol:xhigh' })).toMatchObject({
-      operation: 'port',
-      sourceAgent: 'claude',
-      targetAgent: 'codex',
-      provider: 'openai',
-      modelSpec: 'gpt-5.6-sol:xhigh',
+  it("infers Codex from a cloud model alias and makes the operation an explicit port", () => {
+    expect(resolveResumeTarget(source, { model: "sol:xhigh" })).toMatchObject({
+      operation: "port",
+      sourceAgent: "claude",
+      targetAgent: "codex",
+      provider: "openai",
+      modelSpec: "gpt-5.6-sol:xhigh",
     });
   });
 
-  it('requires an explicit OMP backend for its open model vocabulary', () => {
-    expect(resolveResumeTarget(source, { agent: 'omp', model: 'local/qwen3:high' })).toMatchObject({
-      operation: 'port', targetAgent: 'omp', provider: 'omp-configured-provider',
+  it("requires an explicit OMP backend for its open model vocabulary", () => {
+    expect(
+      resolveResumeTarget(source, { agent: "omp", model: "local/qwen3:high" }),
+    ).toMatchObject({
+      operation: "port",
+      targetAgent: "omp",
+      provider: "omp-configured-provider",
     });
-    expect(resolveResumeTarget(source, { agent: 'omp', model: 'anthropic/claude-opus-4-6' }))
-      .toMatchObject({ modelSpec: 'anthropic/claude-opus-4-6' });
+    expect(
+      resolveResumeTarget(source, {
+        agent: "omp",
+        model: "anthropic/claude-opus-4-6",
+      }),
+    ).toMatchObject({ modelSpec: "anthropic/claude-opus-4-6" });
   });
 
-  it('refuses authority-ambiguous operations and unsupported source directions', () => {
-    expect(() => resolveResumeTarget(source, { agent: 'codex', fork: true })).toThrow(/cannot be combined/);
-    expect(() => resolveResumeTarget({ ...source, agent: 'codex' }, { agent: 'claude' })).toThrow(/v1 supports/);
-    expect(() => resolveResumeTarget(source, { agent: 'codex', model: 'opus' })).toThrow(/belongs to/);
+  it("refuses authority-ambiguous operations and unsupported source directions", () => {
+    expect(() =>
+      resolveResumeTarget(source, { agent: "codex", fork: true }),
+    ).toThrow(/cannot be combined/);
+    expect(() =>
+      resolveResumeTarget({ ...source, agent: "codex" }, { agent: "claude" }),
+    ).toThrow(/v1 supports/);
+    expect(() =>
+      resolveResumeTarget(source, { agent: "codex", model: "opus" }),
+    ).toThrow(/belongs to/);
   });
 
-  it('builds a target-scoped request only from tracked source identity', () => {
-    const target = resolveResumeTarget(source, { agent: 'codex', model: 'sol:high' });
-    expect(sessionPortTargetAccount({ forward: 'auto' })).toBe('auto');
-    expect(sessionPortTargetAccount({ id: 'acct-openai' })).toBe('acct-openai');
-    expect(sessionPortTargetAccount({ notice: 'fallback' })).toBe('default');
-    expect(sessionPortRequestBody(source, target, { id: 'acct-openai' }, { contextSize: 'trimmed', launchContext: '/brief.md' })).toEqual({
+  it("builds a target-scoped request only from tracked source identity", () => {
+    const target = resolveResumeTarget(source, {
+      agent: "codex",
+      model: "sol:high",
+    });
+    expect(sessionPortTargetAccount({ forward: "auto" })).toBe("auto");
+    expect(sessionPortTargetAccount({ id: "acct-openai" })).toBe("acct-openai");
+    expect(sessionPortTargetAccount({ notice: "fallback" })).toBe("default");
+    expect(
+      sessionPortRequestBody(
+        source,
+        target,
+        { id: "acct-openai" },
+        { contextSize: "trimmed", launchContext: "/brief.md" },
+      ),
+    ).toEqual({
       protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       transformVersion: SESSION_PORT_TRANSFORM_VERSION,
-      workspace: 'papercusp-workspace',
+      workspace: "papercusp-workspace",
       sourceAdvSessionId: 42,
-      targetBackend: 'codex',
-      targetModel: 'gpt-5.6-sol:high',
-      targetAccount: 'acct-openai',
-      contextSize: 'trimmed',
-      launchContext: '/brief.md',
+      targetBackend: "codex",
+      targetModel: "gpt-5.6-sol:high",
+      targetAccount: "acct-openai",
+      contextSize: "trimmed",
+      launchContext: "/brief.md",
     });
-    expect(() => sessionPortRequestBody({ ...source, id: null }, target, {}, {})).toThrow(/tracked source/);
+    expect(() =>
+      sessionPortRequestBody({ ...source, id: null }, target, {}, {}),
+    ).toThrow(/tracked source/);
   });
 
-  it('records resume provenance and forwards the opaque handshake/source cwd to bootstrap', () => {
+  it("records resume provenance and forwards the opaque handshake/source cwd to bootstrap", () => {
     const args = {
-      model: 'sol:high',
-      account: 'default',
-      addDir: [], passthrough: [],
+      model: "sol:high",
+      account: "default",
+      addDir: [],
+      passthrough: [],
       sessionPortProtocol: 1,
       sessionPortTransformVersion: 1,
-      sessionPortToken: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
+      sessionPortToken: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,
       sessionPortSourceAdvSessionId: 42,
-      sessionPortSourceCwd: '/source/cwd',
+      sessionPortSourceCwd: "/source/cwd",
     };
     const body = freshSuBootstrapBody(
-      { agent: 'codex', workspace: 'papercusp-workspace', harness: null, plan: 'the-plan' },
+      {
+        agent: "codex",
+        workspace: "papercusp-workspace",
+        harness: null,
+        plan: "the-plan",
+      },
       args,
     );
-    expect(body.cwd).toBe('/source/cwd');
+    expect(body.cwd).toBe("/source/cwd");
     expect(body.session_port_protocol).toBe(1);
     expect(body.session_port_transform_version).toBe(1);
     expect(body.session_port_token).toBe(args.sessionPortToken);
-    expect(body.launch_argv).toContain('--resume=42');
-    expect(body.launch_argv).toContain('--agent=codex');
+    expect(body.launch_argv).toContain("--resume=42");
+    expect(body.launch_argv).toContain("--agent=codex");
   });
 
-  it('maps new-launcher/old-server skew to one actionable upgrade error', () => {
-    expect(sessionPortUpgradeError(Object.assign(new Error('not found'), { status: 404 })).message).toMatch(/Upgrade.*operator together/i);
-    expect(sessionPortUpgradeError(Object.assign(new Error('unsupported session-port protocol'), { status: 426 })).message).toMatch(/migration 611/i);
-    expect(sessionPortUpgradeError(new Error('ordinary failure')).message).toBe('ordinary failure');
-  });
-
-  it('renders the inspect-before-egress disclosure with omissions and authority boundary', () => {
-    const lines = formatSessionPortInspection({ inspection: {
-      source: { advSessionId: 42, snapshotKind: 'live-jsonl', completeBytes: 100, sha256: 'a'.repeat(64) },
-      target: { backend: 'codex', model: 'sol', availableInputTokens: 1000 },
-      fullHistoryEstimatedTokens: 2000,
-      requiresSummary: true,
-      stats: { redactions: 2, omittedAttachments: 1, unsupportedBlocks: 3, sidechainRecords: 4 },
-      disclosure: { targetEgress: 'openai/default', summarizerEgress: 'papercusp inference gateway' },
-      warnings: ['one malformed record'],
-    } });
-    expect(lines.join('\n')).toMatch(/summary \+ recent tail/);
-    expect(lines.join('\n')).toMatch(/authority is not carried/);
-    expect(lines.join('\n')).toMatch(/one malformed record/);
-  });
-
-  it('reconciles a lost delivery response against the durable status route', async () => {
-    const fetchImpl = vi.fn()
-      .mockRejectedValueOnce(new Error('response lost'))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ok: true,
-        port: { status: 'delivered', targetAdvSessionId: 99 },
-      }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    const result = await reportSessionPortDelivery(
-      { protocolVersion: 1, transformVersion: 1, portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 99, workspace: 'papercusp-workspace' },
-      { persisted: true, renderedHash: 'a'.repeat(64), nativeRef: '/native/rollout.jsonl' },
-      { fetchImpl, operatorUrl: 'http://operator', token: 'token' },
+  it("maps new-launcher/old-server skew to one actionable upgrade error", () => {
+    expect(
+      sessionPortUpgradeError(
+        Object.assign(new Error("not found"), { status: 404 }),
+      ).message,
+    ).toMatch(/Upgrade.*operator together/i);
+    expect(
+      sessionPortUpgradeError(
+        Object.assign(new Error("unsupported session-port protocol"), {
+          status: 426,
+        }),
+      ).message,
+    ).toMatch(/migration 611/i);
+    expect(sessionPortUpgradeError(new Error("ordinary failure")).message).toBe(
+      "ordinary failure",
     );
-    expect(result.port.status).toBe('delivered');
+  });
+
+  it("renders the inspect-before-egress disclosure with omissions and authority boundary", () => {
+    const lines = formatSessionPortInspection({
+      inspection: {
+        source: {
+          advSessionId: 42,
+          snapshotKind: "live-jsonl",
+          completeBytes: 100,
+          sha256: "a".repeat(64),
+        },
+        target: { backend: "codex", model: "sol", availableInputTokens: 1000 },
+        fullHistoryEstimatedTokens: 2000,
+        requiresSummary: true,
+        stats: {
+          redactions: 2,
+          omittedAttachments: 1,
+          unsupportedBlocks: 3,
+          sidechainRecords: 4,
+        },
+        disclosure: {
+          targetEgress: "openai/default",
+          summarizerEgress: "papercusp inference gateway",
+        },
+        warnings: ["one malformed record"],
+      },
+    });
+    expect(lines.join("\n")).toMatch(/summary \+ recent tail/);
+    expect(lines.join("\n")).toMatch(/authority is not carried/);
+    expect(lines.join("\n")).toMatch(/one malformed record/);
+  });
+
+  it("reconciles a lost delivery response against the durable status route", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            port: { status: "delivered", targetAdvSessionId: 99 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    const result = await reportSessionPortDelivery(
+      {
+        protocolVersion: 1,
+        transformVersion: 1,
+        portId: "22222222-2222-4222-8222-222222222222",
+        targetAdvSessionId: 99,
+        workspace: "papercusp-workspace",
+      },
+      {
+        persisted: true,
+        renderedHash: "a".repeat(64),
+        nativeRef: "/native/rollout.jsonl",
+      },
+      { fetchImpl, operatorUrl: "http://operator", token: "token" },
+    );
+    expect(result.port.status).toBe("delivered");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({ protocolVersion: 1, transformVersion: 1 });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
+      protocolVersion: 1,
+      transformVersion: 1,
+    });
   });
 });
 
-describe('nativeCompactionEnv (P-022 — native auto-compact retired for every Claude launch)', () => {
-  it('claude → DISABLE_AUTO_COMPACT + DISABLE_COMPACT regardless of spec or window (the carry-respawn ladder owns the boundary; the /compact command itself is removed)', () => {
-    expect(nativeCompactionEnv('claude')).toEqual({ DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' });
+describe("nativeCompactionEnv (P-022 — native auto-compact retired for every Claude launch)", () => {
+  it("claude → DISABLE_AUTO_COMPACT + DISABLE_COMPACT regardless of spec or window (the carry-respawn ladder owns the boundary; the /compact command itself is removed)", () => {
+    expect(nativeCompactionEnv("claude")).toEqual({
+      DISABLE_AUTO_COMPACT: "1",
+      DISABLE_COMPACT: "1",
+    });
   });
 
-  it('non-claude agents get no env fragment — their compaction is papercusp-owned at their own launch legs', () => {
-    expect(nativeCompactionEnv('omp')).toEqual({});
-    expect(nativeCompactionEnv('codex')).toEqual({});
+  it("non-claude agents get no env fragment — their compaction is papercusp-owned at their own launch legs", () => {
+    expect(nativeCompactionEnv("omp")).toEqual({});
+    expect(nativeCompactionEnv("codex")).toEqual({});
     expect(nativeCompactionEnv(null)).toEqual({});
     expect(nativeCompactionEnv(undefined)).toEqual({});
   });
 });
 
-describe('validateModelSpec + --model guard (WI-1979 — reject a malformed model spec at parse)', () => {
-  it('accepts valid aliases, effort specs, full/provider ids, [1m] round-trips, and local ids', () => {
+describe("validateModelSpec + --model guard (WI-1979 — reject a malformed model spec at parse)", () => {
+  it("accepts valid aliases, effort specs, full/provider ids, [1m] round-trips, and local ids", () => {
     for (const s of [
-      'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
-      'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
-      'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-      'sol', 'sol:high', 'sol:max', 'terra:xhigh', 'luna', 'luna:medium',
-      'gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.6-luna:xhigh',
-      'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
+      "fable:xhigh",
+      "opus:max",
+      "sonnet",
+      "sonnet:high",
+      "haiku",
+      "opus[1m]:max",
+      "sonnet[1m]",
+      "claude-fable-5:xhigh",
+      "claude-fable-5[1m]",
+      "claude-sonnet-5:high",
+      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "sol",
+      "sol:high",
+      "sol:max",
+      "terra:xhigh",
+      "luna",
+      "luna:medium",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra:high",
+      "gpt-5.6-luna:xhigh",
+      "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+      "gpt-5-codex",
+      "",
     ]) {
       expect(validateModelSpec(s).ok, s).toBe(true);
     }
   });
-  it('accepts an unknown-but-plausible short id that is NOT a close typo (o3 / gpt4 / grok)', () => {
-    for (const s of ['o3', 'gpt4', 'grok']) expect(validateModelSpec(s).ok, s).toBe(true);
+  it("accepts an unknown-but-plausible short id that is NOT a close typo (o3 / gpt4 / grok)", () => {
+    for (const s of ["o3", "gpt4", "grok"])
+      expect(validateModelSpec(s).ok, s).toBe(true);
   });
-  it('rejects a hand-typed [1m] marker on a non-family base (the fabel5[1m] incident), with the marker tip + suggestion', () => {
-    const r = validateModelSpec('fabel5[1m]');
+  it("rejects a hand-typed [1m] marker on a non-family base (the fabel5[1m] incident), with the marker tip + suggestion", () => {
+    const r = validateModelSpec("fabel5[1m]");
     expect(r.ok).toBe(false);
-    expect(r.message).toContain('do not type it'); // the "[1m] is auto-appended" tip
-    expect(r.message).toContain('fable'); // corrective suggestion (Damerau catches the transposition)
+    expect(r.message).toContain("do not type it"); // the "[1m] is auto-appended" tip
+    expect(r.message).toContain("fable"); // corrective suggestion (Damerau catches the transposition)
   });
   it('rejects a close-typo alias — incl. transpositions — with a "did you mean" suggestion', () => {
     for (const [bad, want] of [
-      ['fabel', 'fable'], ['sonet', 'sonnet'], ['sonnet5', 'sonnet'],
-      ['opus4', 'opus'], ['opuss', 'opus'], ['fabel5:xhigh', 'fable'],
+      ["fabel", "fable"],
+      ["sonet", "sonnet"],
+      ["sonnet5", "sonnet"],
+      ["opus4", "opus"],
+      ["opuss", "opus"],
+      ["fabel5:xhigh", "fable"],
     ] as const) {
       const r = validateModelSpec(bad);
       expect(r.ok, bad).toBe(false);
       expect(r.message, bad).toContain(want);
     }
   });
-  it('rejects the alias-glued-to-version shorthand (sonnet-5 / opus-4.8 / haiku-4 / sol-5.6) — the common leak that reached the CLI as an unrunnable id', () => {
+  it("rejects the alias-glued-to-version shorthand (sonnet-5 / opus-4.8 / haiku-4 / sol-5.6) — the common leak that reached the CLI as an unrunnable id", () => {
     for (const [bad, want] of [
-      ['sonnet-5', 'sonnet'], ['sonnet-5:high', 'sonnet:high'], ['opus-4.8', 'opus'],
-      ['haiku-4', 'haiku'], ['fable-5:xhigh', 'fable:xhigh'], ['opus-4-8', 'opus'], ['sonnet5', 'sonnet'],
-      ['sol-5.6', 'sol'], ['terra-5', 'terra'], ['luna-5.6', 'luna'], ['sol-5.6:high', 'sol:high'],
+      ["sonnet-5", "sonnet"],
+      ["sonnet-5:high", "sonnet:high"],
+      ["opus-4.8", "opus"],
+      ["haiku-4", "haiku"],
+      ["fable-5:xhigh", "fable:xhigh"],
+      ["opus-4-8", "opus"],
+      ["sonnet5", "sonnet"],
+      ["sol-5.6", "sol"],
+      ["terra-5", "terra"],
+      ["luna-5.6", "luna"],
+      ["sol-5.6:high", "sol:high"],
     ] as const) {
       const r = validateModelSpec(bad);
       expect(r.ok, bad).toBe(false);
       expect(r.message, bad).toContain(want);
     }
   });
-  it('keeps genuine full/versioned ids valid (claude-<fam>-<ver>) — the vendor prefix distinguishes them from the bare-alias shorthand', () => {
-    for (const s of ['claude-sonnet-5', 'claude-sonnet-5:high', 'claude-opus-4-8', 'claude-fable-5[1m]']) {
+  it("keeps genuine full/versioned ids valid (claude-<fam>-<ver>) — the vendor prefix distinguishes them from the bare-alias shorthand", () => {
+    for (const s of [
+      "claude-sonnet-5",
+      "claude-sonnet-5:high",
+      "claude-opus-4-8",
+      "claude-fable-5[1m]",
+    ]) {
       expect(validateModelSpec(s).ok, s).toBe(true);
     }
   });
-  it('parseArgs THROWS the corrective error for --model=fabel5[1m] (covers every launch path)', () => {
-    expect(() => parseArgs(['--model=fabel5[1m]'])).toThrow(/fable/);
+  it("parseArgs THROWS the corrective error for --model=fabel5[1m] (covers every launch path)", () => {
+    expect(() => parseArgs(["--model=fabel5[1m]"])).toThrow(/fable/);
   });
-  it('parseArgs is a no-op on VALID input — a good --model spec still normalizes', () => {
-    expect(parseArgs(['--model=fable:xhigh']).model).toBe('fable[1m]:xhigh');
-    expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
+  it("parseArgs is a no-op on VALID input — a good --model spec still normalizes", () => {
+    expect(parseArgs(["--model=fable:xhigh"]).model).toBe("fable[1m]:xhigh");
+    expect(parseArgs(["--model=opus:max"]).model).toBe("opus[1m]:max");
   });
 });
 
-describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift guard)', () => {
+describe("validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift guard)", () => {
   // node exec's psu-launcher.mjs directly, so it cannot import the operator-core TS twin the
   // fleet:launch-on-plan tool boundary uses (and vice-versa) — same constraint that keeps
   // normalizeModelSpec / DEFAULT_1M_FAMILY_RE in lockstep by convention. This asserts the two
@@ -3908,21 +5464,55 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
   // mirrored in the other fails CI here, not silently in production.
   const VECTORS = [
     // valid
-    'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
-    'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
-    'claude-sonnet-5:high', 'claude-opus-4-8', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-    'sol', 'sol:high', 'terra:xhigh', 'luna', 'luna:medium',
-    'gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.6-luna:xhigh',
-    'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
+    "fable:xhigh",
+    "opus:max",
+    "sonnet",
+    "sonnet:high",
+    "haiku",
+    "opus[1m]:max",
+    "sonnet[1m]",
+    "claude-fable-5:xhigh",
+    "claude-fable-5[1m]",
+    "claude-sonnet-5:high",
+    "claude-opus-4-8",
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "sol",
+    "sol:high",
+    "terra:xhigh",
+    "luna",
+    "luna:medium",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra:high",
+    "gpt-5.6-luna:xhigh",
+    "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+    "gpt-5-codex",
+    "",
     // plausible-unknown (pass)
-    'o3', 'gpt4', 'grok',
+    "o3",
+    "gpt4",
+    "grok",
     // rejected
-    'fabel5[1m]', 'fabel', 'sonet', 'sonnet5', 'opus4', 'opuss', 'fabel5:xhigh', 'opus[1m]x',
+    "fabel5[1m]",
+    "fabel",
+    "sonet",
+    "sonnet5",
+    "opus4",
+    "opuss",
+    "fabel5:xhigh",
+    "opus[1m]x",
     // rejected: alias-glued-to-version shorthand (the sonnet-5 leak this guard closes)
-    'sonnet-5', 'sonnet-5:high', 'opus-4.8', 'haiku-4', 'fable-5:xhigh', 'opus-4-8',
-    'sol-5.6', 'sol-5.6:high', 'terra-5', 'luna-5.6',
+    "sonnet-5",
+    "sonnet-5:high",
+    "opus-4.8",
+    "haiku-4",
+    "fable-5:xhigh",
+    "opus-4-8",
+    "sol-5.6",
+    "sol-5.6:high",
+    "terra-5",
+    "luna-5.6",
   ];
-  it('the two copies return an identical { ok, message } for every spec', () => {
+  it("the two copies return an identical { ok, message } for every spec", () => {
     for (const s of VECTORS) {
       const a = validateModelSpec(s);
       const b = validateCloudModelSpec(s);
@@ -3932,81 +5522,99 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
   });
 });
 
-describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026-07-10)', () => {
-  it('recognizes native Codex and Claude model families', () => {
-    expect(cloudModelBackendHint('gpt-5.6-luna:high')).toBe('codex');
-    expect(cloudModelBackendHint('gpt-5.6-terra:high')).toBe('codex');
-    expect(cloudModelBackendHint('o3')).toBe('codex');
-    expect(cloudModelBackendHint('sonnet[1m]:high')).toBe('claude');
-    expect(cloudModelBackendHint('claude-fable-5:xhigh')).toBe('claude');
-    expect(cloudModelBackendHint('future-provider/model-1')).toBeNull();
+describe("cloud model-family/backend coupling (owner Luna→Claude incident 2026-07-10)", () => {
+  it("recognizes native Codex and Claude model families", () => {
+    expect(cloudModelBackendHint("gpt-5.6-luna:high")).toBe("codex");
+    expect(cloudModelBackendHint("gpt-5.6-terra:high")).toBe("codex");
+    expect(cloudModelBackendHint("o3")).toBe("codex");
+    expect(cloudModelBackendHint("sonnet[1m]:high")).toBe("claude");
+    expect(cloudModelBackendHint("claude-fable-5:xhigh")).toBe("claude");
+    expect(cloudModelBackendHint("future-provider/model-1")).toBeNull();
   });
 
-  it('infers Codex from the exact Luna spec when --agent is omitted', () => {
-    const parsed = parseArgs(['--no-picker', '--model=gpt-5.6-luna:high']);
-    expect(parsed.agent).toBe('codex');
-    expect(parsed.model).toBe('gpt-5.6-luna:high');
+  it("infers Codex from the exact Luna spec when --agent is omitted", () => {
+    const parsed = parseArgs(["--no-picker", "--model=gpt-5.6-luna:high"]);
+    expect(parsed.agent).toBe("codex");
+    expect(parsed.model).toBe("gpt-5.6-luna:high");
   });
 
-  it('canonicalizes a user-facing Codex family before constructing fresh-launch argv', () => {
-    const parsed = parseArgs(['--no-picker', '--model=sol:xhigh']);
-    expect(parsed).toMatchObject({ agent: 'codex', model: 'gpt-5.6-sol:xhigh' });
+  it("canonicalizes a user-facing Codex family before constructing fresh-launch argv", () => {
+    const parsed = parseArgs(["--no-picker", "--model=sol:xhigh"]);
+    expect(parsed).toMatchObject({
+      agent: "codex",
+      model: "gpt-5.6-sol:xhigh",
+    });
     // The trailing window pair is the canonical D-008 config. The focused
     // policy tests pin the exact 1M/900k pair even with a stale 872k cache
     // record; this seam pins that psu carries the canonical resolver output.
     expect(modelArgsFor(parsed.agent, parsed.model)).toEqual([
-      '-m',
-      'gpt-5.6-sol',
-      '-c',
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
       'model_reasoning_effort="xhigh"',
-      ...codexContextConfigArgs('gpt-5.6-sol'),
+      ...codexContextConfigArgs("gpt-5.6-sol"),
     ]);
-    expect(modelArgsFor('codex', 'gpt-5.6-terra:high')).toEqual([
-      '-m',
-      'gpt-5.6-terra',
-      '-c',
+    expect(modelArgsFor("codex", "gpt-5.6-terra:high")).toEqual([
+      "-m",
+      "gpt-5.6-terra",
+      "-c",
       'model_reasoning_effort="high"',
-      ...codexContextConfigArgs('gpt-5.6-terra'),
+      ...codexContextConfigArgs("gpt-5.6-terra"),
     ]);
   });
 
-  it('emits NO window config for a codex model that has no extended window', () => {
+  it("emits NO window config for a codex model that has no extended window", () => {
     // gpt-5.5 reports max_context_window == context_window, so there is nothing
     // bigger to ask for and its argv must stay byte-identical to pre-feature.
     // This is the assertion that catches a policy which "helpfully" defaults.
-    expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
-    expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
-    expect(modelArgsFor('codex', 'gpt-5.4-mini')).toEqual(['-m', 'gpt-5.4-mini']);
+    expect(modelArgsFor("codex", "gpt-5.5:max")).toEqual([
+      "-m",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="max"',
+    ]);
+    expect(modelArgsFor("codex", "gpt-5.5")).toEqual(["-m", "gpt-5.5"]);
+    expect(modelArgsFor("codex", "gpt-5.4-mini")).toEqual([
+      "-m",
+      "gpt-5.4-mini",
+    ]);
   });
 
-  it('rejects an explicit native backend mismatch regardless of flag order', () => {
-    expect(() => parseArgs(['--agent=claude', '--model=gpt-5.6-luna:high'])).toThrow(
-      /belongs to the `codex` backend/,
-    );
-    expect(() => parseArgs(['--model=gpt-5.6-luna:high', '--agent=claude'])).toThrow(
-      /belongs to the `codex` backend/,
-    );
-    expect(() => parseArgs(['--agent=codex', '--model=opus:high'])).toThrow(
+  it("rejects an explicit native backend mismatch regardless of flag order", () => {
+    expect(() =>
+      parseArgs(["--agent=claude", "--model=gpt-5.6-luna:high"]),
+    ).toThrow(/belongs to the `codex` backend/);
+    expect(() =>
+      parseArgs(["--model=gpt-5.6-luna:high", "--agent=claude"]),
+    ).toThrow(/belongs to the `codex` backend/);
+    expect(() => parseArgs(["--agent=codex", "--model=opus:high"])).toThrow(
       /belongs to the `claude` backend/,
     );
   });
 
-  it('keeps explicit OMP valid for cloud families because OMP is multi-provider', () => {
-    expect(validateAgentModelPair('omp', 'gpt-5.6-luna:high')).toEqual({ ok: true });
-    expect(parseArgs(['--agent=omp', '--model=gpt-5.6-luna:high'])).toMatchObject({
-      agent: 'omp', model: 'gpt-5.6-luna:high',
+  it("keeps explicit OMP valid for cloud families because OMP is multi-provider", () => {
+    expect(validateAgentModelPair("omp", "gpt-5.6-luna:high")).toEqual({
+      ok: true,
+    });
+    expect(
+      parseArgs(["--agent=omp", "--model=gpt-5.6-luna:high"]),
+    ).toMatchObject({
+      agent: "omp",
+      model: "gpt-5.6-luna:high",
     });
     // `[1m]` is a Claude Code-only window marker. OMP may legitimately have
     // provider model ids containing the same family names and must see the
     // exact configured id regardless of argv order.
-    expect(parseArgs(['--agent=omp', '--model=anthropic/claude-opus-4-6']).model)
-      .toBe('anthropic/claude-opus-4-6');
-    expect(parseArgs(['--model=anthropic/claude-opus-4-6', '--agent=omp']).model)
-      .toBe('anthropic/claude-opus-4-6');
+    expect(
+      parseArgs(["--agent=omp", "--model=anthropic/claude-opus-4-6"]).model,
+    ).toBe("anthropic/claude-opus-4-6");
+    expect(
+      parseArgs(["--model=anthropic/claude-opus-4-6", "--agent=omp"]).model,
+    ).toBe("anthropic/claude-opus-4-6");
   });
 });
 
-describe('suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI-7138 drift guard)', () => {
+describe("suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI-7138 drift guard)", () => {
   // Extract the flags applyRoleModel APPENDS to a bare `<bin>` baseCmd, as a token
   // array comparable to suWrapperExtraArgs' return shape. Vectors below avoid
   // claude's `[1m]` 1M-family auto-injection (normalizeModelSpec) — a real,
@@ -4019,789 +5627,1254 @@ describe('suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI
   // always emits the long form, suWrapperExtraArgs the short form. Functionally
   // equivalent, not the divergence this guard cares about (the EFFORT handling
   // is), so normalize both to `-m` before comparing.
-  function appliedFlags(bin: 'claude' | 'codex' | 'omp', spec: string): string[] {
-    const cmd = applyRoleModel(bin, 'x', spec);
+  function appliedFlags(
+    bin: "claude" | "codex" | "omp",
+    spec: string,
+  ): string[] {
+    const cmd = applyRoleModel(bin, "x", spec);
     return cmd
       .slice(bin.length)
       .trim()
       .split(/\s+/)
       .filter(Boolean)
-      .map((t) => (t === '--model' ? '-m' : t));
+      .map((t) => (t === "--model" ? "-m" : t));
   }
-  const normalize = (args: string[]): string[] => args.map((t) => (t === '--model' ? '-m' : t));
+  const normalize = (args: string[]): string[] =>
+    args.map((t) => (t === "--model" ? "-m" : t));
 
-  it('codex: identical argv for every spec vector (the 2026-07-03 effort-drop this ticket tracks)', () => {
-    for (const spec of ['gpt-5.5', 'gpt-5.5:low', 'gpt-5.5:high', 'gpt-5.5:xhigh', 'gpt-5.5:max']) {
-      expect(appliedFlags('codex', spec), spec).toEqual(normalize(suWrapperExtraArgs('codex', { model: spec })));
+  it("codex: identical argv for every spec vector (the 2026-07-03 effort-drop this ticket tracks)", () => {
+    for (const spec of [
+      "gpt-5.5",
+      "gpt-5.5:low",
+      "gpt-5.5:high",
+      "gpt-5.5:xhigh",
+      "gpt-5.5:max",
+    ]) {
+      expect(appliedFlags("codex", spec), spec).toEqual(
+        normalize(suWrapperExtraArgs("codex", { model: spec })),
+      );
     }
   });
 
-  it('codex EXTENDED-window specs stay in lockstep too (plan codex-1m-context-window P-003)', () => {
+  it("codex EXTENDED-window specs stay in lockstep too (plan codex-1m-context-window P-003)", () => {
     // The gpt-5.5 vectors above can NEVER catch a window-config drift: that
     // model has no extended window, so both sides correctly emit nothing and
     // the guard passes whatever either side does. These vectors are the ones
     // that fail if the window pair is added to one composer and not the other.
-    for (const spec of ['gpt-5.6-sol', 'gpt-5.6-sol:high', 'sol:xhigh', 'gpt-5.4']) {
-      const psu = normalize(suWrapperExtraArgs('codex', { model: spec }));
-      expect(psu.join(' '), spec).toContain('model_context_window=');
-      expect(appliedFlags('codex', spec), spec).toEqual(psu);
+    for (const spec of [
+      "gpt-5.6-sol",
+      "gpt-5.6-sol:high",
+      "sol:xhigh",
+      "gpt-5.4",
+    ]) {
+      const psu = normalize(suWrapperExtraArgs("codex", { model: spec }));
+      expect(psu.join(" "), spec).toContain("model_context_window=");
+      expect(appliedFlags("codex", spec), spec).toEqual(psu);
     }
   });
 
-  it('claude (non-1M-family spec): identical argv', () => {
-    for (const spec of ['haiku', 'haiku:low', 'haiku:high', 'haiku:max', 'anthropic.claude-3-5-sonnet-20241022-v2:0']) {
-      expect(appliedFlags('claude', spec), spec).toEqual(normalize(suWrapperExtraArgs('claude', { model: spec })));
+  it("claude (non-1M-family spec): identical argv", () => {
+    for (const spec of [
+      "haiku",
+      "haiku:low",
+      "haiku:high",
+      "haiku:max",
+      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    ]) {
+      expect(appliedFlags("claude", spec), spec).toEqual(
+        normalize(suWrapperExtraArgs("claude", { model: spec })),
+      );
     }
   });
 
-  it('omp: identical argv — verbatim passthrough, never split (EI-7138: applyRoleModel used to split it, dropping the effort)', () => {
-    for (const spec of ['opus', 'opus:high', 'sonnet:xhigh', 'vendor/model:7b']) {
-      expect(appliedFlags('omp', spec), spec).toEqual(normalize(suWrapperExtraArgs('omp', { model: spec })));
+  it("omp: identical argv — verbatim passthrough, never split (EI-7138: applyRoleModel used to split it, dropping the effort)", () => {
+    for (const spec of [
+      "opus",
+      "opus:high",
+      "sonnet:xhigh",
+      "vendor/model:7b",
+    ]) {
+      expect(appliedFlags("omp", spec), spec).toEqual(
+        normalize(suWrapperExtraArgs("omp", { model: spec })),
+      );
     }
   });
 });
 
-describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
-  it('parses the new omp-convergence flags', () => {
+describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
+  it("parses the new omp-convergence flags", () => {
     // haiku is outside the 1M families so no [1m] injection fires — this
     // passthrough test stays decoupled from the normalization exercised in
     // its own suite above.
-    const a = parseArgs(['--no-picker', '--agent=omp', '--model=haiku', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
-    expect(a.model).toBe('haiku');
-    expect(a.resumeSession).toBe('s-7');
-    expect(a.launchContext).toBe('/dev/shm/k.md');
+    const a = parseArgs([
+      "--no-picker",
+      "--agent=omp",
+      "--model=haiku",
+      "--resume-session=s-7",
+      "--launch-context=/dev/shm/k.md",
+    ]);
+    expect(a.model).toBe("haiku");
+    expect(a.resumeSession).toBe("s-7");
+    expect(a.launchContext).toBe("/dev/shm/k.md");
   });
 
-  it('omp/claude: --model + -r; codex: -m + resume', () => {
-    expect(suWrapperExtraArgs('omp', { model: 'opus', resumeSession: 's-1' })).toEqual(['--model', 'opus', '-r', 's-1']);
-    expect(suWrapperExtraArgs('claude', { model: 'sonnet', resumeSession: 's-2' })).toEqual(['--model', 'sonnet', '-r', 's-2']);
-    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5', resumeSession: 's-3' })).toEqual(['-m', 'gpt-5.5', 'resume', 's-3']);
+  it("omp/claude: --model + -r; codex: -m + resume", () => {
+    expect(
+      suWrapperExtraArgs("omp", { model: "opus", resumeSession: "s-1" }),
+    ).toEqual(["--model", "opus", "-r", "s-1"]);
+    expect(
+      suWrapperExtraArgs("claude", { model: "sonnet", resumeSession: "s-2" }),
+    ).toEqual(["--model", "sonnet", "-r", "s-2"]);
+    expect(
+      suWrapperExtraArgs("codex", { model: "gpt-5.5", resumeSession: "s-3" }),
+    ).toEqual(["-m", "gpt-5.5", "resume", "s-3"]);
   });
 
   // The claude CLI takes effort as its own flag — a verbatim `<model>:<effort>` spec
   // silently drops the effort and the session falls back to the box's saved default
   // (the 2026-07-01 sonnet-5:high fleet that came up at xhigh).
-  it('claude: splits a recognized `<model>:<effort>` spec into --model + --effort', () => {
-    expect(suWrapperExtraArgs('claude', { model: 'claude-sonnet-5:high' })).toEqual(['--model', 'claude-sonnet-5', '--effort', 'high']);
-    expect(suWrapperExtraArgs('claude', { model: 'opus:max' })).toEqual(['--model', 'opus', '--effort', 'max']);
+  it("claude: splits a recognized `<model>:<effort>` spec into --model + --effort", () => {
+    expect(
+      suWrapperExtraArgs("claude", { model: "claude-sonnet-5:high" }),
+    ).toEqual(["--model", "claude-sonnet-5", "--effort", "high"]);
+    expect(suWrapperExtraArgs("claude", { model: "opus:max" })).toEqual([
+      "--model",
+      "opus",
+      "--effort",
+      "max",
+    ]);
     // A non-effort `:` segment (e.g. a bedrock `…-v2:0` id) passes through verbatim.
-    expect(suWrapperExtraArgs('claude', { model: 'anthropic.claude-3-5-sonnet-20241022-v2:0' })).toEqual(['--model', 'anthropic.claude-3-5-sonnet-20241022-v2:0']);
+    expect(
+      suWrapperExtraArgs("claude", {
+        model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      }),
+    ).toEqual(["--model", "anthropic.claude-3-5-sonnet-20241022-v2:0"]);
     // omp keeps the suffixed spec verbatim — it parses `<model>[:<effort>]` natively.
-    expect(suWrapperExtraArgs('omp', { model: 'opus:high' })).toEqual(['--model', 'opus:high']);
+    expect(suWrapperExtraArgs("omp", { model: "opus:high" })).toEqual([
+      "--model",
+      "opus:high",
+    ]);
   });
 
   // Same effort-drop class for codex (found 2026-07-03 launching the backlog-clearance
   // codex fleet): codex's `-m` wants a bare id; effort is the config override
   // `-c model_reasoning_effort="…"`, preserving the owner-requested level.
-  it('codex: splits a recognized `<model>:<effort>` spec into -m + -c model_reasoning_effort', () => {
-    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:high' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="high"']);
-    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:max' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
+  it("codex: splits a recognized `<model>:<effort>` spec into -m + -c model_reasoning_effort", () => {
+    expect(suWrapperExtraArgs("codex", { model: "gpt-5.5:high" })).toEqual([
+      "-m",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="high"',
+    ]);
+    expect(suWrapperExtraArgs("codex", { model: "gpt-5.5:max" })).toEqual([
+      "-m",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="max"',
+    ]);
     // bare id stays bare; a non-effort `:` segment passes through verbatim.
-    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5' })).toEqual(['-m', 'gpt-5.5']);
-    expect(suWrapperExtraArgs('codex', { model: 'weird:0' })).toEqual(['-m', 'weird:0']);
+    expect(suWrapperExtraArgs("codex", { model: "gpt-5.5" })).toEqual([
+      "-m",
+      "gpt-5.5",
+    ]);
+    expect(suWrapperExtraArgs("codex", { model: "weird:0" })).toEqual([
+      "-m",
+      "weird:0",
+    ]);
   });
 
-  it('emits nothing when neither model nor resume is set', () => {
-    expect(suWrapperExtraArgs('omp', {})).toEqual([]);
-    expect(suWrapperExtraArgs('omp')).toEqual([]);
+  it("emits nothing when neither model nor resume is set", () => {
+    expect(suWrapperExtraArgs("omp", {})).toEqual([]);
+    expect(suWrapperExtraArgs("omp")).toEqual([]);
   });
 });
 
-describe('findUntrackedSession (resume a non-psu session by searching the agent stores)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-stores-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("findUntrackedSession (resume a non-psu session by searching the agent stores)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-stores-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
-  it('finds a CLAUDE session by id + recovers cwd from the jsonl (not the dir name)', () => {
-    const projDir = join(home, '.claude', 'projects', '-some-dashed-dir');
+  it("finds a CLAUDE session by id + recovers cwd from the jsonl (not the dir name)", () => {
+    const projDir = join(home, ".claude", "projects", "-some-dashed-dir");
     mkdirSync(projDir, { recursive: true });
     // The real cwd contains a dash — dir-name decoding would be wrong; the
     // jsonl's "cwd" is authoritative.
-    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/my-repo"}\n`);
+    writeFileSync(
+      join(projDir, `${UUID}.jsonl`),
+      `{"sessionId":"${UUID}","cwd":"/home/me/my-repo"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'claude', sessionId: UUID, cwd: '/home/me/my-repo', untracked: true,
+      agent: "claude",
+      sessionId: UUID,
+      cwd: "/home/me/my-repo",
+      untracked: true,
     });
   });
 
-  it('finds a CODEX session by id under sessions/YYYY/MM/DD + recovers cwd', () => {
-    const dir = join(home, '.codex', 'sessions', '2026', '05', '31');
+  it("finds a CODEX session by id under sessions/YYYY/MM/DD + recovers cwd", () => {
+    const dir = join(home, ".codex", "sessions", "2026", "05", "31");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-05-31T09-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/proj"}\n`);
+    writeFileSync(
+      join(dir, `rollout-2026-05-31T09-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/proj"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'codex', sessionId: UUID, cwd: '/home/me/proj', untracked: true,
+      agent: "codex",
+      sessionId: UUID,
+      cwd: "/home/me/proj",
+      untracked: true,
     });
   });
 
-  it('EI-155: finds an isolated-config-dir claude session + carries its configDir for the resume', () => {
+  it("EI-155: finds an isolated-config-dir claude session + carries its configDir for the resume", () => {
     // No shared ~/.claude/projects copy — the transcript lives ONLY under the
     // per-session isolated dir (<home>/.papercusp/session-claude/<owner>/projects).
-    const owner = 'su-owner-1';
-    const configDir = join(home, '.papercusp', 'session-claude', owner);
-    const projDir = join(configDir, 'projects', '-iso-dir');
+    const owner = "su-owner-1";
+    const configDir = join(home, ".papercusp", "session-claude", owner);
+    const projDir = join(configDir, "projects", "-iso-dir");
     mkdirSync(projDir, { recursive: true });
-    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/iso-repo"}\n`);
+    writeFileSync(
+      join(projDir, `${UUID}.jsonl`),
+      `{"sessionId":"${UUID}","cwd":"/home/me/iso-repo"}\n`,
+    );
     // EI-9756: a hit here proves psu launched it (only psu creates the isolated
     // per-owner dir structure) — carries psuTracked so resumeFlow skips the
     // misleading "not a tracked psu launch" warning for an ended session that
     // merely fell outside the resumable window.
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'claude', sessionId: UUID, cwd: '/home/me/iso-repo', untracked: true, configDir,
+      agent: "claude",
+      sessionId: UUID,
+      cwd: "/home/me/iso-repo",
+      untracked: true,
+      configDir,
       psuTracked: true,
     });
   });
 
-  it('a non-UUID id → an omp thread name, resumed in the current dir', () => {
-    expect(findUntrackedSession('my-thread', { home, cwd: '/here' })).toEqual({
-      agent: 'omp', ompThreadId: 'my-thread', cwd: '/here', untracked: true,
+  it("a non-UUID id → an omp thread name, resumed in the current dir", () => {
+    expect(findUntrackedSession("my-thread", { home, cwd: "/here" })).toEqual({
+      agent: "omp",
+      ompThreadId: "my-thread",
+      cwd: "/here",
+      untracked: true,
     });
   });
 
-  it('returns null for an unknown UUID with no matching file', () => {
+  it("returns null for an unknown UUID with no matching file", () => {
     expect(findUntrackedSession(UUID, { home })).toBeNull();
   });
 
-  it('WI-3884: finds a TRACKED codex rollout under su-codex-homes (older than the resumable window) — carries adv id + codexHome + psuTracked', () => {
+  it("WI-3884: finds a TRACKED codex rollout under su-codex-homes (older than the resumable window) — carries adv id + codexHome + psuTracked", () => {
     // The rollout lives ONLY in the per-session tracked home — the shared
     // ~/.codex store has no copy (tracked launches never write there). This is
     // the owner-hit case: adv row #11582 was outside the 30-row resumable
     // window, so resolveTrackedResumeSession never scanned this home.
-    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-11582');
-    const dir = join(codexHome, 'sessions', '2026', '07', '10');
+    const codexHome = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-11582",
+    );
+    const dir = join(codexHome, "sessions", "2026", "07", "10");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-07-10T14-25-16-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/tracked-proj"}\n`);
+    writeFileSync(
+      join(dir, `rollout-2026-07-10T14-25-16-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/tracked-proj"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'codex', sessionId: UUID, cwd: '/home/me/tracked-proj', untracked: true,
-      psuTracked: true, id: 11582, codexHome,
+      agent: "codex",
+      sessionId: UUID,
+      cwd: "/home/me/tracked-proj",
+      untracked: true,
+      psuTracked: true,
+      id: 11582,
+      codexHome,
     });
   });
 
-  it('WI-3884: a malformed tracked-home dir name still resolves (adv id null, codexHome kept)', () => {
-    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-not-a-number');
-    const dir = join(codexHome, 'sessions', '2026', '07', '10');
+  it("WI-3884: a malformed tracked-home dir name still resolves (adv id null, codexHome kept)", () => {
+    const codexHome = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-not-a-number",
+    );
+    const dir = join(codexHome, "sessions", "2026", "07", "10");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-07-10T00-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/odd"}\n`);
+    writeFileSync(
+      join(dir, `rollout-2026-07-10T00-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/odd"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'codex', sessionId: UUID, cwd: '/home/me/odd', untracked: true,
-      psuTracked: true, id: null, codexHome,
+      agent: "codex",
+      sessionId: UUID,
+      cwd: "/home/me/odd",
+      untracked: true,
+      psuTracked: true,
+      id: null,
+      codexHome,
     });
   });
 
-  it('WI-3884: the shared ~/.codex store wins over the tracked-home scan (a raw session stays a raw resume)', () => {
-    const shared = join(home, '.codex', 'sessions', '2026', '07', '10');
+  it("WI-3884: the shared ~/.codex store wins over the tracked-home scan (a raw session stays a raw resume)", () => {
+    const shared = join(home, ".codex", "sessions", "2026", "07", "10");
     mkdirSync(shared, { recursive: true });
-    writeFileSync(join(shared, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/raw"}\n`);
-    const trackedDir = join(home, '.papercusp', 'su-codex-homes', 'session-99', 'sessions', '2026', '07', '10');
+    writeFileSync(
+      join(shared, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/raw"}\n`,
+    );
+    const trackedDir = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-99",
+      "sessions",
+      "2026",
+      "07",
+      "10",
+    );
     mkdirSync(trackedDir, { recursive: true });
-    writeFileSync(join(trackedDir, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/tracked"}\n`);
+    writeFileSync(
+      join(trackedDir, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/tracked"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'codex', sessionId: UUID, cwd: '/home/me/raw', untracked: true,
+      agent: "codex",
+      sessionId: UUID,
+      cwd: "/home/me/raw",
+      untracked: true,
     });
   });
 
-  it('WI-3884: a CLAUDE store hit wins over a codex tracked-home hit for the same uuid (lookup order pinned)', () => {
-    const projDir = join(home, '.claude', 'projects', '-a-dir');
+  it("WI-3884: a CLAUDE store hit wins over a codex tracked-home hit for the same uuid (lookup order pinned)", () => {
+    const projDir = join(home, ".claude", "projects", "-a-dir");
     mkdirSync(projDir, { recursive: true });
-    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/claude-side"}\n`);
-    const trackedDir = join(home, '.papercusp', 'su-codex-homes', 'session-7', 'sessions', '2026', '07', '10');
+    writeFileSync(
+      join(projDir, `${UUID}.jsonl`),
+      `{"sessionId":"${UUID}","cwd":"/home/me/claude-side"}\n`,
+    );
+    const trackedDir = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-7",
+      "sessions",
+      "2026",
+      "07",
+      "10",
+    );
     mkdirSync(trackedDir, { recursive: true });
-    writeFileSync(join(trackedDir, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/codex-side"}\n`);
+    writeFileSync(
+      join(trackedDir, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/codex-side"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'claude', sessionId: UUID, cwd: '/home/me/claude-side', untracked: true,
+      agent: "claude",
+      sessionId: UUID,
+      cwd: "/home/me/claude-side",
+      untracked: true,
     });
   });
 
-  it('WI-3884: a SYMLINKED session dir under su-codex-homes is NOT followed (Dirent.isDirectory is lstat-like)', () => {
+  it("WI-3884: a SYMLINKED session dir under su-codex-homes is NOT followed (Dirent.isDirectory is lstat-like)", () => {
     // A rollout reachable ONLY through a symlinked "session-666" must stay
     // invisible — safeReaddir(withFileTypes) reports a symlink as
     // isDirectory()===false, so the scan never recurses through it. Pins the
     // no-follow property the WI-3859 pass established for archive collection.
-    const realElsewhere = join(home, 'elsewhere', 'sessions', '2026', '07', '10');
+    const realElsewhere = join(
+      home,
+      "elsewhere",
+      "sessions",
+      "2026",
+      "07",
+      "10",
+    );
     mkdirSync(realElsewhere, { recursive: true });
-    writeFileSync(join(realElsewhere, `rollout-2026-07-10T02-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/x"}\n`);
-    const root = join(home, '.papercusp', 'su-codex-homes');
+    writeFileSync(
+      join(realElsewhere, `rollout-2026-07-10T02-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/x"}\n`,
+    );
+    const root = join(home, ".papercusp", "su-codex-homes");
     mkdirSync(root, { recursive: true });
-    symlinkSync(join(home, 'elsewhere'), join(root, 'session-666'));
+    symlinkSync(join(home, "elsewhere"), join(root, "session-666"));
     expect(findUntrackedSession(UUID, { home })).toBeNull();
   });
 
-  it('WI-3884: stray files / non-session dirs / homes without sessions/ are skipped without error', () => {
-    const root = join(home, '.papercusp', 'su-codex-homes');
-    mkdirSync(join(root, 'not-a-session-dir'), { recursive: true }); // wrong prefix
-    mkdirSync(join(root, 'session-11'), { recursive: true }); // no sessions/ subdir
-    writeFileSync(join(root, 'session-12'), 'a stray FILE, not a dir\n'); // file with the prefix
-    const good = join(root, 'session-13', 'sessions', '2026', '07', '10');
+  it("WI-3884: stray files / non-session dirs / homes without sessions/ are skipped without error", () => {
+    const root = join(home, ".papercusp", "su-codex-homes");
+    mkdirSync(join(root, "not-a-session-dir"), { recursive: true }); // wrong prefix
+    mkdirSync(join(root, "session-11"), { recursive: true }); // no sessions/ subdir
+    writeFileSync(join(root, "session-12"), "a stray FILE, not a dir\n"); // file with the prefix
+    const good = join(root, "session-13", "sessions", "2026", "07", "10");
     mkdirSync(good, { recursive: true });
-    writeFileSync(join(good, `rollout-2026-07-10T03-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/ok"}\n`);
+    writeFileSync(
+      join(good, `rollout-2026-07-10T03-00-00-${UUID}.jsonl`),
+      `{"type":"meta","cwd":"/home/me/ok"}\n`,
+    );
     expect(findUntrackedSession(UUID, { home })).toEqual({
-      agent: 'codex', sessionId: UUID, cwd: '/home/me/ok', untracked: true,
-      psuTracked: true, id: 13, codexHome: join(root, 'session-13'),
+      agent: "codex",
+      sessionId: UUID,
+      cwd: "/home/me/ok",
+      untracked: true,
+      psuTracked: true,
+      id: 13,
+      codexHome: join(root, "session-13"),
     });
   });
 
-  it('WI-3884: findTrackedCodexHomeRollout degenerate inputs — null/empty id, missing root, uuid-suffix confusion', () => {
-    expect(findTrackedCodexHomeRollout(null as unknown as string, { home })).toBeNull();
-    expect(findTrackedCodexHomeRollout('', { home })).toBeNull();
+  it("WI-3884: findTrackedCodexHomeRollout degenerate inputs — null/empty id, missing root, uuid-suffix confusion", () => {
+    expect(
+      findTrackedCodexHomeRollout(null as unknown as string, { home }),
+    ).toBeNull();
+    expect(findTrackedCodexHomeRollout("", { home })).toBeNull();
     expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull(); // no su-codex-homes at all
     // A rollout for a DIFFERENT uuid that merely ENDS with the searched id's
     // tail must not match — the filename match is `-<full id>.jsonl`.
-    const dir = join(home, '.papercusp', 'su-codex-homes', 'session-21', 'sessions', '2026', '07', '10');
+    const dir = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-21",
+      "sessions",
+      "2026",
+      "07",
+      "10",
+    );
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-07-10T04-00-00-ffffffff-ffff-7fff-8fff-${UUID.slice(-12)}.jsonl`), '{"cwd":"/x"}\n');
+    writeFileSync(
+      join(
+        dir,
+        `rollout-2026-07-10T04-00-00-ffffffff-ffff-7fff-8fff-${UUID.slice(-12)}.jsonl`,
+      ),
+      '{"cwd":"/x"}\n',
+    );
     expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull();
   });
 });
 
-describe('session-owner index (identity-split fix 2026-07-02 — untracked resume keeps its born SID)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  const FORK_UUID = 'ffffabcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-owners-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
-
-  it('record → recover roundtrips the born coordOwnerId', () => {
-    expect(recordSessionOwner(UUID, 'su-born', { home })).toBe(true);
-    expect(recoverSessionOwner(UUID, { home })).toBe('su-born');
+describe("session-owner index (identity-split fix 2026-07-02 — untracked resume keeps its born SID)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  const FORK_UUID = "ffffabcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-owners-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
   });
 
-  it('FIRST WRITE WINS — a later launch under a different SID cannot rebind', () => {
-    expect(recordSessionOwner(UUID, 'su-born', { home })).toBe(true);
-    expect(recordSessionOwner(UUID, 'su-imposter', { home })).toBe(false);
-    expect(recoverSessionOwner(UUID, { home })).toBe('su-born');
+  it("record → recover roundtrips the born coordOwnerId", () => {
+    expect(recordSessionOwner(UUID, "su-born", { home })).toBe(true);
+    expect(recoverSessionOwner(UUID, { home })).toBe("su-born");
   });
 
-  it('never blocks a launch: missing ids are a no-op, misses/corrupt entries recover null', () => {
-    expect(recordSessionOwner(null, 'su-x', { home })).toBe(false);
+  it("FIRST WRITE WINS — a later launch under a different SID cannot rebind", () => {
+    expect(recordSessionOwner(UUID, "su-born", { home })).toBe(true);
+    expect(recordSessionOwner(UUID, "su-imposter", { home })).toBe(false);
+    expect(recoverSessionOwner(UUID, { home })).toBe("su-born");
+  });
+
+  it("never blocks a launch: missing ids are a no-op, misses/corrupt entries recover null", () => {
+    expect(recordSessionOwner(null, "su-x", { home })).toBe(false);
     expect(recordSessionOwner(UUID, null, { home })).toBe(false);
     expect(recoverSessionOwner(UUID, { home })).toBeNull();
     expect(recoverSessionOwner(null, { home })).toBeNull();
     mkdirSync(sessionOwnersRoot(home), { recursive: true });
-    writeFileSync(join(sessionOwnersRoot(home), UUID), 'not json\n');
+    writeFileSync(join(sessionOwnersRoot(home), UUID), "not json\n");
     expect(recoverSessionOwner(UUID, { home })).toBeNull();
   });
 
-  it('carries the adv row id when known (debuggability, not identity)', () => {
-    recordSessionOwner(UUID, 'su-born', { home, advSessionId: '42' });
-    const raw = JSON.parse(readFileSync(join(sessionOwnersRoot(home), UUID), 'utf8'));
-    expect(raw).toMatchObject({ v: 1, ownerId: 'su-born', advSessionId: '42' });
+  it("carries the adv row id when known (debuggability, not identity)", () => {
+    recordSessionOwner(UUID, "su-born", { home, advSessionId: "42" });
+    const raw = JSON.parse(
+      readFileSync(join(sessionOwnersRoot(home), UUID), "utf8"),
+    );
+    expect(raw).toMatchObject({ v: 1, ownerId: "su-born", advSessionId: "42" });
   });
 
-  it('WI-1863: adv-keyed entry resolves an omp launch (no native UUID) to its ownerId', () => {
+  it("WI-1863: adv-keyed entry resolves an omp launch (no native UUID) to its ownerId", () => {
     // omp launches yield nativeSessionIdFromLaunchArgs=null → the native-id write is a
     // no-op; the launcher ALSO records `adv-<advSessionId>` so a desktop session-<N> is
     // locally resolvable (the 2026-07-03 ornith misdelivery incident).
-    expect(recordSessionOwner(nativeSessionIdFromLaunchArgs(['--approval-mode', 'yolo']), 'su-omp-leader', { home })).toBe(false);
-    expect(recordSessionOwner('adv-9965', 'su-omp-leader', { home, advSessionId: '9965' })).toBe(true);
-    expect(recoverSessionOwner('adv-9965', { home })).toBe('su-omp-leader');
+    expect(
+      recordSessionOwner(
+        nativeSessionIdFromLaunchArgs(["--approval-mode", "yolo"]),
+        "su-omp-leader",
+        { home },
+      ),
+    ).toBe(false);
+    expect(
+      recordSessionOwner("adv-9965", "su-omp-leader", {
+        home,
+        advSessionId: "9965",
+      }),
+    ).toBe(true);
+    expect(recoverSessionOwner("adv-9965", { home })).toBe("su-omp-leader");
     // first-write-wins holds for adv keys too
-    expect(recordSessionOwner('adv-9965', 'su-imposter', { home, advSessionId: '9965' })).toBe(false);
-    expect(recoverSessionOwner('adv-9965', { home })).toBe('su-omp-leader');
+    expect(
+      recordSessionOwner("adv-9965", "su-imposter", {
+        home,
+        advSessionId: "9965",
+      }),
+    ).toBe(false);
+    expect(recoverSessionOwner("adv-9965", { home })).toBe("su-omp-leader");
   });
 
-  it('nativeSessionIdFromLaunchArgs: fresh launch (--session-id) and both resume forms', () => {
-    expect(nativeSessionIdFromLaunchArgs(['--session-id', UUID])).toBe(UUID);
+  it("nativeSessionIdFromLaunchArgs: fresh launch (--session-id) and both resume forms", () => {
+    expect(nativeSessionIdFromLaunchArgs(["--session-id", UUID])).toBe(UUID);
     expect(nativeSessionIdFromLaunchArgs([`--session-id=${UUID}`])).toBe(UUID);
-    expect(nativeSessionIdFromLaunchArgs(['--resume', UUID, '--dangerously-skip-permissions'])).toBe(UUID);
+    expect(
+      nativeSessionIdFromLaunchArgs([
+        "--resume",
+        UUID,
+        "--dangerously-skip-permissions",
+      ]),
+    ).toBe(UUID);
     expect(nativeSessionIdFromLaunchArgs([`--resume=${UUID}`])).toBe(UUID);
-    expect(nativeSessionIdFromLaunchArgs(['resume', UUID])).toBe(UUID); // codex subcommand
+    expect(nativeSessionIdFromLaunchArgs(["resume", UUID])).toBe(UUID); // codex subcommand
   });
 
-  it('nativeSessionIdFromLaunchArgs: a tracked fork binds the FORK id, never the original', () => {
+  it("nativeSessionIdFromLaunchArgs: a tracked fork binds the FORK id, never the original", () => {
     // launchTrackedFork argv shape: claude --resume <orig> --fork-session --session-id <forkId>
-    expect(nativeSessionIdFromLaunchArgs(['--resume', UUID, '--fork-session', '--session-id', FORK_UUID])).toBe(FORK_UUID);
+    expect(
+      nativeSessionIdFromLaunchArgs([
+        "--resume",
+        UUID,
+        "--fork-session",
+        "--session-id",
+        FORK_UUID,
+      ]),
+    ).toBe(FORK_UUID);
   });
 
-  it('nativeSessionIdFromLaunchArgs: a fork with no forced id binds NOTHING (new id unknowable)', () => {
-    expect(nativeSessionIdFromLaunchArgs(['--resume', UUID, '--fork-session'])).toBeNull();
-    expect(nativeSessionIdFromLaunchArgs(['fork', UUID])).toBeNull(); // codex fork
+  it("nativeSessionIdFromLaunchArgs: a fork with no forced id binds NOTHING (new id unknowable)", () => {
+    expect(
+      nativeSessionIdFromLaunchArgs(["--resume", UUID, "--fork-session"]),
+    ).toBeNull();
+    expect(nativeSessionIdFromLaunchArgs(["fork", UUID])).toBeNull(); // codex fork
   });
 
-  it('nativeSessionIdFromLaunchArgs: non-UUID values and empty argv match nothing', () => {
-    expect(nativeSessionIdFromLaunchArgs(['--resume', 'my-omp-thread'])).toBeNull();
+  it("nativeSessionIdFromLaunchArgs: non-UUID values and empty argv match nothing", () => {
+    expect(
+      nativeSessionIdFromLaunchArgs(["--resume", "my-omp-thread"]),
+    ).toBeNull();
     expect(nativeSessionIdFromLaunchArgs([])).toBeNull();
     expect(nativeSessionIdFromLaunchArgs()).toBeNull();
   });
 
-  it('WI-40723: tracked Codex recovery prefers the adv-keyed born owner and never mints a split SID', () => {
-    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-16515');
-    const dir = join(codexHome, 'sessions', '2026', '08', '22');
+  it("WI-40723: tracked Codex recovery prefers the adv-keyed born owner and never mints a split SID", () => {
+    const codexHome = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-16515",
+    );
+    const dir = join(codexHome, "sessions", "2026", "08", "22");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, `rollout-2026-08-22T17-00-00-${UUID}.jsonl`),
       '{"type":"session_meta","payload":{"cwd":"/home/me/tracked-proj"}}\n',
     );
-    recordSessionOwner('adv-16515', 'su-born-leader', { home, advSessionId: '16515' });
+    recordSessionOwner("adv-16515", "su-born-leader", {
+      home,
+      advSessionId: "16515",
+    });
 
     const untracked = findUntrackedSession(UUID, { home });
     expect(untracked).toMatchObject({
-      agent: 'codex', sessionId: UUID, id: 16515, codexHome, psuTracked: true,
+      agent: "codex",
+      sessionId: UUID,
+      id: 16515,
+      codexHome,
+      psuTracked: true,
     });
     expect(recoverSessionOwner(UUID, { home })).toBeNull();
-    expect(recoverResumeSessionOwner(untracked, { home })).toBe('su-born-leader');
+    expect(recoverResumeSessionOwner(untracked, { home })).toBe(
+      "su-born-leader",
+    );
 
     // A later split launch may have written the UUID key under its freshly
     // minted SID. The adv-row binding remains canonical and must still win.
-    recordSessionOwner(UUID, 'su-later-split', { home, advSessionId: '16515' });
+    recordSessionOwner(UUID, "su-later-split", { home, advSessionId: "16515" });
     const bornOwnerId = recoverResumeSessionOwner(untracked, { home });
-    const mintSid = vi.fn(() => 'su-new-split');
-    expect(resumeEnvFor({ ...untracked, coordOwnerId: bornOwnerId }, { mintSid })).toMatchObject({
-      PAPERCUSP_SID: 'su-born-leader',
-      PAPERCUSP_ADV_SESSION_ID: '16515',
+    const mintSid = vi.fn(() => "su-new-split");
+    expect(
+      resumeEnvFor({ ...untracked, coordOwnerId: bornOwnerId }, { mintSid }),
+    ).toMatchObject({
+      PAPERCUSP_SID: "su-born-leader",
+      PAPERCUSP_ADV_SESSION_ID: "16515",
     });
     expect(mintSid).not.toHaveBeenCalled();
   });
 
-  it('END-TO-END: the untracked-resume path re-attaches the born identity instead of minting', () => {
+  it("END-TO-END: the untracked-resume path re-attaches the born identity instead of minting", () => {
     // Launch time (runWrapper): the fresh session recorded its binding.
-    recordSessionOwner(nativeSessionIdFromLaunchArgs(['--session-id', UUID]), 'su-born', { home });
+    recordSessionOwner(
+      nativeSessionIdFromLaunchArgs(["--session-id", UUID]),
+      "su-born",
+      { home },
+    );
     // Later, the adv row is gone → findUntrackedSession knows no identity…
-    const untracked = { agent: 'claude', sessionId: UUID, cwd: '/x', untracked: true };
+    const untracked = {
+      agent: "claude",
+      sessionId: UUID,
+      cwd: "/x",
+      untracked: true,
+    };
     // …but resumeFlow recovers the born owner before resumeEnvFor can mint.
     const born = recoverSessionOwner(untracked.sessionId, { home });
     if (born) (untracked as { coordOwnerId?: string }).coordOwnerId = born;
-    expect(resumeEnvFor(untracked, { mintSid: () => 'su-freshly-minted' }).PAPERCUSP_SID).toBe('su-born');
+    expect(
+      resumeEnvFor(untracked, { mintSid: () => "su-freshly-minted" })
+        .PAPERCUSP_SID,
+    ).toBe("su-born");
   });
 });
 
-describe('mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH --session-id)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+describe("mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH --session-id)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
   const mintId = () => FRESH;
 
-  it('replaces the --session-id VALUE (space form) with a fresh id, preserving everything else', () => {
+  it("replaces the --session-id VALUE (space form) with a fresh id, preserving everything else", () => {
     const { args, nativeId } = mintRecycleArgs(
-      ['claude', '--session-id', UUID, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'],
+      [
+        "claude",
+        "--session-id",
+        UUID,
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+      ],
       { mintId },
     );
     expect(nativeId).toBe(FRESH);
     expect(args).toEqual([
-      'claude', '--session-id', FRESH, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+      "claude",
+      "--session-id",
+      FRESH,
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
     ]);
     // The old id must be gone (that collision is the whole bug).
     expect(args).not.toContain(UUID);
   });
 
-  it('replaces the --session-id=<uuid> (equals form) too', () => {
-    const { args, nativeId } = mintRecycleArgs(['claude', `--session-id=${UUID}`, '--foo'], { mintId });
-    expect(nativeId).toBe(FRESH);
-    expect(args).toEqual(['claude', `--session-id=${FRESH}`, '--foo']);
-  });
-
-  it('strips warm-resume flags (--resume/--continue/--fork-session) — a recycle is a clean boot', () => {
-    // A tracked-fork argv shape carries resume + fork alongside the forced id.
+  it("replaces the --session-id=<uuid> (equals form) too", () => {
     const { args, nativeId } = mintRecycleArgs(
-      ['claude', '--resume', UUID, '--fork-session', '--session-id', UUID, '--add-dir=/d'],
+      ["claude", `--session-id=${UUID}`, "--foo"],
       { mintId },
     );
     expect(nativeId).toBe(FRESH);
-    expect(args).toEqual(['claude', '--session-id', FRESH, '--add-dir=/d']);
-    expect(args).not.toContain('--resume');
-    expect(args).not.toContain('--fork-session');
+    expect(args).toEqual(["claude", `--session-id=${FRESH}`, "--foo"]);
+  });
+
+  it("strips warm-resume flags (--resume/--continue/--fork-session) — a recycle is a clean boot", () => {
+    // A tracked-fork argv shape carries resume + fork alongside the forced id.
+    const { args, nativeId } = mintRecycleArgs(
+      [
+        "claude",
+        "--resume",
+        UUID,
+        "--fork-session",
+        "--session-id",
+        UUID,
+        "--add-dir=/d",
+      ],
+      { mintId },
+    );
+    expect(nativeId).toBe(FRESH);
+    expect(args).toEqual(["claude", "--session-id", FRESH, "--add-dir=/d"]);
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain("--fork-session");
     // The consumed --resume VALUE token is gone too (no dangling uuid).
     expect(args.filter((a) => a === UUID)).toEqual([]);
   });
 
-  it('strips --continue and the --resume=<uuid> equals form', () => {
-    const { args } = mintRecycleArgs(['claude', '--continue', `--resume=${UUID}`, '--session-id', UUID], { mintId });
-    expect(args).toEqual(['claude', '--session-id', FRESH]);
+  it("strips --continue and the --resume=<uuid> equals form", () => {
+    const { args } = mintRecycleArgs(
+      ["claude", "--continue", `--resume=${UUID}`, "--session-id", UUID],
+      { mintId },
+    );
+    expect(args).toEqual(["claude", "--session-id", FRESH]);
   });
 
-  it('is a NO-OP (same array ref, nativeId null) when the argv carries no --session-id (e.g. omp)', () => {
-    const src = ['omp', '--approval-mode', 'yolo'];
+  it("is a NO-OP (same array ref, nativeId null) when the argv carries no --session-id (e.g. omp)", () => {
+    const src = ["omp", "--approval-mode", "yolo"];
     const out = mintRecycleArgs(src, { mintId });
     expect(out.nativeId).toBeNull();
     expect(out.args).toBe(src); // identity — nothing to rotate, respawn is byte-identical
     // Even with an explicit non-claude agent hint the argv is untouched
     // (--session-id is a claude flag).
-    expect(mintRecycleArgs(src, { mintId, agent: 'omp' }).args).toBe(src);
+    expect(mintRecycleArgs(src, { mintId, agent: "omp" }).args).toBe(src);
   });
 
-  it('SYNTHESIZES a fresh --session-id for a RESUME-launched claude argv (agent hint, owner-reported 2026-07-18)', () => {
+  it("SYNTHESIZES a fresh --session-id for a RESUME-launched claude argv (agent hint, owner-reported 2026-07-18)", () => {
     // A `psu --resume` session launches as `claude --resume <id>` with NO
     // --session-id — before the fix its host could never mint carry-respawn
     // argv, so the watchdog's forced cut failed argv-build on EVERY sweep
     // ("carry-respawn requires a Claude --session-id launch" terminal spam) and
     // the session ran unpoliced.
-    const { args, nativeId } = mintRecycleArgs(['claude', '--resume', UUID, '--add-dir=/d'], {
-      mintId,
-      agent: 'claude',
-    });
+    const { args, nativeId } = mintRecycleArgs(
+      ["claude", "--resume", UUID, "--add-dir=/d"],
+      {
+        mintId,
+        agent: "claude",
+      },
+    );
     expect(nativeId).toBe(FRESH);
-    expect(args).toEqual(['claude', '--add-dir=/d', '--session-id', FRESH]);
+    expect(args).toEqual(["claude", "--add-dir=/d", "--session-id", FRESH]);
     expect(args).not.toContain(UUID); // the warm-resume target is gone — clean boot
   });
 
-  it('defaults to a real randomUUID when no mintId is injected (fresh, well-formed, ≠ the old id)', () => {
-    const { args, nativeId } = mintRecycleArgs(['claude', '--session-id', UUID]);
-    expect(nativeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  it("defaults to a real randomUUID when no mintId is injected (fresh, well-formed, ≠ the old id)", () => {
+    const { args, nativeId } = mintRecycleArgs([
+      "claude",
+      "--session-id",
+      UUID,
+    ]);
+    expect(nativeId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
     expect(nativeId).not.toBe(UUID);
-    expect(args).toEqual(['claude', '--session-id', nativeId]);
+    expect(args).toEqual(["claude", "--session-id", nativeId]);
   });
 
-  it('tolerates empty / missing argv', () => {
-    expect(mintRecycleArgs([], { mintId })).toEqual({ args: [], nativeId: null });
-    expect(mintRecycleArgs(undefined, { mintId })).toEqual({ args: [], nativeId: null });
+  it("tolerates empty / missing argv", () => {
+    expect(mintRecycleArgs([], { mintId })).toEqual({
+      args: [],
+      nativeId: null,
+    });
+    expect(mintRecycleArgs(undefined, { mintId })).toEqual({
+      args: [],
+      nativeId: null,
+    });
   });
 });
 
-describe('mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sessions-2026-08-02 P-002)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+describe("mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sessions-2026-08-02 P-002)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
   const mintId = () => FRESH;
-  const OLD_RENDER = '/home/u/.papercusp/launch-context/session-14416.md';
-  const NEW_RENDER = '/home/u/.papercusp/launch-context/session-refresh-su-abc.md';
+  const OLD_RENDER = "/home/u/.papercusp/launch-context/session-14416.md";
+  const NEW_RENDER =
+    "/home/u/.papercusp/launch-context/session-refresh-su-abc.md";
 
-  it('REPLACES the inherited --system-prompt-file with the freshly re-rendered one', () => {
+  it("REPLACES the inherited --system-prompt-file with the freshly re-rendered one", () => {
     // THE bug: the copy loop's bare `out.push(a)` carried the PREDECESSOR's render
     // through every respawn, pinning a session's base persona to launch #1 forever.
     // 27 of 53 live claude sessions were up to 14 days stale when measured.
     const { args } = mintRecycleArgs(
-      ['claude', '--session-id', UUID, '--system-prompt-file', OLD_RENDER, '--foo'],
+      [
+        "claude",
+        "--session-id",
+        UUID,
+        "--system-prompt-file",
+        OLD_RENDER,
+        "--foo",
+      ],
       { mintId, personaFile: NEW_RENDER },
     );
-    expect(args).toEqual(['claude', '--session-id', FRESH, '--system-prompt-file', NEW_RENDER, '--foo']);
+    expect(args).toEqual([
+      "claude",
+      "--session-id",
+      FRESH,
+      "--system-prompt-file",
+      NEW_RENDER,
+      "--foo",
+    ]);
     // Replaced, not appended — exactly one occurrence, and the stale path is gone.
-    expect(args.filter((a: string) => a === '--system-prompt-file')).toHaveLength(1);
+    expect(
+      args.filter((a: string) => a === "--system-prompt-file"),
+    ).toHaveLength(1);
     expect(args).not.toContain(OLD_RENDER);
   });
 
-  it('replaces the --system-prompt-file=<path> form too', () => {
+  it("replaces the --system-prompt-file=<path> form too", () => {
     const { args } = mintRecycleArgs(
-      ['claude', '--session-id', UUID, `--system-prompt-file=${OLD_RENDER}`],
+      ["claude", "--session-id", UUID, `--system-prompt-file=${OLD_RENDER}`],
       { mintId, personaFile: NEW_RENDER },
     );
-    expect(args).toEqual(['claude', '--session-id', FRESH, `--system-prompt-file=${NEW_RENDER}`]);
+    expect(args).toEqual([
+      "claude",
+      "--session-id",
+      FRESH,
+      `--system-prompt-file=${NEW_RENDER}`,
+    ]);
   });
 
-  it('KEEPS the inherited render when no personaFile is supplied (the fail-soft path)', () => {
+  it("KEEPS the inherited render when no personaFile is supplied (the fail-soft path)", () => {
     // A refresh that failed or was unavailable must never cost the session its
     // respawn — a stale prompt beats a dead session. This is also the pre-fix
     // behaviour, so it is the invariant a future change must not break.
-    for (const persona of [null, undefined, '', '   ']) {
+    for (const persona of [null, undefined, "", "   "]) {
       const { args } = mintRecycleArgs(
-        ['claude', '--session-id', UUID, '--system-prompt-file', OLD_RENDER],
+        ["claude", "--session-id", UUID, "--system-prompt-file", OLD_RENDER],
         { mintId, personaFile: persona },
       );
-      expect(args).toEqual(['claude', '--session-id', FRESH, '--system-prompt-file', OLD_RENDER]);
+      expect(args).toEqual([
+        "claude",
+        "--session-id",
+        FRESH,
+        "--system-prompt-file",
+        OLD_RENDER,
+      ]);
     }
   });
 
-  it('never ADDS --system-prompt-file to an argv that has none, and never touches --append-system-prompt-file', () => {
+  it("never ADDS --system-prompt-file to an argv that has none, and never touches --append-system-prompt-file", () => {
     // omp/codex do not take --system-prompt-file; injecting one would be a new flag
     // on a backend that never asked for it. And the APPEND flag carries the carry
     // document + the launch brief — swapping that would drop the session's mission.
-    const carry = '/home/u/.papercusp/launch-context/carry-su-abc.md';
+    const carry = "/home/u/.papercusp/launch-context/carry-su-abc.md";
     const { args } = mintRecycleArgs(
-      ['claude', '--session-id', UUID, '--append-system-prompt-file', carry],
+      ["claude", "--session-id", UUID, "--append-system-prompt-file", carry],
       { mintId, personaFile: NEW_RENDER },
     );
-    expect(args).toEqual(['claude', '--session-id', FRESH, '--append-system-prompt-file', carry]);
+    expect(args).toEqual([
+      "claude",
+      "--session-id",
+      FRESH,
+      "--append-system-prompt-file",
+      carry,
+    ]);
     expect(args).not.toContain(NEW_RENDER);
   });
 });
 
-describe('kickoff positional is dropped on respawn (WI-37939)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+describe("kickoff positional is dropped on respawn (WI-37939)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
   const mintId = () => FRESH;
   // The REAL kickoff recovered from su-12b70e95's persisted argv (args[12]) — a
   // fleet-kickoff minted 2026-08-10T16:57:23Z and still being re-delivered 26.6h
   // later, which is how this bug was found.
   const KICKOFF =
-    '⟦turn-origin:fleet-kickoff nonce:2299b27f74c65c6b⟧\n' +
-    'You are in GOAL mode on goal `make-a-website-displaying-images-of-pandas-aa0205`, which the owner just started.';
+    "⟦turn-origin:fleet-kickoff nonce:2299b27f74c65c6b⟧\n" +
+    "You are in GOAL mode on goal `make-a-website-displaying-images-of-pandas-aa0205`, which the owner just started.";
 
-  it('drops the tagged kickoff positional, so the successor does not re-open on it', () => {
+  it("drops the tagged kickoff positional, so the successor does not re-open on it", () => {
     // THE bug: the copy loop's bare `out.push(a)` carried the launch prompt through
     // every respawn, so each fresh child re-exec'd claude with the ORIGINAL kickoff
     // still on argv and opened on it as turn 1 — 26.6h stale, asserting a GOAL-mode
     // contract the session never held, for an already-achieved goal.
     const { args } = mintRecycleArgs(
-      ['claude', '--session-id', UUID, '--disallowedTools=Task,Agent,Workflow', KICKOFF],
-      { mintId, agent: 'claude' },
+      [
+        "claude",
+        "--session-id",
+        UUID,
+        "--disallowedTools=Task,Agent,Workflow",
+        KICKOFF,
+      ],
+      { mintId, agent: "claude" },
     );
-    expect(args).toEqual(['claude', '--session-id', FRESH, '--disallowedTools=Task,Agent,Workflow']);
-    expect(args.some((a: string) => a.includes('turn-origin'))).toBe(false);
+    expect(args).toEqual([
+      "claude",
+      "--session-id",
+      FRESH,
+      "--disallowedTools=Task,Agent,Workflow",
+    ]);
+    expect(args.some((a: string) => a.includes("turn-origin"))).toBe(false);
   });
 
-  it('drops an UNTAGGED kickoff behind an inline --key=value (tagKickoffProvenance is fail-soft)', () => {
+  it("drops an UNTAGGED kickoff behind an inline --key=value (tagKickoffProvenance is fail-soft)", () => {
     // tagKickoffProvenance returns the text UNTAGGED on any error, so the envelope
     // cannot be the only signal. An inline `--key=value` owns no following token,
     // which makes what follows it a provable positional.
     const { args } = mintRecycleArgs(
-      ['claude', '--session-id', UUID, '--disallowedTools=Task', 'start by working plan foo'],
-      { mintId, agent: 'claude' },
+      [
+        "claude",
+        "--session-id",
+        UUID,
+        "--disallowedTools=Task",
+        "start by working plan foo",
+      ],
+      { mintId, agent: "claude" },
     );
-    expect(args).toEqual(['claude', '--session-id', FRESH, '--disallowedTools=Task']);
+    expect(args).toEqual([
+      "claude",
+      "--session-id",
+      FRESH,
+      "--disallowedTools=Task",
+    ]);
   });
 
-  it('NEVER eats a flag VALUE — the safety invariant that outranks the fix', () => {
+  it("NEVER eats a flag VALUE — the safety invariant that outranks the fix", () => {
     // Wrongly stripping a value launches the successor with a broken flag, which is
     // strictly worse than the staleness being fixed. A trailing token owned by a
     // value-taking flag must survive untouched.
     for (const tail of [
-      ['--permission-mode', 'bypassPermissions'],
-      ['--system-prompt-file', '/home/u/.papercusp/launch-context/session-14710.md'],
-      ['--settings', '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9073"}}'],
-      ['--add-dir', '/some/dir'],
+      ["--permission-mode", "bypassPermissions"],
+      [
+        "--system-prompt-file",
+        "/home/u/.papercusp/launch-context/session-14710.md",
+      ],
+      ["--settings", '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9073"}}'],
+      ["--add-dir", "/some/dir"],
     ]) {
-      const { args } = mintRecycleArgs(['claude', '--session-id', UUID, ...tail], {
-        mintId,
-        agent: 'claude',
-      });
-      expect(args).toEqual(['claude', '--session-id', FRESH, ...tail]);
+      const { args } = mintRecycleArgs(
+        ["claude", "--session-id", UUID, ...tail],
+        {
+          mintId,
+          agent: "claude",
+        },
+      );
+      expect(args).toEqual(["claude", "--session-id", FRESH, ...tail]);
     }
   });
 
-  it('leaves an argv that never had a kickoff completely alone', () => {
-    const src = ['claude', '--session-id', UUID, '--dangerously-skip-permissions'];
-    const { args } = mintRecycleArgs(src, { mintId, agent: 'claude' });
-    expect(args).toEqual(['claude', '--session-id', FRESH, '--dangerously-skip-permissions']);
+  it("leaves an argv that never had a kickoff completely alone", () => {
+    const src = [
+      "claude",
+      "--session-id",
+      UUID,
+      "--dangerously-skip-permissions",
+    ];
+    const { args } = mintRecycleArgs(src, { mintId, agent: "claude" });
+    expect(args).toEqual([
+      "claude",
+      "--session-id",
+      FRESH,
+      "--dangerously-skip-permissions",
+    ]);
   });
 
-  it('is idempotent — a second respawn of an already-stripped argv is a no-op', () => {
+  it("is idempotent — a second respawn of an already-stripped argv is a no-op", () => {
     // Respawn chains are long-lived (this session respawned 6+ times in 27h); the
     // strip must not drift the argv further on each hop.
     const first = mintRecycleArgs(
-      ['claude', '--session-id', UUID, '--disallowedTools=Task', KICKOFF],
-      { mintId, agent: 'claude' },
+      ["claude", "--session-id", UUID, "--disallowedTools=Task", KICKOFF],
+      { mintId, agent: "claude" },
     ).args;
-    const second = mintRecycleArgs(first, { mintId, agent: 'claude' }).args;
+    const second = mintRecycleArgs(first, { mintId, agent: "claude" }).args;
     expect(second).toEqual(first);
   });
 
-  it('carry-respawn drops it too, and still ends on the carry document', () => {
+  it("carry-respawn drops it too, and still ends on the carry document", () => {
     // mintCarryRespawnArgs delegates to mintRecycleArgs, so BOTH respawn modes get
     // the fix from one code path (same shape as the P-002 persona swap above).
     const { args } = mintCarryRespawnArgs(
-      ['claude', '--session-id', UUID, '--disallowedTools=Task', KICKOFF],
-      { systemPromptAddendum: '# carry doc', ownerId: 'su-wi37939-test', mintId, agent: 'claude' },
+      ["claude", "--session-id", UUID, "--disallowedTools=Task", KICKOFF],
+      {
+        systemPromptAddendum: "# carry doc",
+        ownerId: "su-wi37939-test",
+        mintId,
+        agent: "claude",
+      },
     );
-    expect(args.some((a: string) => a.includes('turn-origin'))).toBe(false);
-    expect(args[args.length - 2]).toBe('--append-system-prompt-file');
+    expect(args.some((a: string) => a.includes("turn-origin"))).toBe(false);
+    expect(args[args.length - 2]).toBe("--append-system-prompt-file");
   });
 
-  it('stripKickoffPositional: falsifiable on the exact token classes it decides between', () => {
+  it("stripKickoffPositional: falsifiable on the exact token classes it decides between", () => {
     // A guard that has never failed is untested — pin BOTH verdicts, not just the
     // strip, so a future loosening that eats values fails here.
-    expect(stripKickoffPositional(['claude', '--a=b', KICKOFF])).toEqual(['claude', '--a=b']);
-    expect(stripKickoffPositional(['claude', '--a=b', 'positional'])).toEqual(['claude', '--a=b']);
+    expect(stripKickoffPositional(["claude", "--a=b", KICKOFF])).toEqual([
+      "claude",
+      "--a=b",
+    ]);
+    expect(stripKickoffPositional(["claude", "--a=b", "positional"])).toEqual([
+      "claude",
+      "--a=b",
+    ]);
     // Value-taking flag → the token is a VALUE, not a positional: untouched.
-    expect(stripKickoffPositional(['claude', '--flag', 'value'])).toEqual(['claude', '--flag', 'value']);
+    expect(stripKickoffPositional(["claude", "--flag", "value"])).toEqual([
+      "claude",
+      "--flag",
+      "value",
+    ]);
     // No trailing positional at all.
-    expect(stripKickoffPositional(['claude', '--x'])).toEqual(['claude', '--x']);
+    expect(stripKickoffPositional(["claude", "--x"])).toEqual([
+      "claude",
+      "--x",
+    ]);
     expect(stripKickoffPositional([])).toEqual([]);
   });
 });
 
-describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-carry-respawn-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-carry-respawn-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
-  it('rotates the native id and layers one 0600 owner-scoped carry file', () => {
-    const out = mintCarryRespawnArgs(['claude', '--session-id', UUID, '--foo'], {
-      systemPromptAddendum: 'deterministic carry body',
-      ownerId: 'su/test owner',
-      mintId: () => FRESH,
-      home,
-    });
+  it("rotates the native id and layers one 0600 owner-scoped carry file", () => {
+    const out = mintCarryRespawnArgs(
+      ["claude", "--session-id", UUID, "--foo"],
+      {
+        systemPromptAddendum: "deterministic carry body",
+        ownerId: "su/test owner",
+        mintId: () => FRESH,
+        home,
+      },
+    );
     expect(out.nativeId).toBe(FRESH);
-    expect(out.launchContextPath).toBe(join(home, '.papercusp', 'launch-context', 'carry-su_test_owner.md'));
+    expect(out.launchContextPath).toBe(
+      join(home, ".papercusp", "launch-context", "carry-su_test_owner.md"),
+    );
     expect(out.args).toEqual([
-      'claude', '--session-id', FRESH, '--foo',
-      '--append-system-prompt-file', out.launchContextPath,
+      "claude",
+      "--session-id",
+      FRESH,
+      "--foo",
+      "--append-system-prompt-file",
+      out.launchContextPath,
     ]);
-    expect(readFileSync(out.launchContextPath, 'utf8')).toBe('deterministic carry body\n');
+    expect(readFileSync(out.launchContextPath, "utf8")).toBe(
+      "deterministic carry body\n",
+    );
     expect(statSync(out.launchContextPath).mode & 0o777).toBe(0o600);
   });
 
-  it('threads personaFile through to the base-prompt swap while still layering the carry (P-002)', () => {
+  it("threads personaFile through to the base-prompt swap while still layering the carry (P-002)", () => {
     // The two prompt files answer different questions and must BOTH be right on a
     // carry-respawn: --system-prompt-file is the base persona (which went stale) and
     // --append-system-prompt-file is this cut's carry document (which never did).
     // Fixing one by clobbering the other would trade a stale prompt for a lost
     // hand-off, so assert them together.
-    const stale = join(home, '.papercusp', 'launch-context', 'session-14416.md');
-    const fresh = join(home, '.papercusp', 'launch-context', 'session-refresh-su_test_owner.md');
+    const stale = join(
+      home,
+      ".papercusp",
+      "launch-context",
+      "session-14416.md",
+    );
+    const fresh = join(
+      home,
+      ".papercusp",
+      "launch-context",
+      "session-refresh-su_test_owner.md",
+    );
     const out = mintCarryRespawnArgs(
-      ['claude', '--session-id', UUID, '--system-prompt-file', stale],
+      ["claude", "--session-id", UUID, "--system-prompt-file", stale],
       {
-        systemPromptAddendum: 'carry body',
-        ownerId: 'su/test owner',
+        systemPromptAddendum: "carry body",
+        ownerId: "su/test owner",
         mintId: () => FRESH,
         home,
         personaFile: fresh,
       },
     );
     expect(out.args).toEqual([
-      'claude', '--session-id', FRESH, '--system-prompt-file', fresh,
-      '--append-system-prompt-file', out.launchContextPath,
+      "claude",
+      "--session-id",
+      FRESH,
+      "--system-prompt-file",
+      fresh,
+      "--append-system-prompt-file",
+      out.launchContextPath,
     ]);
     expect(out.args).not.toContain(stale);
   });
 
-  it('fails before any respawn when the carry is empty or the agent has no managed carry consumer', () => {
+  it("fails before any respawn when the carry is empty or the agent has no managed carry consumer", () => {
     expect(() =>
-      mintCarryRespawnArgs(['claude', '--session-id', UUID], {
-        systemPromptAddendum: '  ',
+      mintCarryRespawnArgs(["claude", "--session-id", UUID], {
+        systemPromptAddendum: "  ",
         home,
       }),
     ).toThrow(/non-empty/);
     // OMP has no managed carry consumer. Codex is covered separately below.
     expect(() =>
-      mintCarryRespawnArgs(['omp'], {
-        systemPromptAddendum: 'carry',
+      mintCarryRespawnArgs(["omp"], {
+        systemPromptAddendum: "carry",
         home,
-        agent: 'omp',
+        agent: "omp",
       }),
     ).toThrow(/Claude and Codex/);
   });
 
-  it('restarts Codex as a fresh thread and layers the carry into CODEX_HOME/AGENTS.md', () => {
-    const codexHome = join(home, 'codex-home');
+  it("restarts Codex as a fresh thread and layers the carry into CODEX_HOME/AGENTS.md", () => {
+    const codexHome = join(home, "codex-home");
     mkdirSync(codexHome, { recursive: true });
-    writeFileSync(join(codexHome, 'AGENTS.md'), '# Base persona\n', { mode: 0o600 });
-    const kickoff = '⟦turn-origin:fleet-kickoff nonce:12345678⟧\nBegin draining.';
+    writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n", {
+      mode: 0o600,
+    });
+    const kickoff =
+      "⟦turn-origin:fleet-kickoff nonce:12345678⟧\nBegin draining.";
 
     const first = mintCarryRespawnArgs(
-      ['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna', kickoff],
+      ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna", kickoff],
       {
-        systemPromptAddendum: 'first deterministic carry',
-        ownerId: 'su-codex-carry',
+        systemPromptAddendum: "first deterministic carry",
+        ownerId: "su-codex-carry",
         home,
-        agent: 'codex',
+        agent: "codex",
         codexHome,
       },
     );
     expect(first.nativeId).toBeNull();
-    expect(first.args).toEqual(['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna']);
-    expect(readFileSync(join(codexHome, 'AGENTS.md'), 'utf8')).toContain('first deterministic carry');
-    expect(readFileSync(join(codexHome, '.papercusp-carry-base-AGENTS.md'), 'utf8')).toBe('# Base persona\n');
-    expect(statSync(join(codexHome, 'AGENTS.md')).mode & 0o777).toBe(0o600);
+    expect(first.args).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "-m",
+      "gpt-5.6-luna",
+    ]);
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).toContain(
+      "first deterministic carry",
+    );
+    expect(
+      readFileSync(join(codexHome, ".papercusp-carry-base-AGENTS.md"), "utf8"),
+    ).toBe("# Base persona\n");
+    expect(statSync(join(codexHome, "AGENTS.md")).mode & 0o777).toBe(0o600);
 
     const second = mintCarryRespawnArgs(
-      ['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna', 'resume', UUID],
+      ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna", "resume", UUID],
       {
-        systemPromptAddendum: 'second deterministic carry',
-        ownerId: 'su-codex-carry',
+        systemPromptAddendum: "second deterministic carry",
+        ownerId: "su-codex-carry",
         home,
-        agent: 'codex',
+        agent: "codex",
         codexHome,
       },
     );
-    expect(second.args).toEqual(['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna']);
-    const agents = readFileSync(join(codexHome, 'AGENTS.md'), 'utf8');
-    expect(agents).toContain('# Base persona');
-    expect(agents).toContain('second deterministic carry');
-    expect(agents).not.toContain('first deterministic carry');
+    expect(second.args).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "-m",
+      "gpt-5.6-luna",
+    ]);
+    const agents = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
+    expect(agents).toContain("# Base persona");
+    expect(agents).toContain("second deterministic carry");
+    expect(agents).not.toContain("first deterministic carry");
   });
 
   it.each([
-    ['legacy AGENTS.md without a base snapshot', false],
-    ['legacy contaminated base snapshot', true],
-  ])('repairs %s before layering the next carry', (_label, hasBaseSnapshot) => {
-    const codexHome = join(home, 'codex-home');
+    ["legacy AGENTS.md without a base snapshot", false],
+    ["legacy contaminated base snapshot", true],
+  ])("repairs %s before layering the next carry", (_label, hasBaseSnapshot) => {
+    const codexHome = join(home, "codex-home");
     mkdirSync(codexHome, { recursive: true });
     const legacyAgents = [
-      '# Base persona',
-      '',
-      '---',
-      '## Managed carry checkpoint',
-      '',
-      'stale carry from a predecessor',
-      '',
-    ].join('\n');
-    writeFileSync(join(codexHome, 'AGENTS.md'), legacyAgents, { mode: 0o600 });
+      "# Base persona",
+      "",
+      "---",
+      "## Managed carry checkpoint",
+      "",
+      "stale carry from a predecessor",
+      "",
+    ].join("\n");
+    writeFileSync(join(codexHome, "AGENTS.md"), legacyAgents, { mode: 0o600 });
     if (hasBaseSnapshot) {
-      writeFileSync(join(codexHome, '.papercusp-carry-base-AGENTS.md'), legacyAgents, { mode: 0o600 });
+      writeFileSync(
+        join(codexHome, ".papercusp-carry-base-AGENTS.md"),
+        legacyAgents,
+        { mode: 0o600 },
+      );
     }
 
-    mintCarryRespawnArgs(['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna'], {
-      systemPromptAddendum: 'fresh carry after repair',
-      ownerId: 'su-codex-legacy-carry',
-      home,
-      agent: 'codex',
-      codexHome,
-    });
+    mintCarryRespawnArgs(
+      ["--dangerously-bypass-hook-trust", "-m", "gpt-5.6-luna"],
+      {
+        systemPromptAddendum: "fresh carry after repair",
+        ownerId: "su-codex-legacy-carry",
+        home,
+        agent: "codex",
+        codexHome,
+      },
+    );
 
-    const agents = readFileSync(join(codexHome, 'AGENTS.md'), 'utf8');
-    const base = readFileSync(join(codexHome, '.papercusp-carry-base-AGENTS.md'), 'utf8');
-    expect(base).toBe('# Base persona\n');
-    expect(agents).toContain('# Base persona');
-    expect(agents).toContain('fresh carry after repair');
-    expect(agents).not.toContain('stale carry from a predecessor');
-    expect((agents.match(/^## Managed carry checkpoint$/gm) ?? [])).toHaveLength(1);
+    const agents = readFileSync(join(codexHome, "AGENTS.md"), "utf8");
+    const base = readFileSync(
+      join(codexHome, ".papercusp-carry-base-AGENTS.md"),
+      "utf8",
+    );
+    expect(base).toBe("# Base persona\n");
+    expect(agents).toContain("# Base persona");
+    expect(agents).toContain("fresh carry after repair");
+    expect(agents).not.toContain("stale carry from a predecessor");
+    expect(agents.match(/^## Managed carry checkpoint$/gm) ?? []).toHaveLength(
+      1,
+    );
   });
 
-  it('mints a successor for a RESUME-launched claude argv (no --session-id to rotate — synthesized)', () => {
+  it("mints a successor for a RESUME-launched claude argv (no --session-id to rotate — synthesized)", () => {
     // The owner-reported 2026-07-18 spam: `psu --resume` sessions could never be
     // force-respawned because this threw on their `claude --resume <id>` argv.
-    const out = mintCarryRespawnArgs(['claude', '--resume', UUID, '--foo'], {
-      systemPromptAddendum: 'deterministic carry body',
-      ownerId: 'su-resumed',
+    const out = mintCarryRespawnArgs(["claude", "--resume", UUID, "--foo"], {
+      systemPromptAddendum: "deterministic carry body",
+      ownerId: "su-resumed",
       mintId: () => FRESH,
       home,
     });
     expect(out.nativeId).toBe(FRESH);
     expect(out.args).toEqual([
-      'claude', '--foo', '--session-id', FRESH,
-      '--append-system-prompt-file', out.launchContextPath,
+      "claude",
+      "--foo",
+      "--session-id",
+      FRESH,
+      "--append-system-prompt-file",
+      out.launchContextPath,
     ]);
     expect(out.args).not.toContain(UUID);
   });
 });
 
-describe('claudeStoreHasSession (check if claude can resume a specific session)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-stores-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("claudeStoreHasSession (check if claude can resume a specific session)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-stores-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
-  it('returns true when Claude store has the session file', () => {
-    const projDir = join(home, '.claude', 'projects', '-some-dir');
+  it("returns true when Claude store has the session file", () => {
+    const projDir = join(home, ".claude", "projects", "-some-dir");
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
     expect(claudeStoreHasSession(UUID, { home })).toBe(true);
   });
 
-  it('returns true even if the session file is empty', () => {
-    const projDir = join(home, '.claude', 'projects', 'my-proj');
+  it("returns true even if the session file is empty", () => {
+    const projDir = join(home, ".claude", "projects", "my-proj");
     mkdirSync(projDir, { recursive: true });
-    writeFileSync(join(projDir, `${UUID}.jsonl`), '');
+    writeFileSync(join(projDir, `${UUID}.jsonl`), "");
     expect(claudeStoreHasSession(UUID, { home })).toBe(true);
   });
 
-  it('searches across multiple project directories', () => {
+  it("searches across multiple project directories", () => {
     // Create session in a different project dir
-    const projDir = join(home, '.claude', 'projects', '-other-proj');
+    const projDir = join(home, ".claude", "projects", "-other-proj");
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
     expect(claudeStoreHasSession(UUID, { home })).toBe(true);
   });
 
-  it('returns false when the session file does not exist', () => {
-    mkdirSync(join(home, '.claude', 'projects', 'my-proj'), { recursive: true });
+  it("returns false when the session file does not exist", () => {
+    mkdirSync(join(home, ".claude", "projects", "my-proj"), {
+      recursive: true,
+    });
     expect(claudeStoreHasSession(UUID, { home })).toBe(false);
   });
 
-  it('returns false for null or undefined ids', () => {
-    mkdirSync(join(home, '.claude', 'projects', 'my-proj'), { recursive: true });
+  it("returns false for null or undefined ids", () => {
+    mkdirSync(join(home, ".claude", "projects", "my-proj"), {
+      recursive: true,
+    });
     expect(claudeStoreHasSession(null, { home })).toBe(false);
     expect(claudeStoreHasSession(undefined, { home })).toBe(false);
-    expect(claudeStoreHasSession('', { home })).toBe(false);
+    expect(claudeStoreHasSession("", { home })).toBe(false);
   });
 
-  it('returns false when .claude/projects does not exist', () => {
+  it("returns false when .claude/projects does not exist", () => {
     expect(claudeStoreHasSession(UUID, { home })).toBe(false);
   });
 
-  it('EI-155: finds the transcript in the isolated configDir (not the shared store)', () => {
+  it("EI-155: finds the transcript in the isolated configDir (not the shared store)", () => {
     // The transcript exists ONLY in the per-session isolated config dir.
-    const configDir = join(home, '.papercusp', 'session-claude', 'su-owner-2');
-    const projDir = join(configDir, 'projects', '-iso');
+    const configDir = join(home, ".papercusp", "session-claude", "su-owner-2");
+    const projDir = join(configDir, "projects", "-iso");
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
     // Without the configDir hint, the shared store has nothing → false…
@@ -4811,31 +6884,40 @@ describe('claudeStoreHasSession (check if claude can resume a specific session)'
   });
 });
 
-describe('claudeStoreHasSession (a tracked adv row alone does not prove resumability)', () => {
-  const UUID = '0c0f59c1-1706-4244-aefc-3d6f0aee2361';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-brain-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("claudeStoreHasSession (a tracked adv row alone does not prove resumability)", () => {
+  const UUID = "0c0f59c1-1706-4244-aefc-3d6f0aee2361";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-brain-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
-  it('true when the transcript exists in any project dir', () => {
-    const projDir = join(home, '.claude', 'projects', '-some-dir');
+  it("true when the transcript exists in any project dir", () => {
+    const projDir = join(home, ".claude", "projects", "-some-dir");
     mkdirSync(projDir, { recursive: true });
-    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/x"}\n`);
+    writeFileSync(
+      join(projDir, `${UUID}.jsonl`),
+      `{"sessionId":"${UUID}","cwd":"/x"}\n`,
+    );
     expect(claudeStoreHasSession(UUID, { home })).toBe(true);
   });
 
-  it('false when no transcript exists — the brain-pane wedge case: a pinned + adv-tracked session whose launch died before its first turn', () => {
-    mkdirSync(join(home, '.claude', 'projects', '-some-dir'), { recursive: true });
+  it("false when no transcript exists — the brain-pane wedge case: a pinned + adv-tracked session whose launch died before its first turn", () => {
+    mkdirSync(join(home, ".claude", "projects", "-some-dir"), {
+      recursive: true,
+    });
     expect(claudeStoreHasSession(UUID, { home })).toBe(false);
   });
 
-  it('false for a missing store dir or empty id', () => {
+  it("false for a missing store dir or empty id", () => {
     expect(claudeStoreHasSession(UUID, { home })).toBe(false);
-    expect(claudeStoreHasSession('', { home })).toBe(false);
+    expect(claudeStoreHasSession("", { home })).toBe(false);
   });
 });
 
-describe('rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the stale isolated .credentials.json fork)', () => {
+describe("rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the stale isolated .credentials.json fork)", () => {
   // The regression: `psu --resume <id>` prompts a Claude LOGIN despite the owner
   // being logged in on the default account. Root cause — each psu session runs
   // claude in an ISOLATED CLAUDE_CONFIG_DIR; claude REPLACES .credentials.json on
@@ -4844,28 +6926,30 @@ describe('rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the s
   // make that fork go stale the moment the global rotates. rehealResumeCredentials
   // re-establishes the fresh-mirror invariant before a resume spawn: the isolated
   // .credentials.json must end up a SYMLINK to the (reconciler-kept-newest) global.
-  let home = '';
-  let configDir = '';
-  const globalOf = () => join(home, '.claude', '.credentials.json');
-  const sessOf = () => join(configDir, '.credentials.json');
-  const credBundle = (expiresAt: number, accessToken = 'tok') =>
+  let home = "";
+  let configDir = "";
+  const globalOf = () => join(home, ".claude", ".credentials.json");
+  const sessOf = () => join(configDir, ".credentials.json");
+  const credBundle = (expiresAt: number, accessToken = "tok") =>
     JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } });
-  const writeGlobal = (expiresAt: number, accessToken = 'global-tok') => {
-    mkdirSync(join(home, '.claude'), { recursive: true });
+  const writeGlobal = (expiresAt: number, accessToken = "global-tok") => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(globalOf(), credBundle(expiresAt, accessToken));
   };
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'psu-reheal-'));
-    configDir = join(home, '.papercusp', 'session-claude', 'su-owner-1');
+    home = mkdtempSync(join(tmpdir(), "psu-reheal-"));
+    configDir = join(home, ".papercusp", "session-claude", "su-owner-1");
     mkdirSync(configDir, { recursive: true });
   });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
-  it('a stale REAL-FILE session fork is replaced by a SYMLINK to the live global (the owner-reported regression)', () => {
-    writeGlobal(9_000, 'live-global-token');
+  it("a stale REAL-FILE session fork is replaced by a SYMLINK to the live global (the owner-reported regression)", () => {
+    writeGlobal(9_000, "live-global-token");
     // The divergent, stale real-file fork left behind by an in-session refresh.
-    writeFileSync(sessOf(), credBundle(1_000, 'stale-fork-token'));
+    writeFileSync(sessOf(), credBundle(1_000, "stale-fork-token"));
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(false); // precondition: real file
 
     rehealResumeCredentials(configDir, { home });
@@ -4874,77 +6958,108 @@ describe('rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the s
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
     expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
     // …so claude follows it to the live token, never the stale fork.
-    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('live-global-token');
+    expect(
+      JSON.parse(readFileSync(sessOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("live-global-token");
     // The global's newer bundle is untouched (the fork was OLDER — not promoted).
-    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('live-global-token');
+    expect(
+      JSON.parse(readFileSync(globalOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("live-global-token");
   });
 
-  it('promotes a strictly-NEWER real-file fork to the global, THEN symlinks the session at it', () => {
+  it("promotes a strictly-NEWER real-file fork to the global, THEN symlinks the session at it", () => {
     // An in-session refresh the background reconciler has not converged yet: the
     // isolated fork holds a bundle newer than the global. Promote-then-mirror so the
     // canonical global carries the newest bundle before we re-point the session.
-    writeGlobal(1_000, 'older-global-token');
-    writeFileSync(sessOf(), credBundle(9_000, 'newer-fork-token'));
+    writeGlobal(1_000, "older-global-token");
+    writeFileSync(sessOf(), credBundle(9_000, "newer-fork-token"));
 
     rehealResumeCredentials(configDir, { home });
 
     // The newer fork was promoted into the global…
-    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('newer-fork-token');
+    expect(
+      JSON.parse(readFileSync(globalOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("newer-fork-token");
     expect(claudeCredExpiresAt(globalOf())).toBe(9_000);
     // …and the session credential is a symlink resolving to that now-newest global.
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
     expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
-    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('newer-fork-token');
+    expect(
+      JSON.parse(readFileSync(sessOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("newer-fork-token");
   });
 
-  it('promotes the newest fork from a DIFFERENT concurrent session (fleet-wide sweep, not just this session vs global — WI-4727 durability follow-up)', () => {
+  it("promotes the newest fork from a DIFFERENT concurrent session (fleet-wide sweep, not just this session vs global — WI-4727 durability follow-up)", () => {
     // The gap the original pairwise (this-session-vs-global) reheal missed:
     // resuming su-owner-1 while su-owner-2 — a DIFFERENT live session — holds
     // the truly newest bundle (its own in-session refresh the background
     // reconciler hasn't converged yet). su-owner-1's own fork is merely
     // stale, not the oldest, so a narrow check would symlink it straight to
     // the (also-stale) global and miss the fresher token entirely.
-    writeGlobal(1_000, 'stale-global-token');
-    writeFileSync(sessOf(), credBundle(2_000, 'this-session-token')); // newer than global, but NOT the newest
-    const otherSessionDir = join(home, '.papercusp', 'session-claude', 'su-owner-2');
+    writeGlobal(1_000, "stale-global-token");
+    writeFileSync(sessOf(), credBundle(2_000, "this-session-token")); // newer than global, but NOT the newest
+    const otherSessionDir = join(
+      home,
+      ".papercusp",
+      "session-claude",
+      "su-owner-2",
+    );
     mkdirSync(otherSessionDir, { recursive: true });
-    writeFileSync(join(otherSessionDir, '.credentials.json'), credBundle(9_000, 'other-session-newest-token'));
+    writeFileSync(
+      join(otherSessionDir, ".credentials.json"),
+      credBundle(9_000, "other-session-newest-token"),
+    );
 
     rehealResumeCredentials(configDir, { home });
 
     // The global was promoted to the true fleet-wide newest (su-owner-2's fork)…
-    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('other-session-newest-token');
+    expect(
+      JSON.parse(readFileSync(globalOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("other-session-newest-token");
     expect(claudeCredExpiresAt(globalOf())).toBe(9_000);
     // …and su-owner-1 (the one actually resuming) symlinks to that promoted global.
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
     expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
-    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('other-session-newest-token');
+    expect(
+      JSON.parse(readFileSync(sessOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("other-session-newest-token");
     // The other (non-resuming) session's fork is untouched — promotion reads it, never mutates it.
-    expect(lstatSync(join(otherSessionDir, '.credentials.json')).isSymbolicLink()).toBe(false);
-    expect(JSON.parse(readFileSync(join(otherSessionDir, '.credentials.json'), 'utf8')).claudeAiOauth.accessToken).toBe(
-      'other-session-newest-token',
-    );
+    expect(
+      lstatSync(join(otherSessionDir, ".credentials.json")).isSymbolicLink(),
+    ).toBe(false);
+    expect(
+      JSON.parse(
+        readFileSync(join(otherSessionDir, ".credentials.json"), "utf8"),
+      ).claudeAiOauth.accessToken,
+    ).toBe("other-session-newest-token");
   });
 
-  it('a SYMLINKED fork under the session root is skipped by the sweep (it already resolves to the global; nothing to promote from it)', () => {
-    writeGlobal(5_000, 'global-token');
-    writeFileSync(sessOf(), credBundle(1_000, 'stale-this-session'));
-    const otherSessionDir = join(home, '.papercusp', 'session-claude', 'su-owner-3');
+  it("a SYMLINKED fork under the session root is skipped by the sweep (it already resolves to the global; nothing to promote from it)", () => {
+    writeGlobal(5_000, "global-token");
+    writeFileSync(sessOf(), credBundle(1_000, "stale-this-session"));
+    const otherSessionDir = join(
+      home,
+      ".papercusp",
+      "session-claude",
+      "su-owner-3",
+    );
     mkdirSync(otherSessionDir, { recursive: true });
     // su-owner-3 is already a healthy symlink → global: the sweep must not
     // treat the file IT RESOLVES TO as if it were su-owner-3's own bundle.
-    symlinkSync(globalOf(), join(otherSessionDir, '.credentials.json'));
+    symlinkSync(globalOf(), join(otherSessionDir, ".credentials.json"));
 
     rehealResumeCredentials(configDir, { home });
 
     // Global stays exactly what it was — no fork had a newer bundle to promote.
-    expect(JSON.parse(readFileSync(globalOf(), 'utf8')).claudeAiOauth.accessToken).toBe('global-token');
+    expect(
+      JSON.parse(readFileSync(globalOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("global-token");
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
     expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
   });
 
-  it('leaves a HEALTHY symlink (already resolving to the global) byte-identical', () => {
-    writeGlobal(5_000, 'healthy-token');
+  it("leaves a HEALTHY symlink (already resolving to the global) byte-identical", () => {
+    writeGlobal(5_000, "healthy-token");
     symlinkSync(globalOf(), sessOf());
     const before = lstatSync(sessOf());
 
@@ -4957,95 +7072,136 @@ describe('rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the s
     expect(lstatSync(sessOf()).mtimeMs).toBe(before.mtimeMs);
   });
 
-  it('re-heals a DANGLING session symlink (points at a now-deleted path) into a live symlink', () => {
-    writeGlobal(5_000, 'live-token');
-    symlinkSync(join(home, '.claude', 'gone.json'), sessOf()); // dangling
+  it("re-heals a DANGLING session symlink (points at a now-deleted path) into a live symlink", () => {
+    writeGlobal(5_000, "live-token");
+    symlinkSync(join(home, ".claude", "gone.json"), sessOf()); // dangling
     expect(existsSync(sessOf())).toBe(false); // dangling target
 
     rehealResumeCredentials(configDir, { home });
 
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(true);
     expect(realpathSync(sessOf())).toBe(realpathSync(globalOf()));
-    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('live-token');
+    expect(
+      JSON.parse(readFileSync(sessOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("live-token");
   });
 
-  it('no global credential → no-op (API-key-only / fresh box: nothing to mirror)', () => {
+  it("no global credential → no-op (API-key-only / fresh box: nothing to mirror)", () => {
     // No global written. A pre-existing session fork must NOT be clobbered when
     // there is no canonical login to mirror from.
-    writeFileSync(sessOf(), credBundle(1_000, 'only-fork'));
+    writeFileSync(sessOf(), credBundle(1_000, "only-fork"));
     rehealResumeCredentials(configDir, { home });
     expect(existsSync(globalOf())).toBe(false);
     expect(lstatSync(sessOf()).isSymbolicLink()).toBe(false); // left as-is
-    expect(JSON.parse(readFileSync(sessOf(), 'utf8')).claudeAiOauth.accessToken).toBe('only-fork');
+    expect(
+      JSON.parse(readFileSync(sessOf(), "utf8")).claudeAiOauth.accessToken,
+    ).toBe("only-fork");
   });
 
-  it('never throws — a launch must survive credential reconciliation failure (empty configDir)', () => {
+  it("never throws — a launch must survive credential reconciliation failure (empty configDir)", () => {
     writeGlobal(5_000);
-    expect(() => rehealResumeCredentials('', { home })).not.toThrow();
-    expect(() => rehealResumeCredentials(undefined as unknown as string, { home })).not.toThrow();
+    expect(() => rehealResumeCredentials("", { home })).not.toThrow();
+    expect(() =>
+      rehealResumeCredentials(undefined as unknown as string, { home }),
+    ).not.toThrow();
   });
 });
 
-describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 3)', () => {
+describe("usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 3)", () => {
   const tty = { isTTY: true };
   const notTty = { isTTY: false };
 
-  it('is ON by default for an interactive TTY (managed-pty IS the launch path, D-006)', () => {
+  it("is ON by default for an interactive TTY (managed-pty IS the launch path, D-006)", () => {
     // Flipped 2026-06-08 after the feel-check (P-012/P-015). A bare interactive
     // launch now goes through the managed pty.
     expect(PTY_DEFAULT_ON).toBe(true);
     expect(usePtyHost({ env: {}, stdin: tty, stdout: tty })).toBe(true);
   });
 
-  it('still needs a real TTY on BOTH ends — a non-TTY launch keeps the plain spawn', () => {
+  it("still needs a real TTY on BOTH ends — a non-TTY launch keeps the plain spawn", () => {
     // brain dock pane / --no-picker scripts have no terminal to bridge.
     expect(usePtyHost({ env: {}, stdin: notTty, stdout: tty })).toBe(false);
     expect(usePtyHost({ env: {}, stdin: tty, stdout: notTty })).toBe(false);
   });
 
-  it('PAPERCUSP_PSU_NO_PTY=1 is an always-wins kill switch', () => {
-    expect(usePtyHost({ env: { PAPERCUSP_PSU_NO_PTY: '1' }, stdin: tty, stdout: tty })).toBe(false);
+  it("PAPERCUSP_PSU_NO_PTY=1 is an always-wins kill switch", () => {
+    expect(
+      usePtyHost({
+        env: { PAPERCUSP_PSU_NO_PTY: "1" },
+        stdin: tty,
+        stdout: tty,
+      }),
+    ).toBe(false);
   });
 
-  it('PAPERCUSP_PSU_PTY=0 opts a single launch out of the default', () => {
-    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '0' }, stdin: tty, stdout: tty })).toBe(false);
+  it("PAPERCUSP_PSU_PTY=0 opts a single launch out of the default", () => {
+    expect(
+      usePtyHost({ env: { PAPERCUSP_PSU_PTY: "0" }, stdin: tty, stdout: tty }),
+    ).toBe(false);
   });
 
-  it('PAPERCUSP_PSU_PTY=1 is still honored as an explicit enable', () => {
-    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: tty })).toBe(true);
+  it("PAPERCUSP_PSU_PTY=1 is still honored as an explicit enable", () => {
+    expect(
+      usePtyHost({ env: { PAPERCUSP_PSU_PTY: "1" }, stdin: tty, stdout: tty }),
+    ).toBe(true);
   });
 
-  describe('PAPERCUSP_PSU_HEADLESS — a headless fleet member keeps the injectable pty despite no TTY (headless-fleet-launch P-001)', () => {
-    it('bypasses the isTTY check so a non-TTY launch STILL takes the managed pty', () => {
+  describe("PAPERCUSP_PSU_HEADLESS — a headless fleet member keeps the injectable pty despite no TTY (headless-fleet-launch P-001)", () => {
+    it("bypasses the isTTY check so a non-TTY launch STILL takes the managed pty", () => {
       // The whole point: without the pty there is no control socket / discovery file,
       // so wake-executor Channel 3 parks the member forever after one turn.
-      expect(usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1' }, stdin: notTty, stdout: notTty })).toBe(true);
-      expect(usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1' }, stdin: notTty, stdout: tty })).toBe(true);
+      expect(
+        usePtyHost({
+          env: { PAPERCUSP_PSU_HEADLESS: "1" },
+          stdin: notTty,
+          stdout: notTty,
+        }),
+      ).toBe(true);
+      expect(
+        usePtyHost({
+          env: { PAPERCUSP_PSU_HEADLESS: "1" },
+          stdin: notTty,
+          stdout: tty,
+        }),
+      ).toBe(true);
     });
 
-    it('does NOT override the PAPERCUSP_PSU_NO_PTY kill switch', () => {
+    it("does NOT override the PAPERCUSP_PSU_NO_PTY kill switch", () => {
       expect(
-        usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_NO_PTY: '1' }, stdin: notTty, stdout: notTty }),
+        usePtyHost({
+          env: { PAPERCUSP_PSU_HEADLESS: "1", PAPERCUSP_PSU_NO_PTY: "1" },
+          stdin: notTty,
+          stdout: notTty,
+        }),
       ).toBe(false);
     });
 
-    it('does NOT override an explicit PAPERCUSP_PSU_PTY=0 opt-out', () => {
+    it("does NOT override an explicit PAPERCUSP_PSU_PTY=0 opt-out", () => {
       expect(
-        usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '0' }, stdin: notTty, stdout: notTty }),
+        usePtyHost({
+          env: { PAPERCUSP_PSU_HEADLESS: "1", PAPERCUSP_PSU_PTY: "0" },
+          stdin: notTty,
+          stdout: notTty,
+        }),
       ).toBe(false);
     });
 
-    it('is inert when unset — a plain non-TTY launch still keeps the plain spawn', () => {
-      expect(usePtyHost({ env: {}, stdin: notTty, stdout: notTty })).toBe(false);
+    it("is inert when unset — a plain non-TTY launch still keeps the plain spawn", () => {
+      expect(usePtyHost({ env: {}, stdin: notTty, stdout: notTty })).toBe(
+        false,
+      );
     });
   });
 });
 
-describe('spawnInherit — plain fallback owns and cleans up the backend process group (EI-20234301056067173)', () => {
+describe("spawnInherit — plain fallback owns and cleans up the backend process group (EI-20234301056067173)", () => {
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-  it('detaches the wrapper and kills its group plus direct child after exit', async () => {
-    const child = new EventEmitter() as EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> };
+  it("detaches the wrapper and kills its group plus direct child after exit", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      kill: ReturnType<typeof vi.fn>;
+    };
     child.pid = 4242;
     child.kill = vi.fn();
     const spawnImpl = vi.fn(() => child);
@@ -5055,9 +7211,9 @@ describe('spawnInherit — plain fallback owns and cleans up the backend process
     const report = vi.fn(async () => undefined);
 
     spawnInherit({
-      wrapperBin: 'codex-su',
-      args: ['--resume', 'native-id'],
-      cwd: '/tmp',
+      wrapperBin: "codex-su",
+      args: ["--resume", "native-id"],
+      cwd: "/tmp",
       env: {},
       spawnImpl,
       processApi: { pid: 9001, kill: processKill, exit: processExit },
@@ -5066,24 +7222,27 @@ describe('spawnInherit — plain fallback owns and cleans up the backend process
     });
 
     expect(spawnImpl).toHaveBeenCalledWith(
-      'codex-su',
-      ['--resume', 'native-id'],
-      { cwd: '/tmp', env: {}, stdio: 'inherit', detached: true },
+      "codex-su",
+      ["--resume", "native-id"],
+      { cwd: "/tmp", env: {}, stdio: "inherit", detached: true },
     );
-    child.emit('exit', 7, null);
+    child.emit("exit", 7, null);
     await flush();
 
-    expect(processKill).toHaveBeenCalledWith(-4242, 'SIGKILL');
-    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(processKill).toHaveBeenCalledWith(-4242, "SIGKILL");
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
     expect(report).toHaveBeenCalledWith(null, 7, { killedBySignal: null });
     expect(processExit).toHaveBeenCalledWith(7);
-    expect(signalSource.listenerCount('SIGINT')).toBe(0);
-    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
-    expect(signalSource.listenerCount('SIGHUP')).toBe(0);
+    expect(signalSource.listenerCount("SIGINT")).toBe(0);
+    expect(signalSource.listenerCount("SIGTERM")).toBe(0);
+    expect(signalSource.listenerCount("SIGHUP")).toBe(0);
   });
 
-  it('forwards a parent termination signal and removes handlers before re-signalling the parent', async () => {
-    const child = new EventEmitter() as EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> };
+  it("forwards a parent termination signal and removes handlers before re-signalling the parent", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      kill: ReturnType<typeof vi.fn>;
+    };
     child.pid = 4343;
     child.kill = vi.fn();
     const processKill = vi.fn();
@@ -5092,193 +7251,300 @@ describe('spawnInherit — plain fallback owns and cleans up the backend process
     const report = vi.fn(async () => undefined);
 
     spawnInherit({
-      wrapperBin: 'codex-su',
-      cwd: '/tmp',
-      env: { PAPERCUSP_ADV_SESSION_ID: '17' },
+      wrapperBin: "codex-su",
+      cwd: "/tmp",
+      env: { PAPERCUSP_ADV_SESSION_ID: "17" },
       spawnImpl: vi.fn(() => child),
       processApi: { pid: 9002, kill: processKill, exit: processExit },
       signalSource,
       reportSessionEndedImpl: report,
     });
 
-    signalSource.emit('SIGTERM');
-    expect(processKill).toHaveBeenCalledWith(-4343, 'SIGTERM');
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
-    child.emit('exit', null, 'SIGTERM');
+    signalSource.emit("SIGTERM");
+    expect(processKill).toHaveBeenCalledWith(-4343, "SIGTERM");
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    child.emit("exit", null, "SIGTERM");
     await flush();
 
-    expect(report).toHaveBeenCalledWith('17', null, { killedBySignal: 'SIGTERM' });
-    expect(processKill).toHaveBeenCalledWith(9002, 'SIGTERM');
+    expect(report).toHaveBeenCalledWith("17", null, {
+      killedBySignal: "SIGTERM",
+    });
+    expect(processKill).toHaveBeenCalledWith(9002, "SIGTERM");
     expect(processExit).not.toHaveBeenCalled();
-    expect(signalSource.listenerCount('SIGINT')).toBe(0);
-    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
-    expect(signalSource.listenerCount('SIGHUP')).toBe(0);
+    expect(signalSource.listenerCount("SIGINT")).toBe(0);
+    expect(signalSource.listenerCount("SIGTERM")).toBe(0);
+    expect(signalSource.listenerCount("SIGHUP")).toBe(0);
   });
 });
 
-describe('sessionIsResumable — picker keeps on-disk OR DB-archived sessions (WI-4714, off-disk migration)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-resumable-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("sessionIsResumable — picker keeps on-disk OR DB-archived sessions (WI-4714, off-disk migration)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-resumable-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
-  it('KEEPS an off-disk session that is DB-archived (hasArchive) even with NO on-disk transcript', () => {
+  it("KEEPS an off-disk session that is DB-archived (hasArchive) even with NO on-disk transcript", () => {
     // The ended session's transcript was moved off disk to the DB archive — so the
     // on-disk-only sessionHasTranscript would hide it as a ghost, but the server
     // stamped hasArchive:true and it IS resumable (rematerialized on selection).
-    mkdirSync(join(home, '.papercusp', 'session-claude', 'su-arch', 'projects'), { recursive: true });
-    const s = { agent: 'claude', sessionId: UUID, coordOwnerId: 'su-arch', hasArchive: true };
+    mkdirSync(
+      join(home, ".papercusp", "session-claude", "su-arch", "projects"),
+      { recursive: true },
+    );
+    const s = {
+      agent: "claude",
+      sessionId: UUID,
+      coordOwnerId: "su-arch",
+      hasArchive: true,
+    };
     expect(sessionHasTranscript(s, { home })).toBe(false); // on-disk check alone would HIDE it
-    expect(sessionIsResumable(s, { home })).toBe(true);     // …but it must be KEPT
+    expect(sessionIsResumable(s, { home })).toBe(true); // …but it must be KEPT
   });
 
-  it('HIDES a true ghost — no on-disk transcript AND not archived', () => {
-    mkdirSync(join(home, '.papercusp', 'session-claude', 'su-ghost2', 'projects'), { recursive: true });
-    const s = { agent: 'claude', sessionId: UUID, coordOwnerId: 'su-ghost2' };
+  it("HIDES a true ghost — no on-disk transcript AND not archived", () => {
+    mkdirSync(
+      join(home, ".papercusp", "session-claude", "su-ghost2", "projects"),
+      { recursive: true },
+    );
+    const s = { agent: "claude", sessionId: UUID, coordOwnerId: "su-ghost2" };
     expect(sessionIsResumable(s, { home })).toBe(false);
   });
 
-  it('KEEPS an on-disk session regardless of the hasArchive flag', () => {
-    const owner = 'su-live';
-    const projDir = join(home, '.papercusp', 'session-claude', owner, 'projects', '-d');
+  it("KEEPS an on-disk session regardless of the hasArchive flag", () => {
+    const owner = "su-live";
+    const projDir = join(
+      home,
+      ".papercusp",
+      "session-claude",
+      owner,
+      "projects",
+      "-d",
+    );
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
-    expect(sessionIsResumable({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(true);
+    expect(
+      sessionIsResumable(
+        { agent: "claude", sessionId: UUID, coordOwnerId: owner },
+        { home },
+      ),
+    ).toBe(true);
   });
 });
 
-describe('ensureResumeTranscriptPresent — the archive-at-death race (owner-hit 2026-08-12, WI-38236)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-resume-race-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit 2026-08-12, WI-38236)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-resume-race-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
   const projDirFor = (owner: string) =>
-    join(home, '.papercusp', 'session-claude', owner, 'projects', '-d');
+    join(home, ".papercusp", "session-claude", owner, "projects", "-d");
 
-  it('RESTORES a transcript deleted between the resolve and the exec — the exact owner repro', async () => {
+  it("RESTORES a transcript deleted between the resolve and the exec — the exact owner repro", async () => {
     // Repro of adv 15148: the session ended, psu resolved it while the transcript
     // was still on disk, then the 15s archive-at-death timer deleted it WHILE the
     // user answered the backend/model + account prompts. Before this guard, psu
     // exec'd claude anyway and the owner got "No conversation found with session ID".
-    const owner = 'su-raced';
+    const owner = "su-raced";
     mkdirSync(projDirFor(owner), { recursive: true });
     // ...the file is ALREADY gone by the time we re-check (the timer fired mid-prompt).
-    const source = { agent: 'claude', sessionId: UUID, coordOwnerId: owner };
+    const source = { agent: "claude", sessionId: UUID, coordOwnerId: owner };
     expect(sessionHasTranscript(source, { home })).toBe(false);
 
     // The bytes are safe in the DB archive; the restore puts them back on disk.
     const rematerialize = vi.fn(async () => {
-      writeFileSync(join(projDirFor(owner), `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+      writeFileSync(
+        join(projDirFor(owner), `${UUID}.jsonl`),
+        `{"sessionId":"${UUID}"}\n`,
+      );
       return { ok: true, written: 1 };
     });
-    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
-    expect(rematerialize).toHaveBeenCalledWith(UUID, 'claude');
+    await expect(
+      ensureResumeTranscriptPresent(source, { home, rematerialize }),
+    ).resolves.toBe(true);
+    expect(rematerialize).toHaveBeenCalledWith(UUID, "claude");
   });
 
-  it('REFUSES the launch when the transcript is gone AND the archive cannot restore it', async () => {
+  it("REFUSES the launch when the transcript is gone AND the archive cannot restore it", async () => {
     // The failure psu used to hand to claude as "No conversation found" — reported
     // by psu itself now, with the real reason, instead of exec'ing a doomed id.
-    const owner = 'su-nothing';
+    const owner = "su-nothing";
     mkdirSync(projDirFor(owner), { recursive: true });
     const rematerialize = vi.fn(async () => null);
     await expect(
-      ensureResumeTranscriptPresent({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home, rematerialize }),
+      ensureResumeTranscriptPresent(
+        { agent: "claude", sessionId: UUID, coordOwnerId: owner },
+        { home, rematerialize },
+      ),
     ).resolves.toBe(false);
   });
 
-  it('does NOT restore when the transcript is still on disk — the healthy resume pays no round-trip', async () => {
-    const owner = 'su-ondisk';
+  it("does NOT restore when the transcript is still on disk — the healthy resume pays no round-trip", async () => {
+    const owner = "su-ondisk";
     mkdirSync(projDirFor(owner), { recursive: true });
-    writeFileSync(join(projDirFor(owner), `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    writeFileSync(
+      join(projDirFor(owner), `${UUID}.jsonl`),
+      `{"sessionId":"${UUID}"}\n`,
+    );
     const rematerialize = vi.fn(async () => null);
     await expect(
-      ensureResumeTranscriptPresent({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home, rematerialize }),
+      ensureResumeTranscriptPresent(
+        { agent: "claude", sessionId: UUID, coordOwnerId: owner },
+        { home, rematerialize },
+      ),
     ).resolves.toBe(true);
     expect(rematerialize).not.toHaveBeenCalled();
   });
 
-  it('passes omp through untouched — it resumes by thread name, not an id-addressed transcript', async () => {
+  it("passes omp through untouched — it resumes by thread name, not an id-addressed transcript", async () => {
     const rematerialize = vi.fn(async () => null);
     await expect(
-      ensureResumeTranscriptPresent({ agent: 'omp', ompThreadId: 'some-thread' }, { home, rematerialize }),
+      ensureResumeTranscriptPresent(
+        { agent: "omp", ompThreadId: "some-thread" },
+        { home, rematerialize },
+      ),
     ).resolves.toBe(true);
     expect(rematerialize).not.toHaveBeenCalled();
   });
 });
 
-describe('launchResolvedResume WIRING — the transcript re-verify must run AFTER the prompts (WI-38236)', () => {
+describe("launchResolvedResume WIRING — the transcript re-verify must run AFTER the prompts (WI-38236)", () => {
   // ensureResumeTranscriptPresent is only worth anything if it is called at the
   // right MOMENT. The whole bug is that the earlier check happens before two
   // human-paced prompts; a re-verify placed above them would be just as useless,
   // and a removed call would silently restore the original failure. Both are
   // invisible to behavioural tests of the helper itself, so pin the call site.
-  const src = readFileSync(join(__dirname, '..', 'scripts', 'psu-launcher.mjs'), 'utf8');
-  const body = src.slice(src.indexOf('async function launchResolvedResume('));
+  const src = readFileSync(
+    join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+    "utf8",
+  );
+  const body = src.slice(src.indexOf("async function launchResolvedResume("));
 
-  it('calls ensureResumeTranscriptPresent before handing off to launchResume/launchTrackedFork', () => {
-    const guard = body.indexOf('await ensureResumeTranscriptPresent(source)');
-    const fork = body.indexOf('await launchTrackedFork(');
-    const resume = body.indexOf('await launchResume(source, {');
+  it("calls ensureResumeTranscriptPresent before handing off to launchResume/launchTrackedFork", () => {
+    const guard = body.indexOf("await ensureResumeTranscriptPresent(source)");
+    const fork = body.indexOf("await launchTrackedFork(");
+    const resume = body.indexOf("await launchResume(source, {");
     expect(guard).toBeGreaterThan(-1);
     expect(fork).toBeGreaterThan(guard);
     expect(resume).toBeGreaterThan(guard);
   });
 
-  it('runs it AFTER both prompts — a check above them re-opens the race it exists to close', () => {
-    const target = body.indexOf('await chooseResumeTarget(');
-    const account = body.indexOf('await chooseResumeAccount(');
-    const guard = body.indexOf('await ensureResumeTranscriptPresent(source)');
+  it("runs it AFTER both prompts — a check above them re-opens the race it exists to close", () => {
+    const target = body.indexOf("await chooseResumeTarget(");
+    const account = body.indexOf("await chooseResumeAccount(");
+    const guard = body.indexOf("await ensureResumeTranscriptPresent(source)");
     expect(guard).toBeGreaterThan(target);
     expect(guard).toBeGreaterThan(account);
   });
 });
 
-describe('sessionHasTranscript (ghost rows — adv-tracked launches that never persisted a turn)', () => {
-  const UUID = '0123abcd-1234-5678-9abc-def012345678';
-  let home = '';
-  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-ghosts-')); });
-  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+describe("sessionHasTranscript (ghost rows — adv-tracked launches that never persisted a turn)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  let home = "";
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-ghosts-"));
+  });
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
 
   const writeClaudeTranscript = (configDir) => {
-    const projDir = join(configDir, 'projects', '-some-dir');
+    const projDir = join(configDir, "projects", "-some-dir");
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
   };
 
-  it('claude: TRUE when the transcript lives in the EI-155 isolated config dir (derived from coordOwnerId)', () => {
-    const owner = 'su-owner-9';
-    writeClaudeTranscript(join(home, '.papercusp', 'session-claude', owner));
-    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(true);
+  it("claude: TRUE when the transcript lives in the EI-155 isolated config dir (derived from coordOwnerId)", () => {
+    const owner = "su-owner-9";
+    writeClaudeTranscript(join(home, ".papercusp", "session-claude", owner));
+    expect(
+      sessionHasTranscript(
+        { agent: "claude", sessionId: UUID, coordOwnerId: owner },
+        { home },
+      ),
+    ).toBe(true);
   });
 
-  it('claude: TRUE when the transcript lives in the shared ~/.claude store (pre-EI-155 sessions)', () => {
-    writeClaudeTranscript(join(home, '.claude'));
-    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-other' }, { home })).toBe(true);
+  it("claude: TRUE when the transcript lives in the shared ~/.claude store (pre-EI-155 sessions)", () => {
+    writeClaudeTranscript(join(home, ".claude"));
+    expect(
+      sessionHasTranscript(
+        { agent: "claude", sessionId: UUID, coordOwnerId: "su-other" },
+        { home },
+      ),
+    ).toBe(true);
   });
 
   it('claude: FALSE for a ghost — known sessionId, no transcript anywhere (the "No conversation found" row)', () => {
     // The launch materialized the config dir but died before its first turn.
-    mkdirSync(join(home, '.papercusp', 'session-claude', 'su-ghost', 'projects'), { recursive: true });
-    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-ghost' }, { home })).toBe(false);
+    mkdirSync(
+      join(home, ".papercusp", "session-claude", "su-ghost", "projects"),
+      { recursive: true },
+    );
+    expect(
+      sessionHasTranscript(
+        { agent: "claude", sessionId: UUID, coordOwnerId: "su-ghost" },
+        { home },
+      ),
+    ).toBe(false);
   });
 
-  it('claude: KEEPS a pre-native-id row (no sessionId — resume falls back to --continue, unverifiable)', () => {
-    expect(sessionHasTranscript({ agent: 'claude', sessionId: null, coordOwnerId: 'su-legacy' }, { home })).toBe(true);
+  it("claude: KEEPS a pre-native-id row (no sessionId — resume falls back to --continue, unverifiable)", () => {
+    expect(
+      sessionHasTranscript(
+        { agent: "claude", sessionId: null, coordOwnerId: "su-legacy" },
+        { home },
+      ),
+    ).toBe(true);
   });
 
-  it('claude: an explicit session.configDir (untracked isolated hit) wins over the owner derivation', () => {
-    const configDir = join(home, 'elsewhere', 'iso-dir');
+  it("claude: an explicit session.configDir (untracked isolated hit) wins over the owner derivation", () => {
+    const configDir = join(home, "elsewhere", "iso-dir");
     writeClaudeTranscript(configDir);
-    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, configDir }, { home })).toBe(true);
+    expect(
+      sessionHasTranscript(
+        { agent: "claude", sessionId: UUID, configDir },
+        { home },
+      ),
+    ).toBe(true);
   });
 
-  it('codex: TRUE when the per-session CODEX_HOME holds the rollout; FALSE when it does not', () => {
-    const dir = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '06', '12');
+  it("codex: TRUE when the per-session CODEX_HOME holds the rollout; FALSE when it does not", () => {
+    const dir = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-42",
+      "sessions",
+      "2026",
+      "06",
+      "12",
+    );
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-06-12T09-00-00-${UUID}.jsonl`), `{"type":"meta"}\n`);
-    expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: UUID }, { home })).toBe(true);
-    expect(sessionHasTranscript({ agent: 'codex', id: 43, sessionId: UUID }, { home })).toBe(false);
+    writeFileSync(
+      join(dir, `rollout-2026-06-12T09-00-00-${UUID}.jsonl`),
+      `{"type":"meta"}\n`,
+    );
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: 42, sessionId: UUID },
+        { home },
+      ),
+    ).toBe(true);
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: 43, sessionId: UUID },
+        { home },
+      ),
+    ).toBe(false);
   });
 
   /*
@@ -5293,187 +7559,432 @@ describe('sessionHasTranscript (ghost rows — adv-tracked launches that never p
    *
    * The genuinely unverifiable case — no adv row id, hence no home to look in — still keeps.
    */
-  it('codex: no sessionId → verifies the home holds ANY rollout (what `resume --last` will find)', () => {
-    const dir = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '06', '12');
+  it("codex: no sessionId → verifies the home holds ANY rollout (what `resume --last` will find)", () => {
+    const dir = join(
+      home,
+      ".papercusp",
+      "su-codex-homes",
+      "session-42",
+      "sessions",
+      "2026",
+      "06",
+      "12",
+    );
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-2026-06-12T09-00-00-${UUID}.jsonl`), `{"type":"meta"}\n`);
-    expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: null }, { home })).toBe(true);
+    writeFileSync(
+      join(dir, `rollout-2026-06-12T09-00-00-${UUID}.jsonl`),
+      `{"type":"meta"}\n`,
+    );
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: 42, sessionId: null },
+        { home },
+      ),
+    ).toBe(true);
   });
 
-  it('codex: FALSE for the no-sessionId GHOST — home exists but holds no rollout at all', () => {
+  it("codex: FALSE for the no-sessionId GHOST — home exists but holds no rollout at all", () => {
     // The launch minted its CODEX_HOME and died before persisting a turn: `codex resume --last`
     // finds nothing, so offering this row hands the owner a session that cannot come back.
-    mkdirSync(join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions'), { recursive: true });
-    expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: null }, { home })).toBe(false);
+    mkdirSync(
+      join(home, ".papercusp", "su-codex-homes", "session-42", "sessions"),
+      { recursive: true },
+    );
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: 42, sessionId: null },
+        { home },
+      ),
+    ).toBe(false);
     // …and the same when the home was never created at all (the more common shape on disk).
-    expect(sessionHasTranscript({ agent: 'codex', id: 99, sessionId: null }, { home })).toBe(false);
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: 99, sessionId: null },
+        { home },
+      ),
+    ).toBe(false);
   });
 
-  it('codex: KEEPS a row with no adv id — there is no tracked home to check, so it IS unverifiable', () => {
-    expect(sessionHasTranscript({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe(true);
-    expect(sessionHasTranscript({ agent: 'codex', id: null, sessionId: null }, { home })).toBe(true);
+  it("codex: KEEPS a row with no adv id — there is no tracked home to check, so it IS unverifiable", () => {
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: null, sessionId: UUID },
+        { home },
+      ),
+    ).toBe(true);
+    expect(
+      sessionHasTranscript(
+        { agent: "codex", id: null, sessionId: null },
+        { home },
+      ),
+    ).toBe(true);
   });
 
-  it('omp: verifies the tracked per-session transcript by native thread id', () => {
-    const dir = join(home, '.papercusp', 'su-omp-homes', 'session-42', 'agent', 'sessions', 'some-project');
+  it("omp: verifies the tracked per-session transcript by native thread id", () => {
+    const dir = join(
+      home,
+      ".papercusp",
+      "su-omp-homes",
+      "session-42",
+      "agent",
+      "sessions",
+      "some-project",
+    );
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, '2026-07-16T00-00-00_t-1.jsonl'), '{"type":"session","id":"t-1"}\n');
-    expect(sessionHasTranscript({ agent: 'omp', id: 42, ompThreadId: 't-1' }, { home })).toBe(true);
-    expect(sessionHasTranscript({ agent: 'omp', id: 42, ompThreadId: 'missing' }, { home })).toBe(false);
+    writeFileSync(
+      join(dir, "2026-07-16T00-00-00_t-1.jsonl"),
+      '{"type":"session","id":"t-1"}\n',
+    );
+    expect(
+      sessionHasTranscript(
+        { agent: "omp", id: 42, ompThreadId: "t-1" },
+        { home },
+      ),
+    ).toBe(true);
+    expect(
+      sessionHasTranscript(
+        { agent: "omp", id: 42, ompThreadId: "missing" },
+        { home },
+      ),
+    ).toBe(false);
   });
 });
 
-describe('WI-3758 — psu --resume model select + last-active model', () => {
-  it('modelArgsFor maps a spec onto each backend (and stays in lockstep with suWrapperExtraArgs)', () => {
+describe("WI-3758 — psu --resume model select + last-active model", () => {
+  it("modelArgsFor maps a spec onto each backend (and stays in lockstep with suWrapperExtraArgs)", () => {
     // claude: a recognized :effort tail splits into the CLI's own --effort flag.
-    expect(modelArgsFor('claude', 'claude-sonnet-5:high')).toEqual(['--model', 'claude-sonnet-5', '--effort', 'high']);
+    expect(modelArgsFor("claude", "claude-sonnet-5:high")).toEqual([
+      "--model",
+      "claude-sonnet-5",
+      "--effort",
+      "high",
+    ]);
     // …but a non-effort ':' segment (bedrock version) passes through verbatim.
-    expect(modelArgsFor('claude', 'anthropic.claude-3-5-sonnet-v2:0')).toEqual(['--model', 'anthropic.claude-3-5-sonnet-v2:0']);
+    expect(modelArgsFor("claude", "anthropic.claude-3-5-sonnet-v2:0")).toEqual([
+      "--model",
+      "anthropic.claude-3-5-sonnet-v2:0",
+    ]);
     // codex: bare -m + config-override effort, preserving max verbatim.
-    expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
-    expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
-    expect(modelArgsFor('codex', 'sol:high')).toEqual([
-      '-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"',
-      ...codexContextConfigArgs('gpt-5.6-sol'),
+    expect(modelArgsFor("codex", "gpt-5.5:max")).toEqual([
+      "-m",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="max"',
+    ]);
+    expect(modelArgsFor("codex", "gpt-5.5")).toEqual(["-m", "gpt-5.5"]);
+    expect(modelArgsFor("codex", "sol:high")).toEqual([
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      'model_reasoning_effort="high"',
+      ...codexContextConfigArgs("gpt-5.6-sol"),
     ]);
     // omp understands the suffixed spec natively.
-    expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
-    expect(modelArgsFor('claude', null)).toEqual([]);
+    expect(modelArgsFor("omp", "opus:high")).toEqual(["--model", "opus:high"]);
+    expect(modelArgsFor("claude", null)).toEqual([]);
     // The wrapper path delegates — a divergence here would resurrect the effort-drop class.
-    for (const [agent, spec] of [['claude', 'fable:high'], ['codex', 'gpt-5.5:max'], ['omp', 'opus:low']] as const) {
-      expect(suWrapperExtraArgs(agent, { model: spec })).toEqual(modelArgsFor(agent, spec));
+    for (const [agent, spec] of [
+      ["claude", "fable:high"],
+      ["codex", "gpt-5.5:max"],
+      ["omp", "opus:low"],
+    ] as const) {
+      expect(suWrapperExtraArgs(agent, { model: spec })).toEqual(
+        modelArgsFor(agent, spec),
+      );
     }
   });
 
-  it('WI-37890: refuses the broken Vertex Gemini 3.1 Pro high-effort spec without lowering it', () => {
-    const exactHigh = 'google-vertex/gemini-3.1-pro-preview:high';
-    expect(() => normalizeOmpModelSpec(exactHigh)).toThrow(/Refusing to silently lower the requested effort/);
-    expect(() => modelArgsFor('omp', exactHigh)).toThrow(/choose :low explicitly/);
-    expect(() => ompModelCompatibilityNotice(exactHigh)).toThrow(/empty STOP responses/);
+  it("WI-37890: refuses the broken Vertex Gemini 3.1 Pro high-effort spec without lowering it", () => {
+    const exactHigh = "google-vertex/gemini-3.1-pro-preview:high";
+    expect(() => normalizeOmpModelSpec(exactHigh)).toThrow(
+      /Refusing to silently lower the requested effort/,
+    );
+    expect(() => modelArgsFor("omp", exactHigh)).toThrow(
+      /choose :low explicitly/,
+    );
+    expect(() => ompModelCompatibilityNotice(exactHigh)).toThrow(
+      /empty STOP responses/,
+    );
 
     // Other providers, efforts, and models are not implicated by the controlled repro.
-    expect(normalizeOmpModelSpec('google-vertex/gemini-3.1-pro-preview:low')).toBe(
-      'google-vertex/gemini-3.1-pro-preview:low',
+    expect(
+      normalizeOmpModelSpec("google-vertex/gemini-3.1-pro-preview:low"),
+    ).toBe("google-vertex/gemini-3.1-pro-preview:low");
+    expect(
+      normalizeOmpModelSpec("google-generative-ai/gemini-3.1-pro-preview:high"),
+    ).toBe("google-generative-ai/gemini-3.1-pro-preview:high");
+    expect(normalizeOmpModelSpec("google-vertex/gemini-3.0-pro:high")).toBe(
+      "google-vertex/gemini-3.0-pro:high",
     );
-    expect(normalizeOmpModelSpec('google-generative-ai/gemini-3.1-pro-preview:high')).toBe(
-      'google-generative-ai/gemini-3.1-pro-preview:high',
-    );
-    expect(normalizeOmpModelSpec('google-vertex/gemini-3.0-pro:high')).toBe(
-      'google-vertex/gemini-3.0-pro:high',
-    );
-    expect(ompModelCompatibilityNotice('opus:high')).toBeNull();
+    expect(ompModelCompatibilityNotice("opus:high")).toBeNull();
   });
 
-  it('resumeArgsFor threads a model into each backend resume — codex flags BEFORE the subcommand', () => {
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { model: 'fable:high' }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG, '--model', 'fable', '--effort', 'high',
+  it("resumeArgsFor threads a model into each backend resume — codex flags BEFORE the subcommand", () => {
+    expect(
+      resumeArgsFor(
+        { agent: "claude", sessionId: "uuid-1" },
+        { model: "fable:high" },
+      ).args,
+    ).toEqual([
+      "--resume",
+      "uuid-1",
+      "--dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
+      NO_SUBAGENTS_DENY_FLAG,
+      OWNER_DESKTOP_NOTIFY_DENY_FLAG,
+      "--model",
+      "fable",
+      "--effort",
+      "high",
     ]);
     // codex `-m`/`-c` are TOP-LEVEL options — after the `resume` subcommand they'd
     // be parsed as resume's own args and fail the launch.
-    expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }, { model: 'gpt-5.6-sol:high' }).args).toEqual([
-      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '-m', 'gpt-5.6-sol',
-      '-c', 'model_reasoning_effort="high"',
+    expect(
+      resumeArgsFor(
+        { agent: "codex", sessionId: "uuid-2" },
+        { model: "gpt-5.6-sol:high" },
+      ).args,
+    ).toEqual([
+      "--dangerously-bypass-hook-trust",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      'model_reasoning_effort="high"',
       // The window pair rides the RESUME too, and stays ahead of the subcommand
       // with the other top-level options (plan codex-1m D-002 / P-002).
-      ...codexContextConfigArgs('gpt-5.6-sol'),
-      'resume', 'uuid-2',
+      ...codexContextConfigArgs("gpt-5.6-sol"),
+      "resume",
+      "uuid-2",
     ]);
-    expect(resumeArgsFor({ agent: 'omp', ompThreadId: 'thr-1' }, { model: 'opus:high' }).args).toEqual([
-      '-r', 'thr-1', '--approval-mode', 'yolo', '--model', 'opus:high',
+    expect(
+      resumeArgsFor(
+        { agent: "omp", ompThreadId: "thr-1" },
+        { model: "opus:high" },
+      ).args,
+    ).toEqual([
+      "-r",
+      "thr-1",
+      "--approval-mode",
+      "yolo",
+      "--model",
+      "opus:high",
     ]);
     // No model → byte-identical to the pre-WI-3758 args (the agent-default path).
-    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).not.toContain('--model');
+    expect(
+      resumeArgsFor({ agent: "claude", sessionId: "uuid-1" }).args,
+    ).not.toContain("--model");
   });
 
-describe('lastActiveModelFor (tail-read the session transcript)', () => {
-    const UUID = '0123abcd-1234-5678-9abc-def012345678';
-    let home = '';
-    beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-lastmodel-')); });
-    afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+  describe("lastActiveModelFor (tail-read the session transcript)", () => {
+    const UUID = "0123abcd-1234-5678-9abc-def012345678";
+    let home = "";
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), "psu-lastmodel-"));
+    });
+    afterEach(() => {
+      if (home) rmSync(home, { recursive: true, force: true });
+    });
 
     const writeJsonl = (file: string, lines: unknown[]) => {
-      mkdirSync(join(file, '..'), { recursive: true });
-      writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(
+        file,
+        lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+      );
     };
 
-    it('claude: the NEWEST assistant model wins; <synthetic> (error events) is skipped', () => {
-      const owner = 'su-owner-1';
-      const f = join(home, '.papercusp', 'session-claude', owner, 'projects', '-some-dir', `${UUID}.jsonl`);
+    it("claude: the NEWEST assistant model wins; <synthetic> (error events) is skipped", () => {
+      const owner = "su-owner-1";
+      const f = join(
+        home,
+        ".papercusp",
+        "session-claude",
+        owner,
+        "projects",
+        "-some-dir",
+        `${UUID}.jsonl`,
+      );
       writeJsonl(f, [
-        { type: 'user', message: { content: 'hi' } },
-        { type: 'assistant', message: { model: 'claude-fable-5-20260101', content: [] } },
-        { type: 'assistant', message: { model: 'claude-fable-5-20260415', content: [] } },
-        { type: 'assistant', message: { model: '<synthetic>', content: [] } },
+        { type: "user", message: { content: "hi" } },
+        {
+          type: "assistant",
+          message: { model: "claude-fable-5-20260101", content: [] },
+        },
+        {
+          type: "assistant",
+          message: { model: "claude-fable-5-20260415", content: [] },
+        },
+        { type: "assistant", message: { model: "<synthetic>", content: [] } },
       ]);
-      expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe('claude-fable-5-20260415');
+      expect(
+        lastActiveModelFor(
+          { agent: "claude", sessionId: UUID, coordOwnerId: owner },
+          { home },
+        ),
+      ).toBe("claude-fable-5-20260415");
     });
 
-    it('codex: the NEWEST turn_context payload.model wins (tracked per-session CODEX_HOME)', () => {
-      const f = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '07', '09', `rollout-2026-07-09T22-08-28-${UUID}.jsonl`);
+    it("codex: the NEWEST turn_context payload.model wins (tracked per-session CODEX_HOME)", () => {
+      const f = join(
+        home,
+        ".papercusp",
+        "su-codex-homes",
+        "session-42",
+        "sessions",
+        "2026",
+        "07",
+        "09",
+        `rollout-2026-07-09T22-08-28-${UUID}.jsonl`,
+      );
       writeJsonl(f, [
-        { type: 'session_meta', payload: { id: UUID, model_provider: 'openai' } },
-        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
-        { type: 'turn_context', payload: { model: 'gpt-5.6-lux' } },
-        { type: 'response_item', payload: { role: 'assistant' } },
+        {
+          type: "session_meta",
+          payload: { id: UUID, model_provider: "openai" },
+        },
+        { type: "turn_context", payload: { model: "gpt-5.6-sol" } },
+        { type: "turn_context", payload: { model: "gpt-5.6-lux" } },
+        { type: "response_item", payload: { role: "assistant" } },
       ]);
-      expect(lastActiveModelFor({ agent: 'codex', id: 42, sessionId: UUID }, { home })).toBe('gpt-5.6-lux');
+      expect(
+        lastActiveModelFor(
+          { agent: "codex", id: 42, sessionId: UUID },
+          { home },
+        ),
+      ).toBe("gpt-5.6-lux");
     });
 
-    it('codex: an UNTRACKED session (no adv row id) falls back to the shared ~/.codex store', () => {
-      const f = join(home, '.codex', 'sessions', '2026', '07', '10', `rollout-2026-07-10T00-00-00-${UUID}.jsonl`);
+    it("codex: an UNTRACKED session (no adv row id) falls back to the shared ~/.codex store", () => {
+      const f = join(
+        home,
+        ".codex",
+        "sessions",
+        "2026",
+        "07",
+        "10",
+        `rollout-2026-07-10T00-00-00-${UUID}.jsonl`,
+      );
       writeJsonl(f, [
-        { type: 'session_meta', payload: { id: UUID } },
-        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+        { type: "session_meta", payload: { id: UUID } },
+        { type: "turn_context", payload: { model: "gpt-5.6-sol" } },
       ]);
-      expect(sessionTranscriptFile({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe(f);
-      expect(lastActiveModelFor({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe('gpt-5.6-sol');
+      expect(
+        sessionTranscriptFile(
+          { agent: "codex", id: null, sessionId: UUID },
+          { home },
+        ),
+      ).toBe(f);
+      expect(
+        lastActiveModelFor(
+          { agent: "codex", id: null, sessionId: UUID },
+          { home },
+        ),
+      ).toBe("gpt-5.6-sol");
     });
 
-    it('omp: the newest model_change wins from the tracked per-session store', () => {
-      const threadId = 'omp-thread-7';
-      const f = join(home, '.papercusp', 'su-omp-homes', 'session-42', 'agent', 'sessions', 'project', `2026-07-16T00-00-00_${threadId}.jsonl`);
+    it("omp: the newest model_change wins from the tracked per-session store", () => {
+      const threadId = "omp-thread-7";
+      const f = join(
+        home,
+        ".papercusp",
+        "su-omp-homes",
+        "session-42",
+        "agent",
+        "sessions",
+        "project",
+        `2026-07-16T00-00-00_${threadId}.jsonl`,
+      );
       writeJsonl(f, [
-        { type: 'session', id: threadId },
-        { type: 'model_change', model: 'anthropic/claude-sonnet-4-6' },
-        { type: 'model_change', model: 'papercusp-gateway/claude-opus-4-8' },
+        { type: "session", id: threadId },
+        { type: "model_change", model: "anthropic/claude-sonnet-4-6" },
+        { type: "model_change", model: "papercusp-gateway/claude-opus-4-8" },
       ]);
-      expect(sessionTranscriptFile({ agent: 'omp', id: 42, ompThreadId: threadId }, { home })).toBe(f);
-      expect(lastActiveModelFor({ agent: 'omp', id: 42, ompThreadId: threadId }, { home }))
-        .toBe('papercusp-gateway/claude-opus-4-8');
+      expect(
+        sessionTranscriptFile(
+          { agent: "omp", id: 42, ompThreadId: threadId },
+          { home },
+        ),
+      ).toBe(f);
+      expect(
+        lastActiveModelFor(
+          { agent: "omp", id: 42, ompThreadId: threadId },
+          { home },
+        ),
+      ).toBe("papercusp-gateway/claude-opus-4-8");
     });
 
-    it('degrades to null for a missing transcript or a transcript with no model events', () => {
-      expect(lastActiveModelFor({ agent: 'omp', ompThreadId: 't-1' }, { home })).toBe(null);
-      expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-none' }, { home })).toBe(null);
-      const owner = 'su-owner-2';
-      const f = join(home, '.papercusp', 'session-claude', owner, 'projects', '-d', `${UUID}.jsonl`);
-      writeJsonl(f, [{ type: 'user', message: { content: 'hi' } }]);
-      expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(null);
+    it("degrades to null for a missing transcript or a transcript with no model events", () => {
+      expect(
+        lastActiveModelFor({ agent: "omp", ompThreadId: "t-1" }, { home }),
+      ).toBe(null);
+      expect(
+        lastActiveModelFor(
+          { agent: "claude", sessionId: UUID, coordOwnerId: "su-none" },
+          { home },
+        ),
+      ).toBe(null);
+      const owner = "su-owner-2";
+      const f = join(
+        home,
+        ".papercusp",
+        "session-claude",
+        owner,
+        "projects",
+        "-d",
+        `${UUID}.jsonl`,
+      );
+      writeJsonl(f, [{ type: "user", message: { content: "hi" } }]);
+      expect(
+        lastActiveModelFor(
+          { agent: "claude", sessionId: UUID, coordOwnerId: owner },
+          { home },
+        ),
+      ).toBe(null);
     });
   });
 });
 
-describe('resumeSessionLineageLabel', () => {
-  it('labels a delivered port without exposing transcript content', () => {
-    expect(resumeSessionLineageLabel({ portSourceAdvSessionId: 42, portStatus: 'delivered' }))
-      .toBe('ported from #42');
+describe("resumeSessionLineageLabel", () => {
+  it("labels a delivered port without exposing transcript content", () => {
+    expect(
+      resumeSessionLineageLabel({
+        portSourceAdvSessionId: 42,
+        portStatus: "delivered",
+      }),
+    ).toBe("ported from #42");
   });
 
-  it('surfaces a non-delivered lifecycle state and ignores native sessions', () => {
-    expect(resumeSessionLineageLabel({ portSourceAdvSessionId: 42, portStatus: 'failed' }))
-      .toBe('ported from #42 (failed)');
-    expect(resumeSessionLineageLabel({ portSourceAdvSessionId: null })).toBeNull();
+  it("surfaces a non-delivered lifecycle state and ignores native sessions", () => {
+    expect(
+      resumeSessionLineageLabel({
+        portSourceAdvSessionId: 42,
+        portStatus: "failed",
+      }),
+    ).toBe("ported from #42 (failed)");
+    expect(
+      resumeSessionLineageLabel({ portSourceAdvSessionId: null }),
+    ).toBeNull();
   });
 });
 
-describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, never rejects)', () => {
-  it('POSTs the row id + exit code to bootstrap-su/session-ended with the bearer', async () => {
+describe("reportSessionEnded (stamp adv ended_at on child exit — best-effort, never rejects)", () => {
+  it("POSTs the row id + exit code to bootstrap-su/session-ended with the bearer", async () => {
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionEnded('17', 0, { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionEnded("17", 0, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok-1",
+    });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-ended');
-    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+    expect(calls[0].url).toBe(
+      "http://op:1/api/agent-mcp/console/bootstrap-su/session-ended",
+    );
+    expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 17,
       exitCode: 0,
@@ -5481,10 +7992,17 @@ describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
     });
   });
 
-  it('maps a null/undefined exit code to null (signal exits)', async () => {
+  it("maps a null/undefined exit code to null (signal exits)", async () => {
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionEnded(17, undefined, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionEnded(17, undefined, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 17,
       exitCode: null,
@@ -5495,204 +8013,353 @@ describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
   // WI-38054 — the field that decides whether the server records a voluntary exit or a
   // kill. A killed session reports exitCode 0 (node-pty's placeholder), so if this does
   // not travel, the row asserts a clean exit and a reap becomes undetectable.
-  it('forwards the killing signal, so exit 0 cannot be read as a clean exit', async () => {
+  it("forwards the killing signal, so exit 0 cannot be read as a clean exit", async () => {
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
     await reportSessionEnded(17, 0, {
       fetchImpl,
-      operatorUrl: 'http://op:1',
-      token: 't',
-      killedBySignal: 'SIGHUP',
+      operatorUrl: "http://op:1",
+      token: "t",
+      killedBySignal: "SIGHUP",
     });
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 17,
       exitCode: 0,
-      killedBySignal: 'SIGHUP',
+      killedBySignal: "SIGHUP",
     });
   });
 
-  it('sends killedBySignal: null for an ordinary exit — never omits the key', async () => {
+  it("sends killedBySignal: null for an ordinary exit — never omits the key", async () => {
     // Omitting it would be indistinguishable, server-side, from an older launcher that
     // cannot report signals at all. Always stating it keeps "no signal" an assertion
     // rather than an absence.
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionEnded(17, 0, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
-    expect(JSON.parse(calls[0].opts.body)).toHaveProperty('killedBySignal', null);
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionEnded(17, 0, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    expect(JSON.parse(calls[0].opts.body)).toHaveProperty(
+      "killedBySignal",
+      null,
+    );
   });
 
-  it('no adv row id → no request (untracked sessions have nothing to stamp)', async () => {
+  it("no adv row id → no request (untracked sessions have nothing to stamp)", async () => {
     const calls = [];
-    const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
-    await reportSessionEnded(null, 0, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    const fetchImpl = async (...a) => {
+      calls.push(a);
+      return { ok: true };
+    };
+    await reportSessionEnded(null, 0, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
     expect(calls).toHaveLength(0);
   });
 
-  it('swallows transport failures — psu is about to exit; end-stamping must never hold the terminal', async () => {
-    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+  it("swallows transport failures — psu is about to exit; end-stamping must never hold the terminal", async () => {
+    const fetchImpl = async () => {
+      throw new Error("ECONNREFUSED");
+    };
     await expect(
-      reportSessionEnded(17, 1, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionEnded(17, 1, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBeUndefined();
   });
 });
 
-describe('startSupervisorBeat (WI-3898 P1: the beat self-reports its own pid/host)', () => {
-  it('the immediate first beat POSTs { ownerId, pid: process.pid, host: hostname() }', async () => {
+describe("startSupervisorBeat (WI-3898 P1: the beat self-reports its own pid/host)", () => {
+  it("the immediate first beat POSTs { ownerId, pid: process.pid, host: hostname() }", async () => {
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
     const fakeTimer = { unref: () => {} };
-    startSupervisorBeat('su-abc', {
+    startSupervisorBeat("su-abc", {
       fetchImpl,
-      operatorUrl: 'http://op:1',
-      token: 't',
+      operatorUrl: "http://op:1",
+      token: "t",
       setIntervalImpl: () => fakeTimer,
     });
     // startSupervisorBeat fires an immediate `void beat()` (fire-and-forget)
     // before returning — flush a microtask so it lands before we assert.
     await new Promise((r) => setTimeout(r, 0));
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/heartbeat');
+    expect(calls[0].url).toBe(
+      "http://op:1/api/agent-mcp/console/bootstrap-su/heartbeat",
+    );
     const body = JSON.parse(calls[0].opts.body);
-    expect(body).toEqual({ ownerId: 'su-abc', pid: process.pid, host: hostname() });
+    expect(body).toEqual({
+      ownerId: "su-abc",
+      pid: process.pid,
+      host: hostname(),
+    });
   });
 
-  it('returns null and never beats when ownerId is falsy', () => {
+  it("returns null and never beats when ownerId is falsy", () => {
     const calls = [];
-    const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
-    const timer = startSupervisorBeat('', { fetchImpl, setIntervalImpl: () => ({ unref: () => {} }) });
+    const fetchImpl = async (...a) => {
+      calls.push(a);
+      return { ok: true };
+    };
+    const timer = startSupervisorBeat("", {
+      fetchImpl,
+      setIntervalImpl: () => ({ unref: () => {} }),
+    });
     expect(timer).toBeNull();
     expect(calls).toHaveLength(0);
   });
 
-  it('schedules the recurring beat on the injected interval (same pid/host body each tick)', async () => {
+  it("schedules the recurring beat on the injected interval (same pid/host body each tick)", async () => {
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
     let tickFn;
-    const setIntervalImpl = (fn) => { tickFn = fn; return { unref: () => {} }; };
-    startSupervisorBeat('su-abc', { fetchImpl, operatorUrl: 'http://op:1', token: 't', setIntervalImpl });
+    const setIntervalImpl = (fn) => {
+      tickFn = fn;
+      return { unref: () => {} };
+    };
+    startSupervisorBeat("su-abc", {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+      setIntervalImpl,
+    });
     await new Promise((r) => setTimeout(r, 0)); // the immediate beat
     expect(calls).toHaveLength(1);
     tickFn(); // simulate one interval tick
     await new Promise((r) => setTimeout(r, 0));
     expect(calls).toHaveLength(2);
-    expect(JSON.parse(calls[1].opts.body)).toEqual(JSON.parse(calls[0].opts.body));
+    expect(JSON.parse(calls[1].opts.body)).toEqual(
+      JSON.parse(calls[0].opts.body),
+    );
   });
 });
 
-describe('reportSessionResumed (atomic adv-row resume claim — fail closed)', () => {
-  it('POSTs the row id to bootstrap-su/session-resumed with the bearer', async () => {
+describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
+  it("POSTs the row id to bootstrap-su/session-resumed with the bearer", async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => {
       calls.push({ url, opts });
       return { ok: true, json: async () => ({ ok: true, reactivated: true }) };
     };
     await expect(
-      reportSessionResumed('42', { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' }),
+      reportSessionResumed("42", {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "tok-1",
+      }),
     ).resolves.toBe(true);
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed');
-    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+    expect(calls[0].url).toBe(
+      "http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed",
+    );
+    expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
     expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 42 });
   });
 
-  it('no adv row id → no request (untracked resumes have no row to re-activate)', async () => {
+  it("no adv row id → no request (untracked resumes have no row to re-activate)", async () => {
     const calls = [];
-    const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
+    const fetchImpl = async (...a) => {
+      calls.push(a);
+      return { ok: true };
+    };
     await expect(
-      reportSessionResumed(null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionResumed(null, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBe(false);
     expect(calls).toHaveLength(0);
   });
 
-  it('false claim or a response without explicit reactivated:true fails closed', async () => {
-    const falseClaim = async () => ({ ok: true, json: async () => ({ ok: true, reactivated: false }) });
-    const noClaimField = async () => ({ ok: true, json: async () => ({ ok: true }) });
+  it("false claim or a response without explicit reactivated:true fails closed", async () => {
+    const falseClaim = async () => ({
+      ok: true,
+      json: async () => ({ ok: true, reactivated: false }),
+    });
+    const noClaimField = async () => ({
+      ok: true,
+      json: async () => ({ ok: true }),
+    });
     await expect(
-      reportSessionResumed(42, { fetchImpl: falseClaim, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionResumed(42, {
+        fetchImpl: falseClaim,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBe(false);
     await expect(
-      reportSessionResumed(42, { fetchImpl: noClaimField, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionResumed(42, {
+        fetchImpl: noClaimField,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBe(false);
   });
 
-  it('HTTP/transport failures fail closed — no resume process may spawn', async () => {
-    const httpFailure = async () => ({ ok: false, json: async () => ({ ok: true, reactivated: true }) });
+  it("HTTP/transport failures fail closed — no resume process may spawn", async () => {
+    const httpFailure = async () => ({
+      ok: false,
+      json: async () => ({ ok: true, reactivated: true }),
+    });
     await expect(
-      reportSessionResumed(42, { fetchImpl: httpFailure, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionResumed(42, {
+        fetchImpl: httpFailure,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBe(false);
-    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+    const fetchImpl = async () => {
+      throw new Error("ECONNREFUSED");
+    };
     await expect(
-      reportSessionResumed(42, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionResumed(42, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBe(false);
   });
 });
 
-describe('launchResume wiring — claim before setup or spawn', () => {
-  const src = readFileSync(join(__dirname, '..', 'scripts', 'psu-launcher.mjs'), 'utf8');
-  const body = src.slice(src.indexOf('async function launchResume('));
+describe("launchResume wiring — claim before setup or spawn", () => {
+  const src = readFileSync(
+    join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+    "utf8",
+  );
+  const body = src.slice(src.indexOf("async function launchResume("));
 
-  it('claims the tracked ended row before config repair and runWrapper', () => {
-    const claim = body.indexOf('await reportSessionResumed(session.id)');
-    const configRepair = body.indexOf('await ensureInteractiveConfigViaOperator');
-    const spawn = body.indexOf('runWrapper({');
+  it("claims the tracked ended row before config repair and runWrapper", () => {
+    const claim = body.indexOf("await reportSessionResumed(session.id)");
+    const configRepair = body.indexOf(
+      "await ensureInteractiveConfigViaOperator",
+    );
+    const spawn = body.indexOf("runWrapper({");
     expect(claim).toBeGreaterThan(-1);
     expect(configRepair).toBeGreaterThan(claim);
     expect(spawn).toBeGreaterThan(claim);
   });
 });
 
-describe('reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-respawn/recycle — best-effort, never rejects)', () => {
-  const freshId = '1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f';
+describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-respawn/recycle — best-effort, never rejects)", () => {
+  const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
 
-  it('POSTs { advSessionId, sessionId } to bootstrap-su/session-respawned with the bearer', async () => {
-    const calls: Array<{ url: string; opts: { headers: Record<string, string>; body: string } }> = [];
-    const fetchImpl = async (url: string, opts: never) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionRespawned('42', freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-respawned');
-    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
-    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 42, sessionId: freshId });
-  });
-
-  it('no identity key (neither adv row id nor coordOwnerId) OR no fresh native id → no request', async () => {
-    const calls: unknown[] = [];
-    const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { ok: true }; };
-    await reportSessionRespawned(null, freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
-    await reportSessionRespawned('42', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
-    await reportSessionRespawned(null, null, { coordOwnerId: 'su-abc', fetchImpl, operatorUrl: 'http://op:1', token: 't' });
-    expect(calls).toHaveLength(0);
-  });
-
-  it('interactive/`psu --resume` cohort: no adv id but a coordOwnerId → POSTs { coordOwnerId, sessionId }', async () => {
-    const calls: Array<{ url: string; opts: { body: string } }> = [];
-    const fetchImpl = async (url: string, opts: never) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionRespawned(null, freshId, {
-      coordOwnerId: 'su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89',
-      fetchImpl, operatorUrl: 'http://op:1', token: 't',
+  it("POSTs { advSessionId, sessionId } to bootstrap-su/session-respawned with the bearer", async () => {
+    const calls: Array<{
+      url: string;
+      opts: { headers: Record<string, string>; body: string };
+    }> = [];
+    const fetchImpl = async (url: string, opts: never) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionRespawned("42", freshId, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok-1",
     });
     expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(
+      "http://op:1/api/agent-mcp/console/bootstrap-su/session-respawned",
+    );
+    expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
     expect(JSON.parse(calls[0].opts.body)).toEqual({
-      coordOwnerId: 'su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89',
+      advSessionId: 42,
       sessionId: freshId,
     });
   });
 
-  it('adv-spawned cohort: sends BOTH keys so the server can heal a stale adv-id mapping through the owner', async () => {
+  it("no identity key (neither adv row id nor coordOwnerId) OR no fresh native id → no request", async () => {
+    const calls: unknown[] = [];
+    const fetchImpl = async (...a: unknown[]) => {
+      calls.push(a);
+      return { ok: true };
+    };
+    await reportSessionRespawned(null, freshId, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    await reportSessionRespawned("42", null, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    await reportSessionRespawned(null, null, {
+      coordOwnerId: "su-abc",
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("interactive/`psu --resume` cohort: no adv id but a coordOwnerId → POSTs { coordOwnerId, sessionId }", async () => {
     const calls: Array<{ url: string; opts: { body: string } }> = [];
-    const fetchImpl = async (url: string, opts: never) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionRespawned('42', freshId, {
-      coordOwnerId: 'su-abc', fetchImpl, operatorUrl: 'http://op:1', token: 't',
+    const fetchImpl = async (url: string, opts: never) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionRespawned(null, freshId, {
+      coordOwnerId: "su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89",
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
     });
     expect(calls).toHaveLength(1);
     expect(JSON.parse(calls[0].opts.body)).toEqual({
-      advSessionId: 42, coordOwnerId: 'su-abc', sessionId: freshId,
+      coordOwnerId: "su-57b6247d-ecdb-4fe1-9734-f91c3b6d0f89",
+      sessionId: freshId,
     });
   });
 
-  it('swallows transport failures — a respawn must never wait on or fail from the re-anchor', async () => {
-    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+  it("adv-spawned cohort: sends BOTH keys so the server can heal a stale adv-id mapping through the owner", async () => {
+    const calls: Array<{ url: string; opts: { body: string } }> = [];
+    const fetchImpl = async (url: string, opts: never) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionRespawned("42", freshId, {
+      coordOwnerId: "su-abc",
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 42,
+      coordOwnerId: "su-abc",
+      sessionId: freshId,
+    });
+  });
+
+  it("swallows transport failures — a respawn must never wait on or fail from the re-anchor", async () => {
+    const fetchImpl = async () => {
+      throw new Error("ECONNREFUSED");
+    };
     await expect(
-      reportSessionRespawned(42, freshId, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+      reportSessionRespawned(42, freshId, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBeUndefined();
   });
 });
@@ -5704,126 +8371,266 @@ describe('reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
 // completely untested) that psu --resume depends on to recover a session
 // whose transcript the archive-at-death lifecycle deletes ~15s after every
 // session end (WI-3859 F4) — NOT just a stale/swept one.
-describe('tryRematerializeFromArchive (psu --resume self-heals a transcript the archive-at-death hook deleted)', () => {
-  it('POSTs sessionId (+ sourceKind when given) and returns the parsed result on ok:true', async () => {
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the archive-at-death hook deleted)", () => {
+  it("POSTs sessionId (+ sourceKind when given) and returns the parsed result on ok:true", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const calls = [];
     const fetchImpl = async (url, opts) => {
       calls.push({ url, opts });
-      return { json: async () => ({ ok: true, sourceKind: 'claude', written: 1, root: '/tmp/restored' }) };
+      return {
+        json: async () => ({
+          ok: true,
+          sourceKind: "claude",
+          written: 1,
+          root: "/tmp/restored",
+        }),
+      };
     };
-    const r = await tryRematerializeFromArchive('sid-1', 'claude', { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    const r = await tryRematerializeFromArchive("sid-1", "claude", {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "tok-1",
+    });
     expect(errSpy).toHaveBeenCalledTimes(1);
     errSpy.mockRestore();
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://op:1/api/adv/sessions/rematerialize');
-    expect(calls[0].opts.method).toBe('POST');
-    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
-    expect(JSON.parse(calls[0].opts.body)).toEqual({ sessionId: 'sid-1', sourceKind: 'claude' });
-    expect(r).toEqual({ ok: true, sourceKind: 'claude', written: 1, root: '/tmp/restored' });
+    expect(calls[0].url).toBe("http://op:1/api/adv/sessions/rematerialize");
+    expect(calls[0].opts.method).toBe("POST");
+    expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      sessionId: "sid-1",
+      sourceKind: "claude",
+    });
+    expect(r).toEqual({
+      ok: true,
+      sourceKind: "claude",
+      written: 1,
+      root: "/tmp/restored",
+    });
   });
 
-  it('omits sourceKind when not given (probes all three archive kinds)', async () => {
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("omits sourceKind when not given (probes all three archive kinds)", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push(opts); return { json: async () => ({ ok: true, written: 0 }) }; };
-    await tryRematerializeFromArchive('sid-2', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
-    expect(JSON.parse(calls[0].body)).toEqual({ sessionId: 'sid-2' });
+    const fetchImpl = async (url, opts) => {
+      calls.push(opts);
+      return { json: async () => ({ ok: true, written: 0 }) };
+    };
+    await tryRematerializeFromArchive("sid-2", null, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    expect(JSON.parse(calls[0].body)).toEqual({ sessionId: "sid-2" });
     errSpy.mockRestore();
   });
 
-  it('no sessionId → no request, returns null', async () => {
+  it("no sessionId → no request, returns null", async () => {
     const calls = [];
-    const fetchImpl = async (...a) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
-    expect(await tryRematerializeFromArchive(null, 'claude', { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+    const fetchImpl = async (...a) => {
+      calls.push(a);
+      return { json: async () => ({ ok: true }) };
+    };
+    expect(
+      await tryRematerializeFromArchive(null, "claude", {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
+    ).toBeNull();
     expect(calls).toHaveLength(0);
   });
 
-  it('ok:false (not_archived / sha_mismatch / …) → returns null, never throws', async () => {
-    const fetchImpl = async () => ({ json: async () => ({ ok: false, reason: 'not_archived' }) });
-    expect(await tryRematerializeFromArchive('sid-3', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+  it("ok:false (not_archived / sha_mismatch / …) → returns null, never throws", async () => {
+    const fetchImpl = async () => ({
+      json: async () => ({ ok: false, reason: "not_archived" }),
+    });
+    expect(
+      await tryRematerializeFromArchive("sid-3", null, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
+    ).toBeNull();
   });
 
-  it('transport failure / unreachable operator → swallowed, returns null (never blocks the fallback not-found error)', async () => {
-    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+  it("transport failure / unreachable operator → swallowed, returns null (never blocks the fallback not-found error)", async () => {
+    const fetchImpl = async () => {
+      throw new Error("ECONNREFUSED");
+    };
     await expect(
-      tryRematerializeFromArchive('sid-4', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+      tryRematerializeFromArchive("sid-4", null, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
     ).resolves.toBeNull();
   });
 
-  it('non-JSON / malformed response body → swallowed, returns null', async () => {
-    const fetchImpl = async () => ({ json: async () => { throw new SyntaxError('Unexpected token'); } });
-    expect(await tryRematerializeFromArchive('sid-5', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+  it("non-JSON / malformed response body → swallowed, returns null", async () => {
+    const fetchImpl = async () => ({
+      json: async () => {
+        throw new SyntaxError("Unexpected token");
+      },
+    });
+    expect(
+      await tryRematerializeFromArchive("sid-5", null, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
+    ).toBeNull();
   });
 });
 
-describe('fetchWithResilience (psu connection-retry hardening)', () => {
+describe("fetchWithResilience (psu connection-retry hardening)", () => {
   // A fake clock advanced by the injected sleep makes retry timing deterministic
   // without real timers or sockets.
   function fakeClock() {
     let t = 0;
-    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+    return {
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+      },
+    };
   }
-  const connFail = () => { throw new TypeError('fetch failed'); };
-  const timeoutErr = () => { const e = new Error('timed out'); e.name = 'TimeoutError'; throw e; };
+  const connFail = () => {
+    throw new TypeError("fetch failed");
+  };
+  const timeoutErr = () => {
+    const e = new Error("timed out");
+    e.name = "TimeoutError";
+    throw e;
+  };
   // Pin the target so these tests never inherit the RUNNER box's real
   // operator.json via the module-level OPERATOR_TARGET default (WI-3271).
-  const devTarget = { url: 'http://op', source: 'dev-default', startedAt: null };
+  const devTarget = {
+    url: "http://op",
+    source: "dev-default",
+    startedAt: null,
+  };
 
-  it('rides through a recycle: retries a connection failure on a backoff and returns once the host is back', async () => {
+  it("rides through a recycle: retries a connection failure on a backoff and returns once the host is back", async () => {
     const clock = fakeClock();
     let n = 0;
-    const fetchImpl = async () => { n += 1; if (n < 3) connFail(); return { ok: true, id: 'live' } as unknown as Response; };
-    const res = await fetchWithResilience('http://op/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: devTarget,
-    });
-    expect((res as unknown as { id: string }).id).toBe('live');
+    const fetchImpl = async () => {
+      n += 1;
+      if (n < 3) connFail();
+      return { ok: true, id: "live" } as unknown as Response;
+    };
+    const res = await fetchWithResilience(
+      "http://op/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        connectBudgetMs: 30_000,
+        target: devTarget,
+      },
+    );
+    expect((res as unknown as { id: string }).id).toBe("live");
     expect(n).toBe(3); // two dead-window failures ridden through, third succeeds
   });
 
   it('exhausts the connect budget then throws "could not reach … after Ns"', async () => {
     const clock = fakeClock();
     let n = 0;
-    const fetchImpl = async () => { n += 1; connFail(); return undefined as unknown as Response; };
+    const fetchImpl = async () => {
+      n += 1;
+      connFail();
+      return undefined as unknown as Response;
+    };
     await expect(
-      fetchWithResilience('http://op/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 5_000, target: devTarget,
-      }),
+      fetchWithResilience(
+        "http://op/x",
+        {},
+        {
+          fetchImpl,
+          now: clock.now,
+          sleep: clock.sleep,
+          onNotice: () => {},
+          connectBudgetMs: 5_000,
+          target: devTarget,
+        },
+      ),
     ).rejects.toThrow(/could not reach the operator .* after \d+s/);
     expect(n).toBeGreaterThan(1); // it retried within the budget, not a single shot
   });
 
-  it('announces the connection retry exactly once, not per attempt', async () => {
+  it("announces the connection retry exactly once, not per attempt", async () => {
     const clock = fakeClock();
     const notices: string[] = [];
-    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
-    await fetchWithResilience('http://op/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m), connectBudgetMs: 6_000, target: devTarget,
-    }).catch(() => {});
-    expect(notices.filter((m) => /unreachable .* retrying for up to/.test(m))).toHaveLength(1);
+    const fetchImpl = async () => {
+      connFail();
+      return undefined as unknown as Response;
+    };
+    await fetchWithResilience(
+      "http://op/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: (m) => notices.push(m),
+        connectBudgetMs: 6_000,
+        target: devTarget,
+      },
+    ).catch(() => {});
+    expect(
+      notices.filter((m) => /unreachable .* retrying for up to/.test(m)),
+    ).toHaveLength(1);
   });
 
   it('caps timeout retries (reachable-but-slow) and throws "did not respond within"', async () => {
     const clock = fakeClock();
     let n = 0;
-    const fetchImpl = async () => { n += 1; timeoutErr(); return undefined as unknown as Response; };
+    const fetchImpl = async () => {
+      n += 1;
+      timeoutErr();
+      return undefined as unknown as Response;
+    };
     await expect(
-      fetchWithResilience('http://op/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, timeoutRetries: 1, target: devTarget,
-      }),
+      fetchWithResilience(
+        "http://op/x",
+        {},
+        {
+          fetchImpl,
+          now: clock.now,
+          sleep: clock.sleep,
+          onNotice: () => {},
+          timeoutRetries: 1,
+          target: devTarget,
+        },
+      ),
     ).rejects.toThrow(/did not respond within \d+ms/);
     expect(n).toBe(2); // initial attempt + 1 capped retry, then give up
   });
 
-  it('a caller-supplied AbortSignal disables retry (caller owns the lifetime)', async () => {
+  it("a caller-supplied AbortSignal disables retry (caller owns the lifetime)", async () => {
     const clock = fakeClock();
     let n = 0;
-    const fetchImpl = async () => { n += 1; connFail(); return undefined as unknown as Response; };
+    const fetchImpl = async () => {
+      n += 1;
+      connFail();
+      return undefined as unknown as Response;
+    };
     const ac = new AbortController();
     await expect(
-      fetchWithResilience('http://op/x', { signal: ac.signal }, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: devTarget,
-      }),
+      fetchWithResilience(
+        "http://op/x",
+        { signal: ac.signal },
+        {
+          fetchImpl,
+          now: clock.now,
+          sleep: clock.sleep,
+          onNotice: () => {},
+          connectBudgetMs: 30_000,
+          target: devTarget,
+        },
+      ),
     ).rejects.toThrow(/could not reach/);
     expect(n).toBe(1); // single attempt — no retry when the caller owns the signal
   });
@@ -5833,218 +8640,402 @@ describe('fetchWithResilience (psu connection-retry hardening)', () => {
   it('STALE desktop discovery + refused → fails FAST (~5s, not the 30s budget) with "start the Papercusp app" guidance', async () => {
     const clock = fakeClock();
     // startedAt an hour before the fake clock's origin → record is stale.
-    const staleTarget = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -3_600_000 };
-    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    const staleTarget = {
+      url: "http://127.0.0.1:21487",
+      source: "discovery",
+      startedAt: -3_600_000,
+    };
+    const fetchImpl = async () => {
+      connFail();
+      return undefined as unknown as Response;
+    };
     await expect(
-      fetchWithResilience('http://127.0.0.1:21487/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: staleTarget,
-      }),
-    ).rejects.toThrow(/Papercusp app's server isn't running .*Start \(or restart\) the Papercusp desktop app/);
+      fetchWithResilience(
+        "http://127.0.0.1:21487/x",
+        {},
+        {
+          fetchImpl,
+          now: clock.now,
+          sleep: clock.sleep,
+          onNotice: () => {},
+          connectBudgetMs: 30_000,
+          target: staleTarget,
+        },
+      ),
+    ).rejects.toThrow(
+      /Papercusp app's server isn't running .*Start \(or restart\) the Papercusp desktop app/,
+    );
     expect(clock.now()).toBeLessThanOrEqual(6_000); // fast fail — never burned the 30s ride-through
   });
 
-  it('FRESH desktop discovery + refused → keeps the full ride-through (operator plausibly mid-boot), desktop-flavored final error', async () => {
+  it("FRESH desktop discovery + refused → keeps the full ride-through (operator plausibly mid-boot), desktop-flavored final error", async () => {
     const clock = fakeClock();
-    const freshTarget = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -60_000 }; // 1 min old
-    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    const freshTarget = {
+      url: "http://127.0.0.1:21487",
+      source: "discovery",
+      startedAt: -60_000,
+    }; // 1 min old
+    const fetchImpl = async () => {
+      connFail();
+      return undefined as unknown as Response;
+    };
     await expect(
-      fetchWithResilience('http://127.0.0.1:21487/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000, target: freshTarget,
-      }),
+      fetchWithResilience(
+        "http://127.0.0.1:21487/x",
+        {},
+        {
+          fetchImpl,
+          now: clock.now,
+          sleep: clock.sleep,
+          onNotice: () => {},
+          connectBudgetMs: 30_000,
+          target: freshTarget,
+        },
+      ),
     ).rejects.toThrow(/Start \(or restart\) the Papercusp desktop app/);
     expect(clock.now()).toBeGreaterThanOrEqual(30_000); // full budget honored for a mid-restart window
   });
 
-  it('desktop discovery TIMEOUT advice says restart-the-app, never dev-box systemctl', async () => {
+  it("desktop discovery TIMEOUT advice says restart-the-app, never dev-box systemctl", async () => {
     const clock = fakeClock();
-    const target = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -60_000 };
-    const fetchImpl = async () => { timeoutErr(); return undefined as unknown as Response; };
-    const err = await fetchWithResilience('http://127.0.0.1:21487/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, timeoutRetries: 0, target,
-    }).then(() => null, (e: Error) => e);
+    const target = {
+      url: "http://127.0.0.1:21487",
+      source: "discovery",
+      startedAt: -60_000,
+    };
+    const fetchImpl = async () => {
+      timeoutErr();
+      return undefined as unknown as Response;
+    };
+    const err = await fetchWithResilience(
+      "http://127.0.0.1:21487/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        timeoutRetries: 0,
+        target,
+      },
+    ).then(
+      () => null,
+      (e: Error) => e,
+    );
     expect(err?.message).toMatch(/restart the Papercusp desktop app/);
     expect(err?.message).not.toMatch(/systemctl/);
   });
 
-  it('stale-desktop announce notice names the app and the short check window, once', async () => {
+  it("stale-desktop announce notice names the app and the short check window, once", async () => {
     const clock = fakeClock();
-    const staleTarget = { url: 'http://127.0.0.1:21487', source: 'discovery', startedAt: -3_600_000 };
+    const staleTarget = {
+      url: "http://127.0.0.1:21487",
+      source: "discovery",
+      startedAt: -3_600_000,
+    };
     const notices: string[] = [];
-    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
-    await fetchWithResilience('http://127.0.0.1:21487/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m), connectBudgetMs: 30_000, target: staleTarget,
-    }).catch(() => {});
-    expect(notices.filter((m) => /Papercusp app's server .* isn't answering .* checking for 5s/.test(m))).toHaveLength(1);
+    const fetchImpl = async () => {
+      connFail();
+      return undefined as unknown as Response;
+    };
+    await fetchWithResilience(
+      "http://127.0.0.1:21487/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: (m) => notices.push(m),
+        connectBudgetMs: 30_000,
+        target: staleTarget,
+      },
+    ).catch(() => {});
+    expect(
+      notices.filter((m) =>
+        /Papercusp app's server .* isn't answering .* checking for 5s/.test(m),
+      ),
+    ).toHaveLength(1);
   });
 
   // ── stale-shell heal (mac VM owner repro 2026-07-07): a dead env-pinned
   //    target fails over to a health-checked live operator instead of burning
   //    the whole budget on a port the terminal window outlived. ──
 
-  const envTarget = { url: 'http://127.0.0.1:59999', source: 'env', startedAt: null };
+  const envTarget = {
+    url: "http://127.0.0.1:59999",
+    source: "env",
+    startedAt: null,
+  };
 
-  it('dead env pin + healthy discovery fallback → switches, adopts, and succeeds on the live operator', async () => {
+  it("dead env pin + healthy discovery fallback → switches, adopts, and succeeds on the live operator", async () => {
     const clock = fakeClock();
     const seen: string[] = [];
     const fetchImpl = async (u: string) => {
       seen.push(u);
-      if (u.startsWith('http://127.0.0.1:59999')) connFail();
-      return { ok: true, id: 'live' } as unknown as Response;
+      if (u.startsWith("http://127.0.0.1:59999")) connFail();
+      return { ok: true, id: "live" } as unknown as Response;
     };
     const notices: string[] = [];
     const adopted: Array<{ url: string }> = [];
-    const res = await fetchWithResilience('http://127.0.0.1:59999/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m),
-      connectBudgetMs: 30_000, target: envTarget,
-      resolveFallback: () => [{ url: 'http://127.0.0.1:21960', source: 'discovery', startedAt: null }],
-      onFailover: (t: { url: string }) => adopted.push(t),
-    });
-    expect((res as unknown as { id: string }).id).toBe('live');
-    expect(seen).toContain('http://127.0.0.1:21960/api/health'); // health-gated, not a blind switch
-    expect(seen).toContain('http://127.0.0.1:21960/x'); // request rebased onto the live origin
-    expect(adopted.map((t) => t.url)).toEqual(['http://127.0.0.1:21960']); // adopted session-wide
-    expect(notices.some((m) => /switching/.test(m) && /PAPERCUSP_OPERATOR_URL/.test(m))).toBe(true);
+    const res = await fetchWithResilience(
+      "http://127.0.0.1:59999/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: (m) => notices.push(m),
+        connectBudgetMs: 30_000,
+        target: envTarget,
+        resolveFallback: () => [
+          {
+            url: "http://127.0.0.1:21960",
+            source: "discovery",
+            startedAt: null,
+          },
+        ],
+        onFailover: (t: { url: string }) => adopted.push(t),
+      },
+    );
+    expect((res as unknown as { id: string }).id).toBe("live");
+    expect(seen).toContain("http://127.0.0.1:21960/api/health"); // health-gated, not a blind switch
+    expect(seen).toContain("http://127.0.0.1:21960/x"); // request rebased onto the live origin
+    expect(adopted.map((t) => t.url)).toEqual(["http://127.0.0.1:21960"]); // adopted session-wide
+    expect(
+      notices.some(
+        (m) => /switching/.test(m) && /PAPERCUSP_OPERATOR_URL/.test(m),
+      ),
+    ).toBe(true);
   });
 
-  it('an UNHEALTHY fallback candidate is skipped — no switch, original budget-exhausted failure', async () => {
+  it("an UNHEALTHY fallback candidate is skipped — no switch, original budget-exhausted failure", async () => {
     const clock = fakeClock();
     const adopted: string[] = [];
     const fetchImpl = async (u: string) => {
-      if (u.endsWith('/api/health')) return { ok: false } as unknown as Response; // candidate up but unhealthy
+      if (u.endsWith("/api/health"))
+        return { ok: false } as unknown as Response; // candidate up but unhealthy
       connFail();
       return undefined as unknown as Response;
     };
     await expect(
-      fetchWithResilience('http://127.0.0.1:59999/x', {}, {
-        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {},
-        connectBudgetMs: 5_000, target: envTarget,
-        resolveFallback: () => [{ url: 'http://127.0.0.1:21960', source: 'discovery', startedAt: null }],
-        onFailover: (t: { url: string }) => adopted.push(t.url),
-      }),
-    ).rejects.toThrow(/PAPERCUSP_OPERATOR_URL \(.*\) refused connections .*`unset PAPERCUSP_OPERATOR_URL`/s);
+      fetchWithResilience(
+        "http://127.0.0.1:59999/x",
+        {},
+        {
+          fetchImpl,
+          now: clock.now,
+          sleep: clock.sleep,
+          onNotice: () => {},
+          connectBudgetMs: 5_000,
+          target: envTarget,
+          resolveFallback: () => [
+            {
+              url: "http://127.0.0.1:21960",
+              source: "discovery",
+              startedAt: null,
+            },
+          ],
+          onFailover: (t: { url: string }) => adopted.push(t.url),
+        },
+      ),
+    ).rejects.toThrow(
+      /PAPERCUSP_OPERATOR_URL \(.*\) refused connections .*`unset PAPERCUSP_OPERATOR_URL`/s,
+    );
     expect(adopted).toEqual([]); // never adopted an unhealthy target
   });
 
-  it('failover is attempted exactly ONCE per call, and never for a caller-custom URL outside the target base', async () => {
+  it("failover is attempted exactly ONCE per call, and never for a caller-custom URL outside the target base", async () => {
     const clock = fakeClock();
     let resolves = 0;
-    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
-    await fetchWithResilience('http://127.0.0.1:59999/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {},
-      connectBudgetMs: 10_000, target: envTarget,
-      resolveFallback: () => { resolves += 1; return []; },
-    }).catch(() => {});
+    const fetchImpl = async () => {
+      connFail();
+      return undefined as unknown as Response;
+    };
+    await fetchWithResilience(
+      "http://127.0.0.1:59999/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        connectBudgetMs: 10_000,
+        target: envTarget,
+        resolveFallback: () => {
+          resolves += 1;
+          return [];
+        },
+      },
+    ).catch(() => {});
     expect(resolves).toBe(1);
 
     resolves = 0;
-    await fetchWithResilience('http://other-host:1234/x', {}, {
-      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {},
-      connectBudgetMs: 5_000, target: envTarget,
-      resolveFallback: () => { resolves += 1; return []; },
-    }).catch(() => {});
+    await fetchWithResilience(
+      "http://other-host:1234/x",
+      {},
+      {
+        fetchImpl,
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        connectBudgetMs: 5_000,
+        target: envTarget,
+        resolveFallback: () => {
+          resolves += 1;
+          return [];
+        },
+      },
+    ).catch(() => {});
     expect(resolves).toBe(0); // custom URL not under target.url — never rebased
   });
 });
 
-describe('resolveFallbackOperatorTargets (stale-shell heal candidate ladder)', () => {
-  it('lists proxy then discovery (from operator.json) then dev default, excluding the dead URL', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-fallback-'));
+describe("resolveFallbackOperatorTargets (stale-shell heal candidate ladder)", () => {
+  it("lists proxy then discovery (from operator.json) then dev default, excluding the dead URL", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-fallback-"));
     try {
-      mkdirSync(join(home, '.papercusp'), { recursive: true });
+      mkdirSync(join(home, ".papercusp"), { recursive: true });
       writeFileSync(
-        join(home, '.papercusp', 'operator.json'),
-        JSON.stringify({ httpUrl: 'http://127.0.0.1:21960', startedAt: Date.now() }),
+        join(home, ".papercusp", "operator.json"),
+        JSON.stringify({
+          httpUrl: "http://127.0.0.1:21960",
+          startedAt: Date.now(),
+        }),
       );
-      const out = resolveFallbackOperatorTargets({ env: {}, home, excludeUrls: ['http://127.0.0.1:59999'] });
-      expect(out.map((c) => c.source)).toEqual(['proxy', 'discovery', 'dev-default']);
-      expect(out[1]!.url).toBe('http://127.0.0.1:21960');
+      const out = resolveFallbackOperatorTargets({
+        env: {},
+        home,
+        excludeUrls: ["http://127.0.0.1:59999"],
+      });
+      expect(out.map((c) => c.source)).toEqual([
+        "proxy",
+        "discovery",
+        "dev-default",
+      ]);
+      expect(out[1]!.url).toBe("http://127.0.0.1:21960");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('respects PAPERCUSP_MCP_PROXY=0 (no proxy candidate) and a missing operator.json', () => {
-    const home = mkdtempSync(join(tmpdir(), 'psu-fallback-'));
+  it("respects PAPERCUSP_MCP_PROXY=0 (no proxy candidate) and a missing operator.json", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-fallback-"));
     try {
-      const out = resolveFallbackOperatorTargets({ env: { PAPERCUSP_MCP_PROXY: '0' }, home });
-      expect(out.map((c) => c.source)).toEqual(['dev-default']);
+      const out = resolveFallbackOperatorTargets({
+        env: { PAPERCUSP_MCP_PROXY: "0" },
+        home,
+      });
+      expect(out.map((c) => c.source)).toEqual(["dev-default"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 });
 
-describe('operator endpoint resolution (desktop vs dev box)', () => {
+describe("operator endpoint resolution (desktop vs dev box)", () => {
   let home: string;
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'psu-op-'));
-    mkdirSync(join(home, '.papercusp'), { recursive: true });
+    home = mkdtempSync(join(tmpdir(), "psu-op-"));
+    mkdirSync(join(home, ".papercusp"), { recursive: true });
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   const writeOperatorJson = (obj: unknown) =>
-    writeFileSync(join(home, '.papercusp', 'operator.json'), JSON.stringify(obj));
+    writeFileSync(
+      join(home, ".papercusp", "operator.json"),
+      JSON.stringify(obj),
+    );
 
-  describe('resolveOperatorUrl', () => {
+  describe("resolveOperatorUrl", () => {
     const noProxy = () => false;
 
-    it('falls back to the dev-box :3070 when no operator.json and no proxy (the dev box)', () => {
-      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://localhost:3070');
+    it("falls back to the dev-box :3070 when no operator.json and no proxy (the dev box)", () => {
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe(
+        "http://localhost:3070",
+      );
     });
 
-    it('reads the desktop operator httpUrl from operator.json (the shipping bug fix)', () => {
-      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', port: '24689', token: 'abc' });
-      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://127.0.0.1:24689');
+    it("reads the desktop operator httpUrl from operator.json (the shipping bug fix)", () => {
+      writeOperatorJson({
+        httpUrl: "http://127.0.0.1:24689",
+        port: "24689",
+        token: "abc",
+      });
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe(
+        "http://127.0.0.1:24689",
+      );
     });
 
-    it('synthesizes a URL from port when httpUrl is absent', () => {
-      writeOperatorJson({ port: '31337', token: 'abc' });
-      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://127.0.0.1:31337');
+    it("synthesizes a URL from port when httpUrl is absent", () => {
+      writeOperatorJson({ port: "31337", token: "abc" });
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe(
+        "http://127.0.0.1:31337",
+      );
     });
 
-    it('PAPERCUSP_OPERATOR_URL env overrides operator.json (explicit wins)', () => {
-      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
+    it("PAPERCUSP_OPERATOR_URL env overrides operator.json (explicit wins)", () => {
+      writeOperatorJson({ httpUrl: "http://127.0.0.1:24689" });
       expect(
-        resolveOperatorUrl({ env: { PAPERCUSP_OPERATOR_URL: 'http://override:9999' }, home, probe: noProxy }),
-      ).toBe('http://override:9999');
+        resolveOperatorUrl({
+          env: { PAPERCUSP_OPERATOR_URL: "http://override:9999" },
+          home,
+          probe: noProxy,
+        }),
+      ).toBe("http://override:9999");
     });
 
-    it('falls back to :3070 on a malformed operator.json', () => {
-      writeFileSync(join(home, '.papercusp', 'operator.json'), '{ not json');
-      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://localhost:3070');
+    it("falls back to :3070 on a malformed operator.json", () => {
+      writeFileSync(join(home, ".papercusp", "operator.json"), "{ not json");
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe(
+        "http://localhost:3070",
+      );
     });
 
     // ── WI-3271: resolveOperatorTarget carries the SOURCE + record age so the
     // connection-failure path can tell a dead desktop from a dev box ──
 
     it('resolveOperatorTarget: operator.json → source "discovery" with its startedAt', () => {
-      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', port: 24689, startedAt: 1783377109561 });
+      writeOperatorJson({
+        httpUrl: "http://127.0.0.1:24689",
+        port: 24689,
+        startedAt: 1783377109561,
+      });
       expect(resolveOperatorTarget({ env: {}, home, probe: noProxy })).toEqual({
-        url: 'http://127.0.0.1:24689',
-        source: 'discovery',
+        url: "http://127.0.0.1:24689",
+        source: "discovery",
         startedAt: 1783377109561,
       });
     });
 
-    it('resolveOperatorTarget: missing/invalid startedAt stays null (age unknown → no fast-fail)', () => {
-      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
-      expect(resolveOperatorTarget({ env: {}, home, probe: noProxy }).startedAt).toBeNull();
+    it("resolveOperatorTarget: missing/invalid startedAt stays null (age unknown → no fast-fail)", () => {
+      writeOperatorJson({ httpUrl: "http://127.0.0.1:24689" });
+      expect(
+        resolveOperatorTarget({ env: {}, home, probe: noProxy }).startedAt,
+      ).toBeNull();
     });
 
     it('resolveOperatorTarget: env override → source "env"; bare dev box → "dev-default"', () => {
       expect(
-        resolveOperatorTarget({ env: { PAPERCUSP_OPERATOR_URL: 'http://override:9999' }, home, probe: noProxy }),
-      ).toEqual({ url: 'http://override:9999', source: 'env', startedAt: null });
+        resolveOperatorTarget({
+          env: { PAPERCUSP_OPERATOR_URL: "http://override:9999" },
+          home,
+          probe: noProxy,
+        }),
+      ).toEqual({
+        url: "http://override:9999",
+        source: "env",
+        startedAt: null,
+      });
       expect(resolveOperatorTarget({ env: {}, home, probe: noProxy })).toEqual({
-        url: 'http://localhost:3070',
-        source: 'dev-default',
+        url: "http://localhost:3070",
+        source: "dev-default",
         startedAt: null,
       });
     });
 
     // ── WI-1457: the resilient MCP proxy preference (re-cutover hardening) ──
 
-    it('prefers the ACTIVE resilient proxy over direct :3070 on the dev box', () => {
+    it("prefers the ACTIVE resilient proxy over direct :3070 on the dev box", () => {
       const probed: number[] = [];
       const url = resolveOperatorUrl({
         env: {},
@@ -6054,66 +9045,70 @@ describe('operator endpoint resolution (desktop vs dev box)', () => {
           return true;
         },
       });
-      expect(url).toBe('http://127.0.0.1:9071');
+      expect(url).toBe("http://127.0.0.1:9071");
       expect(probed).toEqual([9071]);
     });
 
-    it('PAPERCUSP_MCP_PROXY=0 opts out without even probing', () => {
+    it("PAPERCUSP_MCP_PROXY=0 opts out without even probing", () => {
       let probes = 0;
       const url = resolveOperatorUrl({
-        env: { PAPERCUSP_MCP_PROXY: '0' },
+        env: { PAPERCUSP_MCP_PROXY: "0" },
         home,
         probe: () => {
           probes++;
           return true;
         },
       });
-      expect(url).toBe('http://localhost:3070');
+      expect(url).toBe("http://localhost:3070");
       expect(probes).toBe(0);
     });
 
-    it('honors PAPERCUSP_MCP_PROXY_PORT for both the probe and the url', () => {
+    it("honors PAPERCUSP_MCP_PROXY_PORT for both the probe and the url", () => {
       const probed: number[] = [];
       const url = resolveOperatorUrl({
-        env: { PAPERCUSP_MCP_PROXY_PORT: '9171' },
+        env: { PAPERCUSP_MCP_PROXY_PORT: "9171" },
         home,
         probe: (port: number) => {
           probed.push(port);
           return true;
         },
       });
-      expect(url).toBe('http://127.0.0.1:9171');
+      expect(url).toBe("http://127.0.0.1:9171");
       expect(probed).toEqual([9171]);
     });
 
-    it('WI-3247: active proxy wins over desktop operator.json so child env stays stable across dynamic port restarts', () => {
-      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
-      expect(resolveOperatorUrl({ env: {}, home, probe: () => true })).toBe('http://127.0.0.1:9071');
-      expect(resolveOperatorTarget({ env: {}, home, probe: () => true })).toEqual({
-        url: 'http://127.0.0.1:9071',
-        source: 'proxy',
+    it("WI-3247: active proxy wins over desktop operator.json so child env stays stable across dynamic port restarts", () => {
+      writeOperatorJson({ httpUrl: "http://127.0.0.1:24689" });
+      expect(resolveOperatorUrl({ env: {}, home, probe: () => true })).toBe(
+        "http://127.0.0.1:9071",
+      );
+      expect(
+        resolveOperatorTarget({ env: {}, home, probe: () => true }),
+      ).toEqual({
+        url: "http://127.0.0.1:9071",
+        source: "proxy",
         startedAt: null,
       });
     });
 
-    it('warns (active-but-unrouted) when an explicit :3070 pin bypasses a live proxy — override still wins', () => {
+    it("warns (active-but-unrouted) when an explicit :3070 pin bypasses a live proxy — override still wins", () => {
       const warnings: string[] = [];
       const url = resolveOperatorUrl({
-        env: { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070' },
+        env: { PAPERCUSP_OPERATOR_URL: "http://localhost:3070" },
         home,
         probe: () => true,
         warn: (m: string) => warnings.push(m),
       });
-      expect(url).toBe('http://localhost:3070'); // explicit override is honored
+      expect(url).toBe("http://localhost:3070"); // explicit override is honored
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(/WI-1457/);
       expect(warnings[0]).toMatch(/:9071/);
     });
 
-    it('does NOT warn on a :3070 pin when the proxy is down (nothing to route through)', () => {
+    it("does NOT warn on a :3070 pin when the proxy is down (nothing to route through)", () => {
       const warnings: string[] = [];
       resolveOperatorUrl({
-        env: { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070' },
+        env: { PAPERCUSP_OPERATOR_URL: "http://localhost:3070" },
         home,
         probe: noProxy,
         warn: (m: string) => warnings.push(m),
@@ -6122,40 +9117,46 @@ describe('operator endpoint resolution (desktop vs dev box)', () => {
     });
   });
 
-  describe('readToken', () => {
-    it('prefers the superuser-token file', () => {
-      writeFileSync(join(home, '.papercusp', 'superuser-token'), 'tok-from-file\n');
-      writeOperatorJson({ token: 'tok-from-operator-json' });
-      expect(readToken({ home })).toBe('tok-from-file');
+  describe("readToken", () => {
+    it("prefers the superuser-token file", () => {
+      writeFileSync(
+        join(home, ".papercusp", "superuser-token"),
+        "tok-from-file\n",
+      );
+      writeOperatorJson({ token: "tok-from-operator-json" });
+      expect(readToken({ home })).toBe("tok-from-file");
     });
 
-    it('falls back to operator.json.token when superuser-token is absent (fresh desktop)', () => {
-      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', token: 'tok-from-operator-json' });
-      expect(readToken({ home })).toBe('tok-from-operator-json');
+    it("falls back to operator.json.token when superuser-token is absent (fresh desktop)", () => {
+      writeOperatorJson({
+        httpUrl: "http://127.0.0.1:24689",
+        token: "tok-from-operator-json",
+      });
+      expect(readToken({ home })).toBe("tok-from-operator-json");
     });
 
-    it('returns empty string when neither source exists (dev-box open operator)', () => {
-      expect(readToken({ home })).toBe('');
+    it("returns empty string when neither source exists (dev-box open operator)", () => {
+      expect(readToken({ home })).toBe("");
     });
   });
 });
 
-describe('default-account Claude OAuth token inheritance (psu-login-inherit / macOS keychain trap)', () => {
+describe("default-account Claude OAuth token inheritance (psu-login-inherit / macOS keychain trap)", () => {
   let home: string;
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'psu-claude-oauth-'));
-    mkdirSync(join(home, '.papercusp'), { recursive: true });
+    home = mkdtempSync(join(tmpdir(), "psu-claude-oauth-"));
+    mkdirSync(join(home, ".papercusp"), { recursive: true });
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  const TOKEN = 'sk-ant-oat01-EXAMPLE-token-value';
+  const TOKEN = "sk-ant-oat01-EXAMPLE-token-value";
 
-  describe('store / read round-trip', () => {
-    it('reads null when no token is stored', () => {
+  describe("store / read round-trip", () => {
+    it("reads null when no token is stored", () => {
       expect(readStoredClaudeOAuthToken({ home })).toBeNull();
     });
 
-    it('persists the token 0600 and reads it back trimmed', () => {
+    it("persists the token 0600 and reads it back trimmed", () => {
       const p = storeClaudeOAuthToken(`  ${TOKEN}\n`, { home });
       expect(p).toBe(claudeOAuthTokenPath({ home }));
       expect(readStoredClaudeOAuthToken({ home })).toBe(TOKEN);
@@ -6163,155 +9164,210 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
       expect(statSync(p).mode & 0o777).toBe(0o600);
     });
 
-    it('refuses to store an empty token', () => {
-      expect(() => storeClaudeOAuthToken('   ', { home })).toThrow(/empty/i);
+    it("refuses to store an empty token", () => {
+      expect(() => storeClaudeOAuthToken("   ", { home })).toThrow(/empty/i);
     });
   });
 
-  describe('applyDefaultClaudeOAuthToken — when it injects', () => {
-    it('injects CLAUDE_CODE_OAUTH_TOKEN for a default-account claude launch', () => {
+  describe("applyDefaultClaudeOAuthToken — when it injects", () => {
+    it("injects CLAUDE_CODE_OAUTH_TOKEN for a default-account claude launch", () => {
       storeClaudeOAuthToken(TOKEN, { home });
       const env: Record<string, string> = {};
-      applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      applyDefaultClaudeOAuthToken("claude-su", env, { home });
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
     });
 
-    it('injects on a RAW claude resume (bin `claude`) and an absolute path', () => {
+    it("injects on a RAW claude resume (bin `claude`) and an absolute path", () => {
       storeClaudeOAuthToken(TOKEN, { home });
-      for (const bin of ['claude', '/Users/x/.papercusp/bin/claude', '/usr/lib/p/bin/claude-su']) {
+      for (const bin of [
+        "claude",
+        "/Users/x/.papercusp/bin/claude",
+        "/usr/lib/p/bin/claude-su",
+      ]) {
         const env: Record<string, string> = {};
         applyDefaultClaudeOAuthToken(bin, env, { home });
         expect(env.CLAUDE_CODE_OAUTH_TOKEN, bin).toBe(TOKEN);
       }
     });
 
-    it('an explicit default route discards every inherited Claude credential, then injects the system login (WI-5052 acceptance)', () => {
+    it("an explicit default route discards every inherited Claude credential, then injects the system login (WI-5052 acceptance)", () => {
       storeClaudeOAuthToken(TOKEN, { home });
       const env: Record<string, string> = {
         ...defaultAccountEnv(),
-        ...Object.fromEntries(CLAUDE_DEFAULT_AUTH_ENV_KEYS.map((key) => [key, `old-${key}`])),
-        PAPERCUSP_ACCOUNT_ID: 'old-pin',
-        CLAUDE_CODE_OAUTH_TOKEN: 'old-oauth',
-        PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788',
-        PAPERCUSP_CODEX_GATEWAY: '1',
+        ...Object.fromEntries(
+          CLAUDE_DEFAULT_AUTH_ENV_KEYS.map((key) => [key, `old-${key}`]),
+        ),
+        PAPERCUSP_ACCOUNT_ID: "old-pin",
+        CLAUDE_CODE_OAUTH_TOKEN: "old-oauth",
+        PAPERCUSP_ANTHROPIC_URL: "http://127.0.0.1:8788",
+        PAPERCUSP_CODEX_GATEWAY: "1",
       };
-      enforceDefaultClaudeAccount('claude', env);
-      expect(env).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
-      applyDefaultClaudeOAuthToken('claude', env, { home });
+      enforceDefaultClaudeAccount("claude", env);
+      expect(env).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: "default" });
+      applyDefaultClaudeOAuthToken("claude", env, { home });
       expect(env).toEqual({
-        [ACCOUNT_ROUTING_MODE_ENV]: 'default',
+        [ACCOUNT_ROUTING_MODE_ENV]: "default",
         CLAUDE_CODE_OAUTH_TOKEN: TOKEN,
       });
     });
 
-    it('without an explicit default route, direct user credentials remain untouched', () => {
-      const env: Record<string, string> = { ANTHROPIC_API_KEY: 'direct-user-key' };
-      enforceDefaultClaudeAccount('claude', env);
-      expect(env).toEqual({ ANTHROPIC_API_KEY: 'direct-user-key' });
+    it("without an explicit default route, direct user credentials remain untouched", () => {
+      const env: Record<string, string> = {
+        ANTHROPIC_API_KEY: "direct-user-key",
+      };
+      enforceDefaultClaudeAccount("claude", env);
+      expect(env).toEqual({ ANTHROPIC_API_KEY: "direct-user-key" });
     });
 
-    it('adds a highest-precedence settings override for every explicit Claude route', () => {
-      const args = ['--resume', 'session-id'];
-      const applied = applyDefaultClaudeAuthSettingsArgs('claude', args, defaultAccountEnv());
-      expect(applied.slice(0, 2)).toEqual(['--settings', JSON.stringify(defaultClaudeAuthSettings())]);
+    it("adds a highest-precedence settings override for every explicit Claude route", () => {
+      const args = ["--resume", "session-id"];
+      const applied = applyDefaultClaudeAuthSettingsArgs(
+        "claude",
+        args,
+        defaultAccountEnv(),
+      );
+      expect(applied.slice(0, 2)).toEqual([
+        "--settings",
+        JSON.stringify(defaultClaudeAuthSettings()),
+      ]);
       expect(applied.slice(2)).toEqual(args);
       expect(JSON.parse(applied[1]!)).toEqual(defaultClaudeAuthSettings());
-      expect(defaultClaudeAuthSettings().apiKeyHelper).toBe('');
-      expect(Object.keys(defaultClaudeAuthSettings().env)).toEqual([...CLAUDE_DEFAULT_AUTH_ENV_KEYS]);
-      expect(Object.values(defaultClaudeAuthSettings().env).every((value) => value === '')).toBe(true);
+      expect(defaultClaudeAuthSettings().apiKeyHelper).toBe("");
+      expect(Object.keys(defaultClaudeAuthSettings().env)).toEqual([
+        ...CLAUDE_DEFAULT_AUTH_ENV_KEYS,
+      ]);
+      expect(
+        Object.values(defaultClaudeAuthSettings().env).every(
+          (value) => value === "",
+        ),
+      ).toBe(true);
       expect(CLAUDE_DEFAULT_AUTH_ENV_KEYS).toEqual(
         expect.arrayContaining([
-          'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
-          'CLAUDE_CODE_API_BASE_URL',
-          'ANTHROPIC_UNIX_SOCKET',
-          'ANTHROPIC_BEDROCK_BASE_URL',
-          'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
-          'ANTHROPIC_VERTEX_BASE_URL',
+          "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+          "CLAUDE_CODE_API_BASE_URL",
+          "ANTHROPIC_UNIX_SOCKET",
+          "ANTHROPIC_BEDROCK_BASE_URL",
+          "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+          "ANTHROPIC_VERTEX_BASE_URL",
         ]),
       );
       // Empty OAuth in settings suppresses file/Keychain fallback, so it must
       // never be part of the secret-free override.
-      expect(defaultClaudeAuthSettings().env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(
+        defaultClaudeAuthSettings().env.CLAUDE_CODE_OAUTH_TOKEN,
+      ).toBeUndefined();
 
-      expect(applyDefaultClaudeAuthSettingsArgs('claude', args, {})).toBe(args);
-      expect(applyDefaultClaudeAuthSettingsArgs('omp', args, defaultAccountEnv())).toBe(args);
+      expect(applyDefaultClaudeAuthSettingsArgs("claude", args, {})).toBe(args);
+      expect(
+        applyDefaultClaudeAuthSettingsArgs("omp", args, defaultAccountEnv()),
+      ).toBe(args);
 
-      const auto = gatewayAutoEnv('claude', 'su-auto');
-      const autoApplied = applyDefaultClaudeAuthSettingsArgs('claude', args, auto);
+      const auto = gatewayAutoEnv("claude", "su-auto");
+      const autoApplied = applyDefaultClaudeAuthSettingsArgs(
+        "claude",
+        args,
+        auto,
+      );
       const autoSettings = JSON.parse(autoApplied[1]!);
       expect(autoSettings.env.ANTHROPIC_BASE_URL).toBe(auto.ANTHROPIC_BASE_URL);
-      expect(autoSettings.env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_CLIENT_AUTH_TOKEN);
-      expect(autoSettings.env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${OWNER_HEADER}: su-auto`);
-      expect(autoSettings.env.CLAUDE_CODE_USE_BEDROCK).toBe('');
+      expect(autoSettings.env.ANTHROPIC_AUTH_TOKEN).toBe(
+        GATEWAY_CLIENT_AUTH_TOKEN,
+      );
+      expect(autoSettings.env.ANTHROPIC_CUSTOM_HEADERS).toBe(
+        `${OWNER_HEADER}: su-auto`,
+      );
+      expect(autoSettings.env.CLAUDE_CODE_USE_BEDROCK).toBe("");
     });
   });
 
-  describe('applyDefaultClaudeOAuthToken — when it stays a no-op (env byte-identical)', () => {
-    it('does nothing when no token is stored (keychain/file login as before)', () => {
+  describe("applyDefaultClaudeOAuthToken — when it stays a no-op (env byte-identical)", () => {
+    it("does nothing when no token is stored (keychain/file login as before)", () => {
       const env: Record<string, string> = {};
-      applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      applyDefaultClaudeOAuthToken("claude-su", env, { home });
       expect(env).toEqual({});
     });
 
-    it('skips non-claude backends (codex/omp authenticate by their own file creds)', () => {
+    it("skips non-claude backends (codex/omp authenticate by their own file creds)", () => {
       storeClaudeOAuthToken(TOKEN, { home });
-      for (const bin of ['codex-su', 'codex', 'omp-su', 'omp', '/path/to/codex']) {
+      for (const bin of [
+        "codex-su",
+        "codex",
+        "omp-su",
+        "omp",
+        "/path/to/codex",
+      ]) {
         const env: Record<string, string> = {};
         applyDefaultClaudeOAuthToken(bin, env, { home });
         expect(env.CLAUDE_CODE_OAUTH_TOKEN, bin).toBeUndefined();
       }
     });
 
-    it('skips when an inference-gateway account is pinned (ANTHROPIC_BASE_URL set)', () => {
+    it("skips when an inference-gateway account is pinned (ANTHROPIC_BASE_URL set)", () => {
       storeClaudeOAuthToken(TOKEN, { home });
-      const env: Record<string, string> = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788' };
-      applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      const env: Record<string, string> = {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:8788",
+      };
+      applyDefaultClaudeOAuthToken("claude-su", env, { home });
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     });
 
-    it('respects an explicit user token/key already in the env', () => {
+    it("respects an explicit user token/key already in the env", () => {
       storeClaudeOAuthToken(TOKEN, { home });
-      for (const key of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) {
-        const env: Record<string, string> = { [key]: 'user-supplied' };
-        applyDefaultClaudeOAuthToken('claude-su', env, { home });
+      for (const key of [
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+      ]) {
+        const env: Record<string, string> = { [key]: "user-supplied" };
+        applyDefaultClaudeOAuthToken("claude-su", env, { home });
         // never overwrite what the user explicitly set
-        expect(env[key]).toBe('user-supplied');
-        if (key !== 'CLAUDE_CODE_OAUTH_TOKEN') expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+        expect(env[key]).toBe("user-supplied");
+        if (key !== "CLAUDE_CODE_OAUTH_TOKEN")
+          expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       }
     });
 
-    it('prefers the live Linux/Windows system credential file over a possibly stale stored setup token', () => {
+    it("prefers the live Linux/Windows system credential file over a possibly stale stored setup token", () => {
       storeClaudeOAuthToken(TOKEN, { home });
-      mkdirSync(join(home, '.claude'), { recursive: true });
-      writeFileSync(join(home, '.claude', '.credentials.json'), '{"claudeAiOauth":{"accessToken":"live"}}');
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      writeFileSync(
+        join(home, ".claude", ".credentials.json"),
+        '{"claudeAiOauth":{"accessToken":"live"}}',
+      );
 
       const linuxEnv: Record<string, string> = {};
-      applyDefaultClaudeOAuthToken('claude', linuxEnv, { home, platform: 'linux' });
+      applyDefaultClaudeOAuthToken("claude", linuxEnv, {
+        home,
+        platform: "linux",
+      });
       expect(linuxEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
 
       // macOS's real login is Keychain-backed under a config-dir-specific
       // suffix, so it still needs the portable stored-token inheritance path.
       const macEnv: Record<string, string> = {};
-      applyDefaultClaudeOAuthToken('claude', macEnv, { home, platform: 'darwin' });
+      applyDefaultClaudeOAuthToken("claude", macEnv, {
+        home,
+        platform: "darwin",
+      });
       expect(macEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
     });
   });
 
-  describe('parseArgs — credential maintenance commands', () => {
-    it('parses --set-claude-token (bare, prompts for a paste)', () => {
-      const a = parseArgs(['--set-claude-token']);
+  describe("parseArgs — credential maintenance commands", () => {
+    it("parses --set-claude-token (bare, prompts for a paste)", () => {
+      const a = parseArgs(["--set-claude-token"]);
       expect(a.setClaudeToken).toBe(true);
       expect(a.setClaudeTokenValue).toBeNull();
     });
 
-    it('parses the inline --set-claude-token=<token> scripting form', () => {
+    it("parses the inline --set-claude-token=<token> scripting form", () => {
       const a = parseArgs([`--set-claude-token=${TOKEN}`]);
       expect(a.setClaudeToken).toBe(true);
       expect(a.setClaudeTokenValue).toBe(TOKEN);
     });
 
-    it('parses --clear-claude-token', () => {
-      expect(parseArgs(['--clear-claude-token']).clearClaudeToken).toBe(true);
+    it("parses --clear-claude-token", () => {
+      expect(parseArgs(["--clear-claude-token"]).clearClaudeToken).toBe(true);
     });
   });
 });
@@ -6321,16 +9377,20 @@ describe('default-account Claude OAuth token inheritance (psu-login-inherit / ma
 // store) and the server RE-DERIVES it authoritatively (agent-fleets-store.ts).
 // The two carry a "MIRRORS … keep in sync" comment but no guard, so a divergence
 // would silently mislabel the picker's new-fleet preview. Pin them identical.
-describe('effectiveAutoMode (WI-1356 fleet-auto-mode)', () => {
-  it('defaults AUTO ON for a --fleet launch (member has no human at the keyboard)', () => {
-    expect(effectiveAutoMode(parseArgs(['--fleet=x']))).toBe(true);
+describe("effectiveAutoMode (WI-1356 fleet-auto-mode)", () => {
+  it("defaults AUTO ON for a --fleet launch (member has no human at the keyboard)", () => {
+    expect(effectiveAutoMode(parseArgs(["--fleet=x"]))).toBe(true);
   });
-  it('is OFF for a plain (non-fleet) launch', () => {
-    expect(effectiveAutoMode(parseArgs(['--no-picker', '--agent=claude']))).toBe(false);
+  it("is OFF for a plain (non-fleet) launch", () => {
+    expect(
+      effectiveAutoMode(parseArgs(["--no-picker", "--agent=claude"])),
+    ).toBe(false);
   });
-  it('--auto forces it on even without a fleet; --no-auto forces it off even with a fleet', () => {
-    expect(effectiveAutoMode(parseArgs(['--auto']))).toBe(true);
-    expect(effectiveAutoMode(parseArgs(['--fleet=x', '--no-auto']))).toBe(false);
+  it("--auto forces it on even without a fleet; --no-auto forces it off even with a fleet", () => {
+    expect(effectiveAutoMode(parseArgs(["--auto"]))).toBe(true);
+    expect(effectiveAutoMode(parseArgs(["--fleet=x", "--no-auto"]))).toBe(
+      false,
+    );
   });
 });
 
@@ -6341,106 +9401,209 @@ describe('effectiveAutoMode (WI-1356 fleet-auto-mode)', () => {
 // guard for the OTHER failure mode: a response that comes back `status: 'ok'`
 // but with `fleetSlug` still null — the exact "recolours the terminal but
 // never persists membership" bug the fix exists to prevent.
-describe('assertFleetJoined (WI-1408 fleet-join-startup-assertion)', () => {
-  it('no fleet requested ⇒ never throws, whatever the response carries', () => {
+describe("assertFleetJoined (WI-1408 fleet-join-startup-assertion)", () => {
+  it("no fleet requested ⇒ never throws, whatever the response carries", () => {
     expect(() => assertFleetJoined(null, {})).not.toThrow();
-    expect(() => assertFleetJoined(undefined, { fleetSlug: null })).not.toThrow();
+    expect(() =>
+      assertFleetJoined(undefined, { fleetSlug: null }),
+    ).not.toThrow();
   });
 
-  it('fleet requested + response carries a non-null fleetSlug ⇒ passes silently', () => {
-    expect(() => assertFleetJoined('shared-hive-testing', { fleetSlug: 'shared-hive-testing', fleetRole: 'member' })).not.toThrow();
+  it("fleet requested + response carries a non-null fleetSlug ⇒ passes silently", () => {
+    expect(() =>
+      assertFleetJoined("shared-hive-testing", {
+        fleetSlug: "shared-hive-testing",
+        fleetRole: "member",
+      }),
+    ).not.toThrow();
   });
 
-  it('fleet requested (join) but response fleetSlug is null ⇒ throws — never a silent unfleeted launch', () => {
-    expect(() => assertFleetJoined('shared-hive-testing', { fleetSlug: null })).toThrow(/shared-hive-testing/);
+  it("fleet requested (join) but response fleetSlug is null ⇒ throws — never a silent unfleeted launch", () => {
+    expect(() =>
+      assertFleetJoined("shared-hive-testing", { fleetSlug: null }),
+    ).toThrow(/shared-hive-testing/);
   });
 
-  it('fleet requested via a fresh --fleet-name create but response fleetSlug is null ⇒ throws', () => {
-    expect(() => assertFleetJoined('My New Fleet', { fleetSlug: null })).toThrow(/My New Fleet/);
+  it("fleet requested via a fresh --fleet-name create but response fleetSlug is null ⇒ throws", () => {
+    expect(() =>
+      assertFleetJoined("My New Fleet", { fleetSlug: null }),
+    ).toThrow(/My New Fleet/);
   });
 
   // Staging-launcher / release-server skew: a pre-WI-1408 operator registers the
   // membership (env + pending-fleet row) but does not echo `fleetSlug` at all.
   // Killing the member then is wrong (the 2026-07-01 10-member wipeout) — the
   // hard-fail is reserved for a server that SPEAKS the field and says null.
-  it('fleet requested but the response predates the fleetSlug field entirely ⇒ warns, does not throw', () => {
-    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("fleet requested but the response predates the fleetSlug field entirely ⇒ warns, does not throw", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      expect(() => assertFleetJoined('shared-hive-testing', {})).not.toThrow();
-      expect(() => assertFleetJoined('shared-hive-testing', { status: 'ok', fleetNotice: 'joined fleet shared-hive-testing as member.' })).not.toThrow();
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('predates the fleetSlug field'));
+      expect(() => assertFleetJoined("shared-hive-testing", {})).not.toThrow();
+      expect(() =>
+        assertFleetJoined("shared-hive-testing", {
+          status: "ok",
+          fleetNotice: "joined fleet shared-hive-testing as member.",
+        }),
+      ).not.toThrow();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("predates the fleetSlug field"),
+      );
     } finally {
       warn.mockRestore();
     }
   });
 });
 
-describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
-  it('reconstructs the canonical psu invocation from resolved selections', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
-    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args)).toEqual([
-      'psu', '--no-picker', '--agent=claude', '--workspace=ws1', '--harness=h1', '--plan=p1',
-    ]);
-  });
-  it('emits --no-plan when no plan is bound', () => {
-    const args = parseArgs(['--no-picker', '--agent=omp', '--harness=h1', '--no-plan']);
-    const argv = psuLaunchArgvRecord({ agent: 'omp', workspace: null, harness: 'h1', plan: null }, args);
-    expect(argv).toContain('--no-plan');
-    expect(argv).not.toContain('--workspace=null');
-  });
-  it('records the explicit --headless launch discriminator', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--no-plan', '--headless', '--carry=cold']);
-    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: null, harness: 'h1', plan: null }, args);
-    expect(argv).toContain('--headless');
-    expect(argv).toContain('--carry=cold');
-    expect(args.carry).toBe('cold');
-  });
-  it('rejects an invalid fleet carry attestation instead of recording a lie', () => {
-    expect(() => parseArgs(['--no-picker', '--carry=lukewarm'])).toThrow(/warm\|cold/);
-  });
-  it('captures fleet, account, profile, context-size, model, add-dir and passthrough', () => {
+describe("psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)", () => {
+  it("reconstructs the canonical psu invocation from resolved selections", () => {
     const args = parseArgs([
-      '--no-picker', '--agent=claude', '--harness=h1', '--plan=p1',
-      '--fleet=shared-hive-testing', '--account=acct1', '--profile=power',
-      '--context-size=full', '--model=opus', '--add-dir=/x', '--', '--verbose',
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--plan=p1",
     ]);
-    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
+    expect(
+      psuLaunchArgvRecord(
+        { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+        args,
+      ),
+    ).toEqual([
+      "psu",
+      "--no-picker",
+      "--agent=claude",
+      "--workspace=ws1",
+      "--harness=h1",
+      "--plan=p1",
+    ]);
+  });
+  it("emits --no-plan when no plan is bound", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=omp",
+      "--harness=h1",
+      "--no-plan",
+    ]);
+    const argv = psuLaunchArgvRecord(
+      { agent: "omp", workspace: null, harness: "h1", plan: null },
+      args,
+    );
+    expect(argv).toContain("--no-plan");
+    expect(argv).not.toContain("--workspace=null");
+  });
+  it("records the explicit --headless launch discriminator", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--no-plan",
+      "--headless",
+      "--carry=cold",
+    ]);
+    const argv = psuLaunchArgvRecord(
+      { agent: "claude", workspace: null, harness: "h1", plan: null },
+      args,
+    );
+    expect(argv).toContain("--headless");
+    expect(argv).toContain("--carry=cold");
+    expect(args.carry).toBe("cold");
+  });
+  it("rejects an invalid fleet carry attestation instead of recording a lie", () => {
+    expect(() => parseArgs(["--no-picker", "--carry=lukewarm"])).toThrow(
+      /warm\|cold/,
+    );
+  });
+  it("captures fleet, account, profile, context-size, model, add-dir and passthrough", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--plan=p1",
+      "--fleet=shared-hive-testing",
+      "--account=acct1",
+      "--profile=power",
+      "--context-size=full",
+      "--model=opus",
+      "--add-dir=/x",
+      "--",
+      "--verbose",
+    ]);
+    const argv = psuLaunchArgvRecord(
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      args,
+    );
     // opus normalizes to opus[1m] at parse — the recorded relaunch argv must carry
     // the marker so a re-launch reproduces the 1M window (owner directive 2026-07-02).
-    expect(argv).toEqual(expect.arrayContaining([
-      '--fleet=shared-hive-testing', '--account=acct1', '--profile=power',
-      '--context-size=full', '--model=opus[1m]', '--add-dir=/x', '--auto', '--', '--verbose',
-    ]));
+    expect(argv).toEqual(
+      expect.arrayContaining([
+        "--fleet=shared-hive-testing",
+        "--account=acct1",
+        "--profile=power",
+        "--context-size=full",
+        "--model=opus[1m]",
+        "--add-dir=/x",
+        "--auto",
+        "--",
+        "--verbose",
+      ]),
+    );
   });
-  it('derives --fleet from a picker-entered fleet NAME', () => {
-    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
-    args.fleetName = 'My New Fleet';
-    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
-    expect(argv).toContain(`--fleet=${storeFleetSlugFromName('My New Fleet')}`);
+  it("derives --fleet from a picker-entered fleet NAME", () => {
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--plan=p1",
+    ]);
+    args.fleetName = "My New Fleet";
+    const argv = psuLaunchArgvRecord(
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+      args,
+    );
+    expect(argv).toContain(`--fleet=${storeFleetSlugFromName("My New Fleet")}`);
   });
-  it('captures --allow-subagents (owner mandate 2026-07-02); omitted when not opted in (deny is the default)', () => {
-    const withFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--allow-subagents']);
-    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withFlag)).toContain('--allow-subagents');
-    const withoutFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
-    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withoutFlag)).not.toContain('--allow-subagents');
+  it("captures --allow-subagents (owner mandate 2026-07-02); omitted when not opted in (deny is the default)", () => {
+    const withFlag = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--plan=p1",
+      "--allow-subagents",
+    ]);
+    expect(
+      psuLaunchArgvRecord(
+        { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+        withFlag,
+      ),
+    ).toContain("--allow-subagents");
+    const withoutFlag = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--harness=h1",
+      "--plan=p1",
+    ]);
+    expect(
+      psuLaunchArgvRecord(
+        { agent: "claude", workspace: "ws1", harness: "h1", plan: "p1" },
+        withoutFlag,
+      ),
+    ).not.toContain("--allow-subagents");
   });
 });
 
-describe('fleetSlugFromName client/server parity', () => {
+describe("fleetSlugFromName client/server parity", () => {
   const NAMES = [
-    'Ops Team',
-    'k-epochs',
-    '  Trailing/Leading  ',
-    'UPPER CASE NAME',
-    'weird!!!chars@@@here',
-    'émoji ✨ and àccents',
-    '---only-dashes---',
-    '!!!',
-    'a'.repeat(80),
-    'mixed_Under-scores and.dots',
-    'single',
+    "Ops Team",
+    "k-epochs",
+    "  Trailing/Leading  ",
+    "UPPER CASE NAME",
+    "weird!!!chars@@@here",
+    "émoji ✨ and àccents",
+    "---only-dashes---",
+    "!!!",
+    "a".repeat(80),
+    "mixed_Under-scores and.dots",
+    "single",
   ];
-  it.each(NAMES)('derives the same slug for %j on client + server', (name) => {
+  it.each(NAMES)("derives the same slug for %j on client + server", (name) => {
     expect(launcherFleetSlugFromName(name)).toBe(storeFleetSlugFromName(name));
   });
 });
@@ -6448,134 +9611,191 @@ describe('fleetSlugFromName client/server parity', () => {
 // fleet-recolor-and-color-hardening P-004: the psu picker shows a color swatch
 // per fleet (from /options' resolved scheme). hexToRgb + colorSwatch are the pure
 // rendering helpers.
-describe('picker color swatch (fleet-color-schemes)', () => {
-  it('hexToRgb parses #rrggbb (with or without #), case-insensitively', () => {
-    expect(hexToRgb('#166534')).toEqual([22, 101, 52]);
-    expect(hexToRgb('166534')).toEqual([22, 101, 52]);
-    expect(hexToRgb('#FFFFFF')).toEqual([255, 255, 255]);
-    expect(hexToRgb('#000000')).toEqual([0, 0, 0]);
+describe("picker color swatch (fleet-color-schemes)", () => {
+  it("hexToRgb parses #rrggbb (with or without #), case-insensitively", () => {
+    expect(hexToRgb("#166534")).toEqual([22, 101, 52]);
+    expect(hexToRgb("166534")).toEqual([22, 101, 52]);
+    expect(hexToRgb("#FFFFFF")).toEqual([255, 255, 255]);
+    expect(hexToRgb("#000000")).toEqual([0, 0, 0]);
   });
-  it('hexToRgb returns null for malformed input', () => {
-    expect(hexToRgb('')).toBeNull();
-    expect(hexToRgb('#fff')).toBeNull();
-    expect(hexToRgb('nope')).toBeNull();
+  it("hexToRgb returns null for malformed input", () => {
+    expect(hexToRgb("")).toBeNull();
+    expect(hexToRgb("#fff")).toBeNull();
+    expect(hexToRgb("nope")).toBeNull();
     expect(hexToRgb(null)).toBeNull();
     expect(hexToRgb(undefined)).toBeNull();
   });
-  it('colorSwatch builds a truecolor 48;2 background cell from a scheme bg', () => {
-    expect(colorSwatch({ bg: '#166534', fg: '#dcfce7', cursor: '#86efac' })).toBe('\x1b[48;2;22;101;52m  \x1b[0m ');
+  it("colorSwatch builds a truecolor 48;2 background cell from a scheme bg", () => {
+    expect(
+      colorSwatch({ bg: "#166534", fg: "#dcfce7", cursor: "#86efac" }),
+    ).toBe("\x1b[48;2;22;101;52m  \x1b[0m ");
   });
-  it('colorSwatch is empty (graceful) when there is no/invalid color', () => {
-    expect(colorSwatch(null)).toBe('');
-    expect(colorSwatch(undefined)).toBe('');
-    expect(colorSwatch({ bg: 'not-a-hex' })).toBe('');
-    expect(colorSwatch({})).toBe('');
+  it("colorSwatch is empty (graceful) when there is no/invalid color", () => {
+    expect(colorSwatch(null)).toBe("");
+    expect(colorSwatch(undefined)).toBe("");
+    expect(colorSwatch({ bg: "not-a-hex" })).toBe("");
+    expect(colorSwatch({})).toBe("");
   });
-  it('schemeNameInAccent renders the name in the cursor accent (truecolor fg), plain on bad color', () => {
+  it("schemeNameInAccent renders the name in the cursor accent (truecolor fg), plain on bad color", () => {
     // The scheme-picker row label: the name in the scheme's cursor accent.
-    expect(schemeNameInAccent({ name: 'forest', cursor: '#86efac' })).toBe('\x1b[38;2;134;239;172mforest\x1b[0m');
+    expect(schemeNameInAccent({ name: "forest", cursor: "#86efac" })).toBe(
+      "\x1b[38;2;134;239;172mforest\x1b[0m",
+    );
     // Unparseable/absent color → plain name (still selectable, just uncolored).
-    expect(schemeNameInAccent({ name: 'forest', cursor: 'nope' })).toBe('forest');
-    expect(schemeNameInAccent(null)).toBe('');
-    expect(schemeNameInAccent({ name: 'x' })).toBe('x');
+    expect(schemeNameInAccent({ name: "forest", cursor: "nope" })).toBe(
+      "forest",
+    );
+    expect(schemeNameInAccent(null)).toBe("");
+    expect(schemeNameInAccent({ name: "x" })).toBe("x");
   });
 });
 
-describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () => {
-  it('assertLaunchPersona: missing / absent / tiny prompt files fail LOUD; a real one returns its size', () => {
+describe("launch preflight guards (context-trimming-tiers P-016 / P-018)", () => {
+  it("assertLaunchPersona: missing / absent / tiny prompt files fail LOUD; a real one returns its size", () => {
     expect(() => assertLaunchPersona(null)).toThrow(/no persona prompt file/i);
-    expect(() => assertLaunchPersona('/nonexistent/persona.md')).toThrow(/missing\/unreadable/);
-    const dir = mkdtempSync(join(tmpdir(), 'psu-p016-'));
-    const tiny = join(dir, 'tiny.md');
-    writeFileSync(tiny, '# stub');
+    expect(() => assertLaunchPersona("/nonexistent/persona.md")).toThrow(
+      /missing\/unreadable/,
+    );
+    const dir = mkdtempSync(join(tmpdir(), "psu-p016-"));
+    const tiny = join(dir, "tiny.md");
+    writeFileSync(tiny, "# stub");
     expect(() => assertLaunchPersona(tiny)).toThrow(/did not render\/append/);
-    const real = join(dir, 'real.md');
-    writeFileSync(real, 'x'.repeat(5_000));
+    const real = join(dir, "real.md");
+    writeFileSync(real, "x".repeat(5_000));
     expect(assertLaunchPersona(real)).toBe(5_000);
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('preflightWindowGuard: warn ≥35%, refuse ≥60%, [1m] widens the window', () => {
+  it("preflightWindowGuard: warn ≥35%, refuse ≥60%, [1m] widens the window", () => {
     // trimmed baseline 55k + ~13.5k persona ≈ 68.5k of 200k ≈ 34% → ok
-    const ok = preflightWindowGuard({ personaBytes: 50_000, contextSize: 'trimmed', model: 'haiku' });
-    expect(ok.level).toBe('ok');
+    const ok = preflightWindowGuard({
+      personaBytes: 50_000,
+      contextSize: "trimmed",
+      model: "haiku",
+    });
+    expect(ok.level).toBe("ok");
     // full baseline 152k + ~28k persona ≈ 180k of 200k = 90% → refuse
-    const refuse = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'haiku' });
-    expect(refuse.level).toBe('refuse');
+    const refuse = preflightWindowGuard({
+      personaBytes: 105_000,
+      contextSize: "full",
+      model: "haiku",
+    });
+    expect(refuse.level).toBe("refuse");
     // same on a [1m] window → 18% → ok
-    const wide = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'haiku[1m]' });
-    expect(wide.level).toBe('ok');
+    const wide = preflightWindowGuard({
+      personaBytes: 105_000,
+      contextSize: "full",
+      model: "haiku[1m]",
+    });
+    expect(wide.level).toBe("ok");
     // trimmed + a big persona lands the warn band (55k + 27k ≈ 82k = 41%)
-    const warn = preflightWindowGuard({ personaBytes: 100_000, contextSize: 'trimmed', model: 'haiku' });
-    expect(warn.level).toBe('warn');
+    const warn = preflightWindowGuard({
+      personaBytes: 100_000,
+      contextSize: "trimmed",
+      model: "haiku",
+    });
+    expect(warn.level).toBe("warn");
   });
 
-  it('preflightWindowGuard: default-1M families (sonnet-5 incl. the bare alias, opus, fable) get the 1M window without [1m]', () => {
-    for (const model of ['claude-sonnet-5:high', 'sonnet:medium', 'sonnet', 'opus:high', 'claude-fable-5:xhigh']) {
-      const g = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model });
+  it("preflightWindowGuard: default-1M families (sonnet-5 incl. the bare alias, opus, fable) get the 1M window without [1m]", () => {
+    for (const model of [
+      "claude-sonnet-5:high",
+      "sonnet:medium",
+      "sonnet",
+      "opus:high",
+      "claude-fable-5:xhigh",
+    ]) {
+      const g = preflightWindowGuard({
+        personaBytes: 105_000,
+        contextSize: "full",
+        model,
+      });
       expect(g.window).toBe(1_000_000);
-      expect(g.level).toBe('ok');
+      expect(g.level).toBe("ok");
     }
     // versioned sonnet ≤4.x stays on the conservative 200k window
-    expect(preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'claude-sonnet-4-6:high' }).window).toBe(200_000);
+    expect(
+      preflightWindowGuard({
+        personaBytes: 105_000,
+        contextSize: "full",
+        model: "claude-sonnet-4-6:high",
+      }).window,
+    ).toBe(200_000);
   });
 
-  it('preflightWindowGuard consumes the bootstrap budget verbatim', () => {
+  it("preflightWindowGuard consumes the bootstrap budget verbatim", () => {
     const budget = {
       version: 1,
       window: 272_000,
-      windowSource: 'codex-model-cache',
+      windowSource: "codex-model-cache",
       baselineTokens: 68_000,
       pct: 0.25,
-      level: 'ok',
+      level: "ok",
     };
     const guard = preflightWindowGuard({
       personaBytes: 999_999,
-      contextSize: 'full',
-      model: 'ignored',
-      agent: 'codex',
+      contextSize: "full",
+      model: "ignored",
+      agent: "codex",
       budget,
     });
-    expect(guard).toMatchObject({ window: 272_000, estTokens: 68_000, pct: 0.25, level: 'ok' });
+    expect(guard).toMatchObject({
+      window: 272_000,
+      estTokens: 68_000,
+      pct: 0.25,
+      level: "ok",
+    });
     expect(guard.budget).toBe(budget);
   });
 
-  it('runLaunchPreflight: refuse throws with the --force pointer; force downgrades to a warning', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'psu-p018-'));
-    const persona = join(dir, 'persona.md');
-    writeFileSync(persona, 'x'.repeat(105_000));
+  it("runLaunchPreflight: refuse throws with the --force pointer; force downgrades to a warning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "psu-p018-"));
+    const persona = join(dir, "persona.md");
+    writeFileSync(persona, "x".repeat(105_000));
     expect(() =>
-      runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'haiku', force: false }),
+      runLaunchPreflight({
+        promptFile: persona,
+        contextSize: "full",
+        model: "haiku",
+        force: false,
+      }),
     ).toThrow(/--force/);
-    const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const g = runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'haiku', force: true });
-    expect(g.level).toBe('refuse');
+    const warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const g = runLaunchPreflight({
+      promptFile: persona,
+      contextSize: "full",
+      model: "haiku",
+      force: true,
+    });
+    expect(g.level).toBe("refuse");
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('runLaunchPreflight: Codex full context is refused before spawn even with --force (WI-39948)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'psu-wi39948-'));
-    const persona = join(dir, 'persona.md');
-    writeFileSync(persona, 'x'.repeat(5_000));
+  it("runLaunchPreflight: Codex full context is refused before spawn even with --force (WI-39948)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "psu-wi39948-"));
+    const persona = join(dir, "persona.md");
+    writeFileSync(persona, "x".repeat(5_000));
 
     expect(() =>
       runLaunchPreflight({
         promptFile: persona,
-        contextSize: 'full',
-        model: 'gpt-5.6-luna:max',
-        agent: 'codex',
+        contextSize: "full",
+        model: "gpt-5.6-luna:max",
+        agent: "codex",
         force: true,
       }),
-    ).toThrow(/64 MiB frame cap.*--context-size=trimmed.*--force cannot bypass/i);
+    ).toThrow(
+      /64 MiB frame cap.*--context-size=trimmed.*--force cannot bypass/i,
+    );
 
     expect(() =>
       runLaunchPreflight({
         promptFile: persona,
-        contextSize: 'trimmed',
-        model: 'gpt-5.6-luna:max',
-        agent: 'codex',
+        contextSize: "trimmed",
+        model: "gpt-5.6-luna:max",
+        agent: "codex",
         force: false,
       }),
     ).not.toThrow();
@@ -6583,59 +9803,82 @@ describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () =>
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('parseArgs: --persona-tier + --force parse (P-017/P-018)', () => {
+  it("parseArgs: --persona-tier + --force parse (P-017/P-018)", () => {
     expect(parseArgs([]).personaTier).toBeNull();
-    expect(parseArgs(['--persona-tier=fleet']).personaTier).toBe('fleet');
+    expect(parseArgs(["--persona-tier=fleet"]).personaTier).toBe("fleet");
     expect(parseArgs([]).force).toBe(false);
-    expect(parseArgs(['--force']).force).toBe(true);
+    expect(parseArgs(["--force"]).force).toBe(true);
   });
 });
 
-describe('--launched-by (solo-launch-provenance)', () => {
-  it('parseArgs captures --launched-by=<ownerId>', async () => {
-    const { parseArgs } = await import('../scripts/psu-launcher.mjs');
-    const a = parseArgs(['--no-picker', '--agent=claude', '--launched-by=su-94b69875-x']);
-    expect(a.launchedBy).toBe('su-94b69875-x');
+describe("--launched-by (solo-launch-provenance)", () => {
+  it("parseArgs captures --launched-by=<ownerId>", async () => {
+    const { parseArgs } = await import("../scripts/psu-launcher.mjs");
+    const a = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--launched-by=su-94b69875-x",
+    ]);
+    expect(a.launchedBy).toBe("su-94b69875-x");
     expect(parseArgs([]).launchedBy).toBeNull();
   });
 
-  it('freshSuBootstrapBody forwards launched_by so bootstrap-su can bake provenance', async () => {
-    const { parseArgs, freshSuBootstrapBody } = await import('../scripts/psu-launcher.mjs');
-    const args = parseArgs(['--no-picker', '--agent=claude', '--launched-by=su-abc']);
-    const body = freshSuBootstrapBody({ agent: 'claude', workspace: 'w', harness: 'h', plan: null }, args);
-    expect(body.launched_by).toBe('su-abc');
+  it("freshSuBootstrapBody forwards launched_by so bootstrap-su can bake provenance", async () => {
+    const { parseArgs, freshSuBootstrapBody } =
+      await import("../scripts/psu-launcher.mjs");
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--launched-by=su-abc",
+    ]);
+    const body = freshSuBootstrapBody(
+      { agent: "claude", workspace: "w", harness: "h", plan: null },
+      args,
+    );
+    expect(body.launched_by).toBe("su-abc");
     // and omitted entirely when absent (server treats absent as null)
-    const bare = freshSuBootstrapBody({ agent: 'claude', workspace: 'w', harness: 'h', plan: null }, parseArgs(['--no-picker', '--agent=claude']));
-    expect('launched_by' in bare).toBe(false);
+    const bare = freshSuBootstrapBody(
+      { agent: "claude", workspace: "w", harness: "h", plan: null },
+      parseArgs(["--no-picker", "--agent=claude"]),
+    );
+    expect("launched_by" in bare).toBe(false);
   });
 
-  it('psuLaunchArgvRecord round-trips --launched-by (WI-1343 reconstruction)', async () => {
-    const { parseArgs, psuLaunchArgvRecord } = await import('../scripts/psu-launcher.mjs');
-    const args = parseArgs(['--no-picker', '--agent=claude', '--launched-by=su-abc']);
-    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'w', harness: 'h', plan: null }, args);
-    expect(argv).toContain('--launched-by=su-abc');
+  it("psuLaunchArgvRecord round-trips --launched-by (WI-1343 reconstruction)", async () => {
+    const { parseArgs, psuLaunchArgvRecord } =
+      await import("../scripts/psu-launcher.mjs");
+    const args = parseArgs([
+      "--no-picker",
+      "--agent=claude",
+      "--launched-by=su-abc",
+    ]);
+    const argv = psuLaunchArgvRecord(
+      { agent: "claude", workspace: "w", harness: "h", plan: null },
+      args,
+    );
+    expect(argv).toContain("--launched-by=su-abc");
   });
 });
 
 describe('setupReminderLines — pre-TUI "setup unfinished" nudge (owner batch #5)', () => {
-  it('returns null when setup is complete (stage done) — no nag', () => {
-    expect(setupReminderLines('done')).toBeNull();
+  it("returns null when setup is complete (stage done) — no nag", () => {
+    expect(setupReminderLines("done")).toBeNull();
   });
-  it('returns null when the stage is unknown (probe failed / operator unreachable)', () => {
+  it("returns null when the stage is unknown (probe failed / operator unreachable)", () => {
     // A failed/timed-out probe resolves to null — never nag on no signal.
     expect(setupReminderLines(null)).toBeNull();
     expect(setupReminderLines(undefined)).toBeNull();
-    expect(setupReminderLines('')).toBeNull();
+    expect(setupReminderLines("")).toBeNull();
   });
-  it('nudges for every not-done concierge stage, naming BOTH `papercusp setup` and `papercusp tutorial`', () => {
-    for (const stage of ['pick', 'install', 'login', 'embeddings', 'handoff']) {
+  it("nudges for every not-done concierge stage, naming BOTH `papercusp setup` and `papercusp tutorial`", () => {
+    for (const stage of ["pick", "install", "login", "embeddings", "handoff"]) {
       const lines = setupReminderLines(stage);
       expect(lines, stage).not.toBeNull();
-      const text = lines.join('\n');
-      expect(text, stage).toContain('papercusp setup');
-      expect(text, stage).toContain('papercusp tutorial');
+      const text = lines.join("\n");
+      expect(text, stage).toContain("papercusp setup");
+      expect(text, stage).toContain("papercusp tutorial");
       // States the WHY (locked functionality) so the nudge is actionable, not noise.
-      expect(text.toLowerCase(), stage).toContain('locked');
+      expect(text.toLowerCase(), stage).toContain("locked");
     }
   });
 });
@@ -6645,24 +9888,27 @@ describe('setupReminderLines — pre-TUI "setup unfinished" nudge (owner batch #
 // login before spawn — the fresh-launch mirror invariant that a raw resume skipped,
 // which made a resumed session "launch logged out" once its in-session OAuth refresh
 // forked the symlink into a stale real file.
-describe('rehealResumeCredentials (psu-resume-relogin)', () => {
+describe("rehealResumeCredentials (psu-resume-relogin)", () => {
   let home: string;
-  const CREDS = (exp: number) => JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: exp } });
-  const globalOf = () => join(home, '.claude', '.credentials.json');
-  const sessCredOf = (dir: string) => join(dir, '.credentials.json');
+  const CREDS = (exp: number) =>
+    JSON.stringify({
+      claudeAiOauth: { accessToken: "a", refreshToken: "r", expiresAt: exp },
+    });
+  const globalOf = () => join(home, ".claude", ".credentials.json");
+  const sessCredOf = (dir: string) => join(dir, ".credentials.json");
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'reheal-home-'));
-    mkdirSync(join(home, '.claude'), { recursive: true });
+    home = mkdtempSync(join(tmpdir(), "reheal-home-"));
+    mkdirSync(join(home, ".claude"), { recursive: true });
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   /** A fresh isolated session dir under `home` (so afterEach cleans it). */
   function makeSessionDir(): string {
-    return mkdtempSync(join(home, 'sess-'));
+    return mkdtempSync(join(home, "sess-"));
   }
 
-  it('re-points a stale real-file fork at the newer global via symlink', () => {
+  it("re-points a stale real-file fork at the newer global via symlink", () => {
     writeFileSync(globalOf(), CREDS(2000)); // reconciler keeps the global newest
     const dir = makeSessionDir();
     writeFileSync(sessCredOf(dir), CREDS(1000)); // stale in-session fork
@@ -6672,7 +9918,7 @@ describe('rehealResumeCredentials (psu-resume-relogin)', () => {
     expect(claudeCredExpiresAt(sessCredOf(dir))).toBe(2000); // resolves to the live token
   });
 
-  it('leaves a healthy symlink-to-global untouched (idempotent)', () => {
+  it("leaves a healthy symlink-to-global untouched (idempotent)", () => {
     writeFileSync(globalOf(), CREDS(2000));
     const dir = makeSessionDir();
     symlinkSync(globalOf(), sessCredOf(dir));
@@ -6682,22 +9928,22 @@ describe('rehealResumeCredentials (psu-resume-relogin)', () => {
     expect(readlinkSync(sessCredOf(dir))).toBe(before);
   });
 
-  it('re-points a dangling symlink at the global', () => {
+  it("re-points a dangling symlink at the global", () => {
     writeFileSync(globalOf(), CREDS(2000));
     const dir = makeSessionDir();
-    symlinkSync(join(home, '.claude', 'gone.json'), sessCredOf(dir)); // dangling
+    symlinkSync(join(home, ".claude", "gone.json"), sessCredOf(dir)); // dangling
     rehealResumeCredentials(dir, { home });
     expect(realpathSync(sessCredOf(dir))).toBe(realpathSync(globalOf()));
   });
 
-  it('creates the symlink when the session dir has no credential file', () => {
+  it("creates the symlink when the session dir has no credential file", () => {
     writeFileSync(globalOf(), CREDS(2000));
     const dir = makeSessionDir();
     rehealResumeCredentials(dir, { home });
     expect(realpathSync(sessCredOf(dir))).toBe(realpathSync(globalOf()));
   });
 
-  it('promotes a strictly-newer session fork to the global, then symlinks (newest-wins)', () => {
+  it("promotes a strictly-newer session fork to the global, then symlinks (newest-wins)", () => {
     writeFileSync(globalOf(), CREDS(1000)); // global stale (reconciler lagged)
     const dir = makeSessionDir();
     writeFileSync(sessCredOf(dir), CREDS(3000)); // session refreshed most recently
@@ -6707,167 +9953,198 @@ describe('rehealResumeCredentials (psu-resume-relogin)', () => {
     expect(claudeCredExpiresAt(sessCredOf(dir))).toBe(3000);
   });
 
-  it('is a no-op (no throw) when there is no global credential file (API-key box)', () => {
+  it("is a no-op (no throw) when there is no global credential file (API-key box)", () => {
     const dir = makeSessionDir();
     writeFileSync(sessCredOf(dir), CREDS(1000)); // no global written
     expect(() => rehealResumeCredentials(dir, { home })).not.toThrow();
     expect(lstatSync(sessCredOf(dir)).isSymbolicLink()).toBe(false); // left as-is, nothing to mirror
   });
 
-  it('claudeCredExpiresAt reads expiresAt and returns -1 on unreadable/missing', () => {
+  it("claudeCredExpiresAt reads expiresAt and returns -1 on unreadable/missing", () => {
     const dir = makeSessionDir();
     const p = sessCredOf(dir);
     writeFileSync(p, CREDS(4242));
     expect(claudeCredExpiresAt(p)).toBe(4242);
-    expect(claudeCredExpiresAt(join(dir, 'nope.json'))).toBe(-1);
+    expect(claudeCredExpiresAt(join(dir, "nope.json"))).toBe(-1);
   });
 });
 
-describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)', () => {
-  it('derives defaultMode from --dangerously-skip-permissions and --permission-mode (both forms)', () => {
-    expect(reExecSafePermissionsFromArgs(['--dangerously-skip-permissions'])).toEqual({
-      defaultMode: 'bypassPermissions',
+describe("re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)", () => {
+  it("derives defaultMode from --dangerously-skip-permissions and --permission-mode (both forms)", () => {
+    expect(
+      reExecSafePermissionsFromArgs(["--dangerously-skip-permissions"]),
+    ).toEqual({
+      defaultMode: "bypassPermissions",
       deny: [],
     });
-    expect(reExecSafePermissionsFromArgs(['--permission-mode', 'plan'])).toEqual({
-      defaultMode: 'plan',
+    expect(
+      reExecSafePermissionsFromArgs(["--permission-mode", "plan"]),
+    ).toEqual({
+      defaultMode: "plan",
       deny: [],
     });
-    expect(reExecSafePermissionsFromArgs(['--permission-mode=acceptEdits'])).toEqual({
-      defaultMode: 'acceptEdits',
+    expect(
+      reExecSafePermissionsFromArgs(["--permission-mode=acceptEdits"]),
+    ).toEqual({
+      defaultMode: "acceptEdits",
       deny: [],
     });
   });
 
-  it('unions repeated --disallowedTools occurrences and dedups (claude unions them too)', () => {
+  it("unions repeated --disallowedTools occurrences and dedups (claude unions them too)", () => {
     const derived = reExecSafePermissionsFromArgs([
       NATIVE_SCHEDULER_DENY_FLAG,
       NO_SUBAGENTS_DENY_FLAG,
-      '--disallowedTools',
-      'Task,ExtraTool',
+      "--disallowedTools",
+      "Task,ExtraTool",
     ]);
     expect(derived).not.toBeNull();
-    expect(derived!.deny).toContain('CronCreate');
-    expect(derived!.deny).toContain('Task');
-    expect(derived!.deny).toContain('Workflow');
-    expect(derived!.deny).toContain('ExtraTool');
+    expect(derived!.deny).toContain("CronCreate");
+    expect(derived!.deny).toContain("Task");
+    expect(derived!.deny).toContain("Workflow");
+    expect(derived!.deny).toContain("ExtraTool");
     // deduped: Task appears in NO_SUBAGENTS_DENY_FLAG and the space-form list
-    expect(derived!.deny.filter((t: string) => t === 'Task')).toHaveLength(1);
+    expect(derived!.deny.filter((t: string) => t === "Task")).toHaveLength(1);
   });
 
-  it('returns null when the argv expresses no permissions (nothing to persist)', () => {
-    expect(reExecSafePermissionsFromArgs(['--session-id', 'abc', '--model', 'opus'])).toBeNull();
+  it("returns null when the argv expresses no permissions (nothing to persist)", () => {
+    expect(
+      reExecSafePermissionsFromArgs(["--session-id", "abc", "--model", "opus"]),
+    ).toBeNull();
     expect(reExecSafePermissionsFromArgs([])).toBeNull();
   });
 
-  describe('persistReExecSafePermissions (IO leg)', () => {
+  describe("persistReExecSafePermissions (IO leg)", () => {
     let dir: string;
     beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), 'psu-reexec-perms-'));
+      dir = mkdtempSync(join(tmpdir(), "psu-reexec-perms-"));
     });
     afterEach(() => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('writes permissions into the isolated CLAUDE_CONFIG_DIR settings.json', () => {
+    it("writes permissions into the isolated CLAUDE_CONFIG_DIR settings.json", () => {
       const ok = persistReExecSafePermissions({
         env: { CLAUDE_CONFIG_DIR: dir },
-        args: ['--dangerously-skip-permissions', NO_SUBAGENTS_DENY_FLAG],
+        args: ["--dangerously-skip-permissions", NO_SUBAGENTS_DENY_FLAG],
       });
       expect(ok).toBe(true);
-      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
-      expect(written.permissions.defaultMode).toBe('bypassPermissions');
-      expect(written.permissions.deny).toContain('Workflow');
+      const written = JSON.parse(
+        readFileSync(join(dir, "settings.json"), "utf8"),
+      );
+      expect(written.permissions.defaultMode).toBe("bypassPermissions");
+      expect(written.permissions.deny).toContain("Workflow");
     });
 
-    it('preserves unrelated settings keys and UNIONS an existing deny (never removes)', () => {
+    it("preserves unrelated settings keys and UNIONS an existing deny (never removes)", () => {
       writeFileSync(
-        join(dir, 'settings.json'),
-        JSON.stringify({ statusLine: { type: 'command', command: 'x' }, permissions: { deny: ['HandEdit'] } }),
+        join(dir, "settings.json"),
+        JSON.stringify({
+          statusLine: { type: "command", command: "x" },
+          permissions: { deny: ["HandEdit"] },
+        }),
       );
       const ok = persistReExecSafePermissions({
         env: { CLAUDE_CONFIG_DIR: dir },
         args: [NATIVE_SCHEDULER_DENY_FLAG],
       });
       expect(ok).toBe(true);
-      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
-      expect(written.statusLine).toEqual({ type: 'command', command: 'x' });
-      expect(written.permissions.deny).toContain('HandEdit'); // pre-existing human entry kept
-      expect(written.permissions.deny).toContain('CronCreate');
+      const written = JSON.parse(
+        readFileSync(join(dir, "settings.json"), "utf8"),
+      );
+      expect(written.statusLine).toEqual({ type: "command", command: "x" });
+      expect(written.permissions.deny).toContain("HandEdit"); // pre-existing human entry kept
+      expect(written.permissions.deny).toContain("CronCreate");
     });
 
-    it('NEVER writes without an isolated config dir (no bleed into shared ~/.claude)', () => {
+    it("NEVER writes without an isolated config dir (no bleed into shared ~/.claude)", () => {
       const ok = persistReExecSafePermissions({
         env: {},
-        args: ['--dangerously-skip-permissions'],
+        args: ["--dangerously-skip-permissions"],
       });
       expect(ok).toBe(false);
     });
 
-    it('no-ops (false) when the argv expresses no permissions', () => {
-      const ok = persistReExecSafePermissions({ env: { CLAUDE_CONFIG_DIR: dir }, args: [] });
+    it("no-ops (false) when the argv expresses no permissions", () => {
+      const ok = persistReExecSafePermissions({
+        env: { CLAUDE_CONFIG_DIR: dir },
+        args: [],
+      });
       expect(ok).toBe(false);
-      expect(existsSync(join(dir, 'settings.json'))).toBe(false);
+      expect(existsSync(join(dir, "settings.json"))).toBe(false);
     });
 
-    it('fail-open: unwritable dir warns and returns false, never throws', () => {
+    it("fail-open: unwritable dir warns and returns false, never throws", () => {
       const logs: string[] = [];
       const ok = persistReExecSafePermissions({
-        env: { CLAUDE_CONFIG_DIR: join(dir, 'nope', 'deeper') },
-        args: ['--dangerously-skip-permissions'],
+        env: { CLAUDE_CONFIG_DIR: join(dir, "nope", "deeper") },
+        args: ["--dangerously-skip-permissions"],
         log: (m: string) => logs.push(m),
       });
       expect(ok).toBe(false);
-      expect(logs.join('')).toContain('re-exec-safe permissions');
+      expect(logs.join("")).toContain("re-exec-safe permissions");
     });
   });
 
-  describe('persistDefaultClaudeAuthSettings (re-exec durable explicit routing)', () => {
+  describe("persistDefaultClaudeAuthSettings (re-exec durable explicit routing)", () => {
     let dir: string;
     beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), 'psu-default-auth-'));
+      dir = mkdtempSync(join(tmpdir(), "psu-default-auth-"));
     });
     afterEach(() => {
       rmSync(dir, { recursive: true, force: true });
     });
 
-    it('removes copied credential/provider settings while preserving unrelated settings', () => {
+    it("removes copied credential/provider settings while preserving unrelated settings", () => {
       writeFileSync(
-        join(dir, 'settings.json'),
+        join(dir, "settings.json"),
         JSON.stringify({
-          apiKeyHelper: '/tmp/old-helper',
+          apiKeyHelper: "/tmp/old-helper",
           env: {
-            ANTHROPIC_API_KEY: 'old-key',
-            CLAUDE_CODE_OAUTH_TOKEN: 'old-oauth',
-            CLAUDE_CODE_USE_BEDROCK: '1',
-            KEEP_ME: 'yes',
+            ANTHROPIC_API_KEY: "old-key",
+            CLAUDE_CODE_OAUTH_TOKEN: "old-oauth",
+            CLAUDE_CODE_USE_BEDROCK: "1",
+            KEEP_ME: "yes",
           },
-          statusLine: { type: 'command', command: 'x' },
+          statusLine: { type: "command", command: "x" },
         }),
       );
       const ok = persistDefaultClaudeAuthSettings({
-        wrapperBin: 'claude',
+        wrapperBin: "claude",
         env: { CLAUDE_CONFIG_DIR: dir, ...defaultAccountEnv() },
       });
       expect(ok).toBe(true);
-      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
-      expect(written.apiKeyHelper).toBe('');
-      expect(written.env).toEqual({ KEEP_ME: 'yes' });
-      expect(written.statusLine).toEqual({ type: 'command', command: 'x' });
+      const written = JSON.parse(
+        readFileSync(join(dir, "settings.json"), "utf8"),
+      );
+      expect(written.apiKeyHelper).toBe("");
+      expect(written.env).toEqual({ KEEP_ME: "yes" });
+      expect(written.statusLine).toEqual({ type: "command", command: "x" });
     });
 
-    it('persists an auto route and removes conflicting provider selectors', () => {
-      writeFileSync(join(dir, 'settings.json'), JSON.stringify({
-        env: { CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_API_KEY: 'old', KEEP_ME: 'yes' },
-      }));
-      const auto = gatewayAutoEnv('claude', 'su-auto');
-      expect(persistDefaultClaudeAuthSettings({
-        wrapperBin: 'claude',
-        env: { CLAUDE_CONFIG_DIR: dir, ...auto },
-      })).toBe(true);
-      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'));
+    it("persists an auto route and removes conflicting provider selectors", () => {
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({
+          env: {
+            CLAUDE_CODE_USE_BEDROCK: "1",
+            ANTHROPIC_API_KEY: "old",
+            KEEP_ME: "yes",
+          },
+        }),
+      );
+      const auto = gatewayAutoEnv("claude", "su-auto");
+      expect(
+        persistDefaultClaudeAuthSettings({
+          wrapperBin: "claude",
+          env: { CLAUDE_CONFIG_DIR: dir, ...auto },
+        }),
+      ).toBe(true);
+      const written = JSON.parse(
+        readFileSync(join(dir, "settings.json"), "utf8"),
+      );
       expect(written.env).toMatchObject({
-        KEEP_ME: 'yes',
+        KEEP_ME: "yes",
         ANTHROPIC_BASE_URL: auto.ANTHROPIC_BASE_URL,
         ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
         ANTHROPIC_CUSTOM_HEADERS: `${OWNER_HEADER}: su-auto`,
@@ -6876,140 +10153,235 @@ describe('re-exec-safe permissions (mcp-transport-resilience P-002, 2026-07-13)'
       expect(written.env.ANTHROPIC_API_KEY).toBeUndefined();
     });
 
-    it('does not mutate an unselected route, non-Claude, or shared-user settings', () => {
+    it("does not mutate an unselected route, non-Claude, or shared-user settings", () => {
       expect(
         persistDefaultClaudeAuthSettings({
-          wrapperBin: 'claude',
+          wrapperBin: "claude",
           env: { CLAUDE_CONFIG_DIR: dir },
         }),
       ).toBe(false);
       expect(
         persistDefaultClaudeAuthSettings({
-          wrapperBin: 'omp',
+          wrapperBin: "omp",
           env: { CLAUDE_CONFIG_DIR: dir, ...defaultAccountEnv() },
         }),
       ).toBe(false);
       expect(
         persistDefaultClaudeAuthSettings({
-          wrapperBin: 'claude',
+          wrapperBin: "claude",
           env: defaultAccountEnv(),
         }),
       ).toBe(false);
-      expect(existsSync(join(dir, 'settings.json'))).toBe(false);
+      expect(existsSync(join(dir, "settings.json"))).toBe(false);
     });
   });
 });
 
-describe('effectiveWindow derivation (deterministic-context-carry P-005 — live backend n_ctx clamp)', () => {
+describe("effectiveWindow derivation (deterministic-context-carry P-005 — live backend n_ctx clamp)", () => {
   const ORNITH_YML = [
-    'providers:',
-    '  anthropic:',
-    '    models:',
-    '      - id: claude-opus-4-8',
-    '        contextWindow: 1000000',
-    '  ollama-cc:',
-    '    baseUrl: http://127.0.0.1:8788/v1',
-    '    models:',
-    '      - id: maxwell1500/ornith-35b:IQ3_M',
-    '        name: Ornith 35B IQ3_M',
-    '        contextWindow: 200000',
-    '        maxTokens: 8192',
-    '      - id: ornith:fast',
-    '        contextWindow: 200000',
-    '',
-  ].join('\n');
+    "providers:",
+    "  anthropic:",
+    "    models:",
+    "      - id: claude-opus-4-8",
+    "        contextWindow: 1000000",
+    "  ollama-cc:",
+    "    baseUrl: http://127.0.0.1:8788/v1",
+    "    models:",
+    "      - id: maxwell1500/ornith-35b:IQ3_M",
+    "        name: Ornith 35B IQ3_M",
+    "        contextWindow: 200000",
+    "        maxTokens: 8192",
+    "      - id: ornith:fast",
+    "        contextWindow: 200000",
+    "",
+  ].join("\n");
   const ORNITH_JSON = JSON.stringify(
-    { models: [
-      { id: 'maxwell1500/ornith-35b:IQ3_M', contextWindow: 57344 },
-      { id: 'ornith:fast', contextWindow: 57344 },
-      { id: 'claude-opus-4-8', contextWindow: 1000000 },
-    ] },
-    null, 2,
+    {
+      models: [
+        { id: "maxwell1500/ornith-35b:IQ3_M", contextWindow: 57344 },
+        { id: "ornith:fast", contextWindow: 57344 },
+        { id: "claude-opus-4-8", contextWindow: 1000000 },
+      ],
+    },
+    null,
+    2,
   );
 
-  it('bareOmpModelId strips the local provider prefix and a trailing reasoning-effort suffix', () => {
-    expect(bareOmpModelId('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe('maxwell1500/ornith-35b:IQ3_M');
-    expect(bareOmpModelId('ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh')).toBe('maxwell1500/ornith-35b:IQ3_M');
-    expect(bareOmpModelId('ollama/ornith:high')).toBe('ornith');
+  it("bareOmpModelId strips the local provider prefix and a trailing reasoning-effort suffix", () => {
+    expect(bareOmpModelId("ollama-cc/maxwell1500/ornith-35b:IQ3_M")).toBe(
+      "maxwell1500/ornith-35b:IQ3_M",
+    );
+    expect(bareOmpModelId("ollama-cc/maxwell1500/ornith-35b:IQ3_M:xhigh")).toBe(
+      "maxwell1500/ornith-35b:IQ3_M",
+    );
+    expect(bareOmpModelId("ollama/ornith:high")).toBe("ornith");
     // a hosted id keeps its provider (it is not a local prefix) — only the effort suffix goes
-    expect(bareOmpModelId('anthropic/claude-opus-4-8:high')).toBe('anthropic/claude-opus-4-8');
-    expect(bareOmpModelId('')).toBe('');
+    expect(bareOmpModelId("anthropic/claude-opus-4-8:high")).toBe(
+      "anthropic/claude-opus-4-8",
+    );
+    expect(bareOmpModelId("")).toBe("");
   });
 
-  it('readModelsYmlContextWindow reads ONLY the named entry (siblings invisible)', () => {
-    expect(readModelsYmlContextWindow(ORNITH_YML, 'maxwell1500/ornith-35b:IQ3_M')).toBe(200000);
-    expect(readModelsYmlContextWindow(ORNITH_YML, 'claude-opus-4-8')).toBe(1000000);
-    expect(readModelsYmlContextWindow(ORNITH_YML, 'not-a-model')).toBe(null);
+  it("readModelsYmlContextWindow reads ONLY the named entry (siblings invisible)", () => {
+    expect(
+      readModelsYmlContextWindow(ORNITH_YML, "maxwell1500/ornith-35b:IQ3_M"),
+    ).toBe(200000);
+    expect(readModelsYmlContextWindow(ORNITH_YML, "claude-opus-4-8")).toBe(
+      1000000,
+    );
+    expect(readModelsYmlContextWindow(ORNITH_YML, "not-a-model")).toBe(null);
   });
 
-  it('rewriteModelsYmlContextWindow rewrites ONLY the named entry, byte-preserving the rest', () => {
-    const out = rewriteModelsYmlContextWindow(ORNITH_YML, 'maxwell1500/ornith-35b:IQ3_M', 123456);
-    expect(readModelsYmlContextWindow(out, 'maxwell1500/ornith-35b:IQ3_M')).toBe(123456);
-    expect(readModelsYmlContextWindow(out, 'ornith:fast')).toBe(200000);
-    expect(readModelsYmlContextWindow(out, 'claude-opus-4-8')).toBe(1000000);
-    expect(out).toContain('maxTokens: 8192');
+  it("rewriteModelsYmlContextWindow rewrites ONLY the named entry, byte-preserving the rest", () => {
+    const out = rewriteModelsYmlContextWindow(
+      ORNITH_YML,
+      "maxwell1500/ornith-35b:IQ3_M",
+      123456,
+    );
+    expect(
+      readModelsYmlContextWindow(out, "maxwell1500/ornith-35b:IQ3_M"),
+    ).toBe(123456);
+    expect(readModelsYmlContextWindow(out, "ornith:fast")).toBe(200000);
+    expect(readModelsYmlContextWindow(out, "claude-opus-4-8")).toBe(1000000);
+    expect(out).toContain("maxTokens: 8192");
     // absent entry → unchanged input
-    expect(rewriteModelsYmlContextWindow(ORNITH_YML, 'nope', 1)).toBe(ORNITH_YML);
+    expect(rewriteModelsYmlContextWindow(ORNITH_YML, "nope", 1)).toBe(
+      ORNITH_YML,
+    );
   });
 
-  it('rewriteModelsJsonContextWindow sets every record with the id; parse failure returns input', () => {
-    const out = JSON.parse(rewriteModelsJsonContextWindow(ORNITH_JSON, 'maxwell1500/ornith-35b:IQ3_M', 200000));
+  it("rewriteModelsJsonContextWindow sets every record with the id; parse failure returns input", () => {
+    const out = JSON.parse(
+      rewriteModelsJsonContextWindow(
+        ORNITH_JSON,
+        "maxwell1500/ornith-35b:IQ3_M",
+        200000,
+      ),
+    );
     expect(out.models[0].contextWindow).toBe(200000);
     expect(out.models[1].contextWindow).toBe(57344);
     expect(out.models[2].contextWindow).toBe(1000000);
-    expect(rewriteModelsJsonContextWindow('not json', 'x', 1)).toBe('not json');
+    expect(rewriteModelsJsonContextWindow("not json", "x", 1)).toBe("not json");
   });
 
-  it('probeOmpBackendContextWindow hits the gateway probe with the BARE id and returns nCtx', async () => {
+  it("probeOmpBackendContextWindow hits the gateway probe with the BARE id and returns nCtx", async () => {
     const calls: string[] = [];
     const fetchImpl = (async (url: string) => {
       calls.push(String(url));
-      return { ok: true, json: async () => ({ ok: true, nCtx: 204800, totalSlots: 3 }) };
+      return {
+        ok: true,
+        json: async () => ({ ok: true, nCtx: 204800, totalSlots: 3 }),
+      };
     }) as unknown as typeof fetch;
-    const n = await probeOmpBackendContextWindow('ollama-cc/maxwell1500/ornith-35b:IQ3_M', { PAPERCUSP_GATEWAY_PORT: '8797' } as NodeJS.ProcessEnv, fetchImpl);
+    const n = await probeOmpBackendContextWindow(
+      "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+      { PAPERCUSP_GATEWAY_PORT: "8797" } as NodeJS.ProcessEnv,
+      fetchImpl,
+    );
     expect(n).toBe(204800);
-    expect(calls[0]).toBe(`http://127.0.0.1:8797/maintenance/backend-context?model=${encodeURIComponent('maxwell1500/ornith-35b:IQ3_M')}`);
+    expect(calls[0]).toBe(
+      `http://127.0.0.1:8797/maintenance/backend-context?model=${encodeURIComponent("maxwell1500/ornith-35b:IQ3_M")}`,
+    );
   });
 
-  it('probeOmpBackendContextWindow is fail-soft: non-ok, garbage nCtx, and thrown fetch all → null', async () => {
-    const notOk = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
-    const garbage = (async () => ({ ok: true, json: async () => ({ nCtx: 'many' }) })) as unknown as typeof fetch;
-    const boom = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
-    expect(await probeOmpBackendContextWindow('ollama/ornith', {} as NodeJS.ProcessEnv, notOk)).toBe(null);
-    expect(await probeOmpBackendContextWindow('ollama/ornith', {} as NodeJS.ProcessEnv, garbage)).toBe(null);
-    expect(await probeOmpBackendContextWindow('ollama/ornith', {} as NodeJS.ProcessEnv, boom)).toBe(null);
+  it("probeOmpBackendContextWindow is fail-soft: non-ok, garbage nCtx, and thrown fetch all → null", async () => {
+    const notOk = (async () => ({
+      ok: false,
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+    const garbage = (async () => ({
+      ok: true,
+      json: async () => ({ nCtx: "many" }),
+    })) as unknown as typeof fetch;
+    const boom = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    expect(
+      await probeOmpBackendContextWindow(
+        "ollama/ornith",
+        {} as NodeJS.ProcessEnv,
+        notOk,
+      ),
+    ).toBe(null);
+    expect(
+      await probeOmpBackendContextWindow(
+        "ollama/ornith",
+        {} as NodeJS.ProcessEnv,
+        garbage,
+      ),
+    ).toBe(null);
+    expect(
+      await probeOmpBackendContextWindow(
+        "ollama/ornith",
+        {} as NodeJS.ProcessEnv,
+        boom,
+      ),
+    ).toBe(null);
   });
 
-  describe('writeOmpSessionConfigDir backendWindow clamp', () => {
+  describe("writeOmpSessionConfigDir backendWindow clamp", () => {
     let home: string;
     beforeEach(() => {
-      home = mkdtempSync(join(tmpdir(), 'psu-effwin-'));
-      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
-      writeFileSync(join(home, '.omp', 'agent', 'config.yml'), 'modelRoles:\n  default: ollama-cc/maxwell1500/ornith-35b:IQ3_M\n');
-      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), ORNITH_YML);
-      writeFileSync(join(home, '.omp', 'agent', 'models.json'), ORNITH_JSON);
+      home = mkdtempSync(join(tmpdir(), "psu-effwin-"));
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(
+        join(home, ".omp", "agent", "config.yml"),
+        "modelRoles:\n  default: ollama-cc/maxwell1500/ornith-35b:IQ3_M\n",
+      );
+      writeFileSync(join(home, ".omp", "agent", "models.yml"), ORNITH_YML);
+      writeFileSync(join(home, ".omp", "agent", "models.json"), ORNITH_JSON);
     });
     afterEach(() => rmSync(home, { recursive: true, force: true }));
-    const read = (f: string) => readFileSync(join(home, '.papercusp', 'su-omp-homes', 'session-s1', 'agent', f), 'utf8');
+    const read = (f: string) =>
+      readFileSync(
+        join(home, ".papercusp", "su-omp-homes", "session-s1", "agent", f),
+        "utf8",
+      );
 
-    it('configured < backend → effective stays configured; models.json stale value is ALIGNED (three-way conflict eliminated)', () => {
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // the informational door line
-      const dir = writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+    it("configured < backend → effective stays configured; models.json stale value is ALIGNED (three-way conflict eliminated)", () => {
+      const err = vi.spyOn(console, "error").mockImplementation(() => {}); // the informational door line
+      const dir = writeOmpSessionConfigDir(
+        "s1",
+        {
+          model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+          backendWindow: 204800,
+        },
+        home,
+      );
       err.mockRestore();
       expect(dir).toBeTruthy();
-      expect(readModelsYmlContextWindow(read('models.yml'), 'maxwell1500/ornith-35b:IQ3_M')).toBe(200000);
-      const j = JSON.parse(read('models.json'));
+      expect(
+        readModelsYmlContextWindow(
+          read("models.yml"),
+          "maxwell1500/ornith-35b:IQ3_M",
+        ),
+      ).toBe(200000);
+      const j = JSON.parse(read("models.json"));
       expect(j.models[0].contextWindow).toBe(200000); // was the stale 57344
       expect(j.models[2].contextWindow).toBe(1000000); // hosted sibling untouched
     });
 
-    it('configured > backend → LOUD config error + clamp to the live backend window in BOTH registry copies', () => {
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it("configured > backend → LOUD config error + clamp to the live backend window in BOTH registry copies", () => {
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 57344 }, home);
-        expect(readModelsYmlContextWindow(read('models.yml'), 'maxwell1500/ornith-35b:IQ3_M')).toBe(57344);
-        expect(JSON.parse(read('models.json')).models[0].contextWindow).toBe(57344);
-        const msgs = err.mock.calls.map((c) => String(c[0])).join('\n');
+        writeOmpSessionConfigDir(
+          "s1",
+          {
+            model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+            backendWindow: 57344,
+          },
+          home,
+        );
+        expect(
+          readModelsYmlContextWindow(
+            read("models.yml"),
+            "maxwell1500/ornith-35b:IQ3_M",
+          ),
+        ).toBe(57344);
+        expect(JSON.parse(read("models.json")).models[0].contextWindow).toBe(
+          57344,
+        );
+        const msgs = err.mock.calls.map((c) => String(c[0])).join("\n");
         expect(msgs).toMatch(/CONFIG ERROR/);
         expect(msgs).toMatch(/EXCEEDS the live backend window 57344/);
       } finally {
@@ -7017,53 +10389,84 @@ describe('effectiveWindow derivation (deterministic-context-carry P-005 — live
       }
     });
 
-    it('no backendWindow (probe miss / hosted model) → registry copied VERBATIM (pre-P-005 behavior)', () => {
-      writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
-      expect(read('models.yml')).toBe(ORNITH_YML);
-      expect(read('models.json')).toBe(ORNITH_JSON);
+    it("no backendWindow (probe miss / hosted model) → registry copied VERBATIM (pre-P-005 behavior)", () => {
+      writeOmpSessionConfigDir(
+        "s1",
+        { model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M" },
+        home,
+      );
+      expect(read("models.yml")).toBe(ORNITH_YML);
+      expect(read("models.json")).toBe(ORNITH_JSON);
     });
 
-    it('P-007: shake thresholdPercent is DERIVED from the effective window when the backend was probed (hard tier = w − maxTurn)', () => {
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {}); // informational door line
+    it("P-007: shake thresholdPercent is DERIVED from the effective window when the backend was probed (hard tier = w − maxTurn)", () => {
+      const err = vi.spyOn(console, "error").mockImplementation(() => {}); // informational door line
       try {
-        writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+        writeOmpSessionConfigDir(
+          "s1",
+          {
+            model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+            backendWindow: 204800,
+          },
+          home,
+        );
         // effective = min(configured 200000, backend 204800) = 200000; maxTurn 8000 → (200000−8000)/200000 = 96%
-        expect(read('config.yml')).toMatch(/\n\s+thresholdPercent:\s*96\b/);
+        expect(read("config.yml")).toMatch(/\n\s+thresholdPercent:\s*96\b/);
       } finally {
         err.mockRestore();
       }
     });
 
-    it('P-007: a deliberately smaller configured window drives the tier (percent from the min, not the raw probe)', () => {
-      const smallYml = ORNITH_YML.replace('        contextWindow: 200000\n        maxTokens: 8192', '        contextWindow: 57344\n        maxTokens: 8192');
-      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), smallYml);
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it("P-007: a deliberately smaller configured window drives the tier (percent from the min, not the raw probe)", () => {
+      const smallYml = ORNITH_YML.replace(
+        "        contextWindow: 200000\n        maxTokens: 8192",
+        "        contextWindow: 57344\n        maxTokens: 8192",
+      );
+      writeFileSync(join(home, ".omp", "agent", "models.yml"), smallYml);
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M', backendWindow: 204800 }, home);
+        writeOmpSessionConfigDir(
+          "s1",
+          {
+            model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M",
+            backendWindow: 204800,
+          },
+          home,
+        );
         // effective = 57344; maxTurn 8000 → (57344−8000)/57344 = 86.05 → 86
-        expect(read('config.yml')).toMatch(/\n\s+thresholdPercent:\s*86\b/);
+        expect(read("config.yml")).toMatch(/\n\s+thresholdPercent:\s*86\b/);
       } finally {
         err.mockRestore();
       }
     });
 
-    it('P-007: no probe → the conservative pre-P-007 constant 70 (nothing bounds the hop without the P-005/P-006 chain)', () => {
-      writeOmpSessionConfigDir('s1', { model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }, home);
-      expect(read('config.yml')).toMatch(/\n\s+thresholdPercent:\s*70\b/);
+    it("P-007: no probe → the conservative pre-P-007 constant 70 (nothing bounds the hop without the P-005/P-006 chain)", () => {
+      writeOmpSessionConfigDir(
+        "s1",
+        { model: "ollama-cc/maxwell1500/ornith-35b:IQ3_M" },
+        home,
+      );
+      expect(read("config.yml")).toMatch(/\n\s+thresholdPercent:\s*70\b/);
     });
   });
 
-  it('computeCompactionThresholdPercents mirrors the canonical two-tier math (lockstep with context-doors.ts)', () => {
-    expect(computeCompactionThresholdPercents(204_800)).toEqual({ softPct: 90, hardPct: 96 });
-    expect(computeCompactionThresholdPercents(400_000)).toEqual({ softPct: 91, hardPct: 96 });
+  it("computeCompactionThresholdPercents mirrors the canonical two-tier math (lockstep with context-doors.ts)", () => {
+    expect(computeCompactionThresholdPercents(204_800)).toEqual({
+      softPct: 90,
+      hardPct: 96,
+    });
+    expect(computeCompactionThresholdPercents(400_000)).toEqual({
+      softPct: 91,
+      hardPct: 96,
+    });
     const d = computeCompactionThresholdPercents(0); // degenerate: sane, never NaN/negative
     expect(d.hardPct).toBeGreaterThanOrEqual(d.softPct);
     expect(d.softPct).toBeGreaterThanOrEqual(0);
   });
 });
 
-describe('per-hop output door (deterministic-context-carry P-006 leg (a) — max_tokens via the session registry)', () => {
-  it('door mirror math matches the canonical operator-core formula (lockstep with context-doors.ts)', () => {
+describe("per-hop output door (deterministic-context-carry P-006 leg (a) — max_tokens via the session registry)", () => {
+  it("door mirror math matches the canonical operator-core formula (lockstep with context-doors.ts)", () => {
     expect(computeMaxTurnTokens(204_800)).toBe(8_000); // Ornith → the floor
     expect(computeMaxTurnTokens(1_000_000)).toBe(15_000); // the cap
     expect(computeMaxTurnTokens(260_000)).toBe(10_000); // /26 between the knees
@@ -7072,64 +10475,109 @@ describe('per-hop output door (deterministic-context-carry P-006 leg (a) — max
     expect(computeOutputDoorTokens(1_000_000)).toBe(7_500);
   });
 
-  it('generalized field helpers: readModelsYmlField / rewriteModelsYmlField / rewriteModelsJsonFields', () => {
-    const yml = 'providers:\n  ollama-cc:\n    models:\n      - id: m1\n        contextWindow: 200000\n        maxTokens: 8192\n';
-    expect(readModelsYmlField(yml, 'm1', 'maxTokens')).toBe(8192);
-    const out = rewriteModelsYmlField(yml, 'm1', 'maxTokens', 4000);
-    expect(readModelsYmlField(out, 'm1', 'maxTokens')).toBe(4000);
-    expect(readModelsYmlField(out, 'm1', 'contextWindow')).toBe(200000);
-    const j = JSON.parse(rewriteModelsJsonFields(JSON.stringify({ models: [{ id: 'm1', contextWindow: 1, maxTokens: 9 }] }), 'm1', { contextWindow: 2, maxTokens: 3 }));
-    expect(j.models[0]).toEqual({ id: 'm1', contextWindow: 2, maxTokens: 3 });
+  it("generalized field helpers: readModelsYmlField / rewriteModelsYmlField / rewriteModelsJsonFields", () => {
+    const yml =
+      "providers:\n  ollama-cc:\n    models:\n      - id: m1\n        contextWindow: 200000\n        maxTokens: 8192\n";
+    expect(readModelsYmlField(yml, "m1", "maxTokens")).toBe(8192);
+    const out = rewriteModelsYmlField(yml, "m1", "maxTokens", 4000);
+    expect(readModelsYmlField(out, "m1", "maxTokens")).toBe(4000);
+    expect(readModelsYmlField(out, "m1", "contextWindow")).toBe(200000);
+    const j = JSON.parse(
+      rewriteModelsJsonFields(
+        JSON.stringify({
+          models: [{ id: "m1", contextWindow: 1, maxTokens: 9 }],
+        }),
+        "m1",
+        { contextWindow: 2, maxTokens: 3 },
+      ),
+    );
+    expect(j.models[0]).toEqual({ id: "m1", contextWindow: 2, maxTokens: 3 });
   });
 
-  describe('writeOmpSessionConfigDir applies the output door with the window clamp', () => {
+  describe("writeOmpSessionConfigDir applies the output door with the window clamp", () => {
     let home: string;
     const YML = [
-      'providers:',
-      '  ollama-cc:',
-      '    models:',
-      '      - id: ornith-x',
-      '        contextWindow: 200000',
-      '        maxTokens: 8192',
-      '      - id: tiny-model',
-      '        contextWindow: 200000',
-      '        maxTokens: 2048',
-      '',
-    ].join('\n');
+      "providers:",
+      "  ollama-cc:",
+      "    models:",
+      "      - id: ornith-x",
+      "        contextWindow: 200000",
+      "        maxTokens: 8192",
+      "      - id: tiny-model",
+      "        contextWindow: 200000",
+      "        maxTokens: 2048",
+      "",
+    ].join("\n");
     beforeEach(() => {
-      home = mkdtempSync(join(tmpdir(), 'psu-door-'));
-      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
-      writeFileSync(join(home, '.omp', 'agent', 'config.yml'), 'modelRoles:\n  default: ollama-cc/ornith-x\n');
-      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), YML);
-      writeFileSync(join(home, '.omp', 'agent', 'models.json'), JSON.stringify({ models: [{ id: 'ornith-x', contextWindow: 57344, maxTokens: 8192 }] }));
+      home = mkdtempSync(join(tmpdir(), "psu-door-"));
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(
+        join(home, ".omp", "agent", "config.yml"),
+        "modelRoles:\n  default: ollama-cc/ornith-x\n",
+      );
+      writeFileSync(join(home, ".omp", "agent", "models.yml"), YML);
+      writeFileSync(
+        join(home, ".omp", "agent", "models.json"),
+        JSON.stringify({
+          models: [{ id: "ornith-x", contextWindow: 57344, maxTokens: 8192 }],
+        }),
+      );
     });
     afterEach(() => rmSync(home, { recursive: true, force: true }));
-    const read = (f: string) => readFileSync(join(home, '.papercusp', 'su-omp-homes', 'session-d1', 'agent', f), 'utf8');
+    const read = (f: string) =>
+      readFileSync(
+        join(home, ".papercusp", "su-omp-homes", "session-d1", "agent", f),
+        "utf8",
+      );
 
-    it('Ornith-class window → max_tokens tightened to the 4K output door in BOTH registry copies', () => {
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-      writeOmpSessionConfigDir('d1', { model: 'ollama-cc/ornith-x', backendWindow: 204800 }, home);
-      const doorLine = err.mock.calls.map((c) => String(c[0])).find((l) => l.includes('per-hop doors'));
+    it("Ornith-class window → max_tokens tightened to the 4K output door in BOTH registry copies", () => {
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      writeOmpSessionConfigDir(
+        "d1",
+        { model: "ollama-cc/ornith-x", backendWindow: 204800 },
+        home,
+      );
+      const doorLine = err.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes("per-hop doors"));
       err.mockRestore();
-      expect(doorLine).toMatch(/maxTurn 8000 → output door \(max_tokens\) 4000/);
-      expect(readModelsYmlField(read('models.yml'), 'ornith-x', 'maxTokens')).toBe(4000);
-      expect(readModelsYmlField(read('models.yml'), 'ornith-x', 'contextWindow')).toBe(200000);
-      const j = JSON.parse(read('models.json'));
-      expect(j.models[0]).toEqual({ id: 'ornith-x', contextWindow: 200000, maxTokens: 4000 });
+      expect(doorLine).toMatch(
+        /maxTurn 8000 → output door \(max_tokens\) 4000/,
+      );
+      expect(
+        readModelsYmlField(read("models.yml"), "ornith-x", "maxTokens"),
+      ).toBe(4000);
+      expect(
+        readModelsYmlField(read("models.yml"), "ornith-x", "contextWindow"),
+      ).toBe(200000);
+      const j = JSON.parse(read("models.json"));
+      expect(j.models[0]).toEqual({
+        id: "ornith-x",
+        contextWindow: 200000,
+        maxTokens: 4000,
+      });
     });
 
-    it('a registry maxTokens BELOW the door is kept (the door only tightens, never raises)', () => {
-      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-      writeOmpSessionConfigDir('d1', { model: 'ollama-cc/tiny-model', backendWindow: 204800 }, home);
+    it("a registry maxTokens BELOW the door is kept (the door only tightens, never raises)", () => {
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      writeOmpSessionConfigDir(
+        "d1",
+        { model: "ollama-cc/tiny-model", backendWindow: 204800 },
+        home,
+      );
       err.mockRestore();
-      expect(readModelsYmlField(read('models.yml'), 'tiny-model', 'maxTokens')).toBe(2048);
+      expect(
+        readModelsYmlField(read("models.yml"), "tiny-model", "maxTokens"),
+      ).toBe(2048);
       // the sibling's entry was not touched
-      expect(readModelsYmlField(read('models.yml'), 'ornith-x', 'maxTokens')).toBe(8192);
+      expect(
+        readModelsYmlField(read("models.yml"), "ornith-x", "maxTokens"),
+      ).toBe(8192);
     });
 
-    it('no backendWindow → registry copied verbatim, no door applied (pre-P-006 behavior)', () => {
-      writeOmpSessionConfigDir('d1', { model: 'ollama-cc/ornith-x' }, home);
-      expect(read('models.yml')).toBe(YML);
+    it("no backendWindow → registry copied verbatim, no door applied (pre-P-006 behavior)", () => {
+      writeOmpSessionConfigDir("d1", { model: "ollama-cc/ornith-x" }, home);
+      expect(read("models.yml")).toBe(YML);
     });
   });
 });
@@ -7149,17 +10597,18 @@ describe('per-hop output door (deterministic-context-carry P-006 leg (a) — max
  * (no round-trip when healthy), delegate the repair to the operator (the mirror
  * has exactly ONE implementation, server-side), and never block a launch.
  */
-describe('EI-12938: psu --resume ensures a launch-ready claude config dir', () => {
+describe("EI-12938: psu --resume ensures a launch-ready claude config dir", () => {
   let root: string;
   const savedRoot = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'psu-icc-'));
+    root = mkdtempSync(join(tmpdir(), "psu-icc-"));
     process.env.PAPERCUSP_SESSION_CLAUDE_DIR = root;
   });
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-    if (savedRoot === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    if (savedRoot === undefined)
+      delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
     else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = savedRoot;
   });
 
@@ -7169,106 +10618,172 @@ describe('EI-12938: psu --resume ensures a launch-ready claude config dir', () =
     return d;
   };
 
-  describe('isClaudeConfigDirLaunchReady (the .mjs mirror of the operator-core predicate)', () => {
-    it('a mirrored dir (.claude.json symlinked to the real config) is ready', () => {
-      const home = mkdtempSync(join(tmpdir(), 'psu-icc-home-'));
-      writeFileSync(join(home, '.claude.json'), '{"mcpServers":{"papercusp-su":{}}}');
-      const dir = dirFor('su-ok');
-      symlinkSync(join(home, '.claude.json'), join(dir, '.claude.json'));
+  describe("isClaudeConfigDirLaunchReady (the .mjs mirror of the operator-core predicate)", () => {
+    it("a mirrored dir (.claude.json symlinked to the real config) is ready", () => {
+      const home = mkdtempSync(join(tmpdir(), "psu-icc-home-"));
+      writeFileSync(
+        join(home, ".claude.json"),
+        '{"mcpServers":{"papercusp-su":{}}}',
+      );
+      const dir = dirFor("su-ok");
+      symlinkSync(join(home, ".claude.json"), join(dir, ".claude.json"));
       expect(isClaudeConfigDirLaunchReady(dir)).toBe(true);
       rmSync(home, { recursive: true, force: true });
     });
 
-    it('a rematerialized / bee dir (no .claude.json) is NOT ready', () => {
-      expect(isClaudeConfigDirLaunchReady(dirFor('su-remat'))).toBe(false);
+    it("a rematerialized / bee dir (no .claude.json) is NOT ready", () => {
+      expect(isClaudeConfigDirLaunchReady(dirFor("su-remat"))).toBe(false);
     });
 
     it("claude's first-run stub (an account, no mcpServers) is NOT ready", () => {
-      const dir = dirFor('su-stub');
-      writeFileSync(join(dir, '.claude.json'), '{"oauthAccount":{"emailAddress":"o@e.com"}}');
+      const dir = dirFor("su-stub");
+      writeFileSync(
+        join(dir, ".claude.json"),
+        '{"oauthAccount":{"emailAddress":"o@e.com"}}',
+      );
       expect(isClaudeConfigDirLaunchReady(dir)).toBe(false);
     });
 
-    it('a P-020 pruned real copy (mcpServers kept) IS ready — never re-materialized behind its back', () => {
-      const dir = dirFor('su-pruned');
-      writeFileSync(join(dir, '.claude.json'), '{"mcpServers":{"papercusp-su":{}},"hasCompletedOnboarding":true}');
+    it("a P-020 pruned real copy (mcpServers kept) IS ready — never re-materialized behind its back", () => {
+      const dir = dirFor("su-pruned");
+      writeFileSync(
+        join(dir, ".claude.json"),
+        '{"mcpServers":{"papercusp-su":{}},"hasCompletedOnboarding":true}',
+      );
       expect(isClaudeConfigDirLaunchReady(dir)).toBe(true);
     });
 
-    it('a dangling symlink / corrupt json is NOT ready, and never throws', () => {
-      const dangling = dirFor('su-dangle');
-      symlinkSync(join(root, 'gone.json'), join(dangling, '.claude.json'));
+    it("a dangling symlink / corrupt json is NOT ready, and never throws", () => {
+      const dangling = dirFor("su-dangle");
+      symlinkSync(join(root, "gone.json"), join(dangling, ".claude.json"));
       expect(isClaudeConfigDirLaunchReady(dangling)).toBe(false);
-      const corrupt = dirFor('su-corrupt');
-      writeFileSync(join(corrupt, '.claude.json'), '{ not json');
+      const corrupt = dirFor("su-corrupt");
+      writeFileSync(join(corrupt, ".claude.json"), "{ not json");
       expect(isClaudeConfigDirLaunchReady(corrupt)).toBe(false);
-      expect(isClaudeConfigDirLaunchReady('')).toBe(false);
+      expect(isClaudeConfigDirLaunchReady("")).toBe(false);
     });
   });
 
-  describe('ensureInteractiveConfigViaOperator', () => {
-    it('POSTs the owner and reports the repair when the dir is not launch-ready', async () => {
-      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  describe("ensureInteractiveConfigViaOperator", () => {
+    it("POSTs the owner and reports the repair when the dir is not launch-ready", async () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const calls: { url: string; opts: any }[] = [];
       const fetchImpl = async (url: string, opts: any) => {
         calls.push({ url, opts });
-        return { json: async () => ({ ok: true, owner: 'su-remat', configDir: join(root, 'su-remat'), repaired: true }) };
+        return {
+          json: async () => ({
+            ok: true,
+            owner: "su-remat",
+            configDir: join(root, "su-remat"),
+            repaired: true,
+          }),
+        };
       };
-      const r = await ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), {
-        fetchImpl,
-        operatorUrl: 'http://op:1',
-        token: 'tok-1',
-      });
+      const r = await ensureInteractiveConfigViaOperator(
+        "su-remat",
+        dirFor("su-remat"),
+        {
+          fetchImpl,
+          operatorUrl: "http://op:1",
+          token: "tok-1",
+        },
+      );
       expect(calls).toHaveLength(1);
-      expect(calls[0].url).toBe('http://op:1/api/adv/sessions/ensure-claude-config');
-      expect(calls[0].opts.method).toBe('POST');
-      expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
-      expect(JSON.parse(calls[0].opts.body)).toEqual({ owner: 'su-remat' });
+      expect(calls[0].url).toBe(
+        "http://op:1/api/adv/sessions/ensure-claude-config",
+      );
+      expect(calls[0].opts.method).toBe("POST");
+      expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
+      expect(JSON.parse(calls[0].opts.body)).toEqual({ owner: "su-remat" });
       expect(r).toMatchObject({ ok: true, repaired: true });
       // The repair is DISCLOSED — a silently-degraded session is the bug.
       expect(errSpy).toHaveBeenCalledTimes(1);
       errSpy.mockRestore();
     });
 
-    it('a healthy dir costs NO round-trip (the normal resume is byte-identical)', async () => {
-      const home = mkdtempSync(join(tmpdir(), 'psu-icc-home2-'));
-      writeFileSync(join(home, '.claude.json'), '{"mcpServers":{"papercusp-su":{}}}');
-      const dir = dirFor('su-healthy');
-      symlinkSync(join(home, '.claude.json'), join(dir, '.claude.json'));
+    it("a healthy dir costs NO round-trip (the normal resume is byte-identical)", async () => {
+      const home = mkdtempSync(join(tmpdir(), "psu-icc-home2-"));
+      writeFileSync(
+        join(home, ".claude.json"),
+        '{"mcpServers":{"papercusp-su":{}}}',
+      );
+      const dir = dirFor("su-healthy");
+      symlinkSync(join(home, ".claude.json"), join(dir, ".claude.json"));
       const calls: unknown[] = [];
-      const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
-      expect(await ensureInteractiveConfigViaOperator('su-healthy', dir, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+      const fetchImpl = async (...a: unknown[]) => {
+        calls.push(a);
+        return { json: async () => ({ ok: true }) };
+      };
+      expect(
+        await ensureInteractiveConfigViaOperator("su-healthy", dir, {
+          fetchImpl,
+          operatorUrl: "http://op:1",
+          token: "t",
+        }),
+      ).toBeNull();
       expect(calls).toHaveLength(0);
       rmSync(home, { recursive: true, force: true });
     });
 
-    it('a foreign/relocated configDir is left alone (the server can only key by owner)', async () => {
+    it("a foreign/relocated configDir is left alone (the server can only key by owner)", async () => {
       const calls: unknown[] = [];
-      const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
-      const foreign = mkdtempSync(join(tmpdir(), 'psu-foreign-'));
+      const fetchImpl = async (...a: unknown[]) => {
+        calls.push(a);
+        return { json: async () => ({ ok: true }) };
+      };
+      const foreign = mkdtempSync(join(tmpdir(), "psu-foreign-"));
       // Not sessionClaudeConfigDir('su-x') — ensuring would materialize a DIFFERENT
       // dir while the one actually being launched stayed broken.
-      expect(await ensureInteractiveConfigViaOperator('su-x', foreign, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+      expect(
+        await ensureInteractiveConfigViaOperator("su-x", foreign, {
+          fetchImpl,
+          operatorUrl: "http://op:1",
+          token: "t",
+        }),
+      ).toBeNull();
       expect(calls).toHaveLength(0);
       rmSync(foreign, { recursive: true, force: true });
     });
 
-    it('no owner (untracked / pre-EI-155 session) → no request, returns null', async () => {
+    it("no owner (untracked / pre-EI-155 session) → no request, returns null", async () => {
       const calls: unknown[] = [];
-      const fetchImpl = async (...a: unknown[]) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
-      expect(await ensureInteractiveConfigViaOperator(null, dirFor('su-none'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+      const fetchImpl = async (...a: unknown[]) => {
+        calls.push(a);
+        return { json: async () => ({ ok: true }) };
+      };
+      expect(
+        await ensureInteractiveConfigViaOperator(null, dirFor("su-none"), {
+          fetchImpl,
+          operatorUrl: "http://op:1",
+          token: "t",
+        }),
+      ).toBeNull();
       expect(calls).toHaveLength(0);
     });
 
-    it('an older operator without the route (404 / ok:false) → null, launch proceeds exactly as today', async () => {
-      const fetchImpl = async () => ({ json: async () => ({ ok: false, error: 'not found' }) });
-      expect(await ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+    it("an older operator without the route (404 / ok:false) → null, launch proceeds exactly as today", async () => {
+      const fetchImpl = async () => ({
+        json: async () => ({ ok: false, error: "not found" }),
+      });
+      expect(
+        await ensureInteractiveConfigViaOperator(
+          "su-remat",
+          dirFor("su-remat"),
+          { fetchImpl, operatorUrl: "http://op:1", token: "t" },
+        ),
+      ).toBeNull();
     });
 
-    it('an unreachable operator is swallowed — config repair NEVER blocks a resume', async () => {
-      const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+    it("an unreachable operator is swallowed — config repair NEVER blocks a resume", async () => {
+      const fetchImpl = async () => {
+        throw new Error("ECONNREFUSED");
+      };
       await expect(
-        ensureInteractiveConfigViaOperator('su-remat', dirFor('su-remat'), { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+        ensureInteractiveConfigViaOperator("su-remat", dirFor("su-remat"), {
+          fetchImpl,
+          operatorUrl: "http://op:1",
+          token: "t",
+        }),
       ).resolves.toBeNull();
     });
   });
@@ -7279,139 +10794,165 @@ describe('EI-12938: psu --resume ensures a launch-ready claude config dir', () =
 // property: the cache proxy carries the SYSTEM login through verbatim, so unlike a
 // gateway route it must SURVIVE the default-account credential enforcement — while a
 // real gateway URL must still be stripped exactly as before.
-describe('cache-proxy default-account routing (P-006)', () => {
-  const GATEWAY_URL = 'http://127.0.0.1:8788';
+describe("cache-proxy default-account routing (P-006)", () => {
+  const GATEWAY_URL = "http://127.0.0.1:8788";
   afterEach(() => __setCacheProxyReachable(null));
 
-  it('is OFF under vitest unless explicitly forced (pure-function determinism)', () => {
+  it("is OFF under vitest unless explicitly forced (pure-function determinism)", () => {
     __setCacheProxyReachable(null);
     expect(cacheProxyReachable()).toBe(false);
     expect(defaultAccountEnv().ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
-  it('adds the proxy base URL to the default-account env when reachable', () => {
+  it("adds the proxy base URL to the default-account env when reachable", () => {
     __setCacheProxyReachable(true);
     const env = defaultAccountEnv();
     expect(env.ANTHROPIC_BASE_URL).toBe(CACHE_PROXY_URL());
-    expect(env[ACCOUNT_ROUTING_MODE_ENV]).toBe('default');
+    expect(env[ACCOUNT_ROUTING_MODE_ENV]).toBe("default");
   });
 
-  it('DEGRADES to today’s behavior when the proxy is down — never blocks a launch', () => {
+  it("DEGRADES to today’s behavior when the proxy is down — never blocks a launch", () => {
     __setCacheProxyReachable(false);
-    expect(defaultAccountEnv()).toEqual({ [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
+    expect(defaultAccountEnv()).toEqual({
+      [ACCOUNT_ROUTING_MODE_ENV]: "default",
+    });
   });
 
-  it('isCacheProxyUrl matches equivalent spellings but not a gateway route', () => {
+  it("isCacheProxyUrl matches equivalent spellings but not a gateway route", () => {
     const p = new URL(CACHE_PROXY_URL());
     expect(isCacheProxyUrl(CACHE_PROXY_URL())).toBe(true);
     expect(isCacheProxyUrl(`http://localhost:${p.port}`)).toBe(true);
     expect(isCacheProxyUrl(`http://127.0.0.1:${p.port}/`)).toBe(true);
     expect(isCacheProxyUrl(GATEWAY_URL)).toBe(false);
-    expect(isCacheProxyUrl('https://api.anthropic.com')).toBe(false);
+    expect(isCacheProxyUrl("https://api.anthropic.com")).toBe(false);
     expect(isCacheProxyUrl(undefined)).toBe(false);
-    expect(isCacheProxyUrl('not a url')).toBe(false);
+    expect(isCacheProxyUrl("not a url")).toBe(false);
   });
 
-  it('enforceDefaultClaudeAccount PRESERVES the cache proxy but still strips a gateway route', () => {
-    const kept = enforceDefaultClaudeAccount('claude', {
-      [ACCOUNT_ROUTING_MODE_ENV]: 'default',
+  it("enforceDefaultClaudeAccount PRESERVES the cache proxy but still strips a gateway route", () => {
+    const kept = enforceDefaultClaudeAccount("claude", {
+      [ACCOUNT_ROUTING_MODE_ENV]: "default",
       ANTHROPIC_BASE_URL: CACHE_PROXY_URL(),
-      ANTHROPIC_AUTH_TOKEN: 'should-be-cleared',
+      ANTHROPIC_AUTH_TOKEN: "should-be-cleared",
     });
     expect(kept.ANTHROPIC_BASE_URL).toBe(CACHE_PROXY_URL());
     expect(kept.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
 
-    const stripped = enforceDefaultClaudeAccount('claude', {
-      [ACCOUNT_ROUTING_MODE_ENV]: 'default',
+    const stripped = enforceDefaultClaudeAccount("claude", {
+      [ACCOUNT_ROUTING_MODE_ENV]: "default",
       ANTHROPIC_BASE_URL: GATEWAY_URL,
     });
     expect(stripped.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
-  it('the --settings overlay keeps the cache proxy and blanks a gateway route', () => {
-    const kept = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'default', ANTHROPIC_BASE_URL: CACHE_PROXY_URL() });
+  it("the --settings overlay keeps the cache proxy and blanks a gateway route", () => {
+    const kept = defaultClaudeAuthSettings({
+      [ACCOUNT_ROUTING_MODE_ENV]: "default",
+      ANTHROPIC_BASE_URL: CACHE_PROXY_URL(),
+    });
     expect(kept.env.ANTHROPIC_BASE_URL).toBe(CACHE_PROXY_URL());
-    expect(kept.apiKeyHelper).toBe('');
+    expect(kept.apiKeyHelper).toBe("");
 
-    const blanked = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'default', ANTHROPIC_BASE_URL: GATEWAY_URL });
-    expect(blanked.env.ANTHROPIC_BASE_URL).toBe('');
+    const blanked = defaultClaudeAuthSettings({
+      [ACCOUNT_ROUTING_MODE_ENV]: "default",
+      ANTHROPIC_BASE_URL: GATEWAY_URL,
+    });
+    expect(blanked.env.ANTHROPIC_BASE_URL).toBe("");
   });
 
-  it('an auto/pin gateway route is still carried through untouched (no regression)', () => {
-    const s = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'pin', ANTHROPIC_BASE_URL: GATEWAY_URL, ANTHROPIC_AUTH_TOKEN: 'tok' });
+  it("an auto/pin gateway route is still carried through untouched (no regression)", () => {
+    const s = defaultClaudeAuthSettings({
+      [ACCOUNT_ROUTING_MODE_ENV]: "pin",
+      ANTHROPIC_BASE_URL: GATEWAY_URL,
+      ANTHROPIC_AUTH_TOKEN: "tok",
+    });
     expect(s.env.ANTHROPIC_BASE_URL).toBe(GATEWAY_URL);
-    expect(s.env.ANTHROPIC_AUTH_TOKEN).toBe('tok');
+    expect(s.env.ANTHROPIC_AUTH_TOKEN).toBe("tok");
   });
 });
 
-describe('omp context-injection hook wiring (omp-context-injection-parity-2026-08-09 P-003)', () => {
+describe("omp context-injection hook wiring (omp-context-injection-parity-2026-08-09 P-003)", () => {
   let home: string;
-  const hookRel = ['.papercusp', 'hooks', 'omp', 'inject-hook.ts'];
+  const hookRel = [".papercusp", "hooks", "omp", "inject-hook.ts"];
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'psu-omp-inject-'));
+    home = mkdtempSync(join(tmpdir(), "psu-omp-inject-"));
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   const installHook = () => {
-    mkdirSync(join(home, '.papercusp', 'hooks', 'omp'), { recursive: true });
-    writeFileSync(join(home, ...hookRel), 'export default () => {};');
+    mkdirSync(join(home, ".papercusp", "hooks", "omp"), { recursive: true });
+    writeFileSync(join(home, ...hookRel), "export default () => {};");
     return join(home, ...hookRel);
   };
 
-  it('resolves the installed hook for omp', () => {
+  it("resolves the installed hook for omp", () => {
     const p = installHook();
-    expect(resolveOmpInjectHookPath('omp', home)).toBe(p);
+    expect(resolveOmpInjectHookPath("omp", home)).toBe(p);
   });
 
-  it('returns undefined when the installer has not run — launch unchanged, not broken', () => {
+  it("returns undefined when the installer has not run — launch unchanged, not broken", () => {
     // A box that never ran the installer has no hook file. Passing --hook at a
     // missing path would make every omp launch fail; absent is the safe state.
-    expect(resolveOmpInjectHookPath('omp', home)).toBeUndefined();
+    expect(resolveOmpInjectHookPath("omp", home)).toBeUndefined();
   });
 
-  it('is omp-only: claude and codex never get --hook', () => {
+  it("is omp-only: claude and codex never get --hook", () => {
     installHook();
-    expect(resolveOmpInjectHookPath('claude', home)).toBeUndefined();
-    expect(resolveOmpInjectHookPath('codex', home)).toBeUndefined();
+    expect(resolveOmpInjectHookPath("claude", home)).toBeUndefined();
+    expect(resolveOmpInjectHookPath("codex", home)).toBeUndefined();
   });
 
-  it('APPENDS --hook without replacing the coord extension (both loaders coexist)', () => {
+  it("APPENDS --hook without replacing the coord extension (both loaders coexist)", () => {
     // omp merges --hook and -e into ONE additionalExtensionPaths list, so these
     // accumulate. The regression this guards is a future edit that "simplifies"
     // by making one flag replace the other, which would silently disable either
     // lock enforcement or context injection.
-    const { args } = suLaunchArgs('omp', {
-      promptFile: '/p.md',
-      coordExtPath: '/h/.papercusp/papercusp-coord.ts',
-      injectHookPath: '/h/.papercusp/hooks/omp/inject-hook.ts',
+    const { args } = suLaunchArgs("omp", {
+      promptFile: "/p.md",
+      coordExtPath: "/h/.papercusp/papercusp-coord.ts",
+      injectHookPath: "/h/.papercusp/hooks/omp/inject-hook.ts",
     });
-    expect(args).toContain('-e');
-    expect(args).toContain('/h/.papercusp/papercusp-coord.ts');
-    expect(args).toContain('--hook');
-    expect(args).toContain('/h/.papercusp/hooks/omp/inject-hook.ts');
+    expect(args).toContain("-e");
+    expect(args).toContain("/h/.papercusp/papercusp-coord.ts");
+    expect(args).toContain("--hook");
+    expect(args).toContain("/h/.papercusp/hooks/omp/inject-hook.ts");
   });
 
-  it('omits --hook entirely when no hook path is supplied', () => {
-    expect(suLaunchArgs('omp', { promptFile: '/p.md' }).args).not.toContain('--hook');
+  it("omits --hook entirely when no hook path is supplied", () => {
+    expect(suLaunchArgs("omp", { promptFile: "/p.md" }).args).not.toContain(
+      "--hook",
+    );
   });
 
-  it('threads --hook through the role and resume launch paths too', () => {
-    const hookPath = '/h/.papercusp/hooks/omp/inject-hook.ts';
-    expect(roleLaunchArgs('omp', { promptFile: '/p.md', injectHookPath: hookPath }).args).toContain(hookPath);
+  it("threads --hook through the role and resume launch paths too", () => {
+    const hookPath = "/h/.papercusp/hooks/omp/inject-hook.ts";
     expect(
-      resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: null }, { injectHookPath: hookPath }).args,
+      roleLaunchArgs("omp", { promptFile: "/p.md", injectHookPath: hookPath })
+        .args,
+    ).toContain(hookPath);
+    expect(
+      resumeArgsFor(
+        { agent: "omp", cwd: "/x", ompThreadId: null },
+        { injectHookPath: hookPath },
+      ).args,
     ).toContain(hookPath);
   });
 
-  it('stays ADDITIVE: adding the hook introduces no model or routing argument', () => {
+  it("stays ADDITIVE: adding the hook introduces no model or routing argument", () => {
     // Owner standing preference 2026-06-29 — psu->omp launches on OMP's own
     // default config and the owner picks the model interactively in-app. The
     // injection wiring must never become a back door for forcing a model.
-    const withHook = suLaunchArgs('omp', { promptFile: '/p.md', injectHookPath: '/h/hook.ts' }).args;
-    const without = suLaunchArgs('omp', { promptFile: '/p.md' }).args;
-    expect(withHook.filter(a => !['--hook', '/h/hook.ts'].includes(a))).toEqual(without);
-    for (const modelFlag of ['--model', '-m', '--models']) expect(withHook).not.toContain(modelFlag);
+    const withHook = suLaunchArgs("omp", {
+      promptFile: "/p.md",
+      injectHookPath: "/h/hook.ts",
+    }).args;
+    const without = suLaunchArgs("omp", { promptFile: "/p.md" }).args;
+    expect(
+      withHook.filter((a) => !["--hook", "/h/hook.ts"].includes(a)),
+    ).toEqual(without);
+    for (const modelFlag of ["--model", "-m", "--models"])
+      expect(withHook).not.toContain(modelFlag);
   });
 });
 
@@ -7429,22 +10970,22 @@ describe('omp context-injection hook wiring (omp-context-injection-parity-2026-0
  * and closes — and the caller still shows a SUCCESS toast (the same shape as the
  * model/agent-pairing bug at NewSessionLauncher.tsx:467-477).
  */
-describe('launch-time mode: the tokens launch-su emits are the tokens psu parses (P-042)', () => {
-  it('accepts --mode=drain and resolves DRAIN, which implies AUTO', () => {
-    const args = parseArgs(['--mode=drain']);
-    expect(args.mode).toBe('drain');
+describe("launch-time mode: the tokens launch-su emits are the tokens psu parses (P-042)", () => {
+  it("accepts --mode=drain and resolves DRAIN, which implies AUTO", () => {
+    const args = parseArgs(["--mode=drain"]);
+    expect(args.mode).toBe("drain");
     // DRAIN implies AUTO — psu forces it on rather than relying on the caller
     // to pass both, which is why launch-su sends only the one flag.
     expect(effectiveAutoMode(args)).toBe(true);
   });
 
-  it('accepts the BOOLEAN --auto and resolves AUTO with no named mode', () => {
-    const args = parseArgs(['--auto']);
+  it("accepts the BOOLEAN --auto and resolves AUTO with no named mode", () => {
+    const args = parseArgs(["--auto"]);
     expect(args.mode).toBeNull();
     expect(effectiveAutoMode(args)).toBe(true);
   });
 
-  it('a launch with neither flag is NOT auto — the unchanged interactive default', () => {
+  it("a launch with neither flag is NOT auto — the unchanged interactive default", () => {
     const args = parseArgs([]);
     expect(args.mode).toBeNull();
     expect(effectiveAutoMode(args)).toBe(false);
@@ -7456,12 +10997,14 @@ describe('launch-time mode: the tokens launch-su emits are the tokens psu parses
    * and it breaks HERE, loudly, instead of at spawn time in a terminal nobody
    * is watching. This test is the reason the special case may not be tidied away.
    */
-  it('REJECTS --mode=auto — AUTO is a boolean flag, so the uniform mapping is wrong', () => {
-    expect(() => parseArgs(['--mode=auto'])).toThrow(/not recognized/);
+  it("REJECTS --mode=auto — AUTO is a boolean flag, so the uniform mapping is wrong", () => {
+    expect(() => parseArgs(["--mode=auto"])).toThrow(/not recognized/);
   });
 
-  it('rejects an unknown named mode rather than launching a plain session', () => {
-    expect(() => parseArgs(['--mode=definitely-not-a-mode'])).toThrow(/not recognized/);
+  it("rejects an unknown named mode rather than launching a plain session", () => {
+    expect(() => parseArgs(["--mode=definitely-not-a-mode"])).toThrow(
+      /not recognized/,
+    );
   });
 
   /**
@@ -7471,14 +11014,14 @@ describe('launch-time mode: the tokens launch-su emits are the tokens psu parses
    * psu's parser is a hand-maintained literal in a .mjs file that neither can
    * see. This fails the moment those disagree.
    */
-  it('every registry-launchable mode is actually launchable through psu', () => {
+  it("every registry-launchable mode is actually launchable through psu", () => {
     for (const id of LAUNCHABLE_MODE_IDS) {
       // The mapping launch-su applies: 'auto' is the boolean, everything else
       // is a named mode.
-      const argv = id === 'auto' ? ['--auto'] : [`--mode=${id}`];
+      const argv = id === "auto" ? ["--auto"] : [`--mode=${id}`];
       const args = parseArgs(argv);
       expect(effectiveAutoMode(args)).toBe(true);
-      if (id !== 'auto') expect(args.mode).toBe(id);
+      if (id !== "auto") expect(args.mode).toBe(id);
     }
   });
 });
@@ -7488,67 +11031,80 @@ describe('launch-time mode: the tokens launch-su emits are the tokens psu parses
  * block a MODEL-LESS `psu --resume` inherits. `modelArgsFor` cannot cover that
  * path: it emits nothing when no model is named.
  */
-describe('codexContextWindowConfigPatch (resume inherits the window)', () => {
-  it('prepends the window keys as ROOT keys, above any table', () => {
-    const out = codexContextWindowConfigPatch('[mcp_servers.papercusp-su]\nurl = "x"\n', 'gpt-5.6-sol');
+describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
+  it("prepends the window keys as ROOT keys, above any table", () => {
+    const out = codexContextWindowConfigPatch(
+      '[mcp_servers.papercusp-su]\nurl = "x"\n',
+      "gpt-5.6-sol",
+    );
     // TOML binds a root key written AFTER a table header to that table, so the
     // block landing first is correctness, not tidiness: emitted below the
     // [mcp_servers.papercusp-su] header these would become MCP server settings.
-    expect(out.indexOf('model_context_window')).toBeLessThan(out.indexOf('[mcp_servers.papercusp-su]'));
+    expect(out.indexOf("model_context_window")).toBeLessThan(
+      out.indexOf("[mcp_servers.papercusp-su]"),
+    );
     expect(out).toMatch(
       /^# BEGIN PAPERCUSP_CODEX_CONTEXT_WINDOW\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
     );
-    expect(out).toContain(codexContextConfigToml('gpt-5.6-sol').trim());
+    expect(out).toContain(codexContextConfigToml("gpt-5.6-sol").trim());
     expect(out).toContain('url = "x"'); // pre-existing content survives
   });
 
-  it('is idempotent — re-applying does not accumulate duplicate blocks', () => {
-    const once = codexContextWindowConfigPatch('model = "gpt-5.6-sol"\n', 'gpt-5.6-sol');
-    const twice = codexContextWindowConfigPatch(once, 'gpt-5.6-sol');
+  it("is idempotent — re-applying does not accumulate duplicate blocks", () => {
+    const once = codexContextWindowConfigPatch(
+      'model = "gpt-5.6-sol"\n',
+      "gpt-5.6-sol",
+    );
+    const twice = codexContextWindowConfigPatch(once, "gpt-5.6-sol");
     expect(twice).toBe(once);
     expect(twice.match(/model_context_window/g)).toHaveLength(1);
   });
 
-  it('migrates legacy unmarked root keys instead of producing invalid duplicate TOML', () => {
+  it("migrates legacy unmarked root keys instead of producing invalid duplicate TOML", () => {
     const legacy = [
-      'model_context_window = 1000000',
-      'model_auto_compact_token_limit = 900000',
+      "model_context_window = 1000000",
+      "model_auto_compact_token_limit = 900000",
       'model = "gpt-5.6-sol"',
-      '',
-      '[features]',
-      'memories = false',
-      '',
-    ].join('\n');
+      "",
+      "[features]",
+      "memories = false",
+      "",
+    ].join("\n");
 
-    const out = codexContextWindowConfigPatch(legacy, 'gpt-5.6-sol');
+    const out = codexContextWindowConfigPatch(legacy, "gpt-5.6-sol");
     expect(out.match(/^model_context_window\s*=/gm)).toHaveLength(1);
     expect(out.match(/^model_auto_compact_token_limit\s*=/gm)).toHaveLength(1);
     expect(out).toContain('model = "gpt-5.6-sol"');
-    expect(out).toContain('[features]\nmemories = false');
+    expect(out).toContain("[features]\nmemories = false");
   });
 
-  it('does not rewrite same-named keys that belong to a TOML table', () => {
+  it("does not rewrite same-named keys that belong to a TOML table", () => {
     const out = codexContextWindowConfigPatch(
-      '[example]\nmodel_context_window = 123\nmodel_auto_compact_token_limit = 100\n',
-      'gpt-5.6-sol',
+      "[example]\nmodel_context_window = 123\nmodel_auto_compact_token_limit = 100\n",
+      "gpt-5.6-sol",
     );
-    expect(out).toContain('[example]\nmodel_context_window = 123\nmodel_auto_compact_token_limit = 100');
+    expect(out).toContain(
+      "[example]\nmodel_context_window = 123\nmodel_auto_compact_token_limit = 100",
+    );
     expect(out.match(/model_context_window/g)).toHaveLength(2);
   });
 
-  it('REMOVES a stale block when the home moves to a model with no extended window', () => {
+  it("REMOVES a stale block when the home moves to a model with no extended window", () => {
     // The failure this prevents: a home switched gpt-5.6-sol -> gpt-5.5 keeps an
     // 872k declaration for a 272k model, and papercusp then seeds a soft limit
     // above the real wall.
-    const withBlock = codexContextWindowConfigPatch('model = "gpt-5.5"\n', 'gpt-5.6-sol');
-    expect(withBlock).toContain('model_context_window');
-    const moved = codexContextWindowConfigPatch(withBlock, 'gpt-5.5');
-    expect(moved).not.toContain('model_context_window');
+    const withBlock = codexContextWindowConfigPatch(
+      'model = "gpt-5.5"\n',
+      "gpt-5.6-sol",
+    );
+    expect(withBlock).toContain("model_context_window");
+    const moved = codexContextWindowConfigPatch(withBlock, "gpt-5.5");
+    expect(moved).not.toContain("model_context_window");
     expect(moved).toContain('model = "gpt-5.5"');
   });
 
-  it('strips the block rather than guessing when the model is unresolvable', () => {
-    const withBlock = codexContextWindowConfigPatch('', 'sol');
-    expect(codexContextWindowConfigPatch(withBlock, null)).toBe('');
+  it("strips the block rather than guessing when the model is unresolvable", () => {
+    const withBlock = codexContextWindowConfigPatch("", "sol");
+    expect(codexContextWindowConfigPatch(withBlock, null)).toBe("");
   });
 });
