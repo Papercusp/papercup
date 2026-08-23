@@ -551,6 +551,18 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
       'Arming makes a scheduled plan start firing runs; reversible (disarm). NON-protected so it can graduate per plan risk (scheduled-recurring-plans-2026-06-16 D-017) — seeded never-auto, distinct from system-control’s permanently-protected SYSTEM loops.',
   },
   {
+    id: 'schedule.arm-goal-schedule',
+    label: 'Arm / pause a scheduled goal activation',
+    category: 'schedule-arm',
+    reversibility: 'reversible',
+    authority: 'system',
+    queenVerbs: ['goals:arm-schedule'],
+    humanSurface: 'Goal schedule controls',
+    coverage: 'covered',
+    notes:
+      'Arming makes a goal start its holder on a cadence (system:goal-start → startGoalById, whose already-held/not-active guards prevent double-spawn); reversible (disarm:true). Same graduatable seeding as plan schedule arming (work-on-everything-goal-2026-08-23 P-020, D-006 ruling 3).',
+  },
+  {
     id: 'schedule.arm-external-trigger',
     label: 'Arm / disarm an external-event plan binding',
     category: 'schedule-arm',

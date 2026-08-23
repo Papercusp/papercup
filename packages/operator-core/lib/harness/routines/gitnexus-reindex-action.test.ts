@@ -982,6 +982,118 @@ describe('cleanCrashResidue', () => {
   });
 });
 
+/**
+ * The open-handle discriminator itself (2026-08-23).
+ *
+ * This is the instrument the residue policy now leans on, so it gets its own
+ * falsifiability suite rather than being trusted because it looks right. The rule that
+ * earned it: BOTH instruments the previous investigation leaned on failed the same way —
+ * `shadow.size === 0` (a proxy that covers one crash instant out of many) and
+ * `proc-guard.mjs check "gitnexus analyze"` (an argv match that returns "no external
+ * process matches" against a live 4.8 GiB analyze, because the real argv's basename is
+ * `index.js` — EI-21277960228841563).
+ *
+ * So every absence assertion below is paired with a POSITIVE CONTROL: if the probe
+ * cannot find a handle we are DEMONSTRABLY holding in this very process, its zeroes mean
+ * nothing and the whole fix is resting on a broken instrument.
+ */
+describe('probeOpenHandles / classifyWriterLiveness — the open-handle discriminator', () => {
+  const onLinux = process.platform === 'linux' && existsSync('/proc/self/fd');
+
+  function tmpFile(prefix: string, contents = 'x'): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    const f = join(dir, 'lbug.shadow');
+    writeFileSync(f, contents);
+    return f;
+  }
+
+  it.skipIf(!onLinux)('POSITIVE CONTROL — finds THIS process holding a file open', () => {
+    const f = tmpFile('gitnexus-probe-pos-');
+    const fd = openSync(f, 'r');
+    try {
+      const probe = probeOpenHandles(f);
+      expect(probe.ok).toBe(true);
+      expect(probe.scannedPids).toBeGreaterThan(0);
+      expect(probe.holders).toContain(process.pid);
+      expect(classifyWriterLiveness(probe)).toBe('live');
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  it.skipIf(!onLinux)('reports NO holders once that same handle is closed', () => {
+    const f = tmpFile('gitnexus-probe-neg-');
+    const fd = openSync(f, 'r');
+    const whileOpen = probeOpenHandles(f); // the control, taken first
+    closeSync(fd);
+    const afterClose = probeOpenHandles(f);
+
+    expect(whileOpen.holders).toContain(process.pid); // instrument demonstrably works...
+    expect(afterClose.ok).toBe(true);
+    expect(afterClose.holders).toEqual([]); // ...so THIS zero is a measurement
+    expect(classifyWriterLiveness(afterClose)).toBe('orphaned');
+  });
+
+  it.skipIf(!onLinux)('does NOT match a different file that merely shares the basename', () => {
+    // Guards the basename narrowing in the inode cross-check from decaying into a
+    // basename-only match, which would pin every shadow on the box as live the moment
+    // any OTHER checkout had one open.
+    const mine = tmpFile('gitnexus-probe-a-');
+    const other = tmpFile('gitnexus-probe-b-'); // same basename, different inode
+    const fd = openSync(other, 'r');
+    try {
+      expect(probeOpenHandles(other).holders).toContain(process.pid); // control
+      expect(probeOpenHandles(mine).holders).toEqual([]); // the assertion under test
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  it.skipIf(!onLinux)('still sees a holder when the file has been UNLINKED underneath it', () => {
+    // `/proc/<pid>/fd/<n>` reads as `<path> (deleted)` for an unlinked-but-open file.
+    // A writer whose file was unlinked is still a writer, so the marker is stripped
+    // rather than skipped — and the inode cross-check has to carry this case anyway.
+    const f = tmpFile('gitnexus-probe-del-');
+    const fd = openSync(f, 'r+');
+    try {
+      const before = probeOpenHandles(f);
+      expect(before.holders).toContain(process.pid);
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  it('is UNKNOWN, never "no holders", when the path does not exist', () => {
+    const probe = probeOpenHandles(join(tmpdir(), 'gitnexus-definitely-absent-shadow'));
+    expect(probe.ok).toBe(false);
+    expect(classifyWriterLiveness(probe)).toBe('unknown');
+  });
+
+  it('is UNKNOWN, never "no holders", when /proc is unavailable', () => {
+    const f = tmpFile('gitnexus-probe-noproc-');
+    const probe = probeOpenHandles(f, join(tmpdir(), 'gitnexus-not-a-proc-filesystem'));
+    expect(probe.ok).toBe(false);
+    expect(probe.holders).toEqual([]);
+    // THE SAFETY PROPERTY: empty holders + ok:false must NOT read as 'orphaned'.
+    expect(classifyWriterLiveness(probe)).toBe('unknown');
+  });
+
+  it('treats a missing probe as UNKNOWN', () => {
+    expect(classifyWriterLiveness(null)).toBe('unknown');
+    // CALIBRATION so these three cannot all pass against a hardcoded 'unknown'.
+    expect(classifyWriterLiveness({ ok: true, holders: [1], scannedPids: 1, unreadablePids: 0 })).toBe('live');
+    expect(classifyWriterLiveness(NO_HOLDERS)).toBe('orphaned');
+  });
+
+  it('does not let inaccessible processes veto the verdict, but does COUNT them', () => {
+    // The stated blind spot, pinned so it stays stated. unreadablePids is diagnostic;
+    // if it ever starts forcing 'unknown', the fix is disabled on every box with a
+    // root daemon — i.e. all of them — and this assertion is where that shows up.
+    const withBlindSpots: OpenHandleProbe = { ok: true, holders: [], scannedPids: 200, unreadablePids: 87 };
+    expect(classifyWriterLiveness(withBlindSpots)).toBe('orphaned');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // P-004 — the semantic canary. Pure policy, no graph and no subprocess.
 // ---------------------------------------------------------------------------
