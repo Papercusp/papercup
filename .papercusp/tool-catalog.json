@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 792,
+  "count": 793,
   "tools": [
     {
       "name": "ablation:report",
@@ -9071,7 +9071,7 @@
           "POST"
         ]
       },
-      "description": "Coordinated restart for a shared long-running host (drain/coalesce/audit). Targets: \"dev\" (:3070, default) · \"staging\" (:3170) · \"desktop-dev\" (wrapper-owned :3270) · \"gateway\" (:8788 LLM egress) · \"bg-host\" (routines/git-sync) · \"embed-sidecar\" (:3384). Dry run unless confirm:true; real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or authorize:true (audited); non-dev targets debounce (~2m; bg-host ~13m).",
+      "description": "Coordinated restart for shared long-running host (drain/coalesce/audit). Targets: \"dev\" (:3070, default) · \"staging\" (:3170) · \"desktop-dev\" (wrapper-owned :3270) · \"gateway\" (:8788 LLM egress) · \"bg-host\" (routines/git-sync) · \"embed-sidecar\" (:3384). Dry run unless confirm:true; real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or authorize:true (audited); non-dev targets debounce (~2m; bg-host ~13m).",
       "capabilities": [
         "locks:write"
       ],
@@ -25781,6 +25781,39 @@
       "guidance": {
         "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the mug, a UI 'run this on that agent' action, a mug placing a precise command (not prose) onto a cup.",
         "notWhen": "Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue."
+      }
+    },
+    {
+      "name": "social:reply",
+      "http": {
+        "path": "/api/agent-tools/social/reply",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Reply to one social post the owner already has, named by its canonical postId (\"<platform>:<id>\"). You supply TEXT ONLY: the server resolves the account, thread, credential and audience from the stored post, so this tool cannot redirect a reply, choose which identity speaks, or widen who sees it.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks you to answer a specific post. Locate it with personal:search and pass the returned canonical ref as postId.",
+        "notWhen": "Posting something NEW, or to a community rather than a thread — that is social:post, which checks the destination. Not for email (mail:reply) or Slack (chat:reply).",
+        "chaining": "personal:search → postId → social:reply. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it."
       }
     },
     {
