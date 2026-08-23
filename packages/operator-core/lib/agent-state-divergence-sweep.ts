@@ -230,6 +230,12 @@ export async function loadRecentCalls(opts: {
        -- goal-drift finding inside that previous bucket. The declaration is
        -- state, not evidence of an action taken under the old intent.
        AND i.tool_name <> 'coord:declare-intent'
+       -- coord:orient is the outer bootstrap wrapper around a declaration and
+       -- its folded reads. Its telemetry can retain the pre-declaration goal
+       -- while the first folded read carries the newly declared goal. Treating
+       -- that control row as an action manufactures drift in every goal pivot;
+       -- the contextual rows inside the bootstrap remain eligible evidence.
+       AND i.tool_name <> 'coord:orient'
        -- Platform reaction rows are telemetry about the wake mechanism, not
        -- agent-authored actions. Keep the predicate deliberately narrow: an
        -- unattributed pot:wake with the event source and its stamped reason.

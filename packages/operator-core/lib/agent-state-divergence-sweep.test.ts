@@ -85,6 +85,10 @@ describe('loadRecentCalls', () => {
     // declaration. Keeping it would manufacture drift when the goal changed
     // as part of a legitimate re-declaration.
     expect(query).toContain("tool_name <> 'coord:declare-intent'");
+    // coord:orient is the outer declaration/bootstrap wrapper. Its telemetry can
+    // retain the pre-declaration goal while folded contextual reads carry the new
+    // goal; the wrapper itself is control-plane state, not action evidence.
+    expect(query).toContain("tool_name <> 'coord:orient'");
     expect(query).not.toContain("tool_name <> 'coord:send'");
     expect(query).toContain("tool_name = 'pot:wake'");
     expect(query).toContain("call_origin IS NULL");
