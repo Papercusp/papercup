@@ -88,8 +88,12 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
           ompThreadId: null,
           coordOwnerId: s.ownerId,
           cwd: s.cwd,
-        }) as never,
+      }) as never,
       alive: () => false,
+      // EI-212246: Channel 2 now claims the ended adv-session atomically before
+      // spawning. Keep this multi-session fixture hermetic and model a winning
+      // claim; the production claim path has its own focused coverage.
+      claimResume: async () => true,
       spawnDetached: (bin, args, opts) => {
         captured.push({ bin, args, cwd: opts.cwd, env: opts.env });
         return 4242;
@@ -177,6 +181,9 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
           cwd: s.cwd,
         }) as never,
       alive: () => false,
+      // The production claim is intentionally outside this isolation fixture;
+      // make the resume writer a winner so the test reaches the spawn seam.
+      claimResume: async () => true,
       spawnDetached: (bin, args, opts) => {
         captured.push({ bin, args, cwd: opts.cwd, env: opts.env });
         return 99;

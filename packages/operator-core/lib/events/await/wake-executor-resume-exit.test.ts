@@ -42,6 +42,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         write: () => true,
         presence: async () => null,
         alive: () => false,
+        // Hermetic Channel 2 resume path: the production default performs the
+        // atomic DB claim, but this unit test only exercises detached-exit wiring.
+        claimResume: async () => true,
         ...over,
       },
     };
