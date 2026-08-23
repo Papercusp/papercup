@@ -256,7 +256,7 @@ export async function refreshGoalTripwires(
 }
 
 /**
- * A measured ceiling breach is a terminal control, not merely telemetry. The
+ * A spend ceiling breach is a terminal control, not merely telemetry. The
  * launch gate prevents new work, but an active goal otherwise keeps its
  * existing pots and attributed loops alive indefinitely. Transition through
  * the shared goal-stop seam after the row is marked killed so placement and
@@ -277,15 +277,24 @@ async function enforceGoalBreaches(
      LIMIT 1
   `;
   const budgetCents = budgetRows[0]?.budget_cents == null ? null : Number(budgetRows[0].budget_cents);
-  const budgetBreached = rollup.measured && budgetCents !== null && rollup.totalCents >= budgetCents;
+  // `totalCents` is a lower bound when any sample is unpriced. If that known
+  // floor already reaches the ceiling, the true spend necessarily does too;
+  // the incomplete measurement marker must not prevent the terminal stop.
+  const budgetBreached = budgetCents !== null && rollup.totalCents >= budgetCents;
   if (!budgetBreached && breached.length === 0) return;
 
   const reasons = [
-    ...(budgetBreached ? [`measured spend ${rollup.totalCents}c reached budget ${budgetCents}c`] : []),
+    ...(budgetBreached
+      ? [
+          rollup.measured
+            ? `measured spend ${rollup.totalCents}c reached budget ${budgetCents}c`
+            : `spend floor ${rollup.totalCents}c reached budget ${budgetCents}c with ${rollup.unpricedSamples} unpriced sample(s)`,
+        ]
+      : []),
     ...breached.map((b) => `${b.metric} ${b.current} reached threshold ${b.threshold}`),
   ];
   const evidence = {
-    reason: 'measured-goal-breach',
+    reason: budgetBreached && !rollup.measured ? 'spend-floor-goal-breach' : 'measured-goal-breach',
     at: new Date().toISOString(),
     reasons,
     spentCents: rollup.totalCents,

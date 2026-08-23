@@ -352,6 +352,27 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     });
   });
 
+  it('kills an active goal when an unmeasured spend floor already exceeds its budget', async () => {
+    await seedGoal({ budgetCents: 200 });
+    await pot('hive-a');
+    await sample({ harness: 'hive-a', usd: 2.0 });
+    await sample({ harness: 'hive-a', usd: null }); // the 200c total is a known floor
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, written: 1, errors: [] });
+    const rows = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(rows[0]?.status).toBe('killed');
+    expect(await goalMetadata()).toMatchObject({
+      autoKilled: {
+        reason: 'spend-floor-goal-breach',
+        spentCents: 200,
+        measured: false,
+      },
+    });
+    expect((await goalMetadata())?.autoKilled.reasons[0]).toContain('unpriced sample');
+  });
+
   it('kills an active goal when a measured structured tripwire breaches', async () => {
     await seedPartitionFixture();
     await setTripwires([{ metric: 'spend_usd', label: 'spend', threshold: 2, unit: 'usd' }]);
