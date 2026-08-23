@@ -18,7 +18,10 @@ import {
   estimateTextTokens,
   findByRef,
   isInteractive,
+  parseAtSpiBusProperty,
   parseWalkerOutput,
+  HOST_BUS_ENV_KEYS,
+  NoAccessibilityBusError,
   renderA11yTree,
   walkerCommand,
   type A11yNode,
@@ -302,18 +305,63 @@ describe('findByRef + elementClickPoint', () => {
   });
 });
 
+const BUS = 'unix:path=/run/user/1000/at-spi/bus_99,guid=abc';
+
+describe('parseAtSpiBusProperty', () => {
+  it('reads the address a display advertises on its root window', () => {
+    expect(parseAtSpiBusProperty(`AT_SPI_BUS(STRING) = "${BUS}"`)).toBe(BUS);
+  });
+
+  it('returns null for xprop\'s absent-property answer — a real "no a11y bus here"', () => {
+    expect(parseAtSpiBusProperty('AT_SPI_BUS:  no such atom on any window.')).toBeNull();
+    expect(parseAtSpiBusProperty('')).toBeNull();
+  });
+});
+
 describe('walkerCommand', () => {
   it('inherits the sandbox rail — reading a desktop is as guarded as driving one', () => {
-    expect(() => walkerCommand(':0')).toThrow(/HOST display/);
-    expect(() => walkerCommand('not-a-display')).toThrow(/invalid display/);
+    expect(() => walkerCommand(':0', BUS)).toThrow(/HOST display/);
+    expect(() => walkerCommand('not-a-display', BUS)).toThrow(/invalid display/);
   });
 
   it('binds DISPLAY to the sandbox and carries the walker on argv', () => {
-    const cmd = walkerCommand(':99');
+    const cmd = walkerCommand(':99', BUS);
     expect(cmd.bin).toBe('gjs');
     expect(cmd.args[0]).toBe('-c');
     expect(cmd.args[1]).toBe(ATSPI_WALKER_JS);
     expect(cmd.env.DISPLAY).toBe(':99');
+  });
+
+  it('PINS the a11y bus and strips the host bus keys — the 69-app leak guard', () => {
+    const cmd = walkerCommand(':99', BUS);
+    expect(cmd.env.AT_SPI_BUS_ADDRESS).toBe(BUS);
+    for (const key of HOST_BUS_ENV_KEYS) {
+      if (key === 'AT_SPI_BUS_ADDRESS') continue;
+      expect(cmd.env[key]).toBeUndefined();
+    }
+  });
+
+  it('strips an INHERITED host bus address rather than letting it win', () => {
+    const dirty = {
+      ...process.env,
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      AT_SPI_BUS_ADDRESS: 'unix:path=/run/user/1000/at-spi/bus',
+    } as NodeJS.ProcessEnv;
+    const restore = { ...process.env };
+    try {
+      Object.assign(process.env, dirty);
+      const cmd = walkerCommand(':99', BUS);
+      expect(cmd.env.AT_SPI_BUS_ADDRESS).toBe(BUS);
+      expect(cmd.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in restore)) delete process.env[k];
+      Object.assign(process.env, restore);
+    }
+  });
+
+  it('REFUSES to walk without a bus address instead of silently reading the host session', () => {
+    expect(() => walkerCommand(':99', '')).toThrow(NoAccessibilityBusError);
+    expect(() => walkerCommand(':99', '   ')).toThrow(/REFUSING to fall back/);
   });
 
   it('carries a walker that prints exactly one sentinel line on both paths', () => {

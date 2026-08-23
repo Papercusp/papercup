@@ -568,27 +568,73 @@ export const HOST_BUS_ENV_KEYS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Read the a11y bus advertised by a display, so the walker can be pinned to it.
+ * PRIMARY: ask a desktop's OWN session bus for its accessibility bus address.
  *
- * This is the ONLY authority for "which accessibility bus belongs to this desktop":
- * the property is written on the sandbox's own root window by `at-spi-bus-launcher`,
- * so it cannot name another display's bus.
+ * `org.a11y.Bus` is a D-Bus ACTIVATABLE service, so this single call both starts
+ * `at-spi-bus-launcher` (if it is not already up) and returns the address it chose.
+ * That two-in-one is why this is the primary probe rather than the root-window read:
+ *
+ *  - Hand-launching `at-spi-bus-launcher` does NOT work — it races the service
+ *    activation and dies with `Failed to launch bus: Bus exited with code 0`
+ *    (measured 2026-08-23 on :121).
+ *  - The `AT_SPI_BUS` root-window property is NOT reliably set. It was present on
+ *    :114/:120 (bus started by an app) and ABSENT on :122 where the very same
+ *    `GetAddress` call returned a perfectly good `…/at-spi/bus_122`. A probe that
+ *    only reads the root property therefore reports "no accessibility here" for a
+ *    desktop that has it.
+ *
+ * Isolation holds because BOTH keys are per-desktop: the session bus is this
+ * desktop's own `dbus-daemon`, and at-spi names its bus after the display
+ * (`bus_122` for `:122`).
  */
-export function a11yBusProbeCommand(display: string): { bin: string; args: string[]; env: Record<string, string> } {
+export function a11yBusCommand(sessionBusAddress: string): { bin: string; args: string[]; env: Record<string, string> } {
+  const addr = (sessionBusAddress ?? '').trim();
+  if (!addr) throw new Error('computer:observe — a11yBusCommand requires the desktop\'s session bus address');
+  return {
+    bin: 'gdbus',
+    args: [
+      'call', '--session',
+      '--dest', 'org.a11y.Bus',
+      '--object-path', '/org/a11y/bus',
+      '--method', 'org.a11y.Bus.GetAddress',
+    ],
+    // Only the bus address — this call needs no display, and passing none means it
+    // cannot accidentally be steered by an inherited host DISPLAY.
+    env: { DBUS_SESSION_BUS_ADDRESS: addr },
+  };
+}
+
+/**
+ * SECONDARY: read the bus a display advertises on its root window.
+ *
+ * For a desktop this process did not provision (a frame slot, a guest) there is no
+ * recorded session-bus address, and the root property is then the only handle. It is
+ * a strictly weaker probe — see `a11yBusCommand` for the measurement showing it can
+ * be absent on a desktop that HAS a bus — so it is the fallback, never the primary.
+ */
+export function a11yBusFromRootCommand(display: string): { bin: string; args: string[]; env: Record<string, string> } {
   return { bin: 'xprop', args: ['-display', display, '-root', 'AT_SPI_BUS'], env: sandboxXEnv(display) };
 }
 
 /**
- * Parse `xprop -root AT_SPI_BUS` output into a bus address.
+ * Parse a bus address out of either probe's output.
  *
- * Returns null for the absent case — `AT_SPI_BUS:  no such atom on any window.` —
- * which is a REAL answer meaning "this desktop has no accessibility bus", and is the
- * exact condition that must refuse rather than fall through to the host's.
+ * One parser for both shapes on purpose: the two probes answer the SAME question and
+ * a caller that falls back from one to the other should not also have to switch
+ * parsers. Accepts gdbus's tuple (`('unix:path=…',)`), xprop's property line, and a
+ * bare address; returns null for xprop's `no such atom on any window.` — which is a
+ * real answer meaning "no accessibility bus here", and is exactly the condition that
+ * must refuse rather than fall through to the host's.
  */
-export function parseAtSpiBusProperty(stdout: string): string | null {
-  const m = /AT_SPI_BUS\s*\(STRING\)\s*=\s*"([^"]+)"/.exec(stdout ?? '');
-  const addr = m?.[1]?.trim();
-  return addr && addr.length > 0 ? addr : null;
+export function parseA11yBusAddress(stdout: string): string | null {
+  const raw = (stdout ?? '').trim();
+  if (!raw) return null;
+  const tuple = /^\(\s*'([^']+)'\s*,?\s*\)$/.exec(raw);
+  if (tuple) return tuple[1]!.trim() || null;
+  const prop = /AT_SPI_BUS\s*\(STRING\)\s*=\s*"([^"]+)"/.exec(raw);
+  if (prop) return prop[1]!.trim() || null;
+  if (/^unix:(path|abstract)=/.test(raw)) return raw;
+  return null;
 }
 
 export class NoAccessibilityBusError extends Error {
