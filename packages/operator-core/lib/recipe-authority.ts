@@ -95,6 +95,34 @@ export interface RecipeAuthorityMetadata {
   refs: RecipeAuthorityRefs;
   requiresContext: boolean;
   runnable: boolean;
+  /**
+   * WI-40896 / D-048: whether `refs` is a MEASUREMENT or merely an empty set.
+   *
+   * When `deriveRecipeAuthority` hits an unprovable construct it returns early
+   * (see `inspectCall`'s dynamic-dispatch branch, which fires BEFORE
+   * `collectArgs`), so that call's identities are never collected. `bound` is
+   * then computed over the uncollected refs and comes out `false`. The result
+   * rendered `refs: {}` + `requiresContext: false` — indistinguishable from a
+   * recipe that genuinely needs no authority, when it actually means the
+   * authority COULD NOT BE MEASURED. On a safety surface a not-measured value
+   * rendered as an absent one is the defect, not the empty set itself.
+   *
+   * This is the same boundedness marker the repo already requires beside a
+   * count computed over a capped fetch: state the boundedness ON the value, so
+   * a floor is never read as a total.
+   *
+   * Optional so older stored/round-tripped payloads do not strand — and
+   * deliberately so: absent reads as `undefined` → falsy → "not measured",
+   * which fails CLOSED. `recipes:get` always populates it.
+   */
+  refsMeasured?: boolean;
+  /**
+   * WI-40896 / D-048: WHICH construct made the script unprovable, when one did.
+   * The descriptor has always carried this (`RecipeAuthorityDescriptor.unresolvedCause`);
+   * the recipes:get rendering simply dropped it, leaving a caller unable to tell
+   * an unmeasurable script from a context-free one. Null when resolvable.
+   */
+  unresolvedCause?: RecipeUnresolvedCause | null;
 }
 
 export interface RecipeAuthorityRecommendation {
