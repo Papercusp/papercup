@@ -1185,7 +1185,8 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # tolerates the sub-millisecond gap where the dir exists unstamped.
       _leader_id > "$_c_lockdir/pid" 2>/dev/null || true
       _do_cache_write=1
-      # Also sweep the leader's in-progress output temps (EI-19368312145172418):
+      # Also sweep the leader's in-progress output temps and capture FIFOs
+      # (EI-19368312145172418):
       # a leader killed mid-run would otherwise leave a `.part` behind. Both are
       # still UNSET at this point — they are assigned only once the leader
       # actually runs — and `set -u` (above) makes expanding an unset name an
@@ -1194,7 +1195,12 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # "line 1: _c_out_tmp: unbound variable", which reads as a fault in the
       # caller's own command, and the trap aborts partway through its cleanup
       # list rather than running all of it (WI-38277, observed live).
-      trap 'rm -rf "$_c_lockdir" 2>/dev/null; rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}" 2>/dev/null' EXIT
+      trap '
+        if [ -n "${_c_out_tee_pid:-}" ]; then kill "${_c_out_tee_pid}" 2>/dev/null || true; fi
+        if [ -n "${_c_err_tee_pid:-}" ]; then kill "${_c_err_tee_pid}" 2>/dev/null || true; fi
+        rm -rf "$_c_lockdir" 2>/dev/null
+        rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}" "${_c_out_fifo:-}" "${_c_err_fifo:-}" 2>/dev/null
+      ' EXIT
       break
     fi
     # Reclaim an ABANDONED lock. Unlike the flock slots above, a plain mkdir
@@ -1354,9 +1360,11 @@ fi
 # or signal). We intentionally do NOT `exec` so the fd/lock stays with us.
 if [ "$_do_cache_write" = 1 ]; then
   # Leader path: tee combined streams to the coalescing cache while keeping
-  # stdout/stderr genuinely separate for OUR OWN caller (process substitution
-  # runs the command in the foreground — $? below is the real command's exit
-  # status, not tee's).
+  # stdout/stderr genuinely separate for OUR OWN caller. The capture readers
+  # use explicit FIFOs and PIDs instead of process substitution: a command may
+  # spawn a daemon that inherits the capture descriptors after the command PID
+  # exits, and Bash's implicit process-substitution wait would then hang forever
+  # waiting for EOF that belongs to the daemon's descriptor table (EI-21261757807519288).
   # Stamped HERE, not when the lock was won: winning the lock can precede the
   # actual start by however long the slot sweep below had to wait, and the
   # barrier's guarantee is about when the command began READING the tree.
@@ -1387,26 +1395,53 @@ if [ "$_do_cache_write" = 1 ]; then
   # it must already have its output in place.
   _c_out_tmp="$_c_out.$$.part"
   _c_err_tmp="$_c_err.$$.part"
-  # WI-40946 — process-substitution children inherit every open descriptor in
-  # this shell, including the flock-backed heavy-slot fd. A real command can
-  # finish while one of its descendants still has stdout/stderr open; Bash then
-  # lets the capture `tee` outlive this wrapper. Before this guard, that orphaned
-  # tee kept the slot flock alive even after the result and exit artifact were
-  # terminal, so an exclusive release materializer could wait forever on work
-  # that no longer existed. The real command tree MUST inherit `_fd` (the slot
-  # covers all of its work), but the two passive capture helpers must not.
+  # WI-40946 / EI-21261757807519288 — capture helpers must not inherit the
+  # wrapper's slot or each other's FIFO descriptors. The real command tree MUST
+  # inherit `_fd` (the slot covers all of its work), but the two passive capture
+  # helpers must not. Closing every non-stdio descriptor in the helper also
+  # prevents the stderr tee from retaining the stdout tee's input pipe.
   _pc_heavy_capture_without_slot_fd() {
-    case "${_fd:-}" in
-      ''|*[!0-9]*) ;;
-      *) eval "exec ${_fd}>&-" 2>/dev/null || true ;;
-    esac
+    _capture_fd_path=""
+    _capture_fd_num=""
+    for _capture_fd_path in /proc/self/fd/*; do
+      _capture_fd_num="${_capture_fd_path##*/}"
+      case "$_capture_fd_num" in
+        0|1|2) ;;
+        *) eval "exec ${_capture_fd_num}>&-" 2>/dev/null || true ;;
+      esac
+    done
     exec tee "$1"
   }
-  "${_runner[@]}" "$@" \
-    > >(_pc_heavy_capture_without_slot_fd "$_c_out_tmp") \
-    2> >(_pc_heavy_capture_without_slot_fd "$_c_err_tmp" >&2)
-  _rc=$?
-  wait 2>/dev/null || true   # let both tee subshells flush before we publish the result
+
+  _c_out_fifo="$_c_out.$$.out.pipe"
+  _c_err_fifo="$_c_err.$$.err.pipe"
+  _c_out_tee_pid=""
+  _c_err_tee_pid=""
+  if mkfifo "$_c_out_fifo" "$_c_err_fifo" 2>/dev/null; then
+    # Start readers before opening the command's FIFO writers. Each helper is
+    # explicitly tracked so it can be terminated as soon as the command PID
+    # exits, even when a daemon still holds a writer open.
+    _pc_heavy_capture_without_slot_fd "$_c_out_tmp" <"$_c_out_fifo" &
+    _c_out_tee_pid=$!
+    _pc_heavy_capture_without_slot_fd "$_c_err_tmp" <"$_c_err_fifo" >&2 &
+    _c_err_tee_pid=$!
+    "${_runner[@]}" "$@" >"$_c_out_fifo" 2>"$_c_err_fifo"
+    _rc=$?
+    # The command has returned; any remaining FIFO writers belong to
+    # descendants. They must not decide when this wrapper or its caller sees
+    # completion. GNU tee writes each read promptly, so killing the readers
+    # here preserves the command's completed output while releasing the pipe.
+    kill "$_c_out_tee_pid" "$_c_err_tee_pid" 2>/dev/null || true
+    wait "$_c_out_tee_pid" "$_c_err_tee_pid" 2>/dev/null || true
+    rm -f "$_c_out_fifo" "$_c_err_fifo" 2>/dev/null || true
+  else
+    # Coalescing is best-effort. If this cache directory cannot host FIFOs,
+    # run the command normally rather than risking a blocked writer or a
+    # cache entry with no complete output pair.
+    _do_cache_write=0
+    "${_runner[@]}" "$@"
+    exit $?
+  fi
   mv -f "$_c_out_tmp" "$_c_out" 2>/dev/null
   mv -f "$_c_err_tmp" "$_c_err" 2>/dev/null
   printf '%s %s\n' "$_rc" "$_started_at" > "$_c_exit" 2>/dev/null
