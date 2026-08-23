@@ -25,6 +25,7 @@ import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { runScheduleTool } from './ScheduleEditor';
 import {
   buildAutomationActivity,
+  buildAutomationFlows,
   buildAutomationItems,
   buildAutomationSources,
   filterAutomationItems,
@@ -38,7 +39,8 @@ import {
 } from './automations-model';
 import './adv-automations.css';
 
-type View = 'catalog' | 'activity' | 'sources';
+type View = 'flow' | 'catalog' | 'activity' | 'sources';
+type FlowFilter = 'all' | 'attention' | 'paused';
 
 interface RunRow {
   id: number;
@@ -94,7 +96,11 @@ function durationLabel(ms: number | null): string {
 export default function AdvAutomationsTab() {
   const [view, setView] = useQueryState(
     'autoView',
-    parseAsStringEnum<View>(['catalog', 'activity', 'sources']).withDefault('catalog'),
+    parseAsStringEnum<View>(['flow', 'catalog', 'activity', 'sources']).withDefault('flow'),
+  );
+  const [flowFilter, setFlowFilter] = useQueryState(
+    'autoFlowFilter',
+    parseAsStringEnum<FlowFilter>(['all', 'attention', 'paused']).withDefault('all'),
   );
   const [filter, setFilter] = useQueryState(
     'autoFilter',
@@ -163,11 +169,22 @@ export default function AdvAutomationsTab() {
     external,
   }), [catalog, external, occurrencesQuery.data, plansQuery.data, schedulesQuery.data]);
   const items = useMemo(() => buildAutomationItems(modelInput), [modelInput]);
+  const flows = useMemo(() => buildAutomationFlows(items), [items]);
+  const visibleFlows = useMemo(() => flows.filter((item) => {
+    if (flowFilter === 'attention' && !item.needsAttention) return false;
+    if (flowFilter === 'paused' && !item.paused) return false;
+    return filterAutomationItems([item], 'all', query).length === 1;
+  }), [flowFilter, flows, query]);
   const visibleItems = useMemo(
     () => filterAutomationItems(items, filter, query),
     [filter, items, query],
   );
-  const selected = items.find((item) => item.id === selectedId) ?? visibleItems[0] ?? items[0] ?? null;
+  const selected = items.find((item) => item.id === selectedId)
+    ?? (view === 'flow' ? visibleFlows[0] : visibleItems[0])
+    ?? items[0]
+    ?? null;
+  const selectedFlow = selected?.kind === 'triggered-plan' ? selected : visibleFlows[0] ?? null;
+  const inspected = view === 'flow' ? selectedFlow : selected;
   const activity = useMemo(() => buildAutomationActivity(modelInput), [modelInput]);
   const sources = useMemo(() => buildAutomationSources(modelInput), [modelInput]);
 
@@ -175,21 +192,21 @@ export default function AdvAutomationsTab() {
   useEffect(() => {
     let live = true;
     setInputs(null);
-    if (!selected?.planSlug) return () => { live = false; };
-    void fetchPlanInputs(selected.planSlug, selected.harness)
+    if (!inspected?.planSlug) return () => { live = false; };
+    void fetchPlanInputs(inspected.planSlug, inspected.harness)
       .then((result) => {
         if (live && result.ok) setInputs(result);
       })
       .catch(() => {});
     return () => { live = false; };
-  }, [selected?.harness, selected?.planSlug]);
+  }, [inspected?.harness, inspected?.planSlug]);
 
   const runHistoryQuery = useSyncQuery<RunHistoryRow>({
     queryName: 'plans.runHistory',
-    args: selected?.planSlug
-      ? { planSlug: selected.planSlug, ...(selected.harness ? { harnessSlug: selected.harness } : {}) }
+    args: inspected?.planSlug
+      ? { planSlug: inspected.planSlug, ...(inspected.harness ? { harnessSlug: inspected.harness } : {}) }
       : { planSlug: '__none__' },
-    enabled: Boolean(selected?.planSlug),
+    enabled: Boolean(inspected?.planSlug),
   });
   const runHistory = runHistoryQuery.data?.[0] ?? null;
 
@@ -348,16 +365,16 @@ export default function AdvAutomationsTab() {
 
       <div className="pc-automations__viewbar">
         <nav aria-label="Automation views">
-          {(['catalog', 'activity', 'sources'] as const).map((candidate) => (
+          {(['flow', 'catalog', 'activity', 'sources'] as const).map((candidate) => (
             <button key={candidate} type="button" data-active={view === candidate} onClick={() => void setView(candidate)}>
               <span className="pc-automations__viewtab-inner">
-                {candidate === 'catalog' ? 'Catalog' : candidate === 'activity' ? 'Activity' : 'Sources'}
-                <span className="pc-automations__viewtab-count">{candidate === 'catalog' ? items.length : candidate === 'activity' ? activity.length : sources.length}</span>
+                {candidate === 'flow' ? 'Flows' : candidate === 'catalog' ? 'Catalog' : candidate === 'activity' ? 'Activity' : 'Sources'}
+                <span className="pc-automations__viewtab-count">{candidate === 'flow' ? flows.length : candidate === 'catalog' ? items.length : candidate === 'activity' ? activity.length : sources.length}</span>
               </span>
             </button>
           ))}
         </nav>
-        <span>Schedule ≠ active run ≠ budget permission</span>
+        <span>Source → plan → Outcome / next</span>
       </div>
 
       {externalError ? (
@@ -366,15 +383,71 @@ export default function AdvAutomationsTab() {
         </div>
       ) : null}
 
-      {view === 'catalog' ? (
-        <>
-          <div className="pc-automations__metrics" aria-label="Automation summary">
-            <Metric icon={AlertTriangle} label="Needs attention" value={String(attentionCount)} tone={attentionCount > 0 ? 'warn' : 'good'} />
-            <Metric icon={Play} label="Running now" value={String(runningCount)} tone={runningCount > 0 ? 'blue' : 'neutral'} />
-            <Metric icon={CalendarClock} label="Next run" value={nextAt == null ? '—' : relativeTime(nextAt)} tone="neutral" />
-            <Metric icon={CircleDollarSign} label="Spend · 7 days" value={`$${(catalog?.spend7dTotalUsd ?? 0).toFixed(2)}`} tone="spend" />
-          </div>
+      {view === 'flow' || view === 'catalog' ? (
+        <div className="pc-automations__metrics" aria-label="Automation summary">
+          <Metric icon={AlertTriangle} label="Needs attention" value={String(attentionCount)} tone={attentionCount > 0 ? 'warn' : 'good'} />
+          <Metric icon={Play} label="Running now" value={String(runningCount)} tone={runningCount > 0 ? 'blue' : 'neutral'} />
+          <Metric icon={CalendarClock} label="Next run" value={nextAt == null ? '—' : relativeTime(nextAt)} tone="neutral" />
+          <Metric icon={CircleDollarSign} label="Spend · 7 days" value={`$${(catalog?.spend7dTotalUsd ?? 0).toFixed(2)}`} tone="spend" />
+        </div>
+      ) : null}
 
+      {view === 'flow' ? (
+        <>
+          <div className="pc-automations__flow-toolbar">
+            <div role="group" aria-label="Filter trigger flows">
+              {([
+                ['all', `All flows · ${flows.length}`],
+                ['attention', `Needs attention · ${flows.filter((item) => item.needsAttention).length}`],
+                ['paused', `Paused · ${flows.filter((item) => item.paused).length}`],
+              ] as const).map(([id, label]) => (
+                <button key={id} type="button" data-active={flowFilter === id} onClick={() => void setFlowFilter(id)}>{label}</button>
+              ))}
+            </div>
+            <label>
+              <Search size={14} aria-hidden />
+              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search trigger flows" aria-label="Search trigger flows" />
+            </label>
+          </div>
+          <div className="pc-automations__workspace pc-automations__flow-workspace">
+            <FlowCanvas
+              items={visibleFlows}
+              loading={loading}
+              selectedId={selectedFlow?.id ?? null}
+              onSelect={(item) => void setSelectedId(item.id)}
+            />
+            <AutomationDetail
+              variant="flow"
+              item={selectedFlow}
+              inputs={inputs}
+              runs={runHistory}
+              busy={busy}
+              onRun={() => selectedFlow?.planSlug && void invoke(
+                `run:${selectedFlow.id}`,
+                'plans:run-now',
+                { slug: selectedFlow.planSlug, ...(selectedFlow.harness ? { harness: selectedFlow.harness } : {}) },
+                `${selectedFlow.label} started`,
+              )}
+              onToggleSchedule={(armed) => selectedFlow?.planSlug && void invoke(
+                `schedule:${selectedFlow.id}`,
+                armed ? 'plans:arm-schedule' : 'plans:disarm-schedule',
+                { slug: selectedFlow.planSlug, ...(selectedFlow.harness ? { harness: selectedFlow.harness } : {}) },
+                armed ? 'Schedule armed' : 'Schedule paused',
+              )}
+              onToggleBinding={(id, armed) => void setBindingArmed(id, armed)}
+              onToggleRoutine={() => selectedFlow && void toggleRoutine(selectedFlow)}
+              onPauseAll={() => selectedFlow && void pauseAutomaticTriggers(selectedFlow)}
+              onEditSchedule={() => {
+                if (!selectedFlow?.planSlug) return;
+                void setCalendarPlan(selectedFlow.planSlug);
+                void setAdvTab('calendar');
+              }}
+              onViewActivity={() => void setView('activity')}
+            />
+          </div>
+        </>
+      ) : view === 'catalog' ? (
+        <>
           <div className="pc-automations__filters">
             <div role="group" aria-label="Filter automations">
               {FILTERS.map((candidate) => (
@@ -404,6 +477,7 @@ export default function AdvAutomationsTab() {
               </div>
             </div>
             <AutomationDetail
+              variant="catalog"
               item={selected}
               inputs={inputs}
               runs={runHistory}
@@ -428,13 +502,15 @@ export default function AdvAutomationsTab() {
                 void setCalendarPlan(selected.planSlug);
                 void setAdvTab('calendar');
               }}
+              onViewActivity={() => void setView('activity')}
             />
           </div>
         </>
       ) : view === 'activity' ? (
         <ActivityView activity={activity} spend={catalog?.spend7d ?? []} onOpen={(item) => {
           if (item.automationId) void setSelectedId(item.automationId);
-          void setView('catalog');
+          const automation = items.find((candidate) => candidate.id === item.automationId);
+          void setView(automation?.kind === 'triggered-plan' ? 'flow' : 'catalog');
         }} />
       ) : (
         <SourcesView sources={sources} />
@@ -481,7 +557,71 @@ function AutomationRow({ item, selected, onSelect }: { item: AutomationItem; sel
   );
 }
 
+function FlowCanvas({
+  items,
+  loading,
+  selectedId,
+  onSelect,
+}: {
+  items: AutomationItem[];
+  loading: boolean;
+  selectedId: string | null;
+  onSelect: (item: AutomationItem) => void;
+}) {
+  return (
+    <section className="pc-automations__flow-canvas" aria-label="Trigger flows">
+      <div className="pc-automations__panelhead">
+        <strong>Trigger flows</strong>
+        <span>Click a flow to inspect its sources, controls, and linked activity</span>
+      </div>
+      <div className="pc-automations__flow-columns" aria-hidden>
+        <span>Trigger source</span><span>Plan</span><span>Outcome / next</span>
+      </div>
+      <div className="pc-automations__flows">
+        {items.map((item) => {
+          const flow = item.flow;
+          if (!flow) return null;
+          return (
+            <button
+              type="button"
+              className="pc-automations__flow-row"
+              data-selected={selectedId === item.id}
+              key={item.id}
+              onClick={() => onSelect(item)}
+              aria-label={`${flow.sourceLabel} starts ${item.label}; outcome or next: ${flow.outcomeLabel}`}
+            >
+              <span className="pc-automations__flow-line" aria-hidden />
+              <span className="pc-automations__flow-node is-source" data-state={flow.sourceState}>
+                <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.sourceLabel}</strong></span>
+                <span className="pc-automations__flow-node-copy">{flow.sourceDetail}</span>
+                <span className="pc-automations__flow-node-meta">{item.triggers.length} installed trigger{item.triggers.length === 1 ? '' : 's'}</span>
+              </span>
+              <span className="pc-automations__flow-node is-plan" data-state={itemState(item).toLowerCase().replaceAll(' ', '-')}>
+                <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{item.label}</strong></span>
+                <span className="pc-automations__flow-node-copy">{item.description}</span>
+                <span className="pc-automations__flow-node-meta">{flow.planDetail}</span>
+              </span>
+              <span className="pc-automations__flow-node is-outcome" data-state={flow.outcomeState}>
+                <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.outcomeLabel}</strong></span>
+                <span className="pc-automations__flow-node-copy">{flow.outcomeDetail}</span>
+                <span className="pc-automations__flow-node-meta">{item.timingLabel}</span>
+              </span>
+            </button>
+          );
+        })}
+        {loading && items.length === 0 ? <div className="pc-automations__empty">Loading trigger flows…</div> : null}
+        {!loading && items.length === 0 ? (
+          <div className="pc-automations__empty">
+            No triggered plans match this view. Non-triggered AI routines and system tasks remain available in Catalog.
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function AutomationDetail({
+  variant,
   item,
   inputs,
   runs,
@@ -492,7 +632,9 @@ function AutomationDetail({
   onToggleRoutine,
   onPauseAll,
   onEditSchedule,
+  onViewActivity,
 }: {
+  variant: 'flow' | 'catalog';
   item: AutomationItem | null;
   inputs: PlanInputSchemaInfo | null;
   runs: RunHistoryRow | null;
@@ -503,13 +645,14 @@ function AutomationDetail({
   onToggleRoutine: () => void;
   onPauseAll: () => void;
   onEditSchedule: () => void;
+  onViewActivity: () => void;
 }) {
   if (!item) return <aside className="pc-automations__detail"><div className="pc-automations__empty">Select an automation.</div></aside>;
   const automatic = item.triggers.filter((trigger) => trigger.kind !== 'manual');
   const runRows = runs?.runs.slice(0, 5) ?? [];
   return (
     <aside className="pc-automations__detail" aria-label="Automation details">
-      <div className="pc-automations__panelhead"><strong>Automation details</strong><span>one identity across every view</span></div>
+      <div className="pc-automations__panelhead"><strong>{variant === 'flow' ? 'Flow inspector' : 'Automation details'}</strong><span>one identity across every view</span></div>
       <div className="pc-automations__detailbody">
         <div className="pc-automations__detail-kicker">{kindLabel(item.kind)} · {itemState(item)}</div>
         <h2>{item.label}</h2>
@@ -526,6 +669,15 @@ function AutomationDetail({
           <DetailCard label="Plan inputs" value={inputs ? `${inputs.required.length} required · ${inputs.ready ? 'ready' : `${inputs.missing.length} missing`}` : item.planSlug ? 'Checking…' : 'Not a plan'} />
           <DetailCard label="Run-linked cost" value={runs?.rollup ? `$${runs.rollup.totalCostUsd.toFixed(2)} · ${runs.rollup.total} runs` : 'No verified run cost'} />
         </div>
+
+        {variant === 'flow' && item.flow ? (
+          <section className="pc-automations__causal-path">
+            <header><strong>Causal path</strong><span>observed state and declared next action</span></header>
+            <div><span>Source</span><p><strong>{item.flow.sourceLabel}</strong><small>{item.flow.sourceDetail}</small></p><em data-state={item.flow.sourceState}>{item.flow.sourceState.replaceAll('-', ' ')}</em></div>
+            <div><span>Plan</span><p><strong>{item.label}</strong><small>{item.flow.planDetail}</small></p><em>{itemState(item)}</em></div>
+            <div><span>Outcome / next</span><p><strong>{item.flow.outcomeLabel}</strong><small>{item.flow.outcomeDetail}</small></p><em data-state={item.flow.outcomeState}>{item.flow.outcomeState}</em></div>
+          </section>
+        ) : null}
 
         <section className="pc-automations__trigger-section">
           <header><strong>Triggers</strong><span>installed and armed are separate</span></header>
@@ -560,6 +712,7 @@ function AutomationDetail({
         <div className="pc-automations__actions">
           {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-automations__button-inner"><Play size={13} aria-hidden /> Run now</span></button> : null}
           {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><span className="pc-automations__button-inner"><CalendarClock size={13} aria-hidden /> Edit schedule</span></button> : null}
+          <button type="button" disabled={busy != null} onClick={onViewActivity}><span className="pc-automations__button-inner"><Activity size={13} aria-hidden /> View activity</span></button>
           {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</span></button> : null}
           {automatic.some((trigger) => trigger.armed === true) ? <button type="button" className="is-warn" disabled={busy != null} onClick={onPauseAll}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> Pause automatic triggers</span></button> : null}
         </div>

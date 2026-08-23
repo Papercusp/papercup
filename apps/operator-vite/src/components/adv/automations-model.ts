@@ -62,6 +62,16 @@ export interface AutomationTrigger {
   bindingId?: string;
 }
 
+export interface AutomationFlowSummary {
+  sourceLabel: string;
+  sourceDetail: string;
+  sourceState: 'ready' | 'paused' | 'needs-attention';
+  planDetail: string;
+  outcomeLabel: string;
+  outcomeDetail: string;
+  outcomeState: 'running' | 'completed' | 'failed' | 'waiting';
+}
+
 export interface AutomationItem {
   id: string;
   kind: AutomationKind;
@@ -78,6 +88,7 @@ export interface AutomationItem {
   lastAt: number | null;
   timingLabel: string;
   spendLabel: string;
+  flow: AutomationFlowSummary | null;
 }
 
 export interface AutomationActivityItem {
@@ -198,6 +209,18 @@ function routineSpendLabel(routine: AutomationRoutine): string {
   return 'Model spend possible';
 }
 
+function sentenceCase(value: string): string {
+  const normalized = value.replaceAll('-', ' ').trim();
+  return normalized ? `${normalized.charAt(0).toLocaleUpperCase()}${normalized.slice(1)}` : normalized;
+}
+
+function flowSourceLabel(triggers: readonly AutomationTrigger[]): string {
+  const providers = [...new Set(triggers.map((trigger) => sentenceCase(trigger.provider)))];
+  if (providers.length === 0) return 'No installed trigger';
+  if (providers.length <= 3) return providers.join(' + ');
+  return `${providers.slice(0, 2).join(' + ')} + ${providers.length - 2} more`;
+}
+
 function planItem(
   plan: AutomationPlanRow,
   schedule: AutomationScheduleRow | undefined,
@@ -221,6 +244,23 @@ function planItem(
   const needsAttention =
     plan.maxImportance === 'urgent' ||
     bindingRuns.some((run) => run.status === 'failed' || Boolean(run.error));
+  const latestBindingRun = bindingRuns.reduce<(typeof bindingRuns)[number] | null>((current, run) => {
+    const at = parseTime(run.triggeredAt) ?? 0;
+    const currentAt = current ? parseTime(current.triggeredAt) ?? 0 : -1;
+    return at > currentAt ? run : current;
+  }, null);
+  const observedOutcome = latestBindingRun?.error
+    ? 'failed'
+    : latestBindingRun?.status ?? occurrences.find((row) => row.lastOutcome)?.lastOutcome ?? null;
+  const automaticArmed = automatic.filter((trigger) => trigger.armed === true).length;
+  const manualInstalled = triggers.some((trigger) => trigger.kind === 'manual');
+  const outcomeState: AutomationFlowSummary['outcomeState'] = running
+    ? 'running'
+    : observedOutcome === 'failed' || observedOutcome === 'error'
+      ? 'failed'
+      : observedOutcome
+        ? 'completed'
+        : 'waiting';
   return {
     id: `plan:${planKey(plan.harness, plan.slug)}`,
     kind: 'triggered-plan',
@@ -237,6 +277,23 @@ function planItem(
     lastAt,
     timingLabel: paused ? 'Automatic triggers paused' : nextAt != null ? `Next ${relativeTime(nextAt, nowMs)}` : `${triggers.length} installed trigger${triggers.length === 1 ? '' : 's'}`,
     spendLabel: 'Run-linked cost available in details',
+    flow: {
+      sourceLabel: flowSourceLabel(triggers),
+      sourceDetail: automatic.length > 0
+        ? `${automaticArmed}/${automatic.length} automatic armed${manualInstalled ? ' · manual available' : ''}`
+        : manualInstalled
+          ? 'Manual start available'
+          : 'No trigger installed',
+      sourceState: needsAttention ? 'needs-attention' : paused ? 'paused' : 'ready',
+      planDetail: `${plan.harness} · ${sentenceCase(plan.status)}`,
+      outcomeLabel: plan.nextAction?.trim() || 'No next action declared',
+      outcomeDetail: running
+        ? 'Run in progress now'
+        : observedOutcome
+          ? `Last observed outcome · ${sentenceCase(observedOutcome)}`
+          : 'No observed run yet',
+      outcomeState,
+    },
   };
 }
 
@@ -271,7 +328,12 @@ function routineItem(routine: AutomationRoutine, nowMs: number): AutomationItem 
         ? `Next ${relativeTime(nextAt, nowMs)}`
         : routine.triggerLabel ?? routine.cadence ?? 'Event-driven',
     spendLabel: routineSpendLabel(routine),
+    flow: null,
   };
+}
+
+export function buildAutomationFlows(items: readonly AutomationItem[]): AutomationItem[] {
+  return items.filter((item) => item.kind === 'triggered-plan' && item.flow != null);
 }
 
 export function buildAutomationItems(input: BuildAutomationModelInput): AutomationItem[] {
