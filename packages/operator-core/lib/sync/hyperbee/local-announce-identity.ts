@@ -41,7 +41,7 @@
  */
 
 import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '../../identity/attest';
-import { getAuthenticatedGithubUser } from '../../identity/resolve-local-github-identity';
+import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { getGhAuthToken } from '../../identity/gh-token';
 import { keychainLoad } from '../../identity/keychain';
@@ -140,6 +140,16 @@ interface CachedLocalAnnounceIdentity extends LocalAnnounceIdentity {
   savedAt: number;
 }
 
+/**
+ * A successful announce identity is machine-local and stable, but this resolver is
+ * reached by several idempotent boot/directory reconciliation paths. Treat a recent,
+ * keychain-verified persisted value as the happy path so those retries do not turn
+ * into an unbounded GitHub `GET /user` + gist-list loop. A short TTL preserves prompt
+ * pickup of a changed gh login; older entries remain available only through the
+ * existing outage fallback below.
+ */
+const FRESH_IDENTITY_CACHE_TTL_MS = 60_000;
+
 function defaultCachePath(): string {
   return process.env.PAPERCUSP_ANNOUNCE_IDENTITY_CACHE ||
     join(homedir(), '.papercusp', 'local-announce-identity.json');
@@ -164,6 +174,8 @@ function isCachedIdentity(value: unknown): value is CachedLocalAnnounceIdentity 
   return Boolean(
     v &&
       v.version === 1 &&
+      typeof v.savedAt === 'number' &&
+      Number.isFinite(v.savedAt) &&
       typeof v.keychainId === 'string' &&
       v.keychainId &&
       typeof v.devicePubkeyBase64 === 'string' &&
@@ -207,9 +219,14 @@ async function identityFromCache(
   // Load-only or load-or-generate — either shape is accepted; a null/throw result
   // is treated as "no verifiable keypair" (returns null), never an error.
   loadKeypair: (keychainId: string) => Promise<{ keychainId: string; pubkeyBase64: string } | null>,
+  maxAgeMs?: number,
 ): Promise<LocalAnnounceIdentity | null> {
   const cached = await readCachedIdentity(path);
   if (!cached) return null;
+  if (maxAgeMs !== undefined) {
+    const ageMs = Date.now() - cached.savedAt;
+    if (ageMs < 0 || ageMs >= maxAgeMs) return null;
+  }
   const keypair = await loadKeypair(cached.keychainId).catch(() => null);
   if (!keypair || keypair.pubkeyBase64 !== cached.devicePubkeyBase64) return null;
   return {
@@ -249,11 +266,14 @@ export async function loadCachedLocalAnnounceIdentity(
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {
-  const user = await getAuthenticatedGithubUser();
-  if (!user) {
+  // Reuse the token-keyed /user cache shared by the rest of the app. Calling the
+  // lower-level getAuthenticatedGithubUser() here bypassed that cache and let
+  // repeated directory wiring consume the entire 5,000-request core window.
+  const identity = await resolveLocalGithubIdentity();
+  if (identity.kind !== 'ok') {
     throw new Error('local-announce-identity: gh not authenticated (run `gh auth login`)');
   }
-  return user;
+  return { id: identity.githubUserId, login: identity.githubLogin };
 }
 
 async function defaultResolveAttestationGistId(
@@ -372,6 +392,16 @@ export async function resolveLocalAnnounceIdentity(
   const resolveUser = opts.resolveGithubUser ?? defaultResolveGithubUser;
   const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;
   const cachePath = cachePathFor(opts);
+
+  // This is deliberately before every GitHub operation. The cache is accepted on
+  // the success path only while fresh and only after the current keychain still
+  // proves the same device pubkey; a stale value continues to be fallback-only.
+  const freshCached = await identityFromCache(
+    cachePath,
+    loadKeypair,
+    FRESH_IDENTITY_CACHE_TTL_MS,
+  );
+  if (freshCached) return freshCached;
 
   // Resolve the gh user FIRST — the canonical device keychain id is keyed by
   // the user's id (`<github_user_id>:<machine-fingerprint>`), the SAME id the

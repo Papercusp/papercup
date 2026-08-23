@@ -195,6 +195,68 @@ describe('resolveLocalAnnounceIdentity', () => {
     });
   });
 
+  it('reuses a fresh keychain-verified identity without repeating GitHub resolution', async () => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+    const resolveGithubUser = stubUser(4242, 'alice');
+    const resolveAttestationGistId = vi.fn(async () => 'gist-cached');
+    const loadKeypair = stubKeypair();
+
+    const first = await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      cachePath,
+      resolveGithubUser,
+      buildKeychainId: (uid: number) => `${uid}:m`,
+      loadKeypair,
+      resolveAttestationGistId,
+    });
+    const second = await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      cachePath,
+      resolveGithubUser,
+      buildKeychainId: (uid: number) => `${uid}:m`,
+      loadKeypair,
+      resolveAttestationGistId,
+    });
+
+    expect(second).toEqual(first);
+    expect(resolveGithubUser).toHaveBeenCalledTimes(1);
+    expect(resolveAttestationGistId).toHaveBeenCalledTimes(1);
+    // The second call still proves that the cached identity names this device.
+    expect(loadKeypair).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes a stale cache entry instead of treating it as a success-path identity', async () => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now() - 60_001,
+        keychainId: '4242:m',
+        devicePubkeyBase64: 'PUBKEY==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+        attestationGistId: 'gist-stale',
+      }),
+      'utf8',
+    );
+    const resolveGithubUser = stubUser(4242, 'alice');
+    const resolveAttestationGistId = vi.fn(async () => 'gist-refreshed');
+
+    const identity = await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      cachePath,
+      resolveGithubUser,
+      buildKeychainId: (uid: number) => `${uid}:m`,
+      loadKeypair: stubKeypair(),
+      resolveAttestationGistId,
+    });
+
+    expect(resolveGithubUser).toHaveBeenCalledTimes(1);
+    expect(resolveAttestationGistId).toHaveBeenCalledTimes(1);
+    expect(identity.attestationGistId).toBe('gist-refreshed');
+  });
+
   it('rejects a cached identity when the keychain pubkey no longer matches the cached pubkey', async () => {
     const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
     await writeFile(
