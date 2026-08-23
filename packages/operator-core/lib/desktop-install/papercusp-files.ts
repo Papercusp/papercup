@@ -2332,6 +2332,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     papercuspCliPath: path.join(binDir, 'papercusp'),
     psuSentinelPath: path.join(binDir, 'psu-sentinel'),
     psuSentinelDeepPath: path.join(binDir, 'psu-sentinel-deep'),
+    ripgrepPath: path.join(binDir, 'rg'),
     macTutorialAppPath: path.join(home, 'Applications', 'Papercusp Tutorial & Setup.app'),
     linuxTutorialDesktopPath: path.join(home, '.local', 'share', 'applications', 'papercusp-tutorial.desktop'),
   };
