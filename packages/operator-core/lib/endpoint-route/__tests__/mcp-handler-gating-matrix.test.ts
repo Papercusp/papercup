@@ -1649,8 +1649,10 @@ describe('scoped-superuser hive clamp', () => {
 
   // P-016/P-014b: confine the workspace-GLOBAL read surfaces per-hive. A `hive`
   // arg naming a DIFFERENT hive is a cross-hive read on ANY tool → rejected;
-  // coord:presence's scope:'workspace'|'all' selector widens past the hive →
-  // rejected (its default already resolves to the caller's own hive).
+  // coord:presence's workspace roster selector widens past the hive → rejected.
+  // A targeted `{ owner }` lookup is allowed to spell scope:'workspace'
+  // explicitly because that lookup already defaults workspace-wide in the tool;
+  // scope:'all' still crosses the workspace boundary and remains forbidden.
   it('flag ON: rejects a `hive` arg naming a DIFFERENT hive (any tool)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('gatingtest:scoped', { hive: 'hiveB-home' }, hiveScoped());
@@ -1672,9 +1674,27 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('hive_forbidden');
   });
 
+  it('flag ON: allows targeted coord:presence scope:\'workspace\' (same scope as its owner default)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'coord:presence',
+      { scope: 'workspace', workspace: 'ws-1', owner: 'su-known-peer' },
+      hiveScoped(),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).not.toContain('hive_forbidden');
+  });
+
   it('flag ON: rejects coord:presence scope:\'all\' (every-workspace roster)', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('coord:presence', { scope: 'all' }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('hive_forbidden');
+  });
+
+  it('flag ON: rejects targeted coord:presence scope:\'all\' (still crosses workspaces)', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('coord:presence', { scope: 'all', owner: 'su-known-peer' }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('hive_forbidden');
   });

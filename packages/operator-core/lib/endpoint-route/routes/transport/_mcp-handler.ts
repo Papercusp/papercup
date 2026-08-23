@@ -2278,10 +2278,13 @@ const handler = createMcpHandler(
               //     read on any tool (coord:presence, pot:get/status, coord:wake, …)
               //     → reject (a hive slug means the same thing on every tool).
               // (b) coord:presence is the one read surface with a hive|workspace|all
-              //     scope selector; its DEFAULT already resolves to the caller's OWN
-              //     hive (presence-snapshot resolvePresenceScope), so only an EXPLICIT
-              //     scope:'workspace'|'all' widens out of the hive → reject it (mirrors
-              //     the harness:'all' reject above; no-op in a single-hive workspace).
+              //     scope selector. Workspace-wide roster BROWSING still widens out of
+              //     the caller's Hive and is rejected. A targeted `{ owner }` lookup is
+              //     different: presence-snapshot intentionally defaults that exact-row
+              //     lookup to workspace scope even when `scope` is omitted, so spelling
+              //     the already-effective `scope:'workspace'` explicitly must not fail at
+              //     this earlier transport gate. `scope:'all'` remains forbidden even for
+              //     a targeted lookup because it crosses the workspace boundary.
               // search/memory stay workspace-scoped via the per-workspace F-C1
               // foundation; a per-hive subtree-narrowing of free-text search/recall is
               // a tracked follow-on (P-016b) — latent today (live workspace == 1 hive).
@@ -2298,13 +2301,21 @@ const handler = createMcpHandler(
                   ],
                 };
               }
-              if (toolName === 'coord:presence' && (hiveArgs?.scope === 'workspace' || hiveArgs?.scope === 'all')) {
+              const targetedPresenceOwner =
+                toolName === 'coord:presence' &&
+                typeof hiveArgs?.owner === 'string' &&
+                hiveArgs.owner.trim().length > 0;
+              const forbiddenPresenceScope =
+                toolName === 'coord:presence' &&
+                (hiveArgs?.scope === 'all' ||
+                  (hiveArgs?.scope === 'workspace' && !targetedPresenceOwner));
+              if (forbiddenPresenceScope) {
                 return {
                   isError: true,
                   content: [
                     {
                       type: 'text' as const,
-                      text: `hive_forbidden: coord:presence scope:'${String(hiveArgs?.scope)}' spans past this session's hive "${scopeHive}" — it reads your hive by default.`,
+                      text: `hive_forbidden: coord:presence scope:'${String(hiveArgs?.scope)}' spans past this session's hive "${scopeHive}" — browse your hive by default, or use a targeted { owner } lookup for one workspace peer.`,
                     },
                   ],
                 };
