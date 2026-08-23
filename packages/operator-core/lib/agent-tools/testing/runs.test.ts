@@ -126,6 +126,56 @@ describe('testing:runs rollup source isolation', () => {
     expect(queryText).toContain('DISTINCT ON (');
     expect(queryText).toContain('latest_rows');
     expect(data).toMatchObject({ latestPerFile: true, groups: [{ failed: 0, failedFiles: 0 }] });
+    expect(data).not.toHaveProperty('notRecorded');
+    expect(data).not.toHaveProperty('reason');
+  });
+});
+
+describe('testing:runs empty results', () => {
+  beforeEach(() => {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (call.strings.some((part) => part.includes('WITH filtered'))) return Promise.resolve([]);
+      return call;
+    });
+  });
+
+  it('marks an empty row list as not recorded instead of a clean result', async () => {
+    const result = (await runsTool.handler({ filePath: 'missing.test.ts', sinceHours: 1 } as never, {} as never)) as {
+      data?: Record<string, unknown>;
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+
+    expect(data).toMatchObject({
+      count: 0,
+      total: 0,
+      truncatedByLimit: false,
+      latestPerFile: false,
+      runs: [],
+      notRecorded: true,
+      reason: 'no_runs_recorded',
+    });
+  });
+
+  it('marks an empty rollup as not recorded instead of a zero-failure verdict', async () => {
+    const result = (await runsTool.handler({ commitSha: 'missing', rollup: 'commit' } as never, {} as never)) as {
+      data?: Record<string, unknown>;
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+
+    expect(data).toMatchObject({
+      rollup: 'commit',
+      source: 'ci',
+      latestPerFile: true,
+      count: 0,
+      total: 0,
+      truncatedByLimit: false,
+      groups: [],
+      notRecorded: true,
+      reason: 'no_runs_recorded',
+    });
   });
 });
 

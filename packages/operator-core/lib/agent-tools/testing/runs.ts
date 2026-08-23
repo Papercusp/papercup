@@ -41,6 +41,19 @@ import { toIso } from '../_pg-timestamp';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
+const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
+
+/**
+ * An empty ledger result is not a clean test verdict. Keep this marker confined
+ * to the empty path so callers that already consume populated responses retain
+ * the established shape, while callers can distinguish "not measured" from
+ * "measured and no red rows".
+ */
+function emptyResultMetadata(rowCount: number):
+  | { notRecorded: true; reason: typeof NO_RUNS_RECORDED_REASON }
+  | Record<string, never> {
+  return rowCount === 0 ? { notRecorded: true, reason: NO_RUNS_RECORDED_REASON } : {};
+}
 
 /** The statuses that constitute a RED row. `error` is red too — the corpus's
  *  own `status IN ('fail','error')` filters agree, and a fail-only filter
@@ -111,6 +124,7 @@ export default defineTool({
     returns: [
       'Rows: { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
       'Rollup rows: { key, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; commit rollups default to source:"ci".',
+      '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
       '`saturationSuspect` = this row was recorded while host event-loop p95 was past the critical band, so it is NOT reliable evidence of a genuine red — re-run before chasing it. NULL lag is not suspect (it means no monitor was running, not that the host was calm).',
@@ -260,6 +274,7 @@ export default defineTool({
           count: rows.length,
           total,
           truncatedByLimit: total > rows.length,
+          ...emptyResultMetadata(rows.length),
           groups: rows.map((r) => ({
             key: r.key,
             total: Number(r.total),
@@ -319,6 +334,7 @@ export default defineTool({
         count: rows.length,
         total,
         truncatedByLimit: total > rows.length,
+        ...emptyResultMetadata(rows.length),
         latestPerFile,
         runs: rows.map((r) => ({
           filePath: r.file_path,
