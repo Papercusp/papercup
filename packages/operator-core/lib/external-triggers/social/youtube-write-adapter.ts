@@ -38,7 +38,11 @@
  * rather than spending 50 units to be told no. A 400 that could have been a
  * local assertion is quota burned to learn something we already knew.
  */
-import type { SocialReplyOutcome, SocialReplyRequest, SocialWriteAdapter } from '../../capability-verbs/social';
+import type {
+  SocialReplyCapableAdapter,
+  SocialReplyOutcome,
+  SocialReplyRequest,
+} from '../../capability-verbs/social';
 import type { OutboundContext } from '../../capability-verbs/resolve';
 
 /* -------------------------------------------------------------------------- */
@@ -160,7 +164,7 @@ export function youtubeCommentUrl(videoId: string | null | undefined, commentId:
 /* The adapter                                                                */
 /* -------------------------------------------------------------------------- */
 
-export function createYouTubeWriteAdapter(deps: YouTubeWriteAdapterDeps): SocialWriteAdapter {
+export function createYouTubeWriteAdapter(deps: YouTubeWriteAdapterDeps): SocialReplyCapableAdapter {
   /**
    * THE DOUBLE-POST GUARD.
    *
