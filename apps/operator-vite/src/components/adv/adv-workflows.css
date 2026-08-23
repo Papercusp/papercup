@@ -1,6 +1,14 @@
 .pc-workflows {
   --auto-line: color-mix(in srgb, var(--border, #26384a), transparent 8%);
-  --auto-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), transparent 12%);
+  /* OPAQUE on purpose. Mixing toward `transparent` makes the computed background
+     alpha/dynamic, which the contrast lint cannot statically evaluate — the pair then
+     lands in the "could NOT statically verify" snapshot and this surface ships
+     contrast-UNCHECKED (a silent false green, not merely a missing check). Mixing
+     toward an opaque colour keeps the same visual intent and stays verifiable: over
+     the --bg #07121e page ground, the previous `transparent 12%` composited to
+     ~#0c1926 and `black 4%` computes to ~#0c1925, so this is a 1/255 change in blue.
+     Matches the --wfl-panel idiom already ratified in adv-workflows-landing.css. */
+  --auto-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), black 4%);
   --auto-panel-2: color-mix(in srgb, var(--bg-raised, #0d1a27), white 2%);
   container-type: inline-size;
   min-height: calc(100vh - 70px);

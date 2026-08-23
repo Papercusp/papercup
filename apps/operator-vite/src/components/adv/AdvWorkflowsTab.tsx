@@ -544,7 +544,7 @@ export default function AdvWorkflowsTab() {
           <p>Everything that can run in the background—what starts it, whether it is running, what it can spend, and how to stop it.</p>
         </div>
         <div className="pc-workflows__mast-actions">
-          <button type="button" className="pc-workflows__ghost" onClick={refreshAll} aria-label="Refresh workflows">
+          <button type="button" onClick={refreshAll} aria-label="Refresh workflows">
             <span className="pc-workflows__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
           <button type="button" className="pc-workflows__primary" onClick={() => setCreateOpen(true)}>
@@ -624,7 +624,7 @@ export default function AdvWorkflowsTab() {
               ))}
             </div>
           </div>
-          <div className="pc-workflows__workspace pc-workflows__flow-workspace">
+          <div className="pc-workflows__workspace">
             <FlowCanvas
               items={visibleFlows}
               loading={loading}
@@ -1360,7 +1360,7 @@ function ActivityView({
           {activity.length === 0 ? <div className="pc-workflows__list-empty">No workflow activity has been recorded yet.</div> : null}
         </div>
       </div>
-      <div className="pc-workflows__widepanel pc-workflows__spend-panel">
+      <div className="pc-workflows__widepanel">
         <div className="pc-workflows__panelhead"><strong>Workspace spend · 7 days</strong><span>by agent role · not guessed per routine</span></div>
         <div className="pc-workflows__spend-rows">
           {spend.map((row) => (
