@@ -18,7 +18,7 @@
     "packages/operator-core/lib/__tests__/power-user-e2e.integration.test.ts": 1,
     "packages/operator-core/lib/__tests__/quarantine-parse-guard.test.ts": 1,
     "packages/operator-core/lib/agent-tools/__tests__/hono-shim-dispatch.test.ts": 1,
-    "packages/operator-core/lib/agent-tools/code/run.test.ts": 1,
+    "packages/operator-core/lib/agent-tools/code/run.test.ts": 0,
     "packages/operator-core/lib/agent-tools/code/run.ts": 1,
     "packages/operator-core/lib/agent-tools/conversation/recent.ts": 1,
     "packages/operator-core/lib/agent-tools/coordination/read-cursors.ts": 1,
