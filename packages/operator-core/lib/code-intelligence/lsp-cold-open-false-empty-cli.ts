@@ -51,7 +51,6 @@ import { resolve } from 'node:path';
 
 import { lspQuery, shutdownAllLspClients } from './lsp-adapter.ts';
 import { BENCH_PROBES, resolveProbeCursor } from './code-intel-bench.ts';
-import { isTrustworthyEmpty } from './contracts.ts';
 import type { CodeIntelAnswer, CodeIntelIntent } from './contracts.ts';
 
 /** packages/operator-core/lib/code-intelligence → repo root. */
@@ -76,11 +75,21 @@ function classify(answer: CodeIntelAnswer, groundTruthSites: number): {
 } {
   const empty = answer.sites.length === 0;
   if (!empty) return { falseEmpty: false, honestlyWithheld: false };
-  // Empty. Did it claim to be believable?
-  const claimsTrust = isTrustworthyEmpty(answer);
+
+  // CAREFUL: isTrustworthyEmpty() does NOT mean "believe there are none". Its
+  // second branch returns TRUE for an errored answer, and the comment there
+  // says why — "loud failure — honest". So an empty WITH an error is the
+  // honest case, not the dishonest one, and feeding it straight into a
+  // false-empty verdict inverts the meaning of the measurement.
+  //
+  // A false empty is the narrow case where all three hold: empty, no error,
+  // and an affirmative claim of health. Spelled out rather than delegated, so
+  // the predicate cannot be misread again.
+  const claimsThereAreNone =
+    answer.error === null && answer.freshness.health === 'healthy';
   return {
-    falseEmpty: claimsTrust && groundTruthSites > 0,
-    honestlyWithheld: !claimsTrust,
+    falseEmpty: claimsThereAreNone && groundTruthSites > 0,
+    honestlyWithheld: !claimsThereAreNone,
   };
 }
 
