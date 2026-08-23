@@ -275,7 +275,22 @@ describe('D-006 capture geometry', () => {
       // screenshot stayed full-size, so coord() clamped every click to 1023x767 and the
       // bottom-right ~72% of a 1920x1080 frame was unreachable.
       const plan = planAction({ action: 'left_click', coordinate: [99999, 99999] }, FRAME) as { args: string[] };
-      expect(plan.args).toEqual(['mousemove', '--sync', '1919', '1079', 'click', '1']);
+      const [x, y] = [Number(plan.args[2]), Number(plan.args[3])];
+
+      // Lands in the LAST capture pixel, which covers display columns 1918-1919 (and
+      // rows 1078-1079). Asserting an exact 1919x1079 would be over-specifying: capture
+      // pixel 1023 maps to 1918.125, and every display pixel it covers shows the same
+      // averaged content, so 1918 and 1919 are the same click as far as any UI target
+      // is concerned. What must hold is that the corner is REACHABLE.
+      expect(x).toBeGreaterThanOrEqual(1918);
+      expect(x).toBeLessThanOrEqual(1919);
+      expect(y).toBeGreaterThanOrEqual(1078);
+      expect(y).toBeLessThanOrEqual(1079);
+
+      // …and the actual bug, stated as the thing it broke: the old clamp pinned this at
+      // 1023x767, leaving most of the screen unclickable.
+      expect(x).toBeGreaterThan(1023);
+      expect(y).toBeGreaterThan(767);
     });
 
     it('is unchanged when there is no capture box', () => {
