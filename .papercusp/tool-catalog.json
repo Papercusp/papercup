@@ -15912,7 +15912,7 @@
           "POST"
         ]
       },
-      "description": "Inspect the loop on your own session (or another owner's, with `ownerId`); this read is owner-scoped and intentionally does not take a `harness` argument. It reports active?, interval, parked (turn in flight), next/last fire, and cost-cap. Three fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than \"no loop\": see `returns`.",
+      "description": "Inspect the loop on your own session (or another owner's, with `ownerId`); this read is owner-scoped and intentionally does not take a `harness` argument. It reports active?, interval, parked (turn in flight), next/last fire, and cost-cap. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than \"no loop\": see `returns`.",
       "capabilities": [
         "routines:write"
       ],
