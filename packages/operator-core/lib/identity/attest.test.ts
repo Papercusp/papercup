@@ -355,6 +355,132 @@ describe('verifyAttestation', () => {
     vi.unstubAllGlobals();
   });
 
+  it('ensureAttestationGist: refuses to create when gist listing is rate-limited', async () => {
+    const { ensureAttestationGist, clearAttestationQuotaGuards } = await import('./attest');
+    clearAttestationQuotaGuards();
+    const { pubkeyBase64 } = makeFakeGistResponse();
+    const resetSec = Math.ceil(Date.now() / 1000) + 120;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      headers: {
+        get: (name: string) =>
+          name === 'x-ratelimit-remaining'
+            ? '0'
+            : name === 'x-ratelimit-reset'
+              ? String(resetSec)
+              : null,
+      },
+      json: async () => ({}),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      ensureAttestationGist({
+        keychainId: 'unused-on-list-failure',
+        pubkeyBase64,
+        deviceLabel: 'test',
+        githubUserId: 12345,
+        githubLogin: 'testuser',
+        token: 'tok',
+      }),
+    ).rejects.toThrow(/gist listing refused \(HTTP 403\)/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(
+        (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+      ),
+    ).toBe(false);
+
+    clearAttestationQuotaGuards();
+    vi.unstubAllGlobals();
+  });
+
+  it('ensureAttestationGist: refuses to create when candidate verification is inconclusive', async () => {
+    const { ensureAttestationGist, clearAttestationQuotaGuards } = await import('./attest');
+    clearAttestationQuotaGuards();
+    const { pubkeyBase64 } = makeFakeGistResponse();
+    const filename = attestationGistFilename(pubkeyBase64);
+    const fetchMock = vi.fn(async (url: unknown) => {
+      if (typeof url === 'string' && url.includes('/gists?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: 'g-inconclusive', files: { [filename]: {} } }],
+        };
+      }
+      return {
+        ok: false,
+        status: 403,
+        headers: { get: () => null },
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      ensureAttestationGist({
+        keychainId: 'unused-on-inconclusive-verify',
+        pubkeyBase64,
+        deviceLabel: 'test',
+        githubUserId: 12345,
+        githubLogin: 'testuser',
+        token: 'tok',
+      }),
+    ).rejects.toThrow(/could not verify candidate binding g-inconclusive/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.some(
+        (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+      ),
+    ).toBe(false);
+
+    clearAttestationQuotaGuards();
+    vi.unstubAllGlobals();
+  });
+
+  it('ensureAttestationGist: refuses to list while the GitHub cooldown is active', async () => {
+    const { ensureAttestationGist, verifyAttestation, clearAttestationQuotaGuards } =
+      await import('./attest');
+    clearAttestationQuotaGuards();
+    const resetSec = Math.ceil(Date.now() / 1000) + 120;
+    const rateLimited = {
+      ok: false,
+      status: 403,
+      headers: {
+        get: (name: string) =>
+          name === 'x-ratelimit-remaining'
+            ? '0'
+            : name === 'x-ratelimit-reset'
+              ? String(resetSec)
+              : null,
+      },
+      json: async () => ({}),
+    };
+    const armFetch = vi.fn().mockResolvedValue(rateLimited);
+    vi.stubGlobal('fetch', armFetch);
+    const first = await verifyAttestation('g-cooldown', 'pk', 12345);
+    expect(first.valid === false && first.reason).toBe('github_api_unavailable');
+
+    const { pubkeyBase64 } = makeFakeGistResponse();
+    const listFetch = vi.fn();
+    vi.stubGlobal('fetch', listFetch);
+    await expect(
+      ensureAttestationGist({
+        keychainId: 'unused-on-cooldown',
+        pubkeyBase64,
+        deviceLabel: 'test',
+        githubUserId: 12345,
+        githubLogin: 'testuser',
+        token: 'tok',
+      }),
+    ).rejects.toThrow(/rate-limit cooldown active/);
+    expect(listFetch).not.toHaveBeenCalled();
+
+    clearAttestationQuotaGuards();
+    vi.unstubAllGlobals();
+  });
+
   it('returns gist_not_found on 404', async () => {
     const { verifyAttestation } = await import('./attest');
 

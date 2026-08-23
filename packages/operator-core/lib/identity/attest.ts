@@ -415,31 +415,61 @@ export async function ensureAttestationGist(
   input: CreateAttestationGistInput,
 ): Promise<string> {
   const expectedFilename = attestationGistFilename(input.pubkeyBase64);
+
+  // Creating is safe only after we have positively established that no usable
+  // binding exists. A refused or failed listing establishes nothing, so it
+  // must never reach createAttestationGist() below.
+  if (Date.now() < (_q.__attestGhRateLimitedUntilMs ?? 0)) {
+    throw new Error(
+      'ensureAttestationGist: GitHub rate-limit cooldown active — cannot establish ' +
+        'whether a binding gist already exists; refusing to create a duplicate',
+    );
+  }
+
+  let resp: Response;
   try {
-    const resp = await fetch('https://api.github.com/gists?per_page=100', {
+    resp = await fetch('https://api.github.com/gists?per_page=100', {
       headers: {
         Authorization: 'token ' + input.token,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
       },
     });
-    if (resp.ok) {
-      const gists = (await resp.json()) as Array<{
-        id?: string;
-        files?: Record<string, unknown> | null;
-      }>;
-      for (const g of gists) {
-        if (!g.id || !g.files || !(expectedFilename in g.files)) continue;
-        const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId, {
-          skipCache: true,
-        });
-        if (v.valid) return g.id;
-      }
-    }
-  } catch {
-    // Network/list failure → fall through to create (idempotent enough: a
-    // duplicate gist is harmless; both verify identically).
+  } catch (err) {
+    throw new Error(
+      'ensureAttestationGist: gist listing failed (' + String(err) +
+        ') — refusing to create a duplicate binding',
+    );
   }
+
+  if (!resp.ok) {
+    // The list path must arm the same cooldown that protects verification.
+    armRateLimitCooldown(resp);
+    throw new Error(
+      'ensureAttestationGist: gist listing refused (HTTP ' + resp.status +
+        ') — refusing to create a duplicate binding',
+    );
+  }
+
+  const gists = (await resp.json()) as Array<{
+    id?: string;
+    files?: Record<string, unknown> | null;
+  }>;
+  for (const g of gists) {
+    if (!g.id || !g.files || !(expectedFilename in g.files)) continue;
+    // Only successful verifications are cached; failures re-verify so
+    // revocation stays prompt. An inconclusive result is not evidence that the
+    // binding is absent.
+    const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId);
+    if (v.valid) return g.id;
+    if (v.reason === 'github_api_unavailable') {
+      throw new Error(
+        'ensureAttestationGist: could not verify candidate binding ' + g.id +
+          ' (github_api_unavailable) — refusing to create a duplicate',
+      );
+    }
+  }
+
   const created = await createAttestationGist(input);
   return created.gistId;
 }
