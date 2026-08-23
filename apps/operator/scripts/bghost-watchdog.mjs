@@ -795,6 +795,9 @@ export const BG_HOST_COMMITTED_HOT_PATHS = Object.freeze([
   'packages/operator-core/lib/events',
   'packages/operator-core/lib/agent-tools/loop',
 ]);
+const BG_HOST_COMMITTED_HOT_PATH_SOURCE_PATHS = Object.freeze(
+  BG_HOST_COMMITTED_HOT_PATHS.map((path) => `:(glob)${path}/**/*.ts`),
+);
 
 /** Pathspec exclusions for the COMMITTED-change read only. A test-only commit does not change the
  * running host's behavior and therefore must not trigger a restart. The cleanliness read below is
@@ -904,7 +907,7 @@ export async function readCommittedHotPathState(deps = {}) {
       '-1',
       '--format=%ct%x00%H',
       '--',
-      ...BG_HOST_COMMITTED_HOT_PATHS,
+      ...BG_HOST_COMMITTED_HOT_PATH_SOURCE_PATHS,
       ...BG_HOST_COMMITTED_HOT_PATH_TEST_EXCLUSIONS,
     ]),
     shImpl('git', [
@@ -1007,28 +1010,35 @@ export async function requestCommittedHotPathRestart(latestCommitHash, deps = {}
 }
 
 async function maybeActivateCommittedHotPathCode() {
-  const nowMs = Date.now();
+  const checkStartedAtMs = Date.now();
   if (
     !shouldCheckCommittedHotPathActivation({
       inFlight: hotPathActivationCheckInFlight,
       lastCheckMs: lastHotPathActivationCheckMs,
-      nowMs,
+      nowMs: checkStartedAtMs,
       intervalMs: HOT_PATH_ACTIVATION_CHECK_MS,
     })
   ) {
     return { restartRequested: false, code: 'throttled_or_in_flight' };
   }
   hotPathActivationCheckInFlight = true;
-  lastHotPathActivationCheckMs = nowMs;
+  lastHotPathActivationCheckMs = checkStartedAtMs;
   try {
-    const [activeForSec, state] = await Promise.all([unitActiveForSec(), readCommittedHotPathState()]);
+    const [activeForSec, state] = await Promise.all([
+      unitActiveForSec(),
+      readCommittedHotPathState(),
+    ]);
+    // `activeForSec` may have been sampled before the git reads completed. Pairing it with a clock read
+    // AFTER both probes moves the inferred boot time later, which is conservative: a borderline change
+    // may wait for the next pass, but probe latency can never make an old commit look newer than boot.
+    const evidenceNowMs = Date.now();
     // Avoid the cgroup scan unless generation ordering + tree cleanliness already say a restart could
     // be safe. Passing null first makes the pure verdict tell us whether collateral is the only missing
     // proof; every other failure exits without touching /proc.
     let verdict = evaluateCommittedHotPathActivation({
       activeForSec,
       latestCommitMs: state.latestCommitMs,
-      nowMs,
+      nowMs: evidenceNowMs,
       dirtyEntries: state.dirtyEntries,
       collateral: null,
     });
@@ -1037,7 +1047,7 @@ async function maybeActivateCommittedHotPathCode() {
       verdict = evaluateCommittedHotPathActivation({
         activeForSec,
         latestCommitMs: state.latestCommitMs,
-        nowMs,
+        nowMs: evidenceNowMs,
         dirtyEntries: state.dirtyEntries,
         collateral,
       });
@@ -1046,10 +1056,16 @@ async function maybeActivateCommittedHotPathCode() {
     // Log only a NEW actionable/suppressed state. A current generation is ordinary and silent; a
     // dirty/collateral suppression is important, but repeating it every 5m adds no information.
     const decisionKey = `${state.latestCommitHash ?? 'unknown'}:${verdict.code}:${verdict.dirtyCount ?? ''}:${verdict.collateral ?? ''}`;
-    if (verdict.code !== 'generation_current' && decisionKey !== lastHotPathActivationDecisionKey) {
+    if (
+      verdict.code !== 'generation_current' &&
+      decisionKey !== lastHotPathActivationDecisionKey
+    ) {
       lastHotPathActivationDecisionKey = decisionKey;
-      const dirty = verdict.dirtySample?.length ? ` dirty=${verdict.dirtySample.join(' | ')}` : '';
-      const collateral = verdict.collateral == null ? '' : ` collateral=${verdict.collateral}`;
+      const dirty = verdict.dirtySample?.length
+        ? ` dirty=${verdict.dirtySample.join(' | ')}`
+        : '';
+      const collateral =
+        verdict.collateral == null ? '' : ` collateral=${verdict.collateral}`;
       log(
         `committed hot-path activation ${verdict.activate ? 'READY' : 'SUPPRESSED'} (${verdict.code})` +
           ` commit=${state.latestCommitHash?.slice(0, 12) ?? 'UNKNOWN'}${dirty}${collateral}`,

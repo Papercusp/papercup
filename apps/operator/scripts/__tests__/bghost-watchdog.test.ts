@@ -236,6 +236,9 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
     const statusArgs = calls.find((args) => args.includes('status'))!;
     expect(logArgs).toContain(':(exclude,glob)**/*.test.ts');
     expect(logArgs).toContain(':(exclude,glob)**/__tests__/**');
+    expect(logArgs).toContain(
+      ':(glob)packages/operator-core/lib/events/**/*.ts',
+    );
     expect(statusArgs).toContain('--untracked-files=all');
     expect(statusArgs).not.toContain(':(exclude,glob)**/*.test.ts');
   });
