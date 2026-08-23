@@ -91,6 +91,9 @@ export declare function scan(root?: string): PeerScanResult;
  */
 export declare function scanLockDrift(root?: string): PeerLockDrift[] | null;
 
+/** True only when Node invoked this checker as its direct CLI entrypoint. */
+export declare function isDirectCliInvocation(entryPath?: string): boolean;
+
 /** Shrink-only grandfather list, EMPTY by construction — see the script header. */
 export declare const BASELINE: string[];
 

@@ -344,6 +344,53 @@ export async function resolvePlanItemStamp(
   }
 }
 
+export interface PlanItemNeedsHumanContradiction {
+  reason: string;
+  planSlug: string;
+  itemIds: string[];
+}
+
+/**
+ * EI-13766: plan truth is authoritative for whether plan-linked work belongs in
+ * the owner lane. A structured work-item ask is necessary, but it must not be
+ * allowed to contradict a plan whose referenced items all explicitly resolve as
+ * `needsHuman:false`.
+ *
+ * This deliberately fails open unless EVERY referenced item resolves. A
+ * multi-item feature whose plan linkage is only partially readable is not enough
+ * evidence to reject the write; the periodic lane reconciler will retry from a
+ * fresh plan read. Both linkage mechanisms are inherited from
+ * {@link resolvePlanItemStamp}.
+ */
+export async function planItemNeedsHumanContradiction(
+  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
+): Promise<PlanItemNeedsHumanContradiction | null> {
+  const stamp = await resolvePlanItemStamp(workItem);
+  if (!stamp) return null;
+  try {
+    const [{ getPlanRow, planItemsForRow }, { resolveEffectiveStatusForItems }] = await Promise.all([
+      import('../agent-tools/plans/source'),
+      import('@papercusp/plan-parser'),
+    ]);
+    const row = await getPlanRow(stamp.plan_slug, { harnessSlug: workItem.harness ?? undefined });
+    if (!row) return null;
+    const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
+    const linked = stamp.item_ids.map((itemId) => items.find((item) => item.id === itemId));
+    if (linked.some((item) => !item)) return null;
+    if (!linked.every((item) => item?.needsHuman === false)) return null;
+    return {
+      reason:
+        `linked plan item${stamp.item_ids.length === 1 ? '' : 's'} ` +
+        `${stamp.plan_slug}#${stamp.item_ids.join(',')} explicitly remain agent-actionable (needsHuman=false)`,
+      planSlug: stamp.plan_slug,
+      itemIds: [...stamp.item_ids],
+    };
+  } catch {
+    // Fail OPEN — an incomplete plan read must not wedge the lifecycle writer.
+    return null;
+  }
+}
+
 /**
  * Whether a just-claimed work-item's linked plan-item lane is currently
  * blocked / needs-human / already-terminal — the cases self-select must not
