@@ -398,3 +398,11 @@ export function pruneRecordings(root: string, maxRetained: number): string[] {
 export function __resetRecordingsForTests(): void {
   state.byDisplay.clear();
 }
+
+/** Test seam — move a recording's start back so the wall-clock cap can be exercised
+ *  without fake timers (the cap is real elapsed time, not a tick count). */
+export function __backdateRecordingForTests(display: string, startedAtMs: number): void {
+  const rec = state.byDisplay.get(display);
+  if (!rec) throw new Error(`__backdateRecordingForTests: no open recording on ${display}`);
+  rec.startedAtMs = startedAtMs;
+}

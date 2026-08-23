@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveBoundDisplay, type ComputerCtx } from './computer';
 import { resolveLocalDesktopByDisplay } from '../../desktop/desktop-session-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -86,7 +86,10 @@ function resolveExportDir(display: string, id?: string): string {
   return recent;
 }
 
-export async function runRecordTrajectory(args: RecordArgs, ctx: ComputerCtx & Record<string, unknown> = {}) {
+/** The tool ctx slice this handler reads: the display resolver's + the comment author's. */
+export type RecordTrajectoryCtx = ComputerCtx & ResolveIdentityCtx;
+
+export async function runRecordTrajectory(args: RecordArgs, ctx: RecordTrajectoryCtx = {}) {
   const target = await resolveBoundDisplay(ctx); // throws loudly if no lease / refuses :0
 
   if (args.op === 'status') {
@@ -166,7 +169,7 @@ export async function runRecordTrajectory(args: RecordArgs, ctx: ComputerCtx & R
   if (parkOn) {
     let authorId: string | undefined;
     try {
-      authorId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+      authorId = resolveAgentIdentity(ctx).ownerId;
     } catch {
       /* an unattributed comment beats no comment */
     }
@@ -220,5 +223,5 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 200,
   args: recordArgs,
-  handler: (args, ctx) => runRecordTrajectory(args, ctx as ComputerCtx & Record<string, unknown>),
+  handler: (args, ctx) => runRecordTrajectory(args, ctx as RecordTrajectoryCtx),
 });
