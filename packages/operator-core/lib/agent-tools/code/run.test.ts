@@ -76,6 +76,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
 }));
 
 import {
+  CODE_RUN_SUMMARY_CHAR_BUDGET,
   shapeCodeRunLogs,
   shapeCodeRunSummary,
   shapeMutationEcho,
@@ -579,6 +580,99 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     });
     expect(payload.summaryNotice.paths).toContain('summary.lines');
     expect(JSON.stringify(payload).length).toBeLessThan(6_000);
+  });
+
+  // EI-21254588525256811: a caller who had ALREADY bounded the value themselves
+  // (`checkpoint.slice(-5000)`) had that deliberate reduction re-cut to 360 chars — the ladder's
+  // rung constant — and lost the END of a value whose whole point was to be a tail.
+  describe('caller-bounded scalar (EI-21254588525256811)', () => {
+    // A tail scalar just over budget: the shaper must clip it, and how it clips is the subject.
+    const tailValue = () => `[HEAD]${'x'.repeat(4_980)}[TAIL]`;
+
+    it('spends the char budget instead of stopping at the ladder rung constant', () => {
+      const shaped = shapeCodeRunSummary({ summary: { checkpointTail: tailValue() } }) as {
+        summary: { checkpointTail: string };
+      };
+      const summaryChars = JSON.stringify(shaped.summary).length;
+
+      // The defect returned 381 chars (10.9% of budget). Anything in that region is the
+      // rung constant winning again, whatever the exact number.
+      expect(summaryChars).toBeGreaterThan(CODE_RUN_SUMMARY_CHAR_BUDGET * 0.75);
+      expect(summaryChars).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    });
+
+    it('keeps the END of a clipped string so a caller-derived tail survives', () => {
+      const shaped = shapeCodeRunSummary({ summary: { checkpointTail: tailValue() } }) as {
+        summary: { checkpointTail: string };
+      };
+
+      expect(shaped.summary.checkpointTail).toContain('[TAIL]');
+      expect(shaped.summary.checkpointTail).toContain('[HEAD]');
+    });
+
+    // CONTROL. Both assertions above must be able to FAIL, or they prove nothing. Head-only
+    // clipping at the old rung width is exactly the defect, reproduced here: it drops [TAIL] and
+    // lands in the ~11%-of-budget region. If this control ever passes the two assertions above,
+    // they have stopped discriminating and the guard is decorative.
+    it('CONTROL: the pre-fix shape would fail both assertions above', () => {
+      const headOnlyAtRungWidth = tailValue().slice(0, 360);
+      const summaryChars = JSON.stringify({ checkpointTail: headOnlyAtRungWidth }).length;
+
+      expect(headOnlyAtRungWidth).not.toContain('[TAIL]');
+      expect(summaryChars).toBeLessThan(CODE_RUN_SUMMARY_CHAR_BUDGET * 0.75);
+    });
+
+    // CALIBRATION. The budget-spend assertion must not pass by clipping something that never
+    // needed clipping: a summary under budget stays byte-identical and is never re-shaped.
+    it('CALIBRATION: a summary already under budget is returned untouched', () => {
+      const small = { summary: { checkpointTail: 'short' } };
+      expect(shapeCodeRunSummary(small)).toBe(small);
+    });
+  });
+
+  // EI-21267600739763524: a summary that is a top-level ARRAY (the natural shape of a
+  // grep-context or row-scan result) and exceeds every ladder rung fell through to the minimal
+  // projection, which returned []. The caller got an EMPTY result — and its notice reported
+  // omittedItems: 0, so the envelope actively denied having cut anything.
+  describe('oversized array summary (EI-21267600739763524)', () => {
+    // Too large for every rung: 200 rows x 30 long fields forces the minimal projection.
+    const rows = () =>
+      Array.from({ length: 200 }, (_, row) =>
+        Object.fromEntries(
+          Array.from({ length: 30 }, (_, field) => [`f${field}`, `row${row}-field${field}-${'z'.repeat(200)}`]),
+        ),
+      );
+
+    it('keeps a bounded prefix instead of collapsing to an empty result', () => {
+      const shaped = shapeCodeRunSummary({ summary: rows() }) as {
+        summary: unknown[];
+        summaryNotice: { omittedItems: number };
+      };
+
+      expect(Array.isArray(shaped.summary)).toBe(true);
+      expect(shaped.summary.length).toBeGreaterThan(0);
+      expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    });
+
+    it('discloses the dropped rows instead of reporting nothing was omitted', () => {
+      const shaped = shapeCodeRunSummary({ summary: rows() }) as {
+        summary: unknown[];
+        summaryNotice: { omittedItems: number };
+      };
+
+      // The old envelope said 0 — indistinguishable from a complete result.
+      expect(shaped.summaryNotice.omittedItems).toBeGreaterThanOrEqual(200 - shaped.summary.length);
+    });
+
+    // CONTROL. Both assertions above must be able to fail. The pre-fix value is literally `[]`
+    // with omittedItems 0; if that shape ever satisfies them, they have stopped discriminating.
+    it('CONTROL: the pre-fix empty result would fail both assertions above', () => {
+      const preFix: unknown[] = [];
+      const preFixNotice = { omittedItems: 0 };
+
+      expect(preFix.length).toBe(0);
+      expect(preFixNotice.omittedItems).toBeLessThan(200 - preFix.length);
+    });
   });
 
   it('preserves background launch handles inside nested MCP result envelopes', () => {

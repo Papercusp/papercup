@@ -934,7 +934,35 @@ function minimalCodeRunSummaryProjection(
     return clipCodeRunSummaryString(value, 'summary', Math.max(1, budget - 32), stats);
   }
   if (isCodeRunSummaryScalar(value)) return value;
-  if (Array.isArray(value)) return [];
+  if (Array.isArray(value)) {
+    // EI-21267600739763524: this used to `return []` — TOTAL data loss for a summary that is a
+    // top-level array (the natural shape of a grep-context or row-scan result). Worse than
+    // truncation: the caller got an EMPTY result whose own summaryNotice reported
+    // `omittedItems: 0`, actively denying that anything had been cut. Keep a bounded prefix so
+    // the caller still sees the shape of their data, and COUNT what did not fit.
+    const projected: unknown[] = [];
+    const entryOptions: CodeRunSummaryProjectionOptions = {
+      arrayLimit: 1,
+      stringChars: CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS,
+      maxDepth: 1,
+    };
+    for (const entry of value) {
+      // Trial-project into scratch stats: an entry that does not fit is discarded, and its
+      // truncation counters must not leak into the disclosure for entries we actually kept.
+      const scratch = newCodeRunSummaryProjectionStats();
+      const candidate = projectCodeRunSummaryValue(entry, `summary[${projected.length}]`, 0, entryOptions, scratch);
+      if (codeRunSummarySerializedChars([...projected, candidate]) > budget) break;
+      projected.push(candidate);
+      mergeCodeRunSummaryStats(stats, scratch);
+    }
+    const dropped = value.length - projected.length;
+    if (dropped > 0) {
+      stats.arraysTruncated++;
+      stats.omittedItems += dropped;
+      noteCodeRunSummaryPath(stats, 'summary');
+    }
+    return projected;
+  }
   if (!isCodeRunSummaryRecord(value)) return String(value);
 
   const projected: Record<string, unknown> = {};
@@ -969,6 +997,18 @@ function minimalCodeRunSummaryProjection(
 
 function newCodeRunSummaryProjectionStats(): CodeRunSummaryProjectionStats {
   return { arraysTruncated: 0, stringsTruncated: 0, valuesTruncated: 0, omittedItems: 0, paths: [] };
+}
+
+/** Fold a trial projection's disclosure counters into the surviving ones once it is kept. */
+function mergeCodeRunSummaryStats(
+  target: CodeRunSummaryProjectionStats,
+  source: CodeRunSummaryProjectionStats,
+): void {
+  target.arraysTruncated += source.arraysTruncated;
+  target.stringsTruncated += source.stringsTruncated;
+  target.valuesTruncated += source.valuesTruncated;
+  target.omittedItems += source.omittedItems;
+  for (const path of source.paths) noteCodeRunSummaryPath(target, path);
 }
 
 /**
@@ -1031,8 +1071,14 @@ export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<str
   for (const options of CODE_RUN_SUMMARY_PROJECTION_STEPS) {
     const candidateStats = newCodeRunSummaryProjectionStats();
     const candidate = projectCodeRunSummaryValue(summary, 'summary', 0, options, candidateStats);
-    if (codeRunSummarySerializedChars(candidate) <= CODE_RUN_SUMMARY_CHAR_BUDGET) {
-      const grown = growCodeRunSummaryToBudget(summary, options, CODE_RUN_SUMMARY_CHAR_BUDGET);
+    const candidateChars = codeRunSummarySerializedChars(candidate);
+    if (candidateChars <= CODE_RUN_SUMMARY_CHAR_BUDGET) {
+      // The search costs ~log2(budget) additional projections, so only pay for it when there is
+      // headroom worth reclaiming. A candidate already near the budget has nothing to gain.
+      const grown =
+        candidateChars < CODE_RUN_SUMMARY_CHAR_BUDGET * 0.9
+          ? growCodeRunSummaryToBudget(summary, options, CODE_RUN_SUMMARY_CHAR_BUDGET)
+          : undefined;
       projected = grown?.value ?? candidate;
       stats = grown?.stats ?? candidateStats;
       break;
