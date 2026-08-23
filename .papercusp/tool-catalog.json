@@ -4013,7 +4013,7 @@
           "POST"
         ]
       },
-      "description": "Find code by SHAPE using pinned ast-grep: `pattern` is code with metavariables (`foo($X)`, `if ($C) { $$$BODY }`), matched against the syntax tree — so it ignores formatting and line breaks, and does NOT match the same characters inside a string or comment. op:\"search\" lists matches; op:\"rewrite_preview\" additionally reports what each site WOULD become. NEVER writes: ast-grep applies only with --update-all, which this tool cannot emit. Returns { sites:[{path,line1,detail}], truncation, freshness, error }; line1 is ONE-indexed (ast-grep reports zero-indexed — this converts). Knows nothing about types: two identically-shaped calls from different modules are indistinguishable here.",
+      "description": "Find code by SHAPE with pinned ast-grep: `pattern` uses metavariables (`foo($X)`, `if ($C) { $$$BODY }`) and matches syntax, ignoring formatting and strings/comments. op:\"search\" lists matches; op:\"rewrite_preview\" also shows each proposed replacement. Read-only: this tool cannot emit ast-grep --update-all. Returns { sites:[{path,line1,detail}], truncation, freshness, error }; line1 is ONE-indexed. It knows no types: identically-shaped calls from different modules are indistinguishable.",
       "capabilities": [
         "intel:read"
       ],
@@ -11189,7 +11189,7 @@
           "POST"
         ]
       },
-      "description": "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: sessionState, `wakeable`, `verdict`, wakeMode, lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, stalled, unanswered, contextPressure, parkedOn + parkedOnResolved, benchSuggestion, `benchSuggestions` (complete target identity index), `dormant`, `spinning`, `throttled` (backed off from a provider wall — nextFireAt is a wait, not a tick; see `throttled.until`/`.reason`), unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.",
+      "description": "Leader health brief for one fleet (yours by default). Per member: sessionState, `wakeable`, `verdict`, wakeMode, lastToolCallAgeMs, claims (doing/ids/queue/load), loop+nextFireAt, stalled, unanswered, contextPressure, parkedOn/resolved, benchSuggestion(s), dormant, spinning, throttled (provider-wall backoff; see `throttled.until`/`.reason`), unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.",
       "capabilities": [
         "work_items:read"
       ],
