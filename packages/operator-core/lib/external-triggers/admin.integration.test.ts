@@ -266,3 +266,52 @@ describe('external-trigger admin shared seam', () => {
     ).rejects.toThrow('external_trigger_pattern_source_mismatch:ext:slack:');
   });
 });
+
+/**
+ * P-023. Every test above supplies an EXPLICIT storm policy, so none of them
+ * exercises what a binding gets when the caller supplies none — which is the
+ * only path a real social source takes at install time.
+ */
+describe('P-023 — a social binding defaults to coalesce-with-cap, never to unbounded', () => {
+  const bindOn = async (kind: string, stormPolicy?: Record<string, unknown>) => {
+    const source = await createExternalTriggerSource(sql, WS, { kind });
+    return createExternalTriggerBinding(sql, WS, {
+      sourceId: source.id,
+      planHarnessSlug: HARNESS,
+      planSlug: PLAN,
+      eventPattern: `ext:${kind}:mention.created`,
+      ...(stormPolicy ? { stormPolicy } : {}),
+    });
+  };
+
+  it('bluesky states no rate budget, and still gets a bounded cap rather than none', async () => {
+    const binding = await bindOn('bluesky');
+    expect(binding.stormPolicy).toMatchObject({
+      mode: 'coalesce-with-cap',
+      maxRuns: 12,
+      windowSeconds: 300,
+    });
+    expect((binding.stormPolicy.basis as { kind: string }).kind).toBe('conservative-default');
+  });
+
+  it('reddit derives its cap from the documented 60 requests/minute', async () => {
+    const binding = await bindOn('reddit');
+    expect(binding.stormPolicy).toMatchObject({ mode: 'coalesce-with-cap', maxRuns: 30 });
+    expect(binding.stormPolicy.basis).toMatchObject({ kind: 'rate-budget', requestsPerMinute: 60 });
+  });
+
+  it('CONTROL: a non-social source is untouched and still defaults to unbounded', async () => {
+    // Proves the change is SCOPED. Without this, the social default passing
+    // would be equally consistent with having silently capped every mail and
+    // chat binding in the system.
+    const binding = await bindOn('gmail');
+    expect(binding.stormPolicy.maxRuns).toBeUndefined();
+    expect(binding.stormPolicy).toMatchObject({ windowSeconds: 60 });
+  });
+
+  it('an explicit caller policy still wins on a social source', async () => {
+    const binding = await bindOn('bluesky', { maxRuns: 2, windowSeconds: 60 });
+    expect(binding.stormPolicy).toMatchObject({ maxRuns: 2, windowSeconds: 60 });
+    expect(binding.stormPolicy.mode).toBeUndefined();
+  });
+});
