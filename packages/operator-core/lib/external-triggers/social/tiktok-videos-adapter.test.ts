@@ -191,7 +191,7 @@ describe('TikTok cursor semantics (the inversion trap)', () => {
 
     // A broken adapter that persisted TikTok's cursor and replayed it would
     // emit ZERO here while reporting healthy paging.
-    expect(second.emitted ?? second.result.emitted).toBe(4);
+    expect(second.result.emitted).toBe(4);
     expect(second.events.every((e) => Number(e.payload.commentCount) === 4)).toBe(true);
   });
 
