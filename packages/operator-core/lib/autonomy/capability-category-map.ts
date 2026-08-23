@@ -322,6 +322,13 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
     meta: { reason: 'arms / disarms a scheduled plan’s recurrence (start/stop autonomous runs)' },
   },
   {
+    id: 'cat:goal-schedule-arm',
+    on: TRIGGER,
+    when: { action: { matches: '^goals:arm-schedule' } },
+    fire: 'schedule-arm',
+    meta: { reason: 'arms / pauses a goal’s activation recurrence (starts unattended goal holders — work-on-everything-goal-2026-08-23 P-020)' },
+  },
+  {
     id: 'cat:plans',
     on: TRIGGER,
     when: { action: { matches: '^plans:' } },

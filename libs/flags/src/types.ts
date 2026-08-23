@@ -1224,6 +1224,13 @@ export const FLAGS = {
   // control is per-plan ARMING (autonomy-gated, schedule-arm never-auto, owner-only);
   // an un-armed feature fires nothing. Flip OFF via /admin/features for dark.
   SCHEDULED_PLANS: "papercusp-scheduled-plans",
+  // work-on-everything-goal-2026-08-23 P-020 (D-006 ruling 3) — scheduled GOAL
+  // activation: goals:set-schedule / goals:arm-schedule materialize a routine
+  // firing `system:goal-start`, which dispatches the one goal-activation
+  // primitive (startGoalById). Default ON (derived FLAG_DEFAULTS — not in
+  // DARK_FLAGS); OFF stops goals:arm-schedule from arming new schedules
+  // (already-armed routines keep firing — disarm them individually).
+  GOAL_SCHEDULES: "papercusp-goal-schedules",
   // impartial-benchmark-suite-2026-06-15 (P-005/BRIEF 3): gates the EXTERNAL-BENCH
   // grader adapter + the `external-bench:run` op — the runner that clones a public
   // benchmark task, spins a throwaway coding harness, extracts the diff, and grades
