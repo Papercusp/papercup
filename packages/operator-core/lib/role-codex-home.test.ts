@@ -77,6 +77,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   return dir;
 }
@@ -280,9 +281,14 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PostToolUse[0].matcher).toBe(
       '^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$',
     );
+    const byteGuard = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-write-byte-integrity-guard.mjs'),
+    );
+    expect(byteGuard).toBeTruthy();
+    expect(byteGuard.matcher).toBe('^(?:Write|mcp__.*__capability_write)$');
     // With NO sid given, no activity (+ merged coord-fold) hook — it needs an
     // identity to report/fold under.
-    expect(hooks.hooks.PostToolUse).toHaveLength(1);
+    expect(hooks.hooks.PostToolUse).toHaveLength(2);
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
     // No sid → no objective-title hook either (it keys the glance read off the sid).
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-objective-title.sh');
@@ -298,9 +304,9 @@ describe('writeRoleCodexHome', () => {
       sid: 'role-abc-9',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // Three PostToolUse entries: lock-release + activity + objective-title. No
+    // Four PostToolUse entries: lock-release + byte-integrity + activity + objective-title. No
     // separate coord entry any more (EI-11405 merged it into the activity hook).
-    expect(hooks.hooks.PostToolUse).toHaveLength(3);
+    expect(hooks.hooks.PostToolUse).toHaveLength(4);
     const activity = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-activity-report.sh'),
     );
@@ -325,6 +331,11 @@ describe('writeRoleCodexHome', () => {
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
+    const byteGuard = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-write-byte-integrity-guard.mjs'),
+    );
+    expect(byteGuard).toBeTruthy();
+    expect(byteGuard.matcher).toBe('^(?:Write|mcp__.*__capability_write)$');
     // Objective-title hook (session-objective-display-2026-06-22): terminal title
     // ← coord:glance self.objective, matcher .*, baked SID = the session id.
     const objective = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
@@ -899,9 +910,9 @@ describe('writeSuCodexHome', () => {
       sid: 'su-abc-123',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // Three PostToolUse entries: lock-release + activity report (coord-folding) +
+    // Four PostToolUse entries: lock-release + byte-integrity + activity report (coord-folding) +
     // objective-title. No separate coord entry any more (EI-11405 merge).
-    expect(hooks.hooks.PostToolUse).toHaveLength(3);
+    expect(hooks.hooks.PostToolUse).toHaveLength(4);
     const preLock = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('pretooluse-locks-acquire.sh'),
     );
@@ -914,6 +925,11 @@ describe('writeSuCodexHome', () => {
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
+    const byteGuard = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('posttooluse-write-byte-integrity-guard.mjs'),
+    );
+    expect(byteGuard).toBeTruthy();
+    expect(byteGuard.matcher).toBe('^(?:Write|mcp__.*__capability_write)$');
 
     // The activity-bridge hook — an SU/engineer session is a worker too — now ALSO
     // carries the coord:inbox PUSH (new messages folded into the same round trip,

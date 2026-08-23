@@ -97,6 +97,9 @@ const CODEX_LOCK_PRE_MATCHER = 'apply_patch|Edit|Write';
  *  release hook also observes its canonical/compatibility aliases and can
  *  recover only the cached lock paths named in that parent's source. */
 const CODEX_LOCK_POST_MATCHER = `^(?:${CODEX_LOCK_PRE_MATCHER}|exec|functions\\.exec|functions__exec)$`;
+/** Full Write/capability:write inputs carry the complete requested content, so
+ * the shared PostToolUse guard can compare exact UTF-8 bytes on disk. */
+const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)$';
 
 /**
  * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
@@ -503,6 +506,18 @@ export function writeCodexLockHooks(
       hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${post}` }],
     },
   ];
+
+  // EI-21220966892195714: full writes are the only edit shape whose input
+  // contains enough content for an exact post-write byte comparison. Keep this
+  // separate from the lock-release matcher so apply_patch/parent exec calls do
+  // not invoke a guard that cannot reconstruct their resulting file.
+  const writeByteIntegrity = join(dir, 'posttooluse-write-byte-integrity-guard.mjs');
+  if (existsSync(writeByteIntegrity)) {
+    postToolUse.push({
+      matcher: CODEX_WRITE_BYTE_INTEGRITY_MATCHER,
+      hooks: [{ type: 'command', command: writeByteIntegrity }],
+    });
+  }
 
   // Activity-bridge hook (matcher `.*`), coord-folding when `coordSid` is ALSO
   // given (SU sessions only — see the header doc for the EI-11405 merge).

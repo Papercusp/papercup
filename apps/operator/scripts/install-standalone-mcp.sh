@@ -222,6 +222,11 @@ CC_POST_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-locks-release.sh"
 # retired. psu sessions only (scopes itself via PAPERCUSP_SID). Its own
 # settings.json entry, matcher "*"; synchronous (it reads the folded response).
 CC_ACTIVITY_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-activity-report.sh"
+# PostToolUse full-write byte-integrity diagnostic (EI-21220966892195714):
+# compare the requested UTF-8 bytes with the resulting file immediately after
+# Write/capability:write dispatch. The copy loop below installs the payload;
+# this variable is the settings-registration path.
+CC_WRITE_BYTE_INTEGRITY_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-write-byte-integrity-guard.mjs"
 # PreToolUse counterpart (EI-8997): the SAME activity bridge, reported at
 # dispatch time instead of completion — closes the D-003 claim-renewal gap a
 # single long-running tool call leaves during PostToolUse-only reporting.
@@ -588,6 +593,48 @@ hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
 arr.append({'matcher': '*',
             'hooks': [{'type': 'command', 'command': activity}]})
+hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the full-write byte-integrity diagnostic as its OWN PostToolUse entry.
+# A full Write carries the complete requested content, so the hook can compare
+# the requested UTF-8 bytes with the resulting file. Edit/MultiEdit are
+# intentionally excluded because their inputs are fragments. Idempotent and
+# non-destructive: remove only prior copies of this command, preserve foreign
+# commands, then append the current registration.
+#   $1 = settings.json path
+merge_write_byte_integrity_guard_hook() {
+  python3 - "$1" "$CC_WRITE_BYTE_INTEGRITY_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
+arr.append({
+    'matcher': 'Write|mcp__.*__capability_write',
+    'hooks': [{'type': 'command', 'command': hook}],
+})
 hooks['PostToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1682,6 +1729,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
   merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)"
   [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_WRITE_BYTE_INTEGRITY_HOOK" ] && merge_write_byte_integrity_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PRE_ACTIVITY_HOOK" ] && merge_activity_pre_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_LIFECYCLE_HOOK" ] && merge_lifecycle_hooks "$CLAUDE_SETTINGS"
   [ -x "$CC_WORKITEM_NUDGE_HOOK" ] && merge_workitem_nudge_hook "$CLAUDE_SETTINGS"

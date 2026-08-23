@@ -436,6 +436,10 @@ describe('install parity — hooks/cc reaches ALL THREE deploy paths', () => {
     expect(sh).toContain('CC_POST_BATCH_LOCKS_HOOK');
     expect(sh).toContain('posttoolbatch-locks-release.sh');
     expect(sh).toContain("hooks['PostToolBatch'] = arr");
+    // EI-21220966892195714: copying the guard is not enough; the standalone
+    // installer must also register its Write-only PostToolUse matcher.
+    expect(sh).toContain('CC_WRITE_BYTE_INTEGRITY_HOOK');
+    expect(sh).toContain('merge_write_byte_integrity_guard_hook');
   });
 
   it('2/3 build-desktop-sidecar.sh ships the *.py libs, not just *.sh', () => {

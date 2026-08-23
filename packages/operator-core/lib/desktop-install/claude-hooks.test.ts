@@ -88,7 +88,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     ]);
     expect(cfg.hooks.PostToolBatch.every((entry: any) => entry.matcher === undefined)).toBe(true);
 
-    // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
+    // PostToolUse: lock-release + activity (coord-folding, EI-11405) + byte-integrity guard +
+    // workitem-nudge +
     // required-field-strand nudge (EI-19374535041074908) + ts-parse nudge
     // (EI-19457231269012320) + MDX nudge (EI-19450114644493388) +
     // no-proc-path-fixture nudge (EI-19968483416347685) +
@@ -100,6 +101,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
       `${DEST}/posttooluse-locks-release.sh`,
       `${DEST}/posttooluse-activity-report.sh`,
+      `${DEST}/posttooluse-write-byte-integrity-guard.mjs`,
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
@@ -114,6 +116,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     ]);
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
     expect(cfg.hooks.PostToolUse[0].matcher).toBe(FILE_WRITE_MATCHER); // lock release mirrors acquire
+    expect(cfg.hooks.PostToolUse[2].matcher).toBe(FILE_OVERWRITE_MATCHER); // byte-integrity guard
     expect(cfg.hooks.PostToolUse[3].matcher).toBe('Edit|Write|MultiEdit'); // strand nudge
     expect(cfg.hooks.PostToolUse[4].matcher).toBe('Edit|Write|MultiEdit'); // ts-parse nudge
     expect(cfg.hooks.PostToolUse[5].matcher).toBe('Edit|Write|MultiEdit'); // MDX nudge
@@ -123,7 +126,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PostToolUse[9].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight nudge
     expect(cfg.hooks.PostToolUse[10].matcher).toBe('Edit|Write|MultiEdit'); // mock-cast-escape nudge
     expect(cfg.hooks.PostToolUse[11].matcher).toBe('Edit|Write|MultiEdit'); // css-design-primitives nudge
-    expect(cfg.hooks.PostToolUse[12].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    expect(cfg.hooks.PostToolUse[13].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);

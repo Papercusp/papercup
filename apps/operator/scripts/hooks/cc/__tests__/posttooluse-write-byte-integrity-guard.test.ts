@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
-const ROOT = resolve(__dirname, '../../../../../..');
 const HOOK = resolve(__dirname, '../posttooluse-write-byte-integrity-guard.mjs');
 
 async function hookMod() {
@@ -65,10 +64,10 @@ describe('posttooluse-write-byte-integrity-guard', () => {
   it('emits a PostToolUse additionalContext diagnostic through the real stdin boundary', () => {
     const payload = {
       tool_name: 'Write',
-      tool_input: { file_path: resolve(ROOT, 'packages/operator-core/lib/plan-items/text-drift-report.ts'), content: 'x' },
+      tool_input: { file_path: '/tmp/ei-21220966892195714-missing-file.ts', content: 'x' },
     };
-    // The real file is not expected to contain one byte, so this call verifies only
-    // that malformed/missing comparisons remain fail-open at the process boundary.
+    // A missing result file verifies that malformed/unavailable comparisons remain
+    // fail-open at the process boundary without depending on shared-tree content.
     const out = execFileSync('node', [HOOK], { input: JSON.stringify(payload), encoding: 'utf8' });
     expect(out.trim()).toBe('');
   });
