@@ -104,10 +104,14 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
   });
 
   it('publishes closed→dropped semantics so successful work is not marked discarded', () => {
-    expect(complete.description).toContain('`closed` means discard/wontfix');
-    expect(complete.description).toContain('`state:"done"`');
+    expect(complete.description).toContain('`closed`/`deprecated` mean discard/wontfix');
+    expect(complete.description).toContain('feature/chunk `state:"passed"`');
+    expect(complete.description).toContain('issue `state:"resolved"`');
+    expect(complete.description).toContain('unified `"done"`/`"dropped"` aliases');
     expect(complete.guidance?.when).toContain('Reserve `state:"dropped"`');
     expect(complete.guidance?.when).toContain('legacy `closed`/`deprecated` for discard/wontfix');
+    expect(complete.guidance?.when).toContain('exactly once in checked/notChecked/notApplicable');
+    expect(complete.guidance?.when).toContain('residue is non-empty');
   });
 });
 
@@ -1899,6 +1903,31 @@ describe('work_items:complete (keyed-array)', () => {
       expect(hasEnumeratedVerificationCoverage({ population: ['a', 'b'], checked: ['a'], residue: ['none'] })).toBe(
         false,
       );
+    });
+
+    it('rejects duplicate or non-population status entries instead of treating them as a partition', () => {
+      expect(
+        hasEnumeratedVerificationCoverage({
+          population: ['a', 'b'],
+          checked: ['a'],
+          notChecked: ['a', 'b'],
+          residue: ['none'],
+        }),
+      ).toBe(false);
+      expect(
+        hasEnumeratedVerificationCoverage({
+          population: ['a', 'b'],
+          checked: ['a', 'b', 'descriptive replacement'],
+          residue: ['none'],
+        }),
+      ).toBe(false);
+      expect(
+        hasEnumeratedVerificationCoverage({
+          population: ['a', 'a'],
+          checked: ['a'],
+          residue: ['none'],
+        }),
+      ).toBe(false);
     });
   });
 

@@ -218,7 +218,8 @@ const CLOSE_INTENT_STATES = new Set([...TERMINAL_WORK_ITEM_STATES, 'done', 'comp
 const COMPLETE_CLOSE_SHAPE_MESSAGE =
   'to CLOSE a work-item, pass { id, state, assumptions: "none"|[fact keys], completion: { summary } } ' +
   '(or items:[{ id, state, assumptions: "none"|[fact keys], completion: { summary } }] for many) — ' +
-  '`state` is the terminal lifecycle (issue: "resolved"|"closed"; feature: "passed"|"deprecated") ' +
+  '`state` is the terminal lifecycle (feature/chunk: "passed"|"deprecated"; issue: "resolved"|"closed"; ' +
+  'the unified aliases "done"|"dropped" are also accepted and preserve success vs discard semantics) ' +
   'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
   'the item stays claimable. `assumptions` is also REQUIRED; pass "none" when no recorded fact ' +
   'supports the close (see work_items:set_state to change state alone, without a completion record).';
@@ -294,7 +295,7 @@ const itemSpec = z.object({
     .max(40)
     .optional()
     .describe(
-      "Terminal lifecycle intent. Successful completion: 'done' (or legacy 'resolved'/'passed'), which stores as 'done'. Discard/wontfix: 'dropped' (or legacy 'closed'/'deprecated'), which stores as 'dropped'. Never use 'closed' as a generic synonym for successfully completed work. Omit to record + emit without changing lifecycle state.",
+      "Terminal lifecycle intent. Feature/chunk success: 'passed'; issue success: 'resolved'. Unified 'done'/'dropped' aliases are accepted and preserve success vs discard semantics. Legacy 'deprecated'/'closed' are discard/wontfix. Never use 'closed' as a generic synonym for successful work. Omit to record + emit without changing lifecycle state.",
     ),
   /** The structured completion record (D-004). `workItem` defaults to this item's `id`. */
   completion: completionSpec,
@@ -1392,12 +1393,28 @@ export function claimsUniversalVerification(completion: {
  */
 export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage | undefined): boolean {
   if (!coverage?.population?.length || !coverage.residue?.length) return false;
-  const accountedFor = new Set([
+  const population = coverage.population;
+  const populationSet = new Set(population);
+  // A population is an enumeration, not a bag of labels. Duplicate names make an
+  // apparently complete partition ambiguous, even when the status buckets are otherwise
+  // balanced.
+  if (populationSet.size !== population.length) return false;
+
+  const statusEntries = [
     ...(coverage.checked ?? []),
     ...(coverage.notChecked ?? []),
     ...(coverage.notApplicable ?? []),
-  ]);
-  return coverage.population.every((entry) => accountedFor.has(entry));
+  ];
+  const statusCounts = new Map<string, number>();
+  for (const entry of statusEntries) {
+    // Unknown entries and repeated entries both violate the exact partition. Keep the
+    // comparison verbatim: callers must copy population strings exactly, not normalize or
+    // replace them with prose descriptions.
+    if (!populationSet.has(entry)) return false;
+    statusCounts.set(entry, (statusCounts.get(entry) ?? 0) + 1);
+  }
+
+  return population.every((entry) => statusCounts.get(entry) === 1) && statusEntries.length === population.length;
 }
 
 interface FinishPlanStamp {
@@ -2634,9 +2651,9 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    'Complete one or many work-items with structured evidence; the system renders and broadcasts it. For successful work pass `state:"done"` (legacy `resolved`/`passed` also maps to done); `closed` means discard/wontfix and maps to `dropped`. Pass terminal `state` plus `assumptions` (`"none"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.',
+    'Complete one or many work-items with structured evidence; the system renders and broadcasts it. For a terminal close, prefer feature/chunk `state:"passed"` or `"deprecated"`, and issue `state:"resolved"` or `"closed"`; unified `"done"`/`"dropped"` aliases are also accepted. `closed`/`deprecated` mean discard/wontfix, not successful work. Pass terminal `state` plus `assumptions` (`"none"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, successful terminal `state:"done"` (or legacy `resolved`/`passed`), and `assumptions` (`\"none\"` or fact keys). Reserve `state:"dropped"` and legacy `closed`/`deprecated` for discard/wontfix. Put structured evidence in `completion.verification` using only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; do not put descriptive `tests`, `typecheck`, or `diff` keys there — use `testsRun`/`testResult` (or top-level `tests`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, a family-appropriate terminal state (`passed`/`deprecated` for feature/chunk, `resolved`/`closed` for issue; unified `done`/`dropped` aliases are accepted), and `assumptions` (`\"none\"` or fact keys). Reserve `dropped` and legacy `closed`/`deprecated` for discard/wontfix. For universal-verification claims, put the complete verbatim population partition in `completion.verification.coverage`: every population entry appears exactly once in checked/notChecked/notApplicable, and residue is non-empty (`["none"]` means zero). Put structured evidence in `completion.verification` using only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; do not put descriptive `tests`, `typecheck`, or `diff` keys there — use `testsRun`/`testResult` (or top-level `tests`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
@@ -2736,7 +2753,7 @@ export default defineTool({
               .max(40)
               .optional()
               .describe(
-                "Successful completion: 'done' (legacy 'resolved'/'passed' also maps to done). Discard/wontfix: 'dropped' (legacy 'closed'/'deprecated' maps to dropped). Never use 'closed' for successfully completed work.",
+                "Terminal intent: feature/chunk uses 'passed'|'deprecated' and issue uses 'resolved'|'closed'; unified 'done'|'dropped' aliases are also accepted. 'dropped'/'closed'/'deprecated' mean discard or wontfix; never use them for successful work.",
               ),
             /** The structured completion record (single-complete shorthand). */
             completion: completionSpec.optional(),
@@ -2774,7 +2791,7 @@ export default defineTool({
               .max(40)
               .optional()
               .describe(
-                "Default terminal intent for items that omit one. Success: 'done' (legacy 'resolved'/'passed'); discard/wontfix: 'dropped' (legacy 'closed'/'deprecated').",
+                "Default terminal intent for items that omit one. Feature/chunk success: 'passed'; issue success: 'resolved'. Legacy discard/wontfix: 'deprecated' or 'closed'; unified aliases 'done'|'dropped' are also accepted.",
               ),
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),

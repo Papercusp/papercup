@@ -64,12 +64,29 @@ export const CompletionVerifiedHowSchema = z
  * keeps the durable shape typed and shared by both completion aliases.
  */
 export const CompletionCoverageSchema = z.object({
-  population: z.array(z.string().min(1)).min(1),
-  checked: z.array(z.string().min(1)).optional(),
-  notChecked: z.array(z.string().min(1)).optional(),
-  notApplicable: z.array(z.string().min(1)).optional(),
-  residue: z.array(z.string().min(1)).optional(),
-});
+  population: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe('The complete, uniquely named population. Copy each entry verbatim into exactly one status bucket.'),
+  checked: z
+    .array(z.string().min(1))
+    .optional()
+    .describe('Population entries verified as checked; entries must be copied verbatim and appear at most once.'),
+  notChecked: z
+    .array(z.string().min(1))
+    .optional()
+    .describe('Population entries not verified; entries must be copied verbatim and appear at most once.'),
+  notApplicable: z
+    .array(z.string().min(1))
+    .optional()
+    .describe('Population entries that do not apply; entries must be copied verbatim and appear at most once.'),
+  residue: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("For a universal-verification close this is required and non-empty; use ['none'] for zero residue."),
+}).describe(
+  "Coverage is an exact partition: every population entry must appear verbatim in exactly one of checked, notChecked, or notApplicable; do not use descriptive replacements or extra bucket entries. For universal-verification closes, residue is required and non-empty, with residue:['none'] declaring zero residue. Omitted status buckets mean empty buckets.",
+);
 export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 
 /**
