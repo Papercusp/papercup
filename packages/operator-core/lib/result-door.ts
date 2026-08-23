@@ -55,7 +55,12 @@ import {
   type OutputEvidenceReferenceContentItem,
   type OutputReferenceContentItem,
 } from './output-envelope';
-import { contentMetadata, writeScratchReference, type ScratchReferenceManifest } from './scratch-reference';
+import {
+  contentMetadata,
+  scratchReferencePayloadByteOffset,
+  writeScratchReference,
+  type ScratchReferenceManifest,
+} from './scratch-reference';
 
 /** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
  *  The live door is resolved per call through the P-023 config surface
@@ -676,9 +681,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // back into a footer whose entire job here is to name NO path — and a reader
     // that sees one will try to page it. The full message stays on `_meta`.
     let spillErrorCode: string | null = null;
+    let spillManifest: ScratchReferenceManifest | null = null;
     const noteSpillFailure = (err: unknown): void => {
       spillError = err instanceof Error ? err.message : String(err);
       spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+      spillManifest = null;
       fsPath = null;
       uri = null;
     };
@@ -742,7 +749,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     if (fsPath != null) {
       try {
         const parts = scratchParts(opts);
-        writeScratchReference({
+        spillManifest = writeScratchReference({
           filePath: fsPath,
           payload: spillPrefix + fullText,
           workspaceId: parts.workspaceId,
@@ -812,7 +819,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // but it is NOT safe to advertise the byte boundary as an exact, complete
     // JSON recovery point — the omitted records were never serialized.
     const partialJsonBody = parsedJsonBody && innerTruncationMarkers.length > 0;
-    const spillBodyByteOffset = Buffer.byteLength(spillPrefix, 'utf8');
+    // `file_path` names the raw self-describing scratch file, so this offset
+    // must include its manifest header as well as the result-door prefix. The
+    // capability:read handler unwraps that header for byte paging, but shell /
+    // jq users applying the advertised offset to the named file must land on
+    // the JSON body in the actual on-disk bytes.
+    const spillBodyByteOffset = spillManifest == null
+      ? null
+      : scratchReferencePayloadByteOffset(spillManifest) + Buffer.byteLength(spillPrefix, 'utf8');
     const recovery =
       fsPath != null && uri != null
         ? {
@@ -839,7 +853,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // body. A tool-internally clipped JSON body is valid JSON while
               // still being an incomplete population, so do not present its
               // boundary as an exact recovery cursor.
-              ...(parsedJsonBody && !partialJsonBody ? { bodyByteOffset: spillBodyByteOffset } : {}),
+              ...(parsedJsonBody && !partialJsonBody && spillBodyByteOffset != null
+                ? { bodyByteOffset: spillBodyByteOffset }
+                : {}),
             },
             next:
               // `response.data` rather than a bare `data`: naming the field's OWNER
@@ -855,7 +871,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   `this JSON is partial and paging cannot recover omitted fields. Re-call ${opts.toolName} ` +
                   `with a wider per-field limit.`
                 : `recover the exact spill bytes. File is plaintext; ` +
-                  (parsedJsonBody ? `skip cursor.bodyByteOffset bytes for JSON.` : `it opens with a text header.`)) +
+                  (parsedJsonBody ? `skip cursor.bodyByteOffset bytes in the raw file for JSON.` : `it opens with a text header.`)) +
               // Keep the established JSON recovery pointer deliberately terse. The
               // payload projector budgets the pointer together with the retained
               // JSON preview; expanding it here can evict coord:orient's recovery

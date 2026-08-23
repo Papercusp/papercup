@@ -128,8 +128,8 @@ function doorOversizedPartialJsonResult(): { cursor: SpillCursor; next: string }
   return { cursor: body._projection.cursor, next: body._projection.next };
 }
 
-/** The single spill file the door wrote, as RAW BYTES (never utf8-decoded — the
- *  whole question here is what the bytes on disk actually are). */
+/** The unwrapped spill payload returned by capability:read (without the
+ *  self-describing manifest header). */
 function spillBytes(): Buffer {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, WS, TOOL, RUN_ID);
   const files = readdirSync(dir);
@@ -137,6 +137,14 @@ function spillBytes(): Buffer {
   const reference = parseScratchReference(readFileSync(join(dir, files[0])));
   expect(reference).not.toBeNull();
   return reference!.payload;
+}
+
+/** The exact bytes on disk at the cursor's file_path, including its manifest. */
+function spillRawBytes(): Buffer {
+  const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, WS, TOOL, RUN_ID);
+  const files = readdirSync(dir);
+  expect(files).toHaveLength(1);
+  return readFileSync(join(dir, files[0]));
 }
 
 describe('EI-20685195115158619: spill cursor encoding contract', () => {
@@ -234,9 +242,12 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
 
     expect(cursor.bodyByteOffset).toEqual(expect.any(Number));
     expect(cursor.bodyByteOffset).toBeGreaterThan(0);
-    expect(next).toContain('skip cursor.bodyByteOffset bytes for JSON.');
+    expect(next).toContain('skip cursor.bodyByteOffset bytes in the raw file for JSON.');
 
-    const bytes = spillBytes();
+    // `cursor.args.file_path` points at the raw self-describing scratch file,
+    // not the unwrapped payload returned by capability:read. The offset must
+    // therefore skip both the manifest header and the result-door prefix.
+    const bytes = spillRawBytes();
     const body = bytes.subarray(cursor.bodyByteOffset!).toString('utf8');
 
     // The offset must land exactly at the serialized tool body, not in the
