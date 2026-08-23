@@ -36,7 +36,11 @@ vi.mock('../../events/await/handle', () => ({
   ),
 }));
 vi.mock('../../events/await/store', () => ({
-  registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 42, eventKey: i.eventKey, expiresTs: '2030-01-01' })),
+  registerAwait: vi.fn(async (i: Record<string, unknown>) => ({
+    id: 42,
+    eventKey: i.eventKey,
+    expiresTs: i.timeoutSec == null ? null : '2030-01-01',
+  })),
   listParkedAwaitsForSubscribers: vi.fn(async () => []),
 }));
 vi.mock('../../fleet/assignments', () => ({
@@ -162,9 +166,28 @@ describe('fleet:bench — stage mode', () => {
       member: 'su-worker',
       event: 'p2p-git:phase3-open',
       stagedAssignment: 'flip TEST hive bridged',
+      expires_ts: null,
       registered: true,
       benched_by: 'su-leader',
     });
+  });
+
+  it('keeps the default bench alive until the wake event instead of expiring after 30 minutes', async () => {
+    const out = await call({ member: 'su-worker', wakeEvent: 'blocked:cleared', stagedAssignment: 'resume the staged leg' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      timeoutBehavior: 'wake',
+      timeoutSec: null,
+    });
+    expect(out).toMatchObject({ ok: true, expires_ts: null });
+  });
+
+  it('preserves an explicit bench deadline for callers that want a timeout backstop', async () => {
+    const out = await call({ member: 'su-worker', wakeEvent: 'blocked:cleared', stagedAssignment: 'resume the staged leg', timeout_sec: 600 });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      timeoutBehavior: 'wake',
+      timeoutSec: 600,
+    });
+    expect(out).toMatchObject({ ok: true, expires_ts: '2030-01-01' });
   });
 
   it('reports a bench miss immediately when no wake handle is found for the member', async () => {

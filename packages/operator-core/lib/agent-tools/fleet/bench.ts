@@ -44,7 +44,7 @@ import { groupByAgent, listFleetAssignments } from '../../fleet/assignments';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
-import { AWAIT_DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC } from '../../events/await/types';
+import { AWAIT_MAX_TIMEOUT_SEC } from '../../events/await/types';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
 
@@ -243,7 +243,7 @@ export default defineTool({
       .positive()
       .max(AWAIT_MAX_TIMEOUT_SEC)
       .optional()
-      .describe(`(stage mode) Deadline in seconds (default ${AWAIT_DEFAULT_TIMEOUT_SEC}) — the member is woken with a TIMEOUT marker if the key never fires.`),
+      .describe('(stage mode) Optional deadline in seconds — omitted means the bench remains registered until the wake event fires.'),
   }),
   async handler(args, ctx) {
     // Resolved defensively (mirrors fleet:leader-brief): a read-mostly fleet
@@ -365,7 +365,10 @@ export default defineTool({
       note: BENCH_NOTE_PREFIX + staged,
       wakeHandle: handle,
       timeoutBehavior: 'wake',
-      timeoutSec: args.timeout_sec ?? AWAIT_DEFAULT_TIMEOUT_SEC,
+      // A fleet bench is a leader-managed park, not a normal short-lived await. An
+      // omitted deadline must survive a long-lived blocker (and the leader's own
+      // session ending); callers can still opt into a timeout when they need one.
+      timeoutSec: args.timeout_sec ?? null,
     });
 
     return {
