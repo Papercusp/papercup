@@ -163,11 +163,94 @@ export function status(live: { branch: string | null; head: string | null }) {
     expect(spawnTriggers(primitive, RAW)).toEqual({
       detachedNotFalse: false,
       storedOnProperty: false,
+      selfDaemonizing: false,
     });
   });
 
   it('stays a strict SUPERSET: everything the literal-text control catches still fails', () => {
     expect(LITERAL_TEXT_PREDICATE(RAW) && check(NEW, RAW)).toBe(true);
+  });
+
+  /**
+   * TRIGGER (3) — the self-daemonizing child (WI-41108).
+   *
+   * The real-world source is `dbus-daemon --fork` in desktop/a11y-bus.ts, which leaked to
+   * 115 host-wide processes while this guard read the tree as clean. Each case below is
+   * asserted DISCRIMINATING against LITERAL_TEXT_PREDICATE: a trigger that fired on
+   * everything would pass the positive cases too, so the control is what gives them force.
+   */
+  describe('trigger (3): a child that daemonizes itself', () => {
+    /** The shape that was invisible: sync launch, no `detached`, no handle kept. */
+    const DAEMONIZES = `
+import { spawnSync } from 'node:child_process';
+const busCmd = { bin: 'dbus-daemon', args: ['--config-file=/tmp/x', '--fork', '--print-pid=1'] };
+export function startBus() {
+  return spawnSync(busCmd.bin, busCmd.args, { encoding: 'utf8' });
+}`;
+
+    it('FAILS a self-daemonizing child that presents NEITHER older trigger', () => {
+      expect(check(NEW, DAEMONIZES)).toBe(true);
+      expect(spawnTriggers(NEW, DAEMONIZES)).toEqual({
+        detachedNotFalse: false,
+        storedOnProperty: false,
+        selfDaemonizing: true,
+      });
+    });
+
+    it('is DISCRIMINATING — the pre-fix control cannot see it', () => {
+      // This is the whole finding: no `detached: true` anywhere, so the old rule read
+      // this file as clean. If this ever goes false, trigger (3) has stopped being new.
+      expect(LITERAL_TEXT_PREDICATE(DAEMONIZES)).toBe(false);
+      expect(check(NEW, DAEMONIZES)).toBe(true);
+    });
+
+    it('is reachable at all: `spawnSync(` does NOT match the trigger-(1)/(2) pre-filter', () => {
+      // Two independent blind spots, not one — if the pre-filter had matched spawnSync,
+      // the a11y site would still have escaped on the trigger set alone.
+      expect(/\b(spawn|childSpawn|spawnFn|fork)\s*\(/.test('spawnSync(')).toBe(false);
+    });
+
+    it('does NOT fire on `git checkout --detach` — the excluded-ambiguous-flag control', () => {
+      // Every `--detach` site in this tree is a git ref operation. Were `--detach` in the
+      // flag set, this guard would cry wolf on them and its findings would get
+      // rubber-stamped into ALLOWLIST — the D-012 failure the guard's own header warns of.
+      const gitCheckout = `
+import { spawnSync } from 'node:child_process';
+export function pin(dir: string, sha: string) {
+  return spawnSync('git', ['-C', dir, 'checkout', '--quiet', '--detach', sha]);
+}`;
+      expect(check(NEW, gitCheckout)).toBe(false);
+    });
+
+    it('does NOT fire on a daemonize flag that appears only in a COMMENT', () => {
+      // Trigger (3) reads string LITERALS off the AST, not raw text. Prose that merely
+      // NAMES `--fork` must not convict a file — the false-positive direction.
+      const prose = `
+import { spawnSync } from 'node:child_process';
+// We deliberately do NOT pass --fork here; the child must die with this call.
+export function run() {
+  return spawnSync('dbus-daemon', ['--nofork']);
+}`;
+      expect(check(NEW, prose)).toBe(false);
+    });
+
+    it('does NOT fire on a daemonize flag with no launch call in the file', () => {
+      const noLaunch = `export const ARGS = ['--fork'];`;
+      expect(check(NEW, noLaunch)).toBe(false);
+    });
+
+    it('still clears once the site enrols', () => {
+      const enrolled = `import { beginSyncEnrolment } from '../task-manager/enroll-sync';\n${DAEMONIZES}`;
+      expect(check(NEW, enrolled)).toBe(false);
+    });
+
+    it('parks the motivating site in KNOWN_DEFECTS, not ALLOWLIST', () => {
+      // Its lifetime IS ours to own, which is exactly what ALLOWLIST must never claim.
+      const a11y = 'packages/operator-core/lib/desktop/a11y-bus.ts';
+      expect(KNOWN_DEFECTS.has(a11y)).toBe(true);
+      expect(allow.has(a11y)).toBe(false);
+      expect(KNOWN_DEFECTS.get(a11y)).toMatch(/WI-41108/);
+    });
   });
 });
 
