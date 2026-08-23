@@ -547,6 +547,27 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
     expect(lintUncheckedExternalClaims(prose, probes)).toHaveLength(0);
   });
 
+  it('treats matching stable row ids as probe coverage', () => {
+    const prose =
+      'Stable-C generation stable-c-false-0517 MUST remain false; ' +
+      'c58 re-arm generation c58-rearm-pending MUST remain pending.';
+    const probes = [
+      renderCheckLine({
+        id: 'stable-c-false-0517',
+        claim: 'Stable-C is false',
+        recheck: 'read current Stable-C result',
+        verified: 'current value confirmed',
+      }),
+      renderCheckLine({
+        id: 'c58-rearm-pending',
+        claim: 'c58 re-arm is pending',
+        recheck: 'read current c58 await status',
+        verified: 'current value confirmed',
+      }),
+    ].join('\n');
+    expect(lintUncheckedExternalClaims(prose, probes)).toEqual([]);
+  });
+
   it('ignores prose without assertion verbs or external-state content, and caps at 3', () => {
     expect(lintUncheckedExternalClaims('read the inbox, then build the patch', '')).toHaveLength(0);
     // Verb but neither a concrete token NOR an external-state noun — clean.

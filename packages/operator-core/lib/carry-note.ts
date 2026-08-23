@@ -1218,6 +1218,11 @@ const CLAIM_TOKEN_RES: ReadonlyArray<RegExp> = [
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/g, // ISO timestamps
 ];
 
+/** Stable row ids are explicit probe anchors. Keep their extraction tied to the
+ * rendered `[#id]` grammar so arbitrary hyphenated prose is not treated as a
+ * check key by accident. */
+const PROBE_ROW_ID_RE = /\[#([A-Za-z0-9._:-]{1,40})\]/g;
+
 /** Review fold #1: external-state NOUNS. The motivating incident line — "expect the
  *  hash to ROLL, count under the new hash" — carries an assertion verb but NO concrete
  *  token, so a token-only lint skips its own root incident. A noun names the external
@@ -1234,9 +1239,14 @@ const CLAIM_NOUN_RE = /\b(hash|sha|generation|watermark|anchor|floor|denominator
 export function lintUncheckedExternalClaims(prose: string, probeText: string): string[] {
   const flagged: string[] = [];
   const probes = probeText.toLowerCase();
+  const probeIdPatterns = [...(probeText ?? '').matchAll(PROBE_ROW_ID_RE)].map((m) => {
+    const id = (m[1] ?? '').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^a-z0-9._:-])${id}(?:$|[^a-z0-9._:-])`, 'i');
+  });
   for (const rawLine of (prose ?? '').split('\n')) {
     const line = rawLine.trim();
     if (!line || !CLAIM_ASSERTION_RE.test(line)) continue;
+    const coveredByRowId = probeIdPatterns.some((pattern) => pattern.test(line));
     const tokens: string[] = [];
     for (const re of CLAIM_TOKEN_RES) {
       re.lastIndex = 0;
@@ -1248,7 +1258,7 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
       for (const m of line.matchAll(CLAIM_NOUN_RE)) tokens.push(m[0]);
     }
     if (tokens.length === 0) continue;
-    const covered = tokens.some((t) => probes.includes(t.toLowerCase()));
+    const covered = coveredByRowId || tokens.some((t) => probes.includes(t.toLowerCase()));
     if (!covered) {
       flagged.push(line.length > 160 ? `${line.slice(0, 157)}…` : line);
       if (flagged.length >= 3) break;
