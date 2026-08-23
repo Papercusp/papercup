@@ -5230,3 +5230,29 @@
     flex-direction: column;
   }
 }
+
+/* --- P-027: social platform constraints inside the trigger composer -------- */
+
+.pc-plan-dialog__note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: -2px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pc-plan-dialog__note strong {
+  color: var(--fg);
+}
+
+/* An owner-side wall or an unverified write path: the binding can be attached,
+   but it cannot succeed yet. Distinct from an error — nothing has failed. */
+.pc-plan-dialog__warn {
+  color: var(--warn);
+}

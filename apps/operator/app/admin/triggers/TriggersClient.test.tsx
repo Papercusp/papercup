@@ -29,6 +29,41 @@ const payload = {
       bindingCount: 1,
       armedBindingCount: 0,
       failedDeliveries24h: 1,
+      social: null,
+    },
+    {
+      // A social source whose cursor carries NO timestamp (reddit's fullname).
+      // Its verdict must read as advancing, never as "never synced".
+      id: "20000000-0000-4000-8000-000000000002",
+      kind: "reddit",
+      status: "connected",
+      config: {},
+      credentialRef: "reddit-oauth:fixture",
+      cursor: { newestFullname: "t3_abc123" },
+      lastConnectedAt: "2026-08-22T00:00:00.000Z",
+      lastError: null,
+      bindingCount: 0,
+      armedBindingCount: 0,
+      failedDeliveries24h: 0,
+      social: {
+        platformId: "reddit",
+        label: "Reddit",
+        wave: "A" as const,
+        verified: true,
+        blockedOn: null,
+        authMode: "self-serve-oauth",
+        readTransport: "poll-cursor",
+        cursor: {
+          state: "position-only" as const,
+          at: null,
+          ageMs: null,
+          position: "newestFullname=t3_abc123",
+          detail: "cursor advancing at newestFullname=t3_abc123; this platform's cursor carries no timestamp",
+        },
+        rateBudget: { maxRuns: 6, windowSeconds: 300, basis: "rate-budget", hold: null },
+        writeVerified: true,
+        writeVerbs: ["reply", "post"],
+      },
     },
   ],
   bindings: [
@@ -123,6 +158,35 @@ describe("/admin/triggers client", () => {
     expect(await screen.findByText(/credential:\s*configured/)).toBeTruthy();
     expect(screen.queryByText("google-oauth:fixture")).toBeNull();
     expect(screen.getByText("1 binding · 0 armed")).toBeTruthy();
+  });
+
+  it("renders a timeless social cursor as advancing, not as never synced", async () => {
+    // The regression under test: reporting a healthy reddit source — whose
+    // cursor is a `t3_…` fullname and can never carry a time — as dead.
+    renderClient("?view=sources");
+    expect(await screen.findByText(/cursor:\s*advancing/)).toBeTruthy();
+    expect(screen.getByText(/newestFullname=t3_abc123/)).toBeTruthy();
+    expect(screen.queryByText(/never synced/)).toBeNull();
+  });
+
+  it("shows the platform rate budget rather than an unbounded storm", async () => {
+    renderClient("?view=sources");
+    expect(await screen.findByText(/budget:\s*up to 6 runs \/ 300s/)).toBeTruthy();
+  });
+
+  it("filters to social sources through nuqs state", async () => {
+    renderClient("?view=sources&sources=social");
+    // The reddit source survives the filter; the gmail one is excluded.
+    expect(await screen.findByText("Reddit")).toBeTruthy();
+    expect(screen.queryByText(/credential:\s*configured/)).toBeNull();
+  });
+
+  it("CONTROL: the unfiltered sources view still shows the non-social source", async () => {
+    // Without this, the filter test above would also pass if the social filter
+    // were stuck on and gmail never rendered at all.
+    renderClient("?view=sources");
+    expect(await screen.findByText(/credential:\s*configured/)).toBeTruthy();
+    expect(screen.getByText("Reddit")).toBeTruthy();
   });
 
   it("renders the global trigger-activity feed with cause, policy, plan progress, and outcome", async () => {
