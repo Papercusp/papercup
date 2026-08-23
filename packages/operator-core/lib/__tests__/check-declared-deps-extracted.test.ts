@@ -396,7 +396,7 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
 
   it('installs the ptool shim behind the same mutex before loading the MCP SDK', () => {
     const installer = readFileSync(
-      join(process.cwd(), 'apps/operator/scripts/install-standalone-mcp.sh'),
+      join(process.cwd(), '../../apps/operator/scripts/install-standalone-mcp.sh'),
       'utf8',
     );
     const ptoolStart = installer.indexOf('# 4h. Install the `ptool` command');
