@@ -17,6 +17,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
+import eventsAwait from '../events/await';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -366,6 +367,27 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     });
 
     expect(compact).toBe('published_sha?:string~/^[0-9a-f]{40,64}$/');
+  });
+
+  it('preserves exclusive bounds in the compact result (events:await timeout_sec)', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        timeout_sec: { type: 'integer', exclusiveMinimum: 0, maximum: 604800 },
+      },
+    });
+
+    expect(compact).toBe('timeout_sec?:integer(>0-604800)');
+  });
+
+  it('exposes the live events:await exclusive lower bound through the discovery corpus', () => {
+    expect(eventsAwait.name).toBe('events:await');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'events:await');
+    const compact = compactSchemaForResult(schemaByTool.get('events:await'));
+
+    expect(entry?.argSchema).toContain('timeout_sec?:integer');
+    expect(compact).toContain('timeout_sec?:integer(>0-604800)');
   });
 
   it('renders a JSON-schema const as a singleton enum in nested discovery output', () => {

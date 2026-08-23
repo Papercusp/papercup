@@ -169,6 +169,57 @@ export function arrayItemConstraintText(input: unknown): string {
   return `<${itemType}~/${pattern}/>`;
 }
 
+type NumericSchemaBound = { value: number; exclusive: boolean };
+
+/**
+ * Render numeric/length/item bounds without erasing JSON Schema exclusivity.
+ * Draft-07+ uses a numeric `exclusiveMinimum`/`exclusiveMaximum`; draft-04
+ * represents the same constraint as `minimum`/`maximum` plus a boolean
+ * exclusive flag. Keep the established compact form for inclusive bounds and
+ * add `>`/`<` only where the endpoint is genuinely exclusive.
+ */
+export function renderSchemaBounds(nodes: readonly unknown[]): string {
+  const records = nodes.filter(
+    (node): node is Record<string, unknown> => !!node && typeof node === 'object' && !Array.isArray(node),
+  );
+  const numberValue = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const findBound = (
+    inclusiveKey: 'minimum' | 'maximum',
+    exclusiveKey: 'exclusiveMinimum' | 'exclusiveMaximum',
+    fallbackKeys: readonly ('minLength' | 'maxLength' | 'minItems' | 'maxItems')[],
+  ): NumericSchemaBound | null => {
+    for (const node of records) {
+      const exclusiveValue = numberValue(node[exclusiveKey]);
+      if (exclusiveValue != null) return { value: exclusiveValue, exclusive: true };
+
+      const inclusiveValue = numberValue(node[inclusiveKey]);
+      if (inclusiveValue != null) {
+        return { value: inclusiveValue, exclusive: node[exclusiveKey] === true };
+      }
+
+      for (const fallbackKey of fallbackKeys) {
+        const fallbackValue = numberValue(node[fallbackKey]);
+        if (fallbackValue != null) return { value: fallbackValue, exclusive: false };
+      }
+    }
+    return null;
+  };
+
+  const lower = findBound('minimum', 'exclusiveMinimum', ['minLength', 'minItems']);
+  const upper = findBound('maximum', 'exclusiveMaximum', ['maxLength', 'maxItems']);
+  const lowerText = lower ? `${lower.exclusive ? '>' : ''}${lower.value}` : '';
+  const upperText = upper ? `${upper.exclusive ? '<' : ''}${upper.value}` : '';
+
+  return lower && upper
+    ? `${lowerText}-${upperText}`
+    : upper
+      ? `${upper.exclusive ? '<' : '≤'}${upper.value}`
+      : lower
+        ? `${lower.exclusive ? '>' : '≥'}${lower.value}`
+        : '';
+}
+
 /**
  * Render a tool's JSON inputSchema into one compact searchable/embeddable line:
  * `key:type description; otherKey?:enum …` (a `?` marks an optional property).
@@ -287,11 +338,9 @@ export function schemaToText(inputSchema: unknown): string | null {
     // `limit?:integer` with no hint that >100 is rejected until the call
     // failed. Render the bound inline (e.g. `integer(1-100)`, `string(≤400)`,
     // `array(≤20)`) whenever the schema declares one — strictly additive, never
-    // fires for a property with no bound.
-    const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-    const lo = numOrNull(p.minimum) ?? numOrNull(p.exclusiveMinimum) ?? numOrNull(p.minLength) ?? numOrNull(p.minItems);
-    const hi = numOrNull(p.maximum) ?? numOrNull(p.exclusiveMaximum) ?? numOrNull(p.maxLength) ?? numOrNull(p.maxItems);
-    const bound = lo != null && hi != null ? `${lo}-${hi}` : hi != null ? `≤${hi}` : lo != null ? `≥${lo}` : '';
+    // fires for a property with no bound. Preserve exclusive endpoints as
+    // `>N`/`<N`; otherwise a caller may be taught to pass an invalid boundary.
+    const bound = renderSchemaBounds([p]);
     // EI-13183: same lossy-discovery bug class as EI-13181/13164, but for a
     // `.regex()` constraint — `z.string().regex(/^[0-9a-f]{40,64}$/)` (e.g.
     // locks:release's published_sha) emits JSON-schema `pattern` right next to

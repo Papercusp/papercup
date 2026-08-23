@@ -307,6 +307,18 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
       expect(schemaToText({ properties: { count: { type: 'number', minimum: 1 } } })).toBe('count?:number(≥1)');
     });
 
+    it('preserves an exclusive lower bound instead of teaching the rejected boundary', () => {
+      expect(
+        schemaToText({ properties: { timeout_sec: { type: 'integer', exclusiveMinimum: 0, maximum: 604800 } } }),
+      ).toBe('timeout_sec?:integer(>0-604800)');
+    });
+
+    it('supports draft-04 boolean exclusivity alongside an inclusive bound', () => {
+      expect(
+        schemaToText({ properties: { value: { type: 'number', minimum: 0, exclusiveMinimum: true } } }),
+      ).toBe('value?:number(>0)');
+    });
+
     it('a string maxLength renders the same way (e.g. hardText caps)', () => {
       expect(schemaToText({ properties: { title: { type: 'string', maxLength: 400 } } })).toBe('title?:string(≤400)');
     });

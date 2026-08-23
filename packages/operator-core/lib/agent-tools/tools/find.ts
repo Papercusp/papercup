@@ -44,7 +44,12 @@ import {
   projectedToolRegistryRevision,
 } from '@papercusp/agent-mcp';
 import { categoryOf } from '../../cupboard/tools-search';
-import { arrayItemConstraintText, schemaToText, type ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
+import {
+  arrayItemConstraintText,
+  renderSchemaBounds,
+  schemaToText,
+  type ToolDiscoveryEntry,
+} from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
@@ -136,34 +141,8 @@ function schemaType(node: JsonSchemaNode): string {
 }
 
 function schemaBound(node: JsonSchemaNode): string {
-  const nodes = [node, ...schemaNodes(node)];
-  const numberValue = (value: unknown): number | null =>
-    typeof value === 'number' && Number.isFinite(value) ? value : null;
-  const lower = nodes
-    .map(
-      (n) =>
-        numberValue(n.minimum) ??
-        numberValue(n.exclusiveMinimum) ??
-        numberValue(n.minLength) ??
-        numberValue(n.minItems),
-    )
-    .find((value): value is number => value != null);
-  const upper = nodes
-    .map(
-      (n) =>
-        numberValue(n.maximum) ??
-        numberValue(n.exclusiveMaximum) ??
-        numberValue(n.maxLength) ??
-        numberValue(n.maxItems),
-    )
-    .find((value): value is number => value != null);
-  return lower != null && upper != null
-    ? `(${lower}-${upper})`
-    : upper != null
-      ? `(≤${upper})`
-      : lower != null
-        ? `(≥${lower})`
-        : '';
+  const bound = renderSchemaBounds([node, ...schemaNodes(node)]);
+  return bound ? `(${bound})` : '';
 }
 
 function schemaPattern(node: JsonSchemaNode): string {
