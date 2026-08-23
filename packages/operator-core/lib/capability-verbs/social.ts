@@ -79,6 +79,15 @@ function splitPlatformToken(
   }
   const platform = raw.slice(0, separator).toLowerCase();
   const tail = raw.slice(separator + 1).trim();
+  // DEFENCE IN DEPTH, currently unreachable — deliberately kept, and labelled
+  // so nobody mistakes it for a live guard they can test. `raw` is trimmed
+  // above, so its last character is non-whitespace; combined with the
+  // `separator === raw.length - 1` rejection there is always at least one
+  // non-whitespace character after the colon, and `tail` cannot be empty. A
+  // trailing-colon token therefore refuses via the SHAPE message above, not
+  // here. This branch exists only to keep the invariant local if the trim ever
+  // moves. (The same branch was already unreachable in the P-005 original this
+  // was factored from.)
   if (!tail) throw new Error(`${codes.malformed}: empty ${codes.tailName}`);
   return { platform, tail };
 }
@@ -133,6 +142,7 @@ export function parseSocialDestinationRef(ref: string): SocialDestinationRef {
     required: 'social_destination_ref_required',
     malformed: 'social_destination_ref_malformed',
     shape: '<platform>:<destination>',
+    tailName: 'destination',
   });
   assertSocialPlatformUsable(platform);
   return { platform: platform as SocialPlatformId, destination: tail };
