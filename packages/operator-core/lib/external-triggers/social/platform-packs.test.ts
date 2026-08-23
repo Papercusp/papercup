@@ -201,16 +201,26 @@ describe('P-025 per-platform social trigger packs', () => {
     expect(verifiedRows.length).toBeGreaterThanOrEqual(7);
   });
 
-  it('a pack exists for exactly the VERIFIED platforms — the list is derived, never enumerated', () => {
+  it('a pack exists for exactly the VERIFIED, READABLE platforms — the list is derived, never enumerated', () => {
     for (const row of listSocialPlatforms()) {
       const hasPack = existsSync(resolve(packDir(row.id), 'papercusp.json'));
-      expect(
-        hasPack,
-        isSocialPlatformVerified(row)
-          ? `platform ${row.id} is verified but has no pack at social-${row.id}`
-          : `platform ${row.id} is NOT verified (verifiedAt is null) — D-005 forbids shipping a pack that would assert facts nobody read`,
-      ).toBe(isSocialPlatformVerified(row));
+      const shouldHavePack = isSocialPlatformVerified(row) && row.read !== null;
+      const why = !isSocialPlatformVerified(row)
+        ? `platform ${row.id} is NOT verified (verifiedAt is null) — D-005 forbids shipping a pack that would assert facts nobody read`
+        : row.read === null
+          ? `platform ${row.id} is verified but WRITE-ONLY — a trigger pack turns inbound events into plan runs and this platform emits none, so a pack would be a hollow shell that reads as support (D-002's reasoning)`
+          : `platform ${row.id} is verified and readable but has no pack at social-${row.id}`;
+      expect(hasPack, why).toBe(shouldHavePack);
     }
+  });
+
+  it('CONTROL: the readable filter excludes something, so the rule above is not a no-op', () => {
+    // Without this, narrowing the derivation to "readable" would look identical
+    // to leaving it at "verified" — and a future row that quietly became
+    // write-only would drop out of every per-platform assertion below unnoticed.
+    const writeOnlyVerified = verifiedRows.filter((row) => row.read === null).map((row) => row.id);
+    expect(writeOnlyVerified).toEqual(['linkedin']);
+    expect(verifiedIds).not.toContain('linkedin');
   });
 
   describe.each(verifiedIds)('social-%s', (id) => {
