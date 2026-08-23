@@ -144,7 +144,7 @@ function makeExec(responses: ExecResp[]) {
   const calls: Array<{
     cmd: string;
     args: string[];
-    opts?: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean };
+    opts?: Parameters<CheckpointExec>[2];
   }> = [];
   let i = 0;
   const exec: CheckpointExec = async (cmd, args, opts) => {
@@ -2060,6 +2060,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "copy",
       ]),
     );
+    expect(calls[0].opts?.onOutput).toBeTypeOf("function");
+    expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
+    expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(setup).toEqual({
       identity: "setup-release-checkout:cand123",
       output: "copied checkpoint dependencies",

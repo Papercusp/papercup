@@ -8903,6 +8903,10 @@ export type CheckpointExec = (
      * complete child output for the verdict. Without this seam a multi-hour child is healthy
      * and busy while the checkpoint transcript remains byte-for-byte silent. */
     relayAffectedProgress?: boolean;
+    /** WI-41117: observe the child output itself while runCmd still retains the complete
+     * stdout/stderr buffers. setupTree uses this to persist setup-release's stage markers in
+     * the checkpoint transcript instead of losing every useful line when the 30m bound fires. */
+    onOutput?: (stream: "stdout" | "stderr", text: string) => void;
     /** Report that the child produced output so a progress-aware watchdog can reset its idle budget. */
     onProgress?: () => void;
   },
@@ -11607,30 +11611,62 @@ export function realCheckpointDeps(
       // suite path (see SETUP_TREE_TIMEOUT_MS). `killProcessGroupOnTimeout` ensures a timeout
       // reaches the script's whole subtree (git/cp/npm), not just the `bash` wrapper, so it
       // can't orphan a half-finished node_modules copy.
-      const setup = await exec(
-        "bash",
-        [
-          path.join(toolingRoot(), "scripts/pc-heavy.sh"),
-          "--exclusive-all-slots",
-          "--",
+      // WI-41117: setup-release already emits precise stage markers, but runCmd used to retain
+      // them only in memory and then discard both streams when the 30m timeout rejected. Relay
+      // complete lines through the checkpoint's durable logger while preserving runCmd's normal
+      // stdout/stderr result. Per-stream remainders keep arbitrary child chunk boundaries from
+      // turning one stage line into misleading fragments.
+      const setupOutputRemainders: Record<"stdout" | "stderr", string> = {
+        stdout: "",
+        stderr: "",
+      };
+      const relaySetupOutput = (
+        stream: "stdout" | "stderr",
+        text: string,
+      ) => {
+        const lines = `${setupOutputRemainders[stream]}${text}`.split(/\r?\n/);
+        setupOutputRemainders[stream] = lines.pop() ?? "";
+        for (const line of lines) {
+          if (line.trim()) log(`setup-release ${stream}: ${line}`);
+        }
+      };
+      const flushSetupOutput = () => {
+        for (const stream of ["stdout", "stderr"] as const) {
+          const remainder = setupOutputRemainders[stream];
+          if (remainder.trim()) log(`setup-release ${stream}: ${remainder}`);
+          setupOutputRemainders[stream] = "";
+        }
+      };
+      let setup: CheckpointExecResult;
+      try {
+        setup = await exec(
           "bash",
-          script,
-          "--ref",
-          ref,
-          "--integration",
-          cfg.integrationRoot,
-          "--release",
-          cfg.checkpointRoot,
-          "--node-modules",
-          "force",
-          "--node-modules-copy",
-          "copy",
-        ],
-        {
-          timeoutMs: SETUP_TREE_TIMEOUT_MS,
-          killProcessGroupOnTimeout: true,
-        },
-      );
+          [
+            path.join(toolingRoot(), "scripts/pc-heavy.sh"),
+            "--exclusive-all-slots",
+            "--",
+            "bash",
+            script,
+            "--ref",
+            ref,
+            "--integration",
+            cfg.integrationRoot,
+            "--release",
+            cfg.checkpointRoot,
+            "--node-modules",
+            "force",
+            "--node-modules-copy",
+            "copy",
+          ],
+          {
+            timeoutMs: SETUP_TREE_TIMEOUT_MS,
+            killProcessGroupOnTimeout: true,
+            onOutput: relaySetupOutput,
+          },
+        );
+      } finally {
+        flushSetupOutput();
+      }
       return {
         identity: `setup-release-checkout:${ref.slice(0, 64)}`,
         output: (setup.stdout + setup.stderr).slice(-1000),
@@ -12819,6 +12855,9 @@ export function runCmd(
      *  THIS process's group). */
     killProcessGroupOnTimeout?: boolean;
     relayAffectedProgress?: boolean;
+    /** Observe every child-output chunk without changing the retained stdout/stderr result.
+     * Diagnostic only: observer failures are swallowed so they cannot change a command verdict. */
+    onOutput?: (stream: "stdout" | "stderr", text: string) => void;
     /** Report every stdout/stderr chunk as real child-process progress. The callback is
      *  diagnostic/liveness-only; failures in it must never change the command verdict. */
     onProgress?: () => void;
@@ -12874,11 +12913,24 @@ export function runCmd(
     });
     let stdout = "";
     let stderr = "";
+    // WI-41117: the old timeout error discarded BOTH captured streams. Preserve the most recent
+    // interleaved child output in a strict bound so a setupTree timeout names the exact stage
+    // that overran instead of reducing 30 minutes of work to a context-free argv string.
+    const timeoutOutputTailMaxChars = 4_000;
+    let timeoutOutputTail = "";
     const progressRemainders = new Map<"stdout" | "stderr", string>();
     const capture = (stream: "stdout" | "stderr", chunk: Buffer | string) => {
       const text = chunk.toString();
       if (stream === "stdout") stdout += text;
       else stderr += text;
+      timeoutOutputTail = `${timeoutOutputTail}[${stream}] ${text}`.slice(
+        -timeoutOutputTailMaxChars,
+      );
+      try {
+        opts.onOutput?.(stream, text);
+      } catch {
+        /* output relay is diagnostic-only and must never break the child process */
+      }
       try {
         opts.onProgress?.();
       } catch {
@@ -12923,7 +12975,10 @@ export function runCmd(
           }
           reject(
             new Error(
-              `${cmd} ${args.join(" ")} timed out after ${opts.timeoutMs}ms`,
+              `${cmd} ${args.join(" ")} timed out after ${opts.timeoutMs}ms` +
+                (timeoutOutputTail.trim()
+                  ? `\n--- last captured child output ---\n${timeoutOutputTail.trimEnd()}`
+                  : ""),
             ),
           );
         }, opts.timeoutMs)

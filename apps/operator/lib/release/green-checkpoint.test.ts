@@ -2415,6 +2415,59 @@ describe("runGreenCheckpoint", () => {
     }
   });
 
+  it("WI-41117: relays setup-style stdout/stderr chunks while retaining the complete result", async () => {
+    const relayed: Array<{ stream: "stdout" | "stderr"; text: string }> = [];
+    const result = await runCmd(
+      "bash",
+      [
+        "-c",
+        "printf '[setup-release] root snapshot complete\\n'; printf '[setup-release] copying package-local dependencies\\n' >&2",
+      ],
+      {
+        onOutput: (stream, text) => relayed.push({ stream, text }),
+      },
+    );
+
+    expect(result.stdout).toContain("root snapshot complete");
+    expect(result.stderr).toContain("copying package-local dependencies");
+    expect(relayed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stream: "stdout",
+          text: expect.stringContaining("root snapshot complete"),
+        }),
+        expect.objectContaining({
+          stream: "stderr",
+          text: expect.stringContaining("copying package-local dependencies"),
+        }),
+      ]),
+    );
+  });
+
+  it("WI-41117: a timeout error retains the latest interleaved child-output tail", async () => {
+    const error = await runCmd(
+      "bash",
+      [
+        "-c",
+        "printf '[setup-release] root snapshot complete\\n'; printf '[setup-release] copying nested dependency tree\\n' >&2; sleep 20",
+      ],
+      {
+        timeoutMs: 500,
+        killProcessGroupOnTimeout: true,
+      },
+    ).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toContain("timed out after 500ms");
+    expect(message).toContain("--- last captured child output ---");
+    expect(message).toContain("[stdout] [setup-release] root snapshot complete");
+    expect(message).toContain("[stderr] [setup-release] copying nested dependency tree");
+  });
+
   it("reports child output progress while retaining stdout and stderr", async () => {
     const onProgress = vi.fn();
     const result = await runCmd(
