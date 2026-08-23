@@ -89,10 +89,7 @@ describe('mid-turn host admission — independent worker realms', () => {
     holdA.resolve();
     await expect(a).resolves.toEqual({ admitted: true, value: 'a' });
     await expect(
-      guardMidTurnMemoryAdmission(
-        { ownerId: 'worker-c', state: thirdState, store: shared.store },
-        async () => 'c',
-      ),
+      guardMidTurnMemoryAdmission({ ownerId: 'worker-c', state: thirdState, store: shared.store }, async () => 'c'),
     ).resolves.toEqual({ admitted: true, value: 'c' });
 
     holdB.resolve();
@@ -105,21 +102,15 @@ describe('mid-turn host admission — independent worker realms', () => {
     const state = workerState();
     const hold = deferred();
     const started = deferred();
-    const first = guardMidTurnMemoryAdmission(
-      { ownerId: 'worker-a', state, store: shared.store },
-      async () => {
-        started.resolve();
-        await hold.promise;
-        return 'first';
-      },
-    );
+    const first = guardMidTurnMemoryAdmission({ ownerId: 'worker-a', state, store: shared.store }, async () => {
+      started.resolve();
+      await hold.promise;
+      return 'first';
+    });
     await started.promise;
 
     await expect(
-      guardMidTurnMemoryAdmission(
-        { ownerId: 'worker-a', state, store: shared.store },
-        async () => 'second',
-      ),
+      guardMidTurnMemoryAdmission({ ownerId: 'worker-a', state, store: shared.store }, async () => 'second'),
     ).resolves.toEqual({ admitted: false, reason: 'local_in_flight' });
     expect(shared.acquireOwners).toEqual(['worker-a']);
 
@@ -131,12 +122,9 @@ describe('mid-turn host admission — independent worker realms', () => {
     const shared = sharedStore(1);
     const state = workerState();
     await expect(
-      guardMidTurnMemoryAdmission(
-        { ownerId: 'worker-a', state, store: shared.store },
-        async () => {
-          throw new Error('memory build failed');
-        },
-      ),
+      guardMidTurnMemoryAdmission({ ownerId: 'worker-a', state, store: shared.store }, async () => {
+        throw new Error('memory build failed');
+      }),
     ).rejects.toThrow('memory build failed');
     expect(shared.active.size).toBe(0);
     expect(shared.releaseOwners).toEqual(['worker-a']);
@@ -150,12 +138,8 @@ describe('mid-turn host admission — independent worker realms', () => {
       throw new Error('locks db unavailable');
     };
     await expect(
-      guardMidTurnMemoryAdmission(
-        { ownerId: 'worker-a', state: workerState(), store },
-        run,
-      ),
+      guardMidTurnMemoryAdmission({ ownerId: 'worker-a', state: workerState(), store }, run),
     ).resolves.toEqual({ admitted: false, reason: 'admission_unavailable' });
     expect(run).not.toHaveBeenCalled();
   });
 });
-

@@ -22,11 +22,7 @@
 import { pinModuleState } from '@papercusp/module-singleton';
 import { hostGlobalLockDomain } from '../agent-tools/locks/coordination-domain';
 import { inWorkspaceTxn } from '../agent-tools/locks/in-workspace-txn';
-import {
-  registerResource,
-  tryAcquireResource,
-  tryReleaseResource,
-} from '../agent-tools/locks/su-lock-store';
+import { registerResource, tryAcquireResource, tryReleaseResource } from '../agent-tools/locks/su-lock-store';
 
 export const MID_TURN_MEMORY_RESOURCE = 'memory-injection:mid-turn';
 export const MID_TURN_MEMORY_MAX_HOLDERS = 2;
@@ -41,15 +37,11 @@ export interface MidTurnAdmissionLocalState {
 
 export interface MidTurnAdmissionStore {
   ensureRegistered: () => Promise<boolean>;
-  tryAcquire: (
-    ownerId: string,
-  ) => Promise<{ ok: true; lockId: string } | { ok: false; reason: string }>;
+  tryAcquire: (ownerId: string) => Promise<{ ok: true; lockId: string } | { ok: false; reason: string }>;
   release: (ownerId: string, lockId: string) => Promise<void>;
 }
 
-export type MidTurnAdmissionOutcome<T> =
-  | { admitted: true; value: T }
-  | { admitted: false; reason: string };
+export type MidTurnAdmissionOutcome<T> = { admitted: true; value: T } | { admitted: false; reason: string };
 
 export interface MidTurnAdmissionGuardOptions {
   ownerId: string;
@@ -163,8 +155,7 @@ async function ensureProductionResource(): Promise<boolean> {
   productionState.registrationPromise = inWorkspaceTxn(domain, registrationOwner, (tx) =>
     registerResource(tx, {
       resource: MID_TURN_MEMORY_RESOURCE,
-      description:
-        'Host-wide concurrency budget for optional per-tool-batch memory injection across operator workers.',
+      description: 'Host-wide concurrency budget for optional per-tool-batch memory injection across operator workers.',
       rule_text:
         'The mid-turn context endpoint acquires a shared, no-wait hold before optional recall and releases it in finally. Full or unavailable capacity sheds the recall; callers must never wait for this resource.',
       enforcement: 'enforced',
@@ -210,9 +201,7 @@ const productionStore: MidTurnAdmissionStore = {
         ttlSec: MID_TURN_MEMORY_LOCK_TTL_SEC,
       }),
     );
-    return result.ok
-      ? { ok: true as const, lockId: result.lock_id }
-      : { ok: false as const, reason: result.reason };
+    return result.ok ? { ok: true as const, lockId: result.lock_id } : { ok: false as const, reason: result.reason };
   },
   async release(ownerId, lockId) {
     const domain = hostGlobalLockDomain();
@@ -231,19 +220,15 @@ const productionStore: MidTurnAdmissionStore = {
 };
 
 /** Production entry point used by the mid-turn endpoint. */
-export function withMidTurnMemoryAdmission<T>(
-  run: () => Promise<T>,
-): Promise<MidTurnAdmissionOutcome<T>> {
+export function withMidTurnMemoryAdmission<T>(run: () => Promise<T>): Promise<MidTurnAdmissionOutcome<T>> {
   return guardMidTurnMemoryAdmission(
     {
       ownerId: productionOwnerId,
       state: productionState,
       store: productionStore,
-      onShed: (reason) =>
-        warnOnce(`host-wide mid-turn admission shed optional recall (${reason})`),
+      onShed: (reason) => warnOnce(`host-wide mid-turn admission shed optional recall (${reason})`),
       onDiagnostic: (message, error) => warnOnce(message, error),
     },
     run,
   );
 }
-
