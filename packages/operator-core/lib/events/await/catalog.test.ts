@@ -71,6 +71,7 @@ describe('buildKey', () => {
     expect(buildKey('deploy', { sha: '' })).toBe('release:deployed');
     expect(buildKey('git-sync', {})).toBe('git-sync:committed');
     expect(buildKey('git-sync-egress', {})).toBe('git-sync:egressed');
+    expect(buildKey('git-sync-lock-retry')).toBe('git-sync:lock-retry');
   });
 
   it('interpolates an OPTIONAL param when supplied (the precise per-sha key)', () => {
@@ -128,6 +129,8 @@ describe('renderCatalog', () => {
     expect(byFamily['deploy'].awaitable_now).toBe(true); // release:deployed:<sha> — P-102 LANDED (deploy.ts dual-emit)
     expect(byFamily['git-sync'].awaitable_now).toBe(true); // git-sync:committed — P-102 LANDED (git-sync-action emit)
     expect(byFamily['git-sync-egress'].awaitable_now).toBe(true); // truthful bridged origin/staging proof
+    expect(byFamily['git-sync-lock-retry'].awaitable_now).toBe(true); // emitted by git-sync when a named resource lock defers a tick
+    expect(byFamily['git-sync-lock-retry'].key).toBe('git-sync:lock-retry');
     expect(byFamily['service-up'].awaitable_now).toBe(true); // service:up:<name> — P-104 LANDED (service-health tick)
     expect(byFamily['service-down'].awaitable_now).toBe(true); // service:down:<name> — P-104 LANDED (service-health tick)
     expect(byFamily['plan-item'].awaitable_now).toBe(true); // plan-item:done:<slug>:<id> — P-105 LANDED (set-status)

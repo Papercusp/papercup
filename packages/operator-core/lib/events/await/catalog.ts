@@ -274,6 +274,15 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     payloadFiltered: true,
   },
   {
+    family: 'git-sync-lock-retry',
+    keyTemplate: 'git-sync:lock-retry',
+    params: [],
+    describe: 'git-sync could not acquire a named resource lock and will retry after lock turnover; payload carries the resource, reason, and holder snapshots.',
+    emitter: 'git-sync action (packages/operator-core/lib/harness/git-sync/git-sync-events.ts)',
+    exists: true,
+    payloadFiltered: true,
+  },
+  {
     family: 'session-compacted',
     keyTemplate: 'session:compacted:<owner>',
     params: [{ name: 'owner', required: true, describe: 'the ownerId whose compaction to wait on' }],
