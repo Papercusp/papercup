@@ -43,6 +43,11 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { GitSyncOutcome } from './run-git-sync';
+import {
+  configureScheduledRegistry,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
 // itself and could drift silently alongside a real-code regression).
@@ -840,7 +845,26 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
   });
 
   it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {
-    vi.useFakeTimers();
+    // The scheduled-registry's production/default backend is intentionally inert under
+    // Vitest. Inject a deterministic backend for this test instead of opting the
+    // production call site into real timers; this exercises the actual heartbeat seam
+    // while keeping the callback under direct test control.
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+    const timerByHandle = new Map<TimerHandle, (typeof timers)[number]>();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        const handle: TimerHandle = { unref: () => undefined };
+        const timer = { cb, ms, stopped: false, handle };
+        timers.push(timer);
+        timerByHandle.set(handle, timer);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => {
+        const timer = timerByHandle.get(handle);
+        if (timer) timer.stopped = true;
+      },
+    });
     try {
       let runStarted!: () => void;
       const runStartedPromise = new Promise<void>((resolve) => {
@@ -863,7 +887,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(acquiredResources()).toEqual(initialResources);
       const initialOwner = (tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner;
 
-      await vi.advanceTimersByTimeAsync(60_000);
+      const heartbeatTimer = timers.find((timer) => timer.ms === 60_000);
+      expect(heartbeatTimer).toBeDefined();
+      heartbeatTimer!.cb();
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(acquiredResources()).toEqual([...initialResources, ...initialResources]);
       for (const [, opts] of tryAcquireResourceMock.mock.calls.slice(3)) {
@@ -879,10 +906,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(releasedResources()).toEqual([...initialResources].reverse());
 
       const callsAfterRelease = tryAcquireResourceMock.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(60_000);
+      expect(heartbeatTimer!.stopped).toBe(true);
+      heartbeatTimer!.cb();
+      await new Promise<void>((resolve) => setImmediate(resolve));
       expect(tryAcquireResourceMock).toHaveBeenCalledTimes(callsAfterRelease);
     } finally {
-      vi.useRealTimers();
+      resetScheduledRegistry();
     }
   });
 
