@@ -9,6 +9,32 @@ const loadSnapshot = vi.fn(async (_sql: unknown, _workspace: string) => ({
   bindings: [],
   recentRuns: [],
 }));
+const loadPlanSnapshot = vi.fn(async (_sql: unknown, _workspace: string, harness: string, plan: string) => ({
+  harnessSlug: harness,
+  planSlug: plan,
+  schedule: { kind: 'cron', cron: '0 9 * * 1-5' },
+  scheduleActive: false,
+  scheduledAt: null,
+  expiresAt: null,
+  tzid: 'America/New_York',
+  lastFire: null,
+  nextFire: null,
+  manualSource: 'input-schema',
+}));
+const createBinding = vi.fn(async (_sql: unknown, _workspace: string, input: Record<string, unknown>) => ({
+  id: BINDING_ID,
+  ...input,
+  sourceKind: 'gmail',
+  action: { type: 'launch-plan' },
+  armed: false,
+  createdAt: '2026-08-22T00:00:00.000Z',
+  updatedAt: '2026-08-22T00:00:00.000Z',
+}));
+const detachBinding = vi.fn(async (_sql: unknown, _workspace: string, id: string) => ({
+  id,
+  detachedAt: '2026-08-23T00:00:00.000Z',
+  updatedAt: '2026-08-23T00:00:00.000Z',
+}));
 const setArmed = vi.fn(async (_sql: unknown, _workspace: string, id: string, armed: boolean) => ({
   id,
   armed,
@@ -76,6 +102,8 @@ vi.mock('../../sync-sse', () => ({
   notifySyncInvalidate: (...args: Parameters<typeof notify>) => notify(...args),
 }));
 vi.mock('../../external-triggers/admin', () => ({
+  createExternalTriggerBinding: (...args: Parameters<typeof createBinding>) => createBinding(...args),
+  detachExternalTriggerBinding: (...args: Parameters<typeof detachBinding>) => detachBinding(...args),
   disabledExternalTriggerAdminSnapshot: () => ({
     enabled: false,
     counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 },
@@ -84,6 +112,7 @@ vi.mock('../../external-triggers/admin', () => ({
     recentRuns: [],
   }),
   loadExternalTriggerAdminSnapshot: (...args: Parameters<typeof loadSnapshot>) => loadSnapshot(...args),
+  loadExternalTriggerPlanAdminSnapshot: (...args: Parameters<typeof loadPlanSnapshot>) => loadPlanSnapshot(...args),
   setExternalTriggerBindingArmed: (...args: Parameters<typeof setArmed>) => setArmed(...args),
   updateExternalTriggerBindingStormPolicy: (...args: Parameters<typeof setStorm>) => setStorm(...args),
 }));
@@ -107,10 +136,10 @@ const [read, mutate, slackManifest, slackConnect] = routes as unknown as AnyRout
 const URL = 'http://127.0.0.1:3070/admin/triggers';
 const BINDING_ID = '10000000-0000-4000-8000-000000000001';
 
-async function request(route: AnyRoute, method: 'GET' | 'PATCH' | 'POST', body?: unknown, headers: Record<string, string> = {}) {
+async function request(route: AnyRoute, method: 'GET' | 'PATCH' | 'POST', body?: unknown, headers: Record<string, string> = {}, query = '') {
   const app = new Hono();
   registerRoute(app, route);
-  return app.request(`http://127.0.0.1:3070${route.path}`, {
+  return app.request(`http://127.0.0.1:3070${route.path}${query}`, {
     method,
     headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -146,6 +175,25 @@ describe('external-trigger admin route pair', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ enabled: true });
     expect(loadSnapshot).toHaveBeenCalledWith(sql, 'ws-test');
+  });
+
+  it('folds the named plan schedule/manual snapshot into the shared trigger read', async () => {
+    const response = await request(
+      read,
+      'GET',
+      undefined,
+      {},
+      '?planSlug=triage-mail&planHarnessSlug=papercusp',
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      plan: {
+        planSlug: 'triage-mail',
+        schedule: { kind: 'cron' },
+        manualSource: 'input-schema',
+      },
+    });
+    expect(loadPlanSnapshot).toHaveBeenCalledWith(sql, 'ws-test', 'papercusp', 'triage-mail');
   });
 
   it('returns the disabled shape without reading data when the flag is explicitly off', async () => {
@@ -190,6 +238,39 @@ describe('external-trigger admin route pair', () => {
     expect(await response.json()).toMatchObject({ ok: true, binding: { id: BINDING_ID, armed: true } });
     expect(setArmed).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID, true);
     expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
+  });
+
+  it('installs an external binding disarmed and invalidates the plan facet', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'attach-external',
+      sourceId: '20000000-0000-4000-8000-000000000001',
+      planHarnessSlug: 'papercusp',
+      planSlug: 'triage-mail',
+      eventPattern: 'ext:gmail:message.received',
+      eventFilter: { label: 'support' },
+      maxRuns: 2,
+      windowSeconds: 60,
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, binding: { armed: false } });
+    expect(createBinding).toHaveBeenCalledWith(sql, 'ws-test', expect.objectContaining({
+      planSlug: 'triage-mail',
+      createdBy: 'owner:22222222-2222-4222-8222-222222222222',
+    }));
+    expect(notify).toHaveBeenCalledWith('plans.list', undefined);
+  });
+
+  it('requires confirmation, then soft-detaches without deleting history', async () => {
+    const refused = await request(mutate, 'PATCH', { op: 'detach-external', id: BINDING_ID });
+    expect(refused.status).toBe(409);
+    expect(detachBinding).not.toHaveBeenCalled();
+
+    const response = await request(mutate, 'PATCH', {
+      op: 'detach-external', id: BINDING_ID, confirm: true,
+    });
+    expect(response.status).toBe(200);
+    expect(detachBinding).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID);
+    expect(notify).toHaveBeenCalledWith('plans.list', undefined);
   });
 
   it('validates and applies the canonical storm-policy fields', async () => {

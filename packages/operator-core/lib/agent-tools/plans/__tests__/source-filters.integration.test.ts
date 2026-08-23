@@ -121,6 +121,19 @@ describe('listPlanIndexRows recency/order/limit filters', () => {
     expect(bySlug.get(P_MID)?.inputSchema).toBeNull();
   });
 
+  it('drops a soft-detached binding from derived trigger presence', async () => {
+    await admin`
+      UPDATE harness_shared.trigger_bindings
+         SET detached_at = now()
+       WHERE workspace_id = ${WS} AND plan_harness_slug = ${HARNESS} AND plan_slug = ${P_NEW}`;
+    const rows = await listPlanIndexRows(opts);
+    expect(rows.find((row) => row.planSlug === P_NEW)).toMatchObject({ hasExternalTrigger: false });
+    await admin`
+      UPDATE harness_shared.trigger_bindings
+         SET detached_at = NULL
+       WHERE workspace_id = ${WS} AND plan_harness_slug = ${HARNESS} AND plan_slug = ${P_NEW}`;
+  });
+
   it('createdSince filters server-side (>= mid → mid + new)', async () => {
     const rows = await listPlanIndexRows({ ...opts, createdSince: T_MID });
     expect(rows.map((r) => r.planSlug).sort()).toEqual([P_MID, P_NEW].sort());

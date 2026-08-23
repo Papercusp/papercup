@@ -5081,3 +5081,70 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* ── Unified per-plan triggers tab (external-triggers P-017) ─────── */
+.pc-plan-triggers {
+  display: grid;
+  gap: 18px;
+  padding: 18px 0 28px;
+}
+.pc-plan-triggers__head,
+.pc-plan-triggers__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.pc-plan-triggers__head h3,
+.pc-plan-triggers__group-head h4 {
+  margin: 0;
+}
+.pc-plan-triggers__head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.pc-plan-triggers__group {
+  display: grid;
+  gap: 9px;
+}
+.pc-plan-triggers__group + .pc-plan-triggers__group {
+  padding-top: 15px;
+  border-top: 1px solid var(--border);
+}
+.pc-plan-triggers__empty,
+.pc-plan-triggers__state {
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.pc-plan-triggers__state--error {
+  color: rgb(248, 113, 113);
+}
+.pc-plan-triggers__state button {
+  margin-left: 10px;
+}
+.pc-plan-dialog__field select,
+.pc-plan-dialog__field input[type='datetime-local'] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-1);
+  color: var(--fg);
+}
+.pc-plan-manual-start {
+  width: min(720px, calc(100vw - 32px));
+}
+.pc-plan-manual-start .pc-plan-inputs {
+  margin: 0;
+}
+@media (max-width: 680px) {
+  .pc-plan-triggers__head,
+  .pc-plan-triggers__group-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

@@ -41,6 +41,7 @@ import RevisionDiffModal from './RevisionDiffModal';
 import RevisionConversationModal from './RevisionConversationModal';
 import AgentsPanel from './AgentsPanel';
 import RunsPanel from './RunsPanel';
+import PlanTriggersPanel from './PlanTriggersPanel';
 import PlanConflictModal from './PlanConflictModal';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import PlanStatusPopover, {
@@ -121,7 +122,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
   // `tab=plans` → AdvShell saw an invalid id and fell back to brainstorm.
   const [tab, setTab] = useQueryState(
     'ptab',
-    parseAsStringEnum(['editor', 'revisions', 'agents', 'runs']).withDefault('editor'),
+    parseAsStringEnum(['editor', 'triggers', 'revisions', 'agents', 'runs']).withDefault('editor'),
   );
   const [itemView, setItemView] = useQueryState(
     'itemView',
@@ -533,6 +534,9 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
         </>
       ) : null}
       {tab === 'revisions' ? <RevisionsPanel slug={data.slug} /> : null}
+      {tab === 'triggers' ? (
+        <PlanTriggersPanel slug={data.slug} harnessSlug={harnessSlug ?? data.harness ?? null} />
+      ) : null}
       {tab === 'agents' ? (
         <AgentsPanel
           slug={data.slug}
@@ -731,7 +735,7 @@ function DetailShell({
   );
 }
 
-type PlanDetailTab = 'editor' | 'revisions' | 'agents' | 'runs';
+type PlanDetailTab = 'editor' | 'triggers' | 'revisions' | 'agents' | 'runs';
 
 /**
  * Top-level tab strip — P-020/P-021. Switches between the editor, the
@@ -751,6 +755,13 @@ function PlanTabStrip({
   return (
     <div className="pc-plans__tabs" role="tablist" aria-label="Plan view">
       <TabButton tab="editor" active={tab} onTab={onTab} label="Editor" />
+      <TabButton
+        tab="triggers"
+        active={tab}
+        onTab={onTab}
+        label="Triggers"
+        hint={editing ? 'unsaved edits' : undefined}
+      />
       <TabButton
         tab="revisions"
         active={tab}

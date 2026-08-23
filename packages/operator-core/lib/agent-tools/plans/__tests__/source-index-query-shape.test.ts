@@ -110,6 +110,7 @@ describe('harness_plans index-list query shape', () => {
     expect(H.statements[0]!.text).toContain('input_schema IS NOT NULL AS has_input_schema');
     expect(H.statements[0]!.text).toContain('FROM harness_shared.trigger_bindings');
     expect(H.statements[0]!.text).toContain("tb.action->>'type' = 'launch-plan'");
+    expect(H.statements[0]!.text).toContain('tb.detached_at IS NULL');
   });
 
   it('keeps the workspace-wide statement shape stable across optional filters', async () => {
@@ -142,5 +143,6 @@ describe('harness_plans index-list query shape', () => {
     expect(H.statements[0]!.text).toContain('forced_past');
     expect(H.statements[0]!.text).toContain('input_schema IS NOT NULL AS has_input_schema');
     expect(H.statements[0]!.text).toContain('FROM harness_shared.trigger_bindings');
+    expect(H.statements[0]!.text).toContain('tb.detached_at IS NULL');
   });
 });
