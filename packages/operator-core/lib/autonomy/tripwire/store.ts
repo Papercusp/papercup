@@ -261,6 +261,32 @@ export async function readTripwireEvidence(
   }
 }
 
+/**
+ * Read successful auto-reverts in a wall-clock window. This is deliberately
+ * keyed off `reverted_at`, not `armed_at`: the revert-loop damper cares when the
+ * undo actually succeeded, and a long watch may have been armed before the
+ * requested window began.
+ */
+export async function listRecentlyRevertedTripwires(
+  sql: Sql,
+  workspaceId: string,
+  sinceMs: number,
+): Promise<TripwireRow[]> {
+  try {
+    const rows = (await sql`
+      SELECT ${sql.unsafe(SELECT_COLS)}
+        FROM harness_shared.autonomy_tripwires
+       WHERE workspace_id = ${workspaceId}
+         AND status = 'reverted'
+         AND reverted_at >= to_timestamp(${sinceMs} / 1000.0)
+       ORDER BY reverted_at ASC, armed_at ASC`) as unknown as RawRow[];
+    return rows.filter((r) => isAutonomyCategory(r.category)).map(rowFrom);
+  } catch (err) {
+    if (isMissingTable(err)) return [];
+    throw err;
+  }
+}
+
 export interface ListTripwiresOptions {
   /** Filter by status (omit for all). */
   status?: TripwireStatus;

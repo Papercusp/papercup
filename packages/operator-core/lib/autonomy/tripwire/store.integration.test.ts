@@ -21,6 +21,7 @@ import {
   getTripwire,
   insertTripwire,
   listArmedTripwires,
+  listRecentlyRevertedTripwires,
   listRecentTripwires,
   markTripwireCleared,
   markTripwireReverted,
@@ -129,6 +130,10 @@ describe('armTripwireForDecision + store round-trip', () => {
     await markTripwireCleared(db.adminSql, WS, idA!, now);
     await markTripwireTripped(db.adminSql, WS, idB!, 'gym-regression', now);
     await markTripwireReverted(db.adminSql, WS, idB!, now);
+
+    const recentReverts = await listRecentlyRevertedTripwires(db.adminSql, WS, now - 1_000);
+    expect(recentReverts.map((row) => row.id)).toContain(idB);
+    expect((await listRecentlyRevertedTripwires(db.adminSql, WS, now + 1)).map((row) => row.id)).not.toContain(idB);
 
     const a = await getTripwire(db.adminSql, WS, idA!);
     const b = await getTripwire(db.adminSql, WS, idB!);
