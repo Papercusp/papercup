@@ -68,6 +68,8 @@ import './lsp/pack';
 import './code/run';
 // orchestration-runtime-unification P-009: server-script facade over code:run
 // with the shared P-006 authored-summary envelope.
+import './orchestration/search';
+import './orchestration/inspect';
 import './orchestration/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.
 import './code/tools';
