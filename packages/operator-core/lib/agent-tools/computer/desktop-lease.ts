@@ -20,6 +20,7 @@ import {
   type SandboxDesktop,
 } from './desktop-provisioner';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resetLedger } from './action-ledger';
 import {
   registerDesktopSession,
   markDesktopReady,
@@ -157,6 +158,9 @@ export async function releaseHiveDesktop(potSlug: string): Promise<void> {
   const d = leases.get(potSlug);
   if (!d) return;
   leases.delete(potSlug);
+  // P-008: display numbers are recycled, so the next lease on `:110` would inherit
+  // this one's step numbers and diagnostics history if the ledger were not dropped.
+  resetLedger(d.display);
   await closeLeaseInRegistry(potSlug);
   await d.release();
 }
