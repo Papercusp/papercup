@@ -27,7 +27,11 @@ vi.mock('nuqs', () => ({
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
-vi.mock('@papercusp/sync', () => ({
+/* Spread the original — see the identical mock in PlanDashboard.test.tsx for
+   why a from-scratch factory breaks collection (`lazyWithRetry` re-exported
+   from this package resolves undefined at PlanDashboardHost's module scope). */
+vi.mock('@papercusp/sync', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: sessionRows.value, loading: false, error: null, invalidate: vi.fn() }),
 }));

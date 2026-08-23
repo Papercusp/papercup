@@ -1032,6 +1032,25 @@ export function ompModelCompatibilityNotice(model) {
   return null;
 }
 
+const OMP_REASONING_MANDATORY_TITLE_BUG_RE =
+  /^(?:openrouter\/)?stealth\/ox-alpha(?::(?:low|medium|high|xhigh|max))?$/i;
+
+/**
+ * TEMPORARY mitigation for EI-21258695702342582.
+ *
+ * OMP 18.0.3's title helper sends `reasoning.enabled=false` even though the
+ * resolved ox-alpha metadata correctly declares reasoning support. OpenRouter
+ * rejects that helper request because reasoning is mandatory. Disable title
+ * generation for this exact model until OMP fixes the helper; unrelated OMP
+ * launches remain byte-identical. Pure + exported for argv regression tests.
+ */
+export function ompTitleMitigationArgs(model) {
+  if (typeof model !== "string") return [];
+  return OMP_REASONING_MANDATORY_TITLE_BUG_RE.test(model.trim())
+    ? ["--no-title"]
+    : [];
+}
+
 export function modelArgsFor(agent, model) {
   if (!model) return [];
   const effectiveModel =
@@ -1077,6 +1096,7 @@ export function modelArgsFor(agent, model) {
 export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
   const args = [];
   if (model) args.push(...modelArgsFor(agent, model));
+  if (agent === "omp") args.push(...ompTitleMitigationArgs(model));
   if (resumeSession) {
     if (agent === "omp" || agent === "claude") args.push("-r", resumeSession);
     else if (agent === "codex") args.push("resume", resumeSession);
@@ -1348,6 +1368,7 @@ export function roleLaunchArgs(
       replaceClaudeBase ? "--system-prompt" : "--append-system-prompt",
       promptFile,
       ...modelArgsFor("omp", model),
+      ...ompTitleMitigationArgs(model),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
@@ -1824,6 +1845,7 @@ export function resumeArgsFor(
     // turn-start/mid-turn context while a fresh one has it.
     if (injectHookPath) args.push("--hook", injectHookPath);
     if (model) args.push(...modelArgsFor("omp", model));
+    args.push(...ompTitleMitigationArgs(model));
     // P-023 (D-015): the native-`lsp` gate has to be re-applied on EVERY resume,
     // for the same reason as the two flags above — omp CLI flags do not persist
     // into a resume. Until now this branch simply never emitted `--no-lsp`, so a
