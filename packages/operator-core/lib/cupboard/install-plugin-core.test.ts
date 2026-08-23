@@ -76,6 +76,87 @@ describe('installPluginFromCupboardCore', () => {
     expect(existsSync(join(installed, '.git'))).toBe(false);
   });
 
+  it('installs a manifest-only trigger pack, validates its plan, and returns a disarmed discovery receipt', async () => {
+    const scopes = [
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.compose',
+    ];
+    await writeManifest(fixtureRepo, {
+      name: 'email-draft-responder',
+      version: '0.1.0',
+      kind: 'plugin',
+      capabilities: [],
+      oauth: [{ provider: 'google', scopes, fieldName: 'googleWorkspace' }],
+      configSchema: {
+        type: 'object',
+        properties: {
+          googleWorkspace: {
+            type: 'string',
+            secret: true,
+            shareable: false,
+            snapshotPolicy: 'strip',
+            oauth: { provider: 'google', scopes },
+          },
+        },
+      },
+      triggerPack: {
+        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
+        plan: {
+          path: 'plan.md',
+          inputSchema: { type: 'object', properties: { trigger: { type: 'object' } } },
+        },
+        binding: {
+          eventPattern: 'ext:gmail:message.received',
+          filter: { direction: 'inbound' },
+          stormPolicy: { maxRuns: 5, windowSeconds: 60 },
+        },
+      },
+    });
+    await fs.writeFile(join(fixtureRepo, 'plan.md'), `---
+title: Email draft responder
+slug: email-draft-responder
+status: draft
+---
+# Email draft responder
+## Phase 1 — Draft
+- **P-001** \`todo\` Draft the reply.
+`, 'utf8');
+
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/email-draft-responder' },
+      makeDeps(),
+    );
+    expect(res.triggerPack).toEqual({
+      sourceKind: 'gmail',
+      eventPattern: 'ext:gmail:message.received',
+      planPath: 'plan.md',
+      planSlug: 'email-draft-responder',
+      armed: false,
+    });
+    expect(invalidated).toBe(1);
+    expect(existsSync(join(globalDir, 'email-draft-responder', 'plan.md'))).toBe(true);
+  });
+
+  it('refuses an invalid trigger pack before replacing the install target', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'broken-trigger-pack',
+      version: '0.1.0',
+      triggerPack: {
+        source: { kind: 'gmail' },
+        plan: { path: 'missing.md', inputSchema: { type: 'object' } },
+        binding: { eventPattern: 'ext:gmail:message.received' },
+      },
+    });
+    await expect(
+      installPluginFromCupboardCore(
+        { githubUrl: 'https://github.com/acme/broken-trigger-pack' },
+        makeDeps(),
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(existsSync(join(globalDir, 'broken-trigger-pack'))).toBe(false);
+    expect(invalidated).toBe(0);
+  });
+
   it('locates the plugin in the listing_ref subdir when the repo hosts several', async () => {
     await writeManifest(join(fixtureRepo, 'packages', 'b'), { name: 'plugin-b', version: '0.1.0' });
     const res = await installPluginFromCupboardCore(

@@ -193,6 +193,17 @@ export interface PluginHostStatus {
   errors: number;
   /** Reaction rules contributed by plugins (`plugin:<name>:<rule-id>`). */
   reactionRules: Array<{ id: string; on: string | string[]; fire: string; plugin: string }>;
+  /**
+   * Installed trigger-pack descriptors. `armed:false` is structural: plugin
+   * discovery makes a pack available but never crosses the trigger arm gate.
+   */
+  triggerPacks: Array<{
+    plugin: string;
+    sourceKind: string;
+    eventPattern: string;
+    planPath: string;
+    armed: false;
+  }>;
 }
 
 /**
@@ -1220,6 +1231,15 @@ export async function pluginHostStatus(): Promise<PluginHostStatus & {
     loaded: state.loaded.length,
     errors: state.loadErrors.length,
     reactionRules,
+    triggerPacks: state.loaded.flatMap((lp) => lp.triggerPack
+      ? [{
+          plugin: lp.plugin.name,
+          sourceKind: lp.triggerPack.source.kind,
+          eventPattern: lp.triggerPack.binding.eventPattern,
+          planPath: lp.triggerPack.plan.path,
+          armed: false as const,
+        }]
+      : []),
     plugins: state.loaded.map((lp) => ({ name: lp.plugin.name, version: lp.plugin.version, source: lp.source })),
     loadErrors: state.loadErrors,
     initializedPairs: Array.from(state.initialized).sort(),

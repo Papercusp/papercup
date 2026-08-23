@@ -17,6 +17,8 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep, dirname } from 'node:path';
+import type { PluginTriggerPack } from '@papercusp/plugin-sdk';
+import { isCompilableSchema } from '../json-schema-validation';
 
 export interface InstallPluginCoreInput {
   /** The plugin repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -35,7 +37,20 @@ export interface InstalledPluginManifest {
   version: string;
   description?: string;
   capabilities?: string[];
+  kind?: string;
+  configSchema?: Record<string, unknown>;
+  oauth?: Array<{ provider: string; scopes?: string[]; fieldName: string }>;
+  triggerPack?: PluginTriggerPack;
   [k: string]: unknown;
+}
+
+export interface InstalledTriggerPackReceipt {
+  sourceKind: string;
+  eventPattern: string;
+  planPath: string;
+  planSlug: string;
+  /** Installation never crosses the autonomy-gated trigger arm boundary. */
+  armed: false;
 }
 
 export interface InstallPluginCoreResult {
@@ -49,6 +64,8 @@ export interface InstallPluginCoreResult {
   installedTo: string;
   /** Capabilities granted for `harness` (only when harness + acceptCapabilities). */
   granted: string[];
+  /** Descriptor made discoverable by the post-copy host invalidation. */
+  triggerPack?: InstalledTriggerPackReceipt;
   /**
    * Deps this unit declares that are not installed but resolvable from the
    * Cupboard (advisory — tool-distribution-granularity D-003). Empty when the
@@ -166,6 +183,70 @@ function isSafeListingRef(ref: string): boolean {
   return ref.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
 }
 
+/**
+ * Validate a trigger pack before any destination is replaced. Generic plugin
+ * installs retain their historical behavior; the new shape is strict from day
+ * one because an invalid declaration otherwise installs cleanly and then stays
+ * inert behind a later loader error.
+ */
+async function inspectTriggerPackForInstall(
+  manifest: InstalledPluginManifest,
+  pluginDir: string,
+): Promise<InstalledTriggerPackReceipt | undefined> {
+  if (!manifest.triggerPack) return undefined;
+
+  const [{ validateManifest }, { validateTriggerPackDeclaration }, { parsePlan }] = await Promise.all([
+    import('@papercusp/plugin-loader/manifest-validate'),
+    import('@papercusp/plugin-sdk'),
+    import('@papercusp/plan-parser'),
+  ]);
+  const shape = validateManifest(manifest);
+  if (!shape.ok) {
+    throw new InstallPluginError(
+      `trigger-pack manifest invalid: ${shape.issues.map((issue) => `${issue.path} — ${issue.message}`).join('; ')}`,
+      422,
+    );
+  }
+  const semanticIssues = validateTriggerPackDeclaration(manifest);
+  if (semanticIssues.length > 0) {
+    throw new InstallPluginError(`trigger-pack manifest invalid: ${semanticIssues.join('; ')}`, 422);
+  }
+  if (!isCompilableSchema(manifest.triggerPack.plan.inputSchema)) {
+    throw new InstallPluginError('trigger-pack manifest invalid: plan.inputSchema is not compilable JSON Schema', 422);
+  }
+
+  const planPath = resolve(pluginDir, manifest.triggerPack.plan.path);
+  assertInside(pluginDir, planPath, 'triggerPack.plan.path');
+  let realPlanPath: string;
+  let markdown: string;
+  try {
+    realPlanPath = await fs.realpath(planPath);
+    assertInside(pluginDir, realPlanPath, 'triggerPack.plan.path symlink target');
+    markdown = await fs.readFile(realPlanPath, 'utf8');
+  } catch (error) {
+    if (error instanceof InstallPluginError) throw error;
+    throw new InstallPluginError(
+      `trigger-pack plan not readable at ${manifest.triggerPack.plan.path}`,
+      422,
+    );
+  }
+  const parsed = parsePlan(markdown);
+  if (parsed.isLegacy || !parsed.frontmatter.slug) {
+    throw new InstallPluginError(
+      `trigger-pack plan at ${manifest.triggerPack.plan.path} is not a structured plan template`,
+      422,
+    );
+  }
+
+  return {
+    sourceKind: manifest.triggerPack.source.kind,
+    eventPattern: manifest.triggerPack.binding.eventPattern,
+    planPath: manifest.triggerPack.plan.path,
+    planSlug: parsed.frontmatter.slug,
+    armed: false,
+  };
+}
+
 async function readManifest(dir: string): Promise<InstalledPluginManifest | null> {
   try {
     const m = JSON.parse(await fs.readFile(join(dir, 'papercusp.json'), 'utf8')) as InstalledPluginManifest;
@@ -220,6 +301,7 @@ export async function installPluginFromCupboardCore(
   try {
     await deps.cloneRepo(url, cloneDir);
     const { dir: pluginDir, manifest } = await locatePlugin(cloneDir, input.listingRef);
+    const triggerPack = await inspectTriggerPackForInstall(manifest, pluginDir);
 
     // manifest.name is UNTRUSTED (from the cloned repo) and becomes a directory we
     // `rm -rf` + `cp` into — so it must be a safe single-segment slug, never a path.
@@ -305,6 +387,7 @@ export async function installPluginFromCupboardCore(
       source: url,
       installedTo: target,
       granted,
+      ...(triggerPack ? { triggerPack } : {}),
       ...(installableDependencies ? { installableDependencies } : {}),
     };
   } finally {
