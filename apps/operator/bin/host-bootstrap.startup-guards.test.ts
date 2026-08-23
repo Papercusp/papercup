@@ -150,6 +150,20 @@ describe('hono-host wires request-worker allocation sampling', () => {
   });
 });
 
+describe('hono-host arms remote authorization before listening', () => {
+  it('calls assertRemoteAuthReady(hostname) before any request server can bind', () => {
+    const guard = honoHostSrc.indexOf(
+      'const remoteAuthPolicy = assertRemoteAuthReady(hostname);',
+    );
+    const requestServer = honoHostSrc.indexOf('function startRequestServers(): void');
+    const listen = honoHostSrc.indexOf('listenWithEaddrinuseRetry(', requestServer);
+
+    expect(guard).toBeGreaterThan(-1);
+    expect(requestServer).toBeGreaterThan(guard);
+    expect(listen).toBeGreaterThan(requestServer);
+  });
+});
+
 describe('host-bootstrap emits a machine-readable source-pass verdict', () => {
   it('calls the stable PASS2_RESULT formatter for ran, skipped, and failed outcomes', () => {
     expect(bootSrc).toContain('formatEnvOperatorPass2Result');

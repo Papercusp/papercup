@@ -62,6 +62,13 @@ describe('flag registry invariants', () => {
     expect(FLAG_DEFAULTS[FLAGS.OPEN_SIGNUP]).toBe(false);
   });
 
+  it('endpoint authorization tiers stay ON by default', () => {
+    // EI-100: route-stack tests deliberately exercise the emergency OFF lever,
+    // but production must enforce every declared RouteAuth tier unless an
+    // operator explicitly flips that kill switch.
+    expect(FLAG_DEFAULTS[FLAGS.ENDPOINT_AUTH_TIERS]).toBe(true);
+  });
+
   it('deterministic maintenance carry defaults ON with an explicit false kill-switch', () => {
     expect(FLAG_DEFAULTS[FLAGS.GATEWAY_MAINTENANCE_CARRY]).toBe(true);
     expect(resolveWithDefaults({ [FLAGS.GATEWAY_MAINTENANCE_CARRY]: false })[

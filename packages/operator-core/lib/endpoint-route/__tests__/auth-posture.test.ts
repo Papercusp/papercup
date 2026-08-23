@@ -16,7 +16,14 @@
  * that MUST stay public (OAuth redirects, unauth probes) is tightened.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ALL_ROUTES } from '../routes';
+
+const attentionBulkResolveSrc = readFileSync(
+  join(__dirname, '../routes/admin/attention-bulk-resolve.ts'),
+  'utf8',
+);
 
 type RouteAuth = 'public' | 'loopback' | { trust?: readonly string[] };
 const VT = { trust: ['verified', 'trusted'] } as const;
@@ -339,6 +346,29 @@ describe('D3 auth posture', () => {
     const def = ALL_ROUTES.find((r) => r.method === 'POST' && r.path === '/oauth/verify-paste');
     expect(def).toBeDefined();
     expect(def!.auth).toEqual(VT);
+  });
+});
+
+describe('EI-100 security-posture recurrence guards', () => {
+  it('keeps the bulk-resolve VTL route CSRF-gated before its flag gate or mutations', () => {
+    const handlerStart = attentionBulkResolveSrc.indexOf('async function handler(');
+    const handlerEnd = attentionBulkResolveSrc.indexOf('\nconst route = defineTool(', handlerStart);
+    const handler = attentionBulkResolveSrc.slice(handlerStart, handlerEnd);
+    const csrf = handler.indexOf('requireAllowedOriginOr403(req)');
+    const flagGate = handler.indexOf('gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE)');
+    const firstMutation = handler.indexOf('createRun({');
+
+    expect(handlerStart).toBeGreaterThan(-1);
+    expect(handlerEnd).toBeGreaterThan(handlerStart);
+    expect(csrf).toBeGreaterThan(-1);
+    expect(flagGate).toBeGreaterThan(csrf);
+    expect(firstMutation).toBeGreaterThan(flagGate);
+  });
+
+  it('keeps the retired GET /fleet/bee-output route out of ALL_ROUTES', () => {
+    expect(
+      ALL_ROUTES.find((route) => route.method === 'GET' && route.path === '/fleet/bee-output'),
+    ).toBeUndefined();
   });
 });
 

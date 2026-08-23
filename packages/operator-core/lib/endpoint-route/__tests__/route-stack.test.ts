@@ -214,6 +214,25 @@ describe('auth step — native direct-remote policy (P-016 / D-025)', () => {
     expect(requirePrincipal).not.toHaveBeenCalled();
   });
 
+  it('requires a verified session for a configured-origin safe remote GET', async () => {
+    const app = freshApp();
+    let handlerRan = false;
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/read', auth: 'public',
+      handler: () => { handlerRan = true; return Response.json({ ok: true }); },
+    }));
+
+    const res = await app.request('https://app.example.com/read', {
+      headers: {
+        origin: 'https://app.example.com',
+        'x-papercusp-workspace': 'ws-1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    expect(handlerRan).toBe(false);
+  });
+
   it('allows the login bootstrap only after exact authority and Origin checks', async () => {
     const app = freshApp();
     registerRoute(app, defineTool({
