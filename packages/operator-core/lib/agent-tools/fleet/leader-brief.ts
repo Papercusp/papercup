@@ -292,6 +292,15 @@ export interface LeaderBriefMemberVerdict {
   idleCause: MemberIdleCause;
 }
 
+export type LeaderBriefBenchSuggestionKind = NonNullable<LeaderBriefMember['benchSuggestion']>['kind'];
+
+export interface LeaderBriefBenchSuggestion {
+  /** The member identity required by fleet:bench. */
+  agentId: string;
+  /** Keep the branch visible so idle-with-claimable is not mistaken for a bench remedy. */
+  kind: LeaderBriefBenchSuggestionKind;
+}
+
 /**
  * EI-20226510994156306: retain the complete member identity/verdict index even
  * when the verbose `members` rows must be bounded for the MCP/ptool transport.
@@ -310,6 +319,29 @@ export function compactLeaderBriefMemberVerdicts(
     verdict,
     idleCause: idleVerdict.cause,
   }));
+}
+
+/**
+ * EI-21242929839064139: preserve every actionable bench target independently of
+ * the bounded verbose `members` sample. The member rows are ordered for detail
+ * density, while this compact index is the stable identity surface a leader uses
+ * to decide which member can be passed to fleet:bench.
+ */
+export function compactLeaderBriefBenchSuggestions(
+  members: ReadonlyArray<Pick<LeaderBriefMember, 'agentId' | 'benchSuggestion'>>,
+): LeaderBriefBenchSuggestion[] {
+  return members.flatMap(({ agentId, benchSuggestion }) =>
+    benchSuggestion == null ? [] : [{ agentId, kind: benchSuggestion.kind }],
+  );
+}
+
+/** Keep flagged rows at the head of the bounded detail sample without changing
+ * the relative order within the flagged and unflagged groups. */
+export function prioritizeBenchSuggestedMembers<T extends { benchSuggestion?: unknown }>(members: readonly T[]): T[] {
+  return [
+    ...members.filter((member) => member.benchSuggestion != null),
+    ...members.filter((member) => member.benchSuggestion == null),
+  ];
 }
 
 /**
@@ -2066,7 +2098,7 @@ export default defineTool({
     'sessionState, `wakeable`, `verdict`, wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved, benchSuggestion, ' +
-    '`dormant`, `spinning`, `throttled` (backed off from a provider wall — nextFireAt is ' +
+    '`benchSuggestions` (complete target identity index), `dormant`, `spinning`, `throttled` (backed off from a provider wall — nextFireAt is ' +
     'a wait, not a tick; see `throttled.until`/`.reason`), ' +
     'unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.',
   guidance: {
@@ -2818,7 +2850,11 @@ export async function buildLeaderBrief(
     { factor: poolCapacity?.factor ?? null, queueDepth: poolCapacity?.queueDepth ?? null },
   );
   const memberVerdicts = compactLeaderBriefMemberVerdicts(membersWithVerdict);
-  const boundedMembers = trimToByteBudget(membersWithVerdict, LEADER_BRIEF_MEMBER_DETAIL_BUDGET);
+  const benchSuggestions = compactLeaderBriefBenchSuggestions(membersWithVerdict);
+  const boundedMembers = trimToByteBudget(
+    prioritizeBenchSuggestedMembers(membersWithVerdict),
+    LEADER_BRIEF_MEMBER_DETAIL_BUDGET,
+  );
   const boundedReservationMembers = trimToByteBudget(reservation.members, LEADER_BRIEF_RESERVATION_DETAIL_BUDGET);
   const reservationForResponse = {
     ...reservation,
@@ -2941,6 +2977,9 @@ export async function buildLeaderBrief(
       // verbose member rows below are bounded. It is the stable recovery surface for a
       // 50-member fleet: every id + verdict remains available without a full-tier fetch.
       memberVerdicts,
+      // EI-21242929839064139: unlike `members`, this exceptional slice is complete.
+      // A leader must never see bench_suggested:N without the N target identities.
+      benchSuggestions,
       members: boundedMembers.kept,
       ...(boundedMembers.truncated
         ? {
