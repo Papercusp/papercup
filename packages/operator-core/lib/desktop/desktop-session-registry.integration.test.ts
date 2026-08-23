@@ -27,6 +27,8 @@ import {
   closeDesktopSession,
   listDesktopSessions,
   resolveDesktopForScope,
+  resolveLocalDesktopByDisplay,
+  setDesktopViewer,
   reconcileLocalDesktopSessions,
   DEFAULT_CAPTURE_GEOMETRY,
   TERMINAL_DESKTOP_STATES,
@@ -283,6 +285,101 @@ describe('reconciliation (D-004: a row without a live handle is DEAD)', () => {
  * ~88% of finished units as failed placements, so the copy gets pinned to its
  * source rather than trusted.
  */
+describe('local live-view admission gate (P-004)', () => {
+  // Display numbers come from `base()`'s monotonic sequence, never hardcoded. A
+  // display is a HOST-global resource — the live-display unique index is keyed on
+  // (COALESCE(host_ref,''), display) with no workspace in it, deliberately, since
+  // two tenants cannot both drive :110 on one machine. Hardcoding a number here
+  // therefore collides with a sibling test and looks like a uniqueness bug.
+  it('resolves a registered LOCAL display', async () => {
+    const ws = 'ws-p004-admit';
+    const s = await registerDesktopSession(base({ workspaceId: ws }), sql);
+    const found = await resolveLocalDesktopByDisplay({ workspaceId: ws, display: s.display }, sql);
+    expect(found?.id).toBe(s.id);
+  });
+
+  it('does NOT resolve a display nothing registered — this is what keeps :0 unviewable', async () => {
+    const ws = 'ws-p004-unregistered';
+    // POSITIVE CONTROL: the tenant HAS a desktop, so an empty answer for :0 is a
+    // real refusal and not an empty-database artefact.
+    const s = await registerDesktopSession(base({ workspaceId: ws }), sql);
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: ws, display: s.display }, sql)).toBeDefined();
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: ws, display: ':0' }, sql)).toBeUndefined();
+  });
+
+  it('stops resolving once the desktop is released — a dead lease is not viewable', async () => {
+    const ws = 'ws-p004-released';
+    const s = await registerDesktopSession(base({ workspaceId: ws }), sql);
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: ws, display: s.display }, sql)).toBeDefined();
+    await closeDesktopSession(s.id, 'released', sql);
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: ws, display: s.display }, sql)).toBeUndefined();
+  });
+
+  it('never resolves a REMOTE row — a frame\'s display is not this host\'s display', async () => {
+    const ws = 'ws-p004-remote';
+    // Owned by another host: the local path must miss it (it belongs to the frame
+    // path's SSH hop), or a viewer would spawn x11vnc against a local display
+    // number that means something else entirely here.
+    const s = await registerDesktopSession(
+      base({ workspaceId: ws, hostRef: 'frame-lat-1', kind: 'frame-slot', scope: 'agent' }),
+      sql,
+    );
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: ws, display: s.display }, sql)).toBeUndefined();
+    // CONTROL: the row really is there — resolvable by scope, just not locally.
+    expect(
+      await resolveDesktopForScope({ workspaceId: ws, scope: 'agent', scopeRef: s.scopeRef }, sql),
+    ).toBeDefined();
+  });
+
+  it('scopes admission per tenant — another workspace cannot view this desktop', async () => {
+    const s = await registerDesktopSession(base({ workspaceId: 'ws-p004-a' }), sql);
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: 'ws-p004-a', display: s.display }, sql)).toBeDefined();
+    expect(await resolveLocalDesktopByDisplay({ workspaceId: 'ws-p004-b', display: s.display }, sql)).toBeUndefined();
+  });
+});
+
+describe('viewer binding (P-004 cross-process indicator)', () => {
+  it('publishes watcher + actor on the row, and clearing drops BOTH', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    expect(s.viewerMode).toBe('none');
+
+    expect(await setDesktopViewer(s.id, { mode: 'takeover', actor: 'user:a' }, sql)).toBe(true);
+    const watched = await resolveDesktopForScope(
+      { workspaceId: WS, scope: 'pot', scopeRef: s.scopeRef },
+      sql,
+    );
+    expect(watched).toMatchObject({ viewerMode: 'takeover', viewerActor: 'user:a' });
+
+    await setDesktopViewer(s.id, { mode: 'none' }, sql);
+    const cleared = await resolveDesktopForScope(
+      { workspaceId: WS, scope: 'pot', scopeRef: s.scopeRef },
+      sql,
+    );
+    // The actor must go with the mode: a name left behind outlives the session
+    // that earned it and reads as "this person is watching you" forever.
+    expect(cleared).toMatchObject({ viewerMode: 'none', viewerActor: null });
+  });
+
+  it('clearing drops the actor even when a caller passes one', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await setDesktopViewer(s.id, { mode: 'none', actor: 'user:a' }, sql);
+    const row = await resolveDesktopForScope({ workspaceId: WS, scope: 'pot', scopeRef: s.scopeRef }, sql);
+    expect(row?.viewerActor).toBeNull();
+  });
+
+  it('returns false for a released row instead of throwing — teardown races are normal', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await closeDesktopSession(s.id, 'released', sql);
+    expect(await setDesktopViewer(s.id, { mode: 'none' }, sql)).toBe(false);
+  });
+
+  it('returns false for a row that does not exist at all', async () => {
+    expect(
+      await setDesktopViewer('00000000-0000-0000-0000-000000000000', { mode: 'watch', actor: 'u' }, sql),
+    ).toBe(false);
+  });
+});
+
 describe('SQL/TS terminal-state drift guard', () => {
   const migrationSql = readFileSync(MIGRATION_900, 'utf8');
 

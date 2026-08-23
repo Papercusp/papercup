@@ -323,6 +323,62 @@ export async function resolveDesktopForScope(
 }
 
 /**
+ * Resolve a LOCAL desktop by its X display string (":110") — the admission gate
+ * for the local live view (P-004).
+ *
+ * ⚠ THIS IS A SECURITY BOUNDARY, not a lookup convenience. The local live view
+ * spawns `x11vnc -display <n>` on THIS host, and this host also runs the owner's
+ * real session on :0/:1. A viewer that could name an arbitrary display number
+ * would be handed a video feed of — and in `takeover` mode a keyboard and mouse
+ * on — the human's actual desktop. So the local VNC path resolves its display
+ * through this function and refuses anything it does not return: only a display
+ * that some agent desktop session REGISTERED is viewable.
+ *
+ * `host_ref IS NULL` is what "local" means in this schema (a remote row names its
+ * host), so a remote frame's `:99` can never satisfy a local request even when
+ * the display numbers collide — those go over the frame path's SSH hop instead.
+ */
+export async function resolveLocalDesktopByDisplay(
+  args: { workspaceId: string; display: string },
+  sql?: Sql,
+): Promise<DesktopSessionRecord | undefined> {
+  const rows = await db(sql)`
+    SELECT * FROM harness_shared.desktop_sessions
+     WHERE workspace_id = ${args.workspaceId}
+       AND host_ref IS NULL
+       AND display     = ${args.display}
+       AND state NOT IN ('released', 'dead')
+     LIMIT 1`;
+  return rows[0] ? toRecord(rows[0]) : undefined;
+}
+
+/**
+ * Bind (or clear) the human viewer on a session — the cross-process half of the
+ * live view's "someone is watching this desktop" indicator (P-004).
+ *
+ * The in-process `activeVncSessions()` map already answers this for the operator
+ * that owns the bridge; the row answers it for everyone else, which is the whole
+ * reason the viewer columns are in PG. Pass `mode:'none'` to clear — the actor is
+ * dropped with it, so a stale name can never outlive the session that earned it.
+ *
+ * Returns false when the row is gone or already terminal: a viewer teardown
+ * racing a desktop release is normal, not an error.
+ */
+export async function setDesktopViewer(
+  id: string,
+  viewer: { mode: DesktopViewerMode; actor?: string | null },
+  sql?: Sql,
+): Promise<boolean> {
+  const actor = viewer.mode === 'none' ? null : (viewer.actor ?? null);
+  const rows = await db(sql)`
+    UPDATE harness_shared.desktop_sessions
+       SET viewer_mode = ${viewer.mode}, viewer_actor = ${actor}, last_active_at = now()
+     WHERE id = ${id} AND state NOT IN ('released', 'dead')
+    RETURNING id`;
+  return rows.length > 0;
+}
+
+/**
  * Operator-start reconciliation (D-004). Marks DEAD every non-terminal LOCAL row
  * that this process cannot vouch for with a live handle.
  *

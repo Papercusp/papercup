@@ -32,9 +32,9 @@ export default defineTool({
   async handler(req, ctx) {
     const user = await getSessionUserOrDefault(req.headers);
     const slug = ctx.params.slug as string;
-    let body: { display?: unknown; mode?: unknown };
+    let body: { display?: unknown; mode?: unknown; target?: unknown };
     try {
-      body = (await req.json()) as { display?: unknown; mode?: unknown };
+      body = (await req.json()) as { display?: unknown; mode?: unknown; target?: unknown };
     } catch {
       return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
     }
@@ -43,6 +43,11 @@ export default defineTool({
       return Response.json({ ok: false, error: 'display must be a display number (e.g. 99)' }, { status: 400 });
     }
     const mode = body.mode === 'takeover' ? 'takeover' : 'watch';
+    // 'frame' stays the default so every pre-P-004 caller keeps its behaviour.
+    // A local session is refused unless the display is a REGISTERED agent
+    // desktop — createVncSession enforces that; the route does not second-guess
+    // it, so there is exactly one place the admission rule lives.
+    const target = body.target === 'local' ? 'local' : 'frame';
 
     const port = await startFrameVncWs();
     if (!port) {
@@ -54,6 +59,7 @@ export default defineTool({
         workspaceId: activeWorkspaceId(),
         display,
         mode,
+        target,
         actor: `user:${user.username}`,
       });
       return Response.json({
@@ -63,6 +69,8 @@ export default defineTool({
         mode,
         display,
         slug,
+        target,
+        desktopSessionId: ticket.desktopSessionId,
       });
     } catch (e) {
       return Response.json(

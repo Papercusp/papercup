@@ -1,6 +1,19 @@
 /**
- * On-demand frame VNC sessions
- * (`hive-frame-desktops-live-view-2026-06-06` P-008/P-010, D-002).
+ * On-demand desktop VNC sessions
+ * (`hive-frame-desktops-live-view-2026-06-06` P-008/P-010, D-002;
+ *  `agent-virtual-desktops-2026-08-23` P-004).
+ *
+ * TWO TARGETS, ONE MACHINE. Originally this served only DEPLOYED FRAMES over the
+ * deploy layer's SSH channel. P-004 added LOCAL desktops — the Xvfb displays this
+ * host leases to pots and frame slots — and did it by generalising the single
+ * thing that differs (the process that speaks RFB on its stdio) rather than by
+ * forking the module. Ticket minting, single-use consumption, the TTL, the WS
+ * bridge, teardown, and audit are shared verbatim; a local session is the same
+ * `x11vnc + socat` script with no `ssh` in front of it.
+ *
+ * ⚠ The local target carries a gate the frame target does not need: this host
+ * also runs the human's real desktop, so a display number from a caller is a
+ * request and never an authorisation. See `createVncSession`.
  *
  * The live-view click-through: a noVNC client in the operator webview connects
  * to a loopback WebSocket here; each accepted connection spawns
@@ -27,8 +40,23 @@ import type { IncomingMessage } from 'node:http';
 import { buildSshStreamArgs } from './remote-exec';
 import { sshTargetForFrame } from './frame-installer';
 import { loadDeployedFrame } from './deployed-frame';
+import {
+  resolveLocalDesktopByDisplay,
+  setDesktopViewer,
+} from '../desktop/desktop-session-registry';
 
 export type VncMode = 'watch' | 'takeover';
+
+/**
+ * Where the desktop being viewed lives (P-004).
+ *
+ *  - `frame` — a DEPLOYED frame reached over the deploy layer's SSH channel.
+ *    The original path; unchanged.
+ *  - `local` — an Xvfb desktop on THIS host (a pot lease or a frame slot). No
+ *    SSH hop: the same bridge script is spawned directly. Admission is NOT the
+ *    caller's display number — see `resolveLocalDesktopByDisplay`.
+ */
+export type VncTarget = 'frame' | 'local';
 
 export interface VncSessionRequest {
   slug: string;
@@ -37,6 +65,8 @@ export interface VncSessionRequest {
   mode: VncMode;
   /** Who asked (the session user) — recorded on the audit events. */
   actor: string;
+  /** Defaults to 'frame', which is the pre-P-004 behaviour. */
+  target?: VncTarget;
 }
 
 export interface VncTicket {
@@ -47,12 +77,23 @@ export interface VncTicket {
   mode: VncMode;
   display: number;
   slug: string;
+  target: VncTarget;
+  /** The registry row this session views — local sessions only. */
+  desktopSessionId: string | null;
 }
 
 interface PendingSession extends VncSessionRequest {
   ticket: string;
   createdAt: number;
-  sshCmd: { cmd: string; args: string[] };
+  target: VncTarget;
+  /**
+   * The process that speaks RFB on its stdio. `ssh …` for a frame, `bash -c …`
+   * for a local desktop — the bridge below does not care which, which is the
+   * point of naming it for what it is rather than for one of its two shapes.
+   */
+  spawnCmd: { cmd: string; args: string[] };
+  /** Registry row to bind the viewer onto (local sessions only). */
+  desktopSessionId: string | null;
 }
 
 export interface ActiveVncSession {
@@ -61,6 +102,7 @@ export interface ActiveVncSession {
   mode: VncMode;
   actor: string;
   sinceMs: number;
+  target: VncTarget;
 }
 
 /** Unconsumed tickets expire after this long (P-010). */
@@ -75,6 +117,10 @@ export interface FrameVncDeps {
   /** Audit sink — defaults to the workspace audit_log writer. */
   audit?: (ev: { action: string; actor: string; subject: string; details: Record<string, unknown> }) => void;
   now?: () => number;
+  /** P-004 admission gate for local desktops; defaults to the registry. */
+  resolveLocalDesktop?: typeof resolveLocalDesktopByDisplay;
+  /** P-004 viewer binding on the registry row; defaults to the registry. */
+  setViewer?: typeof setDesktopViewer;
 }
 
 const pending = new Map<string, PendingSession>();
@@ -123,6 +169,27 @@ const audit = (ev: { action: string; actor: string; subject: string; details: Re
   (depsOverride.audit ?? defaultAudit)(ev);
 
 /**
+ * Publish (or clear) this session's viewer on its registry row.
+ *
+ * A no-op for frame sessions, which have no registry row of their own — those
+ * are covered by the frame status stream's own `viewers` field. Errors are
+ * swallowed by design: the viewer column is an INDICATOR, and a live desktop
+ * session must not die because a cosmetic write lost a race with a release.
+ */
+function bindViewer(session: PendingSession, mode: VncMode | 'none'): void {
+  if (!session.desktopSessionId) return;
+  const setter = depsOverride.setViewer ?? setDesktopViewer;
+  void Promise.resolve(
+    setter(session.desktopSessionId, {
+      mode,
+      actor: mode === 'none' ? null : session.actor,
+    }),
+  ).catch((err) => {
+    console.warn('[frame-vnc] viewer indicator write failed:', err);
+  });
+}
+
+/**
  * The command a session runs on the frame (exported for tests).
  *
  * x11vnc's `-inetd` mode does NOT work over an SSH channel: it does socket
@@ -137,15 +204,38 @@ const audit = (ev: { action: string; actor: string; subject: string; details: Re
  *   - read-only via `-viewonly` for watch mode (D-002).
  * The whole thing is a `bash -c` so buildSshStreamArgs can prefix `sudo -H`.
  */
-export function vncRemoteCommand(display: number, mode: VncMode): string {
+export function vncBridgeScript(display: number, mode: VncMode): string {
   const viewonly = mode === 'takeover' ? '' : ' -viewonly';
-  // No single quotes inside the script (it's wrapped in single quotes here).
-  const script =
+  // No single quotes inside the script: the frame path wraps it in single quotes.
+  return (
     `P=$(x11vnc -display :${display} -localhost -nopw${viewonly} -once -timeout 30 -autoport 5900 -bg 2>/dev/null ` +
     `| sed -n "s/.*PORT=\\([0-9]*\\).*/\\1/p"); ` +
     `[ -n "$P" ] || { echo "x11vnc-no-port" >&2; exit 9; }; ` +
-    `exec socat STDIO TCP:127.0.0.1:$P`;
-  return `bash -c '${script}'`;
+    `exec socat STDIO TCP:127.0.0.1:$P`
+  );
+}
+
+export function vncRemoteCommand(display: number, mode: VncMode): string {
+  return `bash -c '${vncBridgeScript(display, mode)}'`;
+}
+
+/**
+ * The LOCAL equivalent (P-004): the SAME bridge script, spawned directly instead
+ * of over SSH.
+ *
+ * It is deliberately the same script and not a second, simpler implementation.
+ * Node could dial the x11vnc port itself and pipe WS ↔ TCP socket, skipping
+ * socat — but that is a SECOND byte-pipe and a second teardown path, and the two
+ * would drift. Reusing the script means local and frame sessions share one
+ * bridge, one `-once`/`-timeout` lifecycle, and one kill path; the only thing
+ * that differs between them is whether an `ssh` prefix is in front of it.
+ *
+ * There is no `sudo` here (the frame path adds one for its non-root login): the
+ * operator already owns the Xvfb it is connecting to, so asking for privilege
+ * would be asking for more than the job needs.
+ */
+export function localVncCommand(display: number, mode: VncMode): { cmd: string; args: string[] } {
+  return { cmd: 'bash', args: ['-c', vncBridgeScript(display, mode)] };
 }
 
 /**
@@ -154,18 +244,44 @@ export function vncRemoteCommand(display: number, mode: VncMode): string {
  * WS connect. Throws if the harness has no deployed frame.
  */
 export async function createVncSession(req: VncSessionRequest): Promise<VncTicket> {
-  const loadFrame = depsOverride.loadFrame ?? loadDeployedFrame;
-  const loaded = await loadFrame(req.slug, req.workspaceId);
-  if (!loaded) throw new Error(`harness '${req.slug}' has no deployed frame`);
-  const target = sshTargetForFrame(loaded.frame, loaded.config);
-  const sshCmd = buildSshStreamArgs(target, vncRemoteCommand(req.display, req.mode));
+  const target: VncTarget = req.target ?? 'frame';
+  let spawnCmd: { cmd: string; args: string[] };
+  let desktopSessionId: string | null = null;
+
+  if (target === 'local') {
+    // ADMISSION GATE. The display number arrives from the caller, and this host
+    // also runs the human's real session on :0 — so the number is a REQUEST, never
+    // an authorisation. Only a display some agent desktop registered is viewable;
+    // anything else (the owner's desktop, a typo, a display that just died) is
+    // refused here, before a single x11vnc process is spawned.
+    const resolve = depsOverride.resolveLocalDesktop ?? resolveLocalDesktopByDisplay;
+    const record = await resolve({ workspaceId: req.workspaceId, display: `:${req.display}` });
+    if (!record) {
+      throw new Error(
+        `:${req.display} is not a registered local agent desktop — refusing to open a VNC session on it`,
+      );
+    }
+    desktopSessionId = record.id;
+    spawnCmd = localVncCommand(req.display, req.mode);
+  } else {
+    const loadFrame = depsOverride.loadFrame ?? loadDeployedFrame;
+    const loaded = await loadFrame(req.slug, req.workspaceId);
+    if (!loaded) throw new Error(`harness '${req.slug}' has no deployed frame`);
+    const sshTarget = sshTargetForFrame(loaded.frame, loaded.config);
+    spawnCmd = buildSshStreamArgs(sshTarget, vncRemoteCommand(req.display, req.mode));
+  }
+
   const ticket = randomBytes(24).toString('hex');
-  pending.set(ticket, { ...req, ticket, createdAt: now(), sshCmd });
+  pending.set(ticket, { ...req, target, ticket, createdAt: now(), spawnCmd, desktopSessionId });
   audit({
+    // ONE audit namespace across both targets, on purpose: an operator asking
+    // "who took over a desktop" writes one filter and finds every session. Two
+    // namespaces would silently answer for only half the population. `target`
+    // below is what distinguishes them.
     action: `frame-vnc.${req.mode === 'takeover' ? 'takeover-requested' : 'watch-requested'}`,
     actor: req.actor,
-    subject: `${req.slug}:${req.display}`,
-    details: { slug: req.slug, display: req.display, mode: req.mode },
+    subject: auditSubject(target, req.slug, req.display),
+    details: { slug: req.slug, display: req.display, mode: req.mode, target, desktopSessionId },
   });
   // GC stale pending tickets opportunistically.
   for (const [t, s] of pending) {
@@ -178,7 +294,19 @@ export async function createVncSession(req: VncSessionRequest): Promise<VncTicke
     mode: req.mode,
     display: req.display,
     slug: req.slug,
+    target,
+    desktopSessionId,
   };
+}
+
+/**
+ * Frame subjects keep their historical `slug:display` shape; local ones are
+ * prefixed so the two can never be confused in the audit log — both targets can
+ * legitimately be `h1:99`, and an auditor reading a takeover record needs to know
+ * whether it happened on a remote frame or on this machine.
+ */
+function auditSubject(target: VncTarget, slug: string, display: number): string {
+  return target === 'local' ? `local:${slug}:${display}` : `${slug}:${display}`;
 }
 
 /** Consume a ticket (single-use, TTL-bounded). Exported for the WS handler + tests. */
@@ -212,7 +340,7 @@ export interface VncBridgeWs {
  */
 export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): ChildProcess {
   const spawn = depsOverride.spawn ?? nodeSpawn;
-  const child = spawn(session.sshCmd.cmd, session.sshCmd.args, {
+  const child = spawn(session.spawnCmd.cmd, session.spawnCmd.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: true, // own process group → tree-kill on teardown
   });
@@ -223,12 +351,23 @@ export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): Chil
     mode: session.mode,
     actor: session.actor,
     sinceMs: now(),
+    target: session.target,
   });
+  // Publish the viewer on the registry row so OTHER processes can see that this
+  // desktop is being watched — `active` above only answers for this operator.
+  // Fire-and-forget: a failed indicator write must never break a live session.
+  bindViewer(session, session.mode);
   audit({
     action: `frame-vnc.${session.mode === 'takeover' ? 'takeover-started' : 'watch-started'}`,
     actor: session.actor,
-    subject: `${session.slug}:${session.display}`,
-    details: { slug: session.slug, display: session.display, mode: session.mode },
+    subject: auditSubject(session.target, session.slug, session.display),
+    details: {
+      slug: session.slug,
+      display: session.display,
+      mode: session.mode,
+      target: session.target,
+      desktopSessionId: session.desktopSessionId,
+    },
   });
 
   let open = true;
@@ -237,11 +376,22 @@ export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): Chil
     open = false;
     clearTimeout(maxTimer);
     active.delete(key);
+    // Clear the cross-process viewer indicator. This runs on EVERY teardown
+    // reason — viewer-left, remote-closed, spawn-error, max-session-ttl — so a
+    // row can never be left advertising a watcher who is gone.
+    bindViewer(session, 'none');
     audit({
       action: 'frame-vnc.ended',
       actor: session.actor,
-      subject: `${session.slug}:${session.display}`,
-      details: { slug: session.slug, display: session.display, mode: session.mode, why },
+      subject: auditSubject(session.target, session.slug, session.display),
+      details: {
+        slug: session.slug,
+        display: session.display,
+        mode: session.mode,
+        target: session.target,
+        desktopSessionId: session.desktopSessionId,
+        why,
+      },
     });
     // Kill the whole ssh process group; fall back to a single-PID kill when
     // the group send fails OR the child never got a pid (early spawn failure).

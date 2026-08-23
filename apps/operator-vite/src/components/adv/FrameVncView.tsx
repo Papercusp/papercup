@@ -20,11 +20,18 @@ export default function FrameVncView({
   slug,
   display,
   drive,
+  target = 'frame',
   onState,
 }: {
   slug: string;
   display: number;
   drive: boolean;
+  /**
+   * 'frame' (default) = a deployed frame over SSH; 'local' = an Xvfb desktop on
+   * this host (P-004). The server refuses a local display that no agent desktop
+   * registered, so passing 'local' is a request, not a grant.
+   */
+  target?: 'frame' | 'local';
   onState?: (s: VncViewState) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -45,7 +52,7 @@ export default function FrameVncView({
         const res = await fetch(`/api/deploy/${encodeURIComponent(slug)}/vnc-session`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ display, mode: drive ? 'takeover' : 'watch' }),
+          body: JSON.stringify({ display, mode: drive ? 'takeover' : 'watch', target }),
         });
         const data = (await res.json()) as { ok: boolean; wsUrl?: string; error?: string };
         if (!res.ok || !data.ok || !data.wsUrl) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -68,12 +75,12 @@ export default function FrameVncView({
     return () => {
       cancelled = true;
       try {
-        rfb?.disconnect(); // viewer-left → the bridge kills the frame-side x11vnc
+        rfb?.disconnect(); // viewer-left → the bridge kills the desktop-side x11vnc
       } catch {
         /* already gone */
       }
     };
-  }, [slug, display, drive, onState]);
+  }, [slug, display, drive, target, onState]);
 
   return (
     <div className="pc-frame-vnc" data-state={state}>
