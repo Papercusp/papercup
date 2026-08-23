@@ -1,0 +1,128 @@
+import { AGENT_ROLES, defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { ToolResult } from '@papercusp/tooldef';
+import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-contract';
+import { inspectScriptContract } from './contract-preflight';
+import {
+  orchestrationPolicyFailure,
+  orchestrationSourceArgsSchema,
+  type OrchestrationScriptSource,
+  type OrchestrationSourceArgs,
+} from './public-contract';
+import {
+  savedRecipeAdapterFor,
+  type SavedRecipeAdapter,
+  type SavedRecipeSelector,
+} from './saved-recipe-adapter';
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const textResult = (payload: unknown): ToolResult => ({
+  content: [{ type: 'text', text: JSON.stringify(payload) }],
+}) as ToolResult;
+
+export async function inspectOrchestration(
+  args: OrchestrationSourceArgs,
+  ctx: UnifiedToolContext,
+  adapter: SavedRecipeAdapter = savedRecipeAdapterFor(ctx),
+): Promise<ToolResult> {
+  const policyFailure = orchestrationPolicyFailure(args);
+  if (policyFailure) return textResult(policyFailure);
+
+  let script = args.script as OrchestrationScriptSource;
+  let manifest: CapabilityManifestV1 | undefined;
+  let continuation: Record<string, unknown> | undefined;
+  let source: Record<string, unknown> = { kind: 'script', script };
+
+  if (args.recipe) {
+    const inspected = await adapter.inspect(args.recipe as SavedRecipeSelector);
+    if (!inspected.ok) return textResult(inspected);
+    const recipe = inspected.recipe;
+    const recipeSource = recipe.script;
+    if (typeof recipeSource !== 'string' || recipeSource.length === 0) {
+      return textResult({
+        ok: false,
+        phase: 'preflight',
+        executed: false,
+        error: { code: 'recipe_schema_stale', message: 'saved recipe has no executable script', path: 'recipe.script' },
+      });
+    }
+    script = {
+      source: recipeSource,
+      ...(typeof recipe.title === 'string' ? { title: recipe.title } : {}),
+      ...(typeof recipe.description === 'string' ? { description: recipe.description } : {}),
+      ...(recipe.bindingSchema ? { bindingSchema: recipe.bindingSchema as RecipeBindingSchemaV1 } : {}),
+    };
+    manifest = recipe.capabilityManifest as CapabilityManifestV1 | undefined;
+    continuation = { recipe: inspected.continuation };
+    source = { kind: 'recipe', recipe: inspected.recipe, continuation };
+  }
+
+  const checked = await inspectScriptContract({
+    script,
+    bindings: args.bindings,
+    lifecycle: args.execution?.lifecycle,
+    ...(manifest ? { manifest } : {}),
+    ctx,
+  });
+  if (!checked.ok) return textResult(checked);
+
+  return textResult({
+    ok: true,
+    source,
+    normalized: {
+      script,
+      ...(continuation ?? {}),
+      bindingSchema: checked.contract.bindingSchema ?? null,
+      bindings: {
+        values: checked.contract.bindings.inputs,
+        secretRefs: Object.keys(checked.contract.bindings.secretRefs),
+        resourceRefs: checked.contract.bindings.resourceRefs,
+      },
+      staticToolCalls: checked.staticCalls,
+      toolsUsed: checked.staticToolNames,
+      requirements: checked.contract.requirements,
+      manifest: checked.manifest,
+      replay: checked.contract.replay,
+      portability: checked.contract.portability,
+      execution: {
+        requestedMode: args.execution?.mode ?? 'server',
+        mode: 'server',
+        deprecatedAuto: args.execution?.mode === 'auto',
+        lifecycle: 'foreground',
+        timeoutSec: args.timeoutSec ?? 30,
+      },
+      capture: {
+        mode: args.recipe ? 'reuse' : (args.capture?.mode ?? 'auto'),
+      },
+    },
+    diagnostics: args.execution?.mode === 'auto'
+      ? [{ code: 'execution_mode_deprecated', message: 'execution.mode:auto is an alias for server' }]
+      : [],
+  });
+}
+
+const orchestrateInspectTool = defineTool({
+  name: 'orchestrate:inspect',
+  description:
+    'Side-effect-free normalization and current-caller preflight for one fresh script or saved recipe. Revalidates bindings, recipe revision/authority, tools, capabilities, topology, lifecycle and timeout without dispatching nested tools.',
+  guidance: {
+    when: 'Before running an unfamiliar saved recipe or a capability-declaring/bound script.',
+    notWhen: 'You only need recipe discovery; use orchestrate:search.',
+    chaining: 'orchestrate:inspect { script|recipe } → orchestrate:run with the same exact source and bindings',
+    seeAlso: ['orchestrate:search', 'orchestrate:run'],
+  },
+  capability: 'recipes:read',
+  requirePrincipal: false,
+  skipWorkspaceTx: true,
+  agentRoles: [...AGENT_ROLES],
+  args: orchestrationSourceArgsSchema,
+  handler(args, ctx) {
+    return inspectOrchestration(args, ctx);
+  },
+});
+
+export default orchestrateInspectTool;
+

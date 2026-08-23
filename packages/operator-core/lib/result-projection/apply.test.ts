@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { applyPick, applyResultProjection, parsePickPath } from './apply';
+import { applyPick, applyResultProjection, parsePickPath, projectionMaterializationFormat } from './apply';
 import { parseProjection } from './parse';
 
 const textResult = (text: string) => ({ content: [{ type: 'text' as const, text }] });
@@ -45,6 +45,26 @@ const reportOf = (r: { content?: unknown; _meta?: Record<string, unknown> }) =>
     linesOut: number;
     regexFlavor?: string;
   };
+
+describe('projection materialization format', () => {
+  it('forces JSON for the implicit MCP compact source', () => {
+    expect(projectionMaterializationFormat(undefined, true)).toBe('json');
+    expect(projectionMaterializationFormat('compact', true)).toBe('json');
+    expect(projectionMaterializationFormat(' COMPACT ', true)).toBe('json');
+  });
+
+  it('preserves explicit formats and non-materialized contexts', () => {
+    expect(projectionMaterializationFormat('json', true)).toBe('json');
+    expect(projectionMaterializationFormat('toon', true)).toBe('toon');
+    expect(projectionMaterializationFormat('text/csv', true)).toBe('text/csv');
+    expect(projectionMaterializationFormat('toon', false)).toBe('toon');
+    expect(projectionMaterializationFormat(undefined, false)).toBeUndefined();
+  });
+
+  it('normalizes an unsupported request to JSON instead of inheriting compact', () => {
+    expect(projectionMaterializationFormat('yaml', true)).toBe('json');
+  });
+});
 
 describe('applyResultProjection — line operators', () => {
   const LINES = ['alpha 3', 'beta 1', 'ERROR here', 'gamma 2', 'error again', 'delta 10'].join('\n');

@@ -66,6 +66,11 @@ import {
   type RecipeContractFailure,
   type ReplayClass,
 } from '../../recipe-contract';
+import {
+  currentCallerRecipeCatalog,
+  ORCHESTRATION_RECURSION_EXCLUSIONS,
+  runtimeRecipeReplayClass,
+} from '../orchestration/contract-preflight';
 
 interface RunItem {
   id: string;
@@ -155,68 +160,6 @@ const bindingsInputSchema = z
   .object({ values: z.record(z.string(), z.unknown()) })
   .strict();
 
-function projectedNames(tools: ReturnType<typeof listAllProjectedTools>): Set<string> {
-  return new Set(
-    tools
-      .map((tool) => tool.expose.mcp?.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0),
-  );
-}
-
-function hasEvery(names: ReadonlySet<string>, required: readonly string[]): boolean {
-  return required.every((name) => names.has(name));
-}
-
-/** Current implementation + current reuser envelope, expressed in P-015 logical capabilities. */
-function currentCallerCatalog(
-  tools: ReturnType<typeof listAllProjectedTools>,
-  allowedTools: ReadonlySet<string>,
-): CurrentCallerCapabilityCatalog {
-  const allTools = projectedNames(tools);
-  const availableCapabilities = new Set<LogicalCapability>(['content:image', 'content:audio']);
-  const allowedCapabilities = new Set<LogicalCapability>(['content:image', 'content:audio']);
-  const capabilityFamilies: Array<{ capability: LogicalCapability; tools: string[] }> = [
-    { capability: 'execution:shell', tools: ['capability:bash'] },
-    {
-      capability: 'execution:background-task',
-      tools: ['capability:bash', 'capability:bash_output', 'capability:bash_kill'],
-    },
-    {
-      capability: 'execution:pty',
-      tools: [
-        'capability:pty_open',
-        'capability:pty_write_stdin',
-        'capability:pty_read_screen',
-        'capability:pty_kill',
-      ],
-    },
-  ];
-  for (const family of capabilityFamilies) {
-    if (hasEvery(allTools, family.tools)) availableCapabilities.add(family.capability);
-    if (hasEvery(allowedTools, family.tools)) allowedCapabilities.add(family.capability);
-  }
-  return {
-    projectedTools: allTools,
-    allowedTools,
-    availableCapabilities,
-    allowedCapabilities,
-    // D-012: the client/server split is collapsed because both capability families run on this host.
-    topology: { hostSame: true },
-  };
-}
-
-function runtimeReplayClass(
-  staticToolNames: readonly string[],
-  tools: ReturnType<typeof listAllProjectedTools>,
-): ReplayClass {
-  const effects = new Map(
-    tools
-      .map((tool) => [tool.expose.mcp?.name, tool.effect] as const)
-      .filter((entry): entry is readonly [string, 'read' | 'write' | undefined] => typeof entry[0] === 'string'),
-  );
-  return staticToolNames.every((name) => effects.get(name) === 'read') ? 'read-only' : 'non-replayable';
-}
-
 function preflightResult(id: string, failure: RecipeContractFailure): BulkItemResult {
   return {
     ok: false,
@@ -231,28 +174,19 @@ function preflightResult(id: string, failure: RecipeContractFailure): BulkItemRe
 export default defineTool({
   name: 'recipes:run',
   description:
-    'Run saved code:run recipes by id — reuse path. Each recipe\'s script executes under YOUR ' +
-    'role-scoped tool envelope (NOT the author\'s — no privilege travels with a recipe); returns ' +
-    'only each script\'s summary. Pass the exact runArgs from a recipes:search/code:run recommendation, or pass the ' +
-    'authority metadata returned by recipes:get; both are revalidated against the stored revision and YOUR live lane. ' +
-    'Use dryRun:true to preview write-effect mutations. Contracted recipes accept bindings:{ values:{…} }; ' +
-    'bindings are validated against the exact stored revision and only non-secret JSON inputs enter the VM. ' +
-    'Single: { id, authority?, bindings?, dryRun?, ' +
-    'timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. ' +
-    'Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe ' +
-    'failing never fails the rest.',
+    'Run saved code:run recipes by id under YOUR role-scoped tool envelope (not the author\'s); recipes carry no privilege. ' +
+    'Use exact authority/runArgs from recipes:search or recipes:get; both are revalidated against the stored revision and YOUR live lane. ' +
+    'Use dryRun:true before write-effect runs. Contracted recipes accept non-secret bindings:{ values:{…} } validated against the stored revision. ' +
+    'Supports single { id,… }, homogeneous ids:[…], or heterogeneous items:[…]. Returns { ok, results, counts }; correlate by id; one failure does not fail others.',
   guidance: {
     when:
-      'When a recipe already does what you need (found via recipes:search / recipes:list, or a ' +
-      'code:run result\'s similarRecipes) — run it by id instead of re-authoring the same script. ' +
-      'Run several at once via ids:[…] or items:[…]. Each runs under YOUR envelope, so you can only ' +
-      'reuse recipes whose tools you may call.',
+      'Reuse a recipe from recipes:search/recipes:list or code:run.similarRecipes instead of re-authoring it. ' +
+      'Batch with ids:[…] or items:[…]; reuse is limited to tools allowed for YOUR role.',
     notWhen:
-      'When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). ' +
-      'Preview a recipe\'s mutations with dryRun before a committing run. On authority_unresolved, read `reason`.',
+      'When no recipe fits, author code:run (it auto-captures + dedups). Preview writes with dryRun:true; on authority_unresolved, read `reason`.',
     chaining:
-      'recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, authority, dryRun:true } → ' +
-      'recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+      'recipes:search { query } → recipes:get { ids:[…] } → recipes:run { id, authority, dryRun:true } → recipes:run { id }. ' +
+      'Bulk: ids:[…] or items:[…]; correlate results by id.',
     seeAlso: [
       'recipes:get (inspect the recipe\'s script before running)',
       'recipes:search (find the right recipe to run)',
@@ -368,7 +302,7 @@ export default defineTool({
     // contains tools the running agent may already call. Exclude code:run so a
     // recipe can't recursively nest code-mode. Computed ONCE — the same envelope
     // gates every recipe in the batch.
-    const allowed = roleScopedToolNames(all, ctx.role, new Set(['code:run']));
+    const allowed = roleScopedToolNames(all, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
 
     const env = await runBulk(
       list,
@@ -400,8 +334,8 @@ export default defineTool({
           bindings: it.bindings,
           staticToolNames,
           lifecycle: 'foreground',
-          derivedReplayClass: runtimeReplayClass(staticToolNames, all),
-          catalog: currentCallerCatalog(all, allowed),
+          derivedReplayClass: runtimeRecipeReplayClass(staticToolNames, all),
+          catalog: currentCallerRecipeCatalog(all, allowed),
         });
         if (!contract.ok) return preflightResult(it.id, contract);
         const authority = await validateRecipeAuthorityProof({

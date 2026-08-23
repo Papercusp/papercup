@@ -123,6 +123,45 @@ describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
   });
 });
 
+describe('sessions:search owner-directive provenance filters', () => {
+  it('applies turn_origin and owner_only to the verbatim session query', async () => {
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    const hit = {
+      source_kind: 'claude',
+      session_id: 'sess-owner-directive',
+      turn_idx: 4,
+      speaker: 'user',
+      owner: 'su-self',
+      harness_slug: null,
+      ts: null,
+      text: 'please implement the approved change',
+    };
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const [strings, ...values] = args;
+      const sql = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
+      calls.push({ sql, values });
+      return sql.includes('left(text, 700)') ? [hit] : [];
+    });
+
+    const res = await callTool({
+      query: 'approved change',
+      mode: 'verbatim',
+      context: 0,
+      turn_origin: 'owner-typed',
+      owner_only: true,
+    }, tx);
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+    const main = calls.find((call) => call.sql.includes('left(text, 700)'));
+
+    expect(parsed.total_hits).toBe(1);
+    expect(main).toBeDefined();
+    expect(main?.sql).toContain('turn_origin_verdict =');
+    expect(main?.sql).toContain("turn_origin_verdict IN ('owner-typed', 'owner-dialog')");
+    expect(main?.values).toContain('owner-typed');
+    expect(main?.values).toContain(true);
+  });
+});
+
 describe('sessions:search response-door shaping', () => {
   it('returns valid bounded JSON and a cursor when many same-block hits include windows', async () => {
     const text = 'same-content-block '.repeat(80);

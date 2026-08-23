@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer';
-import { z } from 'zod';
 import { AGENT_ROLES, defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import {
@@ -9,44 +8,31 @@ import {
   type OutputExecutionMetrics,
 } from '../../output-envelope';
 import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
-import codeRunTool, { type CodeRunCaptureMode, withCodeRunCaptureMode } from '../code/run';
+import codeRunTool, {
+  type CodeRunCaptureMode,
+  withCodeRunCaptureMode,
+  withCodeRunContract,
+} from '../code/run';
+import { inspectScriptContract } from './contract-preflight';
+import {
+  orchestrationPolicyFailure,
+  orchestrationSourceArgsSchema,
+  type OrchestrationScriptSource,
+  type OrchestrationSourceArgs,
+} from './public-contract';
+import {
+  savedRecipeAdapterFor,
+  type SavedRecipeAdapter,
+  type SavedRecipeSelector,
+} from './saved-recipe-adapter';
 
 const DEFAULT_TIMEOUT_SEC = 30;
 
-const scriptSourceSchema = z
-  .object({
-    source: z.string().min(1).max(20_000),
-    title: z.string().max(120).optional(),
-    description: z.string().max(2_000).optional(),
-  })
-  .strict();
-
-const executionPolicySchema = z
-  .object({
-    mode: z.enum(['server', 'auto']).optional(),
-    lifecycle: z.enum(['foreground', 'background']).optional(),
-  })
-  .strict();
-
-const capturePolicySchema = z
-  .object({
-    mode: z.enum(['auto', 'never']).optional(),
-    title: z.string().max(120).optional(),
-    description: z.string().max(2_000).optional(),
-  })
-  .strict();
-
-export const serverScriptRunArgsSchema = z
-  .object({
-    script: scriptSourceSchema,
-    execution: executionPolicySchema.optional(),
-    capture: capturePolicySchema.optional(),
-    timeoutSec: z.number().int().min(1).max(120).optional(),
-    dryRun: z.boolean().optional(),
-  })
-  .strict();
-
-export type ServerScriptRunArgs = z.infer<typeof serverScriptRunArgsSchema>;
+export const serverScriptRunArgsSchema = orchestrationSourceArgsSchema;
+export type ServerScriptRunArgs = OrchestrationSourceArgs & {
+  script: OrchestrationScriptSource;
+  recipe?: undefined;
+};
 
 type TextContent = { type: 'text'; text: string };
 type MediaContent =

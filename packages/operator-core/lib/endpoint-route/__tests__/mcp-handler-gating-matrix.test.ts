@@ -633,6 +633,17 @@ describe('projection — the caller-specified reduction stage at the dispatch la
     expect(res._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
   });
 
+  it('materializes an implicit compact direct result as JSON before structured pick', async () => {
+    const res = await callTool(
+      'gatingtest:invoke_target',
+      { projection: { pick: ['lines[0]'] } },
+      scoped('ws-test'),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+  });
+
   it('a projection that filters everything out returns an empty body, not the unfiltered result', async () => {
     const res = await callTool(
       'gatingtest:scoped',
@@ -863,6 +874,17 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     // joining the whole thing (textOf) would concatenate two JSON-adjacent
     // texts into invalid JSON.
     expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+  });
+
+  it('materializes an implicit compact nested result as JSON before structured pick', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:invoke_target', args: { projection: { pick: ['lines[0]'] } } },
+      scoped('ws-test'),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
   });
 
   it('an INVALID nested projection fails CLOSED — the target tool is never dispatched', async () => {

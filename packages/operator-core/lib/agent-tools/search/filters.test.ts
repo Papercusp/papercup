@@ -37,6 +37,15 @@ describe('resolveSearchFilters — session:self owner-scoping (WI-5644)', () => 
     const resolved = await resolveSearchFilters(noSql, {}, FAKE_OWNER);
     expect(resolved.filters).toBeUndefined();
   });
+
+  it('maps owner-directive provenance filters into the shared search filter bag', async () => {
+    const { filters } = await resolveSearchFilters(
+      noSql,
+      { turn_origin: 'owner-typed', owner_only: true },
+      FAKE_OWNER,
+    );
+    expect(filters).toMatchObject({ turnOrigin: 'owner-typed', ownerOnly: true });
+  });
 });
 
 /**

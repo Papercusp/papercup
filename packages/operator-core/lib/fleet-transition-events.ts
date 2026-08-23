@@ -110,8 +110,29 @@ export interface FleetMemberObservation {
   sessionState: string | null;
   /** The context-pressure bucket (ok | high | critical), or null when unknown. */
   contextPressure: string | null;
+  /** Whether a coordinator can currently deliver a wake to this member. */
+  wakeable?: boolean | null;
+  /** Total active claims, including plan-item and work-item claims. */
+  claimCount?: number;
   /** Whether this member currently holds a claim whose progress is stalled. */
   stalled?: boolean | null;
+}
+
+/**
+ * A recorded session with no wake path and no claim is terminal control residue,
+ * not a runnable fleet member. It must not enter the transition snapshot: doing
+ * so lets stale context telemetry manufacture a context-critical wake after a
+ * graceful stand-down. Missing enrichment stays actionable so degraded reads do
+ * not silently suppress a real edge.
+ */
+export function isActionableFleetObservation(
+  observation: Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'>,
+): boolean {
+  return !(
+    observation.sessionState === 'recorded' &&
+    observation.wakeable === false &&
+    observation.claimCount === 0
+  );
 }
 
 /** One detected crossing, ready to emit. */
@@ -282,6 +303,15 @@ export interface FleetTransitionEventsDeps {
    * emit behavior.
    */
   currentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
+  /**
+   * Re-read the member's current control state immediately before a queued
+   * context-critical edge emits. `null` means the member is no longer in the
+   * fleet; a rejected read is treated as unknown and preserves the old signal.
+   */
+  currentMemberObservation?: (
+    fleetSlug: string,
+    agentId: string,
+  ) => Promise<Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'> | null>;
   /** Resolve an agent's current fleet. Default = the canonical append-only
    *  membership fact; injected as a stub in tests. */
   fleetOfAgent?: (workspaceId: string, ownerId: string) => Promise<string | null>;
@@ -335,6 +365,22 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
         : `fleet ${edge.fleetSlug}: member ${edge.agentId} claim is STALLED (${edge.from ?? 'unknown'} → ${edge.to})`;
   void Promise.resolve()
     .then(async () => {
+      // A queued edge can outlive a graceful stand-down. Revalidate the member
+      // control state before delivery so recorded/non-wakeable claimless residue
+      // cannot wake a leader after it has become non-actionable.
+      if (edge.kind === 'context-critical' && deps.currentMemberObservation) {
+        let currentMember:
+          | Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'>
+          | null
+          | undefined;
+        try {
+          currentMember = await deps.currentMemberObservation(edge.fleetSlug, edge.agentId);
+        } catch (e: unknown) {
+          failSoft(`context-critical member revalidation for ${edge.fleetSlug}/${edge.agentId}`, e);
+        }
+        if (currentMember === null) return;
+        if (currentMember && !isActionableFleetObservation(currentMember)) return;
+      }
       // The sweep's bucket is a watchdog-cached observation. Revalidate only
       // this derived edge, at the last responsible moment, so recovery between
       // observation and delivery cannot wake a leader with an obsolete payload.

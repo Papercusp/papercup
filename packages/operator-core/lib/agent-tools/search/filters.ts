@@ -41,6 +41,14 @@ export const searchFilterArgs = {
     .enum(['user', 'assistant'])
     .optional()
     .describe('Restrict transcript hits to one side of the conversation.'),
+  turn_origin: z
+    .enum(['owner-typed', 'owner-dialog', 'agent-injected', 'machine-surface', 'synthetic', 'unenrolled-origin', 'not-user-turn'])
+    .optional()
+    .describe('Restrict transcript hits to the persisted turn-origin verdict. Use owner-typed or owner-dialog for confirmed owner turns.'),
+  owner_only: z
+    .boolean()
+    .optional()
+    .describe('Restrict transcript hits to turns affirmatively typed as owner speech (owner-typed or owner-dialog).'),
   session: z
     .string()
     .max(200)
@@ -60,6 +68,8 @@ export interface SearchFilterArgValues {
   owner?: string;
   fleet?: string;
   speaker?: 'user' | 'assistant';
+  turn_origin?: 'owner-typed' | 'owner-dialog' | 'agent-injected' | 'machine-surface' | 'synthetic' | 'unenrolled-origin' | 'not-user-turn';
+  owner_only?: boolean;
   session?: string;
   source_kind?: 'claude' | 'omp' | 'codex' | 'agent_chat';
   since?: string;
@@ -90,7 +100,8 @@ export async function resolveSearchFilters(
   opts?: { workspaceId?: string; liveTailSelf?: boolean },
 ): Promise<ResolvedSearchFilters> {
   const anySet =
-    args.owner || args.fleet || args.speaker || args.session || args.source_kind || args.since || args.until;
+    args.owner || args.fleet || args.speaker || args.turn_origin || args.owner_only !== undefined ||
+    args.session || args.source_kind || args.since || args.until;
   if (!anySet) return {};
 
   const owners = new Set<string>();
@@ -152,6 +163,8 @@ export async function resolveSearchFilters(
   const filters: SearchFilters = {};
   if (owners.size) filters.owners = [...owners];
   if (args.speaker) filters.speaker = args.speaker;
+  if (args.turn_origin) filters.turnOrigin = args.turn_origin;
+  if (args.owner_only !== undefined) filters.ownerOnly = args.owner_only;
   if (sessionId && sessionId !== 'self') filters.sessionId = sessionId;
   if (args.source_kind) filters.sourceKind = args.source_kind;
   const since = isoOrUndefined(args.since);

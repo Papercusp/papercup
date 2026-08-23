@@ -14,6 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { listManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import { setEntityEnum } from '@papercusp/tooldef';
 // Populate the projected-tool REGISTRY so the tools/list profile-gate test
 // below sees the real catalog. (Sibling tool tests import this too; relying on
@@ -142,6 +143,7 @@ import {
   verifyAccessToken,
   _resetPowerUserTokenKeyCache,
 } from '../../power-user-token';
+import { startAwaitSweeper } from '../../events/await/engine';
 
 let app: Hono;
 
@@ -168,6 +170,23 @@ function postJson(path: string, body: unknown, headers: Record<string, string> =
 function bearer(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
 }
+
+it('does not arm the await sweeper against the factory-mocked workspace registry', () => {
+  // This mock intentionally omits backgroundWorkspaceIds (the latent trigger reported by
+  // EI-21209553211440005). The production timer must not survive into this test's module graph.
+  const g = globalThis as typeof globalThis & { __papercuspAwaitSweeperStarted?: boolean };
+  delete g.__papercuspAwaitSweeperStarted;
+  const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+  try {
+    startAwaitSweeper();
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    expect(listManaged().some((entry) => entry.name === 'await-event-sweeper')).toBe(false);
+  } finally {
+    setIntervalSpy.mockRestore();
+    resetScheduledRegistry();
+    delete g.__papercuspAwaitSweeperStarted;
+  }
+});
 
 /* ─── 1. POST /api/agent-tokens/power-user ───────────────────────────── */
 

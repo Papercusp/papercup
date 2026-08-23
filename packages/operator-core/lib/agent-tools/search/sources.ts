@@ -683,6 +683,8 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
   return {
     owners: f.owners && f.owners.length ? f.owners : null,
     speaker: f.speaker ?? null,
+    turnOrigin: f.turnOrigin ?? null,
+    ownerOnly: f.ownerOnly ?? null,
     sessionId: f.sessionId ?? null,
     sourceKind: f.sourceKind ?? null,
     since: f.since ?? null,
@@ -717,6 +719,8 @@ const sessionTurn: SearchSource = {
          AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
          AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
          AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
+         AND (${f.turnOrigin}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin})
+         AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
          AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
          AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
          AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
@@ -796,6 +800,8 @@ const sessionTurn: SearchSource = {
            AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
            AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
            AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
+           AND (${f.turnOrigin}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin})
+           AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
            AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
            AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
            AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
@@ -818,6 +824,8 @@ const sessionTurn: SearchSource = {
            AND (${p.scopeFilter}::text IS NULL OR st.harness_slug = ${p.scopeFilter})
            AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
            AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
+           AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
+           AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
            AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
            AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
            AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)

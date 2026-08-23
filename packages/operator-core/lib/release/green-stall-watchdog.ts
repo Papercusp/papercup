@@ -49,6 +49,10 @@ import { integrationRoot } from '../release-deploy-launch';
 import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 import { PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
+import {
+  CHECKPOINT_SERIALIZER_HOLD_REASON_PREFIX,
+  classifyCheckpointSerializerAuthority,
+} from './checkpoint-serializer-authority';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -125,8 +129,6 @@ const WATCHDOG_KIND = 'green-checkpoint-watchdog';
 const PAUSED_GREEN_CHECKPOINT_PHASE = 'green-checkpoint-paused-watchdog';
 const PAUSED_GREEN_CHECKPOINT_KIND = 'green-checkpoint-paused-watchdog';
 const PAUSED_GREEN_CHECKPOINT_CONDITION_PREFIX = 'green-checkpoint-paused:';
-const QUIESCENCE_PAUSE_MARKER = 'D-012/D-013 live quiescence hold under ';
-const SERIALIZER_HOLD_REASON_PREFIX = 'D-016 sole serializer hold:';
 
 /**
  * The paused gate is deliberately quiet only for the one accountable
@@ -248,19 +250,17 @@ export function evaluatePausedGreenCheckpoint(
   // the pause marker names the same item, that item still carries the durable
   // claim hold + exact serializer reason, and its canonical owner is fresh.
   // Any missing/unknown leg fails open to the ordinary overdue alarm.
-  const quiescenceItemId =
-    typeof s.pauseReason === 'string' && s.pauseReason.startsWith(QUIESCENCE_PAUSE_MARKER)
-      ? s.pauseReason.slice(QUIESCENCE_PAUSE_MARKER.length).match(/^((?:WI|EI)-\d+):/)?.[1] ?? null
-      : null;
-  const liveSerializerQuiescence =
-    quiescenceItemId != null &&
-    s.serializerItemId === quiescenceItemId &&
-    s.serializerClaimHold === true &&
-    typeof s.serializerOwner === 'string' &&
-    s.serializerOwner.length > 0 &&
-    typeof s.serializerHoldReason === 'string' &&
-    s.serializerHoldReason.startsWith(SERIALIZER_HOLD_REASON_PREFIX) &&
-    s.serializerOwnerLive === true;
+  const serializerAuthority = classifyCheckpointSerializerAuthority({
+    active: s.active,
+    groupSlug: s.groupSlug ?? null,
+    targetRole: s.targetRole ?? null,
+    pauseReason: s.pauseReason ?? null,
+    serializerItemId: s.serializerItemId ?? null,
+    serializerClaimHold: s.serializerClaimHold ?? null,
+    serializerOwner: s.serializerOwner ?? null,
+    serializerHoldReason: s.serializerHoldReason ?? null,
+  });
+  const liveSerializerQuiescence = serializerAuthority.status === 'held' && s.serializerOwnerLive === true;
   if (liveSerializerQuiescence) return { overdue: false, reason: null };
 
   const pauseReason = displayPauseText(s.pauseReason ?? null, '(no pause reason recorded)');
@@ -1057,7 +1057,7 @@ async function checkPausedGreenCheckpoint(
                    FROM '^D-012/D-013 live quiescence hold under ((WI|EI)-[0-9]+):'
                  )
              AND (wi.payload->>'_claimHold') = 'true'
-             AND wi.payload->>'held_open_reason' LIKE ${`${SERIALIZER_HOLD_REASON_PREFIX}%`}
+             AND wi.payload->>'held_open_reason' LIKE ${`${CHECKPOINT_SERIALIZER_HOLD_REASON_PREFIX}%`}
            ORDER BY wi.updated_ts DESC NULLS LAST
            LIMIT 1
         ) serializer ON true

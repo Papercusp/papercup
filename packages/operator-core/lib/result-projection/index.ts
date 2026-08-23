@@ -6,7 +6,13 @@
  *      and why the regex flavor is declared rather than assumed).
  */
 
-export { applyPick, applyResultProjection, classifyProjectionBody, parsePickPath } from './apply';
+export {
+  applyPick,
+  applyResultProjection,
+  classifyProjectionBody,
+  parsePickPath,
+  projectionMaterializationFormat,
+} from './apply';
 export type { ApplyProjectionOpts, ProjectableResult, ProjectionBodyShape } from './apply';
 export {
   MAX_PICK_PATHS,

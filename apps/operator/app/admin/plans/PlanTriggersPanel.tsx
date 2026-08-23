@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
+import { Select } from '@/app/harness/Select';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import type {
   ExternalTriggerBindingAdminRow,
@@ -434,14 +435,40 @@ function ScheduleComposer({
     <Modal open={open} onOpenChange={(next) => !next && onClose()} title="Attach schedule" srOnlyTitle contentClassName="pc-plan-dialog">
       <form className="pc-plan-dialog__form" onSubmit={submit}>
         <header className="pc-plan-dialog__head"><h3>Schedule trigger</h3><p>Saving installs the cadence off. Arming is a separate confirmation.</p></header>
-        <label className="pc-plan-dialog__field"><span>Kind</span><select value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}><option value="cron">Cron</option><option value="rrule">RRULE</option><option value="one-shot">One shot</option></select></label>
+        <label className="pc-plan-dialog__field">
+          <span>Kind</span>
+          <Select
+            value={kind}
+            onChange={(value) => setKind(value as typeof kind)}
+            ariaLabel="Kind"
+            options={[
+              { value: 'cron', label: 'Cron' },
+              { value: 'rrule', label: 'RRULE' },
+              { value: 'one-shot', label: 'One shot' },
+            ]}
+          />
+        </label>
         {kind === 'one-shot' ? (
           <label className="pc-plan-dialog__field"><span>Fire at</span><input type="datetime-local" value={oneShot} onChange={(event) => setOneShot(event.target.value)} required /></label>
         ) : (
           <label className="pc-plan-dialog__field"><span>{kind === 'cron' ? 'Cron expression' : 'RRULE'}</span><input value={expression} onChange={(event) => setExpression(event.target.value)} required /></label>
         )}
         <label className="pc-plan-dialog__field"><span>Timezone</span><input value={tzid} onChange={(event) => setTzid(event.target.value)} /></label>
-        {kind !== 'one-shot' ? <label className="pc-plan-dialog__field"><span>Overlap policy</span><select value={concurrency} onChange={(event) => setConcurrency(event.target.value as typeof concurrency)}><option value="skip">Skip while running</option><option value="queue">Queue</option><option value="cancel-prev">Cancel prior</option></select></label> : null}
+        {kind !== 'one-shot' ? (
+          <label className="pc-plan-dialog__field">
+            <span>Overlap policy</span>
+            <Select
+              value={concurrency}
+              onChange={(value) => setConcurrency(value as typeof concurrency)}
+              ariaLabel="Overlap policy"
+              options={[
+                { value: 'skip', label: 'Skip while running' },
+                { value: 'queue', label: 'Queue' },
+                { value: 'cancel-prev', label: 'Cancel prior' },
+              ]}
+            />
+          </label>
+        ) : null}
         <ComposerFooter error={error} submitting={submitting} submitLabel="Save schedule" onCancel={onClose} />
       </form>
     </Modal>
@@ -508,7 +535,22 @@ function ExternalComposer({
     <Modal open={open} onOpenChange={(next) => !next && onClose()} title="Attach external event" srOnlyTitle contentClassName="pc-plan-dialog">
       <form className="pc-plan-dialog__form" onSubmit={submit}>
         <header className="pc-plan-dialog__head"><h3>External event trigger</h3><p>Choose an existing source. New bindings are always installed off.</p></header>
-        <label className="pc-plan-dialog__field"><span>Source</span><select value={sourceId} onChange={(event) => { const id = event.target.value; const selected = sources.find((candidate) => candidate.id === id); setSourceId(id); if (selected) setPattern(`ext:${selected.kind}:`); }}>{sources.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.kind} · {candidate.status}</option>)}</select></label>
+        <label className="pc-plan-dialog__field">
+          <span>Source</span>
+          <Select
+            value={sourceId}
+            onChange={(id) => {
+              const selected = sources.find((candidate) => candidate.id === id);
+              setSourceId(id);
+              if (selected) setPattern(`ext:${selected.kind}:`);
+            }}
+            ariaLabel="Source"
+            options={sources.map((candidate) => ({
+              value: candidate.id,
+              label: `${candidate.kind} · ${candidate.status}`,
+            }))}
+          />
+        </label>
         <label className="pc-plan-dialog__field"><span>Event pattern</span><input value={pattern} onChange={(event) => setPattern(event.target.value)} required /></label>
         <label className="pc-plan-dialog__field"><span>Event filter</span><textarea rows={4} value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
         <label className="pc-plan-dialog__field"><span>Storm max runs <em className="pc-plan-dialog__opt">(blank = unbounded)</em></span><input type="number" min="1" value={maxRuns} onChange={(event) => setMaxRuns(event.target.value)} /></label>

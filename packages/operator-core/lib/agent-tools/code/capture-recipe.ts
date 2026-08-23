@@ -28,6 +28,7 @@ import {
   type CodeRecipeRow,
 } from '../../code-recipes-store';
 import type { NormalizedExecutionTrace } from '../../orchestration-trace';
+import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-contract';
 import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
 import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import {
@@ -163,6 +164,10 @@ export interface CaptureRecipeInput {
   /** Agent-supplied title/description (optional — derived when absent). */
   title?: string;
   description?: string;
+  /** Exact versioned declarations captured with this script revision. */
+  bindingSchema?: RecipeBindingSchemaV1;
+  capabilityManifest?: CapabilityManifestV1;
+  tags?: string[];
   /** All projected tools + the role-scoped allow-list (for tools_used extraction). */
   tools: readonly ProjectedTool[];
   allowed?: ReadonlySet<string>;
@@ -334,8 +339,11 @@ export async function captureRecipe(
         title,
         description,
         script: input.script,
+        bindingSchema: input.bindingSchema,
+        capabilityManifest: input.capabilityManifest,
         authorRole: input.role,
         toolsUsed,
+        tags: input.tags,
         embedding,
         createdBy: input.ownerId,
         potSlug,

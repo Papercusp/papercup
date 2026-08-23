@@ -15,6 +15,7 @@ import {
   emitFleetTransitionEdge,
   fleetTransitionKey,
   indexObservations,
+  isActionableFleetObservation,
   type FleetMemberObservation,
 } from './fleet-transition-events';
 
@@ -120,6 +121,19 @@ describe('detectFleetTransitions', () => {
   });
 });
 
+describe('isActionableFleetObservation', () => {
+  it('drops recorded, non-wakeable, claimless stand-down residue', () => {
+    expect(
+      isActionableFleetObservation({ sessionState: 'recorded', wakeable: false, claimCount: 0 }),
+    ).toBe(false);
+  });
+
+  it('keeps a recorded member when it still has a claim or enrichment is unknown', () => {
+    expect(isActionableFleetObservation({ sessionState: 'recorded', wakeable: false, claimCount: 1 })).toBe(true);
+    expect(isActionableFleetObservation({ sessionState: 'recorded', wakeable: null, claimCount: 0 })).toBe(true);
+  });
+});
+
 describe('emitFleetTransitionEdge', () => {
   it('emits the fleet-scoped key with the crossing in the payload, awaiter-only (no `to` push)', async () => {
     const emit = vi.fn().mockResolvedValue(undefined);
@@ -175,6 +189,25 @@ describe('emitFleetTransitionEdge', () => {
     await settle();
 
     expect(emit).toHaveBeenCalledOnce();
+  });
+
+  it('suppresses a queued wake when the member has gracefully become recorded, non-wakeable, and claimless', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentMemberObservation = vi.fn(async () => ({
+      sessionState: 'recorded' as const,
+      wakeable: false,
+      claimCount: 0,
+    }));
+    const currentContextPressure = vi.fn(async () => 'critical' as const);
+
+    emitFleetTransitionEdge(
+      { kind: 'context-critical', fleetSlug: 'f', agentId: 'su-a', to: 'critical', from: 'high' },
+      { emit, currentMemberObservation, currentContextPressure },
+    );
+    await settle();
+
+    expect(currentMemberObservation).toHaveBeenCalledWith('f', 'su-a');
+    expect(emit).not.toHaveBeenCalled();
   });
 });
 

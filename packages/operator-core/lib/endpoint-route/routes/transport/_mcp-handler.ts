@@ -75,6 +75,7 @@ import {
   applyNamedViewToResult,
   applyResultProjection,
   parseProjection,
+  projectionMaterializationFormat,
   takeNamedViewFromArgs,
 } from '../../../result-projection';
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
@@ -1219,6 +1220,10 @@ function projectionMaterializationContext(ctx: UnifiedToolContext, needsFullSour
   if (!needsFullSource) return ctx;
   return {
     ...ctx,
+    // `pick` classifies the materialized text as JSON. MCP's implicit compact
+    // default may select TOON, so force JSON only for this in-process source;
+    // the caller's explicit format remains the final wire-format choice.
+    requestedFormat: projectionMaterializationFormat(ctx.requestedFormat, true),
     contextTier: 'full',
     payloadTierOverride: 'full',
     transportCapExempt: true,

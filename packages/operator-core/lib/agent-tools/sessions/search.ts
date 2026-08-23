@@ -166,6 +166,8 @@ export default defineTool({
            AND (${args.harness_slug ?? null}::text IS NULL OR harness_slug = ${args.harness_slug ?? null})
            AND (${owners}::text[] IS NULL OR owner = ANY(${owners}::text[]))
            AND (${f.speaker ?? null}::text IS NULL OR speaker = ${f.speaker ?? null})
+           AND (${f.turnOrigin ?? null}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin ?? null})
+           AND (${f.ownerOnly ?? null}::boolean IS NULL OR NOT ${f.ownerOnly ?? null} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
            AND (${f.sessionId ?? null}::text IS NULL OR session_id = ${f.sessionId ?? null})
            AND (${f.sourceKind ?? null}::text IS NULL OR source_kind = ${f.sourceKind ?? null})
            AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)

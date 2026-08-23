@@ -45,11 +45,18 @@ import {
   emitFleetAdmissionTransitionEdge,
   emitFleetTransitionEdge,
   indexObservations,
+  isActionableFleetObservation,
   type FleetAdmissionObservation,
   type FleetMemberObservation,
   type FleetTransitionEventsDeps,
 } from '../../fleet-transition-events';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+
+type ObservableAgent = AgentAssignment & {
+  sessionState?: SessionState | null;
+  confirmLiveness?: boolean | null;
+  wakeable?: boolean | null;
+};
 
 /**
  * The previous sweep's observations, keyed by (fleet, agent). Module-scoped and
@@ -80,10 +87,6 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
   // `AgentAssignment` does not declare the field — so the widened row type has to
   // be named here, or the reconciled result narrows straight back to
   // `AgentAssignment` and reading `.sessionState` off it is a type error.
-  type ObservableAgent = AgentAssignment & {
-    sessionState?: SessionState | null;
-    confirmLiveness?: boolean | null;
-  };
   let agents: ObservableAgent[];
   try {
     agents = groupByAgent(await listFleetAssignments({}));
@@ -111,8 +114,26 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
       fleetSlug: a.fleetSlug,
       sessionState: a.sessionState ?? null,
       contextPressure: pressure.get(a.agentId) ?? null,
+      wakeable: a.wakeable ?? null,
+      claimCount: a.claims.length,
       stalled: a.stalled === true,
     }));
+}
+
+/** Re-read one member's control state for the last-responsible-moment emit guard. */
+async function gatherCurrentFleetMemberObservation(
+  fleetSlug: string,
+  agentId: string,
+): Promise<Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'> | null> {
+  const agents = groupByAgent(await listFleetAssignments({ fleet: fleetSlug, agent: agentId }));
+  const member = agents.find((agent) => agent.fleetSlug === fleetSlug);
+  if (!member) return null;
+  const [reconciled] = await reconcileWakeability([member as ObservableAgent]);
+  return {
+    sessionState: reconciled?.sessionState ?? null,
+    wakeable: reconciled?.wakeable ?? null,
+    claimCount: reconciled?.claims.length ?? 0,
+  };
 }
 
 /**
@@ -164,7 +185,8 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   // making admission gathering explicit on an injected member gather. The
   // production action uses both default gathers.
   const gatherAdmissions = deps.gatherAdmissions ?? (deps.gather ? async () => [] : gatherFleetAdmissionObservations);
-  const [observations, admissionObservations] = await Promise.all([gather(), gatherAdmissions()]);
+  const [rawObservations, admissionObservations] = await Promise.all([gather(), gatherAdmissions()]);
+  const observations = rawObservations.filter(isActionableFleetObservation);
   const edges = detectFleetTransitions(previousObservations, observations);
   const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations);
   previousObservations = indexObservations(observations);
@@ -173,20 +195,23 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   );
   let emitDeps = deps;
   const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
-  if (contextEdges.length > 0 && !deps.currentContextPressure && !deps.gather) {
+  if (contextEdges.length > 0 && !deps.gather) {
     // The production sweep gathers a cached observation first, then supplies a
     // single shared current-state read to all detached edge emits. Keeping the
     // read lazy makes the revalidation happen after the sweep has yielded, which
     // is exactly the recovery-before-delivery race this guard closes.
     const agentIds = [...new Set(contextEdges.map((edge) => edge.agentId))];
     let currentPressure: Promise<Map<string, ContextPressureBucket>> | null = null;
-    emitDeps = {
-      ...deps,
-      currentContextPressure: async (agentId: string) => {
+    emitDeps = { ...deps };
+    if (!deps.currentContextPressure) {
+      emitDeps.currentContextPressure = async (agentId: string) => {
         currentPressure ??= fetchContextPressure(agentIds);
         return (await currentPressure).get(agentId) ?? null;
-      },
-    };
+      };
+    }
+    if (!deps.currentMemberObservation) {
+      emitDeps.currentMemberObservation = gatherCurrentFleetMemberObservation;
+    }
   }
   for (const edge of edges) emitFleetTransitionEdge(edge, emitDeps);
   for (const edge of admissionEdges) emitFleetAdmissionTransitionEdge(edge, deps);

@@ -18,6 +18,10 @@ vi.mock('../../db-boot-migrate', () => ({
   applyPendingMigrationsNow: vi.fn(async () => ({ applied: 0, failed: [] })),
 }));
 
+vi.mock('../../release/checkpoint-serializer-authority', () => ({
+  readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
+}));
+
 const MAKE_CTX = (role = 'operator') =>
   ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role } as never);
 
@@ -66,6 +70,11 @@ const NO_CONTAINMENT = vi.fn(async () => ({
 beforeEach(() => {
   vi.resetModules();
   NO_CONTAINMENT.mockClear();
+  // afterEach removes per-case authority overrides; reinstall the ordinary
+  // no-serializer baseline before every import so later tests never open live PG.
+  vi.doMock('../../release/checkpoint-serializer-authority', () => ({
+    readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
+  }));
   // Keep the broad handler suite hermetic: queue-specific cases below opt into the real
   // helper after installing their routine/DB mocks.
   vi.doMock('../../release/checkpoint-required-ancestor', async () => {
@@ -101,6 +110,7 @@ afterEach(() => {
   vi.doUnmock('../../harness/routines/release-actions');
   vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('../../release/checkpoint-required-ancestor');
+  vi.doUnmock('../../release/checkpoint-serializer-authority');
 });
 
 /**
@@ -284,6 +294,117 @@ describe('WI-6946: pending-migration preflight refuses BEFORE launching, not aft
 });
 
 describe('release:checkpoint-run', () => {
+  it('EI-212098: force/replaceStale/waitForEligibility cannot bypass an exclusive D-016 serializer', async () => {
+    vi.doMock('../../release/checkpoint-serializer-authority', () => ({
+      readCheckpointSerializerAuthority: vi.fn(async () => ({
+        status: 'held',
+        itemId: 'WI-40086',
+        ownerId: 'su-serializer',
+        pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: writers active',
+        holdReason: 'D-016 sole serializer hold: exact admission sequence',
+      })),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-other', workspaceId: 'papercusp-workspace' })),
+    }));
+    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const metadata = vi.fn();
+    const ctx = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      role: 'operator',
+      uiClientId: 'su-other',
+      metadata,
+    } as never;
+    const b = parse(
+      (await tool.handler(
+        { force: true, replaceStale: true, waitForEligibility: true, reason: 'promote unrelated fix' },
+        ctx,
+      )) as never,
+    );
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'serializer_authority_held',
+      work_item: 'WI-40086',
+      taken_by: 'su-serializer',
+    });
+    expect(String(b.note)).toMatch(/force:true, replaceStale:true, and waitForEligibility:true cannot bypass/);
+    expect(metadata).toHaveBeenCalledWith({
+      standDown: 'serializer_authority_held',
+      standDownWorkItem: 'WI-40086',
+      standDownTakenBy: 'su-serializer',
+      fireReason: 'promote unrelated fix',
+    });
+  });
+
+  it('EI-212098: the named serializer can still launch through its own fence', async () => {
+    vi.doMock('../../release/checkpoint-serializer-authority', () => ({
+      readCheckpointSerializerAuthority: vi.fn(async () => ({
+        status: 'held',
+        itemId: 'WI-40086',
+        ownerId: 'su-serializer',
+        pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: ready',
+        holdReason: 'D-016 sole serializer hold: exact admission sequence',
+      })),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-serializer', workspaceId: 'papercusp-workspace' })),
+    }));
+    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const ctx = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      role: 'operator',
+      uiClientId: 'su-serializer',
+    } as never;
+    const b = parse((await tool.handler({}, ctx)) as never);
+
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ ok: true, launched: true });
+  });
+
+  it('EI-212098: an unreadable serializer authority fails closed before launch', async () => {
+    vi.doMock('../../release/checkpoint-serializer-authority', () => ({
+      readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'unreadable', error: 'pg unavailable' })),
+    }));
+    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ force: true }, MAKE_CTX())) as never);
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'serializer_authority_unreadable',
+      error: 'pg unavailable',
+    });
+  });
+
   it('launches the detached checkpoint and reports it (operator role)', async () => {
     const launchSpy = vi.fn(async () => ({
       launched: true,

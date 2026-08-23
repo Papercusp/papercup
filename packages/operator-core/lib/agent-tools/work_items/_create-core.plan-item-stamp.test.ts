@@ -28,9 +28,12 @@ const createWorkItemMock = vi.fn(async (input: { kind: string; title: string; ha
 }));
 const linkWorkItemMock = vi.fn(async (...args: unknown[]) => {});
 let planCollisionRows: Array<{ feature_id: string; status: string }> = [];
-const sqlMock = vi.fn(async (strings: readonly string[], ..._args: unknown[]) =>
+const sqlQueryMock = vi.fn(async (strings: readonly string[], ..._args: unknown[]) =>
   strings.join('').includes('SELECT wi.feature_id, wi.status') ? planCollisionRows : [],
 );
+const sqlMock = Object.assign(sqlQueryMock, {
+  begin: vi.fn(async <T>(transaction: (sql: typeof sqlQueryMock) => Promise<T>) => transaction(sqlQueryMock)),
+});
 vi.mock('../../work-items', () => ({
   createWorkItem: (...args: unknown[]) => createWorkItemMock(...(args as [never])),
   getWorkItem: vi.fn(async () => null),
@@ -61,6 +64,7 @@ beforeEach(() => {
   createWorkItemMock.mockClear();
   linkWorkItemMock.mockClear();
   sqlMock.mockClear();
+  sqlMock.begin.mockClear();
   planCollisionRows = [];
 });
 

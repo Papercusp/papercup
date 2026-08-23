@@ -1882,13 +1882,18 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     };
 
   it('P-002a: a commit failure is reported as error, NOT a phantom conflict', async () => {
+    let commitAttempts = 0;
     const run = fakeGit((args) => {
       const j = args.join(' ');
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' }; // no oversized
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' }; // dirty
       if (j.startsWith('add')) return { code: 0 };
-      if (j.startsWith('commit')) return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
+      if (j.startsWith('commit')) {
+        commitAttempts++;
+        return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+      }
       return { code: 0, stdout: '' };
     });
     const out = await runGitSync('test', {
@@ -1902,6 +1907,44 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       expect(out.errors.map((e) => e.scope)).toContain('superproject');
       expect(out.errors[0].message).toMatch(/commit failed/i);
     }
+    expect(commitAttempts).toBe(1 + 3); // initial attempt + bounded live-contention retries
+  });
+
+  it('EI-21210284687094143: catch-all commit retries a transient live index.lock instead of red-sticking git-sync', async () => {
+    let commitAttempts = 0;
+    const logs: string[] = [];
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('add')) return { code: 0 };
+      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'live holder' };
+      if (j.startsWith('commit')) {
+        commitAttempts++;
+        if (commitAttempts === 1) {
+          return {
+            code: 128,
+            stderr:
+              "fatal: Unable to create '/fake/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+          };
+        }
+        return { code: 0 };
+      }
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { push: false, pushSubmodules: false },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(commitAttempts).toBe(2);
+    expect(logs.join('\n')).toContain("'git commit' hit live index.lock contention");
   });
 
   it('EI-20329530284626235: a failed canonical submodule URL sync is loud and blocks pushes', async () => {

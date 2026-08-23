@@ -28,10 +28,24 @@ import {
   normalizeExecutionTrace,
   type NormalizedExecutionTrace,
 } from '../../orchestration-trace';
+import type {
+  CapabilityManifestV1,
+  JsonValue,
+  RecipeBindingSchemaV1,
+} from '../../recipe-contract';
+import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-preflight';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
 const CODE_RUN_CAPTURE_MODE = Symbol('papercusp.code-run.capture-mode');
+const CODE_RUN_CONTRACT = Symbol('papercusp.code-run.contract');
+
+export interface CodeRunContract {
+  inputs: Record<string, JsonValue | { resourceRef: string; revision?: string }>;
+  bindingSchema?: RecipeBindingSchemaV1;
+  capabilityManifest: CapabilityManifestV1;
+  tags?: string[];
+}
 
 /**
  * Internal adapter seam for orchestrate:run. The public code:run contract keeps
@@ -49,6 +63,15 @@ function codeRunCaptureMode(ctx: UnifiedToolContext): CodeRunCaptureMode {
   return (
     (ctx as UnifiedToolContext & { [CODE_RUN_CAPTURE_MODE]?: CodeRunCaptureMode })[CODE_RUN_CAPTURE_MODE] ?? 'auto'
   );
+}
+
+/** Internal-only typed-input/capture metadata for orchestrate:run. */
+export function withCodeRunContract(ctx: UnifiedToolContext, contract: CodeRunContract): UnifiedToolContext {
+  return { ...ctx, [CODE_RUN_CONTRACT]: contract } as UnifiedToolContext;
+}
+
+function codeRunContract(ctx: UnifiedToolContext): CodeRunContract | undefined {
+  return (ctx as UnifiedToolContext & { [CODE_RUN_CONTRACT]?: CodeRunContract })[CODE_RUN_CONTRACT];
 }
 
 // Compatibility export for the focused branch tests and any internal callers
@@ -184,7 +207,8 @@ export default defineTool({
     const all = listAllProjectedTools();
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
     // exclude code:run itself so a script cannot recursively nest code-mode.
-    const allowed = roleScopedToolNames(all, ctx.role, new Set(['code:run']));
+    const allowed = roleScopedToolNames(all, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
+    const contract = codeRunContract(ctx);
 
     const result = await runToolOrchestration(script, {
       ctx,
@@ -202,6 +226,7 @@ export default defineTool({
       // opaque transport-level request_timeout after the script's own budget was never reached.
       timeoutMs: args.timeoutSec ? clampForegroundTimeoutMs(args.timeoutSec * 1000) : undefined,
       wrapDispatch: bindCurrentCallerDispatch,
+      ...(contract ? { inputs: contract.inputs } : {}),
     });
 
     // P-013: capture the execution evidence BEFORE shaping the model-facing
@@ -236,7 +261,7 @@ export default defineTool({
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
     // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
     if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
-      recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed, executionTrace);
+      recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract);
       similarRecipes = recipeCapture?.similarRecipes ?? [];
     }
     // Failed, dry-run, capture-disabled, and capture-failed scripts still get a
@@ -1298,6 +1323,7 @@ async function maybeCaptureRecipe(
   tools: ReturnType<typeof listAllProjectedTools>,
   allowed: ReadonlySet<string>,
   executionTrace: NormalizedExecutionTrace | null,
+  contract?: CodeRunContract,
 ): Promise<CodeRunRecipeCapture | null> {
   try {
     const workspaceId = ctx.workspaceId;
@@ -1331,6 +1357,9 @@ async function maybeCaptureRecipe(
         role: ctx.role ?? null,
         title: args.title,
         description: args.description,
+        ...(contract?.bindingSchema ? { bindingSchema: contract.bindingSchema } : {}),
+        ...(contract ? { capabilityManifest: contract.capabilityManifest } : {}),
+        ...(contract?.tags ? { tags: contract.tags } : {}),
         tools,
         allowed,
         executionTrace,

@@ -154,6 +154,21 @@ describe('PlanTriggersPanel', () => {
     ));
   });
 
+  it('uses shared select controls in trigger composers', async () => {
+    fetchSnapshot.mockResolvedValue({
+      ...payload,
+      plan: { ...payload.plan, schedule: null, scheduledAt: null, scheduleActive: false },
+    });
+    render(<PlanTriggersPanel slug="triage-mail" harnessSlug="papercusp" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Attach schedule' }));
+    const dialog = screen.getByRole('dialog', { name: 'Attach schedule' });
+    // Radix keeps hidden form-sync selects for native form submission; the user-facing
+    // controls must still be its accessible combobox triggers, not visible native selects.
+    expect(dialog.querySelectorAll('select:not([aria-hidden="true"])')).toHaveLength(0);
+    expect(within(dialog).getByRole('combobox', { name: 'Kind' })).toBeTruthy();
+    expect(within(dialog).getByRole('combobox', { name: 'Overlap policy' })).toBeTruthy();
+  });
+
   it('attaches an external event to the selected existing source', async () => {
     render(<PlanTriggersPanel slug="triage-mail" harnessSlug="papercusp" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Attach event' }));

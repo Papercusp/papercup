@@ -64,6 +64,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { clampText, LIMITS, softText } from '../limits';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
+import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 
 type SeeAlsoContext = { harnessSlug?: unknown };
 
@@ -275,6 +276,74 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // EI-21209828474655790: D-012/D-013 pauses the release gate under an exact
+    // D-016 held-open serializer. The old live-peer rail below was skipped
+    // wholesale by force:true, so an unrelated lane could replace the manual
+    // unit before the serializer's admission event fired. This is an authority
+    // fence, not ordinary coordination: force/replaceStale/waitForEligibility do
+    // not bypass it, and an unread authority store fails closed before migrations
+    // or any detached process can be touched.
+    const serializerAuthority = await readCheckpointSerializerAuthority();
+    if (serializerAuthority.status === 'unreadable') {
+      ctx.metadata?.({
+        standDown: 'serializer_authority_unreadable',
+        ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+      });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: 'serializer_authority_unreadable',
+              note:
+                'NOT launched: the release serializer authority store could not be read, so this tool cannot prove ' +
+                'that no exclusive D-016 checkpoint owner exists. This verification run fails closed before applying ' +
+                'migrations or spawning a process; retry after the authority read recovers.',
+              error: serializerAuthority.error,
+            }),
+          },
+        ],
+      };
+    }
+    if (serializerAuthority.status === 'held') {
+      let callerOwnerId: string | null = null;
+      try {
+        callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+      } catch {
+        callerOwnerId = null;
+      }
+      if (callerOwnerId !== serializerAuthority.ownerId) {
+        ctx.metadata?.({
+          standDown: 'serializer_authority_held',
+          standDownWorkItem: serializerAuthority.itemId,
+          standDownTakenBy: serializerAuthority.ownerId,
+          ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                reason: 'serializer_authority_held',
+                work_item: serializerAuthority.itemId,
+                taken_by: serializerAuthority.ownerId,
+                note:
+                  `NOT launched: ${serializerAuthority.itemId} holds the exact D-016 checkpoint serializer fence for ` +
+                  `${serializerAuthority.ownerId}. Only that owner may run the manual checkpoint while the ` +
+                  'D-012/D-013 quiescence pause is active. force:true, replaceStale:true, and waitForEligibility:true ' +
+                  'cannot bypass this authority boundary; coordinate with the serializer or wait for its explicit ' +
+                  'handoff/terminal closure.',
+              }),
+            },
+          ],
+        };
+      }
+    }
+
     // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
     // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
     // may fire a fresh green verdict.

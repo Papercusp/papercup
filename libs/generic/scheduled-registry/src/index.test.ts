@@ -87,6 +87,33 @@ describe('managedSetInterval / listManaged', () => {
     expect(h.intervals[0].ms).toBe(30_000);
   });
 
+  it('keeps the default recurring backend inert under Vitest unless a test opts in', () => {
+    // The deterministic harness above intentionally injects a fake backend, so it remains
+    // active in Vitest. This case covers the production/default backend that must not leak a
+    // process-wide callback across factory-mocked modules in an unrelated test.
+    resetScheduledRegistry();
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+    try {
+      const skipped = managedSetInterval('vitest-inert', 1_000, () => undefined, { category: 'watchdog' });
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+      expect(managedCount()).toBe(0);
+      skipped.stop();
+
+      const allowed = managedSetInterval('vitest-allowed', 1_000, () => undefined, {
+        category: 'watchdog',
+        allowInTest: true,
+      });
+      expect(setIntervalSpy).toHaveBeenCalledOnce();
+      allowed.stop();
+      expect(clearIntervalSpy).toHaveBeenCalledOnce();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+      resetScheduledRegistry();
+    }
+  });
+
   it('a fire stamps lastFireAt + increments fires + clears lastError', async () => {
     const h = harness();
     let calls = 0;

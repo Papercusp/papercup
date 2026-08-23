@@ -104,6 +104,14 @@ describe('runFleetTransitionSweep', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('does not snapshot recorded, non-wakeable, claimless stand-down residue', async () => {
+    const rounds = await sweepRounds([
+      [member({ contextPressure: 'high', wakeable: true, claimCount: 1 })],
+      [member({ sessionState: 'recorded', contextPressure: 'critical', wakeable: false, claimCount: 0 })],
+    ]);
+    expect(rounds).toEqual([[], []]);
+  });
+
   it('keeps fleets independent — a crossing in one fleet is not attributed to another', async () => {
     const a = member({ agentId: 'su-a', fleetSlug: 'fleet-a' });
     const b = member({ agentId: 'su-b', fleetSlug: 'fleet-b' });

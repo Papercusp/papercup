@@ -20,7 +20,25 @@
  */
 
 import { describeProjection } from './parse';
+import { parseFormatRequest } from '@papercusp/result-encoding';
 import type { ProjectionReport, ProjectionSpec, ProjectionStage } from './types';
+
+/**
+ * Choose the wire format for the intermediate body consumed by a projection.
+ *
+ * MCP's implicit/`compact` format may be TOON, while structured `pick` needs a
+ * JSON body. Preserve every explicit format request; only replace the
+ * transport default (including an unrecognized token that would fall back to
+ * that default) with JSON for the in-process materialization step.
+ */
+export function projectionMaterializationFormat(
+  requestedFormat: string | undefined,
+  needsFullSource: boolean,
+): string | undefined {
+  if (!needsFullSource) return requestedFormat;
+  const parsed = parseFormatRequest(requestedFormat);
+  return parsed === undefined || parsed === 'compact' ? 'json' : requestedFormat;
+}
 
 /** The subset of an MCP tools/call result this stage reads/rewrites. */
 export interface ProjectableResult {
