@@ -454,11 +454,14 @@ function registerListingEndpoints(
     // requires_events above and validated the same way.
     //
     // Two deliberate differences from requires_events:
-    //   1. KIND SCOPE is 'plan' only, for now. The COLUMN is kind-agnostic on
-    //      purpose (so a future kind needs no table rebuild), but accepting the
-    //      field from a kind with no install-time resolver would store a
-    //      declaration nothing ever reads — a silent no-op is worse than a 400.
-    //      Widening this check is the only change needed to admit another kind.
+    //   1. KIND SCOPE is 'plan' + 'goal' (widened by migration 016 /
+    //      work-on-everything-goal-2026-08-23 P-006 — both kinds' installers run
+    //      the SAME operator-side rubric-requirements resolver). The COLUMN is
+    //      kind-agnostic on purpose (so a future kind needs no table rebuild),
+    //      but accepting the field from a kind with no install-time resolver
+    //      would store a declaration nothing ever reads — a silent no-op is
+    //      worse than a 400. Widening this check is the only change needed to
+    //      admit another kind.
     //   2. There is no provides_rubrics counterpart to cross-check (D-002): a
     //      kind='rubric' row provides exactly the rubric named by its listing_ref.
     //
@@ -470,7 +473,7 @@ function registerListingEndpoints(
     if (body.requires_rubrics != null) {
       const bad = (reason: string) =>
         c.json({ error: 'invalid_field', field: 'requires_rubrics', reason }, 400);
-      if (kind !== 'plan') return bad('plan_kind_only');
+      if (kind !== 'plan' && kind !== 'goal') return bad('plan_or_goal_kind_only');
       const rr = body.requires_rubrics;
       if (!Array.isArray(rr) || rr.length === 0 || rr.length > REQUIRES_RUBRICS_MAX_ENTRIES) {
         return bad('array_1_to_200');
