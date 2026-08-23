@@ -140,10 +140,23 @@
         {
           "id": "wdio",
           "label": "WebdriverIO",
+          "globs": [
+            "tools/perf-test/wdio/specs/**/*.spec.ts"
+          ],
           "runners": [
             {
               "kind": "admin-suite",
               "suiteId": "packaged-readiness"
+            },
+            {
+              "kind": "node",
+              "cmd": "npm",
+              "args": [
+                "--prefix",
+                "tools/perf-test/wdio",
+                "test"
+              ],
+              "label": "WebdriverIO packaged-app specs"
             }
           ]
         }
@@ -1398,7 +1411,8 @@
           "globs": [
             "apps/operator/bin/**/*.test.ts",
             "apps/operator/scripts/**/*.test.ts",
-            "apps/operator/scripts/**/*.test.mjs"
+            "apps/operator/scripts/**/*.test.mjs",
+            "scripts/npm-install-safe.test.mjs"
           ]
         },
         {
@@ -1502,13 +1516,6 @@
             "packages/**/*.test.ts",
             "packages/**/*.test.tsx",
             "packages/**/*.spec.ts"
-          ]
-        },
-        {
-          "id": "tools",
-          "label": "tools",
-          "globs": [
-            "tools/**/*.spec.ts"
           ]
         }
       ]
