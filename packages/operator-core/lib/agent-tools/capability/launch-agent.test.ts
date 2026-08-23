@@ -548,6 +548,86 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', resumedOwnerId: 'su-a1a71' });
   });
 
+  it('reuses the canonical fleet profile on resume and corrects an ended visible member back to saved headless placement', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-test',
+      fleetSlug: 'target-fleet',
+      target: 12,
+      config: {
+        plan: 'recovery-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        extraArgs: ['--context-size=trimmed'],
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--resume=sid-dead');
+    expect(command).toContain('--fleet=target-fleet');
+    expect(command).toContain('--model=sonnet:high');
+    expect(command).toContain('--account=default');
+    expect(command).toContain('--context-size=trimmed');
+    expect(command).toContain('--headless');
+    expect(dataOf(res)?.launch).toMatchObject({
+      mode: 'resume',
+      fleet: 'target-fleet',
+      headcountProfile: {
+        applied: true,
+        target: 12,
+        provenance: { source: 'fleet:headcount-target', fleetSlug: 'target-fleet' },
+        reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
+      },
+    });
+  });
+
+  it('fails closed before resume when a caller conflicts with the canonical saved placement', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-test',
+      fleetSlug: 'target-fleet',
+      target: 12,
+      config: {
+        plan: 'recovery-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, headless: false },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Saved launch spec conflict');
+    expect(textOf(res)).toContain('"field":"headless"');
+    expect(textOf(res)).toContain('capability:launch-agent resume/successor');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('propagates the caller DRAIN overlay to a resume/fork command', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     getModesMock.mockResolvedValue([

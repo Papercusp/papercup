@@ -420,7 +420,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
   });
 
-  it('reuses the persisted headcount launch profile for an omitted top-up recipe (D-008)', async () => {
+  it('reuses the persisted headcount launch profile for an existing-fleet top-up/takeover with an omitted recipe (D-008)', async () => {
     getFleetHeadcountTargetMock.mockResolvedValueOnce({
       workspaceId: 'ws-1',
       fleetSlug: 'profiled-fleet',
@@ -457,7 +457,51 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(command).toContain('--carry=warm');
     expect(command).toContain('--headless');
     expect(payload.requested).toBe(30);
-    expect(payload.headcountProfile).toMatchObject({ applied: true, target: 30 });
+    expect(payload.headcountProfile).toMatchObject({
+      applied: true,
+      target: 30,
+      provenance: {
+        source: 'fleet:headcount-target',
+        workspaceId: 'ws-1',
+        fleetSlug: 'profiled-fleet',
+      },
+      reusePath: 'fleet:launch-on-plan -> agent-launch-core.memberLaunchCommand',
+    });
+  });
+
+  it('fails closed before an existing-fleet top-up when launch knobs conflict with the saved profile', async () => {
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'profiled-fleet',
+      target: 30,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'max',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await tool.handler(
+      { name: 'Profiled Fleet', account: 'auto', headless: false } as never,
+      {} as never,
+    );
+    const text = (res as { content: { text: string }[] }).content[0].text;
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(text).toContain('Saved launch spec conflict');
+    expect(text).toContain('"field":"account"');
+    expect(text).toContain('"field":"headless"');
+    expect(text).toContain('fleet:respawn-member');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('suppresses a headless wave when protected agent scopes exhaust the host-memory budget', async () => {

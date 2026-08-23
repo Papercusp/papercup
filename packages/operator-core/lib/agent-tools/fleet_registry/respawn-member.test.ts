@@ -153,6 +153,114 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(p.launched).toContain('Launched su-new');
   });
 
+  it('uses the audited respawn door to correct a saved visible member to headless while preserving the rest of its profile', async () => {
+    resolveSavedFleetLaunchSpec.mockResolvedValueOnce({
+      ok: true,
+      found: true,
+      target: 16,
+      config: {
+        plan: 'byoc-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        account: 'default',
+        headless: false,
+        carry: 'warm',
+        contextSize: 'trimmed',
+        role: 'su',
+      },
+      saved: {
+        plan: 'byoc-plan',
+        harness: 'papercusp',
+        member: {
+          agent: 'codex',
+          model: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          account: 'default',
+          headless: false,
+          carry: 'warm',
+          contextSize: 'trimmed',
+          role: 'su',
+        },
+      },
+      effective: {
+        plan: 'byoc-plan',
+        harness: 'papercusp',
+        member: {
+          agent: 'codex',
+          model: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          account: 'default',
+          headless: true,
+          carry: 'warm',
+          contextSize: 'trimmed',
+          role: 'su',
+        },
+      },
+      preservedFields: ['plan', 'harness', 'agent', 'model', 'account', 'carry', 'role', 'contextSize'],
+      overrides: [
+        {
+          field: 'headless',
+          saved: false,
+          requested: true,
+          provenance: {
+            source: 'fleet:headcount-target',
+            workspaceId: 'ws',
+            fleetSlug: SLUG,
+            target: 16,
+          },
+          reusePath: 'fleet:respawn-member -> capability:launch-agent',
+        },
+      ],
+      provenance: {
+        source: 'fleet:headcount-target',
+        workspaceId: 'ws',
+        fleetSlug: SLUG,
+        target: 16,
+      },
+      reusePath: 'fleet:respawn-member -> capability:launch-agent',
+    });
+
+    const res = await tool.handler(
+      { member: MEMBER, headless: true, reason: 'correct saved fleet placement' } as never,
+      {} as never,
+    );
+    const p = parse(res);
+    const launchArgs = launchHandler.mock.calls[0][0] as Record<string, unknown> & {
+      members: Array<Record<string, unknown>>;
+    };
+
+    expect(p).toMatchObject({
+      ok: true,
+      changed: ['headless'],
+      launchSpec: {
+        provenance: { source: 'fleet:headcount-target', fleetSlug: SLUG },
+        reusePath: 'fleet:respawn-member -> capability:launch-agent',
+        overrides: [{ field: 'headless', saved: false, requested: true }],
+      },
+    });
+    expect(launchArgs).toMatchObject({
+      fleet: SLUG,
+      count: 1,
+      plan: 'byoc-plan',
+      harness: 'papercusp',
+      __savedLaunchCarry: 'warm',
+      members: [
+        {
+          agent: 'codex',
+          model: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          account: 'default',
+          headless: true,
+          carry: 'warm',
+          contextSize: 'trimmed',
+          role: 'su',
+        },
+      ],
+    });
+  });
+
   it('ABORTS (no relaunch) when the kill fails — never double-runs the lane', async () => {
     killHandler.mockResolvedValue({ data: { ok: true, results: [{ ok: false, target: MEMBER, error: 'no host' }], counts: { ok: 0, failed: 1 } } });
     const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
