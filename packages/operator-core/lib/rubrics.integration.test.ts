@@ -133,6 +133,26 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect(r!.methodRef).toBe('pot-coordination-health-runbook');
   });
 
+  it('does not fabricate a ratifier for active acceptance rubrics while preserving the standard legacy fallback', async () => {
+    await insertRubricPlan('legacy-standard-rubric');
+    await insertRubricPlan('plan-acceptance-rubric', {
+      data: {
+        ...rubricData,
+        kind: 'acceptance',
+        subjectPlan: 'subject-plan-for-acceptance',
+      },
+    });
+
+    const standard = await rubrics.getRubric('legacy-standard-rubric');
+    expect(standard?.kind).toBe('standard');
+    expect(standard?.ratifiedBy).toBe('queen-1'); // legacy active standard row fallback
+
+    const acceptance = await rubrics.getRubric('plan-acceptance-rubric');
+    expect(acceptance?.kind).toBe('acceptance');
+    expect(acceptance?.status).toBe('active');
+    expect(acceptance?.ratifiedBy).toBeNull(); // acceptance rubrics are never ratified
+  });
+
   it('listRubrics includes it; a draft plan maps to a proposed rubric', async () => {
     await insertRubricPlan('active-r', { status: 'active' });
     await insertRubricPlan('draft-r', { status: 'draft' });

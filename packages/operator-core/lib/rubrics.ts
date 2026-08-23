@@ -294,12 +294,13 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
   const parsed = rubricTemplateDataSchema.safeParse(row.template_data);
   if (!parsed.success) return null;
   const d = parsed.data;
+  const kind = rubricKindOf(d);
   const updatedAt = tsIso(row.updated_at);
   const status = planStatusToRubricStatus(row.status, row.archived);
   return {
     rubricId: row.plan_slug,
     workspaceId: row.workspace_id,
-    kind: rubricKindOf(d),
+    kind,
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
     ...(d.subjectGoal ? { subjectGoal: d.subjectGoal } : {}),
     ...(d.classRef ? { classRef: d.classRef } : {}),
@@ -330,7 +331,9 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     status,
     createdBy: row.owner ?? null,
     proposedBy: d.proposedBy ?? row.owner ?? null,
-    ratifiedBy: status === 'active' ? (d.ratifiedBy ?? row.owner ?? null) : null,
+    // Acceptance rubrics activate on propose and are never ratified, so their
+    // projection must not inherit the standard-rubric legacy owner fallback.
+    ratifiedBy: status === 'active' && kind === 'standard' ? (d.ratifiedBy ?? row.owner ?? null) : null,
     createdAt: row.created ?? updatedAt,
     updatedAt,
   };
