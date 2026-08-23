@@ -2443,26 +2443,53 @@ export const DELIVERY_DEDUP_TTL_MS = 30 * 60_000;
  * `isDuplicate` opportunistically sweeps expired entries on every call (bounded cost —
  * only iterates while there is something to evict); pure factory, exported for tests. */
 export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.now } = {}) {
-  const acceptedAt = new Map(); // deliveryId -> acceptedAtMs
+  const entries = new Map(); // deliveryId -> { state: 'pending'|'completed', at }
+  const sweep = (t) => {
+    for (const [k, entry] of entries) {
+      if (t - entry.at > ttlMs) entries.delete(k);
+    }
+  };
+  const getState = (id) => {
+    if (!id) return null;
+    const t = now();
+    sweep(t);
+    return entries.get(id)?.state ?? null;
+  };
   return {
-    /** True when `id` was already marked accepted within the TTL. `id` may be
+    /** Return the live state for `id`, or null when it is new/expired. */
+    state(id) {
+      return getState(id);
+    },
+    /** True when `id` is pending or completed within the TTL. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
     isDuplicate(id) {
-      if (!id) return false;
-      const t = now();
-      for (const [k, at] of acceptedAt) {
-        if (t - at > ttlMs) acceptedAt.delete(k);
-      }
-      return acceptedAt.has(id);
+      return getState(id) !== null;
     },
-    /** Record `id` as accepted, starting its TTL window. No-op for a falsy id. */
-    markAccepted(id) {
+    /** Record the early ACK commitment while the detached gated pipeline runs. */
+    markPending(id) {
       if (!id) return;
-      acceptedAt.set(id, now());
+      const current = entries.get(id);
+      if (current?.state === 'completed') return;
+      entries.set(id, { state: 'pending', at: now() });
+    },
+    /** Record the point at which the gated pipeline committed its delivery. */
+    markCompleted(id) {
+      if (!id) return;
+      entries.set(id, { state: 'completed', at: now() });
+    },
+    /** A terminal failed/deferred pipeline is eligible for a later retry. */
+    clearPending(id) {
+      if (!id) return;
+      if (entries.get(id)?.state === 'pending') entries.delete(id);
+    },
+    /** Backward-compatible name for callers that already have a committed delivery. */
+    markAccepted(id) {
+      this.markCompleted(id);
     },
     size() {
-      return acceptedAt.size;
+      sweep(now());
+      return entries.size;
     },
   };
 }
@@ -3601,10 +3628,9 @@ export function hostThroughPty(o) {
   // injects that stack up at the gates while the agent is busy — see the
   // makeTurnCoalescer doc block for the measured 9× duplication this kills.
   const turnCoalescer = makeTurnCoalescer();
-  // EI-19311270129974785: remember delivery ids already ack'd 'accepted' so a
-  // client retry that arrives AFTER the original waiter already cleared (not a
-  // concurrent duplicate the coalescer above would catch) is recognized as the
-  // SAME delivery instead of injecting a second real duplicate turn.
+  // EI-19311270129974785: remember delivery ids while their detached gated
+  // pipeline is pending and after it commits, so a retry cannot inject a second
+  // real turn while an early ACK is still only acceptance.
   const deliveryDedup = makeDeliveryDedup();
   // EI-8822: serialize the gated-inject critical section so a wake `turn` and a
   // session:request-compaction `/compact` freed at the SAME clean boundary can't
@@ -3732,30 +3758,26 @@ export function hostThroughPty(o) {
         }
         return { ok: false, reason: 'ownerId-mismatch' };
       }
-      // EI-19311270129974785: a RETRY of a delivery this host already committed to
-      // (the client's own ack-wait timed out, or this host's earlier ack write-back
-      // failed — either looks like a miss to the client, which then retries with the
-      // IDENTICAL delivery id). The original attempt is unstoppably running (or has
-      // already run) the gated pipeline; short-circuit here, before any mode-specific
-      // state mutation (carry-respawn bookkeeping, the coalescer, the gates), so a
-      // late retry never writes a second real duplicate turn. This is only a CHECK —
-      // marking `msg.deliveryId` accepted happens below, ONLY at the points that
-      // return ok:true (coalesced-fold / the accepted-ack), never here: an early
-      // ok:false return past this point (ownerId-mismatch, deferred-carry-respawn-
-      // pending, and — further down — deferred-busy-gate) means NOTHING was
-      // delivered, so that retry must stay eligible, not be pre-emptively deduped.
+      // EI-19311270129974785: a RETRY of a delivery this host has already accepted
+      // is short-circuited before any mode-specific state mutation. Pending means
+      // the detached pipeline has not committed a write yet; completed means the
+      // original delivery reached its commitment point. A terminal failed/deferred
+      // pipeline clears pending below so a later retry remains eligible.
       // Absent/empty deliveryId (a one-shot raw/osc/compact/mcp-reconnect call, or a
       // pre-fix sender) makes this a no-op — unchanged behavior.
-      if (deliveryDedup.isDuplicate(msg.deliveryId)) {
+      const duplicateState = deliveryDedup.state(msg.deliveryId);
+      if (duplicateState) {
+        const duplicateReason =
+          duplicateState === 'pending' ? 'pending-delivery-id' : 'duplicate-delivery-id';
         try {
           process.stderr.write(
             `psu-pty-host: duplicate delivery id ${msg.deliveryId} for ${ownerId} short-circuited ` +
-              `(already accepted, mode:${msg.mode})\n`,
+              `(${duplicateState}, mode:${msg.mode})\n`,
           );
         } catch {
           /* diagnostic only */
         }
-        return { ok: true, reason: 'duplicate-delivery-id' };
+        return { ok: true, reason: duplicateReason };
       }
       // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
       //
@@ -3884,7 +3906,7 @@ export function hostThroughPty(o) {
         // EI-19311270129974785: this delivery id IS being honored (folded into the
         // pending waiter's one write) — remember it so a later retry of THIS id
         // short-circuits instead of folding in a second time / racing a stale fold.
-        if (msg.deliveryId) deliveryDedup.markAccepted(msg.deliveryId);
+        if (msg.deliveryId) deliveryDedup.markCompleted(msg.deliveryId);
         return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
       // EI-18679050054551625 (WI-5872 follow-up #2): everything from here down —
@@ -4394,12 +4416,29 @@ export function hostThroughPty(o) {
         if (!deferMutexRelease && releaseInject) releaseInject();
       }
       };
+      // EI-19311270129974785: the early ACK is only an acceptance commitment;
+      // keep this id pending until the detached pipeline reaches its write/
+      // recycle commitment, or clear it when the attempt is terminally refused.
+      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
       // Fire the gated pipeline and forget it (from the ACK's point of view) —
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
       // unexpected throw can never surface as an unhandled promise rejection.
       void runGatedDelivery()
+        .then((deliveryOutcome) => {
+          if (!msg.deliveryId) return;
+          if (deliveryOutcome?.ok === true && deliveryOutcome.reason === 'delivered') {
+            deliveryDedup.markCompleted(msg.deliveryId);
+          } else if (msg.mode === 'carry-respawn' && deliveryOutcome?.reason === 'deferred-busy-gate') {
+            // carryRearm.schedule() owns a live retry outside this promise; keep
+            // the id pending so a client retry cannot race that re-arm.
+            deliveryDedup.markPending(msg.deliveryId);
+          } else {
+            deliveryDedup.clearPending(msg.deliveryId);
+          }
+        })
         .catch((err) => {
+          if (msg.deliveryId) deliveryDedup.clearPending(msg.deliveryId);
           try {
             process.stderr.write(
               `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
@@ -4419,13 +4458,9 @@ export function hostThroughPty(o) {
             carryRearm.endFirstAttempt(msg);
           }
         });
-      // EI-19311270129974785: this is the exact commitment point — the gated
-      // pipeline is already fired (fire-and-forget above) and WILL run to some
-      // conclusion regardless of whether this ack reaches the client. Remember
-      // the delivery id now so any retry the client sends after this point
-      // (ack-wait timeout, or this ack's own write-back failing below) is
-      // recognized and short-circuited instead of double-delivering.
-      if (msg.deliveryId) deliveryDedup.markAccepted(msg.deliveryId);
+      // The host has accepted the request for processing, but has not yet
+      // claimed that a turn started. The sender must keep the delivery durable
+      // and retryable until the pipeline settlement above marks it completed.
       return { ok: true, reason: 'accepted' };
       })().catch((err) => ({
         ok: false,
