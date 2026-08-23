@@ -32,6 +32,8 @@
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import type { Sql, TransactionSql } from 'postgres';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 import {
   PROBE_SCOPE_MARKER_RE,
@@ -1428,6 +1430,8 @@ export async function setCarryNoteWithPrior(
      * null/blank still means CLEAR, exactly as passing a blank `note` does.
      */
     transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+    /** Internal: use the bounded admin-pool transaction for su loop writes. */
+    bounded?: boolean;
   },
 ): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
@@ -1435,7 +1439,10 @@ export async function setCarryNoteWithPrior(
   const { sql } = getOrgPg();
   const now = Date.now();
   const depsSpecified = opts !== undefined && 'deps' in opts;
-  return (await sql.begin(async (tx) => {
+  // Both postgres-js `sql.begin` and boundedOrgTxn supply callable SQL handles,
+  // but they expose different structural types (`TransactionSql` vs `Sql`).
+  // Accept the union so this one write body can be used by either transaction path.
+  const write = async (tx: Sql | TransactionSql): Promise<SetCarryNoteResult> => {
     const rows = await tx<{ journal: unknown; note: string | null; deps: unknown }[]>`
       SELECT journal, note, deps FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
@@ -1473,7 +1480,15 @@ export async function setCarryNoteWithPrior(
         SET note = EXCLUDED.note, journal = EXCLUDED.journal, updated_ts = EXCLUDED.updated_ts,
             deps = EXCLUDED.deps`;
     return { stored: noteCol, priorLength, priorDeps };
-  })) as SetCarryNoteResult;
+  };
+  // loop:checkpoint is a cold-loop continuity write. It must fail fast under
+  // admin-pool/row-lock contention so the MCP transport does not time out while
+  // the successor loses its only durable carry anchor. Work-item checkpoints
+  // retain their existing transaction policy and use the unbounded branch here.
+  const result = opts?.bounded
+    ? await boundedOrgTxn(write, { client: sql, acquireTimeoutMs: 8_000 })
+    : await sql.begin(write);
+  return result as SetCarryNoteResult;
 }
 
 /** Read the current carry-note (the full `note` column), or null when none/cleared. */
@@ -1579,7 +1594,7 @@ export async function setLoopCarryNoteWithPrior(
   const result = await setCarryNoteWithPrior(
     { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
     note,
-    opts,
+    { ...opts, bounded: true },
   );
   // WI-6974: the loop carry-note (note + walls + checks) is Orders-panel content,
   // and this ref carries the ownerId the panel is keyed by — so the push is exact.

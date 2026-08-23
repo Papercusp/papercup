@@ -157,18 +157,18 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; " +
-    'the live transcript does not survive. Pass { did, left, insight, next } (or goal as an alias for next) or raw { note }; ' +
-    'blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses ' +
-    "rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use " +
-    "rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, " +
-    "contentHash, walls, checks }; writes verify-read. Transient PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true } instead of hanging the transport.",
+    "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass " +
+    '{ did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. ' +
+    "{ walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive); " +
+    "rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns " +
+    "{ ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. " +
+    "PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
   guidance: {
     when:
       "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
       'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; ' +
-      'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. When updating one wall/check, ' +
-      "pass rowsMode:'replace' only when retiring omitted rows; the default merge mode preserves them. Pair with " +
+      'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Use ' +
+      "rowsMode:'replace' only when retiring rows; default merge mode preserves them. Pair with " +
       'work_items:checkpoint because a loop note can be lost if the session dies.',
     notWhen:
       "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
