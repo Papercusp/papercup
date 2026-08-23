@@ -84,12 +84,14 @@ import {
   bindInnerDispatch,
   buildFacadeHelp,
   shapeCodeRunSimilarRecipes,
+  shapeFieldMissHelp,
   isRecipeCaptureEligible,
   isRecipeCaptureAuthorityEligible,
   codeRunReturnedContextBytes,
   codeRunFailureClass,
   withCodeRunCaptureMode,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
+import type { FieldMiss } from '@papercusp/tooldef';
 
 beforeEach(() => {
   recordRecipeRunMock.mockClear();
@@ -709,6 +711,70 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
       expect(row.result.content[0]?.text).toContain(`"bash_id":"bash-${index}"`);
       expect(row.result.content[0]?.text).toContain(`"task_id":"task-${index}"`);
     }
+  });
+});
+
+// EI-21163938645109933 / EI-21164455886001541 (P-007). Both were filed as "false field-miss
+// flags", but the flags were TRUE — the fields really were absent. The defect was that a typo and
+// a legitimately-optional field produced the SAME warning, burying the signal this detector
+// exists for in noise it could not act on.
+describe('code:run → field-miss classification (P-007)', () => {
+  const miss = (over: Partial<FieldMiss> = {}): FieldMiss => ({
+    tool: 'dev:pg_query',
+    path: '(root)',
+    read: 'ok',
+    available: ['rowCount', 'truncated', 'fields', 'elapsedMs', 'rows'],
+    ...over,
+  });
+
+  it('renders a typo as a correction naming the key it resembles', () => {
+    const help = shapeFieldMissHelp([miss({ read: 'rowcount', likely: 'typo', didYouMean: 'rowCount' })]);
+
+    expect(help).toContain('did you mean `rowCount`?');
+    expect(help).toContain('does NOT have');
+  });
+
+  it('renders an absent optional field as presence-branching advice, not a misspelling', () => {
+    // The real EI-21163938645109933 shape: dev:pg_query success omits `ok` entirely.
+    const help = shapeFieldMissHelp([miss({ likely: 'optional-field' })]);
+
+    expect(help).toContain('OPTIONAL field');
+    expect(help).toContain("'k' in r");
+    expect(help).not.toContain('did you mean');
+  });
+
+  it('separates the two classes when a result carries both', () => {
+    const help = shapeFieldMissHelp([
+      miss({ read: 'rowcount', likely: 'typo', didYouMean: 'rowCount' }),
+      miss({ read: 'criterionClass', path: 'rows.0', available: ['one'], likely: 'optional-field' }),
+    ]);
+
+    expect(help).toContain('⚠ 1 read(s)');
+    expect(help).toContain('ℹ 1 read(s)');
+  });
+
+  // CONTROL. The two renderings must be DISTINGUISHABLE, or the split is decorative. The pre-fix
+  // behaviour is one undifferentiated warning for both — if these ever render identically, this
+  // guard has stopped discriminating.
+  it('CONTROL: the two classes do not render identically', () => {
+    const typo = shapeFieldMissHelp([miss({ likely: 'typo', didYouMean: 'rowCount' })]);
+    const optional = shapeFieldMissHelp([miss({ likely: 'optional-field' })]);
+
+    expect(typo).not.toEqual(optional);
+  });
+
+  // CALIBRATION. A miss with no classification (produced before this existed, or by an older
+  // orchestrator) must still be reported — silently dropping it would lose the original signal.
+  it('CALIBRATION: an unclassified miss still renders as a correction', () => {
+    const help = shapeFieldMissHelp([miss()]);
+
+    expect(help).toContain('does NOT have');
+    expect(help).toContain('`ok`');
+  });
+
+  it('returns undefined when there are no misses', () => {
+    expect(shapeFieldMissHelp([])).toBeUndefined();
+    expect(shapeFieldMissHelp(undefined)).toBeUndefined();
   });
 });
 

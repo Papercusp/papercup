@@ -15,7 +15,7 @@ import {
   AGENT_ROLES,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
-import type { ToolResult } from '@papercusp/tooldef';
+import type { FieldMiss, ToolResult } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
@@ -304,16 +304,7 @@ export default defineTool({
     //
     // Stated as a correction rather than a dump: the miss only exists because the author was
     // ALREADY wrong, so the useful payload is "you read X, the keys are Y".
-    const fieldMissHelp = result.fieldMisses?.length
-      ? [
-          `⚠ ${result.fieldMisses.length} read(s) of a field the tool result does NOT have — the value you got was undefined, ` +
-            `which a \`?? null\` / \`?? 0\` fallback turns into a real-looking value. Check these before trusting the summary:`,
-          ...result.fieldMisses.map(
-            (m) =>
-              `  • ${m.tool} → read \`${m.read}\` on ${m.path}, which has: ${m.available.join(', ') || '(no keys)'}`,
-          ),
-        ].join('\n')
-      : undefined;
+    const fieldMissHelp = shapeFieldMissHelp(result.fieldMisses);
 
     // EI-19324793244855883: sleep(ms) silently clamped a requested delay to the sandbox cap, so a
     // script measuring a rate/share over a requested window divided by the number it ASKED for,
@@ -702,6 +693,53 @@ function sanitizeCodeRunLogLine(raw: string): string {
     .replace(ANSI_SINGLE_PATTERN, '')
     .replace(/[\r\n]+/g, ' ')
     .replace(CONTROL_PATTERN, '');
+}
+
+/**
+ * EI-21163938645109933 / EI-21164455886001541: both were filed as "false field-miss flags", but
+ * the flags were TRUE — the fields really were absent. What was wrong is that a MISSPELLED field
+ * and a probe of a legitimately-OPTIONAL field were reported with the same warning, so the signal
+ * this detector exists for (a silent undefined from a typo) arrived buried in unactionable noise.
+ * Split them: a read that resembles an available key is a correction worth acting on; one that
+ * resembles nothing on the shape is almost always an optional field that is simply not set here,
+ * and the useful advice there is to branch on PRESENCE rather than on a falsy value — which is
+ * exactly the trap in `if (!q.ok)` against a result whose success shape omits `ok` entirely.
+ * Misses carrying no `likely` (produced before the classification existed) render as corrections.
+ */
+export function shapeFieldMissHelp(misses: readonly FieldMiss[] | undefined): string | undefined {
+  if (!misses?.length) return undefined;
+
+  const optional = misses.filter((m) => m.likely === 'optional-field');
+  const corrections = misses.filter((m) => m.likely !== 'optional-field');
+  const lines: string[] = [];
+
+  if (corrections.length) {
+    lines.push(
+      `⚠ ${corrections.length} read(s) of a field the tool result does NOT have — the value you got was undefined, ` +
+        `which a \`?? null\` / \`?? 0\` fallback turns into a real-looking value. Check these before trusting the summary:`,
+    );
+    for (const m of corrections) {
+      const suggestion = m.didYouMean ? ` — did you mean \`${m.didYouMean}\`?` : '';
+      lines.push(
+        `  • ${m.tool} → read \`${m.read}\` on ${m.path}${suggestion}, which has: ${m.available.join(', ') || '(no keys)'}`,
+      );
+    }
+  }
+
+  if (optional.length) {
+    lines.push(
+      `ℹ ${optional.length} read(s) of a field absent from this result shape and close to none of its keys — usually an ` +
+        `OPTIONAL field that is simply not set here. Branch on presence (\`'k' in r\`), not on a falsy value: a shape that ` +
+        `omits the key on success makes \`if (!r.k)\` treat every success as a failure.`,
+    );
+    for (const m of optional) {
+      lines.push(
+        `  • ${m.tool} → read \`${m.read}\` on ${m.path}, which has: ${m.available.join(', ') || '(no keys)'}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
 }
 
 export const CODE_RUN_SUMMARY_CHAR_BUDGET = 3_500;
