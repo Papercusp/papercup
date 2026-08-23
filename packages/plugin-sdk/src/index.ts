@@ -748,6 +748,11 @@ export type PluginTriggerPackSource =
       oauthField?: string;
     }
   | { kind: 'internal'; event: 'binding-run-completed' | 'plan-completed' }
+  /**
+   * @deprecated Trigger packs do not consume schedules. Use a `manual` binding
+   * and arm the instantiated plan with `plans:set-schedule` followed by
+   * `plans:arm-schedule`.
+   */
   | { kind: 'schedule'; scheduleRef: string }
   | { kind: 'manual' };
 
@@ -898,6 +903,13 @@ export function validateTriggerPackDeclaration(manifest: {
 
     if (binding.mapping?.mode === 'fields' && Object.keys(binding.mapping.fields ?? {}).length === 0) {
       issues.push(`triggerPack binding "${binding.id}" fields mapping must declare at least one field`);
+    }
+    const bindingSourceKind = (binding.source as { kind?: unknown }).kind;
+    if (bindingSourceKind === 'schedule') {
+      issues.push(
+        `triggerPack binding "${binding.id}" declares source kind "schedule", which has no runtime consumer — arm the cadence on the instantiated plan with plans:set-schedule + plans:arm-schedule`,
+      );
+      continue;
     }
     if (binding.source.kind !== 'external') continue;
     const sourceKind = binding.source.sourceKind.trim();
@@ -1273,13 +1285,19 @@ export interface Plugin {
    * JSON-Schema describing config keys this plugin accepts under
    * the install's plugin config. Used for validation + config UIs.
    *
-   * Field-level extensions (snapshot share semantics) — recognised by
-   * the snapshot exporter and fork UI:
-   *   - `secret: true`            credential, stripped on snapshot
+   * Supported manifest declarations for config fields:
+   *   - `secret: true`            credential declaration
    *   - `snapshotPolicy: "strip" | "include" | "warn-and-prompt"`
-   *   - `shareable: false`        publisher-specific identifier, stripped
-   *   - `oauth: { provider, scopes }`   surface a Connect button at fork
-   *   - `aliases: (string | null)[]`    schema-evolution rename/removal
+   *                                intended handling for a secret field
+   *   - `shareable: false`        publisher-specific identifier declaration
+   *   - `oauth: { provider, scopes }` OAuth metadata paired with `oauth[]`
+   *   - `aliases: (string | null)[]`  schema-evolution rename/removal
+   *
+   * These are declarations, not a live snapshot redaction mechanism. The
+   * former snapshot exporter and fork UI are retired. The live SDK validator
+   * enforces `secret`, `snapshotPolicy: "strip"`, and `shareable: false` when
+   * a trigger-pack binding identifies an OAuth field; other consumers must
+   * interpret the declarations explicitly.
    *
    * Spec: /docs/snapshots/share-semantics.
    */
