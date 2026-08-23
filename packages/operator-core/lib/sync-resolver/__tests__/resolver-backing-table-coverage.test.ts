@@ -78,6 +78,19 @@ const PUSH_EXEMPT: Record<string, string> = {
   'planLock.byPath :: papercusp_su.agent_file_locks':
     'lock rows live in a different database (papercusp_su), unreachable by an operator-DB trigger; the lock writers push explicitly via notifyPlanLockChange.',
 
+  // plans.attentionBulkRun (inbox-bulk-resolve-2026-08-23, mig 912): every writer to
+  // both tables pushes explicitly — createRun/reportOutcomes (agent-tools/inbox/
+  // bulk-run.ts) and the admin bulk-resolve route each fire
+  // notifySyncInvalidate('plans.attentionBulkRun') after the write commits. That fires
+  // on the write's MEANING (a phase/outcome change), where a row trigger would add a
+  // per-row notify on the outcome batch for no gain.
+  // RE-ARM (both): wire the table in table-to-query-names.ts if its producer push is
+  // ever dropped.
+  'plans.attentionBulkRun :: harness_shared.attention_bulk_runs':
+    'producer-push: every run writer fires notifySyncInvalidate after commit (bulk-run.ts, admin bulk-resolve route); a row trigger would fire per outcome row for no gain.',
+  'plans.attentionBulkRun :: harness_shared.attention_bulk_run_items':
+    'producer-push: item outcome batches are followed by one notifySyncInvalidate from the same writers; a per-row trigger on the batch is the notify-storm shape.',
+
   // Continuous heartbeat gauge: shared_presence is rewritten by every agent's keepalive, so a
   // per-row notify is the notify-storm anti-pattern (/internal/docs/performance) for a panel whose
   // entire content is "who is alive right now" — polling IS the semantics here.

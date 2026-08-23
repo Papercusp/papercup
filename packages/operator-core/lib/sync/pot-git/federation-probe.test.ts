@@ -1,15 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildProbeKey,
-  deriveProbeVerdict,
-  formatProbeVerdict,
-  HOP_TRACKING_WIRED,
-  hopTrackingCaveat,
-  PROBE_HOPS,
-  stampProbe,
-  type ProbeReceipt,
-  type ProbeVerdict,
-} from './federation-probe';
+import { buildProbeKey, PROBE_HOPS, stampProbe } from './federation-probe';
 
 describe('stampProbe', () => {
   const base = {
@@ -28,34 +18,43 @@ describe('stampProbe', () => {
     expect(result.stamped.harnessSlug).toBe('papercusp');
     expect(result.stamped.emittedBy).toBe('su-abc123');
     expect(result.stamped.emittedAtMs).toBe(1_000_000);
-    // the stamped key itself carries the harness + emitter — never opaque.
     expect(result.stamped.probeKey).toContain('papercusp:v2t:');
     expect(result.stamped.probeKey).toContain('su-abc123');
   });
 
   it('refuses loudly (never silently) when workspaceId is missing', () => {
-    const result = stampProbe({ ...base, workspaceId: null });
-    expect(result).toMatchObject({ ok: false, reason: 'missing_workspace' });
+    expect(stampProbe({ ...base, workspaceId: null })).toMatchObject({
+      ok: false,
+      reason: 'missing_workspace',
+    });
   });
 
   it('refuses when workspaceId is the "*" scope selector', () => {
-    const result = stampProbe({ ...base, workspaceId: '*' });
-    expect(result).toMatchObject({ ok: false, reason: 'missing_workspace' });
+    expect(stampProbe({ ...base, workspaceId: '*' })).toMatchObject({
+      ok: false,
+      reason: 'missing_workspace',
+    });
   });
 
   it('refuses when harnessSlug is missing (the exact cause-#10 defect)', () => {
-    const result = stampProbe({ ...base, harnessSlug: '' });
-    expect(result).toMatchObject({ ok: false, reason: 'missing_harness_slug' });
+    expect(stampProbe({ ...base, harnessSlug: '' })).toMatchObject({
+      ok: false,
+      reason: 'missing_harness_slug',
+    });
   });
 
   it('refuses when harnessSlug is the "*" scope selector', () => {
-    const result = stampProbe({ ...base, harnessSlug: '*' });
-    expect(result).toMatchObject({ ok: false, reason: 'invalid_harness_slug' });
+    expect(stampProbe({ ...base, harnessSlug: '*' })).toMatchObject({
+      ok: false,
+      reason: 'invalid_harness_slug',
+    });
   });
 
   it('refuses when emittedBy cannot be resolved', () => {
-    const result = stampProbe({ ...base, emittedBy: undefined });
-    expect(result).toMatchObject({ ok: false, reason: 'missing_emitted_by' });
+    expect(stampProbe({ ...base, emittedBy: undefined })).toMatchObject({
+      ok: false,
+      reason: 'missing_emitted_by',
+    });
   });
 
   it('refuses an unfederated harness loudly instead of emitting a doomed probe', () => {
@@ -87,132 +86,8 @@ describe('buildProbeKey', () => {
   });
 });
 
-describe('deriveProbeVerdict', () => {
-  function receipt(overrides: Partial<ProbeReceipt> = {}): ProbeReceipt {
-    return {
-      probeKey: 'papercusp:v2t:x-su-1-abc',
-      workspaceId: 'ws-1',
-      harnessSlug: 'papercusp',
-      emittedBy: 'su-1',
-      emittedAtMs: 0,
-      status: 'pending',
-      hops: {},
-      ...overrides,
-    };
-  }
-
-  it('reports refused verdicts verbatim, never inferring a hop', () => {
-    const r = receipt({ status: 'refused', refusalReason: 'harness_not_federated' });
-    const v = deriveProbeVerdict(r, { nowMs: 10_000 });
-    expect(v.verdict).toBe('refused');
-    expect(v.lastHopReached).toBeNull();
-    expect(v.stalledAtHop).toBeNull();
-  });
-
-  it('acks once every expected hop has landed', () => {
-    const r = receipt({
-      hops: { captured: 100, drained: 200, replicated: 300, merged: 400, memberGuard: 500, projected: 600 },
-    });
-    const v = deriveProbeVerdict(r, { nowMs: 1000 });
-    expect(v.verdict).toBe('acked');
-    expect(v.lastHopReached).toBe('projected');
-  });
-
-  it('acks against a NARROWED expected-hop list (local-only probe, no live peer)', () => {
-    const r = receipt({ hops: { captured: 100, drained: 200 } });
-    const v = deriveProbeVerdict(r, { nowMs: 1000, expectedHops: ['captured', 'drained'] });
-    expect(v.verdict).toBe('acked');
-  });
-
-  it('reads pending within grace when the next hop has not landed yet', () => {
-    const r = receipt({ hops: { captured: 900_000 } });
-    const v = deriveProbeVerdict(r, { nowMs: 960_000, staleAfterMs: 180_000 });
-    expect(v.verdict).toBe('pending');
-    expect(v.lastHopReached).toBe('captured');
-    expect(v.stalledAtHop).toBeNull();
-  });
-
-  it('NAMES the exact stalled hop once past grace (the P-010 requirement)', () => {
-    const r = receipt({ hops: { captured: 100, drained: 200, replicated: 300 } });
-    const v = deriveProbeVerdict(r, { nowMs: 1_000_000, staleAfterMs: 180_000 });
-    expect(v.verdict).toBe('stalled');
-    expect(v.lastHopReached).toBe('replicated');
-    expect(v.stalledAtHop).toBe('merged');
-    expect(v.detail).toContain("stalled at 'merged'");
-  });
-
-  it('names capture itself as the stalled hop when nothing has landed at all', () => {
-    const r = receipt({ hops: {} });
-    const v = deriveProbeVerdict(r, { nowMs: 1_000_000, staleAfterMs: 180_000 });
-    expect(v.verdict).toBe('stalled');
-    expect(v.lastHopReached).toBeNull();
-    expect(v.stalledAtHop).toBe('captured');
-  });
-
-  it('walks hops in the canonical pipeline order', () => {
-    expect(PROBE_HOPS).toEqual(['captured', 'drained', 'replicated', 'merged', 'memberGuard', 'projected']);
-  });
-});
-
-describe('hopTrackingCaveat (WI-3962)', () => {
-  const stalledPastCapture: ProbeVerdict = {
-    verdict: 'stalled',
-    lastHopReached: 'replicated',
-    stalledAtHop: 'merged',
-    detail: "stalled at 'merged'",
-  };
-
-  it('documents the current unwired reality via HOP_TRACKING_WIRED', () => {
-    // If this ever flips true, every branch below needs re-deriving —
-    // the flip itself is the trigger to revisit this whole caveat mechanism.
-    expect(HOP_TRACKING_WIRED).toBe(false);
-  });
-
-  it('surfaces a caveat when a DEFAULT (unnarrowed) call reads stalled past capture', () => {
-    const caveat = hopTrackingCaveat(stalledPastCapture, { expectedHopsWasNarrowed: false });
-    expect(caveat).toBeDefined();
-    expect(caveat).toContain('WI-3962');
-    expect(caveat).toContain("'merged'");
-  });
-
-  it('stays silent when the caller explicitly narrowed expectedHops (they know what they asked)', () => {
-    const caveat = hopTrackingCaveat(stalledPastCapture, { expectedHopsWasNarrowed: true });
-    expect(caveat).toBeUndefined();
-  });
-
-  it('stays silent when stalled AT capture itself (that is a real emit-time signal)', () => {
-    const caveat = hopTrackingCaveat(
-      { verdict: 'stalled', lastHopReached: null, stalledAtHop: 'captured', detail: "stalled at 'captured'" },
-      { expectedHopsWasNarrowed: false },
-    );
-    expect(caveat).toBeUndefined();
-  });
-
-  it('stays silent for non-stalled verdicts (acked/pending/refused)', () => {
-    const acked: ProbeVerdict = { verdict: 'acked', lastHopReached: 'projected', stalledAtHop: null, detail: 'ok' };
-    const pending: ProbeVerdict = { verdict: 'pending', lastHopReached: 'captured', stalledAtHop: null, detail: 'ok' };
-    const refused: ProbeVerdict = { verdict: 'refused', lastHopReached: null, stalledAtHop: null, detail: 'refused' };
-    for (const v of [acked, pending, refused]) {
-      expect(hopTrackingCaveat(v, { expectedHopsWasNarrowed: false })).toBeUndefined();
-    }
-  });
-});
-
-describe('formatProbeVerdict', () => {
-  it('renders a loud one-liner naming harness + verdict + detail', () => {
-    const r: ProbeReceipt = {
-      probeKey: 'papercusp:v2t:x-su-1-abc',
-      workspaceId: 'ws-1',
-      harnessSlug: 'papercusp',
-      emittedBy: 'su-1',
-      emittedAtMs: 0,
-      status: 'pending',
-      hops: { captured: 100 },
-    };
-    const v = deriveProbeVerdict(r, { nowMs: 1_000_000, staleAfterMs: 180_000 });
-    const line = formatProbeVerdict(r, v);
-    expect(line).toContain('papercusp:v2t:x-su-1-abc');
-    expect(line).toContain('[papercusp]');
-    expect(line).toContain('stalled');
+describe('captured-only receipt contract (WI-3962)', () => {
+  it('declares no synthetic post-capture hops', () => {
+    expect(PROBE_HOPS).toEqual(['captured']);
   });
 });

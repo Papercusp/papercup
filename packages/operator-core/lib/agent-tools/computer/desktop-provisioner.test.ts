@@ -3,8 +3,12 @@
  * (never :0) and the host-display refusal. The live Xvfb path is exercised by
  * the end-to-end proof script, not here.
  */
-import { describe, expect, it } from 'vitest';
-import { findFreeDisplayNumber, provisionSandboxDesktop } from './desktop-provisioner';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  findFreeDisplayNumber,
+  provisionSandboxDesktop,
+  releaseDesktopProcesses,
+} from './desktop-provisioner';
 
 describe('findFreeDisplayNumber', () => {
   it('returns the lowest free number ≥ base (skips locked displays)', () => {
@@ -27,5 +31,73 @@ describe('provisionSandboxDesktop — safety', () => {
   });
   it('refuses a negative display number', async () => {
     await expect(provisionSandboxDesktop({ displayNumber: -5 })).rejects.toThrow(/refusing/);
+  });
+});
+
+describe('releaseDesktopProcesses — managed teardown', () => {
+  const root = {
+    taskId: 'task-root',
+    scopeUnit: 'pc-task-root.scope',
+    confined: true,
+    ledgered: true,
+  };
+
+  it('kills the managed task before touching systemd-run client handles', async () => {
+    const events: string[] = [];
+    const clients = [
+      { kill: vi.fn((signal: NodeJS.Signals) => { events.push(`client-1:${signal}`); return true; }) },
+      { kill: vi.fn((signal: NodeJS.Signals) => { events.push(`client-2:${signal}`); return true; }) },
+    ];
+    const killTask = vi.fn(async (_taskId: string, options: { includeSubtree?: boolean }) => {
+      events.push(`task:${options.includeSubtree === true ? 'subtree' : 'root'}`);
+      return { ok: true as const, taskId: 'task-root', action: 'kill' };
+    });
+
+    await releaseDesktopProcesses(clients, root, { killTask, sleep: async () => {} });
+
+    expect(events[0]).toBe('task:subtree');
+    expect(events).toEqual([
+      'task:subtree',
+      'client-2:SIGTERM',
+      'client-1:SIGTERM',
+      'client-1:SIGKILL',
+      'client-2:SIGKILL',
+    ]);
+  });
+
+  it('uses the validated scope handle when the ledger is unavailable', async () => {
+    const events: string[] = [];
+    const clients = [{ kill: vi.fn((signal: NodeJS.Signals) => { events.push(`client:${signal}`); return true; }) }];
+    const killTask = vi.fn();
+    const killScopeUnit = vi.fn(async (scopeUnit: string) => {
+      events.push(`scope:${scopeUnit}`);
+      return { ok: true as const, scopeUnit, action: 'kill' };
+    });
+
+    await releaseDesktopProcesses(clients, { ...root, ledgered: false }, { killTask, killScopeUnit, sleep: async () => {} });
+
+    expect(killTask).not.toHaveBeenCalled();
+    expect(events).toEqual(['scope:pc-task-root.scope', 'client:SIGTERM', 'client:SIGKILL']);
+  });
+
+  it('leaves client handles untouched when managed teardown is refused', async () => {
+    const client = { kill: vi.fn(() => true) };
+    const killTask = vi.fn(async () => ({
+      ok: false as const,
+      taskId: 'task-root',
+      action: 'kill',
+      error: 'command_failed' as const,
+      detail: 'systemctl unavailable',
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await releaseDesktopProcesses([client], root, { killTask, sleep: async () => {} });
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(client.kill).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('leaving client handles untouched'));
   });
 });
