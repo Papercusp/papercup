@@ -310,6 +310,39 @@ export interface HudPlanInput {
    * the last-work sort rather than colonizing the top).
    */
   lastWorkAtMs?: number | null;
+  /**
+   * The agents currently ON this plan (plan-visibility-revamp-2026-08-23 P-007)
+   * — the roster join by `currentPlanSlug` / claim planSlug, threaded in by
+   * HudView from the SAME `advRoster.list` payload the Sessions tab renders.
+   *
+   * Absent/null = roster not joined (an older caller, or the feed not answered
+   * yet) — meaningfully distinct from `[]`, which is a loaded answer of
+   * "nobody is on this plan". Both render the same (no avatars), but only the
+   * empty array is evidence of absence.
+   */
+  agents?: HudPlanAgent[] | null;
+}
+
+/**
+ * One roster agent as the Plans board needs it (P-007). Narrowed from
+ * `HudRosterEntry` at the caller rather than imported — same reason every
+ * other input type in this file is declared structurally: the wire shape is
+ * the contract, and importing the component-layer type would couple the pure
+ * model to a file that types a full roster payload.
+ */
+export interface HudPlanAgent {
+  ownerId: string;
+  /**
+   * Is this agent's session taking turns right now? Derived from the oracle's
+   * `sessionState` at the caller: `true` only for a positive 'live' verdict,
+   * `false` for a positive non-live one, `null`/absent UNKNOWN. Never coerce
+   * unknown to false — the same rule HudCardIdentity.live documents.
+   */
+  live?: boolean | null;
+  /** The oracle's session state, carried through for tooltips. */
+  sessionState?: string | null;
+  /** The agent's declared intent — the who-is-doing-what material. */
+  intent?: string | null;
 }
 
 /**
@@ -739,6 +772,151 @@ function assemble(
 }
 
 /* ── plans ───────────────────────────────────────────────────────────────── */
+
+/**
+ * The plan card's meta row + progress track (plan-visibility-revamp-2026-08-23
+ * P-007, per the HudH2 mockup): ✎/⚒ ages, items progress, agent avatars with a
+ * live-count pill, and the who-is-doing-what line.
+ *
+ * A separate optional structure on the card (like `subGoals`) rather than more
+ * sibling fields, for the D-002 reason `identity` is one object: the card is
+ * built in three places and only the Plans builder fills this, so siblings
+ * would invite a half-set that half-works undetectably.
+ */
+export interface HudPlanCardMeta {
+  /** ✎ seconds since the plan TEXT last changed; null unknown. */
+  editedSec: number | null;
+  /** ⚒ seconds since a work item on the plan last moved; null = never/unknown. */
+  workedSec: number | null;
+  /** Items progress: settled (done + dropped) over all items. Null total =
+   *  the plan has no parsed items — render no fraction, never `0/0`. */
+  itemsDone: number | null;
+  itemsTotal: number | null;
+  /** Bounded avatar stack — the first HUD_PLAN_AVATARS_SHOWN agents, live
+   *  first. NOT the full population; `avatarsOverflow` says what was cut. */
+  avatars: HudPlanAvatar[];
+  avatarsOverflow: number;
+  /**
+   * How many agents are POSITIVELY live (`live === true`). Unknown liveness
+   * counts zero here — the pill is a "working right now" claim, and counting
+   * an unresolved verdict toward it would manufacture activity, the exact
+   * direction HudCardIdentity.live forbids.
+   */
+  liveCount: number;
+  /** "su-76a83: recording D-001 · su-6e294: P-045 verification" — live agents'
+   *  declared intents, or null when nobody on the plan declared one. */
+  who: string | null;
+}
+
+export interface HudPlanAvatar {
+  ownerId: string;
+  /** Short handle for the tooltip (`su-76a83`). */
+  handle: string;
+  /** The two characters inside the circle (`76`). */
+  initials: string;
+  /** Carried through from the roster verdict — null stays UNKNOWN. */
+  live: boolean | null;
+  /** Deterministic palette index (0..HUD_AVATAR_COLOR_COUNT-1) off ownerId, so
+   *  one agent keeps one colour across cards and renders. */
+  colorIndex: number;
+}
+
+/** Avatar circles rendered before the stack collapses to `+N`. Four, matching
+ *  the mockup's densest card — a fifth reads as noise at 16px. */
+export const HUD_PLAN_AVATARS_SHOWN = 4;
+
+/** Intents woven into the who line. Two: the line is one ellipsized row, and a
+ *  third entry is never visible at card width anyway. */
+const HUD_PLAN_WHO_SHOWN = 2;
+
+/**
+ * ⚒ activity fresher than this renders "hot" (green). SAME threshold as
+ * PlansPane's `WORK_HOT_MS` (1h) — the two surfaces show the same timestamp
+ * and must agree on when it glows; not imported because that module is a
+ * component file and this one must stay DOM-free.
+ */
+export const HUD_PLAN_WORK_HOT_SEC = 60 * 60;
+
+/** How many distinct avatar palette classes hud.css defines (.hud__av--c0..). */
+export const HUD_AVATAR_COLOR_COUNT = 8;
+
+/** Deterministic string → palette index. Tiny FNV-1a — stability across
+ *  renders/sessions is the requirement, not distribution quality. */
+export function avatarColorIndex(ownerId: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < ownerId.length; i++) {
+    h ^= ownerId.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return Math.abs(h) % HUD_AVATAR_COLOR_COUNT;
+}
+
+/** `su-76a83f22-…` → `76` — the first two chars of the id segment, matching
+ *  the mockup. Falls back to the first two chars of the whole string for an
+ *  id that doesn't match the `prefix-hex` grammar. */
+export function avatarInitials(ownerId: string): string {
+  const m = /^[a-z]+-([0-9a-f]{2})/i.exec(ownerId);
+  return (m ? m[1] : ownerId.slice(0, 2)).toLowerCase();
+}
+
+/**
+ * Order agents for display: positively live first, unknown next, positively
+ * gone last — so the avatar cap and the who line both spend their bounded
+ * slots on the agents most likely to matter right now. Stable within a tier
+ * (Array.prototype.sort is stable), so the caller's roster order is the
+ * tiebreak rather than something re-invented here.
+ */
+function agentsByLiveness(agents: readonly HudPlanAgent[]): HudPlanAgent[] {
+  const rank = (a: HudPlanAgent) => (a.live === true ? 0 : a.live == null ? 1 : 2);
+  return [...agents].sort((a, b) => rank(a) - rank(b));
+}
+
+/**
+ * Build the P-007 meta block. Exported for the model test — the counting rules
+ * (live-only pill, capped avatars, settled-over-total progress) are the
+ * substance, and asserting them through a rendered board would test the
+ * renderer's pass-through instead.
+ */
+export function planCardMeta(plan: HudPlanInput, nowMs: number): HudPlanCardMeta {
+  const workedSec =
+    typeof plan.lastWorkAtMs === 'number' && Number.isFinite(plan.lastWorkAtMs)
+      ? Math.max(0, Math.round((nowMs - plan.lastWorkAtMs) / 1000))
+      : null;
+
+  // Progress: SETTLED items over ALL items. `dropped` counts as settled — the
+  // track answers "how much of this plan is still ahead", and a dropped item
+  // is behind you the same way a done one is (rendering it as remaining work
+  // would show a plan that can never reach 100%).
+  const c = plan.itemCounts ?? {};
+  let total = 0;
+  for (const n of Object.values(c)) total += typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  const done = (c.done ?? 0) + (c.dropped ?? 0);
+
+  const agents = agentsByLiveness(plan.agents ?? []);
+  const shown = agents.slice(0, HUD_PLAN_AVATARS_SHOWN);
+  const who = agents
+    .filter((a) => a.intent && a.intent.trim())
+    .slice(0, HUD_PLAN_WHO_SHOWN)
+    .map((a) => `${shortAssignee(a.ownerId)}: ${(a.intent as string).trim()}`)
+    .join(' · ');
+
+  return {
+    editedSec: ageSec(plan.updated, nowMs),
+    workedSec,
+    itemsDone: total > 0 ? done : null,
+    itemsTotal: total > 0 ? total : null,
+    avatars: shown.map((a) => ({
+      ownerId: a.ownerId,
+      handle: shortAssignee(a.ownerId),
+      initials: avatarInitials(a.ownerId),
+      live: a.live ?? null,
+      colorIndex: avatarColorIndex(a.ownerId),
+    })),
+    avatarsOverflow: Math.max(0, agents.length - shown.length),
+    liveCount: agents.filter((a) => a.live === true).length,
+    who: who || null,
+  };
+}
 
 export function toPlanCard(
   plan: HudPlanInput,

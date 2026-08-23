@@ -35,7 +35,12 @@ describe('WI-4975 — verify-tauri-headless --boot-only keeps the isolated app a
     expect(src).toContain('--slice="$VERIFY_SCOPE_SLICE"');
     expect(src).toContain('VERIFY_SCOPE_SLICE="papercusp-agent-session.slice"');
     expect(src).toMatch(/TAURI_SCOPE_UNIT="\$\{VERIFY_SCOPE_BASE\}-tauri-\$\{BOOT_ATTEMPTS\}"/);
-    expect(src).toContain('systemd-run --user --scope --quiet --collect --unit="${VERIFY_SCOPE_BASE}-probe"');
+    // `--property=CollectMode=inactive-or-failed` joined the invocation on
+    // 2026-08-23 (7063f790 — failed scopes must self-collect too); the probe
+    // unit and its position in the same invocation are what this guard pins.
+    expect(src).toContain(
+      'systemd-run --user --scope --quiet --collect --property=CollectMode=inactive-or-failed --unit="${VERIFY_SCOPE_BASE}-probe"',
+    );
     expect(src).toContain('VERIFY_TAURI_SCOPE_MODE');
     expect(src).toContain('VERIFY_TAURI_SCOPE_INHERITED');
   });

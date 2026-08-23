@@ -38,7 +38,13 @@ const H = vi.hoisted(() => ({
   >,
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
-vi.mock('@papercusp/sync', () => ({
+/* Spread the original (WI-38242's class): operator-core's lib/lazy-with-retry
+   RE-EXPORTS lazyWithRetry from this package, and this test's render graph
+   reaches it (PlansPane → PlanDashboardHost, plan-visibility-revamp P-005). A
+   from-scratch factory leaves that binding undefined and the file fails to
+   COLLECT with "lazyWithRetry is not a function". */
+vi.mock('@papercusp/sync', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, enabled }: { queryName: string; enabled?: boolean }) =>
     enabled === false ? blank() : (H.results[queryName] ?? blank()),

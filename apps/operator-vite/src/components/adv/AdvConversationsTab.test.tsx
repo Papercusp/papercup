@@ -160,7 +160,12 @@ let syncResults: Record<string, Record<string, unknown>> = {};
 // The ARGS the feed last asked the server for — the sender-scope contract
 // (system_only) is invisible in the DOM, so it's asserted here (WI-4462).
 let lastFeedArgs: Record<string, unknown> | null = null;
-vi.mock('@papercusp/sync', () => ({
+/* Spread the original (WI-38242's class): a from-scratch factory strips the
+   package's other exports — including lazyWithRetry, which operator-core
+   re-exports and this render graph reaches (PlansPane → PlanDashboardHost,
+   plan-visibility-revamp P-005) — and the file fails to COLLECT. */
+vi.mock('@papercusp/sync', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     if (queryName === 'dev.coordFeed') {

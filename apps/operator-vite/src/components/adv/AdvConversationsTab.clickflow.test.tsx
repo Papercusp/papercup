@@ -68,7 +68,11 @@ const ready = (data: unknown[] = []): Record<string, unknown> => ({
 const syncKey = (q: string, a: Record<string, unknown> = {}) => `${q}:${JSON.stringify(a)}`;
 let syncResults: Record<string, Record<string, unknown>> = {};
 let syncQueryCalls: Array<{ queryName: string; enabled: boolean }> = [];
-vi.mock('@papercusp/sync', () => ({
+/* Spread the original — see the identical note in AdvConversationsTab.test.tsx
+   (WI-38242's class: a from-scratch factory strips lazyWithRetry and the file
+   fails to collect). */
+vi.mock('@papercusp/sync', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     syncQueryCalls.push({ queryName, enabled });
