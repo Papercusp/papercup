@@ -417,6 +417,14 @@ export interface DrainOptions {
    *  the payload of selected hive-CONTENT ops under the current epoch + stamps
    *  `op.epoch` before append. Omitted ⇒ no encryption (plaintext, today's path). */
   epochEncrypt?: EpochEncryptCapability;
+  /**
+   * WI-40905 lifecycle resolver. Read at the selected row's encryption point,
+   * not once before the batch query: a pre-Hive pass may already be in flight
+   * when the in-place re-key refresh completes, and that stale pass must not
+   * drain a newly-captured post-boundary row with its old "no capability"
+   * snapshot. When supplied this takes precedence over `epochEncrypt`.
+   */
+  resolveEpochEncrypt?: () => EpochEncryptCapability | undefined;
   /** Test seam: override the inline-GC batch size (`OUTBOX_GC_BATCH`). Lets a
    *  test exercise the batched/bounded loop + early-break without seeding 100k+
    *  rows. Production omits it. */
@@ -628,12 +636,13 @@ export async function drainOutboxOnce(
     // a rejection (the epoch key is not yet on this device) propagates like an
     // append failure (halt + retry) so the op federates once the key arrives — it
     // is never dropped or sent in the clear.
-    if (opts.epochEncrypt && op.type === 'put' && op.value !== undefined && shouldEncryptOpForRekey(op.table)) {
+    const epochEncrypt = opts.resolveEpochEncrypt?.() ?? opts.epochEncrypt;
+    if (epochEncrypt && op.type === 'put' && op.value !== undefined && shouldEncryptOpForRekey(op.table)) {
       const encryptStage = `epoch-encrypt (row id=${r.id} table=${r.table_name})`;
       const enc = await raceRowStage(
         r.id,
         encryptStage,
-        logIfStageStalls(scope, encryptStage, opts.epochEncrypt.encryptOp(op)),
+        logIfStageStalls(scope, encryptStage, epochEncrypt.encryptOp(op)),
         rowTimeoutMs,
       );
       if (enc) op = { ...op, value: enc.value, epoch: enc.epoch };
@@ -757,8 +766,8 @@ export interface StartDrainOptions {
   /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
   epochEncrypt?: EpochEncryptCapability;
   /**
-   * WI-40905: resolve the re-key encrypt-on-capture capability at the START of
-   * each drain pass instead of snapshotting boot-time state forever. A harness
+   * WI-40905: resolve the re-key encrypt-on-capture capability at each selected
+   * row's encryption point instead of snapshotting boot-time state forever. A harness
    * can boot + start its drain while still private, then become a Hive
    * home/member via an in-place re-key. In that lifecycle the boot-time
    * capability is absent, but the SAME drain must begin encrypting after the
@@ -767,8 +776,8 @@ export interface StartDrainOptions {
    * When supplied this takes precedence over `epochEncrypt`. The resolver is
    * synchronous on purpose: the lifecycle hook performs the async dependency
    * rebuild once, then atomically swaps the capability this getter returns.
-   * One pass snapshots one capability, so a refresh cannot split a batch across
-   * two crypto contexts.
+   * Per-row resolution closes the in-flight-pass race: a pass that began before
+   * the refresh cannot later read + plaintext-drain a row captured after it.
    */
   resolveEpochEncrypt?: () => EpochEncryptCapability | undefined;
   /**
@@ -1298,12 +1307,11 @@ export function startOutboxDrain(
         const drainOpts: DrainOptions = {};
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
-        // WI-40905: snapshot the CURRENT capability once per pass. The
-        // wire-outbox lifecycle controller refreshes this after a private
-        // harness is promoted/re-keyed into a Hive; the existing drain keeps
-        // running and the next pass encrypts without a duplicate drain loop.
-        const epochEncrypt = resolveEpochEncrypt();
-        if (epochEncrypt !== undefined) drainOpts.epochEncrypt = epochEncrypt;
+        // WI-40905: thread the resolver itself, not a pass-start snapshot. A
+        // pre-refresh pass may still be between SELECT stages when the re-key
+        // completes; resolving at the row's encryption point prevents that
+        // stale pass from plaintext-draining a post-boundary capture.
+        drainOpts.resolveEpochEncrypt = resolveEpochEncrypt;
         // WI-3896: thread the per-row bound + this process's standing quarantine
         // set into every pass, so a previously-quarantined row stays skipped and
         // any row currently hanging is bounded well under `passTimeoutMs`.

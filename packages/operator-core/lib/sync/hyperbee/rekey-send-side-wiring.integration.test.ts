@@ -224,6 +224,7 @@ describe('rekeyHarness — EI-521: the in-place re-key wires the REAL outbox dra
       .fn<() => Promise<HiveRekeyBootDeps | null>>()
       .mockResolvedValueOnce(null) // booted + wired before this harness became a Hive
       .mockResolvedValueOnce({ epochEncrypt } as HiveRekeyBootDeps); // post-promotion re-key
+    let notify: ((payload: string) => void) | undefined;
 
     const wireOutbox = vi.fn(async (h: BootedHarnessHandle) => {
       await wireOutboxForHarness(h, db.sql, {
@@ -233,8 +234,11 @@ describe('rekeyHarness — EI-521: the in-place re-key wires the REAL outbox dra
           startOutboxDrain(drainHandle, pg, {
             ...opts,
             fanout: undefined,
-            listen: undefined,
-            pollMs: 50,
+            listen: async (_channel, cb) => {
+              notify = cb;
+              return () => {};
+            },
+            pollMs: 0,
             _orphanCheckIntervalMs: -1,
             _backlogAgeStallMs: 0,
             _backlogSizeStallThreshold: 0,
@@ -280,6 +284,8 @@ describe('rekeyHarness — EI-521: the in-place re-key wires the REAL outbox dra
         (${WS}, ${SLUG}, 'harness_features_consolidated', 'put', 'F-REKEY-E1',
          ${db.sql.json(featureRow('F-REKEY-E1') as unknown as Parameters<typeof db.sql.json>[0])},
          ${Date.now() + 1}, ${null})`;
+    expect(notify).toBeTypeOf('function');
+    notify?.(`${WS}::${SLUG}`);
 
     await vi.waitFor(async () => expect(await undrainedCount(db.sql)).toBe(0), {
       timeout: 5000,
@@ -289,13 +295,11 @@ describe('rekeyHarness — EI-521: the in-place re-key wires the REAL outbox dra
     expect(encryptOp).toHaveBeenCalledTimes(1);
     const keyOps = appends.filter((op) => op.table === 'hive-epoch-keys');
     expect(keyOps).toHaveLength(1);
-    expect(keyOps[0]).toMatchObject({
-      epoch: undefined,
-      value: {
-        epoch: 1,
-        member_device_pubkey: 'owner-device',
-        wrapped_key: 'owner-only-wrapped-key',
-      },
+    expect(keyOps[0]?.epoch).toBeUndefined();
+    expect(keyOps[0]?.value).toMatchObject({
+      epoch: 1,
+      member_device_pubkey: 'owner-device',
+      wrapped_key: 'owner-only-wrapped-key',
     });
     expect(appends.find((op) => op.table === 'features-by-id' && op.hbKey === 'F-REKEY-E1')).toMatchObject({
       epoch: 1,
