@@ -703,6 +703,7 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
     const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
     const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
     const priorProtocol = process.env.GIT_ALLOW_PROTOCOL;
+    const priorHeavyDir = process.env.PC_HEAVY_DIR;
 
     try {
       // A submodule carrying a file the superproject reaches by RELATIVE path — the exact
@@ -742,6 +743,10 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
 
       process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
       process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      // The real dependency preparer now drains the pc-heavy slot domain before
+      // materialization. Keep this fixture hermetic: inheriting /tmp/pc-heavy-slots
+      // makes an unrelated host-wide test run hold this unit test for minutes.
+      process.env.PC_HEAVY_DIR = join(root, "pc-heavy-slots");
       // The subject's submodule clone is its own `git clone` subprocess and does NOT
       // inherit the superproject's local `protocol.file.allow`, so the fixture grants the
       // file transport through the environment the subject forwards. Real submodule URLs
@@ -806,6 +811,8 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
       else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
       if (priorProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
       else process.env.GIT_ALLOW_PROTOCOL = priorProtocol;
+      if (priorHeavyDir === undefined) delete process.env.PC_HEAVY_DIR;
+      else process.env.PC_HEAVY_DIR = priorHeavyDir;
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -592,7 +592,7 @@ node_modules_tree_fingerprint() {
   [ -d "$root" ] || return 1
   (
     cd "$root" || exit 1
-    LC_ALL=C find . -xdev \
+    LC_ALL=C find . -xdev -mindepth 1 \
       ! -path './.papercusp-isolated-snapshot' \
       -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \
       | sha256sum | awk '{ print $1 }'
