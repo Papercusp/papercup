@@ -1,0 +1,22 @@
+[Unit]
+Description=Papercusp marketplace-api (Hono on :3057)
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/papercupai-workspace/papercusp-registry/apps/marketplace-api
+EnvironmentFile=-%h/.papercusp/marketplace-secrets.env
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+# Supervise the API process, not the development watcher. `tsx watch` can keep
+# running after its server child dies and make systemd report a false green.
+ExecStart=/bin/bash -c 'exec /home/linuxbrew/.linuxbrew/bin/npm start'
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=127
+StandardOutput=append:%h/.papercusp/logs/marketplace-api.log
+StandardError=append:%h/.papercusp/logs/marketplace-api.log
+
+[Install]
+WantedBy=default.target

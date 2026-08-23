@@ -1,3 +1,22 @@
+# Marketplace API — installation
+
+`marketplace-api.service` keeps the registry API on `:3057`. It deliberately
+runs the package's non-watching `start` script: the `dev` watcher can survive a
+crashed server child, leaving systemd active while `/healthz` is unreachable.
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+ln -sfn "$(pwd)/marketplace-api.service" ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now marketplace-api.service
+curl --fail --silent http://127.0.0.1:3057/healthz
+```
+
+Verify the live unit resolves to this repo source and that its effective
+`ExecStart` contains `npm start`, never `npm run dev`.
+
+---
+
 # Clustered operator memory envelope — installation (EI-20340243384897336)
 
 `papercup-dev-api.service.d/55-memory-envelope.conf` is the versioned,
