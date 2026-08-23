@@ -17,6 +17,7 @@ import {
   buildJsonbTypeofNegationAdvisory,
   buildClaimabilityAdvisory,
   buildCorpusNamespaceAdvisory,
+  buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
   buildEpochUnitAdvisory,
   buildSplitCompletionEvidenceAdvisory,
@@ -1708,6 +1709,49 @@ describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table 
     expect(
       buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE workspace_id <> 'papercusp-workspace'`),
     ).toBeNull();
+  });
+});
+
+describe('buildSessionTurnPartsJsonAdvisory — mixed transcript text needs a guarded decode', () => {
+  const PARTS = 'harness_shared.session_turn_parts';
+
+  it('fires for a direct text::jsonb cast and gives the safe decoder', () => {
+    const advisory = buildSessionTurnPartsJsonAdvisory(
+      `SELECT p.text::jsonb FROM ${PARTS} AS p WHERE p.workspace_id = 'default'`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('22P02');
+    expect(advisory).toContain('faithful-render');
+    expect(advisory).toContain('CASE WHEN text IS JSON THEN text::jsonb END');
+  });
+
+  it('also catches CAST(text AS json/jsonb)', () => {
+    expect(
+      buildSessionTurnPartsJsonAdvisory(`SELECT CAST(text AS json) FROM ${PARTS}`),
+    ).toContain('unsafe session_turn_parts JSON decode');
+  });
+
+  it('is silent for the guarded CASE form it recommends', () => {
+    expect(
+      buildSessionTurnPartsJsonAdvisory(
+        `SELECT CASE WHEN p.text IS JSON THEN p.text::jsonb END FROM ${PARTS} AS p`,
+      ),
+    ).toBeNull();
+    expect(
+      buildSessionTurnPartsJsonAdvisory(
+        `SELECT CASE WHEN text IS JSON THEN CAST(text AS jsonb) END FROM ${PARTS}`,
+      ),
+    ).toBeNull();
+  });
+
+  it('ignores comments, literals, other tables, and non-text JSON casts', () => {
+    expect(
+      buildSessionTurnPartsJsonAdvisory(
+        `SELECT * FROM ${PARTS} -- text::jsonb is only an example\nWHERE owner = 'text::jsonb'`,
+      ),
+    ).toBeNull();
+    expect(buildSessionTurnPartsJsonAdvisory('SELECT text::jsonb FROM harness_shared.work_items')).toBeNull();
+    expect(buildSessionTurnPartsJsonAdvisory(`SELECT payload::jsonb FROM ${PARTS}`)).toBeNull();
   });
 });
 

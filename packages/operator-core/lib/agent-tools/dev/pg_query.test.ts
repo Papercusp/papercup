@@ -181,6 +181,35 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(res as never)).not.toHaveProperty('advisory');
   });
 
+  it('attaches a guarded session_turn_parts decoder advisory to a successful read', async () => {
+    const sql =
+      "SELECT text::jsonb FROM harness_shared.session_turn_parts WHERE workspace_id = 'default'";
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never).advisory).toContain('unsafe session_turn_parts JSON decode');
+    expect(payloadOf(res as never).advisory).toContain('CASE WHEN text IS JSON THEN text::jsonb END');
+  });
+
+  it('retains the decoder advisory when the unsafe read fails before returning rows', async () => {
+    const sql =
+      "SELECT text::jsonb FROM harness_shared.session_turn_parts WHERE workspace_id = 'default'";
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('invalid input syntax for type json'), { code: '22P02' }),
+    );
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '22P02',
+      advisory: expect.stringContaining('unsafe session_turn_parts JSON decode'),
+    });
+  });
+
+  it('does not advise again after the query uses the guarded decoder', async () => {
+    const sql =
+      'SELECT CASE WHEN text IS JSON THEN text::jsonb END ' +
+      "FROM harness_shared.session_turn_parts WHERE workspace_id = 'default'";
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never)).not.toHaveProperty('advisory');
+  });
+
   it('COMPOSES both advisories — neither masks the other', async () => {
     // A query can be both wrongly-scoped AND wrongly-accessed; reporting only
     // one would send the agent back for a second round-trip on the same query.

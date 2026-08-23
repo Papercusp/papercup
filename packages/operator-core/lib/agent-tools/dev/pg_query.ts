@@ -22,6 +22,7 @@ import {
   buildClaimabilityAdvisory,
   buildEpochUnitAdvisory,
   buildCorpusNamespaceAdvisory,
+  buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
@@ -190,8 +191,18 @@ export default defineTool({
       return jsonError('missing_args', 'Pass `sql` (a read-only SELECT/WITH or EXPLAIN over SELECT/WITH) or `describe` (a relation to inspect).');
     }
     const sql = args.sql;
+    let sessionTurnPartsJsonAdvisory: string | null = null;
 
     try {
+      // EI-21163893229122924: session_turn_parts.text is heterogeneous
+      // faithful-render text, so an unguarded JSON cast can fail before a
+      // result exists. Compute this before execution so the same fix is
+      // available on both successful and failed query payloads.
+      try {
+        sessionTurnPartsJsonAdvisory = buildSessionTurnPartsJsonAdvisory(sql);
+      } catch {
+        sessionTurnPartsJsonAdvisory = null;
+      }
       // EI-20200627264509977: scope-check BEFORE executing. The old advisory was
       // attached after pgReadQuery had already returned the potentially
       // cross-tenant rows, so it diagnosed the unsafe read without preventing
@@ -305,6 +316,7 @@ export default defineTool({
           jsonbTypeofAdvisory,
           splitEvidenceAdvisory,
           nativeToolAdvisory,
+          sessionTurnPartsJsonAdvisory,
           corpusNamespaceAdvisory,
           tenantAdvisory,
           toolRoutingAdvisory,
@@ -346,6 +358,7 @@ export default defineTool({
       // guessing non-obvious column names (EI-8301).
       const info = extractPgErrorInfo(err);
       const payload: Record<string, unknown> = { error: info.message };
+      if (sessionTurnPartsJsonAdvisory) payload.advisory = sessionTurnPartsJsonAdvisory;
       if (info.hint) payload.hint = info.hint;
       if (info.detail) payload.detail = info.detail;
       if (info.code) payload.code = info.code;

@@ -1770,6 +1770,45 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * `session_turn_parts.text` is faithful-render transcript text, not a JSON
+ * argument column. A direct cast is therefore unsafe: tool_use/tool_result
+ * and thinking parts can contain ordinary or truncated text and PostgreSQL
+ * raises 22P02 before the query can return any rows.
+ *
+ * Keep this advisory at the SQL boundary so the failed query itself carries
+ * the durable fix. The recommended CASE expression is safe for a mixed
+ * corpus, while an already guarded CASE should not be nagged again.
+ */
+export function buildSessionTurnPartsJsonAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'session_turn_parts')) return null;
+
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  const textRef = String.raw`(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?text`;
+  const directCast = new RegExp(`\\b${textRef}\\s*::\\s*jsonb?\\b`, 'i');
+  const castExpression = new RegExp(`\\bcast\\s*\\(\\s*${textRef}\\s+as\\s+jsonb?\\s*\\)`, 'i');
+  if (!directCast.test(stripped) && !castExpression.test(stripped)) return null;
+
+  // Suppress the advisory for the guarded form we recommend. This is narrow
+  // on purpose: an arbitrary `WHERE text IS JSON` predicate is not treated as
+  // proof that every projected cast is protected.
+  const guardedCase = new RegExp(
+    `\\bcase\\b[\\s\\S]*?\\bwhen\\s+${textRef}\\s+is\\s+json(?:\\s+(?:value|scalar|array|object))?\\b[\\s\\S]*?\\bthen\\s+(?:${textRef}\\s*::\\s*jsonb?\\b|cast\\s*\\(\\s*${textRef}\\s+as\\s+jsonb?\\s*\\))`,
+    'i',
+  );
+  if (guardedCase.test(stripped)) return null;
+
+  return (
+    '⚠ unsafe session_turn_parts JSON decode: `text` is heterogeneous faithful-render text ' +
+    'across text/tool_use/tool_result/thinking parts, so a direct `text::json/jsonb` or ' +
+    'CAST(text AS json/jsonb) can raise PostgreSQL 22P02 on a non-JSON or truncated row. ' +
+    'Decode defensively with `CASE WHEN text IS JSON THEN text::jsonb END` (or inspect raw ' +
+    'text), and remember this transcript corpus uses workspace_id = \'default\'; it has no ' +
+    'separate JSON argument column.'
+  );
+}
+
+/**
  * Completion evidence read from ONE of its surfaces — a confident false "no evidence"
  * (EI-20203674337042683, WI-38056, plan luna-audit-fixes-2026-08-12 D-001).
  *
