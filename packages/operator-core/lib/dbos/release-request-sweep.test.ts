@@ -96,7 +96,11 @@ describe('release-request-sweep check', () => {
     await check.tick();
 
     expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
-    expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({ ownerId: 'holder-1', paths: ['packages/target.ts'] });
+    expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
+      ownerId: 'holder-1',
+      paths: ['packages/target.ts'],
+      goalRef: 'WI-1',
+    });
     expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', { harness: 'papercup' });
     expect(commentWorkItem).toHaveBeenCalledTimes(1);
     expect(commentWorkItem.mock.calls[0][1]).toContain('EXPIRED');

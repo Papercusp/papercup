@@ -426,6 +426,15 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     );
   });
 
+  it('refreshes both global and focused work-item conversation identities', () => {
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_conversations']).toEqual(
+      expect.arrayContaining([
+        'operatorConversations.current',
+        'operatorConversations.byWorkItem',
+      ]),
+    );
+  });
+
   // P-025 / no-http-anywhere-2026-07-28 D-016 + D-018: the chat pane used to run a
   // second query, `operatorTurns.byConversation`, over the same listTurnsRecent()
   // rows — ~200 turns fetched twice per mount. It was merged into

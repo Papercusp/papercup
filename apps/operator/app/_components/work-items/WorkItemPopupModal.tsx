@@ -29,13 +29,13 @@
  *    below (flex + `overflow: hidden`, so there's exactly one scroller, not
  *    two nested ones).
  *  - unsaved-edit guard: does not apply. WorkItemDetail has no in-place edit
- *    state (its only action is "open chat"), unlike PlanDetail's Vditor
- *    editor — nothing here can be silently discarded on close.
+ *    state, unlike PlanDetail's Vditor editor — nothing here can be silently
+ *    discarded on close. Its legacy Chat action is hidden in this rehost;
+ *    inline work-item Discuss is the sole chat entry point.
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
-import ChatPanel from '../../harness/ChatPanel';
 import { WorkItemDetail } from '../../adv/harnesses/DetailPanel';
 import type { WorkItemRow } from '../../adv/harnesses/WorkItemsPanel';
 import './work-item-popup.css';
@@ -64,21 +64,6 @@ export default function WorkItemPopupModal({
 }) {
   const open = id !== null;
 
-  // WI-6023: the chat this popup is HOSTING, if the user pressed Chat. The
-  // popup is mounted by OperatorChat, which has no dock in its tree, so the
-  // dock's OPEN_CHAT_EVENT path cannot work here — we mount <ChatPanel>
-  // ourselves (the PlanChat precedent) and keep it in local state. Not nuqs:
-  // this is transient within-popup view state whose parent (the open item id)
-  // is already the URL-addressable handle, and a stale chatId in the URL
-  // would outlive the popup that owns it.
-  const [chatId, setChatId] = useState<string | null>(null);
-
-  // Re-target (onSelect) or close must drop the hosted chat — otherwise the
-  // panel for the PREVIOUS item stays mounted over the new one.
-  useEffect(() => {
-    setChatId(null);
-  }, [id]);
-
   const query = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.detail',
     args: { harnessSlug: harnessSlug ?? '', id: id ?? '' },
@@ -93,20 +78,6 @@ export default function WorkItemPopupModal({
     body = <div className="wi-popup__empty">Loading {id}…</div>;
   } else if (!row || row.id !== id) {
     body = <div className="wi-popup__empty">No item found for {id}.</div>;
-  } else if (chatId) {
-    body = (
-      <div className="wi-popup__chat" data-testid="wi-popup-chat">
-        <button
-          type="button"
-          className="wi-popup__chat-back"
-          onClick={() => setChatId(null)}
-          data-testid="wi-popup-chat-back"
-        >
-          ← Back to {id}
-        </button>
-        <ChatPanel slug={harnessSlug} chatId={chatId} mode="discuss" />
-      </div>
-    );
   } else {
     // onBack is intentionally omitted — the popup has no selection history
     // stack (unlike the Working tab's swap panel); BackChip renders nothing
@@ -116,7 +87,7 @@ export default function WorkItemPopupModal({
         slug={harnessSlug}
         workItem={row}
         onSelect={onSelect}
-        onOpenChat={setChatId}
+        showChatAction={false}
       />
     );
   }

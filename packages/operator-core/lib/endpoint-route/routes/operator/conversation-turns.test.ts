@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../operator-conversations', () => ({
   getOrCreateActiveConversation: vi.fn(),
+  getConversationById: vi.fn(),
   appendTurn: vi.fn(),
   listTurnsRecent: vi.fn(),
 }));
@@ -21,12 +22,14 @@ vi.mock('../../../sync-sse', () => ({
 import routes from './conversation-turns';
 import {
   getOrCreateActiveConversation,
+  getConversationById,
   appendTurn,
   listTurnsRecent,
 } from '../../../operator-conversations';
 import { notifySyncInvalidate } from '../../../sync-sse';
 
 const getConv = vi.mocked(getOrCreateActiveConversation);
+const getExplicitConv = vi.mocked(getConversationById);
 const append = vi.mocked(appendTurn);
 const listRecent = vi.mocked(listTurnsRecent);
 const invalidate = vi.mocked(notifySyncInvalidate);
@@ -41,6 +44,7 @@ const [get, post] = routes as unknown as RouteTool[];
 beforeEach(() => {
   vi.clearAllMocks();
   getConv.mockResolvedValue({ id: 'conv-real-uuid' } as never);
+  getExplicitConv.mockImplementation(async (id) => ({ id } as never));
   append.mockResolvedValue({ id: 't1', seq: 5 } as never);
   listRecent.mockResolvedValue({ turns: [], hasMoreEarlier: false } as never);
 });
@@ -72,14 +76,24 @@ describe('POST /operator/conversations/:id/turns', () => {
     });
   });
 
-  it('leaves a concrete id untouched (no active-resolution round-trip)', async () => {
+  it('validates a concrete id in the active workspace before appending', async () => {
     const res = await post.handler(postReq({ role: 'assistant', text: 'yo' }), {
       params: { id: 'conv-explicit' },
     });
     const j = (await res.json()) as { conversationId?: string };
     expect(getConv).not.toHaveBeenCalled();
+    expect(getExplicitConv).toHaveBeenCalledWith('conv-explicit');
     expect(append.mock.calls[0][0]).toMatchObject({ conversationId: 'conv-explicit' });
     expect(j.conversationId).toBe('conv-explicit');
+  });
+
+  it('fails closed when a concrete id is outside the active workspace', async () => {
+    getExplicitConv.mockResolvedValueOnce(null);
+    const res = await post.handler(postReq({ role: 'user', text: 'do not write' }), {
+      params: { id: 'foreign-conversation' },
+    });
+    expect(res.status).toBe(404);
+    expect(append).not.toHaveBeenCalled();
   });
 });
 

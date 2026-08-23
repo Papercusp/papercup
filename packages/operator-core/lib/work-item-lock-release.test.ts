@@ -84,11 +84,38 @@ describe('releaseReclaimedWorkItemLocks', () => {
     ]);
   });
 
-  it('does not query or release when the item has no declared paths', async () => {
+  it('does not query or release when the item has no declared paths or goal', async () => {
     const result = await releaseReclaimedWorkItemLocks({ ownerId: 'holder', paths: [] });
     expect(result).toEqual({ releases: [], failures: 0, skipped: 'no-paths' });
     expect(readQueue).not.toHaveBeenCalled();
     expect(tryRelease).not.toHaveBeenCalled();
+  });
+
+  it('releases goal-associated locks even when the item has no declared paths', async () => {
+    readQueue.mockResolvedValue({
+      active_locks: [
+        { coordination_domain: '/repo/staging', lock_id: 'lock-item', owner: 'holder', path: 'actual.ts', goal_ref: 'WI-item' },
+        { coordination_domain: '/repo/staging', lock_id: 'lock-other', owner: 'holder', path: 'other.ts', goal_ref: 'WI-other' },
+        { coordination_domain: '/repo/staging', lock_id: 'lock-legacy', owner: 'holder', path: 'legacy.ts', goal_ref: null },
+      ],
+      waiting: [],
+    });
+    tryRelease.mockResolvedValue({ released: ['actual.ts'], heldBefore: 1 });
+
+    const result = await releaseReclaimedWorkItemLocks({ ownerId: 'holder', paths: [], goalRef: 'WI-item' });
+
+    expect(readQueue).toHaveBeenCalledWith({}, { coordinationDomain: null, owner: 'holder' });
+    expect(tryRelease).toHaveBeenCalledTimes(1);
+    expect(tryRelease).toHaveBeenCalledWith({}, {
+      coordinationDomain: '/repo/staging',
+      owner: 'holder',
+      lockId: 'lock-item',
+      paths: ['actual.ts'],
+    });
+    expect(result).toMatchObject({ failures: 0, skipped: null });
+    expect(result.releases).toEqual([
+      expect.objectContaining({ lockId: 'lock-item', paths: ['actual.ts'], released: ['actual.ts'] }),
+    ]);
   });
 
   it('fails open when the lock read fails', async () => {

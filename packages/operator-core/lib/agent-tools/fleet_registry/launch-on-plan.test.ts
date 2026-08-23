@@ -66,9 +66,9 @@ describe('persisted fleet launch profile recovery guard (D-004)', () => {
     compactionLimit: 400_000,
   };
 
-  it('accepts omission, repeated values, and a headless placement delta', () => {
+  it('accepts omission, repeated values, and a host-placement delta', () => {
     expect(persistedFleetLaunchProfileConflicts({}, saved)).toEqual([]);
-    expect(persistedFleetLaunchProfileConflicts({ headless: true } as never, saved)).toEqual([]);
+    expect(persistedFleetLaunchProfileConflicts({ headless: false }, saved)).toEqual([]);
     expect(persistedFleetLaunchProfileConflicts({ name: 'Profiled Fleet', count: 30, placement: 'local' } as never, saved)).toEqual([]);
     expect(persistedFleetLaunchProfileConflicts({ plan: 'byoc-plan', model: 'gpt-5.6-sol:high' }, saved)).toEqual([]);
   });
@@ -76,6 +76,9 @@ describe('persisted fleet launch profile recovery guard (D-004)', () => {
   it('rejects conflicting reconstruction', () => {
     expect(persistedFleetLaunchProfileConflicts({ account: 'auto' }, saved)).toEqual([
       { field: 'account', saved: 'default', requested: 'auto' },
+    ]);
+    expect(persistedFleetLaunchProfileConflicts({ headless: true }, saved)).toEqual([
+      { field: 'headless', saved: false, requested: true },
     ]);
   });
 

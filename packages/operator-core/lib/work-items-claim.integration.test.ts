@@ -98,6 +98,22 @@ beforeAll(async () => {
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
+  // The claim path emits awaited claim/release events and arms lifecycle-bound
+  // interests. Keep this throwaway DB on the event schema those side effects
+  // actually use; without it, the CAS assertions are obscured by fail-soft
+  // event warnings and missing-relation errors (EI-21196424219621734).
+  for (const migration of [
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '387-event-wake-delivery-source.sql',
+    '533-add-event-awaits-payload-filter.sql',
+    '541-predicate-watches.sql',
+    '599-event-announcement-generation.sql',
+    '632-event-key-fire-latch.sql',
+    '871-lifecycle-bound-watches.sql',
+  ]) {
+    await db.sql.unsafe(readMigration(migration)).simple();
+  }
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
@@ -112,7 +128,12 @@ beforeAll(async () => {
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items`;
+  await db.sql`
+    TRUNCATE harness_shared.work_items,
+             harness_shared.event_awaits,
+             harness_shared.event_wake_deliveries,
+             harness_shared.event_key_fires,
+             harness_shared.predicate_watches`;
   releaseReclaimedWorkItemLocks.mockReset();
   releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
 });
@@ -181,6 +202,20 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
     });
 
+    it('caller can atomically transfer an issue-family claim to a named assignee', async () => {
+      await seedIssue('EI-self-transfer', { takenBy: 'former-holder' });
+
+      const claimed = await wi.claimWorkItem('EI-self-transfer', 'successor', {
+        harness: H,
+        fromHolder: 'former-holder',
+      });
+
+      expect(claimed?.assignee).toBe('successor');
+      const row = await db.sql<{ taken_by: string | null }[]>`
+        SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-self-transfer'`;
+      expect(row[0].taken_by).toBe('successor');
+    });
+
     it('expected-holder transfer releases only the prior holder touch-set', async () => {
       const transferPath = 'packages/operator-core/lib/external-triggers/slack-socket-manager.ts';
       await seedFeature('F-transfer-locks', { takenBy: 'former-holder' });
@@ -198,6 +233,7 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
         ownerId: 'former-holder',
         paths: [transferPath],
+        goalRef: 'F-transfer-locks',
       });
     });
 

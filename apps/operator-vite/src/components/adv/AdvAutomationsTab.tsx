@@ -390,6 +390,10 @@ export default function AdvAutomationsTab() {
       {view === 'flow' ? (
         <>
           <div className="pc-automations__flow-toolbar">
+            <label>
+              <Search size={14} aria-hidden />
+              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search trigger flows" aria-label="Search trigger flows" />
+            </label>
             <div role="group" aria-label="Filter trigger flows">
               {([
                 ['all', `All flows · ${flows.length}`],
@@ -399,10 +403,6 @@ export default function AdvAutomationsTab() {
                 <button key={id} type="button" data-active={flowFilter === id} onClick={() => void setFlowFilter(id)}>{label}</button>
               ))}
             </div>
-            <label>
-              <Search size={14} aria-hidden />
-              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search trigger flows" aria-label="Search trigger flows" />
-            </label>
           </div>
           <div className="pc-automations__workspace pc-automations__flow-workspace">
             <FlowCanvas

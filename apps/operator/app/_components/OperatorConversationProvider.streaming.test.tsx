@@ -94,6 +94,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
   });
 
   beforeEach(() => {
+    vi.clearAllMocks();
     sessionStorage.clear();
     sessionStorage.setItem(
       "papercusp.operatorMessages",
@@ -283,5 +284,76 @@ describe("OperatorConversationProvider streamed say projection", () => {
         .getByTestId("messages")
         .querySelectorAll('[data-role="assistant"]'),
     ).toHaveLength(1);
+  });
+
+  it("fails closed before optimistic mutation when a scoped id has not resolved", async () => {
+    const generationFn: GenerationFn = vi.fn(async () => ({
+      chunks: (async function* () {
+        yield "<say>must not run</say>";
+      })(),
+    }));
+
+    render(
+      <OperatorConversationProvider
+        generationFn={generationFn}
+        target={{ kind: "work-item", conversationId: null }}
+      >
+        <Probe />
+      </OperatorConversationProvider>,
+    );
+
+    // Scoped runtimes do not hydrate the global sessionStorage paint cache.
+    expect(screen.queryByText("Existing conversation")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("error").textContent).toMatch(
+        /still resolving.*No message was sent/i,
+      );
+    });
+    expect(generationFn).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByTestId("messages").children).toHaveLength(0);
+  });
+
+  it("uses only the explicit scoped id for history, writes, and generation", async () => {
+    const generationFn: GenerationFn = vi.fn(async () => ({
+      chunks: (async function* () {
+        yield "<say>Scoped reply.</say>";
+      })(),
+    }));
+
+    render(
+      <OperatorConversationProvider
+        generationFn={generationFn}
+        target={{ kind: "work-item", conversationId: "work-item-conversation-42" }}
+      >
+        <Probe />
+      </OperatorConversationProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+
+    await screen.findByText("Scoped reply.");
+    await waitFor(() => expect(generationFn).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(generationFn).mock.calls[0][0]).toMatchObject({
+      conversationId: "work-item-conversation-42",
+      modality: "text",
+      mayAskActive: false,
+    });
+
+    const urls = vi
+      .mocked(fetch)
+      .mock.calls.map(([input]) => String(input));
+    expect(urls.length).toBeGreaterThanOrEqual(3);
+    expect(
+      urls.every((url) =>
+        url.includes("/api/operator/conversations/work-item-conversation-42/turns"),
+      ),
+    ).toBe(true);
+    expect(urls.some((url) => url.includes("/active/"))).toBe(false);
+
+    // No scoped turn may overwrite the root/global paint cache.
+    expect(JSON.parse(sessionStorage.getItem("papercusp.operatorMessages") ?? "[]")).toEqual([
+      { role: "system", content: "Existing conversation" },
+    ]);
   });
 });

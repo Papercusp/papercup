@@ -205,12 +205,14 @@ export interface PersistedFleetLaunchProfileConflict {
   requested: unknown;
 }
 
-/** Existing fleets recover from their persisted recipe; only placement and
- * target size may change here. Boot-baked changes use fleet:respawn-member. */
+/** Existing fleets recover from their persisted recipe; only host placement
+ * (`local` / `remote`) and target size may change here. Terminal visibility is
+ * boot-baked launch behavior, so changing `headless` requires an explicit
+ * fleet:respawn-member transition rather than an ad-hoc top-up override. */
 export function persistedFleetLaunchProfileConflicts(
   requested: {
     plan?: string; harness?: string; agent?: string; model?: string;
-    account?: string; carry?: 'warm' | 'cold'; role?: string; brief?: string;
+    account?: string; headless?: boolean; carry?: 'warm' | 'cold'; role?: string; brief?: string;
     launchContext?: string; contextSize?: 'full' | 'trimmed';
     compactionLimit?: number; extraArgs?: string[];
     members?: readonly unknown[]; perMemberLaunchContext?: readonly string[];
@@ -223,6 +225,7 @@ export function persistedFleetLaunchProfileConflicts(
     agent: saved.agent,
     model: composeModelSpec(saved.model, saved.effort),
     account: saved.account,
+    headless: saved.headless ?? true,
     carry: saved.carry,
     role: saved.role,
     brief: saved.brief,
