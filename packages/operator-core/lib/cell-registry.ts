@@ -82,6 +82,74 @@ export interface CellFalsifier {
   kills: string;
 }
 
+/** One entry of an assessment's closed code map. Both fields are required and
+ *  non-empty — see `CellAssessmentSpec.codes` for why `meaning` alone is not enough. */
+export interface CellAssessmentCode {
+  /** What this code says about the subject, in one sentence. */
+  meaning: string;
+  /** What a caller may safely DO under this code. An ACTION, not a reassurance. */
+  safeAction: string;
+}
+
+/**
+ * D-008 — WHAT THE VALUE MEANS, as a closed enum a program can branch on.
+ *
+ * The counterpart to `headline`: that field says WHERE the raw measurement is, this
+ * says how to READ it. They are separate stable properties on purpose (D-003) — the
+ * raw value keeps its existing type for predicates, thresholds, fact dependency
+ * digests and auditing, and collapsing the two into a number-or-enum union would
+ * break every caller that genuinely consumes telemetry in order to serve the ones
+ * that want semantics.
+ *
+ * ⚠ THIS IS NOT A FALSIFIER, AND THE DIFFERENCE IS THE WHOLE POINT (D-004). A
+ * falsifier asserted a NEGATIVE — "here is the reading this kills" — which is
+ * unactionable on its own: the caller learns what not to conclude and is left to
+ * invent what to do instead. An assessment states the positive: a code, what it
+ * MEANS, and the action that is SAFE under it. There is deliberately no `kills`, no
+ * `measurement`, and no negative-inference field anywhere in this contract.
+ *
+ * ⚠ OPTIONAL ONLY FOR THE LENGTH OF THE MIGRATION (P-003 → P-006). P-004 populates
+ * all ten built-in cells from the P-001 truth tables; P-006 deletes `falsifier` and
+ * makes this required. It is declared optional HERE only so that introducing it does
+ * not strand the ten live registrations and the test fixtures that construct a
+ * `CellSpec` — the required-field strand `lint:required-field-strands` exists to
+ * catch. Do NOT read the `?` as "assessment is discretionary": a value-bearing cell
+ * without one is unfinished, not exempt.
+ */
+export interface CellAssessmentSpec {
+  /**
+   * The ONE path in this cell's own resolver payload carrying the enum code.
+   *
+   * Same-payload by construction (D-004, axis 5): the assessment is a LENS on the
+   * derivation already in hand, never a second dispatch. A cell whose semantics
+   * needed another call would be two cells.
+   */
+  path: string;
+  /**
+   * The CLOSED map — every code this cell can emit → what it means and what is safe
+   * to do under it.
+   *
+   * CLOSED is load-bearing. An undeclared code found on a payload can only ever
+   * downgrade the read to `unavailable`; it is never passed through. That is what
+   * lets generic registry code TRANSPORT domain meaning without ever DERIVING it —
+   * the registry never learns what a gate verdict is, it only carries what the
+   * owning resolver declared.
+   *
+   * `safeAction` is required beside `meaning` because meaning alone reproduces the
+   * exact defect this contract was written against: a reason a human can read and a
+   * program cannot act on.
+   */
+  codes: Readonly<Record<string, CellAssessmentCode>>;
+  /**
+   * The same-payload paths that SUBSTANTIATE the code. Non-empty and distinct.
+   *
+   * This is where a retiring falsifier's independent measurement goes when it still
+   * carries information (D-004): kept as evidence FOR a positive reading, rather
+   * than its `kills` prose translated mechanically into a negative one.
+   */
+  evidence: readonly string[];
+}
+
 /** D-038 axis 4 — no cell may be registered on FIXTURE evidence alone. A fixture
  *  cannot catch a resolver that is fresh, correctly-versioned and confidently wrong
  *  (the `realGit` class), so registration demands a live-exercise attestation. */
@@ -296,8 +364,15 @@ export interface CellSpec {
   owner: string;
   /** Field path of the headline value this cell answers with. */
   headline: string;
-  /** Axis 1. */
+  /** Axis 1. ⚠ RETIRING — D-006/P-006 delete this field once every cell declares an
+   *  `assessment` below. Both are carried only for the length of the migration, and
+   *  there is deliberately NO alias or auto-translation between them: a `kills`
+   *  sentence is a negative claim and a `safeAction` is a positive one, so mapping
+   *  one onto the other mechanically would manufacture guidance nobody authored. */
   falsifier: CellFalsifier;
+  /** D-008 — WHAT THE VALUE MEANS. Optional ONLY until P-006; see
+   *  {@link CellAssessmentSpec} for why, and for why that `?` is not a licence. */
+  assessment?: CellAssessmentSpec;
   /** Axis 2 — can the verdict be unknown? If so the rules below bind. */
   nullable: boolean;
   /**

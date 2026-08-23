@@ -97,3 +97,21 @@ const UNKNOWN_CODE_PROSE: Record<CellUnknownCode, string> = {
   'not-measured': 'The value was not measured on this read.',
   'insufficient-data': 'There was not enough data to reach a verdict.',
 };
+
+/**
+ * Every `CellUnknownCode`, as a runtime value.
+ *
+ * DERIVED from the prose map rather than written out a second time, so the list and
+ * the type cannot drift: `UNKNOWN_CODE_PROSE` is a `Record<CellUnknownCode, …>`, so
+ * the compiler already forces it to be exhaustive, and reading its keys inherits that
+ * guarantee for free. A hand-maintained sibling array is exactly the second copy of a
+ * truth the code already owns that this repo's derived-truth rule exists to prevent.
+ *
+ * Consumer (D-008): the cell registry rejects an assessment enum that reuses one of
+ * these. Read-health and domain meaning are different vocabularies — a cell answering
+ * `resolver-failed` as though it were a domain verdict would let an apparatus failure
+ * masquerade as a measured finding about the subject.
+ */
+export const CELL_UNKNOWN_CODES: readonly CellUnknownCode[] = Object.freeze(
+  Object.keys(UNKNOWN_CODE_PROSE) as CellUnknownCode[],
+);
