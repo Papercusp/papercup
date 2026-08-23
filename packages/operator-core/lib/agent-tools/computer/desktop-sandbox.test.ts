@@ -116,17 +116,25 @@ describe('buildDesktopSandboxCommand — D-015 mount plan', () => {
     // and would pass vacuously on a box without ~/.aws), and the property worth pinning is
     // that these two sandboxes cannot drift apart. A copy-paste of the policy back into this
     // module fails here even if it happens to be correct on the day it is written.
-    const argv = build({ homeDir: HOME }).argv;
-    const expected = credentialMaskArgs(HOME);
-    const start = argv.indexOf(expected[0]!);
-    expect(expected.length).toBeGreaterThan(0); // the emitter must produce SOMETHING to compare
-    expect(argv.slice(start, start + expected.length)).toEqual(expected);
+    // maskExists is stubbed TRUE so every mask target is emitted regardless of which
+    // dotfiles exist on the machine running this — otherwise the comparison could pass
+    // while comparing two empty lists.
+    const allExist = () => true;
+    const argv = build({ homeDir: HOME }, { maskExists: allExist }).argv;
+    const expected = credentialMaskArgs(HOME, allExist);
+    expect(expected.length).toBeGreaterThan(3); // a real list, not a vacuous match
+
+    // Locate the block as a SUBSEQUENCE. `indexOf(expected[0])` is wrong here and was the
+    // first thing this test caught: `--ro-bind` also opens the root bind at argv[0], so a
+    // first-match search compares against the wrong region entirely.
+    const start = argv.findIndex((_, i) => expected.every((e, k) => argv[i + k] === e));
+    expect(start).toBeGreaterThan(-1);
   });
 
   it('never masks a FILE credential with --tmpfs, which would no-op and leave it readable', () => {
     // The specific bug the shared emitter exists to prevent (`~/.npmrc` holds auth tokens).
     // Read off the emitter's real output so it holds for whatever the mask list becomes.
-    const args = credentialMaskArgs(HOME);
+    const args = credentialMaskArgs(HOME, () => true);
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--tmpfs') expect(args[i + 1]).not.toMatch(/\.npmrc$/);
     }

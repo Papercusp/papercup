@@ -497,7 +497,7 @@ export function buildCapabilitySandboxCommand(
   // `~/.config/gcloud` broke every capability:bash on the bwrap-fallback path.)
   // P-019: union any runtime add-only mask dirs (exec_sandbox:set_policy) over the baked set —
   // tighten-only (extra masks; the baked set is never removable). Additions are dirs ⇒ tmpfs.
-  argv.push(...credentialMaskArgs(home));
+  argv.push(...credentialMaskArgs(home, maskExists));
   if (denyAllEgress) argv.push('--unshare-net');
   // No `--clearenv`: a capability:bash build/test needs the caller's env (PATH,
   // HOME, npm/cargo config); the caller passes the same env to the bwrap spawn and

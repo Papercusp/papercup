@@ -104,6 +104,14 @@ export interface DesktopSandboxOpts {
    * combination with the mount plan below, which is the point of that ruling.
    */
   denyNetwork?: boolean;
+  /**
+   * Existence probe for credential-mask targets, injectable so this builder is genuinely
+   * PURE given its opts (it defaults to `existsSync`). The masks SKIP absent targets —
+   * bwrap cannot create a mount point under a read-only root and aborts the whole command —
+   * so without this seam a unit test's assertions would silently depend on which dotfiles
+   * happen to exist on the machine running it.
+   */
+  maskExists?: (abs: string) => boolean;
 }
 
 export interface DesktopSandboxDecision {
@@ -209,7 +217,7 @@ export function buildDesktopSandboxCommand(
   // sandboxes. These paths sit under the private HOME tmpfs already, but the masks are
   // applied anyway: that tmpfs is a consequence of how we chose to give the app a writable
   // home, and a later change to that choice must not silently un-mask ~/.ssh.
-  argv.push(...credentialMaskArgs(home));
+  argv.push(...credentialMaskArgs(home, opts.maskExists));
 
   // NO `--die-with-parent`. A desktop app is long-lived and deliberately outlives the call
   // that launched it; EI-16635 is the recorded case of that flag killing exactly this shape
