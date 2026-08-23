@@ -324,44 +324,46 @@
   color: var(--fg, #e7e7ea);
   background: var(--bg-1, #0b1220);
 }
-.plans-pane__filter-toggle {
+/* Sort picker (WI-40982) — the Radix Select trigger, standing in the slot the
+   retired "Filters" disclosure button used to hold. Sized to the search shell
+   beside it (same 44px min-height + 10px radius) so the toolbar reads as one
+   row of controls rather than two unrelated widgets. `flex: 0 1 auto` with a
+   max-width lets a long order name ("Recently updated") give way to the search
+   box instead of squeezing it, and the label ellipsises rather than wrapping. */
+.plans-pane__sort {
   min-height: 44px;
-  padding: 0 10px;
-  flex: 0 0 auto;
+  padding: 0 9px;
+  flex: 0 1 auto;
+  max-width: 48%;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
   border-radius: 10px;
   color: var(--fg-mute, #c2c2c9);
   background: transparent;
+  font-family: inherit;
   font-size: 11.5px;
   font-weight: 650;
   cursor: pointer;
 }
-.plans-pane__filter-toggle:hover {
+.plans-pane__sort:hover {
   color: var(--fg, #e7e7ea);
   border-color: var(--fg-mute, #a6a6ad);
 }
-.plans-pane__filter-toggle.is-open {
+/* Radix stamps data-state="open" on the trigger while the menu is up. */
+.plans-pane__sort[data-state="open"] {
   color: var(--accent, #8b5cf6);
   border-color: color-mix(in srgb, var(--accent, #8b5cf6) 50%, transparent);
   background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent);
 }
-.plans-pane__filter-active {
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
-  border-radius: 999px;
-  color: #fff;
-  background: var(--accent, #8b5cf6);
-  font-size: 9px;
-  font-weight: 750;
-  line-height: 14px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+.plans-pane__sort-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.plans-pane__filter-toggle:focus-visible,
+.plans-pane__sort:focus-visible,
 .plans-pane__search-clear:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent, #8b5cf6) 70%, transparent);
   outline-offset: 1px;
