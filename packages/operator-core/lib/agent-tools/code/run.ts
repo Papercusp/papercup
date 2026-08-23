@@ -22,6 +22,11 @@ import { captureRecipe } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
 import { recipeRevision } from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import { recordRecipeRun } from '../../code-recipes-store';
+import {
+  normalizeExecutionTrace,
+  type NormalizedExecutionTrace,
+} from '../../orchestration-trace';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
@@ -198,6 +203,22 @@ export default defineTool({
       wrapDispatch: bindCurrentCallerDispatch,
     });
 
+    // P-013: capture the execution evidence BEFORE shaping the model-facing
+    // payload. callRecords are internal dispatch evidence; the normalized trace
+    // keeps the safe subset and the raw records never cross the result door.
+    let executionTrace: NormalizedExecutionTrace | null = null;
+    try {
+      executionTrace = await normalizeExecutionTrace({
+        script,
+        backend: 'server',
+        tools: all,
+        allowed,
+        callRecords: result.callRecords,
+      });
+    } catch (err) {
+      ctx.log(`code:run trace normalization failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+    }
+
     // CAPTURE + DEDUP (code-recipes-2026-06-21 P-003/P-004): every SUCCESSFUL, non-dry-run
     // code:run is saved as a reusable recipe (D-012), and the capture path ALSO returns the
     // top prior recipes that already do something similar (semantic + structural dedup, D-003).
@@ -214,8 +235,14 @@ export default defineTool({
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
     // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
     if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
-      recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed);
+      recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed, executionTrace);
       similarRecipes = recipeCapture?.similarRecipes ?? [];
+    }
+    // Failed, dry-run, capture-disabled, and capture-failed scripts still get a
+    // durable trace row. A successful capture already recorded this same trace
+    // against its recipe, so do not emit a duplicate execution row.
+    if (executionTrace && !recipeCapture) {
+      await maybeRecordTraceOnly(ctx, executionTrace, Boolean(result.ok));
     }
 
     // P-007 (agent-tooling-token-efficiency): cut the discovery ritual. The old flow demanded a
@@ -274,7 +301,8 @@ export default defineTool({
     // D-019/P-027: media is an MCP content-item variant, not part of P-006's JSON envelope.
     // Keep it out of the serialized text payload (which would duplicate the base64 and charge
     // context twice); append only the orchestrator's validated final blocks below.
-    const { media, ...resultForPayload } = result;
+    const { media, callRecords: traceOnlyCallRecords, ...resultForPayload } = result;
+    void traceOnlyCallRecords;
     const shownResult = shapeCodeRunSummary(
       shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(resultForPayload))),
     );
@@ -1266,6 +1294,7 @@ async function maybeCaptureRecipe(
   ctx: UnifiedToolContext,
   tools: ReturnType<typeof listAllProjectedTools>,
   allowed: ReadonlySet<string>,
+  executionTrace: NormalizedExecutionTrace | null,
 ): Promise<CodeRunRecipeCapture | null> {
   try {
     const workspaceId = ctx.workspaceId;
@@ -1301,6 +1330,7 @@ async function maybeCaptureRecipe(
         description: args.description,
         tools,
         allowed,
+        executionTrace,
       },
     );
     return captured
@@ -1313,5 +1343,42 @@ async function maybeCaptureRecipe(
   } catch (err) {
     ctx.log(`code:run recipe capture wiring failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
     return null;
+  }
+}
+
+/** Persist a script execution that has no durable recipe row to attach to. */
+async function maybeRecordTraceOnly(
+  ctx: UnifiedToolContext,
+  executionTrace: NormalizedExecutionTrace,
+  success: boolean,
+): Promise<void> {
+  try {
+    const workspaceId = ctx.workspaceId;
+    if (!workspaceId) return;
+    const { resolveLearningPotSlug } = await import('../../learning/pot-scope');
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+    let ownerId: string | null = null;
+    try {
+      ownerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      ownerId = null;
+    }
+    const potSlug = await resolveLearningPotSlug({
+      workspaceId,
+      harnessSlug: ctx.harnessSlug ?? null,
+    });
+    await recordRecipeRun(getOrgPg().sql, {
+      recipeId: null,
+      workspaceId,
+      potSlug,
+      agentOwner: ownerId,
+      agentRole: ctx.role ?? null,
+      success,
+      reused: false,
+      executionTrace,
+      countTowardRecipe: false,
+    });
+  } catch (err) {
+    ctx.log(`code:run trace record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
   }
 }

@@ -25,8 +25,8 @@ import {
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
-/** A throwaway 384-dim embedding (the store only round-trips presence, not value). */
-const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 384 }, () => seed);
+/** A throwaway 768-dim embedding (the store only round-trips presence, not value). */
+const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 768 }, () => seed);
 
 describe('code_recipes store (real PG)', () => {
   let db: OrgTestDb;
@@ -153,6 +153,65 @@ describe('code_recipes store (real PG)', () => {
       SELECT count(*)::text AS count FROM harness_shared.code_recipe_runs
        WHERE recipe_id = 'runner' AND workspace_id = ${ws}`;
     expect(parseInt(runRows[0].count, 10)).toBe(2);
+  });
+
+  it('records a trace-only execution and can preserve recipe counters for preview/failure evidence', async () => {
+    const ws = 'ws-cr-traces';
+    const executionTrace = {
+      schemaVersion: 1 as const,
+      backend: 'server' as const,
+      requirements: { tools: [], capabilities: [], premises: ['host:same'] as ['host:same'] },
+      toolGraph: { staticCalls: [], runtimeCalls: [] },
+      stableBindings: [],
+      ephemeralValues: [],
+      redactedSecretPaths: [],
+      portability: { host: 'same' as const, replayability: 'deterministic' as const, ephemeralKinds: [] },
+      structuralFingerprint: 'c'.repeat(64),
+    };
+
+    await recordRecipeRun(db.adminSql, {
+      recipeId: null,
+      workspaceId: ws,
+      potSlug: 'alpha',
+      success: false,
+      executionTrace,
+      countTowardRecipe: false,
+    });
+
+    await upsertRecipe(db.adminSql, {
+      id: 'previewed',
+      title: 'Previewed',
+      description: 'd',
+      script: 'return 1;',
+      potSlug: null,
+    });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: 'previewed',
+      workspaceId: ws,
+      potSlug: 'alpha',
+      success: true,
+      reused: true,
+      executionTrace,
+      countTowardRecipe: false,
+    });
+
+    const traceRows = await db.adminSql<Array<{
+      recipe_id: string | null;
+      execution_trace: typeof executionTrace;
+      structural_fingerprint: string;
+    }>>`
+      SELECT recipe_id, execution_trace, structural_fingerprint
+        FROM harness_shared.code_recipe_runs
+       WHERE workspace_id = ${ws}
+       ORDER BY id`;
+    expect(traceRows).toHaveLength(2);
+    expect(traceRows[0]).toEqual({
+      recipe_id: null,
+      execution_trace: executionTrace,
+      structural_fingerprint: executionTrace.structuralFingerprint,
+    });
+    expect(traceRows[1].recipe_id).toBe('previewed');
+    expect(await getRecipe(db.adminSql, 'previewed')).toMatchObject({ runCount: 0, successCount: 0, lastRunAt: null });
   });
 
   it('listRecipes returns the global recipe corpus', async () => {

@@ -55,6 +55,7 @@ import { getTxPool } from '../locks/su-lock-store';
 import { readIdentity } from '../locks/identity';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import { normalizeExecutionTrace } from '../../orchestration-trace';
 
 interface RunItem {
   id: string;
@@ -242,6 +243,14 @@ export default defineTool({
     // each wrote its own telemetry row, so this row is wrapper overhead when > 0.
     let totalInnerDispatches = 0;
     let liveBoundRefsPromise: Promise<RecipeAuthorityRefs> | null = null;
+    let runPotSlugPromise: Promise<string | null> | null = null;
+    const runPotSlug = (): Promise<string | null> => {
+      runPotSlugPromise ??= resolveLearningPotSlug({
+        workspaceId,
+        harnessSlug: ctx.harnessSlug ?? null,
+      });
+      return runPotSlugPromise;
+    };
     const liveBoundRefs = (): Promise<RecipeAuthorityRefs> | null => {
       if (!ownerId || !coordinationDomain) return null;
       liveBoundRefsPromise ??= resolveLiveBoundRefs(sql, ownerId, coordinationDomain);
@@ -336,6 +345,7 @@ export default defineTool({
         // P-012: counted before any early return below — a failed item's dispatches
         // still wrote their own telemetry rows.
         totalInnerDispatches += result.dispatchCount ?? 0;
+        const { callRecords, ...publicResult } = result;
 
         // EI-20224785432797349: code-mode tracks reads of fields that are absent from a
         // child tool result. Treat those misses as a failed recipe reuse, even when the
@@ -344,6 +354,35 @@ export default defineTool({
         // undefined values after a tool-schema change. The caller must update the recipe
         // script before it is eligible for a successful reuse record again.
         const fieldMisses = Array.isArray(result.fieldMisses) ? result.fieldMisses : [];
+        const successfulReuse = Boolean(result.ok) && fieldMisses.length === 0;
+
+        // P-013: every EXECUTED saved script gets one normalized trace row,
+        // including failures and dry-run previews. Only a successful committing
+        // reuse moves the parent recipe's popularity counters, preserving their
+        // established meaning while making all execution evidence durable.
+        try {
+          const executionTrace = await normalizeExecutionTrace({
+            script: recipe.script,
+            backend: 'server',
+            tools: all,
+            allowed,
+            callRecords,
+          });
+          await recordRecipeRun(sql, {
+            recipeId: recipe.id,
+            workspaceId,
+            potSlug: await runPotSlug(),
+            agentOwner: ownerId,
+            agentRole: ctx.role ?? null,
+            success: successfulReuse,
+            reused: true,
+            executionTrace,
+            countTowardRecipe: successfulReuse && !dryRun,
+          });
+        } catch (err) {
+          ctx.log(`recipes:run trace record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+        }
+
         if (fieldMisses.length > 0) {
           return {
             ok: false,
@@ -352,37 +391,14 @@ export default defineTool({
             fieldMisses,
             reason:
               'the saved recipe read fields absent from current tool results; update the recipe script before reusing it',
-            result,
+            result: publicResult,
           };
-        }
-
-        // Record the REUSE (reused:true) on a successful, committing run — the
-        // distinct-from-authored signal Phase-3 graduation reads. Best-effort: a
-        // recording failure must not fail the run.
-        if (result.ok && !dryRun) {
-          try {
-            const potSlug = await resolveLearningPotSlug({
-              workspaceId,
-              harnessSlug: ctx.harnessSlug ?? null,
-            });
-            await recordRecipeRun(sql, {
-              recipeId: recipe.id,
-              workspaceId,
-              potSlug,
-              agentOwner: ownerId,
-              agentRole: ctx.role ?? null,
-              success: true,
-              reused: true,
-            });
-          } catch (err) {
-            ctx.log(`recipes:run record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
-          }
         }
 
         // The script's own ok/error rides inside `result`; the item is "ok" in the
         // sense that the recipe RAN — mirror the result's ok so counts.failed
         // reflects scripts that failed, not just recipes that were absent.
-        return { ok: Boolean(result.ok), id: it.id, result };
+        return { ok: Boolean(result.ok), id: it.id, result: publicResult };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

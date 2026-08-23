@@ -22,6 +22,7 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import type { NormalizedExecutionTrace } from './orchestration-trace';
 
 export interface CodeRecipeRow {
   id: string;
@@ -81,7 +82,8 @@ export interface UpsertCodeRecipeInput {
 }
 
 export interface RecordRecipeRunInput {
-  recipeId: string;
+  /** Null for an executed script that was not captured as / replayed from a recipe. */
+  recipeId?: string | null;
   /** The workspace that RAN the recipe — USAGE, stored on code_recipe_runs (the
    *  recipe itself is global; this records which hive/workspace exercised it). */
   workspaceId: string;
@@ -93,6 +95,14 @@ export interface RecordRecipeRunInput {
   success?: boolean;
   /** true when this was a recipes:run of an existing recipe (vs an authored code:run). */
   reused?: boolean;
+  /** Secret-free normalized P-013 trace. Its fingerprint is stored alongside it for indexed dedup. */
+  executionTrace?: NormalizedExecutionTrace | null;
+  /**
+   * Preserve the existing recipe popularity semantics for failed and dry-run traces:
+   * their execution row is durable, but the parent recipe counters do not move.
+   * Defaults to true when recipeId is present.
+   */
+  countTowardRecipe?: boolean;
 }
 
 type DbRow = {
@@ -209,22 +219,33 @@ export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInp
  * carries workspace_id + pot_slug (usage); the recipe itself is global.
  */
 export async function recordRecipeRun(sql: postgres.Sql, input: RecordRecipeRunInput): Promise<void> {
+  const recipeId = input.recipeId ?? null;
+  const executionTrace = input.executionTrace ?? null;
+  if (!recipeId && !executionTrace) {
+    throw new Error('recordRecipeRun requires recipeId or executionTrace');
+  }
   const success = input.success ?? true;
+  const countTowardRecipe = input.countTowardRecipe ?? recipeId !== null;
+  const traceJson = executionTrace ? JSON.stringify(executionTrace) : null;
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.code_recipe_runs
-        (recipe_id, workspace_id, pot_slug, agent_owner, agent_role, success, reused)
+        (recipe_id, workspace_id, pot_slug, agent_owner, agent_role, success, reused,
+         execution_trace, structural_fingerprint)
       VALUES (
-        ${input.recipeId}, ${input.workspaceId}, ${input.potSlug},
+        ${recipeId}, ${input.workspaceId}, ${input.potSlug},
         ${input.agentOwner ?? null}, ${input.agentRole ?? null},
-        ${success}, ${input.reused ?? false}
+        ${success}, ${input.reused ?? false},
+        ${traceJson}::text::jsonb, ${executionTrace?.structuralFingerprint ?? null}
       )`;
-    await tx`
-      UPDATE harness_shared.code_recipes
-         SET run_count     = run_count + 1,
-             success_count = success_count + ${success ? 1 : 0},
-             last_run_at   = now()
-       WHERE id = ${input.recipeId}`;
+    if (recipeId && countTowardRecipe) {
+      await tx`
+        UPDATE harness_shared.code_recipes
+           SET run_count     = run_count + 1,
+               success_count = success_count + ${success ? 1 : 0},
+               last_run_at   = now()
+         WHERE id = ${recipeId}`;
+    }
   });
 }
 

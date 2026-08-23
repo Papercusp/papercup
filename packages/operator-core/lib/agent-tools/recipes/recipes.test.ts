@@ -27,19 +27,43 @@ import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispa
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
 // we can capture the `allowed` set the handler builds for the facade.
-const { getRecipeMock, recordRecipeRunMock, runOrchestrationMock, orgSqlMock, resourceSqlMock } = vi.hoisted(() => ({
-  getRecipeMock: vi.fn(),
-  recordRecipeRunMock: vi.fn(async () => {}),
-  runOrchestrationMock: vi.fn<typeof import('@papercusp/agent-mcp').runToolOrchestration>(async () => ({
-    ok: true,
-    summary: { done: true },
-    logs: [],
-    dryRun: false,
-    plannedMutations: [],
-  })),
-  orgSqlMock: vi.fn(),
-  resourceSqlMock: vi.fn(),
-}));
+const {
+  getRecipeMock,
+  recordRecipeRunMock,
+  runOrchestrationMock,
+  normalizeExecutionTraceMock,
+  normalizedTrace,
+  orgSqlMock,
+  resourceSqlMock,
+} = vi.hoisted(() => {
+  const trace = {
+    schemaVersion: 1 as const,
+    backend: 'server' as const,
+    requirements: { tools: [], capabilities: [], premises: ['host:same'] as ['host:same'] },
+    toolGraph: { staticCalls: [], runtimeCalls: [] },
+    stableBindings: [],
+    ephemeralValues: [],
+    redactedSecretPaths: [],
+    portability: { host: 'same' as const, replayability: 'deterministic' as const, ephemeralKinds: [] },
+    structuralFingerprint: 'b'.repeat(64),
+  };
+  return {
+    getRecipeMock: vi.fn(),
+    recordRecipeRunMock: vi.fn(async () => {}),
+    runOrchestrationMock: vi.fn<typeof import('@papercusp/agent-mcp').runToolOrchestration>(async () => ({
+      ok: true,
+      summary: { done: true },
+      logs: [],
+      dryRun: false,
+      plannedMutations: [],
+      callRecords: [],
+    })),
+    normalizeExecutionTraceMock: vi.fn(async () => trace),
+    normalizedTrace: trace,
+    orgSqlMock: vi.fn(),
+    resourceSqlMock: vi.fn(),
+  };
+});
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -53,6 +77,9 @@ vi.mock('../../code-recipes-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getRecipe: getRecipeMock,
   recordRecipeRun: recordRecipeRunMock,
+}));
+vi.mock('../../orchestration-trace', () => ({
+  normalizeExecutionTrace: normalizeExecutionTraceMock,
 }));
 vi.mock('../../hive-federation', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -138,6 +165,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     getRecipeMock.mockReset();
     recordRecipeRunMock.mockClear();
     runOrchestrationMock.mockClear();
+    normalizeExecutionTraceMock.mockClear();
     orgSqlMock.mockReset();
     resourceSqlMock.mockReset();
     orgSqlMock.mockImplementation(async (parts: TemplateStringsArray) => {
@@ -228,19 +256,38 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     });
     await findTool('recipes:run').fn({ id: 'r2' }, mkCtx('worker'));
     expect(recordRecipeRunMock).toHaveBeenCalledTimes(1);
-    const [, input] = recordRecipeRunMock.mock.calls[0] as unknown as [unknown, { reused: boolean; recipeId: string; agentRole: string }];
+    const [, input] = recordRecipeRunMock.mock.calls[0] as unknown as [unknown, {
+      reused: boolean;
+      recipeId: string;
+      agentRole: string;
+      executionTrace: unknown;
+      countTowardRecipe: boolean;
+    }];
     expect(input.reused).toBe(true);
     expect(input.recipeId).toBe('r2');
     expect(input.agentRole).toBe('worker'); // the REUSER's role, recorded
+    expect(input.executionTrace).toBe(normalizedTrace);
+    expect(input.countTowardRecipe).toBe(true);
   });
 
-  it('does NOT record a run on a dry-run preview', async () => {
+  it('records a dry-run trace without moving the parent recipe counters', async () => {
     getRecipeMock.mockResolvedValue({
       id: 'r3', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
       script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0, status: 'active', tags: [],
     });
-    await findTool('recipes:run').fn({ id: 'r3', dryRun: true }, mkCtx('worker'));
-    expect(recordRecipeRunMock).not.toHaveBeenCalled();
+    const res = await findTool('recipes:run').fn({ id: 'r3', dryRun: true }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.results[0].result.callRecords).toBeUndefined();
+    expect(recordRecipeRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        recipeId: 'r3',
+        executionTrace: normalizedTrace,
+        success: true,
+        reused: true,
+        countTowardRecipe: false,
+      }),
+    );
   });
 
   it('rejects a saved recipe whose literal arguments no longer match the live tool schema', async () => {
@@ -286,7 +333,15 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       error: 'recipe_field_miss',
     });
     expect(payload.results[0].fieldMisses).toHaveLength(1);
-    expect(recordRecipeRunMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        recipeId: 'field-miss',
+        executionTrace: normalizedTrace,
+        success: false,
+        countTowardRecipe: false,
+      }),
+    );
   });
 
   it('returns not_found for a missing recipe per item (no orchestration) — bulk envelope', async () => {

@@ -5,11 +5,34 @@ import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesFor
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
 // registry is touched and we can assert captureRecipe was invoked on success.
-const { captureRecipeMock } = vi.hoisted(() => ({
-  captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
-}));
+const { captureRecipeMock, recordRecipeRunMock, normalizeExecutionTraceMock, normalizedTrace } = vi.hoisted(() => {
+  const trace = {
+    schemaVersion: 1 as const,
+    backend: 'server' as const,
+    requirements: { tools: [], capabilities: [], premises: ['host:same'] as ['host:same'] },
+    toolGraph: { staticCalls: [], runtimeCalls: [] },
+    stableBindings: [],
+    ephemeralValues: [],
+    redactedSecretPaths: [],
+    portability: { host: 'same' as const, replayability: 'deterministic' as const, ephemeralKinds: [] },
+    structuralFingerprint: 'a'.repeat(64),
+  };
+  return {
+    captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
+    recordRecipeRunMock: vi.fn(async () => {}),
+    normalizeExecutionTraceMock: vi.fn(async () => trace),
+    normalizedTrace: trace,
+  };
+});
 vi.mock('./capture-recipe', () => ({
   captureRecipe: captureRecipeMock,
+}));
+vi.mock('../../code-recipes-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  recordRecipeRun: recordRecipeRunMock,
+}));
+vi.mock('../../orchestration-trace', () => ({
+  normalizeExecutionTrace: normalizeExecutionTraceMock,
 }));
 // ── Mocks for the WI-1411 per-inner-call rebinding wiring ────────────────────
 // withWorkspace/synthesizeDispatchPrincipal/runWithWorkspaceIfConcrete would
@@ -65,6 +88,11 @@ import {
   codeRunFailureClass,
   withCodeRunCaptureMode,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
+
+beforeEach(() => {
+  recordRecipeRunMock.mockClear();
+  normalizeExecutionTraceMock.mockClear();
+});
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
@@ -256,17 +284,28 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(captureRecipeMock).toHaveBeenCalledTimes(1);
     const [, input] = captureRecipeMock.mock.calls[0] as unknown as [
       unknown,
-      { script: string; workspaceId: string; title?: string },
+      { script: string; workspaceId: string; title?: string; executionTrace?: unknown },
     ];
     expect(input.script).toBe('return 1 + 1;');
     expect(input.workspaceId).toBe('ws-test');
     expect(input.title).toBe('add');
+    expect(input.executionTrace).toBe(normalizedTrace);
+    expect(payload.callRecords).toBeUndefined();
   });
 
-  it('does NOT capture on a dry-run preview', async () => {
+  it('does NOT capture on a dry-run preview, but records one trace-only execution', async () => {
     const tool = codeRun();
     await tool.fn({ script: 'return 1;', dryRun: true }, mkCtx());
     expect(captureRecipeMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        recipeId: null,
+        executionTrace: normalizedTrace,
+        success: true,
+        countTowardRecipe: false,
+      }),
+    );
   });
 
   it('honors the internal capture-mode override without changing the public args', async () => {
@@ -275,12 +314,17 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT capture when the run fails', async () => {
+  it('does NOT capture when the run fails, but records the failed trace-only execution', async () => {
     const tool = codeRun();
     const res = await tool.fn({ script: 'throw new Error("boom");' }, mkCtx());
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
     expect(payload.ok).toBe(false);
+    expect(payload.callRecords).toBeUndefined();
     expect(captureRecipeMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ recipeId: null, executionTrace: normalizedTrace, success: false }),
+    );
   });
 
   describe('capture eligibility for nested child failures', () => {
@@ -368,6 +412,11 @@ describe('code:run → recipe capture (P-003)', () => {
     });
     expect(stamped.recipeRevision).toMatch(/^[0-9a-f]{64}$/);
     expect(stamped.durationMs).toEqual(expect.any(Number));
+    expect(recordRecipeRunMock).not.toHaveBeenCalled();
+    expect(captureRecipeMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ executionTrace: normalizedTrace }),
+    );
     expect(JSON.stringify(stamped)).not.toContain('kept');
     expect(codeRunFailureClass({ ok: true })).toBeNull();
   });

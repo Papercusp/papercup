@@ -25,6 +25,7 @@ import {
   isLowValueRecipe,
   type CodeRecipeRow,
 } from '../../code-recipes-store';
+import type { NormalizedExecutionTrace } from '../../orchestration-trace';
 import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
 import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import {
@@ -163,6 +164,8 @@ export interface CaptureRecipeInput {
   /** All projected tools + the role-scoped allow-list (for tools_used extraction). */
   tools: readonly ProjectedTool[];
   allowed?: ReadonlySet<string>;
+  /** P-013 trace for the same execution; stored on the recipe-run row. */
+  executionTrace?: NormalizedExecutionTrace | null;
 }
 
 export interface CaptureRecipeResult {
@@ -269,6 +272,7 @@ export async function captureRecipe(
       agentRole: input.role,
       success: true,
       reused: false,
+      executionTrace: input.executionTrace,
     });
 
     // Live-update the /admin/recipes dashboard (code-recipes-2026-06-21 P-009):
