@@ -29,6 +29,7 @@ import type {
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { GCP_CLOUD_PLATFORM_SCOPE } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
+import { assertGcpImmutableImageId } from './gcp-image-family';
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } from './gcp-safety';
 
 export { createGcpWorkspaceHostApiClient, GoogleComputeWorkspaceHostApiClient } from './gcp-api-client';
@@ -295,6 +296,7 @@ type GcpAccessSettings = GcpIapAccessSettings | GcpDirectSshAccessSettings | Gcp
 export interface GcpWorkspaceHostDesiredProviderSettings {
   projectId: string;
   zone: string;
+  imageId: string;
   network: ManagedNetworkSettings | ExistingNetworkSettings;
   access: GcpAccessSettings;
   serviceAccountEmail: string;
@@ -815,6 +817,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     optionalString(provider.projectId, 'gcp.desired.provider.projectId') ??
     requireString(desired.scope.id, 'desired.scope.id');
   if (projectId !== desired.scope.id) throw new Error('GCP provider projectId must match desired.scope.id');
+  const imageId = assertGcpImmutableImageId(desired.image.id, 'gcp.desired.image.id');
   const zone = requireString(desired.zone, 'desired.zone');
   if (!zone.startsWith(`${desired.region}-`)) throw new Error('GCP desired.zone must belong to desired.region');
   const rawNetwork = provider.network;
@@ -861,6 +864,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
   return {
     projectId,
     zone,
+    imageId,
     network,
     access,
     serviceAccountEmail: requireString(provider.serviceAccountEmail, 'gcp.desired.provider.serviceAccountEmail'),
@@ -1092,6 +1096,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     );
     const requestId = gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:${request.action}:${instance.providerId}`);
     if (request.action === 'upgrade') {
+      const imageId = assertGcpImmutableImageId(request.image.id, 'gcp.upgrade.image.id');
       const observed = await this.client.getInstance(projectId, zone, instance.providerId);
       if (!observed?.recreateInput) {
         throw new Error('GCP upgrade requires a fresh instance read with recreateInput');
@@ -1141,7 +1146,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               disks: [
                 {
                   ...bootDisk,
-                  initializeParams: { ...bootDisk.initializeParams, sourceImage: request.image.id },
+                  initializeParams: { ...bootDisk.initializeParams, sourceImage: imageId },
                 },
                 { ...dataDisk, autoDelete: false, source: dataDisk.source },
               ],
@@ -1448,7 +1453,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               boot: true,
               autoDelete: true,
               initializeParams: {
-                sourceImage: desired.image.id,
+                sourceImage: settings.imageId,
                 diskSizeGb: settings.bootDiskGiB,
                 diskType: settings.bootDiskType,
                 ...(settings.kmsKeyName ? { diskEncryptionKey: { kmsKeyName: settings.kmsKeyName } } : {}),

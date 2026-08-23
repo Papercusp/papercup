@@ -103,12 +103,56 @@ describe('ADC-backed GCP workspace-host API client', () => {
     expect(sizes).toEqual([
       { id: 'n2-standard-2', label: 'n2-standard-2', cpuCount: 2, memoryMiB: 8192, available: true },
     ]);
-    expect(images[0]).toMatchObject({ architecture: 'x86_64', signed: true });
+    expect(images[0]).toMatchObject({
+      id: 'projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260801',
+      version: 'ubuntu-2404-noble-amd64-v20260801',
+      architecture: 'x86_64',
+      signed: true,
+    });
+    expect(images[0]?.id).not.toContain('/images/family/');
     expect(estimate).toMatchObject({ currency: 'USD', hourlyAmount: 0, confidence: 'unknown' });
     expect(JSON.stringify({ validation, scopes, regions, sizes, images, estimate })).not.toContain(TOKEN);
     for (const [, init] of vi.mocked(fetchImpl).mock.calls) {
       expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
     }
+  });
+
+  it('resolves a configured Papercusp family but exposes only its immutable member to consumers', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      expect(url).toContain(`/projects/${PROJECT}/global/images/family/papercusp-workspace-host`);
+      return json({
+        name: 'papercusp-workspace-host-2026-8-23-1',
+        selfLink:
+          `https://compute.googleapis.com/compute/v1/projects/${PROJECT}/global/images/` +
+          'papercusp-workspace-host-2026-8-23-1',
+        architecture: 'X86_64',
+        creationTimestamp: '2026-08-23T01:00:00.000Z',
+      });
+    }) as typeof fetch;
+    const client = new GoogleComputeWorkspaceHostApiClient({
+      acquireAuth: vi.fn(async () => ({
+        accessToken: TOKEN,
+        projectId: PROJECT,
+        identity: 'operator@example.com',
+      })),
+      fetch: fetchImpl,
+      now: () => NOW,
+      imageFamily: { project: PROJECT, family: 'papercusp-workspace-host', label: 'Papercusp workspace host' },
+    });
+
+    await expect(
+      client.listImages({ scope: { kind: 'project', id: PROJECT }, architecture: 'x86_64' }, connection()),
+    ).resolves.toEqual([
+      {
+        id: `projects/${PROJECT}/global/images/papercusp-workspace-host-2026-8-23-1`,
+        version: 'papercusp-workspace-host-2026-8-23-1',
+        label: 'Papercusp workspace host',
+        architecture: 'x86_64',
+        signed: true,
+        publishedAt: '2026-08-23T01:00:00.000Z',
+      },
+    ]);
   });
 
   it('maps resource observations, rebuilds a secret-free recreate input, and treats only HTTP 404 as absence', async () => {

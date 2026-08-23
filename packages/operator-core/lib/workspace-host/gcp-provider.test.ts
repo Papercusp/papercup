@@ -67,7 +67,7 @@ function desired(network: 'managed' | 'existing' = 'managed'): WorkspaceHostDesi
     region: 'us-central1',
     zone: 'us-central1-a',
     size: 'n2-standard-2',
-    image: { id: 'projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64' },
+    image: { id: 'projects/papercusp-images/global/images/papercusp-workspace-host-2026-8-23-1' },
     data: { volumeGiB: 120, encrypted: true },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'adc://authorized_user' } },
     labels: { environment: 'test', owner: 'workspace-host-contract' },
@@ -182,7 +182,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   async listImages() {
     return [
       {
-        id: 'projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64',
+        id: 'projects/papercusp-images/global/images/papercusp-workspace-host-2026-8-23-1',
         label: 'Ubuntu 24.04 LTS',
         architecture: 'x86_64',
         signed: true,
@@ -635,6 +635,17 @@ describe('GCP workspace-host provider planning', () => {
         context(),
       ),
     ).rejects.toThrow('projectId must match desired.scope.id');
+
+    const mutableFamily = desired();
+    mutableFamily.image = {
+      id: 'projects/papercusp-images/global/images/family/papercusp-workspace-host',
+    };
+    await expect(
+      provider.plan(
+        { action: 'provision', operationId: 'unsafe-3', idempotencyKey: 'unsafe-3', desired: mutableFamily },
+        context(),
+      ),
+    ).rejects.toThrow('family aliases are forbidden');
     expect(() => createGcpWorkspaceHostProvider({ client: undefined as never })).toThrow('requires an injected');
   });
 
@@ -786,6 +797,18 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
   it('upgrades by replacing only the boot/runtime VM and reattaching the exact retained data disk', async () => {
     const { client, provider } = providerAndClient();
     const { host, resources } = await provision(client, provider);
+    await expect(
+      provider.plan(
+        {
+          action: 'upgrade',
+          operationId: 'operation:mutable-upgrade',
+          idempotencyKey: 'operation:mutable-upgrade',
+          host,
+          image: { id: 'projects/papercusp/global/images/family/papercusp-workspace-host' },
+        },
+        context(),
+      ),
+    ).rejects.toThrow('family aliases are forbidden');
     const plan = await provider.plan(
       {
         action: 'upgrade',
