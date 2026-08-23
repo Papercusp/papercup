@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 800,
+  "count": 803,
   "tools": [
     {
       "name": "ablation:report",
@@ -13792,6 +13792,108 @@
         "when": "To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for \"why did/didn't the watchdog file X?\" — and for the auto-implement lane's dispatch ledger (\"did the dispatch fire / is a worker on it / did it die?\").",
         "notWhen": "You want the captured backlog itself — improvements:digest. You want one improvement — work_items:get { id }. You want to file one — improvements:capture.",
         "chaining": "improvements:watchdog-status → work_items:get on a captured/self-escalated/dispatched id → improvements:digest for the full backlog triage."
+      }
+    },
+    {
+      "name": "inbox:bulk-run-manifest",
+      "http": {
+        "path": "/api/agent-tools/inbox/bulk-run-manifest",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, the owner's filter provenance) plus every item in it with the LIVE options that item currently offers. Omit `runId` to get the workspace's active run. Each item carries `actions:[{ id, label, terminal }]` — `terminal:true` options RESOLVE the item, `terminal:false` ones only open a sub-surface and resolve nothing. You may only report an action id that appears in that list. An item whose `actions` come back EMPTY is not resolvable right now (its detail has not loaded, or it left the feed) — report it `skipped` with that reason rather than guessing.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "FIRST call when you are woken as a bulk-resolve resolver — it tells you what you are working on and what each item can actually do. Re-read it after a consult reply lands to pick up any item whose options changed.",
+        "notWhen": "Acting on a single attention item outside a run (use the item's own verb: coord:resolve, plans:set-status, inbox:triage). Reading the human inbox generally → plans:attention."
+      }
+    },
+    {
+      "name": "inbox:bulk-run-report",
+      "http": {
+        "path": "/api/agent-tools/inbox/bulk-run-report",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Report per-item outcomes for a BULK RESOLVE run. `auto_resolved` = you took the terminal action (rationale REQUIRED — it is the audit note for something done on the owner's behalf, and an attention_triage record is written alongside it); `recommended` = pre-select an option for the owner's review list with a ≤2-sentence why; `skipped` / `failed` = record the reason, never a blank. An `actionId` that the item does not actually offer, or that only opens a sub-surface (discuss/answer/open/chat/view-log), is REJECTED for that item alone — the rest still land. Re-reporting the same item overwrites it (that is the intended path when a consulted asker answers late); the run counters are derived from the rows, never incremented, so it cannot double-count.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "After deciding each item in a bulk-resolve run. Batch several via `items:[…]` rather than one call per item.",
+        "notWhen": "Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage)."
+      }
+    },
+    {
+      "name": "inbox:bulk-run-settle",
+      "http": {
+        "path": "/api/agent-tools/inbox/bulk-run-settle",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "End your BULK RESOLVE pass. The final phase is DERIVED from the item rows, not from what you claim: `review` when anything is still recommended or was never reached, `complete` only when nothing is left for the owner. Pass `failed:true` with a reason when you are giving up part-way — the partial outcomes are kept and the untouched items stay resolvable by hand, which is strictly better than leaving the run stuck on \"running\" forever.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Once every item in the manifest has been reported — the last call of a bulk-resolve pass, before you end your turn.",
+        "notWhen": "Mid-pass (keep reporting via inbox:bulk-run-report)."
       }
     },
     {
