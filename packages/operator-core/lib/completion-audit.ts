@@ -504,14 +504,18 @@ export const LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS = ['capture', 'screenshot', 'che
 
 const SCREENSHOT_ARTIFACT_PATTERNS: readonly RegExp[] = [
   // An image artifact path — a screenshot/capture output file.
-  /[\w./-]+\.(?:png|jpe?g|webp|gif)\b/i,
+  // PPM is the canonical raw-pixel output of the vmctl desktop verifier.  The
+  // artifact inspector deliberately fails open for formats it cannot decode, so
+  // recognizing this path here preserves the evidence instead of rejecting a
+  // genuine capture at the text gate.
+  /[\w./-]+\.(?:png|jpe?g|webp|gif|ppm)\b/i,
   // A tauri-agent-tools invocation recorded in the run — built FROM the exported list
   // above so the accepted set cannot drift from what the doc (and its guard test) claim.
   // e.g. "tauri-agent-tools capture -o /tmp/fail-route" (it takes a DIRECTORY via
   // `-o`/`--output`; there is no `--out` — verified against `tauri-agent-tools help capture`).
   new RegExp(String.raw`\btauri-agent-tools\b[^\n]{0,80}\b(?:${LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS.join('|')})\b`, 'i'),
   // A bare "screenshot"/"capture" mention paired with an image path in the same clause.
-  /\b(?:screenshot|capture)\b[^\n]{0,80}\.(?:png|jpe?g|webp|gif)\b/i,
+  /\b(?:screenshot|capture)\b[^\n]{0,80}\.(?:png|jpe?g|webp|gif|ppm)\b/i,
 ];
 
 /** Does this piece of completion text cite a real screenshot/capture artifact? */
@@ -628,7 +632,7 @@ const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
  */
 const ASSERTION_BEARING_PATTERN = /\btauri-agent-tools\b[^\n]{0,80}\bcheck\b/i;
 
-const IMAGE_PATH_PATTERN = /[\w./~-]*[\w~-]\.(?:png|jpe?g|webp|gif)\b/gi;
+const IMAGE_PATH_PATTERN = /[\w./~-]*[\w~-]\.(?:png|jpe?g|webp|gif|ppm)\b/gi;
 
 /** An HTTP status code immediately following a citation, e.g. `-> 200` or `200 OK`. */
 const HTTP_STATUS_AFTER_PATTERN = /^\s*(?:->|→)?\s*\d{3}\b/;

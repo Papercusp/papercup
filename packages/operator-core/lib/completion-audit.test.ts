@@ -298,6 +298,9 @@ describe('citesScreenshotArtifact (WI-5891)', () => {
   it('flags an image artifact path', () => {
     expect(citesScreenshotArtifact('saved to /tmp/hud-card-fix.png')).toBe(true);
   });
+  it('flags the canonical vmctl PPM artifact path', () => {
+    expect(citesScreenshotArtifact('saved to /home/dev/run/verify/screen.ppm')).toBe(true);
+  });
   it('flags a tauri-agent-tools capture/screenshot/check invocation', () => {
     expect(citesScreenshotArtifact('ran tauri-agent-tools capture --out /tmp/shot.png')).toBe(true);
     expect(citesScreenshotArtifact('tauri-agent-tools check hud-card-flex')).toBe(true);
@@ -379,6 +382,7 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
     await writeFile(join(dir, 'real.png'), contentPng());
     await writeFile(join(dir, 'empty.png'), Buffer.alloc(0));
     await writeFile(join(dir, 'shot.jpg'), Buffer.from('not really a jpeg, but on disk'));
+    await writeFile(join(dir, 'screen.ppm'), Buffer.from('P6\n2 2\n255\n\xff\x00\x00\x00\xff\x00\x00\x00\xff\xff\xff\xff'));
   });
 
   afterAll(async () => {
@@ -425,6 +429,17 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
     expect(verdict.ok).toBe(true);
     expect(verdict.basis).toBe('image');
     expect(verdict.artifacts[0].status).toBe('content');
+  });
+
+  it('ACCEPTS the canonical vmctl PPM screenshot artifact', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testResult: `vmctl verified the desktop; screenshot at ${dir}/screen.ppm`,
+    });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.basis).toBe('image');
+    expect(verdict.artifacts[0].cited).toBe(join(dir, 'screen.ppm'));
+    expect(verdict.artifacts[0].status).not.toBe('missing');
   });
 
   it('ACCEPTS a falsifiable `check` run with no image at all — the path the rejection recommends', async () => {
@@ -661,6 +676,12 @@ describe('citedImagePaths / citesAssertionBearingRun (EI-18797014705631713)', ()
         filesChanged: ['apps/operator/app/x.tsx', '/tmp/c.webp'],
       }),
     ).toEqual(['/tmp/a.png', '/tmp/b.jpeg', '/tmp/c.webp']);
+  });
+
+  it('pulls a canonical vmctl PPM path out of the evidence', () => {
+    expect(citedImagePaths({ testResult: 'vmctl screenshot at /home/dev/run/verify/screen.ppm' })).toEqual([
+      '/home/dev/run/verify/screen.ppm',
+    ]);
   });
 
   it('counts only `check` as assertion-bearing — screenshot and capture cannot fail', () => {
