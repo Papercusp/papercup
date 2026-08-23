@@ -983,10 +983,10 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 
   it('WI-40946: capture tees cannot retain a heavy slot after their wrapper dies', async () => {
     // A command descendant can legitimately keep stdout/stderr open after the
-    // command leader exits. That keeps pc-heavy's process-substitution tees
-    // alive, but it must NOT keep the heavy slot alive through a descriptor the
-    // passive capture process inherited. The descendant below closes its own
-    // slot descriptor first, then deliberately holds only the output pipes.
+    // command leader exits. That keeps pc-heavy's capture tees alive, but it
+    // must NOT keep the heavy slot alive through a descriptor the passive
+    // capture process inherited. The descendant below closes its own slot
+    // descriptor first, then deliberately holds only the output pipes.
     // We kill ONLY the wrapper and positively prove its tee children survived;
     // pre-fix those orphaned tees alone kept slot.0 flocked. The live incident
     // left the same process class behind for 32–45 minutes after final artifacts.
@@ -1015,12 +1015,12 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     const captureTeePids = (): number[] => {
       const coalesceDir = join(dir, 'coalesce');
       if (!existsSync(coalesceDir)) return [];
-      const partFiles = readdirSync(coalesceDir)
-        .filter((name) => name.endsWith('.part'))
+      const fifoFiles = readdirSync(coalesceDir)
+        .filter((name) => name.endsWith('.pipe'))
         .map((name) => join(coalesceDir, name));
       const pids = new Set<number>();
-      for (const partFile of partFiles) {
-        const probe = spawnSync('fuser', [partFile], { encoding: 'utf8' });
+      for (const fifoFile of fifoFiles) {
+        const probe = spawnSync('fuser', [fifoFile], { encoding: 'utf8' });
         for (const token of probe.stdout.match(/\d+/g) ?? []) {
           const pid = Number(token);
           if (!Number.isSafeInteger(pid) || pid <= 1) continue;
@@ -1043,7 +1043,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(Number.isSafeInteger(lingerPid) && lingerPid > 1).toBe(true);
       expect(() => process.kill(lingerPid, 0)).not.toThrow(); // positive control: the pipe keeper is still live
 
-      await waitFor('both process-substitution tee children exist', () => captureTeePids().length === 2);
+      await waitFor('both capture tee children exist', () => captureTeePids().length === 2);
       teePids = captureTeePids();
       expect(teePids).toHaveLength(2);
 
@@ -1063,6 +1063,51 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       }
       for (const pid of teePids) {
         try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+      }
+    }
+  }, 20_000);
+
+  it('does not let a daemon-held capture descriptor wedge a filtered pipeline after the command exits', async () => {
+    // The daemon redirects stdio like dbus-daemon does, but inherits the
+    // wrapper's extra capture descriptors. The command PID exits and writes a
+    // complete result; the outer grep must still receive EOF immediately.
+    const daemonPidFile = join(dir, 'daemon.pid');
+    const command = [
+      'sleep 20 >/dev/null 2>&1 &',
+      `printf '%s\\n' "$!" > "${daemonPidFile}"`,
+      'echo daemon-started',
+    ].join('\n');
+    const pipeline = spawn(
+      'bash',
+      [
+        '-o',
+        'pipefail',
+        '-c',
+        `${PC_HEAVY} bash -c "$PC_HEAVY_TEST_COMMAND" 2>&1 | grep --line-buffered daemon-started >&2`,
+      ],
+      {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_COALESCE_SEC: '30',
+          PC_HEAVY_TEST_COMMAND: command,
+        }),
+        cwd: dir,
+        detached: true,
+      },
+    );
+    const seen = createTextCollector(pipeline.stderr);
+    try {
+      await untilStderr(pipeline, seen, (text) => text.includes('daemon-started'), 'the filtered command output');
+      await waitFor('the filtered pipeline to reach EOF', () => pipeline.exitCode !== null || pipeline.signalCode !== null, 5_000);
+      expect(pipeline.exitCode, seen.text()).toBe(0);
+      expect(seen.text()).toContain('daemon-started');
+    } finally {
+      killGroup(pipeline);
+      if (existsSync(daemonPidFile)) {
+        const daemonPid = Number(readFileSync(daemonPidFile, 'utf8').trim());
+        if (Number.isSafeInteger(daemonPid) && daemonPid > 1) {
+          try { process.kill(daemonPid, 'SIGKILL'); } catch { /* already gone */ }
+        }
       }
     }
   }, 20_000);
