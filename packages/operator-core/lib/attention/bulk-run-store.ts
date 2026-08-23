@@ -29,6 +29,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
@@ -284,6 +285,127 @@ const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref
                       outcome, action_id, rationale, draft_answer, confidence, consulted,
                       consult_reply, error, decided_at`;
 
+type BulkSql = Sql | TransactionSql;
+
+async function recomputeCounters(sql: BulkSql, runId: string, workspaceId: string): Promise<void> {
+  await sql`
+    UPDATE harness_shared.attention_bulk_runs r
+       SET auto_resolved = c.auto_resolved,
+           recommended = c.recommended,
+           skipped = c.skipped,
+           failed = c.failed,
+           updated_at = now()
+      FROM (
+        SELECT
+          COUNT(*) FILTER (WHERE outcome = 'auto_resolved')::int AS auto_resolved,
+          COUNT(*) FILTER (WHERE outcome = 'recommended')::int  AS recommended,
+          COUNT(*) FILTER (WHERE outcome = 'skipped')::int      AS skipped,
+          COUNT(*) FILTER (WHERE outcome = 'failed')::int       AS failed
+          FROM harness_shared.attention_bulk_run_items
+         WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
+      ) c
+     WHERE r.workspace_id = ${workspaceId} AND r.run_id = ${runId}
+  `;
+}
+
+/**
+ * Execute one irreversible terminal action while holding the run's revocable
+ * authority token. Stop/settle takes the same row lock, so exactly one ordering
+ * wins: either the action (including audit + outcome + counters) commits first,
+ * or Stop commits first and the callback is never entered.
+ */
+export async function executeBulkRunAction<T>(input: {
+  runId: string;
+  itemId: string;
+  actionId: string;
+  rationale: string;
+  draftAnswer?: string | null;
+  confidence?: 'low' | 'high' | null;
+  consulted?: boolean;
+  consultReply?: string | null;
+  workspaceId?: string;
+  execute: () => Promise<T>;
+  /** Required audit work can join this transaction; a failure rolls the run
+   *  outcome back instead of reporting a clean, unaudited success. */
+  audit?: (sql: TransactionSql) => Promise<void>;
+}): Promise<{
+  actionResult: T | null;
+  item: BulkRunItemRow | null;
+  run: BulkRunRow | null;
+  refused:
+    | { reason: 'run_authority_revoked'; phase: BulkRunPhase }
+    | { reason: 'run_not_found'; phase: null }
+    | { reason: 'item_not_in_run'; phase: BulkRunPhase }
+    | null;
+}> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+
+  return await sql.begin(async (tx) => {
+    const runRows = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    const run = runRows[0] ? mapRun(runRows[0]) : null;
+    if (!run) return { actionResult: null, item: null, run: null, refused: { reason: 'run_not_found' as const, phase: null } };
+    if (!ACCEPTING_REPORTS.includes(run.phase)) {
+      return {
+        actionResult: null,
+        item: null,
+        run,
+        refused: { reason: 'run_authority_revoked' as const, phase: run.phase },
+      };
+    }
+
+    const itemRows = await tx<RawItemRow[]>`
+      SELECT ${tx.unsafe(ITEM_COLUMNS)}
+        FROM harness_shared.attention_bulk_run_items
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
+       FOR UPDATE
+    `;
+    if (!itemRows[0]) {
+      return {
+        actionResult: null,
+        item: null,
+        run,
+        refused: { reason: 'item_not_in_run' as const, phase: run.phase },
+      };
+    }
+
+    const actionResult = await input.execute();
+    await input.audit?.(tx);
+    const updatedRows = await tx<RawItemRow[]>`
+      UPDATE harness_shared.attention_bulk_run_items
+         SET outcome = 'auto_resolved',
+             action_id = ${input.actionId},
+             rationale = ${input.rationale},
+             draft_answer = ${input.draftAnswer ?? null},
+             confidence = ${input.confidence ?? null},
+             consulted = ${input.consulted === true},
+             consult_reply = ${input.consultReply ?? null},
+             error = NULL,
+             decided_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
+      RETURNING ${tx.unsafe(ITEM_COLUMNS)}
+    `;
+    await recomputeCounters(tx, input.runId, ws);
+    const afterRows = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return {
+      actionResult,
+      item: updatedRows[0] ? mapItem(updatedRows[0]) : null,
+      run: afterRows[0] ? mapRun(afterRows[0]) : null,
+      refused: null,
+    };
+  });
+}
+
 /**
  * Create a run from the owner's SNAPSHOT of filtered items. Returns the created
  * run row. An empty item list is rejected: a run over nothing is always a caller
@@ -492,10 +614,7 @@ export async function reportOutcomes(input: {
 }> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
-  const updated: string[] = [];
-  const unknown: string[] = [];
-
-  // WI-41013 — the stop rail. The owner's Stop settles the run; the resolver is
+  // WI-41013/WI-41022 — the stop rail. The owner's Stop settles the run; the resolver is
   // a separate process and may not have noticed yet. Refuse its writes rather
   // than letting them land, so a stopped run cannot keep growing.
   //
@@ -507,19 +626,28 @@ export async function reportOutcomes(input: {
   // This is a backstop, not the whole fix: it bounds the DAMAGE (no further
   // writes) but cannot un-take an action already taken, which is why the
   // manifest also reports `stopped` so a well-behaved resolver halts first.
-  const before = await getRun(input.runId, ws);
-  if (before && !ACCEPTING_REPORTS.includes(before.phase)) {
-    return {
-      updated: [],
-      unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
-      run: before,
-      refused: { reason: 'run_not_accepting_reports', phase: before.phase },
-    };
-  }
+  return await sql.begin(async (tx) => {
+    const updated: string[] = [];
+    const unknown: string[] = [];
+    const runRows = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    const before = runRows[0] ? mapRun(runRows[0]) : null;
+    if (before && !ACCEPTING_REPORTS.includes(before.phase)) {
+      return {
+        updated: [],
+        unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+        run: before,
+        refused: { reason: 'run_not_accepting_reports' as const, phase: before.phase },
+      };
+    }
 
-  for (const o of input.outcomes ?? []) {
-    if (!o?.itemId) continue;
-    const rows = await sql<{ item_id: string }[]>`
+    for (const o of input.outcomes ?? []) {
+      if (!o?.itemId) continue;
+      const rows = await tx<{ item_id: string }[]>`
       UPDATE harness_shared.attention_bulk_run_items
          SET outcome = ${o.outcome},
              action_id = ${o.actionId ?? null},
@@ -534,13 +662,18 @@ export async function reportOutcomes(input: {
        WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${o.itemId}
       RETURNING item_id
     `;
-    if (rows[0]) updated.push(rows[0].item_id);
-    else unknown.push(o.itemId);
-  }
+      if (rows[0]) updated.push(rows[0].item_id);
+      else unknown.push(o.itemId);
+    }
 
-  await reportCountersOnly(input.runId, ws);
-  const run = await getRun(input.runId, ws);
-  return { updated, unknown, run, refused: null };
+    await recomputeCounters(tx, input.runId, ws);
+    const afterRows = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return { updated, unknown, run: afterRows[0] ? mapRun(afterRows[0]) : null, refused: null };
+  });
 }
 
 /**
@@ -590,24 +723,7 @@ export async function markItemAccepted(input: {
 export async function reportCountersOnly(runId: string, workspaceId?: string): Promise<void> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
-  await sql`
-    UPDATE harness_shared.attention_bulk_runs r
-       SET auto_resolved = c.auto_resolved,
-           recommended = c.recommended,
-           skipped = c.skipped,
-           failed = c.failed,
-           updated_at = now()
-      FROM (
-        SELECT
-          COUNT(*) FILTER (WHERE outcome = 'auto_resolved')::int AS auto_resolved,
-          COUNT(*) FILTER (WHERE outcome = 'recommended')::int  AS recommended,
-          COUNT(*) FILTER (WHERE outcome = 'skipped')::int      AS skipped,
-          COUNT(*) FILTER (WHERE outcome = 'failed')::int       AS failed
-          FROM harness_shared.attention_bulk_run_items
-         WHERE workspace_id = ${ws} AND run_id = ${runId}
-      ) c
-     WHERE r.workspace_id = ${ws} AND r.run_id = ${runId}
-  `;
+  await recomputeCounters(sql, runId, ws);
 }
 
 /**
@@ -622,13 +738,33 @@ export async function settleRunPhase(input: {
   resolverOwner?: string | null;
   workspaceId?: string;
 }): Promise<BulkRunRow | null> {
+  const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
-  const items = await getRunItems(input.runId, ws);
-  const awaitingOwner = items.some((i) => i.outcome === 'recommended' || i.outcome === 'pending');
-  return setRunPhase({
-    runId: input.runId,
-    phase: awaitingOwner ? 'review' : 'complete',
-    resolverOwner: input.resolverOwner ?? null,
-    workspaceId: ws,
+  return await sql.begin(async (tx) => {
+    const locked = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    if (!locked[0]) return null;
+    const states = await tx<{ outcome: BulkItemOutcome }[]>`
+      SELECT outcome
+        FROM harness_shared.attention_bulk_run_items
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    const awaitingOwner = states.some((i) => i.outcome === 'recommended' || i.outcome === 'pending');
+    const phase: BulkRunPhase = awaitingOwner ? 'review' : 'complete';
+    const rows = await tx<RawRunRow[]>`
+      UPDATE harness_shared.attention_bulk_runs
+         SET phase = ${phase},
+             resolver_owner = COALESCE(${input.resolverOwner ?? null}, resolver_owner),
+             error = NULL,
+             finished_at = CASE WHEN ${phase === 'complete'} THEN now() ELSE finished_at END,
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+      RETURNING ${tx.unsafe(RUN_COLUMNS)}
+    `;
+    return rows[0] ? mapRun(rows[0]) : null;
   });
 }

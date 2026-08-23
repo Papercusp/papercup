@@ -17,6 +17,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { TriageAction, TriageRecord } from './types';
 
@@ -27,8 +28,11 @@ export async function upsertTriage(input: {
   note?: string | null;
   triagedBy?: string | null;
   workspaceId?: string;
+  /** Join a caller-owned transaction when the audit row is part of a larger
+   *  success contract (bulk terminal actions). */
+  sql?: Sql | TransactionSql;
 }): Promise<void> {
-  const { sql } = getOrgPg();
+  const sql = input.sql ?? getOrgPg().sql;
   const ws = input.workspaceId ?? activeWorkspaceId();
   await sql`
     INSERT INTO harness_shared.attention_triage (workspace_id, item_id, action, note, triaged_by)
