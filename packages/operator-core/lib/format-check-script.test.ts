@@ -16,6 +16,7 @@ import {
   normalizeScopedPaths,
   parseAddedLineRanges,
   parseFormatCliArgs,
+  rangeFormattingDiffers,
 } from '../../../scripts/check-format.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -66,6 +67,14 @@ describe('scoped repository format check', () => {
     expect(args).toContain('20');
     expect(args).toContain('--range-end');
     expect(args).toContain('40');
+  });
+
+  it('ignores formatter changes outside the requested range', () => {
+    const source = 'changed();\ntrailing();\n';
+    const formatted = 'changed();\ntrailing();';
+
+    expect(rangeFormattingDiffers(source, formatted, { start: 0, end: 11 })).toBe(false);
+    expect(rangeFormattingDiffers('changed ( );\ntrailing();\n', formatted, { start: 0, end: 11 })).toBe(true);
   });
 
   it('parses write mode separately from explicit paths', () => {

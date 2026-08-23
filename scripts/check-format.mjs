@@ -320,6 +320,19 @@ function formatRangeWithPrettier(cli, repoPath, source, range) {
   return result.stdout;
 }
 
+/**
+ * Prettier's range check compares the formatter output for the whole file.
+ * That lets an unrelated change outside the requested range (notably the final
+ * newline when the range starts at offset zero) fail an otherwise clean range.
+ * Compare only the requested source span so the scoped check remains scoped.
+ */
+export function rangeFormattingDiffers(source, formatted, range) {
+  return (
+    source.slice(range.start, range.end) !==
+    formatted.slice(range.start, range.end)
+  );
+}
+
 export function parseFormatCliArgs(args) {
   const raw = args[0] === "--" ? args.slice(1) : [...args];
   const write = raw[0] === "--write";
@@ -373,15 +386,19 @@ function main() {
     } else {
       for (const lineRange of runnableRanges) {
         const range = characterRangeForLines(source, lineRange);
-        const result = spawnSync(
-          process.execPath,
-          buildPrettierCheckArgs(prettierCli(), repoPath, range),
-          {
-            cwd: REPO_ROOT,
-            stdio: "inherit",
-          },
-        );
-        if (result.error || result.status !== 0) failedRanges += 1;
+        try {
+          const formatted = formatRangeWithPrettier(
+            prettierCli(),
+            repoPath,
+            source,
+            range,
+          );
+          if (rangeFormattingDiffers(source, formatted, range)) {
+            failedRanges += 1;
+          }
+        } catch {
+          failedRanges += 1;
+        }
       }
     }
   }
