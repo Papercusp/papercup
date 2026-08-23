@@ -37,6 +37,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
 import { STANDING_GOAL_KILL_POLARITY, killCriterionProblem } from '../../goals/kill-criterion';
+import { evaluateGoalStartInputs } from '../../goals/goal-io-validation';
+import { isCompilableSchema } from '../../json-schema-validation';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -333,6 +335,28 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Launch with NO desktop window (still registers presence and stays injectable).'),
+    /* work-on-everything-goal-2026-08-23 P-021 (migration 927): a goal's typed
+       argument list + declared product, mirroring plans' 714/908 pair. The
+       start door is one of the two declared surfaces (the other is the P-006
+       package format, which stamps these at install/start). */
+    inputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "OPTIONAL — the goal's own JSON Schema for its start-time inputs (P-021). `required: [...]` is what the start gate enforces; must ajv-compile (refused otherwise, so the gate is never left unable to check). Omitted ⇒ the goal declares no inputs.",
+      ),
+    outputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "OPTIONAL — the goal's own JSON Schema for what it PRODUCES, reported at wind-down (P-021). Disposition 'achieved' requires every declared output filled; 'killed' tolerates absence. Must ajv-compile. Omitted ⇒ no declared outputs.",
+      ),
+    inputs: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        'OPTIONAL — the values this goal is STARTED with, validated against inputSchema (a missing required field refuses the start). Allowed without a schema (carried unvalidated).',
+      ),
   }),
   async handler(args, ctx) {
     const workspaceId =
@@ -382,6 +406,27 @@ export default defineTool({
     const holderProblem = goalHolderPolicyProblem(launchSettings);
     if (holderProblem) return err(holderProblem);
 
+    // ── P-021: IO-schema compilability + typed-input readiness ─────────────
+    // Same placement as the criterion + holder checks above: before the
+    // ownerId pre-pin and the row write, so a refusal costs no minted identity
+    // and no rollback. Compilability is a DECLARE-time gate (714's rule): a
+    // schema that cannot compile could not be checked later, and "could not
+    // check" must never render as "nothing was required/promised".
+    if (args.inputSchema && !isCompilableSchema(args.inputSchema)) {
+      return err(
+        'inputSchema is not a compilable JSON Schema — refused at declare time so the start gate is never left unable to check it.',
+      );
+    }
+    if (args.outputSchema && !isCompilableSchema(args.outputSchema)) {
+      return err(
+        'outputSchema is not a compilable JSON Schema — refused at declare time so the wind-down gate is never left unable to check it.',
+      );
+    }
+    const inputsVerdict = evaluateGoalStartInputs(args.inputSchema ?? null, args.inputs ?? null);
+    if (!inputsVerdict.ready) {
+      return err(`inputs refused (${inputsVerdict.code}): ${inputsVerdict.hint}`);
+    }
+
     let callerOwnerId: string | null = null;
     try {
       callerOwnerId = resolveAgentIdentity(ctx).ownerId;
@@ -411,6 +456,9 @@ export default defineTool({
         tripwires: args.tripwires ?? null,
         metadata: { startedBy: callerOwnerId ?? 'operator-ui', agentOwnerId: ownerId },
         launchSettings,
+        inputSchema: args.inputSchema ?? null,
+        inputs: inputsVerdict.inputs,
+        outputSchema: args.outputSchema ?? null,
       });
     } catch (e) {
       return err(`Could not open the goal: ${(e as Error)?.message ?? e}`);
