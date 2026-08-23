@@ -79,6 +79,7 @@ function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     lastTurnAt: null,
     lastRealTurnAt: null,
     turnsStalled: false,
+    parkedForSec: null,
     lifecycleBackoff: null,
     ...overrides,
   };

@@ -47,7 +47,9 @@ export const harnessArg = z
     "Harness slug to operate on. In a workspace-scoped operator/superuser session, " +
       "pass the concrete in-scope harness slug (for example, 'papercusp' for " +
       "Papercusp's own plans). 'all' is only valid in an unscoped (--all-workspaces) " +
-      "session. A harness-scoped session supplies this automatically.",
+      "session. A harness-scoped session supplies this automatically. Recovering an " +
+      "EXACT plan slug without knowing its owner? On plans:get / plans:items you may " +
+      "omit `harness` entirely — the owning harness resolves from the slug.",
   );
 
 /** True when a value is the explicit all/operator-scope sentinel. */
@@ -131,7 +133,9 @@ export const HARNESS_REQUIRED_DETAIL =
   "harness (for example, `harness: 'papercusp'` for Papercusp's own plans). " +
   "`harness: 'all'` is valid only in an unscoped (`--all-workspaces`) session; a " +
   'workspace-scoped session rejects it as `harness_forbidden`. (A harness-scoped ' +
-  'session supplies its concrete slug automatically.)';
+  'session supplies its concrete slug automatically.) Recovering an EXACT plan slug ' +
+  'you already know? plans:get / plans:items resolve the owning harness automatically ' +
+  'when you OMIT `harness` and pass the slug.';
 
 export function harnessRequiredDetail(
   ctx?:
