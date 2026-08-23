@@ -407,12 +407,48 @@ export const FACEBOOK_PAGES_OAUTH_SCOPES = [
 ] as const;
 
 /**
- * What a Facebook connection MAY request: the landed personal-vault scopes plus
- * the Pages scopes, which are granted only by an explicit incremental consent.
+ * INSTAGRAM scopes — allowed, never DEFAULT, for exactly the reason above (P-017).
+ *
+ * ⚠ THIS LIST IS SHORTER THAN THE REGISTRY ROW'S, AND THAT IS THE POINT. The
+ * `instagram` platform row names five scopes; only these three are new. The
+ * other two — `pages_show_list` and `pages_read_engagement` — are already in the
+ * Pages block above, because the "Instagram API with Facebook Login for
+ * Business" flavor runs on a Facebook Page token and therefore inherits the Page
+ * scopes rather than duplicating them. Restating them here would create two
+ * sources of truth for one grant, which is how a later edit to one list silently
+ * diverges from the other.
+ *
+ * The same inheritance answers a dependency the permissions reference states and
+ * the registry row does not: `instagram_basic` depends on `pages_read_user_content`
+ * (and `pages_show_list`). Both are already requestable through the Pages block,
+ * so the dependency is satisfied without widening the consent surface — worth
+ * recording because the natural reading of the registry row is that it is
+ * missing, and the natural fix would have been to add a scope we already have.
+ *
+ * ⚠ D-024 FIRES ON THIS PLATFORM TOO, contrary to what the registry row said
+ * until this item corrected it. The `/replies` edge reference lists
+ * `page_read_engagement` — SINGULAR — among its required permissions, and no
+ * such permission exists in the reference. Every string below was resolved
+ * against the permissions REFERENCE, never against an endpoint's own page.
+ */
+export const INSTAGRAM_OAUTH_SCOPES = [
+  /** "read an Instagram account profile's info and media" — depends on pages_read_user_content + pages_show_list. */
+  'instagram_basic',
+  /** "create organic feed photo and video posts on behalf of a business user". */
+  'instagram_content_publish',
+  /** "create, delete and hide comments on behalf of the Instagram account linked to a Page". */
+  'instagram_manage_comments',
+] as const;
+
+/**
+ * What a Facebook connection MAY request: the landed personal-vault scopes, the
+ * Pages scopes, and the Instagram scopes — each granted only by an explicit
+ * incremental consent, never presumed.
  */
 export const FACEBOOK_ALLOWED_OAUTH_SCOPES = [
   ...FACEBOOK_OAUTH_SCOPES,
   ...FACEBOOK_PAGES_OAUTH_SCOPES,
+  ...INSTAGRAM_OAUTH_SCOPES,
 ] as const;
 
 interface FacebookTokenBody {

@@ -7,6 +7,7 @@ import {
   FACEBOOK_ALLOWED_OAUTH_SCOPES,
   FACEBOOK_OAUTH_SCOPES,
   FACEBOOK_PAGES_OAUTH_SCOPES,
+  INSTAGRAM_OAUTH_SCOPES,
   GOOGLE_CALENDAR_EVENTS_SCOPE,
   GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
   GOOGLE_CONTACTS_READONLY_SCOPE,
@@ -275,6 +276,50 @@ describe('Meta / Facebook OAuth provider', () => {
         expect(provider?.allowedScopes).not.toContain(notReal);
         expect(provider?.defaultScopes).not.toContain(notReal);
       }
+
+      // ── P-017: Instagram rides the SAME provider under the same rail ───────
+      // The Facebook Login flavor uses a Page token, so Instagram is not a
+      // separate provider — which means the identical presumed-granted trap
+      // applies to its scopes and the identical split is the answer.
+      // Pinned CONCRETELY before the loop, because a `for (const s of LIST)`
+      // assertion passes vacuously on an empty LIST — it would report a clean
+      // green for a provider that requests no Instagram scopes at all, which is
+      // the failure it is supposed to catch wearing the colour of success.
+      expect(INSTAGRAM_OAUTH_SCOPES).toEqual([
+        'instagram_basic',
+        'instagram_content_publish',
+        'instagram_manage_comments',
+      ]);
+      for (const scope of INSTAGRAM_OAUTH_SCOPES) {
+        expect(provider?.allowedScopes).toContain(scope);
+        expect(provider?.defaultScopes).not.toContain(scope);
+      }
+
+      // The Instagram block deliberately does NOT restate pages_show_list /
+      // pages_read_engagement, which it inherits from the Pages block. Asserted
+      // so a later edit cannot "fix" the apparent omission by duplicating them
+      // and creating two sources of truth for one grant.
+      expect(INSTAGRAM_OAUTH_SCOPES).not.toContain('pages_show_list');
+      expect(INSTAGRAM_OAUTH_SCOPES).not.toContain('pages_read_engagement');
+      expect(provider?.allowedScopes).toContain('pages_show_list');
+      // instagram_basic's stated dependency, already satisfied via the Pages block.
+      expect(provider?.allowedScopes).toContain('pages_read_user_content');
+
+      // D-024 fires on Instagram too: the /replies EDGE reference names
+      // `page_read_engagement` (singular), which is not a real permission. The
+      // registry row claimed D-024 passed for this platform until P-017 read
+      // that page and corrected it.
+      expect(provider?.allowedScopes).not.toContain('page_read_engagement');
+      expect(provider?.defaultScopes).not.toContain('page_read_engagement');
+
+      // Not requested: documented as needed only "if the user got a Page role
+      // through Business Manager" — unjustifiable privilege at review.
+      expect(provider?.allowedScopes).not.toContain('ads_management');
+      expect(provider?.allowedScopes).not.toContain('ads_read');
+      // The OTHER Instagram flavor's family (graph.instagram.com, a separate app
+      // identity and a separate review). Requesting one would be a silent
+      // cross-flavor mix.
+      expect(provider?.allowedScopes?.some((s) => s.startsWith('instagram_business_'))).toBe(false);
 
       // D-003 declines webhooks for v1, so this grant is unjustifiable privilege.
       expect(provider?.allowedScopes).not.toContain('pages_manage_metadata');
