@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- guard script is plain .mjs and intentionally has no declaration file.
 import {
   collectVitestConfigs,
   findUnenrolledConfigs,
