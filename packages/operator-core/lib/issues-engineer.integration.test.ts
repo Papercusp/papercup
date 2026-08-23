@@ -885,3 +885,67 @@ describe('createIssue is atomic with its substrate writes (WI-8848)', () => {
     expect(rows).toHaveLength(1); // committed before the failure ⇒ stranded. Exactly what the fix prevents.
   });
 });
+
+describe('mergeIssuePayload opts.unset REMOVES the key (EI-21215793636294109)', () => {
+  // mergeIssuePayload used to UPDATE the engineer_issues COMPATIBILITY VIEW. Its
+  // INSTEAD OF trigger re-merges the incoming payload into the stored one
+  // (`payload = COALESCE(payload,'{}') || (NEW.payload - '_ei') || _ei`) — deliberate, so a
+  // partial-payload UPDATE cannot wipe control state like `_claimHold` (WI-5493, pinned in
+  // work-items-view.integration.test.ts). The side effect: a key the caller REMOVED was put
+  // straight back, so `unset` was a silent no-op that still reported success. Live symptom —
+  // `work_items:update { plan_item: null }` returned ok:true, no error, stamp still there, so
+  // a mis-stamped item could never be released from the plan-item lane-sync hold.
+  //
+  // These are falsifiable: re-point mergeIssuePayload at harness_shared.engineer_issues and
+  // the first test fails (the key comes back), while the view control below keeps passing.
+  const rawPayload = async (id: string) => {
+    const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return rows[0]?.payload ?? {};
+  };
+
+  it('removes the named key, leaves siblings and the internal _ei block intact', async () => {
+    const a = await issues.createIssue({ title: `unset-guard-${Date.now()}`, createdBy: 'agA' });
+    await issues.mergeIssuePayload(a.id, {
+      plan_item: { plan_slug: 'some-plan', item_id: 'P-003', harness_slug: 'papercup' },
+      keep: 'yes',
+    });
+    expect(Object.keys(await rawPayload(a.id))).toContain('plan_item'); // calibration: the stamp really landed
+
+    const returned = await issues.mergeIssuePayload(a.id, {}, { unset: ['plan_item'] });
+
+    const after = await rawPayload(a.id);
+    // EXISTENCE-shaped, not value-shaped: the defect was a key that SURVIVED, which a
+    // `payload.plan_item ?? undefined` read would have masked as absent.
+    expect(Object.keys(after)).not.toContain('plan_item');
+    expect(after).toMatchObject({ keep: 'yes' }); // an unrelated key is untouched
+    // `_ei` carries severity/state projection and is written by the trigger the base-table
+    // write now bypasses — prove bypassing it does not drop the block.
+    expect(Object.keys(after)).toContain('_ei');
+    expect(returned).not.toBeNull(); // a successful unset still returns the refreshed issue
+  });
+
+  it('CONTROL: the same removal through the engineer_issues VIEW does not happen — why the fix targets the base table', async () => {
+    const a = await issues.createIssue({ title: `unset-view-control-${Date.now()}`, createdBy: 'agA' });
+    await issues.mergeIssuePayload(a.id, { plan_item: { plan_slug: 'p', item_id: 'P-001' } });
+    expect(Object.keys(await rawPayload(a.id))).toContain('plan_item');
+
+    // Exactly the statement mergeIssuePayload used to run, against the view.
+    await db.sql`
+      UPDATE harness_shared.engineer_issues
+         SET payload = (COALESCE(payload, '{}'::jsonb) || '{}'::jsonb) - ARRAY['plan_item']::text[],
+             origin = 'local', updated_at = now()
+       WHERE issue_id = ${a.id}`;
+
+    // Still present: the trigger merged it back. This is the trap the fix routes around,
+    // and it is asserted rather than described so a future trigger change surfaces here.
+    expect(Object.keys(await rawPayload(a.id))).toContain('plan_item');
+  });
+
+  it('an unset naming an absent key is a no-op, not a wipe', async () => {
+    const a = await issues.createIssue({ title: `unset-absent-${Date.now()}`, createdBy: 'agA' });
+    await issues.mergeIssuePayload(a.id, { keep: 'yes' });
+    await issues.mergeIssuePayload(a.id, {}, { unset: ['never_present'] });
+    expect(await rawPayload(a.id)).toMatchObject({ keep: 'yes' });
+  });
+});
