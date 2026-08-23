@@ -359,6 +359,15 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotService).toContain('TimeoutStopSec=30s');
   });
 
+  it('bounds the hourly database dump after a serialized run breached host PSI', () => {
+    expect(dbService).toContain('MemoryAccounting=yes');
+    expect(dbService).toContain('MemoryHigh=32G');
+    expect(dbService).toContain('MemoryMax=40G');
+    expect(dbService).toContain('MemorySwapMax=0');
+    expect(dbService).toContain('OOMPolicy=kill');
+    expect(dbService).toContain('kopia-backup-guard.sh --mode wait --label db-dump');
+  });
+
   it('hot cleanup kills only the exact recorded root Kopia child', () => {
     const { dir } = fixture();
     const stateDir = join(dir, 'state');

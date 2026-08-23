@@ -16,6 +16,19 @@ OnFailure=papercusp-db-backup-alert.service
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
+# A single serialized 4-job dump was measured at 34.25 GiB cgroup memory while
+# the host reached memory PSI some/full 47.78%/34.88% (2026-08-23 12:08Z).
+# Keep the hourly RPO and the shared wait-mode guard, but make the backup's
+# memory footprint reclaim-first and bounded so one dump cannot consume the
+# host's remaining capacity. MemoryMax is a last-resort ceiling; a failed dump
+# leaves the previous validated artifact intact and the healthcheck alerts.
+MemoryAccounting=yes
+MemoryHigh=32G
+MemoryMax=40G
+MemorySwapMax=0
+# Treat a hard-limit event as one failed atomic backup, not a partially alive
+# pg_dump worker set. The next run's PGAPPNAME reaper remains defense in depth.
+OOMPolicy=kill
 # The dump atomically rewrites the same source tree Kopia snapshots. Hold the
 # shared backup guard for the whole rewrite so the hourly dump and the
 # 30-minute snapshot timer cannot saturate I/O together or capture different
