@@ -24,7 +24,8 @@ import {
 } from "./source";
 import { isTerminalItemStatus } from "../../fleet-drained-events";
 import { ctxToPlanSourceOpts } from "./_ctx-opts";
-import { harnessArg, harnessScopedCtx } from "../_harness-scope";
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from "../_harness-scope";
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from "./slug-scope";
 import {
   resolveEffectiveStatusForItems,
   type ResolvedItem,
@@ -183,7 +184,25 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const sctx = harnessScopedCtx(args.harness, ctx);
+    // EI-21194994217912029: exact-slug scope recovery for single-plan reads —
+    // a caller passing `slug` without any resolvable harness gets the owning
+    // harness resolved from the PG index instead of a bare harness_required.
+    // Cross-plan queries keep the unchanged gate below.
+    const scope = resolveHarnessScope(args.harness, ctx);
+    let sctx: typeof ctx & { harnessSlug: string };
+    if (scope.kind === "none" && args.slug) {
+      const decision = await recoverHarnessFromSlugs(ctx, [args.slug]);
+      if (decision.status !== "resolved") return slugScopeErrorResult("plans:items", decision);
+      sctx = { ...ctx, harnessSlug: decision.harnessSlug };
+      ctxAny.metadata?.({
+        harnessAutoResolved: decision.bySlug,
+        ...(Object.keys(decision.ambiguous).length > 0
+          ? { harnessAmbiguous: decision.ambiguous }
+          : {}),
+      });
+    } else {
+      sctx = harnessScopedCtx(args.harness, ctx);
+    }
     const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
 
