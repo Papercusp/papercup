@@ -127,17 +127,81 @@ export function resolveTsserverPath(vendorDir: string = LSP_VENDOR_DIR): string 
  * `Partial<Record<…>>` or an index signature — either one silently restores the
  * original failure mode.
  */
+export type LspReadinessIntent = Extract<
+  CodeIntelIntent,
+  | 'definition'
+  | 'references'
+  | 'implementations'
+  | 'rename-preview'
+  | 'diagnostics'
+  | 'symbol-search'
+>;
+
+/**
+ * How one `(language, intent)` earns a readiness proof (WI-41090 / D-003).
+ *
+ * The `intent` field is deliberately repeated in the value even though the
+ * strategy is stored under that intent's key. It makes a strategy portable to
+ * provisioning/telemetry without losing the exact claim it is allowed to
+ * make: a `definition` canary must never certify `references`.
+ */
+export type LspReadinessStrategy =
+  | { readonly kind: 'progress-signal'; readonly intent: LspReadinessIntent }
+  | {
+      readonly kind: 'settle-window';
+      readonly intent: LspReadinessIntent;
+      readonly settleMs: number;
+    }
+  | {
+      readonly kind: 'canary-query';
+      readonly intent: LspReadinessIntent;
+      readonly minimumSites: number;
+    };
+
+const LSP_READINESS_INTENTS: readonly LspReadinessIntent[] = [
+  'definition',
+  'references',
+  'implementations',
+  'rename-preview',
+  'diagnostics',
+  'symbol-search',
+];
+
+const settleWindow = (intent: LspReadinessIntent): LspReadinessStrategy => ({
+  kind: 'settle-window',
+  intent,
+  // D-003 measured a ~4.7s false-positive window for a cold tsserver. This is
+  // intentionally a proof threshold, not a latency target.
+  settleMs: 5_000,
+});
+
+const canaryQuery = (intent: LspReadinessIntent): LspReadinessStrategy => ({
+  kind: 'canary-query',
+  intent,
+  // A positive site is evidence that this intent's index exists. An empty is
+  // never allowed to prove itself — it remains degraded until another canary
+  // for the SAME intent succeeds.
+  minimumSites: 1,
+});
+
+const progressSignalStrategies = (): Readonly<Record<LspReadinessIntent, LspReadinessStrategy>> =>
+  Object.fromEntries(
+    LSP_READINESS_INTENTS.map((intent) => [intent, { kind: 'progress-signal', intent }]),
+  ) as Readonly<Record<LspReadinessIntent, LspReadinessStrategy>>;
+
 interface LanguageSpec {
   /** The `textDocument.languageId` this server expects. */
   readonly languageId: string;
   /** Absolute path to the pinned server binary, or null when not provisioned. */
   readonly resolveBin: () => string | null;
   /**
-   * Readiness must come from the server's OWN progress signal rather than from
-   * an idle heuristic (WI-40224 — a server that is still indexing answers
-   * "no references" indistinguishably from a server that is ready).
+   * Readiness is per intent, never per server. Missing entries use the
+   * conservative canary-query default; they can answer positively, but cannot
+   * certify an empty until that exact intent has produced positive evidence.
    */
-  readonly requiresProgressSignal: boolean;
+  readonly readinessStrategy: Readonly<
+    Partial<Record<LspReadinessIntent, LspReadinessStrategy>>
+  >;
 }
 
 const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
@@ -147,7 +211,11 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
       const bin = join(LSP_VENDOR_DIR, 'node_modules', '.bin', 'typescript-language-server');
       return existsSync(bin) ? bin : null;
     },
-    requiresProgressSignal: false,
+    readinessStrategy: {
+      // The only tsserver intents with measured readiness mechanisms so far.
+      definition: settleWindow('definition'),
+      references: canaryQuery('references'),
+    },
   },
   rust: {
     languageId: 'rust',
@@ -164,7 +232,10 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
       );
       return existsSync(raBin) ? raBin : null;
     },
-    requiresProgressSignal: true,
+    // rust-analyzer exposes its own authoritative quiescence signal. Each
+    // intent consumes that signal independently so one query never certifies
+    // another merely because they share a process.
+    readinessStrategy: progressSignalStrategies(),
   },
 };
 
@@ -186,6 +257,18 @@ export function specForLanguage(language: LspLanguage): LanguageSpec {
     );
   }
   return spec;
+}
+
+/**
+ * The configured strategy for one intent, conservatively defaulting to a
+ * positive canary. The default is load-bearing: absence means UNPROVEN, never
+ * "ready enough" (R-5).
+ */
+export function readinessStrategyFor(
+  language: LspLanguage,
+  intent: LspReadinessIntent,
+): LspReadinessStrategy {
+  return specForLanguage(language).readinessStrategy[intent] ?? canaryQuery(intent);
 }
 
 /** Absolute path to a pinned server binary, or null when not provisioned. */
@@ -213,7 +296,7 @@ interface LspClient {
   /**
    * Outstanding `window/workDoneProgress` tokens. While ANY is open the server
    * is still loading the project and its answers are not yet trustworthy —
-   * see `awaitProjectReady`.
+   * see `prepareIntentReadiness`.
    */
   pendingProgress: Set<string | number>;
   /**
@@ -239,6 +322,8 @@ interface LspClient {
    * progress bars.
    */
   quiescent: boolean | null;
+  /** Intents that have independently earned a readiness proof (WI-41090). */
+  certifiedReadiness: Set<LspReadinessIntent>;
   /**
    * Latest `textDocument/publishDiagnostics` payload per document URI.
    *
@@ -269,24 +354,9 @@ export interface LspDiagnostic {
 const PROJECT_READY_TIMEOUT_MS = 60_000;
 
 /**
- * Servers that ALWAYS announce their indexing via `$/progress`, and so must be
- * required to SETTLE rather than being assumed ready when no token is pending.
- * For these, "no progress token" means "has not started yet", never "done".
- */
-/**
- * DERIVED from LANGUAGE_SPECS — never hand-maintained. A second hand-written
- * list of languages is a second place to forget one (WI-40250).
- */
-const REQUIRES_PROGRESS_SIGNAL: ReadonlySet<LspLanguage> = new Set<LspLanguage>(
-  (Object.keys(LANGUAGE_SPECS) as LspLanguage[]).filter(
-    (language) => LANGUAGE_SPECS[language].requiresProgressSignal,
-  ),
-);
-
-/**
  * How long the progress set must stay CONTINUOUSLY empty before a
- * REQUIRES_PROGRESS_SIGNAL server is treated as loaded — used only as the
- * FALLBACK when the server never sends `experimental/serverStatus` (WI-40224).
+ * progress-signal server may issue an UNPROVEN canary when it never sends
+ * `experimental/serverStatus` (WI-40224).
  *
  * An instantaneous "nothing pending" reading cannot distinguish the gap
  * between two of rust-analyzer's loading phases from the end of the last one.
@@ -452,6 +522,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     pendingProgress: new Set(),
     everSettled: false,
     quiescent: null,
+    certifiedReadiness: new Set(),
     diagnostics: new Map(),
   };
 
@@ -584,28 +655,38 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
   return pending;
 }
 
+type IntentReadinessPreparation = 'certified' | 'canary' | 'timeout';
+
+/** Pinned module state may contain a pre-WI-41090 client until host restart. */
+function readinessProofs(client: LspClient): Set<LspReadinessIntent> {
+  const compatible = client as LspClient & {
+    certifiedReadiness?: Set<LspReadinessIntent>;
+  };
+  return (compatible.certifiedReadiness ??= new Set());
+}
+
 /**
- * Block until the server has finished loading the project, so we never answer
- * from a half-loaded program.
+ * Prepare one intent without ever promoting server-wide readiness.
  *
- * Returns true when the project is genuinely ready, false when we gave up
- * waiting — and the caller MUST degrade health on false rather than answering
- * as if the result were trustworthy. Returning a bare boolean (instead of
- * throwing) is deliberate: a timeout here is a FRESHNESS fact about the answer,
- * not an error that should erase the difference between "broken" and "empty".
+ * `certified` means the configured strategy earned a proof for THIS intent.
+ * `canary` means the query may run, but an empty result remains unproven. A
+ * positive canary can certify only the same intent after the response arrives.
  */
-async function awaitProjectReady(
+async function prepareIntentReadiness(
   client: LspClient,
+  intent: LspReadinessIntent,
   timeoutMs = readyTimeoutFor(client.language),
-): Promise<boolean> {
+): Promise<IntentReadinessPreparation> {
+  const proofs = readinessProofs(client);
+  if (proofs.has(intent)) return 'certified';
+
+  const strategy = readinessStrategyFor(client.language, intent);
+  if (strategy.kind === 'canary-query') return 'canary';
+
   const deadline = Date.now() + timeoutMs;
-  // Give the server a beat to CREATE its progress token; without this grace a
-  // query issued microseconds after didOpen sees an empty pending set and
-  // concludes — wrongly — that loading already finished.
-  const graceUntil = Date.now() + 1_000;
   let idleSince: number | null = null;
   for (;;) {
-    if (client.health === 'unhealthy') return false;
+    if (client.health === 'unhealthy') return 'timeout';
     const idle = client.pendingProgress.size === 0;
     // Track how long the pending set has been CONTINUOUSLY empty. A single
     // instantaneous reading cannot tell the gap between two loading phases
@@ -613,60 +694,55 @@ async function awaitProjectReady(
     if (idle) idleSince ??= Date.now();
     else idleSince = null;
 
-    // WI-40224 — a server that reports its OWN readiness is authoritative, and
-    // OUTRANKS our progress bookkeeping in BOTH directions:
-    //
-    //   quiescent === true  -> ready, even with a progress token open (a
-    //                          background task is not a half-loaded project).
-    //   quiescent === false -> NOT ready, even though `idle && everSettled`.
-    //                          This is the false-empty window: between
-    //                          rust-analyzer's phases the pending set is empty
-    //                          and everSettled is already true, so the old gate
-    //                          green-lit a query against a partially-loaded
-    //                          index and returned a healthy EMPTY answer that
-    //                          isTrustworthyEmpty() blessed as "nothing
-    //                          implements this trait".
-    if (client.quiescent === true) return true;
-    if (client.quiescent !== false) {
-      // quiescent === null: the server has never reported. Do NOT hang waiting
-      // for a signal that may never come (an older rust-analyzer, or one that
-      // ignored our capability) — but do not accept a bare instantaneous idle
-      // either, which is the defect. Require the idle to have been SUSTAINED,
-      // which closes the inter-phase gap without depending on the notification.
-      const settled =
-        idle &&
+    if (strategy.kind === 'progress-signal') {
+      // rust-analyzer's own verdict outranks momentary idle in BOTH directions.
+      if (client.quiescent === true) {
+        proofs.add(intent);
+        return 'certified';
+      }
+      // Older servers may omit serverStatus. Preserve availability after a
+      // sustained completed progress cycle, but keep the answer UNPROVEN: a
+      // positive result may act as a canary; an empty remains degraded.
+      if (
+        client.quiescent === null &&
         client.everSettled &&
-        (!REQUIRES_PROGRESS_SIGNAL.has(client.language) ||
-          (idleSince !== null && Date.now() - idleSince >= PROGRESS_SETTLE_WINDOW_MS));
-      if (settled) return true;
+        idle &&
+        idleSince !== null &&
+        Date.now() - idleSince >= PROGRESS_SETTLE_WINDOW_MS
+      ) {
+        return 'canary';
+      }
+    } else if (
+      client.quiescent !== false &&
+      idle &&
+      idleSince !== null &&
+      Date.now() - idleSince >= strategy.settleMs
+    ) {
+      proofs.add(intent);
+      return 'certified';
     }
-    if (idle && Date.now() > graceUntil && !REQUIRES_PROGRESS_SIGNAL.has(client.language)) {
-      // No progress was ever reported. Either the server does not implement
-      // workDoneProgress or it had nothing to load. Treat as ready, but only
-      // after the grace window has actually elapsed — and only for a server
-      // that might legitimately never report progress at all (tsserver).
-      //
-      // ⚠ This branch is VACUOUS for a server that always reports progress:
-      // it fires precisely because the token has not been created YET, so it
-      // green-lights a query against a completely unloaded server. MEASURED
-      // 2026-08-21 (P-010): rust-analyzer answered `textDocument/implementation`
-      // healthy-and-EMPTY for 88.6 SECONDS before its index filled, and
-      // isTrustworthyEmpty() blesses every one of those empties — an agent
-      // asking "who implements this trait?" is told "nobody", authoritatively.
-      // Hence REQUIRES_PROGRESS_SIGNAL: such a server must SETTLE, never be
-      // assumed ready from the absence of a signal it has not sent yet.
-      return true;
-    }
-    if (Date.now() > deadline) return false;
+    if (Date.now() > deadline) return 'timeout';
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+function certifyCanaryAnswer(
+  client: LspClient,
+  intent: LspReadinessIntent,
+  preparation: IntentReadinessPreparation,
+  siteCount: number,
+): void {
+  if (preparation !== 'canary') return;
+  const strategy = readinessStrategyFor(client.language, intent);
+  const minimumSites = strategy.kind === 'canary-query' ? strategy.minimumSites : 1;
+  if (siteCount >= minimumSites) readinessProofs(client).add(intent);
 }
 
 /**
  * The health an ANSWER may claim — which is not always the health the client
  * has. WI-40224's class fix, and the durable half of it.
  *
- * `awaitProjectReady` decides WHEN to answer; this decides whether an answer
+ * `prepareIntentReadiness` decides WHEN to answer; this decides whether an answer
  * is entitled to be BELIEVED. They are different questions, and conflating
  * them is what let a bounded readiness bug become an authoritative lie:
  * `isTrustworthyEmpty()` blesses any empty whose health is 'healthy', so the
@@ -683,12 +759,14 @@ async function awaitProjectReady(
  * there would suppress good answers for no safety gain.
  */
 export function healthForAnswer(
-  client: Pick<LspClient, 'health' | 'language' | 'quiescent'>,
+  client: Pick<LspClient, 'health'> & {
+    readonly certifiedReadiness?: ReadonlySet<LspReadinessIntent>;
+  },
+  intent: LspReadinessIntent,
   siteCount: number,
 ): BackendHealth {
   if (siteCount > 0) return client.health;
-  if (!REQUIRES_PROGRESS_SIGNAL.has(client.language)) return client.health;
-  if (client.quiescent === true) return client.health;
+  if (client.certifiedReadiness?.has(intent)) return client.health;
   return client.health === 'healthy' ? 'degraded' : client.health;
 }
 
@@ -834,6 +912,9 @@ export async function lspQuery(
   });
 
   if (!method) return fail(`intent '${intent}' is not served by the LSP adapter`, 'unknown');
+  // METHOD_BY_INTENT contains only the three LSP query intents. The runtime
+  // refusal above is the corresponding guard for plain-JS/persisted callers.
+  const readinessIntent = intent as LspReadinessIntent;
 
   const language = languageForFile(query.file);
   if (!language) return fail(`no pinned language server for file ${query.file}`, 'unknown');
@@ -850,12 +931,12 @@ export async function lspQuery(
 
     // Never answer from a half-loaded project — that returns a plausible WRONG
     // location, not an error (measured: ~4.7s window on this repo).
-    const ready = await awaitProjectReady(client);
-    if (!ready) {
+    const readiness = await prepareIntentReadiness(client, readinessIntent);
+    if (readiness === 'timeout') {
       return fail(
-        `language server did not finish loading the project within ` +
-          `${readyTimeoutFor(client.language)}ms; refusing to answer from a half-loaded` +
-          ` program because it returns a plausible WRONG location rather than an error`,
+        `language server did not establish readiness for intent '${intent}' within ` +
+          `${readyTimeoutFor(client.language)}ms; refusing to answer from a half-loaded ` +
+          `program because it returns a plausible WRONG location rather than an error`,
         'degraded',
       );
     }
@@ -888,6 +969,7 @@ export async function lspQuery(
     const sites = list
       .map((r) => toSite(r, query.rootPath))
       .filter((s): s is SymbolSite => s !== null);
+    certifyCanaryAnswer(client, readinessIntent, readiness, sites.length);
 
     return {
       backend: 'lsp-adapter',
@@ -900,7 +982,7 @@ export async function lspQuery(
         // that has never reported itself quiescent must not be certifiable as
         // absence — "no results", "file is clean" and "nothing to rename" are
         // all read as facts by callers via isTrustworthyEmpty().
-        health: healthForAnswer(client, sites.length),
+        health: healthForAnswer(client, readinessIntent, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
         // The server reads from disk on didOpen, so an opened document is
         // never stale against disk. We do NOT claim to know about files the
@@ -968,12 +1050,12 @@ export async function lspDiagnostics(query: {
   try {
     const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
-    const ready = await awaitProjectReady(client);
-    if (!ready) {
+    const readiness = await prepareIntentReadiness(client, intent);
+    if (readiness === 'timeout') {
       return fail(
-        `language server did not finish loading the project within ` +
-          `${readyTimeoutFor(client.language)}ms; diagnostics from a half-loaded program` +
-          ` are not evidence of a clean file`,
+        `language server did not establish readiness for intent '${intent}' within ` +
+          `${readyTimeoutFor(client.language)}ms; diagnostics from a half-loaded program ` +
+          `are not evidence of a clean file`,
         'degraded',
       );
     }
@@ -1003,6 +1085,7 @@ export async function lspDiagnostics(query: {
       kind: SEVERITY_NAME[d.severity ?? 0] ?? null,
       detail: [d.source, d.code, d.message].filter(Boolean).join(' ') || null,
     }));
+    certifyCanaryAnswer(client, intent, readiness, sites.length);
 
     return {
       backend: 'lsp-adapter',
@@ -1015,7 +1098,7 @@ export async function lspDiagnostics(query: {
         // that has never reported itself quiescent must not be certifiable as
         // absence — "no results", "file is clean" and "nothing to rename" are
         // all read as facts by callers via isTrustworthyEmpty().
-        health: healthForAnswer(client, sites.length),
+        health: healthForAnswer(client, intent, sites.length),
         indexedAt: new Date(entry.receivedAt).toISOString(),
         staleVsDisk: false,
         indexedCommit: null,
@@ -1058,12 +1141,12 @@ export async function lspWorkspaceSymbols(query: {
 
   try {
     const client = await getClient(query.language, query.rootPath);
-    const ready = await awaitProjectReady(client);
-    if (!ready) {
+    const readiness = await prepareIntentReadiness(client, intent);
+    if (readiness === 'timeout') {
       return fail(
-        `language server did not finish loading the project within ` +
-          `${readyTimeoutFor(client.language)}ms; a symbol index that is still building` +
-          ` returns a PARTIAL list that looks complete`,
+        `language server did not establish readiness for intent '${intent}' within ` +
+          `${readyTimeoutFor(client.language)}ms; a symbol index that is still building ` +
+          `returns a PARTIAL list that looks complete`,
         'degraded',
       );
     }
@@ -1080,6 +1163,7 @@ export async function lspWorkspaceSymbols(query: {
       .filter((s): s is SymbolSite => s !== null);
 
     const sites = all.slice(0, limit);
+    certifyCanaryAnswer(client, intent, readiness, sites.length);
     return {
       backend: 'lsp-adapter',
       intent,
@@ -1093,7 +1177,7 @@ export async function lspWorkspaceSymbols(query: {
         continuation: null,
       },
       freshness: {
-        health: client.health,
+        health: healthForAnswer(client, intent, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
         staleVsDisk: null,
         indexedCommit: null,
@@ -1141,12 +1225,12 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
   try {
     const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
-    const ready = await awaitProjectReady(client);
-    if (!ready) {
+    const readiness = await prepareIntentReadiness(client, intent);
+    if (readiness === 'timeout') {
       return fail(
-        `language server did not finish loading the project within ` +
-          `${readyTimeoutFor(client.language)}ms; a rename plan computed from a half-loaded` +
-          ` program MISSES call sites, which is the most dangerous possible partial answer`,
+        `language server did not establish readiness for intent '${intent}' within ` +
+          `${readyTimeoutFor(client.language)}ms; a rename plan computed from a half-loaded ` +
+          `program MISSES call sites, which is the most dangerous possible partial answer`,
         'degraded',
       );
     }
@@ -1166,6 +1250,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
         if (site) sites.push({ ...site, detail: edit.newText ?? null });
       }
     }
+    certifyCanaryAnswer(client, intent, readiness, sites.length);
 
     return {
       backend: 'lsp-adapter',
@@ -1178,7 +1263,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
         // that has never reported itself quiescent must not be certifiable as
         // absence — "no results", "file is clean" and "nothing to rename" are
         // all read as facts by callers via isTrustworthyEmpty().
-        health: healthForAnswer(client, sites.length),
+        health: healthForAnswer(client, intent, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
         staleVsDisk: false,
         indexedCommit: null,
@@ -1220,8 +1305,8 @@ export async function lspRenameWorkspaceEdit(
   try {
     const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
-    const ready = await awaitProjectReady(client);
-    if (!ready) {
+    const readiness = await prepareIntentReadiness(client, 'rename-preview');
+    if (readiness !== 'certified') {
       // The same refusal `lspRenamePreview` makes, and for a stronger reason
       // here: a rename plan computed from a half-loaded program MISSES call
       // sites, and this caller WRITES. A partial rename that compiles is the
@@ -1230,8 +1315,8 @@ export async function lspRenameWorkspaceEdit(
       return {
         ok: false,
         error:
-          `language server did not finish loading the project within ` +
-          `${readyTimeoutFor(client.language)}ms; refusing to compute an edit for application`,
+          `language server has not certified readiness for intent 'rename-preview'; ` +
+          `refusing to compute an edit for application`,
         health: 'degraded',
       };
     }

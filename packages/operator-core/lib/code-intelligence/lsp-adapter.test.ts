@@ -1,7 +1,7 @@
 /**
  * Unit coverage for the LSP adapter's pure decision functions.
  *
- * WI-40224 — the false-empty class. `awaitProjectReady` decides WHEN to
+ * WI-40224 / WI-41090 — the false-empty class. Per-intent readiness decides WHEN to
  * answer; `healthForAnswer` decides whether an answer may be BELIEVED. The
  * second is what this file guards, because it is the durable half: a
  * readiness bug is bounded, but a readiness bug that also certifies its own
@@ -14,21 +14,27 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ensureOpen, healthForAnswer, specForLanguage, resolveServerBin } from './lsp-adapter.ts';
+import {
+  ensureOpen,
+  healthForAnswer,
+  readinessStrategyFor,
+  specForLanguage,
+  resolveServerBin,
+  type LspReadinessIntent,
+} from './lsp-adapter.ts';
 import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
 
-type Client = { health: BackendHealth; language: 'typescript' | 'rust'; quiescent: boolean | null };
+type Client = {
+  health: BackendHealth;
+  certifiedReadiness?: ReadonlySet<LspReadinessIntent>;
+};
 
 const rust = (over: Partial<Client> = {}): Client => ({
   health: 'healthy',
-  language: 'rust',
-  quiescent: null,
   ...over,
 });
 const ts = (over: Partial<Client> = {}): Client => ({
   health: 'healthy',
-  language: 'typescript',
-  quiescent: null,
   ...over,
 });
 
@@ -37,36 +43,51 @@ describe('healthForAnswer — an empty answer must earn the right to be believed
     // The exact measured defect: rust-analyzer answered implementations
     // healthy-and-EMPTY while still indexing, and isTrustworthyEmpty blessed
     // it, so an agent asking "who implements this trait?" was told "nobody".
-    expect(healthForAnswer(rust({ quiescent: null }), 0)).toBe('degraded');
+    expect(healthForAnswer(rust(), 'references', 0)).toBe('degraded');
   });
 
   it('REFUSES to certify an empty while the server says it is NOT quiescent', () => {
-    expect(healthForAnswer(rust({ quiescent: false }), 0)).toBe('degraded');
+    expect(healthForAnswer(rust(), 'implementations', 0)).toBe('degraded');
   });
 
   it('certifies an empty once the server itself reports quiescent', () => {
     // The positive case — without this the guard would just break Rust empties
     // permanently, which is not a fix.
-    expect(healthForAnswer(rust({ quiescent: true }), 0)).toBe('healthy');
+    expect(
+      healthForAnswer(
+        rust({ certifiedReadiness: new Set<LspReadinessIntent>(['references']) }),
+        'references',
+        0,
+      ),
+    ).toBe('healthy');
   });
 
   it('does NOT withhold trust from a NON-EMPTY answer', () => {
     // Deliberate asymmetry: sites are positive evidence and cannot be a
     // false-empty. Degrading them would suppress good answers for no gain.
-    expect(healthForAnswer(rust({ quiescent: null }), 3)).toBe('healthy');
-    expect(healthForAnswer(rust({ quiescent: false }), 1)).toBe('healthy');
+    expect(healthForAnswer(rust(), 'references', 3)).toBe('healthy');
+    expect(healthForAnswer(rust(), 'implementations', 1)).toBe('healthy');
   });
 
-  it('leaves TypeScript empties alone — it does not announce indexing this way', () => {
-    // Scope control: the rule is for servers in REQUIRES_PROGRESS_SIGNAL. If
-    // it fired for tsserver too, every clean TypeScript answer would degrade.
-    expect(healthForAnswer(ts({ quiescent: null }), 0)).toBe('healthy');
+  it('defaults an unproven TypeScript empty to degraded too', () => {
+    expect(healthForAnswer(ts(), 'symbol-search', 0)).toBe('degraded');
+  });
+
+  it("one intent's proof never certifies another intent's empty", () => {
+    const client = ts({ certifiedReadiness: new Set<LspReadinessIntent>(['definition']) });
+    expect(healthForAnswer(client, 'definition', 0)).toBe('healthy');
+    expect(healthForAnswer(client, 'references', 0)).toBe('degraded');
   });
 
   it('never UPGRADES health — an unhealthy server stays unhealthy', () => {
-    expect(healthForAnswer(rust({ health: 'unhealthy', quiescent: true }), 0)).toBe('unhealthy');
-    expect(healthForAnswer(rust({ health: 'degraded', quiescent: true }), 0)).toBe('degraded');
-    expect(healthForAnswer(rust({ health: 'unknown', quiescent: true }), 5)).toBe('unknown');
+    const proof = new Set<LspReadinessIntent>(['references']);
+    expect(healthForAnswer(rust({ health: 'unhealthy', certifiedReadiness: proof }), 'references', 0)).toBe(
+      'unhealthy',
+    );
+    expect(healthForAnswer(rust({ health: 'degraded', certifiedReadiness: proof }), 'references', 0)).toBe(
+      'degraded',
+    );
+    expect(healthForAnswer(rust({ health: 'unknown' }), 'references', 5)).toBe('unknown');
   });
 });
 
@@ -81,7 +102,7 @@ describe('healthForAnswer composes with isTrustworthyEmpty (the contract that co
     // The whole point of returning 'degraded' rather than logging a warning:
     // isTrustworthyEmpty is the function callers use to decide whether an
     // empty means "none exist". This asserts the two agree.
-    const health = healthForAnswer(rust({ quiescent: null }), 0);
+    const health = healthForAnswer(rust(), 'references', 0);
     expect(isTrustworthyEmpty(answerWith(health) as never)).toBe(false);
   });
 
@@ -94,7 +115,11 @@ describe('healthForAnswer composes with isTrustworthyEmpty (the contract that co
   });
 
   it('a quiescent server still produces a trustworthy empty', () => {
-    const health = healthForAnswer(rust({ quiescent: true }), 0);
+    const health = healthForAnswer(
+      rust({ certifiedReadiness: new Set<LspReadinessIntent>(['references']) }),
+      'references',
+      0,
+    );
     expect(isTrustworthyEmpty(answerWith(health) as never)).toBe(true);
   });
 });
@@ -119,10 +144,30 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
     expect(specForLanguage('rust').languageId).toBe('rust');
   });
 
-  it('declares the progress-signal requirement per language rather than hardcoding rust', () => {
-    // rust-analyzer indexes before it can answer (WI-40224); tsserver does not.
-    expect(specForLanguage('rust').requiresProgressSignal).toBe(true);
-    expect(specForLanguage('typescript').requiresProgressSignal).toBe(false);
+  it('declares readiness per language AND intent rather than hardcoding rust', () => {
+    expect(readinessStrategyFor('rust', 'definition')).toEqual({
+      kind: 'progress-signal',
+      intent: 'definition',
+    });
+    expect(readinessStrategyFor('typescript', 'definition')).toEqual({
+      kind: 'settle-window',
+      intent: 'definition',
+      settleMs: 5_000,
+    });
+    expect(readinessStrategyFor('typescript', 'references')).toEqual({
+      kind: 'canary-query',
+      intent: 'references',
+      minimumSites: 1,
+    });
+  });
+
+  it('uses the conservative canary default for an unmeasured intent', () => {
+    expect(specForLanguage('typescript').readinessStrategy['symbol-search']).toBeUndefined();
+    expect(readinessStrategyFor('typescript', 'symbol-search')).toEqual({
+      kind: 'canary-query',
+      intent: 'symbol-search',
+      minimumSites: 1,
+    });
   });
 
   it('REFUSES an unknown language loudly, and never hands back another server', () => {
