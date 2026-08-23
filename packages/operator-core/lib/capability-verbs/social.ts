@@ -461,6 +461,32 @@ export interface SocialWriteAdapter {
    * limitation, sending someone to verify a lexicon that was never the problem.
    */
   post?(request: SocialPostRequest, context: OutboundContext): Promise<SocialPostOutcome>;
+  /**
+   * Optional for the same reason `post` is — a missing implementation is an
+   * adapter gap, not a platform limitation, and the two are reported
+   * separately.
+   *
+   * `deleted:false` is a FIRST-CLASS outcome, not a failure: it is how an
+   * adapter says "the platform reports nothing there to delete". Delete is the
+   * one verb whose retry is indistinguishable from its success — a second call
+   * on an already-gone post looks exactly like a first call that worked — so an
+   * adapter that cannot tell those apart must say so here rather than return a
+   * success the caller will read as "I deleted it".
+   */
+  delete?(request: SocialDeleteRequest, context: OutboundContext): Promise<SocialDeleteOutcome>;
+}
+
+export interface SocialDeleteRequest {
+  ref: SocialPostRef;
+  /** Platform-native handle for the post, derived from the STORED row. */
+  target: SocialReplyTarget;
+  idempotencyKey: string;
+}
+
+export interface SocialDeleteOutcome {
+  /** false = the platform reported nothing to delete. Never conflate with success. */
+  deleted: boolean;
+  detail?: string;
 }
 
 const WRITE_ADAPTERS = new Map<SocialPlatformId, SocialWriteAdapter>();

@@ -57,8 +57,26 @@ type CodeRunPayload = {
   uncertainMutations?: unknown;
   childFailures?: unknown;
   notDispatchedWrites?: unknown;
+  runtimeObservations?: unknown;
   state?: unknown;
 };
+
+function runtimeObservations(value: unknown): {
+  authorizationObservationCount: number;
+  authorityWideningDetected: boolean;
+  midTurnPromptInjectionObservability: 'not-observable';
+} {
+  const record = typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    authorizationObservationCount: finiteNonNegative(record.authorizationObservationCount) ?? 0,
+    authorityWideningDetected: record.authorityWideningDetected === true,
+    // Server execution has no truthful before/after signal for native-client
+    // prompt injection. Never turn missing visibility into an unchanged claim.
+    midTurnPromptInjectionObservability: 'not-observable',
+  };
+}
 
 export interface ServerScriptRunDeps {
   runCode: (
@@ -155,6 +173,7 @@ function executionMetrics(
     ? clampForegroundTimeoutMs(args.timeoutSec * 1_000) / 1_000
     : DEFAULT_TIMEOUT_SEC;
   const dispatchCount = finiteNonNegative(payload.dispatchCount) ?? 0;
+  const observations = runtimeObservations(payload.runtimeObservations);
 
   return {
     backend: 'server',
@@ -175,6 +194,9 @@ function executionMetrics(
     uncertainMutationCount: countArray(payload.uncertainMutations),
     childFailureCount: countArray(payload.childFailures),
     notDispatchedWriteCount: countArray(payload.notDispatchedWrites),
+    authorizationObservationCount: observations.authorizationObservationCount,
+    authorityWideningDetected: observations.authorityWideningDetected,
+    midTurnPromptInjectionObservability: observations.midTurnPromptInjectionObservability,
   };
 }
 

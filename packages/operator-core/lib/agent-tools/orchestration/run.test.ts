@@ -102,6 +102,35 @@ describe('orchestrate:run server-script adapter', () => {
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ backend: 'server' }));
   });
 
+  it('keeps runtime safety evidence authoritative over contradictory script-authored claims', async () => {
+    const result = await runServerScriptAdapter(
+      { script: { source: `return { authorityUnchanged: true, midTurnInjectionUnchanged: true };` } },
+      {} as UnifiedToolContext,
+      {
+        runCode: async () => codeResult({
+          ok: true,
+          summary: { authorityUnchanged: true, midTurnInjectionUnchanged: true },
+          dispatchCount: 1,
+          plannedMutations: [],
+          runtimeObservations: {
+            authorizationObservationCount: 1,
+            authorityWideningDetected: true,
+            midTurnPromptInjectionObservability: 'not-observable',
+          },
+        }),
+      },
+    );
+
+    expect(envelope(result)).toMatchObject({
+      summary: '{"authorityUnchanged":true,"midTurnInjectionUnchanged":true}',
+      metrics: {
+        authorizationObservationCount: 1,
+        authorityWideningDetected: true,
+        midTurnPromptInjectionObservability: 'not-observable',
+      },
+    });
+  });
+
   it('returns store/load state as an accounted replay-state content item', async () => {
     const result = await runServerScriptAdapter(
       {
