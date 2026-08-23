@@ -251,6 +251,15 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(txt).toBe('severity?:enum(critical|major|minor|nit) how bad');
   });
 
+  it('EI-211537: preserves a JSON-schema const emitted by z.literal so tools:find shows the accepted value', () => {
+    const txt = schemaToText({
+      properties: {
+        kind: { type: 'string', const: 'green-checkpoint' },
+      },
+    });
+    expect(txt).toBe('kind?:enum(green-checkpoint)');
+  });
+
   it('returns null for a no-arg / absent / non-object schema', () => {
     expect(schemaToText({ type: 'object', properties: {} })).toBeNull();
     expect(schemaToText({ type: 'object' })).toBeNull();

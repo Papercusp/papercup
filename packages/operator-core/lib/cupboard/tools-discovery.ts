@@ -211,6 +211,7 @@ export function schemaToText(inputSchema: unknown): string | null {
       description?: unknown;
       type?: unknown;
       enum?: unknown;
+      const?: unknown;
       properties?: unknown;
       required?: unknown;
       minimum?: unknown;
@@ -236,10 +237,16 @@ export function schemaToText(inputSchema: unknown): string | null {
     // and render its actual member values (not just the word "enum") — strictly
     // more informative than either the old enum-only or type-only text.
     const enumValues = Array.isArray(p.enum)
-      ? (p.enum as unknown[]).filter((v): v is string | number | boolean =>
-          typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+      ? (p.enum as unknown[]).filter((v): v is string | number | boolean | null =>
+          v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
         )
-      : null;
+      : Object.prototype.hasOwnProperty.call(p, 'const') &&
+          (p.const === null ||
+            typeof p.const === 'string' ||
+            typeof p.const === 'number' ||
+            typeof p.const === 'boolean')
+        ? [p.const]
+        : null;
     const type =
       enumValues && enumValues.length > 0
         ? `enum(${enumValues.join('|')})`
