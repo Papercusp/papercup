@@ -36,6 +36,7 @@ import {
   runForeground,
   startBackground,
 } from './bash-jobs';
+import { augmentedSpawnPath } from '../../plugin-spawn-impl';
 import { taskManagerEnabledSync } from '../../task-manager/enabled';
 import * as enrollSync from '../../task-manager/enroll-sync';
 
@@ -305,6 +306,83 @@ describe('background jobs', () => {
     expect(final.status).toBe('completed');
     expect(final.exitCode).toBe(0);
     expect(readJobOutput(final)).toContain(`${STATE}\n`);
+  });
+
+  it('passes the scrubbed identity and final augmented PATH into the transient service payload', async () => {
+    const previousSid = process.env.PAPERCUSP_SID;
+    const previousWorkspace = process.env.PAPERCUSP_WORKSPACE;
+    const previousSecret = process.env.DATABASE_URL;
+    process.env.PAPERCUSP_SID = 'service-payload-session';
+    process.env.PAPERCUSP_WORKSPACE = 'papercusp-workspace';
+    process.env.DATABASE_URL = 'postgres://user:pw@host/should-not-leak';
+
+    let wrappedEnv: Readonly<Record<string, string | undefined>> | undefined;
+    let wrappedCwd: string | undefined;
+    const wrap = vi.fn(
+      (
+        binary: string,
+        argv: string[],
+        env?: Readonly<Record<string, string | undefined>>,
+        cwd?: string,
+      ) => {
+        wrappedEnv = env;
+        wrappedCwd = cwd;
+        return { binary, argv };
+      },
+    );
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'service-payload-task',
+      confined: true,
+      unconfinedReason: null,
+      unitKind: 'service',
+      scopeUnit: 'service-payload-task.service',
+      enrolled: true,
+      registrationReady: null,
+      wrap,
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+
+    try {
+      const job = startBackground(
+        {
+          command: 'printf "SID=%s|WS=%s|PATH=%s|EXPLICIT=%s|SECRET=%s" "$PAPERCUSP_SID" "$PAPERCUSP_WORKSPACE" "$PATH" "$EXPLICIT" "${DATABASE_URL:-unset}"',
+          cwd: STATE,
+          stateDir: STATE,
+          env: { EXPLICIT: 'per-call' },
+        },
+        10_000,
+      );
+      await waitForStatus(job.id);
+
+      expect(job.status).toBe('completed');
+      expect(wrap).toHaveBeenCalledOnce();
+      expect(wrappedCwd).toBe(STATE);
+      expect(wrappedEnv).toMatchObject({
+        PAPERCUSP_SID: 'service-payload-session',
+        PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+        EXPLICIT: 'per-call',
+        PATH: augmentedSpawnPath(STATE),
+      });
+      expect(wrappedEnv).not.toHaveProperty('DATABASE_URL');
+
+      const output = readJobOutput(job);
+      expect(output).toContain('SID=service-payload-session');
+      expect(output).toContain('WS=papercusp-workspace');
+      expect(output).toContain(`PATH=${augmentedSpawnPath(STATE)}`);
+      expect(output).toContain('EXPLICIT=per-call');
+      expect(output).toContain('SECRET=unset');
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+      finish.mockRestore();
+      if (previousSid === undefined) delete process.env.PAPERCUSP_SID;
+      else process.env.PAPERCUSP_SID = previousSid;
+      if (previousWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE;
+      else process.env.PAPERCUSP_WORKSPACE = previousWorkspace;
+      if (previousSecret === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousSecret;
+    }
   });
 
   it('stamps background children with durable task provenance and rejects caller overrides', async () => {

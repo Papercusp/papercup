@@ -294,13 +294,27 @@ function spawnShell(
       `[capability:bash] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,
     );
   }
+  // Build the payload environment once, after the inherited env has been
+  // scrubbed and the cwd-specific toolchain PATH has been finalized. A
+  // transient systemd SERVICE is started by the user manager, so it does not
+  // inherit this process's environment; passing only the caller's explicit
+  // env to `wrapScope` silently dropped the scrubbed identity and PATH that
+  // `childSpawn` still received.
+  const childEnv = {
+    ...inheritedEnv,
+    TMPDIR: CAPABILITY_SANDBOX_TMPDIR,
+    TMP: CAPABILITY_SANDBOX_TMPDIR,
+    TEMP: CAPABILITY_SANDBOX_TMPDIR,
+    ...(env ?? {}),
+    PATH: spawnPath,
+  };
   // EI-21229453838112711: `cwd` MUST be handed to the wrapper, not only to
   // childSpawn below. A background bash job is enrolled as a transient systemd
   // SERVICE, and a service payload does not inherit this process's cwd — the
   // childSpawn `cwd` applies to the systemd-run client only, leaving the real
   // command in $HOME.
   const launch = wrapScope
-    ? wrapScope(decision.binary, decision.argv, env, cwd)
+    ? wrapScope(decision.binary, decision.argv, childEnv, cwd)
     : { binary: decision.binary, argv: decision.argv };
   const child = childSpawn(launch.binary, launch.argv, {
     cwd,
@@ -311,14 +325,7 @@ function spawnShell(
     // TMPDIR/TMP/TEMP → a dir that EXISTS inside the exec-sandbox (EI-5912): after
     // stripHostX (which keeps the inherited, possibly-ephemeral TMPDIR) but BEFORE
     // the caller's explicit `env`, so a deliberate caller override still wins.
-    env: {
-      ...inheritedEnv,
-      TMPDIR: CAPABILITY_SANDBOX_TMPDIR,
-      TMP: CAPABILITY_SANDBOX_TMPDIR,
-      TEMP: CAPABILITY_SANDBOX_TMPDIR,
-      ...(env ?? {}),
-      PATH: spawnPath,
-    },
+    env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
     // OWN PROCESS GROUP (capability-bash-orphan-kill-2026-06-21): `detached:true`
     // makes the child (bash, or the bwrap wrapper) a process-group leader
