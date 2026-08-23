@@ -176,4 +176,50 @@ describe('GET /api/oauth/start', () => {
     expect(response.status).toBe(400);
     expect(authMocks.getSessionUserOrDefault).not.toHaveBeenCalled();
   });
+
+  it('captures the owner for Facebook Personal Vault and always requests the capability-accurate scope set', async () => {
+    const buildAuthorizeUrl = vi.fn(() => 'https://www.facebook.com/dialog/oauth');
+    registerProvider({
+      ...stubProvider,
+      id: 'facebook',
+      defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
+      allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
+      buildAuthorizeUrl,
+    });
+
+    const response = await GET(new Request(
+      'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=ignored&scopes=public_profile',
+      { headers: { cookie: 'papercusp_session=opaque' } },
+    ));
+    expect(response.status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'facebook',
+        plugin: 'facebook-personal-vault',
+        harness: 'papercusp',
+        field: 'owner-22222222-2222-4222-8222-222222222222',
+      }),
+      {
+        privateContext: {
+          ownerUserId: '22222222-2222-4222-8222-222222222222',
+          workspaceId: 'workspace-1',
+          returnPath: '/settings/personal-vault',
+        },
+      },
+    );
+    expect(buildAuthorizeUrl).toHaveBeenCalledWith(
+      ['public_profile', 'user_posts', 'user_photos'],
+      'test-state-token',
+      expect.objectContaining({ ownerUserId: '22222222-2222-4222-8222-222222222222' }),
+    );
+  });
+
+  it('rejects a non-Facebook provider under the reserved Facebook Personal Vault plugin id', async () => {
+    registerProvider(stubProvider);
+    const response = await GET(new Request(
+      'http://x/api/oauth/start?provider=github&plugin=facebook-personal-vault&harness=papercusp&field=owner',
+    ));
+    expect(response.status).toBe(400);
+    expect(authMocks.getSessionUserOrDefault).not.toHaveBeenCalled();
+  });
 });

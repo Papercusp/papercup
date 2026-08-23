@@ -36,6 +36,23 @@ export function personalDocumentFromExternalEvent(event: NormalizedExternalEvent
       metadata: p, dedupeKey: `calendar:${event.externalId}`,
     };
   }
+  if (event.key.startsWith('ext:facebook:')) {
+    const entityType = p.entityType === 'profile' || p.entityType === 'photo'
+      ? p.entityType
+      : 'post';
+    const author = typeof p.author === 'string' && p.author.trim() ? p.author.trim() : null;
+    const text = String(p.text ?? '');
+    const title = entityType === 'profile'
+      ? author ?? 'Facebook profile'
+      : entityType === 'photo'
+        ? text || 'Facebook photo'
+        : 'Facebook post';
+    return {
+      source: 'facebook', kind: entityType, externalId: event.externalId, occurredAt: event.occurredAt,
+      participants: author ? [author] : [], title, text,
+      metadata: p, dedupeKey: `facebook:${entityType}:${event.externalId}`,
+    };
+  }
   throw new Error(`unsupported_personal_event:${event.key}`);
 }
 

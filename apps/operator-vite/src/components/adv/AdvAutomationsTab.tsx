@@ -120,18 +120,13 @@ export default function AdvAutomationsTab() {
   });
   const catalog = catalogQuery.data?.[0] ?? null;
 
-  const projectsQuery = useSyncQuery<{ slug: string }>({
-    queryName: 'harnessProjects.lite',
-    args: { includeHiveHomes: true },
-    staleTime: 60_000,
-  });
-  const harnessSlugs = useMemo(
-    () => (projectsQuery.data ?? []).map((row) => row.slug).filter(Boolean),
-    [projectsQuery.data],
-  );
   const plansQuery = useSyncQuery<AutomationPlanRow>({
     queryName: 'plans.list',
-    args: harnessSlugs.length > 0 ? { harness_slugs: harnessSlugs } : {},
+    // No args is the canonical active-workspace superset: callPlansReadRaw
+    // injects workspaceWide:true. Do not fan out the project registry here —
+    // harness_slugs is capped at 64 and a large workspace would strand this
+    // view in Loading after the resolver rejects the oversized list.
+    args: {},
   });
   const schedulesQuery = useSyncQuery<AutomationScheduleRow>({
     queryName: 'plans.schedule',

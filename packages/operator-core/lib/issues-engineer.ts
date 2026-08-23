@@ -2656,14 +2656,31 @@ export async function mergeIssuePayload(
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
   const unset = [...new Set(opts.unset ?? [])];
-  const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues
+  // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
+  // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
+  // INSTEAD OF trigger re-merges the incoming payload into the stored one
+  // (`payload = COALESCE(payload,'{}') || (NEW.payload - '_ei') || _ei`), which is
+  // DELIBERATE: a partial-payload UPDATE must not wipe control state like `_claimHold` /
+  // `held_open_by` (pinned by work-items-view.integration.test.ts, WI-5493). But that same
+  // merge RESTORES any key this function removed, so `opts.unset` computed the right
+  // payload and the trigger silently put the key back — while still reporting success.
+  // Live symptom: `work_items:update { plan_item: null }` returned ok:true with no error
+  // and left payload.plan_item in place, so a mis-stamped item could never be released
+  // from the plan-item lane-sync hold. The same silent no-op hit the `needsHuman` legacy
+  // -key clear, which routes through this identical unset path.
+  // Writing the base table also stops a lossy round-trip: the trigger rebuilds `_ei` from
+  // the view's scalar projection, whereas the stored `_ei` is preserved untouched here.
+  const rows = await sql<{ ok: number }[]>`
+    UPDATE harness_shared.work_items
        SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb) - ${unset}::text[],
            origin = 'local',
-           updated_at = now()
-     WHERE workspace_id = ${ws} AND issue_id = ${id}
-    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
-  return rows[0] ? toIssue(rows[0]) : null;
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${ws}
+       AND feature_id = ${id}
+       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+    RETURNING 1 AS ok`;
+  if (!rows[0]) return null;
+  return getIssueInWorkspace(ws, id);
 }
 
 /** Threadable.addPost — comment on the issue (creates the thread on first post). */

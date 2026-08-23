@@ -63,6 +63,7 @@ const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 type JsonSchemaNode = {
   type?: unknown;
   enum?: unknown;
+  const?: unknown;
   pattern?: unknown;
   properties?: unknown;
   required?: unknown;
@@ -117,6 +118,18 @@ function schemaType(node: JsonSchemaNode): string {
       )
     : [];
   if (enumValues.length > 0) return `enum(${enumValues.join('|')})`;
+  // z.literal() emits JSON Schema's `const`, not `enum`. Preserve that
+  // singleton constraint in discovery so callers do not learn the accepted
+  // value only after a runtime rejection (EI-21166891721391042).
+  if (
+    Object.prototype.hasOwnProperty.call(node, 'const') &&
+    (node.const === null ||
+      typeof node.const === 'string' ||
+      typeof node.const === 'number' ||
+      typeof node.const === 'boolean')
+  ) {
+    return `enum(${String(node.const)})`;
+  }
   if (typeof node.type === 'string') return node.type;
   const unionTypes = [...new Set(schemaNodes(node).map(schemaType).filter(Boolean))];
   return unionTypes.join('|');

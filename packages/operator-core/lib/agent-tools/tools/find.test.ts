@@ -345,6 +345,23 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toBe('published_sha?:string~/^[0-9a-f]{40,64}$/');
   });
 
+  it('renders a JSON-schema const as a singleton enum in nested discovery output', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        producer_health: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', const: 'green-checkpoint' },
+          },
+          required: ['kind'],
+        },
+      },
+    });
+
+    expect(compact).toBe('producer_health?:object{kind:enum(green-checkpoint)}');
+  });
+
   it('returns valid bounded JSON and marks omitted hits', () => {
     const base = {
       query: 'a verbose discovery query',

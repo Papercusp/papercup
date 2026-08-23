@@ -38,6 +38,11 @@ vi.mock('../../../external-triggers/google-workspace', () => ({
   GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal'],
   googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
 }));
+vi.mock('../../../external-triggers/facebook', () => ({
+  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN: 'facebook-personal-vault',
+  FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS: ['facebook'],
+  facebookPersonalVaultOAuthField: (ref: string) => ref.replace('facebook-personal-vault:', ''),
+}));
 vi.mock('../../../oauth/providers', () => ({
   loadAndRegisterProvidersFromDisk: mocks.loadProviders,
   getProvider: mocks.getProvider,
@@ -84,7 +89,7 @@ beforeEach(() => {
   mocks.purge.mockResolvedValue({ documents: 2, cursors: 1, aliases: 1, identities: 1 });
   mocks.upsert.mockResolvedValue({ insertedOrUpdated: 1, ids: ['doc-1'] });
   mocks.loadProviders.mockResolvedValue(['google']);
-  mocks.getProvider.mockReturnValue({ id: 'google' });
+  mocks.getProvider.mockImplementation((id: string) => id === 'google' ? { id: 'google' } : null);
   mocks.listSources.mockResolvedValue([
     {
       id: 'gmail-source',
@@ -148,6 +153,12 @@ describe('Personal Vault owner routes', () => {
             lastSyncAt: '2026-08-23T00:00:00.000Z',
           }],
         },
+        facebook: {
+          configured: false,
+          connected: false,
+          status: 'needs-app-config',
+          sources: [],
+        },
       },
     });
     expect(mocks.stats).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1');
@@ -174,6 +185,61 @@ describe('Personal Vault owner routes', () => {
       ['gmail', 'gcal'],
     );
     expect(mocks.tokenUpdate).toHaveBeenCalledWith('google-workspace', 'papercusp', {
+      'owner-user-1': null,
+      'owner-user-1_refresh': null,
+      'owner-user-1_expires_at': null,
+      'owner-user-1_expired': true,
+    });
+    expect(mocks.purge).not.toHaveBeenCalled();
+  });
+
+  it('projects and disconnects Facebook without exposing cursors, credentials, or purging documents', async () => {
+    mocks.getProvider.mockImplementation((id: string) => ({ id }));
+    mocks.listSources.mockResolvedValue([{
+      id: 'facebook-source',
+      workspaceId: 'ws-test',
+      kind: 'facebook',
+      ownerUserId: 'user-1',
+      credentialRef: 'facebook-personal-vault:owner-user-1',
+      status: 'connected',
+      config: { coverage: ['profile', 'posts', 'photo-metadata'] },
+      cursor: { since: 'secret-provider-watermark', lastSyncAt: '2026-08-23T00:15:00.000Z' },
+      lastError: null,
+      lastConnectedAt: '2026-08-23T00:00:00.000Z',
+      updatedAt: '2026-08-23T00:15:00.000Z',
+    }]);
+    mocks.disconnectSources.mockResolvedValue({
+      sources: 1,
+      credentialRefs: ['facebook-personal-vault:owner-user-1'],
+    });
+
+    const statusResponse = await invoke(
+      'GET',
+      '/user/personal-vault',
+      new Request('http://localhost/user/personal-vault'),
+    );
+    const statusPayload = await statusResponse.json();
+    expect(statusPayload.integrations.facebook).toMatchObject({
+      provider: 'facebook',
+      configured: true,
+      connected: true,
+      status: 'connected',
+      sources: [{ kind: 'facebook', lastSyncAt: '2026-08-23T00:15:00.000Z' }],
+    });
+    expect(JSON.stringify(statusPayload)).not.toContain('secret-provider-watermark');
+    expect(JSON.stringify(statusPayload)).not.toContain('credentialRef');
+
+    const disconnectResponse = await invoke(
+      'DELETE',
+      '/user/personal-vault/integrations/facebook',
+      new Request('http://localhost/user/personal-vault/integrations/facebook', { method: 'DELETE' }),
+    );
+    await expect(disconnectResponse.json()).resolves.toMatchObject({
+      provider: 'facebook',
+      disconnectedSources: 1,
+    });
+    expect(mocks.disconnectSources).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', ['facebook']);
+    expect(mocks.tokenUpdate).toHaveBeenCalledWith('facebook-personal-vault', 'papercusp', {
       'owner-user-1': null,
       'owner-user-1_refresh': null,
       'owner-user-1_expires_at': null,

@@ -307,6 +307,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
+  'system:facebook-personal-vault-poll': {
+    spend: 'none',
+    why: 'Polls the owner-authorized Facebook Graph surface and emits replay-safe trigger/vault deliveries',
+  },
   'system:google-calendar-poll': {
     spend: 'none',
     why: 'Polls Google Calendar, advances provider cursors, and emits local trigger/vault deliveries',

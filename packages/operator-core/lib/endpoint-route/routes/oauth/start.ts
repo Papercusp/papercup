@@ -13,6 +13,7 @@ import { signState } from '../../../oauth/state';
 import { getSessionUserOrDefault } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../../../external-triggers/google-workspace';
+import { FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN } from '../../../external-triggers/facebook';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
@@ -40,9 +41,17 @@ export default defineTool({
     }
     const connectsGoogleWorkspace =
       providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
+    const connectsFacebookPersonalVault =
+      providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
     if (plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN && !connectsGoogleWorkspace) {
       return Response.json(
         { ok: false, error: 'google-workspace plugin requires provider google' },
+        { status: 400 },
+      );
+    }
+    if (plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN && !connectsFacebookPersonalVault) {
+      return Response.json(
+        { ok: false, error: 'facebook-personal-vault plugin requires provider facebook' },
         { status: 400 },
       );
     }
@@ -68,7 +77,7 @@ export default defineTool({
     // The reserved Workspace connection backs Gmail, Calendar, and Contacts as
     // one consent. A caller-supplied subset must not create source rows that look
     // connected but cannot actually read one of those provider surfaces.
-    const scopes = connectsGoogleWorkspace
+    const scopes = connectsGoogleWorkspace || connectsFacebookPersonalVault
       ? [...(provider.defaultScopes ?? [])]
       : requestedScopes.length > 0
         ? requestedScopes
@@ -79,10 +88,16 @@ export default defineTool({
         { status: 500 },
       );
     }
+    if (connectsFacebookPersonalVault && scopes.length === 0) {
+      return Response.json(
+        { ok: false, error: 'facebook-personal-vault provider has no default scopes' },
+        { status: 500 },
+      );
+    }
     const providerHost = new URL(provider.config.authorizeUrl).host;
     let field = requestedField;
     let privateContext = { ...((await provider.createFlowContext?.()) ?? {}) };
-    if (connectsGoogleWorkspace) {
+    if (connectsGoogleWorkspace || connectsFacebookPersonalVault) {
       const owner = await getSessionUserOrDefault(req.headers);
       field = 'owner-' + owner.id;
       privateContext = {

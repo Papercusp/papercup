@@ -268,6 +268,7 @@ import '../../blueprint/blueprint-run-action';
 // scheduled plan (instance plan → plan_runs row → run-scoped frontier work_items).
 import './plan-run-action';
 import './external-trigger-dispatch-action';
+import './facebook-personal-vault-poll-action';
 import './google-calendar-poll-action';
 import './google-gmail-poll-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the

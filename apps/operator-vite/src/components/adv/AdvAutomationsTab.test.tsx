@@ -8,6 +8,7 @@ import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/
 const H = vi.hoisted(() => ({
   runTool: vi.fn(async () => ({ ok: true })),
   invalidates: [] as string[],
+  queries: [] as Array<{ queryName: string; args: unknown }>,
 }));
 
 function routine(): AutomationRoutine {
@@ -40,7 +41,8 @@ const external: ExternalTriggerAdminSnapshot = {
 };
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) => {
+  useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
+    H.queries.push({ queryName, args });
     const invalidate = vi.fn(() => H.invalidates.push(queryName));
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
@@ -68,6 +70,7 @@ function renderTab() {
 beforeEach(() => {
   H.runTool.mockClear();
   H.invalidates.length = 0;
+  H.queries.length = 0;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'PATCH') return new Response(JSON.stringify({ ok: true }), { status: 200 });
     return new Response(JSON.stringify(external), { status: 200 });
@@ -79,6 +82,8 @@ describe('<AdvAutomationsTab>', () => {
   it('lands on the causal trigger-flow view and keeps non-triggered routines in Catalog', async () => {
     renderTab();
     expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
+    expect(H.queries.some(({ queryName, args }) => queryName === 'plans.list' && JSON.stringify(args) === '{}')).toBe(true);
+    expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
     expect(screen.getAllByText('Outcome / next').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Trigger flows')).toBeTruthy();
     const planRow = screen.getByRole('button', { name: /Schedule \+ Slack \+ Manual starts Customer feedback digest/ });

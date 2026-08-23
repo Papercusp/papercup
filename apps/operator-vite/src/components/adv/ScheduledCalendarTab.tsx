@@ -102,25 +102,13 @@ export default function ScheduledCalendarTab() {
   const [pickerOpen, setPickerOpen] = useState(false);
   // The plan list (incl. P-021 schedule fields) powers the "Schedule a plan"
   // picker — pick an unscheduled plan to give it a first schedule.
-  // Workspace-wide plan picker (D-020 item 3): fan plans.list across every harness
-  // so an unscheduled plan in a NON-primary pot is schedulable too (the same
-  // projects/lite source MugTab uses). LIVE-queried lazily — `enabled: pickerOpen`
-  // keeps the cross-harness fan-out off until the picker opens, and the registry
-  // list now auto-updates on create/delete/rename/fork (EI-206, data-sync-push
-  // P-010) instead of the old one-shot fetch.
-  const { data: projectsData } = useSyncQuery<{ slug: string }>({
-    queryName: 'harnessProjects.lite',
-    args: { includeHiveHomes: true },
-    enabled: pickerOpen,
-    staleTime: 60_000,
-  });
-  const harnessSlugs = useMemo(
-    () => (projectsData ?? []).map((p) => p.slug).filter((s): s is string => !!s),
-    [projectsData],
-  );
+  // The no-args plans.list subscription is the canonical active-workspace
+  // superset: callPlansReadRaw injects workspaceWide:true. Keep it lazy, but do
+  // not fan out harnessProjects.lite — harness_slugs is capped at 64 and large
+  // workspaces would make the schedule picker fail before it rendered.
   const { data: planListData } = useSyncQuery<PlanListLite>({
     queryName: 'plans.list',
-    args: harnessSlugs.length > 0 ? { harness_slugs: harnessSlugs } : {},
+    args: {},
     enabled: pickerOpen,
   });
   const planList = useMemo(() => (Array.isArray(planListData) ? planListData : []), [planListData]);

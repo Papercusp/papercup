@@ -32,6 +32,16 @@ const sourceMocks = vi.hoisted(() => ({
     plan: { created: true, schemaAdded: true },
     binding: { id: 'binding-1', armed: false },
   })),
+  provisionFacebook: vi.fn(async () => ({
+    id: '33333333-3333-4333-8333-333333333333',
+    workspaceId: 'workspace-1',
+    kind: 'facebook',
+    ownerUserId: '22222222-2222-4222-8222-222222222222',
+    credentialRef: 'facebook-personal-vault:owner',
+    status: 'connected',
+    config: {},
+    cursor: {},
+  })),
   sql: { test: true },
 }));
 
@@ -52,6 +62,10 @@ vi.mock('../../external-triggers/google-workspace', async (importOriginal) => ({
 }));
 vi.mock('../../external-triggers/gmail-flagship', () => ({
   ensureGmailRespondDraftBinding: sourceMocks.ensureGmailBinding,
+}));
+vi.mock('../../external-triggers/facebook', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../external-triggers/facebook')>()),
+  provisionOwnedFacebookPersonalVaultSource: sourceMocks.provisionFacebook,
 }));
 vi.mock('../../oauth/state', () => ({
   verifyAndConsumeState: async (token: string) => {
@@ -76,6 +90,24 @@ vi.mock('../../oauth/state', () => ({
           field: 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'accounts.google.com',
           provider: 'google',
+        },
+      };
+    }
+    if (token === 'facebook.valid' || token === 'facebook.missing') {
+      return {
+        ok: true,
+        privateContext: token === 'facebook.missing'
+          ? {}
+          : {
+              ownerUserId: '22222222-2222-4222-8222-222222222222',
+              workspaceId: 'workspace-1',
+            },
+        claims: {
+          plugin: 'facebook-personal-vault',
+          harness: 'papercusp',
+          field: 'owner-22222222-2222-4222-8222-222222222222',
+          providerHost: 'www.facebook.com',
+          provider: 'facebook',
         },
       };
     }
@@ -111,6 +143,7 @@ beforeEach(async () => {
   process.env.PAPERCUSP_HOME = TMP_HOME;
   providers.__resetRegistryForTest();
   sourceMocks.provision.mockClear();
+  sourceMocks.provisionFacebook.mockClear();
   sourceMocks.ensureGmailBinding.mockClear();
 });
 
@@ -266,5 +299,69 @@ describe('GET /api/oauth/callback', () => {
     expect(response.status).toBe(400);
     expect(exchangeCode).not.toHaveBeenCalled();
     expect(sourceMocks.provision).not.toHaveBeenCalled();
+  });
+
+  it('stores the Facebook token under the private plugin and provisions exactly one owned source', async () => {
+    providers.registerProvider({
+      id: 'facebook',
+      config: {
+        clientId: 'facebook-app',
+        clientSecret: 'facebook-secret',
+        authorizeUrl: 'https://www.facebook.com/dialog/oauth',
+        tokenUrl: 'https://graph.facebook.com/oauth/access_token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
+      allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({
+        accessToken: 'facebook-long-lived',
+        refreshToken: 'facebook-long-lived',
+        expiresAt: Date.now() + 60 * 24 * 60 * 60 * 1000,
+      }),
+      refresh: async () => ({ accessToken: 'facebook-refreshed' }),
+    });
+
+    const response = await GET(new Request(
+      'http://x/api/oauth/callback?code=authorization-code&state=facebook.valid',
+    ));
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_connected=facebook-personal-vault',
+    );
+    expect(sourceMocks.provisionFacebook).toHaveBeenCalledWith(sourceMocks.sql, {
+      workspaceId: 'workspace-1',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      field: 'owner-22222222-2222-4222-8222-222222222222',
+      createdBy: 'owner:22222222-2222-4222-8222-222222222222',
+    });
+    const cfgPath = join(TMP_HOME, 'harnesses/papercusp/plugin-configs/facebook-personal-vault.json');
+    const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+    expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('facebook-long-lived');
+    expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('facebook-long-lived');
+  });
+
+  it('fails closed when a Facebook callback lacks server-owned identity context', async () => {
+    const exchangeCode = vi.fn(async () => ({ accessToken: 'must-not-store' }));
+    providers.registerProvider({
+      id: 'facebook',
+      config: {
+        clientId: 'facebook-app',
+        clientSecret: 'facebook-secret',
+        authorizeUrl: 'https://www.facebook.com/dialog/oauth',
+        tokenUrl: 'https://graph.facebook.com/oauth/access_token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode,
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(new Request(
+      'http://x/api/oauth/callback?code=authorization-code&state=facebook.missing',
+    ));
+    expect(response.status).toBe(400);
+    expect(exchangeCode).not.toHaveBeenCalled();
+    expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
   });
 });

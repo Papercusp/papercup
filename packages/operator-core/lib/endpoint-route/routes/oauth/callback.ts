@@ -19,6 +19,11 @@ import {
   provisionOwnedGoogleWorkspaceSources,
 } from '../../../external-triggers/google-workspace';
 import { ensureGmailRespondDraftBinding } from '../../../external-triggers/gmail-flagship';
+import {
+  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
+  assertFacebookPersonalVaultOwnerUserId,
+  provisionOwnedFacebookPersonalVaultSource,
+} from '../../../external-triggers/facebook';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
@@ -35,7 +40,10 @@ function redirectWith(reqUrl: string, path: string, key: string, value: string):
 }
 
 function callbackReturnPath(plugin: string, providerId: string, harness: string): string {
-  if (providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN) {
+  if (
+    (providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN)
+    || (providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN)
+  ) {
     return '/settings/personal-vault';
   }
   return '/harness/' + encodeURIComponent(harness) + '?panel=config';
@@ -83,13 +91,29 @@ export default defineTool({
     }
 
     const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
+    const connectsFacebookPersonalVault =
+      providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
     let googleOwner: { ownerUserId: string; workspaceId: string } | null = null;
+    let facebookOwner: { ownerUserId: string; workspaceId: string } | null = null;
     if (connectsGoogleWorkspace) {
       try {
         const ownerUserId = assertGoogleWorkspaceOwnerUserId(verified.privateContext?.ownerUserId);
         const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
         if (!workspaceId) throw new Error('google_workspace_workspace_id_required');
         googleOwner = { ownerUserId, workspaceId };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return Response.json({ ok: false, error: message }, { status: 400 });
+      }
+    }
+    if (connectsFacebookPersonalVault) {
+      try {
+        const ownerUserId = assertFacebookPersonalVaultOwnerUserId(
+          verified.privateContext?.ownerUserId,
+        );
+        const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
+        if (!workspaceId) throw new Error('facebook_personal_vault_workspace_id_required');
+        facebookOwner = { ownerUserId, workspaceId };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return Response.json({ ok: false, error: message }, { status: 400 });
@@ -125,6 +149,19 @@ export default defineTool({
           gmail,
           `owner:${googleOwner.ownerUserId}`,
         );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return redirectWith(req.url, returnPath, 'oauth_error', message);
+      }
+    }
+    if (facebookOwner) {
+      try {
+        await provisionOwnedFacebookPersonalVaultSource(getOrgPg().sql, {
+          workspaceId: facebookOwner.workspaceId,
+          ownerUserId: facebookOwner.ownerUserId,
+          field,
+          createdBy: `owner:${facebookOwner.ownerUserId}`,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return redirectWith(req.url, returnPath, 'oauth_error', message);

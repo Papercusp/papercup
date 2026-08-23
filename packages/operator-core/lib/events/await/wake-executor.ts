@@ -1760,6 +1760,29 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
   const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
   const tagTurn = deps.tagTurn ?? tagTurnForInjection;
+  // EI-20460364238376772: the delivery-time carry-note read is the authority for
+  // this whole wake. Rehydration runs immediately before psu-host injection, but
+  // a second independent read can observe an older replica/pinned row and replace
+  // the newer checkpoint in the cold reset payload. Share one promise for the
+  // delivery-scoped reference so every path consumes the same snapshot.
+  const readCarryNoteWithMeta =
+    deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
+  const deliveryCarryNoteReads = new Map<
+    string,
+    ReturnType<typeof defaultGetLoopCarryNoteWithMeta>
+  >();
+  const getDeliveryCarryNoteWithMeta: typeof defaultGetLoopCarryNoteWithMeta = (ref) => {
+    const key = JSON.stringify([ref.workspaceId ?? null, ref.harness, ref.ownerId]);
+    const cached = deliveryCarryNoteReads.get(key);
+    if (cached) return cached;
+    const pending = Promise.resolve().then(() => readCarryNoteWithMeta(ref));
+    deliveryCarryNoteReads.set(key, pending);
+    return pending;
+  };
+  const deliveryDeps: ExecuteWakeDeps = {
+    ...deps,
+    getLoopCarryNoteWithMetaFn: getDeliveryCarryNoteWithMeta,
+  };
   const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
@@ -1851,10 +1874,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // because the socket inject below sat under this early-return).
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(d, applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deps)), tagTurn),
+        tagWakeText(
+          d,
+          applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)),
+          tagTurn,
+        ),
         findPsuHost,
         injectPsuHost,
-        deps,
+        deliveryDeps,
       );
       if (outcome) return outcome;
       // No injectable socket: presence fresh → park (a one-time inbox nudge
@@ -1873,7 +1900,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
       const planRunText = tagWakeText(
         d,
-        applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deps)),
+        applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)),
         tagTurn,
       );
       const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText });
@@ -1912,7 +1939,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     const text = tagWakeText(
       sessionDelivery,
-      applyInjectionDoor(sessionDelivery, await rehydrateLoopWakeText(sessionDelivery, wakeTurnText(sessionDelivery), deps)),
+      applyInjectionDoor(
+        sessionDelivery,
+        await rehydrateLoopWakeText(sessionDelivery, wakeTurnText(sessionDelivery), deliveryDeps),
+      ),
       tagTurn,
     );
 
@@ -1928,7 +1958,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       text,
       findPsuHost,
       injectPsuHost,
-      deps,
+      deliveryDeps,
     );
     if (outcome) return outcome;
 

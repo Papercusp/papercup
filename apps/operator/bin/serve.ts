@@ -436,7 +436,13 @@ export function startParentDeathWatch(
       const why = orphanReason();
       if (why) fire(why);
     },
-    { category: "watchdog" },
+    {
+      category: "watchdog",
+      // This watchdog has an explicit fake-timer regression test for the
+      // healthy-arm -> parent-dies interval path. The scheduled registry is
+      // inert under Vitest unless a deliberately exercised timer opts in.
+      allowInTest: true,
+    },
   );
 }
 

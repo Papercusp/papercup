@@ -17,6 +17,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 const H = vi.hoisted(() => ({
   occurrences: [] as unknown[],
   planList: [] as unknown[],
+  queries: [] as Array<{ queryName: string; args: unknown }>,
   nuqs: { calView: 'dayGridMonth', calPlan: null } as Record<string, unknown>,
 }));
 
@@ -41,7 +42,8 @@ vi.mock('@/app/harness/Tooltip', () => ({
 
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: (opts: { queryName: string }) => {
+  useSyncQuery: (opts: { queryName: string; args: unknown }) => {
+    H.queries.push({ queryName: opts.queryName, args: opts.args });
     if (opts.queryName === 'plans.scheduledOccurrences')
       return { data: H.occurrences, loading: false, invalidate: vi.fn() };
     if (opts.queryName === 'plans.list') return { data: H.planList, loading: false, invalidate: vi.fn() };
@@ -82,6 +84,7 @@ function occ(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   H.occurrences = [];
   H.planList = [];
+  H.queries = [];
   H.nuqs = { calView: 'dayGridMonth', calPlan: null };
 });
 afterEach(cleanup);
@@ -168,6 +171,8 @@ describe('<ScheduledCalendarTab> schedule picker', () => {
     ];
     render(<ScheduledCalendarTab />);
     fireEvent.click(screen.getByText('Schedule'));
+    expect(H.queries.some(({ queryName, args }) => queryName === 'plans.list' && JSON.stringify(args) === '{}')).toBe(true);
+    expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
     // picker modal mounts with both plans + the armed glance on the scheduled one
     expect(screen.getByText('Schedule a plan')).toBeTruthy();
     expect(screen.getByText('Alpha Plan')).toBeTruthy();

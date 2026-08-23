@@ -2160,6 +2160,46 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(data).toContain('(fire #96)');
   });
 
+  it('EI-20460364238376772: one delivery-time meta snapshot wins over a stale second read in a delayed cold wake', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const fireSnapshot = '## Next action\nfire-time checkpoint A';
+    const deliveryCheckpoint = '## Next action\ndelivery checkpoint B';
+    const staleSecondRead = '## Next action\nstale second read A';
+    const getLoopCarryNoteWithMetaFn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        note: deliveryCheckpoint,
+        updatedAtMs: Date.parse('2026-08-23T04:20:00.000Z'),
+      })
+      // Model the replica/pinned-row regression that can occur between the
+      // delivery rehydration and the cold reset composition. The delivery must
+      // not replace B with this older value.
+      .mockResolvedValueOnce({
+        note: staleSecondRead,
+        updatedAtMs: Date.parse('2026-08-23T04:19:00.000Z'),
+      });
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: coldPayload({ wakeCount: 1 }),
+        summary: fireSnapshot,
+      }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        // Force both the delivery rehydration and cold injection through the
+        // memoized meta reader instead of the note-only cold seam.
+        getLoopCarryNoteFn: undefined,
+        getLoopCarryNoteWithMetaFn: getLoopCarryNoteWithMetaFn as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(1);
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    expect(data).toContain(deliveryCheckpoint);
+    expect(data).not.toContain(staleSecondRead);
+  });
+
   // WI-6951: the un-checkpointed-work banner must read the STRICT turn signal
   // (lastRealTurnAt = session_turn_journal) and never the lastTurnAt union, which folds
   // in the '■ session ended' lifecycle marker. A cold reset KILLS its predecessor, so that

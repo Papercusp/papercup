@@ -22,6 +22,11 @@ import {
   GOOGLE_WORKSPACE_SOURCE_KINDS,
   googleWorkspaceOAuthField,
 } from '../../../external-triggers/google-workspace';
+import {
+  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
+  FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
+  facebookPersonalVaultOAuthField,
+} from '../../../external-triggers/facebook';
 import { getProvider, loadAndRegisterProvidersFromDisk } from '../../../oauth/providers';
 import { fsTokenStorage } from '../../../oauth/storage-fs';
 import {
@@ -48,7 +53,7 @@ interface SafeIntegrationSource {
 }
 
 interface SafeIntegrationStatus {
-  provider: 'google';
+  provider: 'google' | 'facebook';
   configured: boolean;
   connected: boolean;
   status: 'needs-app-config' | 'available' | 'connected' | 'degraded' | 'error';
@@ -79,20 +84,14 @@ function safeLastSyncAt(source: OwnedExternalTriggerSourceRow): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
-async function googleIntegrationStatus(
-  workspaceId: string,
-  ownerUserId: string,
-): Promise<SafeIntegrationStatus> {
-  let providerLoadFailed = false;
-  try {
-    await loadAndRegisterProvidersFromDisk();
-  } catch {
-    providerLoadFailed = true;
-  }
-  const configured = !providerLoadFailed && getProvider('google') !== null;
-  const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, ownerUserId);
-  const sources = owned.filter((source) =>
-    (GOOGLE_WORKSPACE_SOURCE_KINDS as readonly string[]).includes(source.kind));
+function safeIntegrationStatus(
+  provider: SafeIntegrationStatus['provider'],
+  configured: boolean,
+  providerLoadFailed: boolean,
+  owned: OwnedExternalTriggerSourceRow[],
+  kinds: readonly string[],
+): SafeIntegrationStatus {
+  const sources = owned.filter((source) => kinds.includes(source.kind));
   const connected = sources.some((source) => source.credentialRef !== null && source.status !== 'disabled');
   const status = providerLoadFailed || sources.some((source) => source.status === 'error')
     ? 'error'
@@ -104,7 +103,7 @@ async function googleIntegrationStatus(
           ? 'available'
           : 'needs-app-config';
   return {
-    provider: 'google',
+    provider,
     configured,
     connected,
     status,
@@ -114,6 +113,35 @@ async function googleIntegrationStatus(
       lastConnectedAt: source.lastConnectedAt,
       lastSyncAt: safeLastSyncAt(source),
     })),
+  };
+}
+
+async function integrationStatuses(
+  workspaceId: string,
+  ownerUserId: string,
+): Promise<{ google: SafeIntegrationStatus; facebook: SafeIntegrationStatus }> {
+  let providerLoadFailed = false;
+  try {
+    await loadAndRegisterProvidersFromDisk();
+  } catch {
+    providerLoadFailed = true;
+  }
+  const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, ownerUserId);
+  return {
+    google: safeIntegrationStatus(
+      'google',
+      !providerLoadFailed && getProvider('google') !== null,
+      providerLoadFailed,
+      owned,
+      GOOGLE_WORKSPACE_SOURCE_KINDS,
+    ),
+    facebook: safeIntegrationStatus(
+      'facebook',
+      !providerLoadFailed && getProvider('facebook') !== null,
+      providerLoadFailed,
+      owned,
+      FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
+    ),
   };
 }
 
@@ -179,11 +207,11 @@ const status = defineTool({
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
     const { sql } = getOrgPg();
-    const [enabled, stats, grants, google] = await Promise.all([
+    const [enabled, stats, grants, integrations] = await Promise.all([
       isPersonalVaultEnabled(sql, workspaceId, user.id),
       personalVaultStats(sql, workspaceId, user.id),
       listPersonalGrants(sql, workspaceId, user.id),
-      googleIntegrationStatus(workspaceId, user.id),
+      integrationStatuses(workspaceId, user.id),
     ]);
     return Response.json({
       ok: true,
@@ -194,7 +222,7 @@ const status = defineTool({
       grants,
       supportedSources: SUPPORTED_SOURCES,
       embedding: { mode: 'gemma', localOnly: true },
-      integrations: { google },
+      integrations,
     });
   },
 });
@@ -224,6 +252,36 @@ const disconnectGoogle = defineTool({
     return Response.json({
       ok: true,
       provider: 'google',
+      disconnectedSources: disconnected.sources,
+    });
+  },
+});
+
+const disconnectFacebook = defineTool({
+  method: 'DELETE',
+  path: '/user/personal-vault/integrations/facebook',
+  auth: 'loopback',
+  async handler(req) {
+    const user = await getSessionUserOrDefault(req.headers);
+    const workspaceId = activeWorkspaceId();
+    const disconnected = await disconnectOwnedExternalTriggerSources(
+      getOrgPg().sql,
+      workspaceId,
+      user.id,
+      [...FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS],
+    );
+    for (const credentialRef of disconnected.credentialRefs) {
+      const field = facebookPersonalVaultOAuthField(credentialRef);
+      await fsTokenStorage.update(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp', {
+        [field]: null,
+        [field + '_refresh']: null,
+        [field + '_expires_at']: null,
+        [field + '_expired']: true,
+      });
+    }
+    return Response.json({
+      ok: true,
+      provider: 'facebook',
       disconnectedSources: disconnected.sources,
     });
   },
@@ -430,6 +488,7 @@ export default [
   setEnabled,
   purge,
   disconnectGoogle,
+  disconnectFacebook,
   archiveImport,
   grants,
   previewGrant,
