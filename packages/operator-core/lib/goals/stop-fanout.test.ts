@@ -19,6 +19,15 @@ import {
 const pausePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const resumePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const deactivateLoop = vi.hoisted(() => vi.fn(async () => true));
+const windDownGoalFleet = vi.hoisted(() =>
+  vi.fn(
+    async (): Promise<import('../agent-tools/fleet_registry/control-core').FleetControlResult> => ({
+      ok: true,
+      fleet: 'goal-drain-g1',
+      controlState: 'winding-down',
+    }),
+  ),
+);
 /**
  * Default: the clear succeeds. Tests that need the OWNER-STICKY refusal override it.
  *
@@ -36,6 +45,7 @@ const sqlRows = vi.hoisted(() => ({
   unattributed: 0,
   /** Attributed loops currently DISARMED — what the resume reports and leaves alone. */
   disarmed: 0,
+  drainFleet: null as string | null,
 }));
 
 /**
@@ -60,6 +70,9 @@ const sql = vi.hoisted(() => {
         { n: String(disarmedQuery ? sqlRows.disarmed : sqlRows.unattributed) },
       ]);
     }
+    if (text.includes('harness_shared.goals')) {
+      return Promise.resolve(sqlRows.drainFleet ? [{ drain_fleet: sqlRows.drainFleet }] : []);
+    }
     return Promise.resolve([]);
   };
   return fn as unknown as never;
@@ -80,6 +93,7 @@ vi.mock('../harness/routines/loop', () => ({
   loopRoutineName: (ownerId: string) => `loop-${ownerId}`,
 }));
 vi.mock('../modes/store', () => ({ setMode }));
+vi.mock('../agent-tools/fleet_registry/control-core', () => ({ windDownGoalFleet }));
 
 // Imported after the mocks so the module-load install picks them up.
 const { executeGoalStop, executeGoalResume, executeGoalTransition } = await import('./stop-fanout');
@@ -106,7 +120,13 @@ beforeEach(() => {
   sqlRows.owners = [];
   sqlRows.unattributed = 0;
   sqlRows.disarmed = 0;
+  sqlRows.drainFleet = null;
   potsForGoal.mockResolvedValue([]);
+  windDownGoalFleet.mockResolvedValue({
+    ok: true,
+    fleet: 'goal-drain-g1',
+    controlState: 'winding-down',
+  });
 });
 
 describe('executeGoalStop', () => {
@@ -414,5 +434,63 @@ describe('tier 3 — GOAL-mode rows on a terminal goal', () => {
     expect(isStopReport(report) && report.modesCleared).toEqual([]);
     expect(isStopReport(report) && report.modesLeftArmed).toEqual([]);
     expect(isStopReport(report) && report.degraded).toBe(false);
+  });
+});
+
+describe('tier 4 — the standing goal drain fleet', () => {
+  beforeEach(() => {
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    sqlRows.drainFleet = 'goal-drain-g1';
+  });
+
+  it.each(TERMINAL_STATUSES)('puts the recorded fleet into typed winding-down state on "%s"', async (status) => {
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status,
+      actor: 'su-test',
+    });
+
+    expect(windDownGoalFleet).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      fleetSlug: 'goal-drain-g1',
+      goalId: 'g1',
+      status,
+      actor: 'su-test',
+    });
+    expect(isStopReport(report) && report.drainFleet).toBe('goal-drain-g1');
+    expect(isStopReport(report) && report.drainFleetWoundDown).toBe(true);
+  });
+
+  it('keeps the fleet resumable while the goal is paused', async () => {
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'paused',
+      actor: 'su-test',
+    });
+
+    expect(windDownGoalFleet).not.toHaveBeenCalled();
+    expect(isStopReport(report) && report.drainFleet).toBeNull();
+    expect(isStopReport(report) && report.drainFleetWoundDown).toBeNull();
+  });
+
+  it('marks a terminal stop degraded when typed fleet retirement fails', async () => {
+    windDownGoalFleet.mockResolvedValueOnce({
+      ok: false,
+      error: 'fleet_leadership_superseded',
+      message: 'leader changed',
+    });
+
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'killed',
+      actor: 'su-test',
+    });
+
+    expect(isStopReport(report) && report.drainFleetWoundDown).toBe(false);
+    expect(isStopReport(report) && report.drainFleetWindDownError).toBe('fleet_leadership_superseded');
+    expect(isStopReport(report) && report.degraded).toBe(true);
   });
 });
