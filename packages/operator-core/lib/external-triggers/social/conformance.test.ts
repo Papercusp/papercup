@@ -94,6 +94,22 @@ function cursorSeq(cursor: unknown | null): number {
 }
 
 /**
+ * Whether a non-null cursor is one this adapter can actually READ.
+ *
+ * Needed because `cursorSeq` returns 0 for a cursor it cannot parse, and 0 is
+ * indistinguishable from "start of stream". Without this the reference adapter
+ * would replay everything and report `cursor-replay` — a claim that the stored
+ * cursor was accepted and honoured, made about a cursor that was silently
+ * dropped. That is precisely the condition
+ * `unreadable-cursor-falls-back-to-backfill` was added to catch, so the
+ * reference implementation has to model the correct behaviour or the kit's own
+ * calibration fails.
+ */
+function isReadableCursor(cursor: unknown | null): boolean {
+  return Boolean(cursor && typeof cursor === 'object' && 'seq' in cursor && typeof (cursor as { seq: unknown }).seq === 'number');
+}
+
+/**
  * The reference implementation: a correct adapter for a platform with a bounded
  * cursor window, i.e. the Bluesky shape. Everything the kit asks for and
  * nothing more.
@@ -116,6 +132,20 @@ class CorrectAdapter implements SocialAdapter {
 
     if (ctx.cursor === null) {
       return this.emitAll(ctx, 'cold-start', maxSeq);
+    }
+
+    if (!isReadableCursor(ctx.cursor)) {
+      // A non-null cursor this adapter cannot parse is still a PREVIOUS
+      // connection's state — from an older or newer adapter version, or a
+      // corrupted row. Treating it as null and reporting `cold-start` would
+      // assert "first connect for this source", which is false and hides the
+      // loss; replaying from seq 0 and reporting `cursor-replay` would assert
+      // the cursor was honoured. The honest answer is a bounded re-read that
+      // NAMES the local condition, which is what `cursor-rejected` denotes —
+      // the kit is explicit that it applies even when the provider never saw
+      // the cursor.
+      const result = await this.emitAll(ctx, 'backfill', maxSeq);
+      return { ...result, backfillReason: 'cursor-rejected' };
     }
 
     if (this.world.expireNextCursor) {
