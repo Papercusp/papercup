@@ -5,6 +5,8 @@ import {
   callToolWithReplayRecovery,
   buildCallToolParams,
   buildMcpUrl,
+  escapeJsonStringControls,
+  parseJsonInput,
   resolveContextTier,
   resolveTokenPath,
   resolveTokenPaths,
@@ -388,5 +390,31 @@ describe('ptool scripted JSON output', () => {
     expect(shouldPrintRawResult('stdin', false)).toBe(true);
     expect(shouldPrintRawResult(null, false)).toBe(false);
     expect(shouldPrintRawResult(null, true)).toBe(true);
+  });
+});
+
+describe('ptool JSON input', () => {
+  it('accepts literal newlines inside quoted values from a heredoc payload', () => {
+    const payload = [
+      '{',
+      '  "slug": "validation-plan",',
+      '  "body": "first line',
+      'second line",',
+      '  "nested": { "value": "already\\nescaped" }',
+      '}',
+    ].join('\n');
+
+    expect(parseJsonInput(payload)).toEqual({
+      slug: 'validation-plan',
+      body: 'first line\nsecond line',
+      nested: { value: 'already\nescaped' },
+    });
+    expect(escapeJsonStringControls(payload)).toContain('first line\\u000asecond line');
+  });
+
+  it('leaves formatting whitespace outside strings and already-escaped controls unchanged', () => {
+    const payload = '{\n  "body": "first\\nsecond"\n}\n';
+    expect(escapeJsonStringControls(payload)).toBe(payload);
+    expect(parseJsonInput(payload)).toEqual({ body: 'first\nsecond' });
   });
 });

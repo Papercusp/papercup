@@ -17,15 +17,16 @@
  *
  * Sibling to `psu` (psu-launcher.mjs) — same conventions: lives in the repo
  * so it resolves `@inquirer/prompts` + the MCP SDK from the operator's
- * node_modules; the on-PATH `ptool` shim (install-standalone-mcp.sh) is a
- * one-liner exec'ing this file by absolute path; `PAPERCUSP_OPERATOR_URL`
+ * node_modules; the on-PATH `ptool` shim (install-standalone-mcp.sh) enters
+ * the repo-keyed install:safe mutex before exec'ing this file by absolute
+ * path; `PAPERCUSP_OPERATOR_URL`
  * overrides the host; the token is read from `--token-file`, then
  * `PAPERCUSP_MCP_TOKEN_FILE`, then `PAPERCUSP_HOME/superuser-token`, then
  * `~/.papercusp/superuser-token`.
  *
  * Interactive:  ptool
  *               ptool <group:verb>                 # skip the pickers, prompt args
- * Scripting:    ptool <group:verb> --json - <<'EOF'          # read JSON from stdin (safe)
+ * Scripting:    ptool <group:verb> --json - <<'EOF'          # read JSON from stdin (safe; raw controls in strings are escaped)
  *               {"copy": "it's fine now"}
  *               EOF
  *               ptool <group:verb> --json-file payload.json   # read JSON from a file (safe)
@@ -39,7 +40,8 @@
  *
  * Prefer `--json -` (read stdin) or `--json-file <path>` for arbitrary payloads,
  * especially `loop:checkpoint` checks/walls whose recheck text commonly contains
- * shell quotes. A `--json '<inline>'` argument asks the SHELL to carry the JSON
+ * shell quotes. Literal control characters inside quoted JSON strings (for example
+ * a multiline decision body) are escaped before parsing; a `--json '<inline>'` argument asks the SHELL to carry the JSON
  * through a single-quoted argument — any apostrophe in the payload (a normal
  * English string like "it's") terminates that shell quoting early and the tool
  * never sees valid JSON (EI-14958). For `code:run`, use `--script -` or
@@ -206,6 +208,54 @@ export function jsonSourceKind(args) {
   if (args.json === '-') return 'stdin';
   if (args.json != null) return 'inline';
   return null;
+}
+
+/**
+ * Escape literal JSON control characters that occur inside quoted strings.
+ * JSON requires those characters to be represented as escapes, but a heredoc
+ * is a natural way to author a multiline tool argument and users should not
+ * have to hand-escape every line break. Formatting whitespace outside strings
+ * is left untouched, as are already-escaped sequences. Pure.
+ * @param {string} text
+ * @returns {string}
+ */
+export function escapeJsonStringControls(text) {
+  if (typeof text !== 'string') return String(text);
+
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+  let repaired = '';
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (inString) {
+      if (escaped) {
+        repaired += ch;
+        escaped = false;
+      } else if (ch === '\\') {
+        repaired += ch;
+        escaped = true;
+      } else if (ch === '"') {
+        repaired += ch;
+        inString = false;
+      } else if (code < 0x20) {
+        repaired += `\\u${code.toString(16).padStart(4, '0')}`;
+        changed = true;
+      } else {
+        repaired += ch;
+      }
+    } else {
+      repaired += ch;
+      if (ch === '"') inString = true;
+    }
+  }
+
+  return changed ? repaired : text;
+}
+
+/** Parse a ptool JSON payload after normalizing heredoc-friendly string controls. Pure. */
+export function parseJsonInput(text) {
+  return JSON.parse(escapeJsonStringControls(text));
 }
 
 /**
@@ -422,35 +472,7 @@ export function sanitizeJsonText(text) {
     // Continue only for the known text-content serialization defect below.
   }
 
-  let inString = false;
-  let escaped = false;
-  let changed = false;
-  let repaired = '';
-  for (const ch of text) {
-    const code = ch.charCodeAt(0);
-    if (inString) {
-      if (escaped) {
-        repaired += ch;
-        escaped = false;
-      } else if (ch === '\\') {
-        repaired += ch;
-        escaped = true;
-      } else if (ch === '"') {
-        repaired += ch;
-        inString = false;
-      } else if (code < 0x20) {
-        repaired += `\\u${code.toString(16).padStart(4, '0')}`;
-        changed = true;
-      } else {
-        repaired += ch;
-      }
-    } else {
-      repaired += ch;
-      if (ch === '"') inString = true;
-    }
-  }
-
-  return changed ? repaired : text;
+  return escapeJsonStringControls(text);
 }
 
 /** Pretty-print a text payload: if it parses as JSON, indent it; else
@@ -1410,7 +1432,7 @@ async function main() {
         process.exit(1);
       }
       try {
-        callArgs = JSON.parse(jsonText);
+        callArgs = parseJsonInput(jsonText);
       } catch (e) {
         console.error(`ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${e.message}`);
         process.exit(1);
