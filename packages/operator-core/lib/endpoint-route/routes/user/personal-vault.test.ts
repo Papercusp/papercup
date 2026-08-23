@@ -16,8 +16,10 @@ const mocks = vi.hoisted(() => ({
   upsert: vi.fn(),
   listSources: vi.fn(),
   disconnectSources: vi.fn(),
+  setCapability: vi.fn(),
   loadProviders: vi.fn(),
   getProvider: vi.fn(),
+  tokenRead: vi.fn(),
   tokenUpdate: vi.fn(),
 }));
 
@@ -32,10 +34,11 @@ vi.mock('../../../personal-vault/archive-import', () => ({ parsePersonalArchive:
 vi.mock('../../../external-triggers/source-store', () => ({
   listOwnedExternalTriggerSources: mocks.listSources,
   disconnectOwnedExternalTriggerSources: mocks.disconnectSources,
+  setOwnedExternalTriggerSourceCapability: mocks.setCapability,
 }));
 vi.mock('../../../external-triggers/google-workspace', () => ({
   GOOGLE_WORKSPACE_OAUTH_PLUGIN: 'google-workspace',
-  GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal'],
+  GOOGLE_WORKSPACE_SOURCE_KINDS: ['gmail', 'gcal', 'contacts'],
   googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
 }));
 vi.mock('../../../external-triggers/facebook', () => ({
@@ -44,16 +47,25 @@ vi.mock('../../../external-triggers/facebook', () => ({
   facebookPersonalVaultOAuthField: (ref: string) => ref.replace('facebook-personal-vault:', ''),
 }));
 vi.mock('../../../oauth/providers', () => ({
+  GOOGLE_GMAIL_READONLY_SCOPE: 'https://www.googleapis.com/auth/gmail.readonly',
+  GOOGLE_GMAIL_COMPOSE_SCOPE: 'https://www.googleapis.com/auth/gmail.compose',
+  GOOGLE_CALENDAR_READONLY_SCOPE: 'https://www.googleapis.com/auth/calendar.readonly',
+  GOOGLE_CALENDAR_EVENTS_SCOPE: 'https://www.googleapis.com/auth/calendar.events',
+  GOOGLE_CONTACTS_READONLY_SCOPE: 'https://www.googleapis.com/auth/contacts.readonly',
+  GOOGLE_WORKSPACE_SCOPES: [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.compose',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/contacts.readonly',
+  ],
   loadAndRegisterProvidersFromDisk: mocks.loadProviders,
   getProvider: mocks.getProvider,
 }));
 vi.mock('../../../oauth/storage-fs', () => ({
-  fsTokenStorage: { update: mocks.tokenUpdate },
+  fsTokenStorage: { read: mocks.tokenRead, update: mocks.tokenUpdate },
 }));
 vi.mock('../../../personal-vault/store', async () => {
-  const actual = await vi.importActual<typeof import('../../../personal-vault/store')>(
-    '../../../personal-vault/store',
-  );
+  const actual = await vi.importActual<typeof import('../../../personal-vault/store')>('../../../personal-vault/store');
   return {
     ...actual,
     isPersonalVaultEnabled: mocks.enabled,
@@ -70,13 +82,14 @@ vi.mock('../../../personal-vault/store', async () => {
 import routes, { declaredPersonalScopes } from './personal-vault';
 
 const route = (method: string, path: string): RouteDefinition => {
-  const found = (routes as RouteDefinition[]).find((candidate) => candidate.method === method && candidate.path === path);
+  const found = (routes as RouteDefinition[]).find(
+    (candidate) => candidate.method === method && candidate.path === path,
+  );
   if (!found) throw new Error(`missing route ${method} ${path}`);
   return found;
 };
 
-const invoke = (method: string, path: string, req: Request) =>
-  route(method, path).handler(req, {} as never);
+const invoke = (method: string, path: string, req: Request) => route(method, path).handler(req, {} as never);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -89,7 +102,7 @@ beforeEach(() => {
   mocks.purge.mockResolvedValue({ documents: 2, cursors: 1, aliases: 1, identities: 1 });
   mocks.upsert.mockResolvedValue({ insertedOrUpdated: 1, ids: ['doc-1'] });
   mocks.loadProviders.mockResolvedValue(['google']);
-  mocks.getProvider.mockImplementation((id: string) => id === 'google' ? { id: 'google' } : null);
+  mocks.getProvider.mockImplementation((id: string) => (id === 'google' ? { id: 'google' } : null));
   mocks.listSources.mockResolvedValue([
     {
       id: 'gmail-source',
@@ -98,7 +111,7 @@ beforeEach(() => {
       ownerUserId: 'user-1',
       credentialRef: 'google-workspace:owner-user-1',
       status: 'connected',
-      config: {},
+      config: { privateSetting: 'never-serialize-source-config' },
       cursor: { historyId: 'never-serialize-me', lastSyncAt: '2026-08-23T00:00:00.000Z' },
       lastError: null,
       lastConnectedAt: '2026-08-23T00:00:00.000Z',
@@ -106,8 +119,29 @@ beforeEach(() => {
     },
   ]);
   mocks.disconnectSources.mockResolvedValue({
-    sources: 2,
+    sources: 3,
     credentialRefs: ['google-workspace:owner-user-1'],
+  });
+  mocks.setCapability.mockResolvedValue({
+    id: 'contacts-source',
+    workspaceId: 'ws-test',
+    kind: 'contacts',
+    ownerUserId: 'user-1',
+    credentialRef: 'google-workspace:owner-user-1',
+    status: 'disabled',
+    config: { capabilityEnabled: false },
+    cursor: {},
+  });
+  mocks.tokenRead.mockResolvedValue({
+    'owner-user-1': 'never-serialize-google-access-token',
+    'owner-user-1_refresh': 'never-serialize-google-refresh-token',
+    'owner-user-1_scopes': [
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.compose',
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/contacts.readonly',
+    ],
   });
   mocks.parseArchive.mockReturnValue({
     documents: [{ source: 'gmail', kind: 'message', text: 'hello' }],
@@ -130,11 +164,7 @@ describe('Personal Vault owner routes', () => {
   });
 
   it('returns status from the canonical per-user store', async () => {
-    const response = await invoke(
-      'GET',
-      '/user/personal-vault',
-      new Request('http://localhost/user/personal-vault'),
-    );
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
     expect(response.status).toBe(200);
     const payload = await response.json();
     expect(payload).toMatchObject({
@@ -147,11 +177,18 @@ describe('Personal Vault owner routes', () => {
           configured: true,
           connected: true,
           status: 'connected',
-          sources: [{
-            kind: 'gmail',
-            status: 'connected',
-            lastSyncAt: '2026-08-23T00:00:00.000Z',
-          }],
+          sources: [
+            {
+              kind: 'gmail',
+              status: 'connected',
+              lastSyncAt: '2026-08-23T00:00:00.000Z',
+            },
+          ],
+          capabilities: [
+            expect.objectContaining({ id: 'gmail', enabled: true, status: 'connected' }),
+            expect.objectContaining({ id: 'calendar', enabled: true, status: 'connected' }),
+            expect.objectContaining({ id: 'contacts', enabled: true, status: 'connected' }),
+          ],
         },
         facebook: {
           configured: false,
@@ -165,6 +202,9 @@ describe('Personal Vault owner routes', () => {
     const body = JSON.stringify(payload);
     expect(body).not.toContain('historyId');
     expect(body).not.toContain('credentialRef');
+    expect(body).not.toContain('never-serialize-source-config');
+    expect(body).not.toContain('never-serialize-google-access-token');
+    expect(body).not.toContain('never-serialize-google-refresh-token');
   });
 
   it('disconnects Google sources and clears server-side token fields without purging vault data', async () => {
@@ -176,38 +216,86 @@ describe('Personal Vault owner routes', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       provider: 'google',
-      disconnectedSources: 2,
+      disconnectedSources: 3,
     });
-    expect(mocks.disconnectSources).toHaveBeenCalledWith(
-      mocks.sql,
-      'ws-test',
-      'user-1',
-      ['gmail', 'gcal'],
-    );
+    expect(mocks.disconnectSources).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', ['gmail', 'gcal', 'contacts']);
     expect(mocks.tokenUpdate).toHaveBeenCalledWith('google-workspace', 'papercusp', {
       'owner-user-1': null,
       'owner-user-1_refresh': null,
       'owner-user-1_expires_at': null,
+      'owner-user-1_scopes': null,
       'owner-user-1_expired': true,
     });
     expect(mocks.purge).not.toHaveBeenCalled();
   });
 
+  it('toggles one Google capability without revoking the shared OAuth credential', async () => {
+    const response = await invoke(
+      'PATCH',
+      '/user/personal-vault/integrations/google/capabilities',
+      new Request('http://localhost/user/personal-vault/integrations/google/capabilities', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capability: 'contacts', enabled: false }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      capability: 'contacts',
+      enabled: false,
+      source: { kind: 'contacts', status: 'disabled' },
+    });
+    expect(mocks.setCapability).toHaveBeenCalledWith(mocks.sql, {
+      workspaceId: 'ws-test',
+      ownerUserId: 'user-1',
+      kind: 'contacts',
+      credentialRef: 'google-workspace:owner-user-1',
+      enabled: false,
+      createdBy: 'owner:user-1',
+    });
+    expect(mocks.disconnectSources).not.toHaveBeenCalled();
+    expect(mocks.tokenUpdate).not.toHaveBeenCalled();
+  });
+
+  it('surfaces Calendar write consent as a capability-scoped upgrade', async () => {
+    mocks.tokenRead.mockResolvedValueOnce({
+      'owner-user-1_scopes': [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.compose',
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/contacts.readonly',
+      ],
+    });
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
+    const payload = await response.json();
+    expect(payload.integrations.google.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'calendar',
+          status: 'needs-consent',
+          missingScopes: ['https://www.googleapis.com/auth/calendar.events'],
+        }),
+      ]),
+    );
+  });
+
   it('projects and disconnects Facebook without exposing cursors, credentials, or purging documents', async () => {
     mocks.getProvider.mockImplementation((id: string) => ({ id }));
-    mocks.listSources.mockResolvedValue([{
-      id: 'facebook-source',
-      workspaceId: 'ws-test',
-      kind: 'facebook',
-      ownerUserId: 'user-1',
-      credentialRef: 'facebook-personal-vault:owner-user-1',
-      status: 'connected',
-      config: { coverage: ['profile', 'posts', 'photo-metadata'] },
-      cursor: { since: 'secret-provider-watermark', lastSyncAt: '2026-08-23T00:15:00.000Z' },
-      lastError: null,
-      lastConnectedAt: '2026-08-23T00:00:00.000Z',
-      updatedAt: '2026-08-23T00:15:00.000Z',
-    }]);
+    mocks.listSources.mockResolvedValue([
+      {
+        id: 'facebook-source',
+        workspaceId: 'ws-test',
+        kind: 'facebook',
+        ownerUserId: 'user-1',
+        credentialRef: 'facebook-personal-vault:owner-user-1',
+        status: 'connected',
+        config: { coverage: ['profile', 'posts', 'photo-metadata'] },
+        cursor: { since: 'secret-provider-watermark', lastSyncAt: '2026-08-23T00:15:00.000Z' },
+        lastError: null,
+        lastConnectedAt: '2026-08-23T00:00:00.000Z',
+        updatedAt: '2026-08-23T00:15:00.000Z',
+      },
+    ]);
     mocks.disconnectSources.mockResolvedValue({
       sources: 1,
       credentialRefs: ['facebook-personal-vault:owner-user-1'],
