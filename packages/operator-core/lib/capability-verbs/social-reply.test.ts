@@ -19,6 +19,7 @@ import {
   type SocialWriteAdapter,
 } from './social';
 import { SocialVisibilityWidened } from './social';
+import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
 
 /**
  * Minimal postgres stand-in. `resolveCanonicalDocument` and
@@ -246,7 +247,13 @@ describe('social:reply — gate ORDER', () => {
   it('refuses an unverified platform before any credential lookup', async () => {
     const sql = fakeSql([[], []]);
     await expect(
-      replyToCanonicalSocialPost(sql, { ...BASE, ref: 'tiktok:123', text: 'ok' }),
+      replyToCanonicalSocialPost(sql, {
+        ...BASE,
+        // DERIVED — see platform-exemplars.fixture; this exemplar has already
+        // moved three times as each named platform got verified.
+        ref: `${anUnverifiedPlatformId()}:123`,
+        text: 'ok',
+      }),
     ).rejects.toThrow(/unverified/);
     expect(sql.calls()).toBe(0);
   });

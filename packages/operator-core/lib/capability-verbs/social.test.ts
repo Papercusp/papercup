@@ -33,6 +33,7 @@ import {
   socialWriteRefusal,
   type SocialPlatformRow,
 } from '../external-triggers/social/platform-registry';
+import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
 import type { CanonicalDocument } from './resolve';
 
 function doc(source: string, externalId: string, payload: Record<string, unknown>): CanonicalDocument {
@@ -88,7 +89,8 @@ describe('parseSocialPostRef', () => {
 
   it('refuses an unverified Wave B/C platform even though the id is well-formed', () => {
     // D-005: an unverified row is UNUSABLE, not permissive.
-    expect(() => parseSocialPostRef('tiktok:12345')).toThrow(/unverified/);
+    // DERIVED, not named — see platform-exemplars.fixture.
+    expect(() => parseSocialPostRef(`${anUnverifiedPlatformId()}:12345`)).toThrow(/unverified/);
   });
 });
 
@@ -250,7 +252,7 @@ describe('rail 1 — reply coordinates come from the document alone', () => {
 
   it('refuses an unverified platform before it ever looks at coordinates', () => {
     expect(() =>
-      resolveSocialReplyCoordinates(doc('tiktok', '123', { fullname: 't3_x' })),
+      resolveSocialReplyCoordinates(doc(anUnverifiedPlatformId(), '123', { fullname: 't3_x' })),
     ).toThrow(SocialPlatformUnusableError);
   });
 });
