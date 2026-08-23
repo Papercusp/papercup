@@ -48,6 +48,7 @@ import {
   type RecipeAuthorityMetadata,
   type RecipeAuthorityRefs,
   type RecipeAuthorityProof,
+  type RecipeUnresolvedCause,
 } from '../../recipe-authority';
 import { deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
@@ -156,7 +157,17 @@ const authorityMetadataSchema = z.object({
   // is derived from `refs`), so restating it would be a second copy of a type the
   // authority module already owns, free to drift.
   refsMeasured: z.boolean().optional(),
-  unresolvedCause: z.unknown().optional(),
+  // TYPED FROM THE TS UNION, NOT RESTATED AS ZOD — and `z.unknown()` here is a
+  // trap, not a shortcut: it widens the inferred field to `unknown`, which is
+  // not assignable to RecipeAuthorityMetadata['unresolvedCause'], and strands
+  // the `const list: RunItem[]` assignment below with TS2322. (Measured: it did.)
+  // Restating the 9-variant heterogeneous union instead would be a second copy
+  // of a type recipe-authority.ts owns, free to drift from it — so the type
+  // comes from that module and the runtime check is deliberately skipped: this
+  // handler never READS the field (the proof context is derived from `refs`);
+  // it exists only so recipes:get's own metadata survives the `.strict()`
+  // round-trip back into recipes:run.
+  unresolvedCause: z.custom<RecipeUnresolvedCause>().nullish(),
 }).strict();
 
 const authorityInputSchema = z.union([authorityProofSchema, authorityMetadataSchema]);

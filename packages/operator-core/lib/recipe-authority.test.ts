@@ -7,6 +7,7 @@ import {
   recipeRevision,
   recipeAuthorityMatches,
   recipeAuthorityMatchesLiveRefs,
+  toRecipeAuthorityMetadata,
   validateRecipeAuthorityProof,
 } from './recipe-authority';
 
@@ -694,5 +695,77 @@ return { windowFrom: '2026-08-09T09:40:00Z', totalAgentToolCalls: (tl.entries ||
       updatedAt: '2026-08-09T14:12:07.701Z',
       proof: recommendation!.proof,
     })).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe('WI-40896 / D-048: refsMeasured separates an UNMEASURED authority set from an empty one', () => {
+  const REV = 'a'.repeat(64);
+
+  // The script whose identities can never be collected: `inspectCall` returns the
+  // cause BEFORE collecting the dynamic call's args, so `refs` is a FLOOR, not a total.
+  const dynamicScript = `await tools.tools.invoke({ name: chosenVerb, args: {} });`;
+  // A script that genuinely touches no bound entity — refs are empty because there
+  // is nothing to measure, which is the OPPOSITE situation with the SAME rendering.
+  const contextFreeScript = `return 1 + 1;`;
+
+  it('renders a dynamically-dispatched script as NOT measured, and names which construct fired', async () => {
+    const descriptor = await deriveRecipeAuthority(dynamicScript);
+    const metadata = toRecipeAuthorityMetadata(descriptor, REV);
+
+    expect(metadata.refsMeasured).toBe(false);
+    expect(metadata.unresolvedCause).toMatchObject({ kind: 'dynamic-dispatch-target' });
+  });
+
+  it('renders a genuinely context-free script as MEASURED, with no cause', async () => {
+    const descriptor = await deriveRecipeAuthority(contextFreeScript);
+    const metadata = toRecipeAuthorityMetadata(descriptor, REV);
+
+    expect(metadata.refsMeasured).toBe(true);
+    expect(metadata.unresolvedCause).toBeNull();
+  });
+
+  // THIS is the regression test that actually pins the bug. The two scripts above
+  // are INDISTINGUISHABLE on every field recipes:get used to emit — identical empty
+  // refs, identical requiresContext:false. A test asserting only "refs are empty"
+  // would therefore pass both BEFORE and AFTER the fix and prove nothing. The
+  // discrimination has to be asserted against a field that differs, which is the
+  // whole reason `refsMeasured` exists.
+  it('pins the defect: the two are identical on refs/requiresContext, so only refsMeasured tells them apart', async () => {
+    const unmeasured = toRecipeAuthorityMetadata(await deriveRecipeAuthority(dynamicScript), REV);
+    const genuinelyEmpty = toRecipeAuthorityMetadata(await deriveRecipeAuthority(contextFreeScript), REV);
+
+    // Calibration: confirm the collision this field exists to break is real. If a
+    // future analyzer change makes these differ on their own, this assertion fails
+    // and tells you the premise moved — rather than the test quietly passing for a
+    // new reason.
+    expect(unmeasured.refs).toEqual(genuinelyEmpty.refs);
+    expect(unmeasured.requiresContext).toBe(genuinelyEmpty.requiresContext);
+
+    // The discrimination itself.
+    expect(unmeasured.refsMeasured).not.toBe(genuinelyEmpty.refsMeasured);
+  });
+
+  // FALSIFIABILITY CONTROL (kept permanently, per the repo's tier-1 rule: prove the
+  // guard CAN fail with a deliberately-wrong implementation in the test file, never
+  // by mutating the shared tree). This models the PRE-FIX projection — the exact
+  // shape recipes:get emitted before WI-40896 — and asserts it is blind to the
+  // difference. If someone deletes `refsMeasured` from toRecipeAuthorityMetadata,
+  // the real assertions above start failing; this control is what proves those
+  // assertions were ever capable of failing at all.
+  it('control: the pre-fix projection could not tell the two apart (so the tests above are falsifiable)', async () => {
+    const preFixProjection = (descriptor: Awaited<ReturnType<typeof deriveRecipeAuthority>>) => ({
+      version: 1 as const,
+      revision: REV,
+      refs: descriptor.refs,
+      requiresContext: descriptor.bound,
+      runnable: !descriptor.unresolved,
+      // no refsMeasured, no unresolvedCause — this was the whole defect
+    });
+
+    const unmeasured = preFixProjection(await deriveRecipeAuthority(dynamicScript));
+    const genuinelyEmpty = preFixProjection(await deriveRecipeAuthority(contextFreeScript));
+
+    // Blind: every emitted authority field is identical across two OPPOSITE situations.
+    expect(unmeasured).toEqual(genuinelyEmpty);
   });
 });
