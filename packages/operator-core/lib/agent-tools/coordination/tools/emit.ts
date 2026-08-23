@@ -31,8 +31,10 @@ export default defineTool({
     'Emit a structured LIFECYCLE coordination notification (completion / claim / window / handoff / finding). The system fires this automatically from lifecycle events; agents rarely call it directly — use coord:send for unpredictable, contextual messages.',
   guidance: {
     when: 'Almost never directly — the event-reaction rules fire coord:emit automatically when a work_item completes/claims, a coordination-window opens/closes, etc. Call it by hand ONLY to emit a recognized-shape lifecycle event the rules do not yet cover.',
-    notWhen: 'For a genuinely contextual message (a finding\'s nuance, a design call, a question, a hand-written status), use coord:send — that is the unpredictable residual coord:emit deliberately does NOT carry.',
-    chaining: 'The lifecycle rules render the payload via the coord-lifecycle render layer, then fire this. Pair with coord:inbox to see emitted lifecycle.',
+    notWhen:
+      "For a genuinely contextual message (a finding's nuance, a design call, a question, a hand-written status), use coord:send — that is the unpredictable residual coord:emit deliberately does NOT carry.",
+    chaining:
+      'The lifecycle rules render the payload via the coord-lifecycle render layer, then fire this. Pair with coord:inbox to see emitted lifecycle.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -65,12 +67,17 @@ export default defineTool({
       .min(1)
       .max(40)
       .optional(),
+    /** Typed P-NNN plan-lane items explicitly covered by an intent lifecycle event. */
+    declared_plan_items: z
+      .array(z.string().regex(/^P-\d{3,}$/, 'plan item ref required'))
+      .min(1)
+      .max(40)
+      .optional(),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
-    const harnessSlug =
-      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    const harnessSlug = typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
     const env = await sendMessage(identity, {
       to: args.to,
       summary: args.summary,
@@ -83,6 +90,7 @@ export default defineTool({
         auto: true,
         lifecycle: args.category,
         ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
+        ...(args.declared_plan_items ? { declared_plan_items: args.declared_plan_items } : {}),
       },
     });
     return {
