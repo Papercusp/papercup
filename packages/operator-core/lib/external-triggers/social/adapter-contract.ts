@@ -78,6 +78,35 @@ export interface SocialReconcileContext {
   signal?: AbortSignal;
 }
 
+/**
+ * Positive evidence that events were missed AND cannot be recovered.
+ *
+ * This is a different statement from `path`/`backfillReason`, which say how the
+ * adapter TRIED to close the gap. This says the gap could not be closed — and
+ * says it in the one situation where the provider will never tell you: a result
+ * set the provider caps and offers no paging for (D-031). Such a call returns a
+ * full page whether or not there were more, so success and silent loss are
+ * identical from the response alone; only the adapter, holding the watermark,
+ * can compute the difference.
+ *
+ * It belongs on the RESULT for the same reason `path` does. This contract exists
+ * because "emitted zero events" was ambiguous between correct and broken; this
+ * field exists because "emitted a full page" is ambiguous between complete and
+ * lossy. Both ambiguities are resolved by making the adapter declare what it
+ * knows instead of leaving the caller to infer it from a count.
+ */
+export interface SocialLossRisk {
+  /**
+   * The provider capped a result set, documents no way to page past the cap, and
+   * the window did not reach back to the last thing we saw.
+   */
+  kind: 'capped-window-overflow';
+  /** How many distinct fetches hit the condition this pass. Never zero when set. */
+  occurrences: number;
+  /** Provider-specific detail a human can act on (which media, which cap). */
+  detail: string;
+}
+
 export interface SocialReconcileResult {
   /** The cursor to persist. Null is legal only when the platform has no cursor concept. */
   cursor: unknown | null;
@@ -87,6 +116,12 @@ export interface SocialReconcileResult {
   path: SocialReconcilePath;
   /** Required when `path` is 'backfill'. */
   backfillReason?: SocialBackfillReason;
+  /**
+   * Set ONLY when the adapter has positive evidence of unrecoverable loss.
+   * Absent means "no evidence of loss", which is not the same as "no loss" —
+   * an adapter that cannot compute the predicate simply never sets it.
+   */
+  lossRisk?: SocialLossRisk;
 }
 
 /**
@@ -102,6 +137,10 @@ export interface SocialAdapter {
 
 /** True when the result's `path`/`backfillReason` pair is internally coherent. */
 export function isCoherentReconcileResult(result: SocialReconcileResult): boolean {
+  // A declared loss must be a real one. `occurrences: 0` would be an adapter
+  // reporting loss it did not observe, which is worse than not reporting: it
+  // trains a reader to discount the field.
+  if (result.lossRisk && !(result.lossRisk.occurrences > 0)) return false;
   if (result.path === 'backfill') return Boolean(result.backfillReason);
   return result.backfillReason === undefined;
 }
