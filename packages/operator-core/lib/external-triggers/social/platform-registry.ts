@@ -68,17 +68,62 @@ export type SocialAuthMode =
 export type SocialReadTransport = 'outbound-websocket' | 'poll-cursor';
 
 /**
- * The three replay classes measured in D-005. They differ in what happens after
- * the process is offline for a while, and that difference is the whole reason
- * the conformance kit exists:
+ * The replay classes measured in D-005 and extended by D-021. They differ in what
+ * happens after the process is offline for a while, and that difference is the
+ * whole reason the conformance kit exists:
  * - `bounded-cursor-window` — a stored cursor replays missed events, but only
  *   within a retention window; past it the cursor is refused and the adapter
  *   MUST fall back to a bounded backfill. (Bluesky; also Gmail's historyId.)
  * - `no-replay-rest-backfill` — the stream carries no cursor at all, so a gap
  *   is recoverable ONLY by re-reading REST with a since-marker. (Mastodon.)
  * - `poll-cursor` — there is no stream; reading IS the cursored poll. (Reddit.)
+ * - `watermark-rescan` — the provider offers NO time filter and NO since-marker
+ *   of any kind, so the only way to close a gap is to re-read from the newest
+ *   entry and stop CLIENT-SIDE at a stored watermark. (YouTube commentThreads:
+ *   its complete parameter inventory has no `publishedAfter`, verified in D-021.)
+ *
+ * ⚠ `watermark-rescan` is deliberately NOT folded into `no-replay-rest-backfill`.
+ * They read alike and behave differently where it matters: a REST backfill has a
+ * server-side since-marker, so the provider bounds the re-read. A watermark rescan
+ * has none, so the CLIENT bounds it — which means cost grows with the gap, and an
+ * adapter that persists a `pageToken` as if it were a resume point is silently
+ * wrong (a pageToken identifies a page within one query's result set, not a
+ * position in a stream). Collapsing the two classes would hide exactly the
+ * distinction that makes the second one dangerous.
  */
-export type SocialReplayClass = 'bounded-cursor-window' | 'no-replay-rest-backfill' | 'poll-cursor';
+export type SocialReplayClass =
+  | 'bounded-cursor-window'
+  | 'no-replay-rest-backfill'
+  | 'poll-cursor'
+  | 'watermark-rescan';
+
+/**
+ * How much replay guarantee each class actually carries, LOW = weakest.
+ *
+ * Exported because it is the derived basis for the registry invariant that a
+ * platform's scalar `read` may never overstate its streams (see `SocialPlatformRow.read`).
+ * Encoding the order ONCE here means the rule is checked against a single
+ * declaration instead of a hand-maintained list in a test — the same reason
+ * D-016's per-verb idempotency convention pins "the scalar means the weakest".
+ */
+export const SOCIAL_REPLAY_STRENGTH: Record<SocialReplayClass, number> = {
+  // No marker at all; the client re-reads and filters. Cost grows with the gap.
+  'watermark-rescan': 0,
+  // A server-side since-marker bounds the re-read, but the stream itself replays nothing.
+  'no-replay-rest-backfill': 1,
+  // Reading IS the cursored poll: nothing to miss, no window to expire.
+  'poll-cursor': 2,
+  // A real stream cursor replays the gap, but only inside a retention window.
+  'bounded-cursor-window': 3,
+};
+
+/** One readable stream's transport and replay behaviour. */
+export interface SocialReadSpec {
+  transport: SocialReadTransport;
+  replay: SocialReplayClass;
+  /** How a gap is recovered when the cursor is unusable. */
+  backfill?: string;
+}
 
 /** Agent-facing capability verbs (D-019 Tier 1) a platform's adapter can serve. */
 export type SocialWriteVerb = 'reply' | 'post' | 'delete';
@@ -93,6 +138,31 @@ export type SocialWriteVerb = 'reply' | 'post' | 'delete';
  */
 export type SocialWriteIdempotency = 'header' | 'none' | 'unknown';
 
+/**
+ * A budget that does NOT exchange with the platform's general pool (D-020).
+ *
+ * WHY THIS IS NOT JUST A NUMBER IN `notes`. YouTube grants 10,000 general units
+ * per day AND a separate 100 `search.list` calls per day AND a separate 100
+ * `videos.insert` calls per day. Unused general units cannot buy an extra upload.
+ * A cap derived from the general pool is therefore not merely imprecise for
+ * uploads, it is unrelated to the real constraint — so a storm policy that
+ * reads one scalar is calibrated against the wrong quantity entirely.
+ */
+export interface SocialQuotaBucket {
+  /** What draws on this bucket, in the platform's own endpoint vocabulary. */
+  appliesTo: string;
+  /** The hard daily ceiling, in this bucket's own unit. */
+  perDay: number;
+  /**
+   * What `perDay` counts. `calls` is a ceiling on INVOCATIONS regardless of what
+   * each costs; `units` is a ceiling on summed per-call unit costs. Recording
+   * this is the whole point: YouTube's upload bucket is call-capped, and reading
+   * it as unit-capped is exactly the error D-020 corrected.
+   */
+  unit: 'calls' | 'units';
+  notes?: string;
+}
+
 export interface SocialRateBudget {
   /** Requests per minute, where the platform states one. */
   requestsPerMinute?: number;
@@ -100,6 +170,12 @@ export interface SocialRateBudget {
   quotaUnitsPerDay?: number;
   /** Response headers that report remaining budget, for adaptive backoff. */
   budgetHeaders?: string[];
+  /**
+   * Non-fungible budgets keyed by name, for a platform whose quota is not one
+   * pool (D-020). A consumer deriving a cap for a specific verb MUST prefer the
+   * bucket that verb draws on over `quotaUnitsPerDay`/`requestsPerMinute`.
+   */
+  buckets?: Record<string, SocialQuotaBucket>;
   /** Anything the numbers alone do not convey. */
   notes?: string;
 }
@@ -121,11 +197,21 @@ export interface SocialPlatformRow {
     scopes: string[];
     notes?: string;
   };
-  read: {
-    transport: SocialReadTransport;
-    replay: SocialReplayClass;
-    /** How a gap is recovered when the cursor is unusable. */
-    backfill?: string;
+  read: SocialReadSpec & {
+    /**
+     * Per-stream detail, for a platform whose streams do NOT share one replay
+     * guarantee (D-021 measured exactly that on YouTube: its activities stream
+     * has a real `publishedAfter` time cursor, and its commentThreads stream has
+     * no timestamp filter of any kind).
+     *
+     * When this is present the scalar fields above mean the WEAKEST stream —
+     * the same convention D-016 fixed for write idempotency, reused rather than
+     * reinvented. The point is directional: a scalar read can then never
+     * OVERSTATE what the platform guarantees, only understate it, so a caller
+     * that ignores `streams` is left conservative instead of wrong.
+     * `platform-registry.test.ts` pins that against SOCIAL_REPLAY_STRENGTH.
+     */
+    streams?: Record<string, SocialReadSpec>;
   };
   write: {
     verbs: SocialWriteVerb[];
@@ -302,18 +388,79 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     id: 'youtube',
     label: 'YouTube',
     wave: 'B',
-    verifiedAt: null,
-    sources: [],
+    verifiedAt: '2026-08-23',
+    sources: [
+      'https://developers.google.com/youtube/v3/getting-started',
+      'https://developers.google.com/youtube/v3/docs/activities/list',
+      'https://developers.google.com/youtube/v3/docs/commentThreads/list',
+      'https://developers.google.com/youtube/v3/docs/comments/insert',
+      'https://developers.google.com/youtube/v3/docs/videos/insert',
+    ],
     auth: {
       mode: 'self-serve-oauth',
-      scopes: [],
+      // D-019: these are added to GOOGLE_WORKSPACE_ALLOWED_SCOPES and to this
+      // capability's own requiredScopes — and NEVER to GOOGLE_WORKSPACE_SCOPES,
+      // whose members are presumed-granted for legacy connections and would make
+      // an ungranted YouTube read `connected: true` until a 403 at call time.
+      scopes: ['https://www.googleapis.com/auth/youtube.readonly', 'https://www.googleapis.com/auth/youtube.force-ssl'],
       notes:
-        'Intended to ride the SAME Google Workspace OAuth source as the landed Gmail and Calendar lanes (external-triggers D-010 one-credential-path pattern) — a scope addition with a documented consent upgrade, never a second credential path.',
+        'Rides the SAME Google Workspace OAuth source as the landed Gmail and Calendar lanes (external-triggers D-010 one-credential-path pattern) — a scope addition with an incremental consent upgrade, never a second credential path. `youtube.force-ssl` is the ONLY scope comments.insert accepts, and it also confers delete rights, so it is requested per-capability rather than by default (D-019).',
     },
-    read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply'], idempotency: 'unknown', verifiedAt: null },
-    limits: { notes: 'Quota-unit budget unverified.' },
-    blockedOn: 'verification: Wave B just-in-time verification has not run (D-005)',
+    // The scalar is the WEAKEST stream (comments), per the D-016 convention that
+    // a registry scalar may understate but never overstate. Detail in `streams`.
+    read: {
+      transport: 'poll-cursor',
+      replay: 'watermark-rescan',
+      backfill: 'Re-read each stream from newest and stop client-side at the stored watermark.',
+      streams: {
+        activities: {
+          transport: 'poll-cursor',
+          replay: 'poll-cursor',
+          backfill:
+            'activities.list takes `publishedAfter` (ISO 8601) — "the earliest date and time that an activity could have occurred for that activity to be included" — so the stored timestamp IS a real server-side cursor and the gap is closed by the provider.',
+        },
+        comments: {
+          transport: 'poll-cursor',
+          replay: 'watermark-rescan',
+          backfill:
+            'commentThreads.list has NO timestamp filter: its complete parameter inventory is part; one of allThreadsRelatedToChannelId/id/videoId; and optional maxResults, moderationStatus, order, pageToken, searchTerms, textFormat (D-021). So a gap is closed by ordering on `time` and re-reading from the newest entry until entries fall below the stored watermark. `pageToken` identifies a page WITHIN one query\'s result set and is never a resume point — persisting it across an offline gap is the P-013 expireCursor trap in a new costume.',
+        },
+      },
+    },
+    write: {
+      verbs: ['reply'],
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
+      notes:
+        'reply = comments.insert (50 units, general pool), which accepts ONLY youtube.force-ssl and offers no idempotency key or replay-safe token — so the duplicate guard is entirely ours. `post` is deliberately NOT declared: videos.insert had its QUOTA verified (D-020) but not its write shape or duplicate behaviour, and D-005 discipline is that an unverified write path is an undeclared verb, not a hopeful one.',
+    },
+    limits: {
+      quotaUnitsPerDay: 10000,
+      buckets: {
+        general: {
+          appliesTo: 'all endpoints except search.list and videos.insert (activities.list 1, commentThreads.list 1, comments.list 1, comments.insert 50)',
+          perDay: 10000,
+          unit: 'units',
+        },
+        search: {
+          appliesTo: 'search.list',
+          perDay: 100,
+          unit: 'calls',
+          notes: 'A separate allocation; unused general units cannot buy another search.',
+        },
+        videoUploads: {
+          appliesTo: 'videos.insert',
+          perDay: 100,
+          unit: 'calls',
+          notes:
+            'The "Video Uploads quota bucket". Each call costs 1 unit, NOT the widely-repeated 1600 — that figure is stale, and the real constraint is this 100-CALL ceiling, which no amount of unused general quota replenishes (D-020).',
+        },
+      },
+      notes:
+        'THREE non-fungible budgets, verified against two independent vendor pages (D-020). A cap derived from quotaUnitsPerDay alone is meaningless for uploads and searches, so a per-verb consumer must read `buckets`.',
+    },
+    blockedOn:
+      'owner: Google incremental consent upgrade — the YouTube scopes are additive on the existing Workspace connection, so the owner must approve the incremental consent screen once before any live call. Code and simulated conformance proceed without it (D-018 posture); `include_granted_scopes=true` is already set on buildAuthorizeUrl, so the upgraded token retains the landed Gmail and Calendar grants (D-019).',
   },
 
   'facebook-pages': {

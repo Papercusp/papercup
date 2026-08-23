@@ -5,6 +5,7 @@ import {
   isSocialPlatformVerified,
   listSocialPlatforms,
   listSocialPlatformsByWave,
+  SOCIAL_REPLAY_STRENGTH,
   SocialPlatformUnusableError,
   type SocialPlatformRow,
 } from './platform-registry';
@@ -41,14 +42,60 @@ describe('social platform registry', () => {
   it('keeps transport and replay class coherent', () => {
     for (const row of rows) {
       if (row.read.transport === 'poll-cursor') {
-        // There is no stream to miss events on: reading IS the cursored poll.
-        expect(row.read.replay, `${row.id}`).toBe('poll-cursor');
+        // Polling admits exactly two gap behaviours, and the difference is the
+        // whole of D-021. Either the provider accepts a time filter, so reading
+        // IS the cursored poll — or it accepts none, and the only recovery is to
+        // re-read and stop client-side at a watermark. A third value here would
+        // mean a stream class nobody measured.
+        expect(['poll-cursor', 'watermark-rescan'], `${row.id}`).toContain(row.read.replay);
       } else {
         // A streaming platform's gap behaviour must be one of the two measured
         // stream classes — never silently reclassified as a poll.
         expect(['bounded-cursor-window', 'no-replay-rest-backfill'], `${row.id}`).toContain(row.read.replay);
       }
     }
+  });
+
+  it('never lets a scalar read overstate the streams it summarizes', () => {
+    // THE invariant that makes per-stream detail safe to ignore (D-022). A row
+    // with differing streams reports the WEAKEST of them in its scalar — the
+    // same convention D-016 fixed for write idempotency — so a consumer that
+    // never looks at `streams` is left CONSERVATIVE rather than wrong. Overstating
+    // is the failure that matters: it would promise a replay guarantee the
+    // weakest stream cannot deliver, and the loss would be silent.
+    const withStreams = rows.filter((row) => row.read.streams);
+    expect(withStreams.length, 'expected at least one row declaring per-stream reads').toBeGreaterThan(0);
+
+    for (const row of withStreams) {
+      const specs = Object.entries(row.read.streams ?? {});
+      expect(specs.length, `${row.id} declares an empty streams map`).toBeGreaterThan(0);
+
+      const weakest = Math.min(...specs.map(([, spec]) => SOCIAL_REPLAY_STRENGTH[spec.replay]));
+      expect(
+        SOCIAL_REPLAY_STRENGTH[row.read.replay],
+        `${row.id} scalar replay '${row.read.replay}' overstates its weakest stream`,
+      ).toBe(weakest);
+
+      // A stream may not claim a transport the row itself does not.
+      for (const [name, spec] of specs) {
+        expect(spec.transport, `${row.id}.${name} transport`).toBe(row.read.transport);
+      }
+    }
+  });
+
+  it('ranks every replay class exactly once, so the weakest-stream rule is total', () => {
+    // The strength map is the derived basis for the check above. If a future
+    // class is added to the union and NOT ranked here, the lookup returns
+    // undefined and every comparison silently becomes NaN — a guard that
+    // passes because it stopped measuring. Pin the population instead.
+    for (const row of rows) {
+      expect(SOCIAL_REPLAY_STRENGTH[row.read.replay], `${row.id} scalar replay is unranked`).toBeTypeOf('number');
+      for (const spec of Object.values(row.read.streams ?? {})) {
+        expect(SOCIAL_REPLAY_STRENGTH[spec.replay], `${row.id} stream replay is unranked`).toBeTypeOf('number');
+      }
+    }
+    const ranks = Object.values(SOCIAL_REPLAY_STRENGTH);
+    expect(new Set(ranks).size, 'two replay classes share a rank, so "weakest" is ambiguous').toBe(ranks.length);
   });
 
   it('requires a verified row to cite dated https sources', () => {
@@ -122,17 +169,25 @@ describe('social platform registry', () => {
     });
 
     it('refuses a verified platform that is still owner-blocked', () => {
-      // Constructed rather than drawn from the registry: today no row is both
-      // verified and owner-blocked, but that combination is reachable the
-      // moment Wave B verification runs while Meta review is outstanding, and
-      // it must refuse rather than proceed.
-      const verifiedButBlocked = rows.find((r) => isSocialPlatformVerified(r) && r.blockedOn);
-      if (verifiedButBlocked) {
+      // This check was a conditional no-op until P-015: no row was both verified
+      // and owner-blocked, so the body never ran and the guard proved nothing.
+      // YouTube is now exactly that combination — vendor-verified (D-020/D-021)
+      // but waiting on the owner's incremental consent — so the population is
+      // asserted non-empty rather than silently skipped. That is the D-012
+      // lesson applied in reverse: verifying a platform can retire a guard's only
+      // subject, so a guard whose subject set can empty must say so out loud.
+      const verifiedButBlocked = rows.filter((r) => isSocialPlatformVerified(r) && r.blockedOn);
+      expect(
+        verifiedButBlocked.length,
+        'expected at least one verified-but-owner-blocked row to exercise this refusal',
+      ).toBeGreaterThan(0);
+
+      for (const row of verifiedButBlocked) {
         try {
-          assertSocialPlatformUsable(verifiedButBlocked.id);
-          throw new Error('expected assertSocialPlatformUsable to throw');
+          assertSocialPlatformUsable(row.id);
+          throw new Error(`expected assertSocialPlatformUsable to throw for ${row.id}`);
         } catch (error) {
-          expect((error as SocialPlatformUnusableError).reason).toBe('owner-blocked');
+          expect((error as SocialPlatformUnusableError).reason, `${row.id}`).toBe('owner-blocked');
         }
       }
     });
@@ -161,5 +216,40 @@ describe('social platform registry', () => {
     const reddit = assertSocialPlatformUsable('reddit');
     expect(reddit.limits.requestsPerMinute).toBe(60);
     expect(reddit.read.transport).toBe('poll-cursor');
+  });
+
+  it('records the YouTube facts P-015 actually verified against the vendor docs', () => {
+    // Pinned for the same reason as the Wave A facts above: each of these was
+    // read off a live vendor page in D-020/D-021, and each CONTRADICTS a
+    // plausible assumption someone would otherwise restore while tidying.
+    // Fetched by id rather than assertSocialPlatformUsable, which correctly
+    // refuses this row while the owner consent upgrade is outstanding.
+    const youtube = getSocialPlatform('youtube') as SocialPlatformRow;
+    expect(youtube.verifiedAt).toBe('2026-08-23');
+
+    // D-021: the two streams do NOT share a replay guarantee, and the scalar
+    // reports the weaker one so it cannot overstate.
+    expect(youtube.read.streams?.activities.replay).toBe('poll-cursor');
+    expect(youtube.read.streams?.comments.replay).toBe('watermark-rescan');
+    expect(youtube.read.replay).toBe('watermark-rescan');
+
+    // D-020: three non-fungible budgets. The upload ceiling counts CALLS, not
+    // units — the correction that matters, since the endpoint costs 1 unit and
+    // the widely-repeated 1600-unit figure is stale.
+    expect(youtube.limits.buckets?.videoUploads.perDay).toBe(100);
+    expect(youtube.limits.buckets?.videoUploads.unit).toBe('calls');
+    expect(youtube.limits.buckets?.search.perDay).toBe(100);
+    expect(youtube.limits.buckets?.general.unit).toBe('units');
+
+    // comments.insert offers no idempotency mechanism, so the duplicate guard is
+    // entirely ours; and `post` stays undeclared because videos.insert had its
+    // quota verified but not its write shape.
+    expect(youtube.write.idempotency).toBe('none');
+    expect(youtube.write.verbs).toEqual(['reply']);
+
+    // D-019: force-ssl is requested per-capability. A regression that moves it
+    // into the default Workspace list would make every legacy connection report
+    // YouTube as granted without the user ever consenting.
+    expect(youtube.auth.scopes).toContain('https://www.googleapis.com/auth/youtube.force-ssl');
   });
 });
