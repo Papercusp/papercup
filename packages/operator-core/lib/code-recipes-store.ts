@@ -115,6 +115,19 @@ export interface RecordRecipeRunInput {
   countTowardRecipe?: boolean;
 }
 
+export interface ReviseRecipeSourceInput {
+  id: string;
+  script: string;
+  toolsUsed: string[];
+  /** Compare-and-swap token read from the current row. */
+  expectedUpdatedAt: string;
+}
+
+export type ReviseRecipeSourceResult =
+  | { status: 'updated'; row: CodeRecipeRow }
+  | { status: 'not_found' }
+  | { status: 'conflict'; current: CodeRecipeRow };
+
 type DbRow = {
   id: string;
   title: string;
@@ -274,6 +287,46 @@ export async function recordRecipeRun(sql: postgres.Sql, input: RecordRecipeRunI
                last_run_at   = now()
          WHERE id = ${recipeId}`;
     }
+  });
+}
+
+/**
+ * Replace only a saved recipe's executable source metadata, without recording an
+ * execution or changing its popularity counters. The `updated_at` predicate is a
+ * compare-and-swap rail: a caller that inspected an older revision can never
+ * overwrite a concurrent edit silently.
+ *
+ * The versioned binding/capability contract is deliberately preserved. This
+ * operation is for source corrections whose runtime-input contract is unchanged;
+ * capture/upsert remains the authoring path for a different contract.
+ */
+export async function reviseRecipeSource(
+  sql: postgres.Sql,
+  input: ReviseRecipeSourceInput,
+): Promise<ReviseRecipeSourceResult> {
+  return sql.begin(async (tx) => {
+    // Compare the same mapped timestamp representation the caller read. A raw
+    // SQL timestamptz equality check is incorrect here because postgres.js maps
+    // the value through Date (millisecond precision) while PG stores microseconds.
+    const currentRows = await tx<DbRow[]>`
+      SELECT ${SELECT_COLS(tx)}
+        FROM harness_shared.code_recipes
+       WHERE id = ${input.id}
+       FOR UPDATE`;
+    if (!currentRows[0]) return { status: 'not_found' };
+    const current = mapRow(currentRows[0]);
+    if (current.updatedAt !== input.expectedUpdatedAt) {
+      return { status: 'conflict', current };
+    }
+
+    const rows = await tx<DbRow[]>`
+      UPDATE harness_shared.code_recipes
+         SET script = ${input.script},
+             tools_used = ${input.toolsUsed},
+             updated_at = now()
+       WHERE id = ${input.id}
+      RETURNING ${SELECT_COLS(tx)}`;
+    return { status: 'updated', row: mapRow(rows[0]) };
   });
 }
 

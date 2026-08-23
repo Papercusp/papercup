@@ -13,15 +13,8 @@
  * so the test pins the role-scoping decision, not the orchestration internals.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  listAllProjectedTools,
-  roleScopedToolNames,
-} from '@papercusp/agent-mcp';
-import {
-  deriveRecipeAuthority,
-  recipeRevision,
-  validateRecipeAuthorityProof,
-} from '../../recipe-authority';
+import { listAllProjectedTools, roleScopedToolNames } from '@papercusp/agent-mcp';
+import { deriveRecipeAuthority, recipeRevision, validateRecipeAuthorityProof } from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
@@ -103,6 +96,7 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 // Side-effect: register the recipes:* tools AFTER the mocks are hoisted.
 import './list';
 import recipeGetTool from './get';
+import './revise';
 import './search';
 import './run';
 import './candidates';
@@ -123,7 +117,7 @@ describe('recipes:* registration (P-005, P-013)', () => {
     it(`registers ${name} as a role-gated tool`, () => {
       const tool = findTool(name);
       expect(tool).toBeDefined();
-      expect((tool.agentRoles?.length ?? 0)).toBeGreaterThan(0);
+      expect(tool.agentRoles?.length ?? 0).toBeGreaterThan(0);
       // bee is in the envelope (mirrors code:run's [...SU_ROLES,'cup'])
       expect(tool.agentRoles).toContain('cup');
     });
@@ -149,11 +143,11 @@ describe('recipes:* registration (P-005, P-013)', () => {
   });
 
   // Phase 4 hygiene tools (P-010 / D-015): curation actions, SU-only (no bee), write-effect.
-  for (const name of ['recipes:merge', 'recipes:sweep']) {
+  for (const name of ['recipes:merge', 'recipes:sweep', 'recipes:revise']) {
     it(`registers ${name} as an SU-only write-effect curation tool`, () => {
       const tool = findTool(name);
       expect(tool).toBeDefined();
-      expect((tool.agentRoles?.length ?? 0)).toBeGreaterThan(0);
+      expect(tool.agentRoles?.length ?? 0).toBeGreaterThan(0);
       // A review/curation action — NOT bee-authored (unlike recipes:run/get/list).
       expect(tool.agentRoles).not.toContain('cup');
       // Mutates the recipe corpus.
@@ -202,7 +196,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     content: { emits: ['text'] as ['text'] },
   });
 
-  it('runs the AUTHOR\'s recipe under the REUSER\'s role-scoped envelope, not the author\'s', async () => {
+  it("runs the AUTHOR's recipe under the REUSER's role-scoped envelope, not the author's", async () => {
     // A recipe AUTHORED by an operator (privileged), referencing whatever tools.
     getRecipeMock.mockResolvedValue({
       id: 'r1',
@@ -254,15 +248,25 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('preflights typed bindings and passes only validated safe inputs into the VM', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'bound-inputs', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-      script: 'return inputs.query;', authorRole: 'operator', toolsUsed: [], runCount: 0,
-      successCount: 0, status: 'active', tags: [],
+      id: 'bound-inputs',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 't',
+      description: 'd',
+      script: 'return inputs.query;',
+      authorRole: 'operator',
+      toolsUsed: [],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
       bindingSchema: {
         version: 1,
         properties: {
           query: { type: 'string', required: true, lifetime: { kind: 'stable' } },
           token: {
-            type: 'secret-ref', required: true,
+            type: 'secret-ref',
+            required: true,
             lifetime: { kind: 'resolved-ref', refKind: 'secret', resolution: 'each-use' },
           },
         },
@@ -271,15 +275,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       capabilityManifest: emptyManifest(),
     });
 
-    const res = await findTool('recipes:run').fn({
-      id: 'bound-inputs',
-      bindings: {
-        values: {
-          query: 'open queue',
-          token: { secretRef: 'secret://github/pat' },
+    const res = await findTool('recipes:run').fn(
+      {
+        id: 'bound-inputs',
+        bindings: {
+          values: {
+            query: 'open queue',
+            token: { secretRef: 'secret://github/pat' },
+          },
         },
       },
-    }, mkCtx('worker'));
+      mkCtx('worker'),
+    );
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
 
     expect(payload.results[0]).toMatchObject({ ok: true, id: 'bound-inputs' });
@@ -291,9 +298,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('returns typed binding preflight diagnostics without dispatching the script', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'invalid-binding', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-      script: 'return inputs.count;', authorRole: 'operator', toolsUsed: [], runCount: 0,
-      successCount: 0, status: 'active', tags: [],
+      id: 'invalid-binding',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 't',
+      description: 'd',
+      script: 'return inputs.count;',
+      authorRole: 'operator',
+      toolsUsed: [],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
       bindingSchema: {
         version: 1,
         properties: { count: { type: 'integer', required: true, lifetime: { kind: 'stable' } } },
@@ -302,10 +318,13 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       capabilityManifest: emptyManifest(),
     });
 
-    const res = await findTool('recipes:run').fn({
-      id: 'invalid-binding',
-      bindings: { values: { count: 'many' } },
-    }, mkCtx('worker'));
+    const res = await findTool('recipes:run').fn(
+      {
+        id: 'invalid-binding',
+        bindings: { values: { count: 'many' } },
+      },
+      mkCtx('worker'),
+    );
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
 
     expect(payload.results[0]).toMatchObject({
@@ -321,9 +340,19 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('fails unavailable declared capabilities in current-caller preflight before execution', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'durable-unavailable', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0,
-      successCount: 0, status: 'active', tags: [], bindingSchema: null,
+      id: 'durable-unavailable',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 't',
+      description: 'd',
+      script: 'return 1;',
+      authorRole: 'operator',
+      toolsUsed: [],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
+      bindingSchema: null,
       capabilityManifest: emptyManifest(['lifecycle:durable']),
     });
 
@@ -357,13 +386,16 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     });
     await findTool('recipes:run').fn({ id: 'r2' }, mkCtx('worker'));
     expect(recordRecipeRunMock).toHaveBeenCalledTimes(1);
-    const [, input] = recordRecipeRunMock.mock.calls[0] as unknown as [unknown, {
-      reused: boolean;
-      recipeId: string;
-      agentRole: string;
-      executionTrace: unknown;
-      countTowardRecipe: boolean;
-    }];
+    const [, input] = recordRecipeRunMock.mock.calls[0] as unknown as [
+      unknown,
+      {
+        reused: boolean;
+        recipeId: string;
+        agentRole: string;
+        executionTrace: unknown;
+        countTowardRecipe: boolean;
+      },
+    ];
     expect(input.reused).toBe(true);
     expect(input.recipeId).toBe('r2');
     expect(input.agentRole).toBe('worker'); // the REUSER's role, recorded
@@ -373,8 +405,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('records a dry-run trace without moving the parent recipe counters', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'r3', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0, status: 'active', tags: [],
+      id: 'r3',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 't',
+      description: 'd',
+      script: 'return 1;',
+      authorRole: 'operator',
+      toolsUsed: [],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
     });
     const res = await findTool('recipes:run').fn({ id: 'r3', dryRun: true }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -393,10 +435,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('rejects a saved recipe whose literal arguments no longer match the live tool schema', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'stale', workspaceId: 'ws-test', potSlug: 'alpha', title: 'stale', description: 'd',
+      id: 'stale',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 'stale',
+      description: 'd',
       script: 'return await tools.recipes.list({ bogus: true });',
-      authorRole: 'operator', toolsUsed: ['recipes:list'], runCount: 1, successCount: 1,
-      status: 'active', tags: [],
+      authorRole: 'operator',
+      toolsUsed: ['recipes:list'],
+      runCount: 1,
+      successCount: 1,
+      status: 'active',
+      tags: [],
     });
     const res = await findTool('recipes:run').fn({ id: 'stale' }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -407,9 +457,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
   it('fails a recipe with stale field reads instead of recording a successful reuse', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'field-miss', workspaceId: 'ws-test', potSlug: 'alpha', title: 'field miss', description: 'd',
-      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 1, successCount: 1,
-      status: 'active', tags: [],
+      id: 'field-miss',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 'field miss',
+      description: 'd',
+      script: 'return 1;',
+      authorRole: 'operator',
+      toolsUsed: [],
+      runCount: 1,
+      successCount: 1,
+      status: 'active',
+      tags: [],
     });
     runOrchestrationMock.mockResolvedValueOnce({
       ok: true,
@@ -418,12 +477,14 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       dryRun: false,
       plannedMutations: [],
       partial: false,
-      fieldMisses: [{
-        tool: 'scheduler:getNext',
-        path: '(root)',
-        read: 'windDown',
-        available: ['workItem', 'claimedUnder'],
-      }],
+      fieldMisses: [
+        {
+          tool: 'scheduler:getNext',
+          path: '(root)',
+          read: 'windDown',
+          available: ['workItem', 'claimedUnder'],
+        },
+      ],
     });
 
     const res = await findTool('recipes:run').fn({ id: 'field-miss' }, mkCtx('worker'));
@@ -461,8 +522,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       id === 'gone'
         ? null
         : {
-            id, workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-            script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0, status: 'active', tags: [],
+            id,
+            workspaceId: 'ws-test',
+            potSlug: 'alpha',
+            title: 't',
+            description: 'd',
+            script: 'return 1;',
+            authorRole: 'operator',
+            toolsUsed: [],
+            runCount: 0,
+            successCount: 0,
+            status: 'active',
+            tags: [],
           },
     );
     const res = await findTool('recipes:run').fn({ ids: ['r1', 'gone', 'r2'] }, mkCtx('worker'));
@@ -482,9 +553,17 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     const script = `return await tools.workItems.get({ id: 'WI-bound', harness: 'alpha' });`;
     const updatedAt = '2026-07-13T12:00:00.000Z';
     getRecipeMock.mockResolvedValue({
-      id: 'bound', title: 'bound', description: 'd', script, updatedAt,
-      authorRole: 'operator', toolsUsed: ['work_items:get'], runCount: 0,
-      successCount: 0, status: 'active', tags: [],
+      id: 'bound',
+      title: 'bound',
+      description: 'd',
+      script,
+      updatedAt,
+      authorRole: 'operator',
+      toolsUsed: ['work_items:get'],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
     });
 
     const missing = await findTool('recipes:run').fn({ id: 'bound' }, mkCtx('worker'));
@@ -516,10 +595,13 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     const mismatchedBody = JSON.parse((mismatched as { content: { text: string }[] }).content[0].text);
     expect(mismatchedBody.results[0]).toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
 
-    const stale = await findTool('recipes:run').fn({
-      id: 'bound',
-      authority: { ...authority, revision: '0'.repeat(64) },
-    }, mkCtx('worker'));
+    const stale = await findTool('recipes:run').fn(
+      {
+        id: 'bound',
+        authority: { ...authority, revision: '0'.repeat(64) },
+      },
+      mkCtx('worker'),
+    );
     const staleBody = JSON.parse((stale as { content: { text: string }[] }).content[0].text);
     expect(staleBody.results[0]).toMatchObject({ ok: false, error: 'authority_stale_revision' });
   });
@@ -528,9 +610,17 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     const script = `return await tools.workItems.get({ id: 'WI-bound', harness: 'alpha' });`;
     const updatedAt = '2026-07-13T12:00:00.000Z';
     getRecipeMock.mockResolvedValue({
-      id: 'metadata-bound', title: 'bound', description: 'd', script, updatedAt,
-      authorRole: 'operator', toolsUsed: ['work_items:get'], runCount: 0,
-      successCount: 0, status: 'active', tags: [],
+      id: 'metadata-bound',
+      title: 'bound',
+      description: 'd',
+      script,
+      updatedAt,
+      authorRole: 'operator',
+      toolsUsed: ['work_items:get'],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
     });
 
     const metadata = {
@@ -555,10 +645,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       ]),
     );
 
-    const accepted = await findTool('recipes:run').fn(
-      { id: 'metadata-bound', authority: metadata },
-      mkCtx('worker'),
-    );
+    const accepted = await findTool('recipes:run').fn({ id: 'metadata-bound', authority: metadata }, mkCtx('worker'));
     const acceptedBody = JSON.parse((accepted as { content: { text: string }[] }).content[0].text);
     expect(acceptedBody.results[0]).toMatchObject({ ok: true, id: 'metadata-bound' });
     expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
@@ -604,14 +691,28 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
 
   it('inline { id } → one result with the recipe (script included)', async () => {
     getRecipeMock.mockResolvedValue({
-      id: 'r1', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
-      lastRunAt: null, status: 'active', tags: [],
+      id: 'r1',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 't',
+      description: 'd',
+      script: 'return 1;',
+      authorRole: 'operator',
+      toolsUsed: [],
+      runCount: 0,
+      successCount: 0,
+      lastRunAt: null,
+      status: 'active',
+      tags: [],
       bindingSchema: { version: 1, properties: {}, additionalProperties: false },
       capabilityManifest: {
-        version: 1, representation: 'recipe-script', topology: { premises: ['host:same'] },
-        requirements: [], lifecycle: { allowed: ['foreground'], default: 'foreground' },
-        replay: { class: 'read-only' }, content: { emits: ['text'] },
+        version: 1,
+        representation: 'recipe-script',
+        topology: { premises: ['host:same'] },
+        requirements: [],
+        lifecycle: { allowed: ['foreground'], default: 'foreground' },
+        replay: { class: 'read-only' },
+        content: { emits: ['text'] },
       },
     });
     const b = await getBody({ id: 'r1' });
@@ -630,11 +731,23 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
 
   it('ids:[…] → many; a not-found id fails only itself', async () => {
     getRecipeMock.mockImplementation(async (_sql: unknown, id: string) =>
-      id === 'x' ? null : {
-        id, workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-        script: 's', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
-        lastRunAt: null, status: 'active', tags: [],
-      },
+      id === 'x'
+        ? null
+        : {
+            id,
+            workspaceId: 'ws-test',
+            potSlug: 'alpha',
+            title: 't',
+            description: 'd',
+            script: 's',
+            authorRole: 'operator',
+            toolsUsed: [],
+            runCount: 0,
+            successCount: 0,
+            lastRunAt: null,
+            status: 'active',
+            tags: [],
+          },
     );
     const b = await getBody({ ids: ['r1', 'x', 'r2'] });
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
@@ -650,13 +763,27 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
  */
 describe('recipes:run dispatch-wrapper mark (P-012)', () => {
   const RECIPE = {
-    id: 'r1', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
-    script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0,
-    successCount: 0, lastRunAt: null, status: 'active', tags: [],
+    id: 'r1',
+    workspaceId: 'ws-test',
+    potSlug: 'alpha',
+    title: 't',
+    description: 'd',
+    script: 'return 1;',
+    authorRole: 'operator',
+    toolsUsed: [],
+    runCount: 0,
+    successCount: 0,
+    lastRunAt: null,
+    status: 'active',
+    tags: [],
   };
   const orchestration = (dispatchCount: number) => ({
-    ok: true, summary: { done: true }, logs: [], dryRun: false,
-    plannedMutations: [], dispatchCount,
+    ok: true,
+    summary: { done: true },
+    logs: [],
+    dryRun: false,
+    plannedMutations: [],
+    dispatchCount,
   });
   const mkCtx = (metadata: ReturnType<typeof vi.fn>) =>
     ({
@@ -671,14 +798,10 @@ describe('recipes:run dispatch-wrapper mark (P-012)', () => {
 
   it('aggregates inner dispatches across the batch and stamps one mark', async () => {
     getRecipeMock.mockImplementation(async (_sql: unknown, id: string) => ({ ...RECIPE, id }));
-    runOrchestrationMock
-      .mockResolvedValueOnce(orchestration(2))
-      .mockResolvedValueOnce(orchestration(3));
+    runOrchestrationMock.mockResolvedValueOnce(orchestration(2)).mockResolvedValueOnce(orchestration(3));
     const metadata = vi.fn();
     await findTool('recipes:run').fn({ ids: ['r1', 'r2'] }, mkCtx(metadata));
-    expect(metadata).toHaveBeenCalledWith(
-      expect.objectContaining({ dispatchWrapper: true, dispatchedToolCalls: 5 }),
-    );
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ dispatchWrapper: true, dispatchedToolCalls: 5 }));
   });
 
   it('control: a zero-dispatch batch (and a legacy result with no dispatchCount) stamps nothing', async () => {
@@ -687,7 +810,11 @@ describe('recipes:run dispatch-wrapper mark (P-012)', () => {
       .mockResolvedValueOnce(orchestration(0))
       // legacy shape: dispatchCount absent entirely — must be read as 0, never guessed
       .mockResolvedValueOnce({
-        ok: true, summary: {}, logs: [], dryRun: false, plannedMutations: [],
+        ok: true,
+        summary: {},
+        logs: [],
+        dryRun: false,
+        plannedMutations: [],
       });
     const metadata = vi.fn();
     await findTool('recipes:run').fn({ ids: ['r1', 'r2'] }, mkCtx(metadata));

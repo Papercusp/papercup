@@ -77,6 +77,7 @@ import './code/tools';
 // search (the BEFORE-author dedup check) / run (reuse under the REUSER envelope, D-004).
 import './recipes/list';
 import './recipes/get';
+import './recipes/revise';
 import './recipes/search';
 import './recipes/run';
 // code-recipes-2026-06-21 Phase 3 (P-013 / D-017) — the Queen's deterministic

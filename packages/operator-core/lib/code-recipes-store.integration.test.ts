@@ -20,6 +20,7 @@ import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertRecipe,
   recordRecipeRun,
+  reviseRecipeSource,
   getRecipe,
   findActiveRecipeByStructuralFingerprint,
   listRecipes,
@@ -115,6 +116,64 @@ describe('code_recipes store (real PG)', () => {
     expect(list.filter((r) => r.id === 'note')).toHaveLength(1);
   });
 
+  it('revises recipe source with compare-and-swap without recording a run or moving counters', async () => {
+    const initial = await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'source-revision',
+      title: 'Source revision',
+      description: 'correct stored source without replaying it',
+      script: 'return await tools.state.read({ cell: "old" });',
+      toolsUsed: ['state:read'],
+    });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: initial.id,
+      workspaceId: 'ws-revise',
+      potSlug: null,
+      success: true,
+    });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: initial.id,
+      workspaceId: 'ws-revise',
+      potSlug: null,
+      success: true,
+    });
+    const before = await getRecipe(db.adminSql, initial.id);
+    expect(before).toMatchObject({ runCount: 2, successCount: 2 });
+
+    const result = await reviseRecipeSource(db.adminSql, {
+      id: initial.id,
+      script: 'return await tools.state.read({ cell: "new" });',
+      toolsUsed: ['state:read'],
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(result.status).toBe('updated');
+    if (result.status !== 'updated') throw new Error(`unexpected revision result: ${result.status}`);
+    expect(result.row).toMatchObject({
+      script: 'return await tools.state.read({ cell: "new" });',
+      runCount: 2,
+      successCount: 2,
+    });
+
+    const stale = await reviseRecipeSource(db.adminSql, {
+      id: initial.id,
+      script: 'return "stale overwrite";',
+      toolsUsed: [],
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(stale.status).toBe('conflict');
+    await expect(getRecipe(db.adminSql, initial.id)).resolves.toMatchObject({
+      script: 'return await tools.state.read({ cell: "new" });',
+      runCount: 2,
+      successCount: 2,
+    });
+
+    const runRows = await db.adminSql<{ count: string }[]>`
+      SELECT count(*)::text AS count
+        FROM harness_shared.code_recipe_runs
+       WHERE recipe_id = ${initial.id}`;
+    expect(parseInt(runRows[0].count, 10)).toBe(2);
+  });
+
   it('round-trips the exact versioned recipe contract and clears it when a later revision omits it', async () => {
     const bindingSchema = {
       version: 1 as const,
@@ -164,14 +223,16 @@ describe('code_recipes store (real PG)', () => {
   });
 
   it('refuses a binding schema without the manifest that defines its admission contract', async () => {
-    await expect(upsertRecipe(db.adminSql, {
-      potSlug: null,
-      id: 'invalid-contract',
-      title: 'Invalid contract',
-      description: 'must fail before SQL',
-      script: 'return 1;',
-      bindingSchema: { version: 1, properties: {}, additionalProperties: false },
-    })).rejects.toThrow('bindingSchema requires capabilityManifest');
+    await expect(
+      upsertRecipe(db.adminSql, {
+        potSlug: null,
+        id: 'invalid-contract',
+        title: 'Invalid contract',
+        description: 'must fail before SQL',
+        script: 'return 1;',
+        bindingSchema: { version: 1, properties: {}, additionalProperties: false },
+      }),
+    ).rejects.toThrow('bindingSchema requires capabilityManifest');
   });
 
   it('upsert PRESERVES an existing embedding when re-run without one', async () => {
@@ -274,11 +335,13 @@ describe('code_recipes store (real PG)', () => {
       countTowardRecipe: false,
     });
 
-    const traceRows = await db.adminSql<Array<{
-      recipe_id: string | null;
-      execution_trace: typeof executionTrace;
-      structural_fingerprint: string;
-    }>>`
+    const traceRows = await db.adminSql<
+      Array<{
+        recipe_id: string | null;
+        execution_trace: typeof executionTrace;
+        structural_fingerprint: string;
+      }>
+    >`
       SELECT recipe_id, execution_trace, structural_fingerprint
         FROM harness_shared.code_recipe_runs
        WHERE workspace_id = ${ws}
@@ -307,20 +370,48 @@ describe('code_recipes store (real PG)', () => {
       structuralFingerprint: 'd'.repeat(64),
     };
 
-    await upsertRecipe(db.adminSql, { id: 'fingerprint-low', title: 'Low', description: 'd', script: 's', potSlug: null });
-    await upsertRecipe(db.adminSql, { id: 'fingerprint-hot', title: 'Hot', description: 'd', script: 's', potSlug: null });
-    await upsertRecipe(db.adminSql, { id: 'fingerprint-retired', title: 'Retired', description: 'd', script: 's', potSlug: null });
+    await upsertRecipe(db.adminSql, {
+      id: 'fingerprint-low',
+      title: 'Low',
+      description: 'd',
+      script: 's',
+      potSlug: null,
+    });
+    await upsertRecipe(db.adminSql, {
+      id: 'fingerprint-hot',
+      title: 'Hot',
+      description: 'd',
+      script: 's',
+      potSlug: null,
+    });
+    await upsertRecipe(db.adminSql, {
+      id: 'fingerprint-retired',
+      title: 'Retired',
+      description: 'd',
+      script: 's',
+      potSlug: null,
+    });
     await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-low', workspaceId: ws, potSlug: null, executionTrace });
     await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-hot', workspaceId: ws, potSlug: null, executionTrace });
     await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-hot', workspaceId: ws, potSlug: null, executionTrace });
-    await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-retired', workspaceId: ws, potSlug: null, executionTrace });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: 'fingerprint-retired',
+      workspaceId: ws,
+      potSlug: null,
+      executionTrace,
+    });
     await db.adminSql`UPDATE harness_shared.code_recipes SET status = 'retired' WHERE id = 'fingerprint-retired'`;
-    await recordRecipeRun(db.adminSql, { recipeId: null, workspaceId: ws, potSlug: null, executionTrace, countTowardRecipe: false });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: null,
+      workspaceId: ws,
+      potSlug: null,
+      executionTrace,
+      countTowardRecipe: false,
+    });
 
-    await expect(findActiveRecipeByStructuralFingerprint(
-      db.adminSql,
-      executionTrace.structuralFingerprint,
-    )).resolves.toMatchObject({ id: 'fingerprint-hot', runCount: 2, status: 'active' });
+    await expect(
+      findActiveRecipeByStructuralFingerprint(db.adminSql, executionTrace.structuralFingerprint),
+    ).resolves.toMatchObject({ id: 'fingerprint-hot', runCount: 2, status: 'active' });
     await expect(findActiveRecipeByStructuralFingerprint(db.adminSql, 'e'.repeat(64))).resolves.toBeNull();
   });
 
@@ -346,19 +437,28 @@ describe('code_recipes store (real PG)', () => {
     // multi-tool, authored title → reuse-worthy (shown by default)
     await upsertRecipe(db.adminSql, {
       potSlug: null,
-      id: 'multi-tool-worthy', title: 'Triage and block stale items', description: 'd', script: 's',
+      id: 'multi-tool-worthy',
+      title: 'Triage and block stale items',
+      description: 'd',
+      script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
     });
     // 1-tool wrapper → low-value (hidden by default)
     await upsertRecipe(db.adminSql, {
       potSlug: null,
-      id: 'one-tool-wrapper', title: 'Just list plans', description: 'd', script: 's',
+      id: 'one-tool-wrapper',
+      title: 'Just list plans',
+      description: 'd',
+      script: 's',
       toolsUsed: ['plans:list'],
     });
     // auto-derived fallback title ("recipe: …") on a multi-tool script → low-value
     await upsertRecipe(db.adminSql, {
       potSlug: null,
-      id: 'auto-titled', title: 'recipe: plans:add-item + plans:set-status', description: 'd', script: 's',
+      id: 'auto-titled',
+      title: 'recipe: plans:add-item + plans:set-status',
+      description: 'd',
+      script: 's',
       toolsUsed: ['plans:add-item', 'plans:set-status'],
     });
 
@@ -378,12 +478,19 @@ describe('code_recipes store (real PG)', () => {
     it('folds duplicates into the survivor: status=merged, merged_into set, counts summed', async () => {
       const ws = 'ws-cr-merge';
       // Survivor with some usage.
-      await upsertRecipe(db.adminSql, { id: 'survivor', title: 'Survivor', description: 'd', script: 's', potSlug: null });
+      await upsertRecipe(db.adminSql, {
+        id: 'survivor',
+        title: 'Survivor',
+        description: 'd',
+        script: 's',
+        potSlug: null,
+      });
       // Two near-duplicates with their own usage.
       await upsertRecipe(db.adminSql, { id: 'dup-1', title: 'Dup 1', description: 'd', script: 's', potSlug: null });
       await upsertRecipe(db.adminSql, { id: 'dup-2', title: 'Dup 2', description: 'd', script: 's', potSlug: null });
       // Survivor: 2 runs / 2 success; dup-1: 3 runs / 2 success; dup-2: 1 run / 0 success.
-      for (let i = 0; i < 2; i++) await recordRecipeRun(db.adminSql, { recipeId: 'survivor', workspaceId: ws, potSlug: 'alpha', success: true });
+      for (let i = 0; i < 2; i++)
+        await recordRecipeRun(db.adminSql, { recipeId: 'survivor', workspaceId: ws, potSlug: 'alpha', success: true });
       await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: true });
       await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: true });
       await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: false });
@@ -459,7 +566,7 @@ describe('code_recipes store (real PG)', () => {
       opts: { potSlug?: string | null; runCount: number; daysAgo: number | null; status?: string },
     ) {
       await upsertRecipe(db.adminSql, {
-      potSlug: null,
+        potSlug: null,
         id,
         title: id,
         description: 'd',
