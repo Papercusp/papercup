@@ -56,10 +56,19 @@ import {
 } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
-import { TIER_LABEL, type AttentionItem, type AttentionTier } from '@/app/admin/plans/plans-api';
+import {
+  TIER_LABEL,
+  type AttentionActionId,
+  type AttentionItem,
+  type AttentionTier,
+} from '@/app/admin/plans/plans-api';
 import { effectiveTier, scopeInboxItems, useInboxAttention } from './use-inbox-pending';
 import { seedOperatorChatDraft } from './chat-seed';
 import SessionChatModal from '../chat/SessionChatModal';
+import {
+  CHAT_WORK_ITEM_POPUP_PARAM,
+  encodeScopedRef,
+} from '../chat/chat-ref-popup-params';
 // The Queue detail card's styles (pc-items__*, pc-tier/pc-kind badges). Global
 // (non-module) CSS — importing it here makes the pane self-sufficient on
 // every route.
@@ -148,6 +157,25 @@ function searchHaystack(i: AttentionItem): string {
     .toLowerCase();
 }
 
+/** The durable work-item id a source-opening action can show in the shared
+ * popup. Kept conservative: an owner-wall ref that is not a WI/EI/F id falls
+ * back to the full Queue rather than guessing a destination. */
+function attentionWorkItemId(i: AttentionItem): string | null {
+  switch (i.ref.kind) {
+    case 'work-item-needs-human':
+    case 'work-item-blocked':
+      return i.ref.workItemId;
+    case 'improvement':
+      return i.ref.issueId;
+    case 'owner-wall':
+      return i.ref.wallRef && /^(?:WI|EI|F)-\d+$/i.test(i.ref.wallRef)
+        ? i.ref.wallRef.toUpperCase()
+        : null;
+    default:
+      return null;
+  }
+}
+
 export default function InboxPane({ onDiscussInChat }: {
   /** Flip the sidebar back to the chat view (the seed is already staged). */
   onDiscussInChat: () => void;
@@ -169,6 +197,7 @@ export default function InboxPane({ onDiscussInChat }: {
   // The "chat-grade session context" popup (P-007): which agent's live session
   // to show, keyed by ownerAgentId.
   const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
+  const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
   // The Queue lives on /adv (?tab=plans&view=queue) — MERGE-write the params
   // when already there; hard-navigate otherwise (this sidebar is global).
   const [, setQueueParams] = useQueryStates({
@@ -199,6 +228,32 @@ export default function InboxPane({ onDiscussInChat }: {
     void setSel(null);
     refresh();
   }, [refresh, setSel]);
+
+  const onNavigate = useCallback(
+    (i: AttentionItem, actionId: AttentionActionId) => {
+      if ((actionId === 'message-owner' || actionId === 'chat') && i.ownerAgentId) {
+        void setChatOwner(i.ownerAgentId);
+        return true;
+      }
+      if (actionId === 'open') {
+        const workItemId = attentionWorkItemId(i);
+        if (workItemId && i.harnessSlug) {
+          void setOpenWorkItem(encodeScopedRef(i.harnessSlug, workItemId));
+          return true;
+        }
+        openQueue();
+        return true;
+      }
+      if (actionId === 'view-log') {
+        // The Queue owns the source-specific smoke/log drill-ins. This is an
+        // honest navigation, not the previous toast-only pseudo-action.
+        openQueue();
+        return true;
+      }
+      return false;
+    },
+    [openQueue, setChatOwner, setOpenWorkItem],
+  );
 
   // P-101: narrow the shared attention firehose to genuinely-active, owner-
   // addressed items BEFORE anything else reads it — so the chip counts, the
@@ -580,6 +635,7 @@ export default function InboxPane({ onDiscussInChat }: {
                 item={selectedItem}
                 onResolved={onResolved}
                 onDiscuss={onDiscuss}
+                onNavigate={onNavigate}
               />
             </div>
           </>

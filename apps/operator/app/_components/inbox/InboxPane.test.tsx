@@ -43,14 +43,17 @@ vi.mock('@tanstack/react-virtual', () => ({
 // the hosted item id and exposes the onDiscuss seam (parity behavior is the
 // Queue suites' job).
 vi.mock('@/app/admin/plans/PlanOtherList', () => ({
-  OtherDetail: ({ item, onDiscuss, onResolved }: {
+  OtherDetail: ({ item, onDiscuss, onResolved, onNavigate }: {
     item: { id: string };
     onDiscuss?: (i: unknown) => boolean;
     onResolved: () => void;
+    onNavigate?: (i: unknown, actionId: 'open' | 'message-owner') => boolean;
   }) => (
     <div data-testid="other-detail" data-item={item.id}>
       <button type="button" data-testid="stub-discuss" onClick={() => onDiscuss?.(item)} />
       <button type="button" data-testid="stub-resolve" onClick={onResolved} />
+      <button type="button" data-testid="stub-open" onClick={() => onNavigate?.(item, 'open')} />
+      <button type="button" data-testid="stub-message-owner" onClick={() => onNavigate?.(item, 'message-owner')} />
     </div>
   ),
   KIND_LABEL: {
@@ -333,6 +336,25 @@ describe('<InboxPane>', () => {
     expect(screen.getByTestId('session-chat-modal-stub')).toBeTruthy();
     fireEvent.click(screen.getByTestId('session-chat-modal-close'));
     await waitFor(() => expect(lastQuery()).not.toContain('opcsession='));
+  });
+
+  it('the detail Open action launches the shared work-item popup for a needs-human item', async () => {
+    seedAttention([
+      mkItem('work-item-needs-human:WI-42', {
+        kind: 'work-item-needs-human',
+        ref: { kind: 'work-item-needs-human', workItemId: 'WI-42', itemKind: 'change' },
+      }),
+    ]);
+    const { lastQuery } = renderPane('?opcis=work-item-needs-human%3AWI-42');
+    fireEvent.click(screen.getByTestId('stub-open'));
+    await waitFor(() => expect(lastQuery()).toContain('wpop=papercusp%3A%3AWI-42'));
+  });
+
+  it('the detail Message owner action focuses the live agent session instead of showing a toast', () => {
+    seedAttention([mkItem('wall-1', { ownerAgentId: 'su-live-1', ownerLabel: 'su · live-1' })]);
+    renderPane('?opcis=wall-1');
+    fireEvent.click(screen.getByTestId('stub-message-owner'));
+    expect(screen.getByTestId('session-chat-modal-stub').getAttribute('data-owner')).toBe('su-live-1');
   });
 
   it('Discuss stages a Papercup chat seed and flips back to the chat view', () => {
