@@ -21,6 +21,9 @@ describe('capability:bash — repository search scope guidance', () => {
     const guidance = (bashTool as unknown as GuidanceTool).guidance?.when ?? '';
 
     expect(guidance).toContain(RIPGREP_SCOPE_GUIDANCE);
+    expect(guidance).toContain('prefer ripgrep (`rg`)');
+    expect(guidance).toContain('`grep`/`grep -E`');
+    expect(guidance).toContain('fall back to `grep -F`');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');
     expect(guidance).toContain('apps/operator/public/internal/docs');
