@@ -47,6 +47,7 @@ import {
 } from 'nuqs';
 import {
   ArrowLeft,
+  ClipboardList,
   ChevronRight,
   Inbox as InboxIcon,
   MessageCircle,
@@ -175,6 +176,14 @@ function attentionWorkItemId(i: AttentionItem): string | null {
     default:
       return null;
   }
+}
+
+function InboxRowIcon({ kind }: { kind: AttentionItem['kind'] }) {
+  if (kind === 'plan-item') return <ClipboardList size={17} aria-hidden="true" />;
+  if (kind === 'blocked-session' || kind === 'conversation') {
+    return <MessageCircle size={17} aria-hidden="true" />;
+  }
+  return <InboxIcon size={17} aria-hidden="true" />;
 }
 
 export default function InboxPane({ onDiscussInChat }: {
@@ -388,22 +397,6 @@ export default function InboxPane({ onDiscussInChat }: {
           {counts.needs}
         </span>
       </header>
-      <div className="op-inbox__chips" aria-label="Inbox filter">
-        {FILTERS.map((f) => (
-          <button
-            key={f}
-            type="button"
-            className={`op-inbox__chip${filter === f ? ' is-active' : ''}`}
-            aria-pressed={filter === f}
-            data-testid={`inbox-filter-${f}`}
-            onClick={() => void setFilter(f)}
-          >
-            {FILTER_LABEL[f]}
-            <span className="op-inbox__chip-count">{counts[f]}</span>
-          </button>
-        ))}
-      </div>
-
       {/* Search + collapsible kind-facet filter (mimics the Queue's QueueFilterBar). */}
       <div className="op-inbox__toolbar">
         <div className="op-inbox__search">
@@ -442,6 +435,22 @@ export default function InboxPane({ onDiscussInChat }: {
             <span className="op-inbox__filter-active">{activeFilterCount}</span>
           ) : null}
         </button>
+      </div>
+
+      <div className="op-inbox__chips" aria-label="Inbox filter">
+        {FILTERS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`op-inbox__chip${filter === f ? ' is-active' : ''}`}
+            aria-pressed={filter === f}
+            data-testid={`inbox-filter-${f}`}
+            onClick={() => void setFilter(f)}
+          >
+            {FILTER_LABEL[f]}
+            <span className="op-inbox__chip-count">{counts[f]}</span>
+          </button>
+        ))}
       </div>
 
       {filtersOpen && kindFacets.length > 0 ? (
@@ -524,6 +533,9 @@ export default function InboxPane({ onDiscussInChat }: {
                 }}
               >
                 <div className={`op-inbox__row op-inbox__row--${tier}${isSel ? ' is-selected' : ''}`}>
+              <span className="op-inbox__row-icon" aria-hidden="true">
+                <InboxRowIcon kind={i.kind} />
+              </span>
               {/* A `div` (not `button`) — the row nests a real chat-launch
                   <button>, and nested interactive elements are invalid HTML. */}
               <div
