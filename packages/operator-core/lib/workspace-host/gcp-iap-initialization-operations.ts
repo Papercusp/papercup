@@ -46,9 +46,7 @@ export interface GcpIapWorkspaceHostInitializationProcessResult {
 }
 
 export interface GcpIapWorkspaceHostInitializationCommandRunner {
-  run(
-    command: GcpIapWorkspaceHostInitializationCommand,
-  ): Promise<GcpIapWorkspaceHostInitializationProcessResult>;
+  run(command: GcpIapWorkspaceHostInitializationCommand): Promise<GcpIapWorkspaceHostInitializationProcessResult>;
 }
 
 export interface NodeGcpIapWorkspaceHostInitializationRunnerOptions {
@@ -177,9 +175,7 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
 }
 
 /** Real process runner with bounded output and secret-safe failures. */
-export class NodeGcpIapWorkspaceHostInitializationCommandRunner
-  implements GcpIapWorkspaceHostInitializationCommandRunner
-{
+export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIapWorkspaceHostInitializationCommandRunner {
   private readonly spawn: typeof nodeSpawn;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
@@ -256,7 +252,10 @@ function parseResponse(stdout: string, stepId: string): WorkspaceHostInitializat
   } catch {
     throw new Error('GCP IAP initializer returned invalid JSON');
   }
-  requireCondition(candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate), 'GCP IAP initializer returned an invalid response');
+  requireCondition(
+    candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate),
+    'GCP IAP initializer returned an invalid response',
+  );
   const response = candidate as Partial<RemoteInitializationResponse>;
   requireCondition(
     response.protocolVersion === GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
@@ -286,9 +285,7 @@ function parseResponse(stdout: string, stepId: string): WorkspaceHostInitializat
 }
 
 /** Concrete capability-declaring adapter for the signed remote initializer. */
-export class GcpIapWorkspaceHostInitializationOperations
-  implements WorkspaceHostInitializationHostOperations
-{
+export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHostInitializationHostOperations {
   readonly supportedStepKinds = WORKSPACE_HOST_INITIALIZATION_STEP_KINDS;
 
   private readonly profile: GcpIapWorkspaceHostInitializationProfile;
@@ -296,16 +293,13 @@ export class GcpIapWorkspaceHostInitializationOperations
 
   constructor(
     profile: GcpIapWorkspaceHostInitializationProfile,
-    runner: GcpIapWorkspaceHostInitializationCommandRunner =
-      new NodeGcpIapWorkspaceHostInitializationCommandRunner(),
+    runner: GcpIapWorkspaceHostInitializationCommandRunner = new NodeGcpIapWorkspaceHostInitializationCommandRunner(),
   ) {
     this.profile = profile;
     this.runner = runner;
   }
 
-  async execute(
-    step: WorkspaceHostInitializationStep,
-  ): Promise<WorkspaceHostInitializationHostOperationResult> {
+  async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult> {
     const command = buildGcpIapWorkspaceHostInitializationCommand(this.profile, step);
     const result = await this.runner.run(command);
     if (result.exitCode !== 0) {
