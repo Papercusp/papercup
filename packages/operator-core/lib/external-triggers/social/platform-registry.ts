@@ -130,6 +130,20 @@ export interface SocialPlatformRow {
   write: {
     verbs: SocialWriteVerb[];
     idempotency: SocialWriteIdempotency;
+    /**
+     * ISO date the WRITE path specifically was verified against the cited
+     * sources, or null.
+     *
+     * Separate from the row-level `verifiedAt` because the two can genuinely
+     * diverge, and Bluesky is exactly that case: its read stream is fully
+     * specified by atproto.com while docs.bsky.app now 301s to a client-rendered
+     * host, so the createRecord shape and the app-password-vs-OAuth model are
+     * unread (D-005 residue). Before this field existed that residue lived only
+     * in `notes` prose, which no code can enforce — so a write verb was one
+     * forgetful moment away from being issued against unverified facts.
+     * `assertSocialWriteAllowed` refuses a null.
+     */
+    verifiedAt: string | null;
     notes?: string;
   };
   limits: SocialRateBudget;
@@ -165,7 +179,9 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     write: {
       verbs: ['reply', 'post', 'delete'],
       idempotency: 'unknown',
-      notes: 'Write path unverified (D-005 residue). Verbs are declared but gated by verifiedAt on the write half.',
+      verifiedAt: null,
+      notes:
+        'Write path UNVERIFIED (D-005 residue): docs.bsky.app 301s to bsky.network, which renders client-side and returns an empty body to fetch, so the createRecord / app.bsky.feed.post shape and the app-password-vs-OAuth model are unread. The verbs listed here are what the platform is expected to support, NOT what we have confirmed how to call — which is precisely why write.verifiedAt is null and assertSocialWriteAllowed refuses. The READ half is fully specified and unblocked.',
     },
     limits: {
       budgetHeaders: ['Retry-After'],
@@ -198,6 +214,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     write: {
       verbs: ['reply', 'post', 'delete'],
       idempotency: 'header',
+      verifiedAt: '2026-08-23',
       notes:
         'POST /api/v1/statuses; reply via in_reply_to_id; visibility is one of public|unlisted|private|direct. Send an Idempotency-Key header on EVERY write — it is retained for up to an hour and is what stops a retry from double-posting.',
     },
@@ -224,6 +241,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     write: {
       verbs: ['reply', 'post', 'delete'],
       idempotency: 'none',
+      verifiedAt: '2026-08-23',
       notes: 'No documented idempotency mechanism, so the adapter must carry its own write-dedupe guard.',
     },
     limits: {
@@ -249,7 +267,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
         'Intended to ride the SAME Google Workspace OAuth source as the landed Gmail and Calendar lanes (external-triggers D-010 one-credential-path pattern) — a scope addition with a documented consent upgrade, never a second credential path.',
     },
     read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply'], idempotency: 'unknown' },
+    write: { verbs: ['reply'], idempotency: 'unknown', verifiedAt: null },
     limits: { notes: 'Quota-unit budget unverified.' },
     blockedOn: 'verification: Wave B just-in-time verification has not run (D-005)',
   },
@@ -262,7 +280,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     sources: [],
     auth: { mode: 'app-review', scopes: [] },
     read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply', 'post'], idempotency: 'unknown' },
+    write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
     limits: {},
     blockedOn: 'owner: Meta app review (identity, legal and business verification; multi-week lead time)',
   },
@@ -280,7 +298,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
       backfill:
         'Comment webhooks are unusable without public ingress (D-003), so this is poll+cursor. If measured poll latency cannot serve comment triage, that measurement is the documented trigger to reopen the Svix decision.',
     },
-    write: { verbs: ['reply', 'post'], idempotency: 'unknown' },
+    write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
     limits: {},
     blockedOn: 'owner: Meta app review',
   },
@@ -293,7 +311,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     sources: [],
     auth: { mode: 'app-review', scopes: [] },
     read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply', 'post'], idempotency: 'unknown' },
+    write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
     limits: {},
     blockedOn: 'owner: Meta app review (shares the Meta app identity with Instagram and Facebook Pages)',
   },
@@ -306,7 +324,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     sources: [],
     auth: { mode: 'app-review', scopes: [] },
     read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['post'], idempotency: 'unknown' },
+    write: { verbs: ['post'], idempotency: 'unknown', verifiedAt: null },
     limits: {},
     blockedOn: 'owner: partner review for organization/page access; personal-profile posting may be self-serve (unverified)',
   },
@@ -319,7 +337,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     sources: [],
     auth: { mode: 'app-review', scopes: [] },
     read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['post'], idempotency: 'unknown' },
+    write: { verbs: ['post'], idempotency: 'unknown', verifiedAt: null },
     limits: {},
     blockedOn: 'owner: TikTok audit — unaudited apps cannot direct-publish, so v1 targets the draft/inbox path',
   },
@@ -332,7 +350,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     sources: [],
     auth: { mode: 'paid-tier', scopes: [] },
     read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply', 'post', 'delete'], idempotency: 'unknown' },
+    write: { verbs: ['reply', 'post', 'delete'], idempotency: 'unknown', verifiedAt: null },
     limits: {},
     policyNotes:
       'D-002 rejected the alternatives on record: no scraping or unofficial client (against terms, and it would be the only integration not riding a sanctioned API), and no free-tier write-only adapter (it cannot serve the mention-triage or comment-digest workflows, so it would ship a hollow row that reads as support).',
@@ -362,7 +380,12 @@ export function isSocialPlatformVerified(row: SocialPlatformRow): boolean {
 
 export class SocialPlatformUnusableError extends Error {
   readonly platformId: string;
-  readonly reason: 'unknown-platform' | 'unverified' | 'owner-blocked';
+  readonly reason:
+    | 'unknown-platform'
+    | 'unverified'
+    | 'owner-blocked'
+    | 'write-unverified'
+    | 'write-verb-unsupported';
 
   constructor(platformId: string, reason: SocialPlatformUnusableError['reason'], detail: string) {
     super(`social_platform_unusable:${platformId}:${reason}: ${detail}`);
@@ -395,6 +418,46 @@ export function assertSocialPlatformUsable(id: string): SocialPlatformRow {
   }
   if (row.blockedOn) {
     throw new SocialPlatformUnusableError(id, 'owner-blocked', row.blockedOn);
+  }
+  return row;
+}
+
+/** True when the WRITE path specifically has been verified against its sources. */
+export function isSocialWriteVerified(row: SocialPlatformRow): boolean {
+  return typeof row.write.verifiedAt === 'string' && row.write.verifiedAt.length > 0;
+}
+
+/**
+ * Resolve a platform for a WRITE, refusing anything we cannot correctly call.
+ *
+ * Stricter than `assertSocialPlatformUsable` in one specific way, and the
+ * distinction is the whole reason this exists: a row can be verified for
+ * READING while its write path is not. Bluesky is that case today — the event
+ * stream is exhaustively specified, so the ingest adapter is buildable now,
+ * while the createRecord shape is unread and any write we emitted would be a
+ * guess dressed as an integration.
+ *
+ * Failing here is CHEAP and loud. Not failing here means discovering the guess
+ * at the moment it publishes to the owner's real public identity, where it is
+ * neither cheap nor reversible.
+ */
+export function assertSocialWriteAllowed(id: string, verb: SocialWriteVerb): SocialPlatformRow {
+  const row = assertSocialPlatformUsable(id);
+  if (!row.write.verbs.includes(verb)) {
+    throw new SocialPlatformUnusableError(
+      id,
+      'write-verb-unsupported',
+      `platform declares [${row.write.verbs.join(', ')}], not '${verb}'`,
+    );
+  }
+  if (!isSocialWriteVerified(row)) {
+    throw new SocialPlatformUnusableError(
+      id,
+      'write-unverified',
+      `the row is verified for reading but its WRITE path is not (write.verifiedAt is null)${
+        row.write.notes ? ` — ${row.write.notes}` : ''
+      }`,
+    );
   }
   return row;
 }
