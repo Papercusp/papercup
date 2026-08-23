@@ -157,6 +157,9 @@ export default defineTool({
         'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
           'media from intermediate tool calls is never emitted implicitly. ' +
+          'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +
+          '`generatedImage({ image_url: "data:image/...;base64,...", output_hint? })` appends a validated image; ' +
+          '`store(key, value)` / `load(key)` use explicit replay state seeded from bindings/inputs and returned with the result -- never hidden session memory. ' +
           'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
           'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
           'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
