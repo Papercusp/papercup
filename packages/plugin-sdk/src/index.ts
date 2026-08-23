@@ -698,6 +698,153 @@ export interface ManifestDependencies {
   events?: ManifestEventDependency[];
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ * Trigger packs (external-triggers-gmail-slack-2026-08-22 P-012).
+ *
+ * A trigger pack is PURE MANIFEST DATA carried by a normal plugin
+ * (`kind:'plugin'`, usually with no entry point). It packages the reusable
+ * half of an external workflow: which source/event feeds it, the plan template
+ * to instantiate, its declared inputs, and the default storm policy. It is
+ * deliberately NOT `kind:'pack'`: that discriminator means n>=1 executable
+ * code tools and the loader correctly rejects runtime/reaction surfaces there.
+ *
+ * Installation only makes this declaration available to the host. It never
+ * arms the binding; the existing trigger arm gate remains a separate,
+ * autonomy-governed action.
+ * ───────────────────────────────────────────────────────────────────── */
+
+export interface PluginTriggerPackSource {
+  /** Canonical trigger-source kind (`gmail`, `slack`, `gcal`, ...). */
+  kind: string;
+  /**
+   * Optional configSchema property that acquires the source credential through
+   * OAuth. When present, {@link validateTriggerPackDeclaration} requires the
+   * field to be secret + non-shareable + snapshot-stripped and requires matching
+   * inline/top-level OAuth provider + scopes declarations.
+   */
+  oauthField?: string;
+}
+
+export interface PluginTriggerPackPlan {
+  /** Relative path to the bundled structured plan template. */
+  path: string;
+  /** Plan-authored JSON Schema delivered with every instantiated template. */
+  inputSchema: Record<string, unknown>;
+}
+
+export interface PluginTriggerPackBinding {
+  /** Canonical `ext:<source-kind>:<event>` key or anchored pattern. */
+  eventPattern: string;
+  /** Payload matcher passed to the existing external-trigger binding engine. */
+  filter?: Record<string, unknown>;
+  /** Existing v1 storm-policy vocabulary. Empty/omitted means unbounded. */
+  stormPolicy?: {
+    maxRuns?: number;
+    windowSeconds?: number;
+  };
+}
+
+export interface PluginTriggerPack {
+  source: PluginTriggerPackSource;
+  plan: PluginTriggerPackPlan;
+  binding: PluginTriggerPackBinding;
+}
+
+function triggerPackObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function triggerPackScopes(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((scope): scope is string => typeof scope === 'string' && scope.length > 0)
+    : [];
+}
+
+/**
+ * Cross-field validation the JSON schema cannot express. The manifest schema
+ * proves the local shapes; this proves the references agree, so a pack cannot
+ * look installable while silently leaking its credential or requesting a
+ * different OAuth grant than the config UI displays.
+ */
+export function validateTriggerPackDeclaration(manifest: {
+  kind?: string;
+  triggerPack?: PluginTriggerPack;
+  configSchema?: Record<string, unknown>;
+  oauth?: PluginOAuthRequirement[];
+}): string[] {
+  const pack = manifest.triggerPack;
+  if (!pack) return [];
+
+  const issues: string[] = [];
+  if (manifest.kind === 'pack') {
+    issues.push('triggerPack must ride kind "plugin" — kind "pack" is reserved for executable code-tool packs');
+  }
+
+  const sourceKind = typeof pack.source?.kind === 'string' ? pack.source.kind.trim() : '';
+  const eventPattern = typeof pack.binding?.eventPattern === 'string'
+    ? pack.binding.eventPattern.trim()
+    : '';
+  if (sourceKind && eventPattern && !eventPattern.startsWith(`ext:${sourceKind}:`)) {
+    issues.push(`triggerPack.binding.eventPattern must start with "ext:${sourceKind}:"`);
+  }
+
+  const planPath = typeof pack.plan?.path === 'string' ? pack.plan.path : '';
+  const pathSegments = planPath.split('/');
+  if (
+    !planPath ||
+    planPath.startsWith('/') ||
+    planPath.includes('\\') ||
+    pathSegments.some((segment) => segment === '' || segment === '.' || segment === '..') ||
+    !planPath.endsWith('.md')
+  ) {
+    issues.push('triggerPack.plan.path must be a safe relative .md path');
+  }
+
+  const oauthField = typeof pack.source?.oauthField === 'string'
+    ? pack.source.oauthField.trim()
+    : '';
+  if (!oauthField) return issues;
+
+  const properties = triggerPackObject(triggerPackObject(manifest.configSchema).properties);
+  const field = triggerPackObject(properties[oauthField]);
+  if (Object.keys(field).length === 0) {
+    issues.push(`triggerPack.source.oauthField "${oauthField}" is absent from configSchema.properties`);
+    return issues;
+  }
+  if (field.secret !== true) {
+    issues.push(`configSchema.properties.${oauthField}.secret must be true`);
+  }
+  if (field.snapshotPolicy !== 'strip') {
+    issues.push(`configSchema.properties.${oauthField}.snapshotPolicy must be "strip"`);
+  }
+  if (field.shareable !== false) {
+    issues.push(`configSchema.properties.${oauthField}.shareable must be false`);
+  }
+
+  const inlineOauth = triggerPackObject(field.oauth);
+  const requirement = (manifest.oauth ?? []).find((candidate) => candidate.fieldName === oauthField);
+  if (!requirement) {
+    issues.push(`oauth[] must declare fieldName "${oauthField}"`);
+    return issues;
+  }
+  if (typeof inlineOauth.provider !== 'string' || inlineOauth.provider !== requirement.provider) {
+    issues.push(`configSchema.properties.${oauthField}.oauth.provider must match oauth[].provider`);
+  }
+  const inlineScopes = triggerPackScopes(inlineOauth.scopes).sort();
+  const declaredScopes = triggerPackScopes(requirement.scopes).sort();
+  if (declaredScopes.length === 0) {
+    issues.push(`oauth[] entry for "${oauthField}" must declare at least one scope`);
+  } else if (
+    inlineScopes.length !== declaredScopes.length ||
+    inlineScopes.some((scope, index) => scope !== declaredScopes[index])
+  ) {
+    issues.push(`configSchema.properties.${oauthField}.oauth.scopes must match oauth[].scopes`);
+  }
+  return issues;
+}
+
 
 /* ─────────────────────────────────────────────────────────────────────
  * Plugin schema — Postgres DDL the plugin owns.
@@ -949,6 +1096,12 @@ export interface Plugin {
    * `events` axis is D-003 / P-005. See {@link ManifestDependencies}.
    */
   dependencies?: ManifestDependencies;
+
+  /**
+   * Pure-data external source → plan-template package. Discovery exposes the
+   * descriptor after install; arming remains an explicit trigger action.
+   */
+  triggerPack?: PluginTriggerPack;
 
   /** Full-route UI mounted at /harness/<slug>. */
   ui?: UiContribution;
