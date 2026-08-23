@@ -33,8 +33,35 @@ import {
   type A11ySnapshot,
   type SnapshotOptions,
 } from './a11y-snapshot';
-import { computerExec, resolveBoundDisplay, type ComputerCtx } from './computer';
+import { captureScreenshotPng, computerExec, resolveBoundDisplay, type ComputerCtx } from './computer';
 import { planAction, xdotoolCommand, type DesktopTarget } from './desktop-driver';
+import { recordAction, renderLedgerLine } from './action-ledger';
+import { isRecording, noteRecordedAction } from './trajectory-recorder';
+
+/**
+ * Record an activation on the P-008 action ledger — and, when a P-009 recording is
+ * open, park its frame (D-013 §4).
+ *
+ * P-008 shipped the ledger on `capability:computer` only, so every AT-SPI
+ * activation was invisible to it: the ledger claimed to answer "what has this
+ * desktop been asked to do" while omitting exactly the path P-007 teaches agents to
+ * PREFER — the cheapest path was also the unrecorded one. A tree-driven trajectory
+ * would then record frames with no actions to explain them. The line is emitted
+ * like `capability:computer` emits it, so seq numbers stay dense in the transcript.
+ */
+async function recordActivation(
+  target: DesktopTarget,
+  input: { action: string; coordinate?: readonly [number, number]; ok: boolean; note?: string },
+  signal?: AbortSignal,
+): Promise<string> {
+  const entry = recordAction(target.display, { ...input, observed: 'none' });
+  if (isRecording(target.display)) {
+    await noteRecordedAction(target.display, entry, {
+      capture: () => captureScreenshotPng(target, signal),
+    });
+  }
+  return renderLedgerLine(entry);
+}
 
 /** Resolve the a11y bus a display advertises, or throw the loud refusal. */
 async function resolveBus(display: string, signal?: AbortSignal): Promise<string> {
@@ -126,11 +153,16 @@ export async function runClickElement(args: z.infer<typeof clickArgs>, ctx: Comp
   const parsed = parseA11yActionOutput(r.stdout.toString());
 
   if (parsed?.ok) {
+    const line = await recordActivation(
+      target,
+      { action: `click_element #${args.ref.replace(/^#/, '')}`, ok: true },
+      ctx.signal,
+    );
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Activated ${parsed.role ?? 'element'}${parsed.name ? ` "${parsed.name}"` : ''} (#${args.ref.replace(/^#/, '')}) via "${parsed.performed}". Call computer:observe again to see the result.`,
+          text: `${line}\nActivated ${parsed.role ?? 'element'}${parsed.name ? ` "${parsed.name}"` : ''} (#${args.ref.replace(/^#/, '')}) via "${parsed.performed}". Call computer:observe again to see the result.`,
         },
       ],
     };
@@ -165,17 +197,24 @@ export async function runClickElement(args: z.infer<typeof clickArgs>, ctx: Comp
   if (plan.kind !== 'xdotool') throw new Error('computer:click_element — unexpected plan');
   const clickCmd = xdotoolCommand(plan, target);
   const click = await computerExec(clickCmd.bin, clickCmd.args, { env: clickCmd.env, signal: ctx.signal });
+  const clickLedger = {
+    action: `click_element #${args.ref.replace(/^#/, '')}`,
+    coordinate: [x, y] as const,
+    note: 'pixel-fallback',
+  };
   if (click.status !== 0) {
+    const line = await recordActivation(target, { ...clickLedger, ok: false }, ctx.signal);
     return {
       isError: true,
-      content: [{ type: 'text' as const, text: `computer:click_element — pixel-click fallback failed (exit ${click.status}): ${click.stderr.slice(0, 200)}` }],
+      content: [{ type: 'text' as const, text: `${line}\ncomputer:click_element — pixel-click fallback failed (exit ${click.status}): ${click.stderr.slice(0, 200)}` }],
     };
   }
+  const line = await recordActivation(target, { ...clickLedger, ok: true }, ctx.signal);
   return {
     content: [
       {
         type: 'text' as const,
-        text: `Clicked ${node.role}${node.name ? ` "${node.name}"` : ''} at (${x}, ${y}) — it exposed no activating action, so this was a pixel click at its centre. Call computer:observe to see the result.`,
+        text: `${line}\nClicked ${node.role}${node.name ? ` "${node.name}"` : ''} at (${x}, ${y}) — it exposed no activating action, so this was a pixel click at its centre. Call computer:observe to see the result.`,
       },
     ],
   };

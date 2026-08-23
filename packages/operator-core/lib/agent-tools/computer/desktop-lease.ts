@@ -21,6 +21,7 @@ import {
 } from './desktop-provisioner';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resetLedger } from './action-ledger';
+import { stopRecording } from './trajectory-recorder';
 import {
   registerDesktopSession,
   markDesktopReady,
@@ -161,6 +162,9 @@ export async function releaseHiveDesktop(potSlug: string): Promise<void> {
   // P-008: display numbers are recycled, so the next lease on `:110` would inherit
   // this one's step numbers and diagnostics history if the ledger were not dropped.
   resetLedger(d.display);
+  // P-009: same reason, one level up — an open recording left on a recycled display
+  // would keep appending the NEXT lease's frames to the previous lease's trajectory.
+  stopRecording(d.display, 'desktop-released');
   await closeLeaseInRegistry(potSlug);
   await d.release();
 }

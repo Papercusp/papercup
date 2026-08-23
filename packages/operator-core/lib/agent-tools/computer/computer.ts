@@ -44,7 +44,8 @@ import {
 } from '../../desktop/desktop-session-registry';
 import { scrubExecEnv } from '../capability/exec-sandbox';
 import { snapshotA11yTree } from './a11y-snapshot';
-import { recordAction, renderLedgerLine, type ObservedAs } from './action-ledger';
+import { recordAction, renderLedgerLine, type ActionLedgerEntry, type ObservedAs } from './action-ledger';
+import { isRecording, noteRecordedAction } from './trajectory-recorder';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
 const DEFAULT_W = 1024;
@@ -276,14 +277,26 @@ export function rewriteCursorPosition(raw: string, target: DesktopTarget): strin
     .join('\n');
 }
 
-/** Capture the sandbox screen → an MCP image content block (base64 PNG). */
-async function screenshot(target: DesktopTarget, signal?: AbortSignal): Promise<{ type: 'image'; data: string; mimeType: string }> {
+/**
+ * Capture the sandbox screen as raw PNG bytes.
+ *
+ * Split out from `screenshot()` for P-009: a trajectory recording writes the PNG
+ * to disk, so making it round-trip through base64 and back would cost ~33% extra
+ * allocation per recorded step for nothing.
+ */
+export async function captureScreenshotPng(target: DesktopTarget, signal?: AbortSignal): Promise<Buffer> {
   const cap = captureCommand(target);
   const r = await execImpl(cap.bin, cap.args, { signal });
   if (!r.stdout || r.stdout.length < 8 || r.stdout.slice(0, 8).toString('hex') !== '89504e470d0a1a0a') {
     throw new Error(`capability:computer — screenshot capture failed (exit ${r.status}): ${r.stderr.slice(0, 200)}`);
   }
-  return { type: 'image', data: r.stdout.toString('base64'), mimeType: 'image/png' };
+  return r.stdout;
+}
+
+/** Capture the sandbox screen → an MCP image content block (base64 PNG). */
+async function screenshot(target: DesktopTarget, signal?: AbortSignal): Promise<{ type: 'image'; data: string; mimeType: string }> {
+  const png = await captureScreenshotPng(target, signal);
+  return { type: 'image', data: png.toString('base64'), mimeType: 'image/png' };
 }
 
 const computerArgs = z.object({
@@ -380,6 +393,32 @@ interface ComputerToolResult {
 }
 
 /**
+ * P-009: park this action's frame on any OPEN recording — out of band (D-013 §2).
+ *
+ * Two properties matter here and are both load-bearing:
+ *   - it adds NOTHING to `content`, so a recording is invisible in the agent's
+ *     context and cannot re-introduce the per-step screenshot P-008 removed; and
+ *   - when the observation already produced pixels it hands the recorder THOSE
+ *     bytes, so a recorded step costs one capture, not two — and the recorded
+ *     frame is provably the image the model reasoned about.
+ * `isRecording` is a Map lookup, so the not-recording path (the overwhelming
+ * majority) costs nothing measurable.
+ */
+async function noteFrame(
+  target: DesktopTarget,
+  entry: ActionLedgerEntry,
+  content: ComputerToolResult['content'],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!isRecording(target.display)) return;
+  const shot = content.find((c): c is { type: 'image'; data: string; mimeType: string } => c.type === 'image');
+  await noteRecordedAction(target.display, entry, {
+    ...(shot ? { pngBase64: shot.data } : {}),
+    capture: () => captureScreenshotPng(target, signal),
+  });
+}
+
+/**
  * The capability:computer handler — extracted + exported so it unit-tests
  * directly (with an injected exec seam) without the dispatch layer or a live X.
  */
@@ -418,6 +457,7 @@ export async function runComputerAction(
       observed: obs.observed,
       ...(obs.note ? { note: obs.note } : {}),
     });
+    await noteFrame(target, entry, obs.content, signal);
     return { content: [{ type: 'text', text: renderLedgerLine(entry) }, ...obs.content] };
   }
 
@@ -448,6 +488,9 @@ export async function runComputerAction(
       observed: 'none',
       note: `exit ${r.status}`,
     });
+    // A FAILED step is exactly the frame a human reviewing the trajectory wants,
+    // so record it too — there are no pixels in this result, so this one captures.
+    await noteFrame(target, entry, [], signal);
     return {
       isError: true,
       content: [
@@ -466,6 +509,7 @@ export async function runComputerAction(
     observed: obs.observed,
     ...(obs.note ? { note: obs.note } : {}),
   });
+  await noteFrame(target, entry, obs.content, signal);
   return { content: [{ type: 'text', text: renderLedgerLine(entry) }, ...obs.content] };
 }
 
