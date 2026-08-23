@@ -38,6 +38,20 @@ describe('Vitest config enrollment guard', () => {
     expect(PLAIN_CONFIG_EXEMPTIONS.has('libs/generic/new-package/vitest.config.ts')).toBe(false);
   });
 
+  it('does not treat reporter tokens quoted in config data as live enrollment code', () => {
+    expect(
+      isReporterEnrolled(
+        [
+          "import { defineVitestConfig } from '@papercusp/test-config/vitest-config';",
+          "const explanation = 'defineVitestConfig(';",
+          "const reporterName = 'ADMIN_TEST_RUNS_REPORTER_PATH';",
+          'export default {};',
+        ].join('\n'),
+        'vitest.config.ts',
+      ),
+    ).toBe(false);
+  });
+
   it('keeps every declared workspace config enrolled at repository HEAD', () => {
     const findings = findUnenrolledConfigs(collectVitestConfigs());
     expect(findings, findings.join('\n')).toEqual([]);

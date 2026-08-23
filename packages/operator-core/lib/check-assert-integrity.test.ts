@@ -510,6 +510,17 @@ describe('check-assert-integrity: R7 discarded reading', () => {
     expect(out).toEqual([]);
   });
 
+  it('does NOT classify an arithmetic counter update as a command measurement', () => {
+    const out = r7(
+      [
+        '  processed=$((processed + 1))',
+        '  [ "$valid" = 1 ] || return 1',
+        '  printf "processed=%s\\n" "$processed"',
+      ].join('\n'),
+    );
+    expect(out).toEqual([]);
+  });
+
   it('FAIL-CLOSED: a longer arithmetic identifier is not a reference to the measured value', () => {
     const out = r7(
       [

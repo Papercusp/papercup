@@ -309,6 +309,10 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
         // line windows; account for the real tool surface without widening
         // this answer-equivalent text family.
         'content_indexes',
+        // Evidence-class selection is another stable scratch-reference mode.
+        // It is mutually exclusive with line/byte windows and does not widen
+        // the answer-equivalent file-read family.
+        'evidence_class',
         'file_path',
         'limit',
         'offset',
@@ -316,7 +320,9 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
         'uri',
       ],
       'the four text-output pairs map directly onto file_path/offset/limit/tail. `uri` is the result-door ' +
-        '`papercusp://scratch` alias for file_path and does not widen that text operation family. `tail` in particular was ADDED ' +
+        '`papercusp://scratch` alias for file_path and does not widen that text operation family. ' +
+        '`content_indexes` and `evidence_class` select structured values from a stable scratch reference and are ' +
+        'mutually exclusive with the text windows, so neither changes this family. `tail` in particular was ADDED ' +
         'to close the family\'s real gap (1,752 `tail -n N FILE` atoms across 63 sessions had no tool form); losing ' +
         'it would silently restore that gap while the pair still records `equivalent`. The byte args are accounted ' +
         'for but deliberately remain outside this family because their structured base64 answer is not raw-byte ' +

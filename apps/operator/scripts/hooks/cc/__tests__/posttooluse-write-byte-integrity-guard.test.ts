@@ -10,6 +10,8 @@ import { resolve } from 'node:path';
 const HOOK = resolve(__dirname, '../posttooluse-write-byte-integrity-guard.mjs');
 
 async function hookMod() {
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore -- plain runtime hook intentionally exercised from TypeScript; it has no declaration file.
   return (await import(`file://${HOOK}`)) as typeof import('../posttooluse-write-byte-integrity-guard.mjs');
 }
 

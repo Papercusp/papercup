@@ -35,6 +35,13 @@ const ROOT = repoRoot();
 // even when nothing goes wrong. Defaults to the real shipping script.
 const GATE_PATH =
   process.env.PROBE_SCRIPT ?? join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
+const FEDERATION_ASSERTS_PATH = join(
+  ROOT,
+  'papercusp-desktop',
+  'bin',
+  'lib',
+  'federation-asserts.sh',
+);
 const LOCAL_MATRIX_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'local-matrix.sh');
 const MATRIX_PATH = join(
   ROOT,
@@ -43,6 +50,7 @@ const MATRIX_PATH = join(
   'two-instance-content-matrix-smoke.sh',
 );
 const gate = readFileSync(GATE_PATH, 'utf8');
+const federationAsserts = readFileSync(FEDERATION_ASSERTS_PATH, 'utf8');
 const localMatrix = readFileSync(LOCAL_MATRIX_PATH, 'utf8');
 const matrix = readFileSync(MATRIX_PATH, 'utf8');
 
@@ -54,6 +62,10 @@ function extractFnFrom(source: string, name: string): string {
 
 function extractFn(name: string): string {
   return extractFnFrom(gate, name);
+}
+
+function extractFederationFn(name: string): string {
+  return extractFnFrom(federationAsserts, name);
 }
 
 function runPreflight(opts: {
@@ -109,6 +121,8 @@ printf '{"user":"%s","ok":true,"cleanedUp":true}\\n' "$PAPERCUSP_ATTEST_LOGIN"
     `DESKTOP_DIR=${JSON.stringify(join(ROOT, 'papercusp-desktop'))}`,
     `P_A_USER=${JSON.stringify(opts.a ?? 'papercupai')}`,
     `P_B_USER=${JSON.stringify(opts.b ?? 'aviynw')}`,
+    extractFederationFn('_fed_github_user_with_retry'),
+    extractFederationFn('fed_github_login_with_retry'),
     extractFn('preflight_attestation_write_account'),
     extractFn('preflight_attestation_write_accounts'),
     'preflight_attestation_write_accounts',
@@ -123,6 +137,7 @@ printf '{"user":"%s","ok":true,"cleanedUp":true}\\n' "$PAPERCUSP_ATTEST_LOGIN"
       FAIL_USER: opts.failUser ?? '',
       MISMATCH_USER: opts.mismatchUser ?? '',
       UNAVAILABLE_USER: opts.unavailableUser ?? '',
+      ATTESTATION_IDENTITY_RETRY_DELAY_SEC: '0',
     },
   });
   return {
@@ -246,7 +261,7 @@ fi
     'set -uo pipefail',
     'P_A_USER=papercupai',
     'P_B_USER=aviynw',
-    extractFn('preflight_github_rest_accounts'),
+    extractFederationFn('preflight_github_rest_accounts'),
     'preflight_github_rest_accounts',
   ].join('\n');
   const result = spawnSync('bash', ['-c', script], {

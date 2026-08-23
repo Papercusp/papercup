@@ -221,6 +221,17 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'It deliberately does not route through the workspace @papercusp/search engine: that engine ' +
       'has neither the vault grant boundary nor its scope/participant/time filters.',
   },
+  {
+    id: 'social:search',
+    entry: 'agent-tools/social/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'Delegates to searchSocialPosts → searchPersonalDocuments, the Personal Vault\'s ' +
+      'authorization-gated first-party lexical + EmbeddingGemma RRF query. It deliberately stays ' +
+      'off the workspace @papercusp/search engine for the same reason as personal:search: that ' +
+      'engine has neither the owner-private grant boundary nor the social scope, participant and ' +
+      'time filters. This is hybrid retrieval by contract, but through the private-vault engine.',
+  },
 
   // ─── NOT in the `*:search` naming class — added by hand (P-030) ───────────
   // Discovery cannot see any of these. Each was traced with the same import

@@ -377,7 +377,7 @@ function discardedReadings(file, text) {
     const body = fn.body.split('\n');
     for (let i = 0; i < body.length; i++) {
       const m = body[i].match(
-        /^\s*(?:local\s+|declare\s+-\w+\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\()/,
+        /^\s*(?:local\s+|declare\s+-\w+\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\((?!\()/,
       );
       if (!m) continue;
       const v = m[1];

@@ -11,6 +11,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VITEST_CONFIG_NAME = /^vitest\.config\.[^/]+$/;
@@ -48,18 +49,14 @@ function normalizePath(filePath) {
   return filePath.split(sep).join('/');
 }
 
-function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-}
-
 /**
  * Return true when a config wires the shared reporter, either through the base
  * helper or by explicitly importing the reporter path (the established app
  * config pattern).
  */
-export function isReporterEnrolled(source) {
-  const code = stripComments(source);
-  const hasBaseImport = /import\s*\{[\s\S]*?\bdefineVitestConfig\b[\s\S]*?\}\s*from\s*['"][^'"]+['"]/.test(code) &&
+export function isReporterEnrolled(source, fileName) {
+  const code = stripCommentsAndStrings(source, fileName);
+  const hasBaseImport = /import\s*\{[\s\S]*?\bdefineVitestConfig\b[\s\S]*?\}\s*from\s*['"][^'"]*['"]/.test(code) &&
     /\bdefineVitestConfig\s*\(/.test(code);
   const hasExplicitReporter = /\bADMIN_TEST_RUNS_REPORTER_PATH\b/.test(code);
   return hasBaseImport || hasExplicitReporter;
@@ -72,7 +69,7 @@ export function isReporterEnrolled(source) {
  */
 export function findUnenrolledConfigs(configs) {
   return configs
-    .filter(({ path, content }) => !PLAIN_CONFIG_EXEMPTIONS.has(normalizePath(path)) && !isReporterEnrolled(content))
+    .filter(({ path, content }) => !PLAIN_CONFIG_EXEMPTIONS.has(normalizePath(path)) && !isReporterEnrolled(content, path))
     .map(({ path }) => normalizePath(path))
     .sort();
 }
