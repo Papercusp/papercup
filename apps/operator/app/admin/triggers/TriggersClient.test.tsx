@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import TriggersClient from "./TriggersClient";
 
@@ -38,7 +38,9 @@ const payload = {
       kind: "reddit",
       status: "connected",
       config: {},
-      credentialRef: "reddit-oauth:fixture",
+      // Deliberately unconnected: keeps "credential: configured" unique to the
+      // gmail row, and matches today's reality (no social credential is wired).
+      credentialRef: null,
       cursor: { newestFullname: "t3_abc123" },
       lastConnectedAt: "2026-08-22T00:00:00.000Z",
       lastError: null,
@@ -104,6 +106,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Without this, every render in this file stayed mounted and queries matched
+  // across accumulated trees. It went unnoticed while only ONE test rendered
+  // the sources view; a second one turns every getBy into "found multiple".
+  cleanup();
   (payload.recentRuns as unknown[]).splice(0);
   vi.unstubAllGlobals();
   vi.clearAllMocks();
