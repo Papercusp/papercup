@@ -230,11 +230,18 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
     // Boot-time wiring SUCCEEDS here (the common path). The re-key must then be a
     // no-op — a second drain loop would double-append + double-GC the same outbox.
     let wireCalls = 0;
+    let notify: ((payload: string) => void) | undefined;
     const host = createSubstrateSidecarHost({
       bootHarnessImpl: (async () => fake.handle) as (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>,
       wireOutbox: async (h) => {
         wireCalls += 1;
-        const drain = startOutboxDrain(h, db.sql, { pollMs: 50 });
+        const drain = startOutboxDrain(h, db.sql, {
+          pollMs: 0,
+          listen: async (_channel, cb) => {
+            notify = cb;
+            return () => {};
+          },
+        });
         h.registerCloseHook(() => drain.stop());
       },
       wirePresence: async () => {},
@@ -251,6 +258,8 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
 
     // The boot-wired drain already drains a seeded row.
     await seedOutbox(db.sql, 'F-SIDECAR-2');
+    expect(notify).toBeTypeOf('function');
+    notify?.(`${WS}::${SLUG}`);
     await vi.waitFor(async () => expect(await undrainedCount(db.sql)).toBe(0), {
       timeout: 5000,
       interval: 50,
@@ -279,6 +288,7 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
       .fn<() => Promise<HiveRekeyBootDeps | null>>()
       .mockResolvedValueOnce(null) // boot-time: private harness, no Hive deps
       .mockResolvedValueOnce({ epochEncrypt } as HiveRekeyBootDeps); // post-rekey Hive
+    let notify: ((payload: string) => void) | undefined;
 
     const wireOutbox = vi.fn(async (h: BootedHarnessHandle) => {
       await wireOutboxForHarness(h, db.sql, {
@@ -288,8 +298,11 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
           startOutboxDrain(drainHandle, pg, {
             ...opts,
             fanout: undefined,
-            listen: undefined,
-            pollMs: 50,
+            listen: async (_channel, cb) => {
+              notify = cb;
+              return () => {};
+            },
+            pollMs: 0,
             _orphanCheckIntervalMs: -1,
             _backlogAgeStallMs: 0,
             _backlogSizeStallThreshold: 0,
@@ -332,6 +345,8 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
         (${WS}, ${SLUG}, 'harness_features_consolidated', 'put', 'F-SIDECAR-E1',
          ${db.sql.json(featureRow('F-SIDECAR-E1') as unknown as Parameters<typeof db.sql.json>[0])},
          ${Date.now() + 1}, ${null})`;
+    expect(notify).toBeTypeOf('function');
+    notify?.(`${WS}::${SLUG}`);
 
     await vi.waitFor(async () => expect(await undrainedCount(db.sql)).toBe(0), {
       timeout: 5000,
