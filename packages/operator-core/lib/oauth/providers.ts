@@ -451,6 +451,53 @@ export const FACEBOOK_ALLOWED_OAUTH_SCOPES = [
   ...INSTAGRAM_OAUTH_SCOPES,
 ] as const;
 
+/**
+ * Threads scopes (P-018).
+ *
+ * ⚠⚠ DELIBERATELY **NOT** ADDED TO `FACEBOOK_ALLOWED_OAUTH_SCOPES` ABOVE, AND
+ * THAT OMISSION IS THE POINT. Instagram's scopes belong there because the
+ * Facebook-Login flavor authorizes through Facebook Login against
+ * `graph.facebook.com`. Threads does not: its API host is `graph.threads.net`,
+ * and its own Get Started guide describes a separate "Authorization Window" and
+ * states that a Meta app configured for it has "2 app IDs and app secrets",
+ * instructing you to "use the Threads app ID and its corresponding app secret".
+ * Folding these strings into the Facebook consent surface would request Threads
+ * permissions from the wrong authorization server under the wrong app id.
+ *
+ * ⚠ NO PROVIDER WIRING IS CLAIMED HERE, ON PURPOSE. P-018 verified these SCOPE
+ * STRINGS against the permissions reference; it did NOT verify the Threads
+ * authorization and token ENDPOINTS, because the Get Started page names neither
+ * (it documents `GET /refresh_access_token` with no host and defers the rest to
+ * a page not read). Declaring a `threads` provider from an unverified endpoint
+ * guess is exactly the inherited-not-verified failure this plan exists to
+ * avoid, and it would fail at consent time rather than at build time. The
+ * remaining work is a NAMED gap — the authorization surface — rather than a
+ * silent one, and the platform is owner-blocked on Meta app review regardless.
+ *
+ * Every string below was resolved against the permissions REFERENCE, never
+ * against an endpoint page or the Threads overview — whose own scope list omits
+ * `threads_read_replies` entirely.
+ */
+export const THREADS_OAUTH_SCOPES = [
+  /** "get a user's Threads profile information and the media and text content that they posted". */
+  'threads_basic',
+  /** "create and publish content on behalf of a Threads profile". */
+  'threads_content_publish',
+  /** "create a reply on behalf of a Threads profile, hide or unhide replies to a thread". */
+  'threads_manage_replies',
+  /**
+   * "read replies to a user's thread".
+   *
+   * ⚠ THE SCOPE THE THREADS OVERVIEW NEVER NAMES. Its scope callouts run
+   * threads_basic / threads_content_publish / threads_manage_replies /
+   * threads_delete / threads_location_tagging, so an integration built from
+   * that page ships without the one permission its read path needs — and an
+   * under-privileged read on this surface returns EMPTY rather than erroring
+   * (D-027), so the symptom is "this profile has no replies", permanently.
+   */
+  'threads_read_replies',
+] as const;
+
 interface FacebookTokenBody {
   access_token?: string;
   expires_in?: number;

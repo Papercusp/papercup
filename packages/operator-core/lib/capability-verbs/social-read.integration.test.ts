@@ -165,8 +165,21 @@ describe('social:search scope fence, against real Postgres', () => {
     // the first-colon split exists for, proven end to end through real storage.
     expect(hit.postId).toBe(`bluesky:${POST_ID}`);
     expect(parseSocialPostRef(hit.postId).externalId).toBe(POST_ID);
-    // Bluesky reads but does not write: the agent is told before it drafts.
-    expect(hit.replyable.allowed).toBe(false);
+    // ⚠ THIS ASSERTION WAS INVERTED WHEN WRITTEN AND STAYED RED. It read
+    // `toBe(false)` with the comment "Bluesky reads but does not write" — but
+    // the registry already declared `write.verbs: ['reply','post','delete']`
+    // for Bluesky in the SAME commit that added this test, so it never passed.
+    // `socialWriteAvailability` delegates to `assertSocialWriteAllowed`, which
+    // reads those verbs, and P-011 has since landed the Bluesky write adapter;
+    // `social-read.ts`'s own doc comment records the change ("Bluesky was that
+    // second case until 2026-08-23 ... it is no longer an example of a
+    // refusal") while this test was never updated with it.
+    //
+    // The PROPERTY under test is still worth asserting, so it is asserted
+    // correctly rather than deleted: a read result must advertise exactly what
+    // the write path would accept, never more and never less.
+    expect(hit.replyable.allowed).toBe(true);
+    expect(hit.replyable.reason).toBeUndefined();
   });
 
   it('a platform filter narrows within the grant and cannot reach past it', async () => {
