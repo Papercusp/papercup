@@ -88,6 +88,22 @@ export function augmentedSpawnPath(cwd?: string): string {
       : process.env.HOME
         ? join(process.env.HOME, '.bun/bin')
         : '',
+    // ~/.papercusp/bin — the papercusp shim directory that `installPapercuspFiles`
+    // writes (psu, ptool, papercusp, psu-sentinel, and the `rg` entry point) and
+    // that `ensureBinOnPath` adds to the user's SHELL profile. A shell profile is
+    // not read by a scrubbed `bash -c` child, so until now every operator-spawned
+    // child — capability:bash, code:run, saved recipes, exec-sandbox — could not
+    // see anything installed there, while a human typing the same command could.
+    // That asymmetry is the whole shape of the four independent `rg: command not
+    // found` filings (D-001 of orchestration-surface-residue-drain-2026-08-23).
+    //
+    // DELIBERATELY LAST, and deliberately in `extra` (appended) rather than
+    // `prepend`: this directory also holds copies of binaries that resolve
+    // elsewhere — notably `omp`, whose canonical location the comment above pins
+    // to ~/.bun/bin. Appending it last means it can only ever SUPPLY a command
+    // nothing else on PATH provides, never SHADOW one, so adding it cannot change
+    // which `omp` (or node, or claude) a spawn already resolves.
+    process.env.HOME ? join(process.env.HOME, '.papercusp/bin') : '',
   ];
   const seen = new Set<string>();
   return [...prepend, ...(process.env.PATH ?? '').split(delimiter), ...extra]
