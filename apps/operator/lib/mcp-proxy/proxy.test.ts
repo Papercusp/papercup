@@ -24,6 +24,7 @@ import {
   shouldShedForInFlight,
   DEFAULT_MAX_IN_FLIGHT,
   isReservedControlPlaneCall,
+  isReservedControlPlanePath,
   shouldSkipDefaultFailureLog,
   shouldRotateFailureLog,
   type McpProxyTarget,

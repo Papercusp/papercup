@@ -704,6 +704,24 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
 // establish/prove a session, not every idempotent resources/prompts request.
 const RESERVED_CONTROL_PLANE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
 
+// psu launch/resume preflight uses plain REST rather than JSON-RPC. These calls
+// are the human/fleet entry point and must retain access to the reserve while
+// ordinary tool traffic is saturated. Heartbeat is intentionally absent: it is
+// a cheap repeating beat and should fail fast rather than consume a reserved slot.
+export const RESERVED_CONTROL_PLANE_PATHS = new Set([
+  '/api/adv/sessions/resumable',
+  '/api/agent-mcp/console/bootstrap-su/options',
+  '/api/agent-mcp/console/bootstrap-su',
+]);
+
+/** Match a REST control-plane path without letting query strings or a harmless
+ * trailing slash defeat the reserve classification. */
+export function isReservedControlPlanePath(requestPath: unknown): boolean {
+  if (typeof requestPath !== 'string') return false;
+  const path = requestPath.split('?')[0]?.replace(/\/+$/, '') || '/';
+  return RESERVED_CONTROL_PLANE_PATHS.has(path);
+}
+
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
  * deferred tool discovery, bounded diagnostics, loop arming, incident capture, file-lock inspection,
  * file-lock cancellation/release, and continuation checkpoint writes are liveness/control-plane traffic:
@@ -716,8 +734,10 @@ const RESERVED_CONTROL_PLANE_METHODS = new Set(['initialize', 'ping', 'tools/lis
  * ordinary traffic has saturated the proxy. The MCP
  * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
  * name; both are normalized through the shared tooldef helper before this narrow membership check.
- * Keep the reserved set deliberately narrow. */
-export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
+ * Keep the reserved set deliberately narrow. `requestPath` covers the small
+ * plain-REST bootstrap surface that cannot identify itself in a JSON-RPC body. */
+export function isReservedControlPlaneCall(rawBody: Buffer, requestPath?: string): boolean {
+  if (isReservedControlPlanePath(requestPath)) return true;
   try {
     const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
     // JSON-RPC permits a request body to contain a batch. Reserve the whole forward when
@@ -884,7 +904,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // this is what stops the congestion-collapse feedback loop the unbounded agent used to
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
-        const reservedControlPlane = isReservedControlPlaneCall(rawBody);
+        const reservedControlPlane = isReservedControlPlaneCall(rawBody, req.url);
         const admissionCeiling = reservedControlPlane
           ? maxInFlight
           : maxInFlight > 0
