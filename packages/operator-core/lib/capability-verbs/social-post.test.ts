@@ -67,15 +67,15 @@ const REDDIT_SOURCE = {
 };
 
 const BLUESKY_SOURCE = { ...REDDIT_SOURCE, id: 'src-bsky-1', kind: 'bluesky', credentialRef: 'cred-bsky-1' };
-/** Wave B, `blockedOn` an owner-side app review — refused by the registry gate. */
-const LINKEDIN_SOURCE = {
+/** Wave C, unverified and `blockedOn` an owner-side audit — refused by the registry gate. */
+const TIKTOK_SOURCE = {
   ...REDDIT_SOURCE,
-  id: 'src-li-1',
-  kind: 'linkedin',
-  credentialRef: 'cred-li-1',
+  id: 'src-tt-1',
+  kind: 'tiktok',
+  credentialRef: 'cred-tt-1',
 };
 
-function recordingAdapter(platform: 'reddit' | 'bluesky' | 'mastodon' | 'linkedin' = 'reddit') {
+function recordingAdapter(platform: 'reddit' | 'bluesky' | 'mastodon' | 'tiktok' = 'reddit') {
   const seen: SocialPostRequest[] = [];
   const adapter: SocialWriteAdapter = {
     platform,
@@ -231,18 +231,20 @@ describe('registry write gate — runs before the adapter lookup', () => {
     // platform the registry refuses. Registering one here is what makes the
     // claim falsifiable — if the lookup ran first, `seen` would be non-empty.
     //
-    // This used to be asserted against Bluesky, whose write path was unread.
-    // P-011 verified it, so the subject moved to a platform that is still
-    // refused (LinkedIn is `blockedOn` an owner-side app review). The property
-    // is unchanged; only the reason for the refusal is.
-    const { adapter, seen } = recordingAdapter('linkedin');
+    // The subject has moved twice, for the same happy reason each time: it must
+    // be a platform the registry still refuses. It was Bluesky until P-011
+    // verified its write path, then LinkedIn until P-021 verified ITS posting
+    // grant as self-serve. TikTok is now the standing example (unverified,
+    // `blockedOn` an owner-side audit). The property is unchanged; only the
+    // reason for the refusal is.
+    const { adapter, seen } = recordingAdapter('tiktok');
     registerSocialWriteAdapter(adapter);
-    expect(getSocialWriteAdapter('linkedin')).toBeDefined();
-    const sql = fakeSql([STANDING_UNKNOWN, [LINKEDIN_SOURCE]]);
+    expect(getSocialWriteAdapter('tiktok')).toBeDefined();
+    const sql = fakeSql([STANDING_UNKNOWN, [TIKTOK_SOURCE]]);
 
     await expect(
-      post(sql, { destination: 'linkedin:urn:li:share:123' }),
-    ).rejects.toThrow(/social_platform_unusable:linkedin/);
+      post(sql, { destination: 'tiktok:1234567890' }),
+    ).rejects.toThrow(/social_platform_unusable:tiktok/);
     expect(seen, 'the adapter must not be consulted for a refused platform').toHaveLength(0);
   });
 

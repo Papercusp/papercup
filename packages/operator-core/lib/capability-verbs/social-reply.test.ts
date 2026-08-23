@@ -197,7 +197,11 @@ describe('social:reply — gate ORDER', () => {
         ref: 'linkedin:urn:li:share:123',
         text: 'hello',
       }),
-    ).rejects.toThrow(/social_platform_unusable:linkedin/);
+    // LinkedIn is VERIFIED as of P-021, so it no longer demonstrates
+    // "unverified" — it now demonstrates something sharper: a usable platform
+    // whose grant covers posting but not commenting. The gate still refuses
+    // before the registered adapter is consulted, which is what this asserts.
+    ).rejects.toThrow(/social_platform_unusable:linkedin:write-verb-unsupported/);
 
     expect(seen, 'a refused platform must not reach its adapter').toHaveLength(0);
   });
