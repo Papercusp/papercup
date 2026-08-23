@@ -46,7 +46,7 @@
  * behind a click bought nothing. The toolbar slot the toggle vacated now holds
  * the sort picker. A stale `?opcf=…` deep link is inert.
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   useQueryState,
@@ -74,6 +74,10 @@ import {
   type AttentionTier,
 } from '@/app/admin/plans/plans-api';
 import { effectiveTier, scopeInboxItems, useInboxAttention } from './use-inbox-pending';
+import InboxBulkStrip from './InboxBulkStrip';
+import InboxBulkRecommendation from './InboxBulkRecommendation';
+import { useBulkRunOps, useInboxBulkRun, type BulkRunItem } from './use-inbox-bulk-run';
+import { useFlag } from '@/lib/flag-hooks';
 import SessionChatModal from '../chat/SessionChatModal';
 import {
   CHAT_WORK_ITEM_POPUP_PARAM,
@@ -290,6 +294,11 @@ export default function InboxPane() {
     'opcsort',
     parseAsStringLiteral(INBOX_SORT_IDS).withDefault(DEFAULT_INBOX_SORT),
   );
+  // The BULK RESOLVE run being shown (inbox-bulk-resolve-2026-08-23 P-006).
+  // In the URL like every other pane selection, so a run is deep-linkable and
+  // agent-driveable; empty ⇒ the strip reads the workspace's LATEST run, which
+  // is what "is there a run I should be showing?" actually means on open.
+  const [bulkRunId, setBulkRunId] = useQueryState('opcbr', parseAsString);
   // The "chat-grade session context" popup (P-007): which agent's live session
   // to show, keyed by ownerAgentId.
   const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
@@ -438,6 +447,63 @@ export default function InboxPane() {
     }
     return ordered;
   }, [scoped, filter, selectedKinds, q, selectedItem, sort]);
+
+  /* ── BULK RESOLVE (inbox-bulk-resolve-2026-08-23, P-006) ─────────────────
+     The strip and the per-row recommendations read the SAME run: one sync
+     subscription here, passed down, so the band and the rows can never disagree
+     about a run's phase. Flag-gated as a unit — OFF makes the pane render
+     exactly what it rendered before this existed.
+
+     Declared after `visible` because the strip acts on the pane's CURRENT
+     filtered set, which is what `visible` is. */
+  const bulkEnabled = useFlag('INBOX_BULK_RESOLVE');
+  const bulk = useInboxBulkRun(bulkEnabled ? bulkRunId : null);
+  const { acceptRecommendation } = useBulkRunOps();
+  const [acceptingCount, setAcceptingCount] = useState(0);
+
+  // Provenance for the record — what the pane SAID it was showing when the owner
+  // clicked. Never the source of the run's membership (the posted ids are), so a
+  // filter that has moved since cannot silently change which items get acted on.
+  const bulkFilterSnapshot = useMemo(
+    () => ({
+      tier: filter,
+      kinds: [...selectedKinds],
+      query: query.trim() || null,
+      shownCount: visible.length,
+    }),
+    [filter, selectedKinds, query, visible.length],
+  );
+
+  const acceptOneRecommendation = useCallback(
+    async (item: AttentionItem, rec: BulkRunItem) => {
+      if (!bulk.run) return { ok: false, error: 'no active run' };
+      setAcceptingCount((n) => n + 1);
+      try {
+        const res = await acceptRecommendation(bulk.run.runId, item, rec);
+        // A resolved row is about to leave the live feed — the same cleanup a
+        // hand resolve does, through the same callback.
+        if (res.ok) onResolved();
+        return res;
+      } finally {
+        setAcceptingCount((n) => Math.max(0, n - 1));
+      }
+    },
+    [bulk.run, acceptRecommendation, onResolved],
+  );
+
+  const acceptAllRecommendations = useCallback(async () => {
+    if (!bulk.run) return;
+    // SEQUENTIALLY, not Promise.all: each accept dispatches a real resolve that
+    // wakes an agent and writes an audit row, and firing N of those at once
+    // against the same feed is how a partial failure becomes unattributable.
+    // Sequential also means a mid-way failure leaves the REST still pending and
+    // visible, rather than an indeterminate half-applied batch.
+    for (const rec of bulk.recommendations) {
+      const item = scoped.find((i) => i.id === rec.itemId);
+      if (!item) continue; // already gone from the feed — nothing left to resolve
+      await acceptOneRecommendation(item, rec);
+    }
+  }, [bulk.run, bulk.recommendations, scoped, acceptOneRecommendation]);
 
   // Virtualize the row list (WI-5339): even scoped, the inbox can hold many rows.
   const rowVirtualizer = useVirtualizer({

@@ -21,11 +21,30 @@
  * returned even when the resolver could not be launched: the owner then sees a
  * failed run naming the reason, with every item untouched and still resolvable
  * by hand, instead of a click that silently did nothing.
+ *
+ * THE OWNER-SIDE OPS ride the same route under an `op` discriminator (P-006),
+ * because they share this route's admin-tier posture, its CSRF backstop and its
+ * one sync invalidation — a separate route per verb would duplicate all three:
+ *   { op:'stop',    runId }                     → settle the run where it stands
+ *   { op:'accept',  runId, itemId, actionId }   → record an accepted recommendation
+ *   { op:'dismiss', runId }                     → close the run without acting
+ *
+ * `accept` RECORDS ONLY. The resolution itself is dispatched CLIENT-side through
+ * the same `resolveAttentionAction` / `replyToAttentionItem` helpers a hand
+ * resolve uses, so asker-wake, provenance and the triage audit note are produced
+ * by exactly one code path (D-003). Re-deriving the resolve here would fork that
+ * behavior into a second implementation that drifts silently.
  */
 
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
-import { createRun, setRunPhase, type BulkRunSeedItem } from '../../../attention/bulk-run-store';
+import {
+  createRun,
+  markItemAccepted,
+  setRunPhase,
+  settleRunPhase,
+  type BulkRunSeedItem,
+} from '../../../attention/bulk-run-store';
 
 /** Cap one run so a mis-click on an unfiltered inbox cannot enqueue thousands. */
 const MAX_RUN_ITEMS = 200;
@@ -138,6 +157,107 @@ async function launchResolver(
   }
 }
 
+/** Push the new run/item state to every mounted strip. Best-effort: the poll
+ *  fallback still picks it up, so a notify failure must never fail the op. */
+async function invalidateBulkRun(): Promise<void> {
+  try {
+    const { notifySyncInvalidate } = await import('../../../sync-sse');
+    await notifySyncInvalidate('plans.attentionBulkRun');
+  } catch {
+    /* the poll fallback still picks it up */
+  }
+}
+
+/**
+ * The three owner-side ops. Each returns the run's resulting phase so the strip
+ * can render from the response without waiting for the SSE round-trip.
+ */
+async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise<Response> {
+  const runId = typeof body.runId === 'string' ? body.runId.trim() : '';
+  if (!runId) {
+    return Response.json(
+      { error: { code: 'missing_run_id', message: `op "${op}" requires runId` } },
+      { status: 400 },
+    );
+  }
+
+  try {
+    if (op === 'stop') {
+      // Settle where it stands rather than forcing `complete`: settleRunPhase
+      // derives the phase from the ITEM ROWS, so a stop mid-run parks in
+      // `review` with whatever the resolver got through — including the items
+      // it never reached, which stay `pending` and are shown as not-reached
+      // rather than silently dropped (Requirement 2).
+      const run = await settleRunPhase({ runId });
+      await invalidateBulkRun();
+      return Response.json({ ok: true, runId, phase: run?.phase ?? null, stopped: true });
+    }
+
+    if (op === 'dismiss') {
+      // The owner is done with the review list. The run closes; the items it
+      // recommended stay recommended in the record (nothing is retro-resolved),
+      // and every one of them is still resolvable by hand in the pane.
+      const run = await setRunPhase({ runId, phase: 'complete' });
+      await invalidateBulkRun();
+      return Response.json({ ok: true, runId, phase: run?.phase ?? null, dismissed: true });
+    }
+
+    if (op === 'accept') {
+      const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
+      const actionId = typeof body.actionId === 'string' ? body.actionId.trim() : '';
+      if (!itemId || !actionId) {
+        return Response.json(
+          {
+            error: {
+              code: 'missing_accept_fields',
+              message: 'op "accept" requires itemId and actionId',
+            },
+          },
+          { status: 400 },
+        );
+      }
+      const note = typeof body.note === 'string' ? body.note.slice(0, 2000) : null;
+      const item = await markItemAccepted({ runId, itemId, actionId, note });
+      if (!item) {
+        return Response.json(
+          {
+            error: {
+              code: 'item_not_in_run',
+              message: `item ${itemId} is not part of run ${runId}`,
+            },
+          },
+          { status: 404 },
+        );
+      }
+      // An accept can be the LAST one — re-settle so the strip leaves `review`
+      // on its own instead of stranding the owner on an empty review list.
+      const run = await settleRunPhase({ runId });
+      await invalidateBulkRun();
+      return Response.json({ ok: true, runId, itemId, phase: run?.phase ?? null, accepted: true });
+    }
+
+    return Response.json(
+      {
+        error: {
+          code: 'unknown_op',
+          message: `op must be one of start | stop | accept | dismiss (got "${op}")`,
+        },
+      },
+      { status: 400 },
+    );
+  } catch (e) {
+    return Response.json(
+      {
+        error: {
+          code: 'bulk_resolve_op_failed',
+          message: e instanceof Error ? e.message : String(e),
+        },
+      },
+      { status: 500 },
+    );
+  }
+}
+
 async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   const csrf = requireAllowedOriginOr403(req);
   if (csrf) return csrf;
@@ -152,6 +272,9 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
       { status: 400 },
     );
   }
+
+  const op = typeof body.op === 'string' ? body.op : 'start';
+  if (op !== 'start') return handleOwnerOp(op, body);
 
   const items = parseItems(body.items);
   if (items.length === 0) {
@@ -187,12 +310,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
       await setRunPhase({ runId: run.runId, phase: 'failed', error: launched.error ?? 'launch failed' });
     }
 
-    try {
-      const { notifySyncInvalidate } = await import('../../../sync-sse');
-      await notifySyncInvalidate('plans.attentionBulkRun');
-    } catch {
-      /* the poll fallback still picks it up */
-    }
+    await invalidateBulkRun();
 
     return Response.json({
       ok: true,
