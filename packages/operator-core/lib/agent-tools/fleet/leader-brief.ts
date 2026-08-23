@@ -376,6 +376,7 @@ export function fleetCapacityProviderForMembers(
     model?: string | null;
     alive?: boolean;
     verdict?: MemberVerdict | null;
+    fleetRole?: string | null;
   }>,
   agentByOwner: ReadonlyMap<string, 'claude' | 'omp' | 'codex' | null | undefined> = new Map(),
 ): AccountProvider | null {
@@ -385,6 +386,15 @@ export function fleetCapacityProviderForMembers(
       // different backend. They are not consuming inference now and must not turn a uniform
       // live fleet into an apparent mixed-provider fleet.
       .filter((member) => member.alive !== false && member.verdict !== 'dead')
+      // WI-41005: the LEADER is an observer of this pool, not a puller from it. A psu leader
+      // routinely runs a different backend from the fleet it supervises (a Claude-Code leader
+      // over Codex workers is the common shape), and counting its row made every such fleet
+      // read as mixed-provider — so `poolCapacity` was null forever and `blockedAt` told the
+      // leader the pool "could NOT be read" no matter how many times it probed. Measured on
+      // nonp2p-bug-drain-luna-max-20260820: 33 codex workers + 1 claude leader = suppressed,
+      // while its uniformly-codex sibling read healthy in the same instant. The question this
+      // resolves is "which pool do my MEMBERS pull from", so the observer is not part of it.
+      .filter((member) => member.fleetRole !== 'leader')
       .map((member) => {
         const modelProvider = providerForModel(member.model ?? undefined);
         if (modelProvider) return modelProvider;
@@ -1717,13 +1727,17 @@ export function computeFleetBlockVerdict(input: {
         `${input.idleMemberCount} member(s) are idle beside ${input.claimable} claimable row(s) ` +
         'with no upstream layer blocking them' +
         (poolUnread
-          ? ' — EXCEPT that the inference pool could NOT be read on this brief, so layer 2 was ' +
-            'not ruled out. Probe it before acting: this layer is the only one whose remedy ' +
-            '(waking members) makes a congested pool WORSE.'
+          ? ' — EXCEPT that no single inference pool could be RESOLVED for this fleet, so layer 2 ' +
+            'was not ruled out. That is not necessarily a failed read: it is also what a fleet ' +
+            'spanning more than one provider looks like, and re-probing cannot change THAT. ' +
+            'Check which before acting — this layer is the only one whose remedy (waking ' +
+            'members) makes a congested pool WORSE.'
           : ' (pool read and healthy, spec matching, floors clear). The members themselves are ' + 'the block.'),
       remedy: poolUnread
-        ? 'Run the falsifier FIRST. If the pool is genuinely usable, coord:send { wake: "required" } ' +
-          'those members so they re-run scheduler:get_next.'
+        ? 'Run the falsifier FIRST. If it returns a healthy pool for the provider your MEMBERS ' +
+          'run on, this was a resolution gap rather than congestion: coord:send { wake: "required" } ' +
+          'those members so they re-run scheduler:get_next. If probing keeps leaving this ' +
+          'unresolved, the fleet spans providers — read capacity per provider (WI-41005).'
         : 'coord:send { wake: "required" } those members so they re-run scheduler:get_next now.',
       subordinate: subordinateTo('idleWithClaimableAlert'),
       falsifier: poolUnread
