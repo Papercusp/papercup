@@ -136,6 +136,17 @@ beforeAll(async () => {
     '163-await-event-subscriptions.sql',
     '175-watch-floor-coalesce-cols.sql',
     '541-predicate-watches.sql',
+    // EI-13705's per-key fire latch. emitAwaitedEvent upserts one row here on EVERY
+    // real fire, so both minting ('work-item:created:<sev>') and claiming
+    // ('work-item:claimed:<id>') a work_item in this fixture reach it. Absent, the
+    // latch write throws, engine.ts logs `[await-event] …`, and vitest-fail-on-console
+    // fails every test in this file that mints or claims — measured 17 of 22.
+    // Ledger (harness_shared.test_runs): this file last PASSED 2026-08-22T01:08:52Z
+    // and had not been run again until the 2026-08-23 run that surfaced this, so the
+    // regression window is those ~27h; the causing change is NOT identified here, and
+    // the missing-table gap is the same fixture-completeness debt the event_awaits
+    // entries above were added for.
+    '632-event-key-fire-latch.sql',
     '871-lifecycle-bound-watches.sql',
   ]) {
     await db.sql.unsafe(readMigration(migration)).simple();

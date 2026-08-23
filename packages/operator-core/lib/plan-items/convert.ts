@@ -241,6 +241,11 @@ export async function findConvertedWorkItemByStamp(
     sql`payload->'plan_item' IS NOT NULL
     AND payload->'plan_item'->>'plan_slug' = ${planSlug}
     AND payload->'plan_item'->>'item_id' = ${itemId}`;
+  // Same live-record preference as findImplementingWorkItem (EI-21213528544407590):
+  // recency is only a tie-break, so a newer TERMINAL stamped row can never mask an
+  // older stamped row that is still open. The newest terminal row remains the answer
+  // when every candidate is terminal.
+  let newestTerminal: WorkItem | null = null;
   const featureRows = await sql<{ feature_id: string; harness_slug: string }[]>`
     SELECT feature_id, harness_slug
       FROM harness_shared.harness_features_consolidated
@@ -248,7 +253,9 @@ export async function findConvertedWorkItemByStamp(
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of featureRows) {
     const wi = await getWorkItem(r.feature_id, r.harness_slug);
-    if (wi) return wi;
+    if (!wi) continue;
+    if (!TERMINAL_WORK_ITEM_STATES.has(wi.state)) return wi;
+    newestTerminal ??= wi;
   }
   // Read the UNIFIED base table rather than the engineer_issues view: the view projects
   // `payload - '_ei'`, an expression no base-table index can serve, so every call through
@@ -263,9 +270,11 @@ export async function findConvertedWorkItemByStamp(
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of issueRows) {
     const wi = await getWorkItem(r.issue_id);
-    if (wi) return wi;
+    if (!wi) continue;
+    if (!TERMINAL_WORK_ITEM_STATES.has(wi.state)) return wi;
+    newestTerminal ??= wi;
   }
-  return null;
+  return newestTerminal;
 }
 
 /**
@@ -595,11 +604,23 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   // Primary key: the `implements` edge. Fallback: the durable `payload.plan_item`
   // STAMP — covers an edge deleted out-of-band, so a re-pickup never SILENTLY mints
   // a second work_item for the same plan item (the re-pick-resumes contract; §2).
+  // EI-21213528544407590: consult the stamp not only when the edge resolver comes back
+  // EMPTY but also when it comes back TERMINAL. Both resolvers now prefer a live record
+  // over a terminal one, so a terminal answer here means every EDGE-linked record is
+  // terminal — which does not rule out a still-open record whose edge was pruned. Minting
+  // in that state produces the duplicate this bug was filed for. A stamped record is
+  // adopted over a terminal edge answer only when it is itself non-terminal; when nothing
+  // live exists anywhere the terminal record stands and step 3 mints, as before.
   let existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
   let edgeMissing = false;
-  if (!existing) {
-    existing = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
-    edgeMissing = existing !== null; // found by stamp ⇒ the edge was gone, re-link below.
+  if (!existing || TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
+    const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
+    if (stamped && (!existing || !TERMINAL_WORK_ITEM_STATES.has(stamped.state))) {
+      // Adopted from the stamp ⇒ this record carries no live implements edge
+      // (one would have been returned above), so re-link it below.
+      existing = stamped;
+      edgeMissing = true;
+    }
   }
   if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
     // WI-21000935885012621: a plan-item pickup is a self-select/placement path, not an

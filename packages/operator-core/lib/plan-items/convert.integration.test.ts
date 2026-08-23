@@ -41,9 +41,14 @@ vi.mock('@papercusp/db-org', async (orig) => {
 // ISSUE_FAMILY_KINDS must be the REAL value (not a stub array) — findConvertedWorkItemByStamp
 // binds it into a `= ANY(...)` SQL filter against a real Postgres, so a wrong/missing value
 // silently changes which rows match rather than throwing.
+//
+// EI-21213528544407590: the resolvers now PREFER a non-terminal record over a terminal
+// one, so the stub's state is load-bearing. `wiState.states` overrides it per id; the
+// default stays 'open' so every test written before this distinction existed is unaffected.
+const wiState = vi.hoisted(() => ({ states: {} as Record<string, string> }));
 vi.mock('../work-items', () => ({
   getWorkItem: (id: string, harness?: string) =>
-    id.startsWith('missing') ? null : { id, harness: harness ?? null, state: 'open' },
+    id.startsWith('missing') ? null : { id, harness: harness ?? null, state: wiState.states[id] ?? 'open' },
   ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
   createWorkItem: vi.fn(), claimWorkItem: vi.fn(), releaseWorkItem: vi.fn(), linkWorkItem: vi.fn(),
   isWorkItemKind: () => true,
@@ -131,6 +136,7 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items,
                 harness_shared.agent_modes, harness_shared.session_briefs`;
   cs.scope = 'default'; // collapse the union to WS unless a test widens it
+  wiState.states = {}; // every id back to the default 'open'
 });
 
 async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string; rel?: string; dstKind?: string; ws?: string; createdAt?: string }) {
@@ -198,6 +204,37 @@ describe('findImplementingWorkItem (PG)', () => {
     await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-old', createdAt: '2026-01-01T00:00:00Z' });
     await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-new', createdAt: '2026-06-01T00:00:00Z' });
     expect(await findImplementingWorkItem('p1', 'I-1')).toMatchObject({ id: 'EI-new' });
+  });
+
+  /**
+   * EI-21213528544407590 regression: "a newer TERMINAL implements edge masks an older
+   * OPEN execution record", measured live on plan P-028 2026-08-23T03:33:59Z.
+   *
+   * Two implements edges, 6s apart: the older pointed at WI-40489 (open, the record
+   * actually doing the work), the newer at WI-40495 (dropped 20min earlier). The
+   * resolver returned the newest EXTANT edge with no state filter, so it answered with
+   * the dropped record; convertPlanItem's step-2 resume branch only fires for a
+   * NON-terminal record, so it fell through and minted a duplicate (WI-40781) for a
+   * plan item that already had a live execution record.
+   *
+   * Recency is now only a TIE-BREAK. The calibration for these two tests is the
+   * 'prefers the NEWEST edge' test above: same helper, same stub, both records open —
+   * so newest-first is provably still in force, and these pin only what state changes.
+   */
+  it('EI-21213528544407590: a newer TERMINAL edge does NOT mask an older open record', async () => {
+    wiState.states['EI-dropped'] = 'dropped';
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-open', createdAt: '2026-01-01T00:00:00Z' });
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-dropped', createdAt: '2026-06-01T00:00:00Z' });
+    expect(await findImplementingWorkItem('p1', 'I-1')).toMatchObject({ id: 'EI-open' });
+  });
+
+  it('EI-21213528544407590: falls back to the NEWEST terminal record when every candidate is terminal', async () => {
+    wiState.states['EI-done'] = 'done';
+    wiState.states['EI-dropped'] = 'dropped';
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-done', createdAt: '2026-01-01T00:00:00Z' });
+    await edge({ plan: 'p1', item: 'I-1', srcRef: 'EI-dropped', createdAt: '2026-06-01T00:00:00Z' });
+    // NOT the oldest — the live-record preference must not degrade into "prefer oldest".
+    expect(await findImplementingWorkItem('p1', 'I-1')).toMatchObject({ id: 'EI-dropped' });
   });
 
   it('returns null when no edge exists', async () => {
@@ -336,6 +373,96 @@ describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
     expect(await findImplementingWorkItem('p6', 'I-6')).toBeNull();
     // The FALLBACK (stamp match) must find the same item convertPlanItem would then resume.
     expect(await findConvertedWorkItemByStamp('p6', 'I-6', 'web')).toMatchObject({ id: 'EI-relates-only' });
+  });
+});
+
+/**
+ * EI-21213528544407590, END TO END: the resolver tests above pin which record is
+ * RESOLVED; these pin what convertPlanItem then DOES with it, which is where the
+ * duplicate actually got minted. Both halves are needed — a resolver that answers
+ * correctly still mints a duplicate if step 2 stops consulting it, and step 2's
+ * resume branch is guarded on the resolved record's terminal state.
+ *
+ * The pair is deliberately two-sided: preferring a live record must NOT become
+ * "never mint again" — a plan item whose every execution record is genuinely
+ * finished still has to convert.
+ */
+describe('convertPlanItem step 2: terminal records must not mask a live one (EI-21213528544407590)', () => {
+  const HARNESS = 'web';
+  let readPlanM: ReturnType<typeof vi.fn>;
+  let claimPlanItemM: ReturnType<typeof vi.fn>;
+  let createWorkItemM: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    readPlanM = (await import('../agent-tools/plans/source')).readPlanBySlug as unknown as ReturnType<typeof vi.fn>;
+    claimPlanItemM = (await import('./liveness')).claimPlanItem as unknown as ReturnType<typeof vi.fn>;
+    createWorkItemM = (await import('../work-items')).createWorkItem as unknown as ReturnType<typeof vi.fn>;
+  });
+
+  // These mocks are module-level and shared with the other describes, so reset
+  // rather than inherit whatever a previous test left configured.
+  beforeEach(() => {
+    readPlanM.mockReset();
+    claimPlanItemM.mockReset();
+    createWorkItemM.mockReset();
+    claimPlanItemM.mockResolvedValue({
+      status: 'claimed',
+      claim: { claimId: 'c-028' },
+      mode: 'solo',
+      viaAssignment: false,
+    });
+  });
+
+  const givenPlanItem = (itemId: string) =>
+    readPlanM.mockResolvedValue({
+      row: { items: [{ id: itemId, status: 'todo', text: 'Provision the thing' }] },
+      parsed: { items: [], frontmatter: null, now: null },
+    });
+
+  const convert = (itemId: string) =>
+    convertPlanItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: 'pz',
+      itemId,
+      owner: 'member-28',
+      ownerUser: 'member-28',
+    });
+
+  it('RESUMES the older open record instead of minting a duplicate (the live P-028 shape)', async () => {
+    wiState.states['WI-dropped'] = 'dropped';
+    givenPlanItem('P-028');
+    await edge({ plan: 'pz', item: 'P-028', srcKind: 'feature', srcRef: `${HARNESS}#WI-live`, createdAt: '2026-01-01T00:00:00Z' });
+    await edge({ plan: 'pz', item: 'P-028', srcKind: 'feature', srcRef: `${HARNESS}#WI-dropped`, createdAt: '2026-06-01T00:00:00Z' });
+
+    expect(await convert('P-028')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-live' } });
+    expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('a still-open STAMPED record whose edge was pruned is resumed too, not masked by a terminal edge', async () => {
+    // The edge plane knows only the dropped record; the live one survives via the
+    // durable payload.plan_item stamp. Before the fix step 2 consulted the stamp
+    // ONLY when the edge lookup returned nothing at all, so a terminal edge
+    // suppressed the fallback entirely and the live stamped record was invisible.
+    wiState.states['WI-dropped'] = 'dropped';
+    givenPlanItem('P-030');
+    await edge({ plan: 'pz', item: 'P-030', srcKind: 'feature', srcRef: `${HARNESS}#WI-dropped` });
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES (${HARNESS}, 'WI-stamped-live', 'task', ${WS},
+                          ${rootSql.json({ plan_item: { plan_slug: 'pz', item_id: 'P-030', harness_slug: HARNESS } })})`;
+
+    expect(await convert('P-030')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-stamped-live' } });
+    expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('still MINTS when every implementing record is genuinely terminal', async () => {
+    wiState.states['WI-done'] = 'done';
+    givenPlanItem('P-029');
+    await edge({ plan: 'pz', item: 'P-029', srcKind: 'feature', srcRef: `${HARNESS}#WI-done` });
+    createWorkItemM.mockResolvedValue({ id: 'WI-fresh', harness: HARNESS, state: 'open', title: 'Provision the thing' });
+
+    expect(await convert('P-029')).toMatchObject({ status: 'converted', workItem: { id: 'WI-fresh' } });
+    expect(createWorkItemM).toHaveBeenCalled();
   });
 });
 
