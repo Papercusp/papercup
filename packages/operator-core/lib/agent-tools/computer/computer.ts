@@ -92,6 +92,9 @@ const realExec: ComputerExec = (bin, args, opts) =>
   });
 
 let execImpl: ComputerExec = realExec;
+/** The live executor, shared with the accessibility tools so both honour the same
+ *  env scrubbing, timeout and test seam rather than growing a second spawn path. */
+export const computerExec: ComputerExec = (bin, args, opts) => execImpl(bin, args, opts);
 /** Test seam — swap the executor. Call `__resetComputerExec()` in afterEach. */
 export function __setComputerExecForTests(next: ComputerExec): void {
   execImpl = next;
@@ -125,7 +128,7 @@ export interface ComputerCtx {
  *      (`acquireAgentDisplay`). BOTH are deliberate capability markers — never raw
  *      `DISPLAY`, which can leak a dev box's own `:0` session.
  */
-async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
+export async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
   // 1. The caller's hive lease (operator-process Map). Route the ctx slug through
   //    the fail-loud resolver (workspace-data-isolation-leaks P-004) so the
   //    operator/superuser `'*'` auto-default (and an unset ctx) resolve to "no

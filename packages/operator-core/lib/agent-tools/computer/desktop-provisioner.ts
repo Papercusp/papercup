@@ -20,6 +20,7 @@ import { existsSync } from 'node:fs';
 import { applyGlStrategy, detectGlStrategy, type GlStrategy } from '../../desktop/gl-strategy';
 import { managedSpawn } from '../../task-manager/managed-spawn';
 import { sandboxXEnv } from './desktop-driver';
+import { startA11yBus, type A11yBus } from '../../desktop/a11y-bus';
 
 const DEFAULT_W = 1024;
 const DEFAULT_H = 768;
@@ -56,6 +57,15 @@ export interface SandboxDesktop {
    * frozen — and the governor reports exactly that rather than no-opping.
    */
   taskId: string | null;
+  /**
+   * P-007 — this desktop's accessibility bus, when one came up.
+   *
+   * Absent means screenshot-only, which is a legal degraded state and NOT an error:
+   * a host with no `at-spi2-core` still gets a perfectly good desktop. Callers that
+   * need the tree should read this rather than assume, exactly as they read `gl`
+   * rather than assume pixels.
+   */
+  a11y?: A11yBus;
   /**
    * D-006 — the capture bounding box requested for this lease, if the caller asked
    * for one. Absent means "use the 1024x768 default", which is what both the
@@ -107,6 +117,16 @@ export interface ProvisionOptions {
   launchedBy?: string;
   /** Harness the desktop belongs to, recorded on its ledger rows. */
   harnessSlug?: string;
+  /**
+   * P-007 — stand up an accessibility bus for this desktop. Default true.
+   *
+   * Default-ON because it is what makes `computer:observe` work at all, and because
+   * it is cheap and additive: one `dbus-daemon` whose only activatable service is
+   * `org.a11y.Bus` (deliberately NOT a full session — see a11y-bus.ts for the portal
+   * cascade that measurement ruled out). Set false for a desktop that will only ever
+   * be screenshotted.
+   */
+  accessibility?: boolean;
 }
 
 /**
@@ -236,9 +256,19 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       );
       procs.push(wm.child);
     }
+    // P-007 (D-010): bring up this desktop's OWN accessibility bus BEFORE any app.
+    //
+    // The ordering is load-bearing, not tidiness: an app reads the a11y bus address
+    // once, at atk-bridge init. Started before the bus exists it logs "Unable to
+    // acquire the address of the accessibility bus" and stays invisible to
+    // accessibility for its whole life, even though the bus appears moments later.
+    // That is why this sits above the app loop rather than beside it.
+    const a11y = opts.accessibility === false ? null : startA11yBus(display);
+    const appEnv = a11y ? { ...env, ...a11y.env } : env;
+
     for (const appArgv of opts.apps ?? []) {
       if (appArgv.length === 0) continue;
-      const launch = applyGlStrategy(gl, env, appArgv);
+      const launch = applyGlStrategy(gl, appEnv, appArgv);
       const app = await managedSpawn(
         launch.argv[0]!,
         launch.argv.slice(1),
@@ -261,6 +291,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       height,
       gl,
       taskId,
+      ...(a11y ? { a11y } : {}),
       // D-006: only carried when the caller actually asked for a box — see the
       // field's comment for why absent means "the default", not "full size".
       ...(opts.captureWidth && opts.captureHeight
