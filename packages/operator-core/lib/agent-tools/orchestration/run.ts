@@ -528,20 +528,30 @@ function recipeRunEnvelope(
   }
   const serialized = JSON.stringify(envelope);
   if (ctx) {
+    // Derive phase/executed from the envelope that was ACTUALLY built, never hardcode them.
+    // `item.ok === false` with `item.phase === 'preflight'` produces a preflight/not-executed
+    // envelope, and an earlier draft stamped execution/true regardless — which would have
+    // recorded a recipe that never ran as a completed execution, inflating both the executed
+    // count and the latency sample with work that did not happen.
+    const built = envelope as { metrics?: { phase?: string; executed?: boolean } };
     stampOrchestrationRow(ctx, {
       envelope,
       serializedBytes: Buffer.byteLength(serialized, 'utf8'),
       durationMs,
-      phase: 'execution',
-      executed: true,
+      phase: built.metrics?.phase === 'preflight' ? 'preflight' : 'execution',
+      executed: built.metrics?.executed ?? true,
       source: 'recipe',
       requestedExecutionMode: args.execution?.mode ?? 'server',
-      // Saved-recipe reuse is a headline P-020 rollout metric, and this path recorded none of
-      // it — the recipe was requested and reused with nothing counting either fact.
+      // Saved-recipe reuse is a headline P-020 rollout metric and this path recorded none of it.
+      // recipeId is taken from `metrics`, which already resolved it as args.recipe?.id ?? item.id —
+      // an earlier draft re-derived it with `typeof args.recipe === 'string'`, which can NEVER be
+      // true because the public selector is an object, so it silently stamped nothing. Reusing the
+      // resolved value is both correct and drift-proof.
       extra: {
         recipeRequested: true,
         recipeReuse: true,
-        ...(typeof args.recipe === 'string' ? { recipeId: args.recipe } : {}),
+        ...(metrics.recipeId ? { recipeId: metrics.recipeId } : {}),
+        ...(args.recipe?.revision === undefined ? {} : { recipeRevision: args.recipe.revision }),
       },
     });
   }
