@@ -6,6 +6,7 @@ import {
   DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS,
   type OutputEnvelope,
   type OutputExecutionMetrics,
+  type OutputReplayStateContentItem,
 } from '../../output-envelope';
 import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import codeRunTool, {
@@ -36,7 +37,7 @@ export type ServerScriptRunArgs = OrchestrationSourceArgs & {
 
 type TextContent = { type: 'text'; text: string };
 type MediaContent =
-  | { type: 'image'; data: string; mimeType: string }
+  | { type: 'image'; data: string; mimeType: string; _meta?: Record<string, unknown> }
   | { type: 'audio'; data: string; mimeType: string };
 
 type CodeRunToolResult = Omit<ToolResult, 'content'> & {
@@ -56,6 +57,7 @@ type CodeRunPayload = {
   uncertainMutations?: unknown;
   childFailures?: unknown;
   notDispatchedWrites?: unknown;
+  state?: unknown;
 };
 
 export interface ServerScriptRunDeps {
@@ -134,6 +136,14 @@ function finiteNonNegative(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function replayStateContent(value: unknown): OutputReplayStateContentItem[] {
+  if (value === undefined) return [];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('code:run returned non-object replay state');
+  }
+  return [{ kind: 'replay-state', values: value as Record<string, unknown> }];
+}
+
 function executionMetrics(
   args: ServerScriptRunArgs,
   payload: CodeRunPayload,
@@ -176,9 +186,11 @@ function executionEnvelope(
 ): OutputEnvelope {
   const summary = authoredSummaryText(payload.summary);
   const metrics = executionMetrics(args, payload, durationMs, captureMode);
+  const content = replayStateContent(payload.state);
   if (payload.ok === false) {
     return buildOutputEnvelope({
       summary,
+      ...(content.length ? { content } : {}),
       state: 'error',
       error: {
         code: 'script_execution_failed',
@@ -190,12 +202,13 @@ function executionEnvelope(
   if (payload.partial === true || countArray(payload.childFailures) > 0) {
     return buildOutputEnvelope({
       summary,
+      ...(content.length ? { content } : {}),
       state: 'incomplete',
       incomplete: { reason: 'partial_execution' },
       metrics,
     });
   }
-  return buildOutputEnvelope({ summary, metrics });
+  return buildOutputEnvelope({ summary, ...(content.length ? { content } : {}), metrics });
 }
 
 function preflightError(code: string, message: string, args: OrchestrationSourceArgs): ToolResult {
