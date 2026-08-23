@@ -210,6 +210,22 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ inboxLimit: 0 }).success).toBe(true);
   });
 
+  it('accepts the stale includeFleet/includeInbox/includeAssignments aliases', () => {
+    const parsed = orientTool.args.safeParse({
+      includeFleet: false,
+      includeInbox: false,
+      includeAssignments: false,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toMatchObject({
+        includeFleet: false,
+        includeInbox: false,
+        includeAssignments: false,
+      });
+    }
+  });
+
   it('accepts recipesLimit=0 for a lean bootstrap', () => {
     expect(orientTool.args.safeParse({ recipesLimit: 0 }).success).toBe(true);
   });
@@ -657,6 +673,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls.some(({ name }) => name === 'coord:inbox')).toBe(false);
   });
 
+  it('maps legacy includeInbox:false to inboxLimit=0, while an explicit inboxLimit wins', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+    const r = await composeOrient({ includeInbox: false }, call, 'me');
+    expect(r.inbox).toEqual({ summary: undefined, recent: undefined, entries: undefined });
+    expect(calls.some(({ name }) => name === 'coord:inbox')).toBe(false);
+
+    const { call: call2, calls: calls2 } = fakeCall({ ...CORE });
+    await composeOrient({ includeInbox: false, inboxLimit: 2 }, call2, 'me');
+    expect(calls2.find(({ name }) => name === 'coord:inbox')?.args).toMatchObject({ limit: 2 });
+  });
+
   it('with `intent`: folds a memory recall + relevant recipes AND declares the intent (full bootstrap in one call)', async () => {
     const { call, calls } = fakeCall({
       ...CORE,
@@ -1100,6 +1127,39 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const r = await composeOrient({ includeFleetCatchup: false }, call, 'me');
     expect(calls.some((c) => c.name === 'coord:catch-up')).toBe(false);
     expect(r.fleetCatchUp).toBeUndefined();
+  });
+
+  it('maps legacy includeFleet:false to both optional fleet folds while retaining assignments', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 0, rows: [] }),
+      'coord:glance': () => ({ bees: { running: 0, working: 0 } }),
+    });
+    const r = await composeOrient({ includeFleet: false, includeAssignments: false }, call, 'me');
+    expect(r.fleetCatchUp).toBeUndefined();
+    expect(r.fleetHealth).toBeUndefined();
+    expect(calls.some(({ name }) => name === 'fleet:assignments')).toBe(true);
+    expect(calls.some(({ name }) => name === 'coord:catch-up')).toBe(false);
+    expect(calls.some(({ name }) => name === 'coord:glance')).toBe(false);
+  });
+
+  it('lets canonical fleet controls override the legacy includeFleet alias', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 0, rows: [] }),
+      'coord:glance': () => ({ bees: { running: 0, working: 0 } }),
+    });
+    const r = await composeOrient(
+      { includeFleet: false, includeFleetCatchUp: true, includeFleetHealth: true },
+      call,
+      'me',
+    );
+    expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 0, recent: [] });
+    expect(r.fleetHealth).toEqual({ bees: { running: 0, working: 0 }, wake: undefined, governor: undefined });
+    expect(calls.some(({ name }) => name === 'coord:catch-up')).toBe(true);
+    expect(calls.some(({ name }) => name === 'coord:glance')).toBe(true);
   });
 
   it('best-effort: a failing fleet catch-up degrades to null, not a thrown orient', async () => {

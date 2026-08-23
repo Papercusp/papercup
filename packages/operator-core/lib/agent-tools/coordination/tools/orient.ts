@@ -202,6 +202,15 @@ export interface OrientArgs {
   claimableLimit?: number;
   inboxLimit?: number;
   /**
+   * Deprecated launch/checkpoint alias: false suppresses both fleet catch-up and
+   * fleet-health folds. Explicit canonical controls take precedence.
+   */
+  includeFleet?: boolean;
+  /** Deprecated alias: false maps to inboxLimit=0 unless inboxLimit is explicit. */
+  includeInbox?: boolean;
+  /** Deprecated no-op: assignments are a core orient fold and are always retained. */
+  includeAssignments?: boolean;
+  /**
    * EI-8300: a repeating LEADER/MONITOR loop pays the full fresh-task bootstrap
    * cost (claimable backlog + facts + plan-events + mem0 recall + fleet
    * catch-up + recipes) every wake even though a monitoring tick only needs
@@ -1167,7 +1176,8 @@ export async function composeOrient(
   // "newer than read_through_ts", which could HIDE mail the agent had been shown
   // but not acted on. `unanswered` remains the actionable signal, and it is
   // computed independently of this window.
-  const inboxLimit = args.inboxLimit ?? (args.afterCompaction ? 25 : 10);
+  const inboxLimit =
+    args.inboxLimit ?? (args.includeInbox === false ? 0 : args.afterCompaction ? 25 : 10);
   // EI-20287600163306401: callers that already consumed the inbox can pass zero
   // to suppress this duplicate fold. The nested coord:inbox tool requires a
   // positive limit, so do not forward an explicit zero as an invalid call.
@@ -1965,8 +1975,14 @@ export async function composeOrient(
     }
   }
 
-  const includeFleetCatchUp = args.includeFleetCatchUp ?? args.includeFleetCatchup ?? args.includeCatchup;
-  if (!monitor && (includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
+  // Legacy includeFleet controlled both optional fleet folds. Canonical controls
+  // win when callers provide them explicitly; undefined preserves the default-on
+  // behavior. includeAssignments is intentionally a no-op: assignments are one
+  // of orient's core reads and cannot be omitted.
+  const includeFleetCatchUp =
+    args.includeFleetCatchUp ?? args.includeFleetCatchup ?? args.includeCatchup ?? args.includeFleet;
+  const includeFleetHealth = args.includeFleetHealth ?? args.includeFleet;
+  if (!monitor && (includeFleetCatchUp !== false || includeFleetHealth !== false)) {
     if (fleetSlug && includeFleetCatchUp !== false) {
       try {
         const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);
@@ -1999,7 +2015,7 @@ export async function composeOrient(
     // fleet-health (fold #1) — COMPACT: coord:glance's health subset only (bees/wake/
     // governor; audience 'su' + activity_limit:0 skip the human display/tips/activity
     // rows). Kills the post-orient coord:glance re-call for fleet members.
-    if (fleetSlug && args.includeFleetHealth !== false) {
+    if (fleetSlug && includeFleetHealth !== false) {
       // WI-3818: bounded — a slow coord:glance used to hang orient until the
       // 55s MCP client timeout; now degrades to null (same as the pre-existing
       // catch-based failure contract) within ORIENT_FLEET_LEG_TIMEOUT_MS.
@@ -2640,6 +2656,20 @@ export default defineTool({
       .max(50)
       .optional()
       .describe('Max recent inbox entries (default 10; 0 skips the inbox read).'),
+    includeFleet: z
+      .boolean()
+      .optional()
+      .describe(
+        'Deprecated alias for the optional fleet folds; false skips both fleet catch-up and fleet health. Explicit canonical controls win.',
+      ),
+    includeInbox: z
+      .boolean()
+      .optional()
+      .describe('Deprecated alias for inboxLimit; false maps to inboxLimit=0 unless inboxLimit is explicit.'),
+    includeAssignments: z
+      .boolean()
+      .optional()
+      .describe('Deprecated no-op accepted for compatibility; assignments are a core orient fold and are always retained.'),
     mode: z
       .enum(['full', 'monitor'])
       .optional()
