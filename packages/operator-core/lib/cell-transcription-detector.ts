@@ -77,7 +77,7 @@ export const CONTEXT_WINDOW = 60;
  * sentence cannot turn a source citation into a deployment claim.
  */
 const SOURCE_HEAD_VALUE_PREFIX =
-  /\b(?:current|local|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?\s*(?:is|=|:)?\s*$/i;
+  /\b(?:current|local|root|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?\s*(?:is|=|:)?\s*$/i;
 
 /**
  * If a source HEAD value is explicitly described as deployed/serving/live, it is

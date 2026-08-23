@@ -89,6 +89,7 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     // release/staging words belong to separate facts in the same report.
     ['a current source HEAD beside unrelated pipeline prose', 'current HEAD 2b95ba4eb7; release status remains red'],
     ['a source HEAD beside a staging note', 'source HEAD is 2b95ba4eb7, while staging source is ahead'],
+    ['a historical root HEAD beside an origin divergence', 'Root HEAD cd9b060 was still ahead of direct origin/staging'],
     [
       'a future target-commit ancestry check beside pipeline words',
       'on next immutable checkpoint verdict, validate P-008 commit 13a4158ebd main/deployed ancestry',
@@ -123,6 +124,12 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     const hits = detectCellTranscriptions('current HEAD 2b95ba4eb7 is deployed to :3070');
     expect(hits).toHaveLength(1);
     expect(hits[0]!.value).toBe('2b95ba4eb7');
+  });
+
+  it('DOES fire when a root HEAD is explicitly described as deployed', () => {
+    const hits = detectCellTranscriptions('Root HEAD cd9b060 is deployed to :3070');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('cd9b060');
   });
 
   it('DOES fire when a target commit is explicitly described as deployed', () => {
