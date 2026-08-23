@@ -46,6 +46,54 @@ export const ACTIVE_PHASES: readonly BulkRunPhase[] = ['pending', 'running', 're
 /** Terminal phases — nothing further will be written by the resolver. */
 export const TERMINAL_PHASES: readonly BulkRunPhase[] = ['complete', 'failed'] as const;
 
+/**
+ * Phases in which a run is EXCLUSIVE — an agent is acting, or is about to.
+ * `review` is deliberately absent: a run in review is waiting on the OWNER, not
+ * working, so it must not block a new run behind a review list the owner may
+ * never return to. Migration 915's partial unique index is keyed on exactly
+ * this set; keep the two in step.
+ */
+export const RUNNING_PHASES: readonly BulkRunPhase[] = ['pending', 'running'] as const;
+
+/**
+ * Phases in which the resolver's outcome reports are still accepted. Same set
+ * as RUNNING_PHASES today, but named separately because it answers a different
+ * question ("may this write land?" rather than "may a new run start?") and the
+ * two are free to diverge.
+ */
+const ACCEPTING_REPORTS: readonly BulkRunPhase[] = RUNNING_PHASES;
+
+/**
+ * WI-41012 — a start was refused because a run is already pending/running in
+ * this workspace. Typed rather than a bare Error so the route can answer with a
+ * useful `run_already_active` (naming the run already in flight) instead of a
+ * 500, and so the pre-check and the DB rail are indistinguishable to a caller.
+ */
+export class BulkRunAlreadyActiveError extends Error {
+  readonly code = 'run_already_active';
+  constructor(
+    readonly activeRunId: string | null,
+    readonly activePhase: BulkRunPhase | null,
+  ) {
+    super(
+      activeRunId
+        ? `a bulk-resolve run is already active (${activeRunId}, phase ${activePhase ?? 'unknown'})`
+        : 'a bulk-resolve run is already active in this workspace',
+    );
+    this.name = 'BulkRunAlreadyActiveError';
+  }
+}
+
+/** Is this error the single-flight index (migration 915) refusing a second run? */
+function isSingleFlightViolation(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (code !== '23505') return false;
+  const detail = `${(e as { constraint_name?: unknown } | null)?.constraint_name ?? ''} ${
+    e instanceof Error ? e.message : ''
+  }`;
+  return detail.includes('one_active_per_workspace');
+}
+
 /** The filters in force when the owner clicked — provenance for the record and
  *  the review header, never the source of membership. */
 export interface BulkRunFilterSnapshot {
@@ -257,6 +305,16 @@ export async function createRun(input: {
   const ws = input.workspaceId ?? activeWorkspaceId();
   const runId = input.runId ?? `bulk-${randomUUID()}`;
 
+  // WI-41012 — single-flight. Starting a run LAUNCHES A REAL HEADLESS AGENT with
+  // terminal authority over the owner's attention items, so two live runs means
+  // two agents racing on overlapping items: the same item resolved twice, its
+  // asker woken twice, two audit trails for one owner intention. This check is
+  // the friendly half; migration 915's partial unique index is the rail that
+  // makes it TRUE rather than likely (a check-then-insert races exactly as wide
+  // as its own round trip, which is where a double-click lands).
+  const live = await getRunningRun(ws);
+  if (live) throw new BulkRunAlreadyActiveError(live.runId, live.phase);
+
   // De-dupe defensively: the client builds this list from a virtualized render,
   // and a duplicate id would violate the (workspace, run, item) key mid-insert
   // and abort the whole seed.
@@ -268,13 +326,26 @@ export async function createRun(input: {
   });
   if (unique.length === 0) throw new Error('createRun: no valid item ids in the snapshot');
 
-  const rows = await sql<RawRunRow[]>`
-    INSERT INTO harness_shared.attention_bulk_runs
-      (workspace_id, run_id, harness_slug, requested_by, phase, filter_snapshot, total_items)
-    VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
-            'pending', ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${unique.length})
-    RETURNING ${sql.unsafe(RUN_COLUMNS)}
-  `;
+  let rows: RawRunRow[];
+  try {
+    rows = await sql<RawRunRow[]>`
+      INSERT INTO harness_shared.attention_bulk_runs
+        (workspace_id, run_id, harness_slug, requested_by, phase, filter_snapshot, total_items)
+      VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
+              'pending', ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${unique.length})
+      RETURNING ${sql.unsafe(RUN_COLUMNS)}
+    `;
+  } catch (e) {
+    // The rail firing (migration 915) means a concurrent start won the race
+    // between our check above and this insert. Re-read and report it as the
+    // SAME typed refusal, so the caller cannot tell the two paths apart and a
+    // race never surfaces to the owner as a 500.
+    if (isSingleFlightViolation(e)) {
+      const live = await getRunningRun(ws);
+      throw new BulkRunAlreadyActiveError(live?.runId ?? null, live?.phase ?? null);
+    }
+    throw e;
+  }
 
   for (let i = 0; i < unique.length; i += 1) {
     const it = unique[i]!;
@@ -333,7 +404,26 @@ export async function getLatestRun(workspaceId?: string): Promise<BulkRunRow | n
   return rows[0] ? mapRun(rows[0]) : null;
 }
 
-/** The run the resolver should be working: the newest non-terminal one. */
+/**
+ * The run that currently OWNS the workspace: pending or running — i.e. one an
+ * agent is acting on. Distinct from getActiveRun, which also counts `review`
+ * (owner-waiting) and answers "what should the pane show". This one answers
+ * "may a new run start" and "is this run still accepting the resolver's work",
+ * and is keyed on the same set as migration 915's single-flight index.
+ */
+export async function getRunningRun(workspaceId?: string): Promise<BulkRunRow | null> {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<RawRunRow[]>`
+    SELECT ${sql.unsafe(RUN_COLUMNS)}
+      FROM harness_shared.attention_bulk_runs
+     WHERE workspace_id = ${ws} AND phase IN ('pending', 'running')
+     ORDER BY created_at DESC
+     LIMIT 1
+  `;
+  return rows[0] ? mapRun(rows[0]) : null;
+}
+
 export async function getActiveRun(workspaceId?: string): Promise<BulkRunRow | null> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
@@ -394,11 +484,38 @@ export async function reportOutcomes(input: {
   runId: string;
   outcomes: BulkOutcomeReport[];
   workspaceId?: string;
-}): Promise<{ updated: string[]; unknown: string[]; run: BulkRunRow | null }> {
+}): Promise<{
+  updated: string[];
+  unknown: string[];
+  run: BulkRunRow | null;
+  refused: { reason: 'run_not_accepting_reports'; phase: BulkRunPhase | null } | null;
+}> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const updated: string[] = [];
   const unknown: string[] = [];
+
+  // WI-41013 — the stop rail. The owner's Stop settles the run; the resolver is
+  // a separate process and may not have noticed yet. Refuse its writes rather
+  // than letting them land, so a stopped run cannot keep growing.
+  //
+  // REFUSE, never silently drop: the resolver has usually ALREADY performed the
+  // terminal action it is reporting, so swallowing the write would leave it
+  // believing the action was recorded when the record shows nothing. A refusal
+  // it can read is what lets it stop instead of continuing down the manifest.
+  //
+  // This is a backstop, not the whole fix: it bounds the DAMAGE (no further
+  // writes) but cannot un-take an action already taken, which is why the
+  // manifest also reports `stopped` so a well-behaved resolver halts first.
+  const before = await getRun(input.runId, ws);
+  if (before && !ACCEPTING_REPORTS.includes(before.phase)) {
+    return {
+      updated: [],
+      unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+      run: before,
+      refused: { reason: 'run_not_accepting_reports', phase: before.phase },
+    };
+  }
 
   for (const o of input.outcomes ?? []) {
     if (!o?.itemId) continue;
@@ -423,7 +540,7 @@ export async function reportOutcomes(input: {
 
   await reportCountersOnly(input.runId, ws);
   const run = await getRun(input.runId, ws);
-  return { updated, unknown, run };
+  return { updated, unknown, run, refused: null };
 }
 
 /**
