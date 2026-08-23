@@ -15,7 +15,7 @@ import {
   AGENT_ROLES,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
-import type { FieldMiss, ToolResult } from '@papercusp/tooldef';
+import { DEFAULT_SCRIPT_TIMEOUT_MS, type FieldMiss, type ToolResult } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
@@ -194,7 +194,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        `Wall-clock budget (default 30s). EI-9239: code:run has no run_in_background — every call is ` +
+        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). EI-9239: code:run has no run_in_background — every call is ` +
           `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
           `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
           `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
