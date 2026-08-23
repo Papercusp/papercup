@@ -490,6 +490,8 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       const swarmB = makeSwarm(testnet.bootstrap);
       const rootOwner = makeWorkspaceRoot('kcut-owner-');
       const rootB = makeWorkspaceRoot('kcut-b-');
+      const ownerPublishedRevoked = new Set<string>();
+      const bPublishedRevoked = new Set<string>();
 
       const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: hivePubkeyB64 };
       const bBinding: SwarmBinding = {
@@ -504,6 +506,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         binding: hiveBinding,
         bootExtra: {
           announceIdentityOverride: idOwner.override,
+          loadRevokedOverride: async () => new Set(ownerPublishedRevoked),
           verifyBindingOverride: async (_pk, _login, userId) =>
             userId === idB.userId ? 'verified' : 'fail',
           // The owner authors its content directly into dbOwner + drains it; it receives no
@@ -519,6 +522,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         binding: bBinding,
         bootExtra: {
           announceIdentityOverride: idB.override,
+          loadRevokedOverride: async () => new Set(bPublishedRevoked),
           applyOverride: (op) => {
             bApply ??= buildBApply(bHandle!.ownLog.keyHex);
             return bApply(op);
@@ -539,6 +543,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         binding: hiveBinding,
         bootExtra: {
           announceIdentityOverride: idOwner.override,
+          loadRevokedOverride: async () => new Set(ownerPublishedRevoked),
           verifyBindingOverride: async (_pk, _login, userId) =>
             userId === idB.userId ? 'verified' : 'fail',
           applyOverride: async () => true,
@@ -551,6 +556,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         binding: bBinding,
         bootExtra: {
           announceIdentityOverride: idB.override,
+          loadRevokedOverride: async () => new Set(bPublishedRevoked),
           applyOverride: async () => true,
         },
       });
@@ -582,7 +588,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
           (workspace_id, harness_slug, plan_slug, title, content, status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, 'plan-epoch0', 'Epoch0 plan', ${EPOCH0_BODY}, 'active')
       `;
-      const drained0 = await drainOutboxOnce(owner.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
+      const drained0 = await drainOutboxOnce(ownerSibling.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
       expect(drained0, 'owner drained the epoch-0 key rows + the (baseline-plaintext) plan').toBeGreaterThanOrEqual(3);
 
       // WI-2102: epoch 0 is the pre-re-key BASELINE — `buildEpochEncryptCapability` returns
@@ -591,7 +597,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       // plan op is genuinely plaintext on the wire — B reads it WITHOUT needing to decrypt.
       // The read CUT (the security core of this repro) lands at the first ENCRYPTED epoch —
       // the post-ban epoch 1 below — not here.
-      const wireOps0 = await readOwnLogOps(owner.handle);
+      const wireOps0 = await readOwnLogOps(ownerSibling.handle);
       const planWire0 = wireOps0.find((o) => o.table === 'plans-by-slug' && o.hbKey === 'plan-epoch0');
       expect(planWire0, 'epoch-0 plan op federated on the owner log').toBeTruthy();
       expect(planWire0?.epoch, 'epoch-0 (baseline) plan op carries NO epoch stamp — it federates plaintext (WI-2102)')
@@ -687,11 +693,16 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
           ownerSibling.handle.admitted.has(bSibling.handle.ownLog.keyHex),
         'precondition: the owner sibling admitted at least one B log before revoke',
       ).toBe(true);
+      // Production discovers the published revoked_pubkeys union at the top of
+      // mergeOnePass; it does not call these handles' explicit revoke() method.
+      // Drive that exact refresh path on every same-topic handle on both peers.
+      ownerPublishedRevoked.add(idB.devicePubkey);
+      bPublishedRevoked.add(idB.devicePubkey);
       await Promise.all([
-        owner.handle.revoke(idB.devicePubkey),
-        ownerSibling.handle.revoke(idB.devicePubkey),
-        bPeer.handle.revoke(idB.devicePubkey),
-        bSibling.handle.revoke(idB.devicePubkey),
+        owner.mergeNow(),
+        ownerSibling.mergeNow(),
+        bPeer.mergeNow(),
+        bSibling.mergeNow(),
       ]);
       expect(
         owner.handle.admitted.has(bPeer.handle.ownLog.keyHex),
@@ -705,11 +716,11 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
           (workspace_id, harness_slug, plan_slug, title, content, status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, 'plan-epoch1', 'Epoch1 plan', ${EPOCH1_BODY}, 'active')
       `;
-      const drained1 = await drainOutboxOnce(owner.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
+      const drained1 = await drainOutboxOnce(ownerSibling.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
       expect(drained1, 'owner drained the epoch advance + epoch-1 key + the encrypted post-boundary plan')
         .toBeGreaterThanOrEqual(2);
 
-      const wireOps1 = await readOwnLogOps(owner.handle);
+      const wireOps1 = await readOwnLogOps(ownerSibling.handle);
       const planWire1 = wireOps1.find((o) => o.table === 'plans-by-slug' && o.hbKey === 'plan-epoch1');
       expect(planWire1?.epoch, 'epoch-1 plan op carries the epoch-1 stamp').toBe(1);
       expect(JSON.stringify(planWire1?.value ?? {}), 'epoch-1 plan federates as ciphertext')
