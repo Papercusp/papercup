@@ -26,6 +26,11 @@ const conversationCols = {
   id: oc.id,
   workspace_id: oc.workspaceId,
   harness_slug: oc.harnessSlug,
+  // Migration 901. Keep these as raw aliases until pull-schema has run after
+  // the migration is armed; this lets the expand-phase implementation and its
+  // ephemeral-PG tests land before generated.ts learns the columns.
+  subject_kind: dsql<string>`subject_kind`.as('subject_kind'),
+  subject_ref: dsql<string | null>`subject_ref`.as('subject_ref'),
   title: oc.title,
   status: oc.status,
   started_at: oc.startedAt,
@@ -59,8 +64,10 @@ export interface ConversationRow {
   id: string;
   workspaceId: string;
   harnessSlug: string | null;
+  subjectKind: 'global' | 'work-item';
+  subjectRef: string | null;
   title: string | null;
-  status: 'active' | 'done' | 'abandoned';
+  status: 'active' | 'done' | 'abandoned' | 'scoped';
   startedAt: number;
   endedAt: number | null;
   elConversationIds: string[];
@@ -135,7 +142,18 @@ export async function getOrCreateActiveConversation(
   const existing = await db
     .select(conversationCols)
     .from(oc)
-    .where(and(eq(oc.workspaceId, ws), eq(oc.status, 'active')))
+    .where(
+      and(
+        eq(oc.workspaceId, ws),
+        eq(oc.status, 'active'),
+        // Migration 901 makes global identity explicit. `status='scoped'`
+        // already protects old releases during the expand window; this
+        // discriminator protects every new reader even if future statuses
+        // become shared across subject kinds.
+        dsql`subject_kind = 'global'`,
+        dsql`subject_ref IS NULL`,
+      ),
+    )
     .orderBy(desc(oc.startedAt))
     .limit(1);
 
@@ -147,6 +165,110 @@ export async function getOrCreateActiveConversation(
     .returning(conversationCols);
 
   return rowToConversation(created[0] as Record<string, unknown>);
+}
+
+export interface WorkItemConversationKey {
+  workspaceId?: string;
+  harnessSlug: string;
+  workItemId: string;
+}
+
+function normalizedWorkItemConversationKey(input: WorkItemConversationKey): {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+} {
+  const workspaceId = resolveConcreteWorkspaceId(input.workspaceId);
+  const harnessSlug = input.harnessSlug?.trim();
+  const workItemId = input.workItemId?.trim();
+  if (!harnessSlug) {
+    throw new Error('work-item conversation: harnessSlug is required');
+  }
+  if (!workItemId) {
+    throw new Error('work-item conversation: workItemId is required');
+  }
+  return { workspaceId, harnessSlug, workItemId };
+}
+
+/**
+ * Read one conversation by id inside the caller's concrete workspace.
+ *
+ * This is the fail-closed identity seam used by explicit conversation routes
+ * and prompt assembly: knowing a UUID is not enough to cross a workspace.
+ */
+export async function getConversationById(
+  conversationId: string,
+  workspaceId?: string,
+): Promise<ConversationRow | null> {
+  const id = conversationId?.trim();
+  if (!id) return null;
+  const ws = resolveConcreteWorkspaceId(workspaceId);
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT id, workspace_id, harness_slug, subject_kind, subject_ref,
+            title, status, started_at, ended_at, el_conversation_ids,
+            has_audio
+       FROM harness_shared.operator_conversations
+      WHERE id = $1 AND workspace_id = $2
+      LIMIT 1`,
+    [id, ws],
+  )) as Array<Record<string, unknown>>;
+  return rows[0] ? rowToConversation(rows[0]) : null;
+}
+
+/** Read the persisted rich Papercup thread bound to one canonical work item. */
+export async function getWorkItemConversation(
+  input: WorkItemConversationKey,
+): Promise<ConversationRow | null> {
+  const key = normalizedWorkItemConversationKey(input);
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT id, workspace_id, harness_slug, subject_kind, subject_ref,
+            title, status, started_at, ended_at, el_conversation_ids,
+            has_audio
+       FROM harness_shared.operator_conversations
+      WHERE workspace_id = $1
+        AND harness_slug = $2
+        AND subject_kind = 'work-item'
+        AND subject_ref = $3
+        AND status = 'scoped'
+      LIMIT 1`,
+    [key.workspaceId, key.harnessSlug, key.workItemId],
+  )) as Array<Record<string, unknown>>;
+  return rows[0] ? rowToConversation(rows[0]) : null;
+}
+
+/**
+ * Idempotently materialize the rich Papercup thread for one work item.
+ *
+ * The partial unique index from migration 901 is the concurrency authority.
+ * `DO NOTHING` avoids emitting a spurious row-update invalidation on every
+ * reopen; the losing creator then reads the winner.
+ */
+export async function getOrCreateWorkItemConversation(
+  input: WorkItemConversationKey,
+): Promise<ConversationRow> {
+  const key = normalizedWorkItemConversationKey(input);
+  const { sql } = getOrgPg();
+  const created = (await sql.unsafe(
+    `INSERT INTO harness_shared.operator_conversations
+       (workspace_id, harness_slug, subject_kind, subject_ref, status, started_at)
+     VALUES ($1, $2, 'work-item', $3, 'scoped', $4)
+     ON CONFLICT (workspace_id, harness_slug, subject_ref)
+       WHERE subject_kind = 'work-item'
+     DO NOTHING
+     RETURNING id, workspace_id, harness_slug, subject_kind, subject_ref,
+               title, status, started_at, ended_at, el_conversation_ids,
+               has_audio`,
+    [key.workspaceId, key.harnessSlug, key.workItemId, Date.now()],
+  )) as Array<Record<string, unknown>>;
+  if (created[0]) return rowToConversation(created[0]);
+
+  const existing = await getWorkItemConversation(key);
+  if (existing) return existing;
+  throw new Error(
+    `work-item conversation conflict did not resolve for ${key.harnessSlug}/${key.workItemId}`,
+  );
 }
 
 export async function listTurns(conversationId: string): Promise<TurnRow[]> {
@@ -441,6 +563,8 @@ function rowToConversation(r: Record<string, unknown>): ConversationRow {
     id: String(r.id),
     workspaceId: String(r.workspace_id ?? ''),
     harnessSlug: r.harness_slug == null ? null : String(r.harness_slug),
+    subjectKind: r.subject_kind === 'work-item' ? 'work-item' : 'global',
+    subjectRef: r.subject_ref == null ? null : String(r.subject_ref),
     title: r.title == null ? null : String(r.title),
     status: (r.status as ConversationRow['status']) ?? 'active',
     startedAt: Number(r.started_at),

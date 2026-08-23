@@ -15,6 +15,7 @@ import {
 import '../../../agent-tools/index';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget, shouldBypassOperatorBudget } from '../../../operator-budget';
+import { getConversationById } from '../../../operator-conversations';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface ConverseRequestBody {
@@ -121,6 +122,25 @@ export default defineTool({
 
     const ctrl = new AbortController();
     const workspaceId = activeWorkspaceId();
+
+    // An explicit id is a fail-closed target, not a hint. Validate it inside
+    // the request's workspace before starting an expensive stream; prompt
+    // assembly then re-resolves its subject from this canonical row rather
+    // than accepting work-item metadata from the browser.
+    if (body.conversationId !== undefined) {
+      const requestedId = body.conversationId.trim();
+      if (!requestedId) {
+        return Response.json({ error: 'conversationId must be non-empty' }, { status: 400 });
+      }
+      const conversation = await getConversationById(requestedId, workspaceId);
+      if (!conversation) {
+        return Response.json(
+          { error: 'conversation not found in the active workspace' },
+          { status: 404 },
+        );
+      }
+      body.conversationId = conversation.id;
+    }
 
     return sseResponse({
       signal: req.signal,

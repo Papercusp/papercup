@@ -6638,6 +6638,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [await getOrCreateActiveConversation(workspaceId)];
     },
   },
+  // Focused, side-effect-free identity read for an inline work-item Discuss
+  // host. Creation stays an explicit POST mutation; a cache refetch can never
+  // mint a conversation as a side effect.
+  'operatorConversations.byWorkItem': {
+    argsSchema: z.object({
+      workspaceId: z.string().optional(),
+      harness: z.string().trim().min(1),
+      workItemId: z.string().trim().min(1),
+    }),
+    resolve: async (args) => {
+      const { workspaceId, harness, workItemId } = args as {
+        workspaceId?: string;
+        harness: string;
+        workItemId: string;
+      };
+      const { getWorkItemConversation } = await import('../operator-conversations');
+      const conversation = await getWorkItemConversation({
+        workspaceId,
+        harnessSlug: harness,
+        workItemId,
+      });
+      return conversation ? [conversation] : [];
+    },
+  },
   // `operatorTurns.byConversation` USED TO LIVE HERE. Removed by
   // EI-19372323793235963, completing P-025 (no-http-anywhere-2026-07-28 D-016/D-018):
   // the chat pane's live tail no longer runs its own query — it reads `initialPage

@@ -12,6 +12,7 @@ import { askChoiceOptionIds } from '../../../ask-choice-options';
 import { canonicalToolName } from '../../../operator-mcp-tools';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { getConversationById } from '../../../operator-conversations';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
@@ -27,6 +28,9 @@ export default defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const conversationId = ctx.params.id as string;
+    if (!(await getConversationById(conversationId))) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
+    }
     const body = (await req.json().catch(() => null)) as Body | null;
     const picks = Array.isArray(body?.picks) ? body.picks : [];
     const declined = body?.declined === true;

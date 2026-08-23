@@ -116,6 +116,25 @@ export async function buildOperatorPrompt(
   // conversation. Best-effort: no conversationId / no summary yet / a read
   // failure all degrade to exactly the legacy window behavior.
   const contextMode = prefs?.operatorContextMode ?? 'compaction';
+  // A scoped client sends only the conversation id. Resolve the bound subject
+  // on the server and keep this lookup concurrent with the existing summary /
+  // memory gathers so work-item context does not add a serial prompt phase.
+  const subjectContextPromise: Promise<string | null> = input.conversationId
+    ? import('../../operator-conversation-subject')
+        .then(({ buildOperatorConversationSubjectContext }) =>
+          buildOperatorConversationSubjectContext(
+            input.conversationId!,
+            activeWorkspaceId(),
+          ),
+        )
+        .catch((err) => {
+          console.warn(
+            '[converse-prompt] conversation subject read failed (omitting the section):',
+            err instanceof Error ? err.message : String(err),
+          );
+          return null;
+        })
+    : Promise.resolve(null);
   let compactedSummary: string | null = null;
   if (contextMode === 'compaction' && input.conversationId) {
     try {
@@ -321,6 +340,9 @@ export async function buildOperatorPrompt(
   if (sentinelBlock && !memoryInUser) systemSections.push(sentinelBlock);
   const tSentinel = Date.now();
 
+  const subjectContextBlock = await subjectContextPromise;
+  const tSubject = Date.now();
+
   // USER sections (this turn's context — sent as the positional message).
   // historySections carry the conversation PAST (rolling summary + verbatim
   // transcript window). A RESUMED claude session already holds those turns
@@ -377,6 +399,10 @@ export async function buildOperatorPrompt(
   // prompt stays byte-stable for session reuse + prompt-cache hits.
   if (memoryInUser && memBlock) userSections.push(memBlock);
   if (memoryInUser && sentinelBlock) userSections.push(sentinelBlock);
+  // Always a USER section: the canonical work-item state can change between
+  // turns, and resumed brain sessions must receive the fresh record in their
+  // delta prompt too. Global conversations return null and stay byte-identical.
+  if (subjectContextBlock) userSections.push(subjectContextBlock);
 
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
     user_message: `Trigger: user_message — the user just said something. React per the ladder.
@@ -523,7 +549,8 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
   console.log(
     `[converse-prompt] prompt-phases historySummaryMs=${tHistSummary - tP0} ` +
       `personaCatalogMs=${tPersona - tHistSummary} memoryMs=${tMem - tPersona} ` +
-      `sentinelMs=${tSentinel - tMem} renderMs=${Date.now() - tSentinel} role=${role}`,
+      `sentinelMs=${tSentinel - tMem} subjectMs=${tSubject - tSentinel} ` +
+      `renderMs=${Date.now() - tSubject} role=${role}`,
   );
 
   return {

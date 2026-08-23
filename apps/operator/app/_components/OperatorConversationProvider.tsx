@@ -897,13 +897,35 @@ interface ProviderProps {
   children: ReactNode;
   /** Optional override — tests inject a fake generation fn here. */
   generationFn?: GenerationFn;
+  /**
+   * Default/global keeps the one workspace Papercup thread and its ambient
+   * mode/voice/proactive ownership. A work-item target is an isolated nested
+   * runtime and MUST carry a concrete server-resolved id before it can write.
+   */
+  target?: OperatorConversationTarget;
 }
+
+export type OperatorConversationTarget =
+  | { kind: "global" }
+  | { kind: "work-item"; conversationId: string | null };
+
+const GLOBAL_CONVERSATION_TARGET: OperatorConversationTarget = {
+  kind: "global",
+};
 
 export function OperatorConversationProvider({
   children,
   generationFn = defaultGenerationFn,
+  target = GLOBAL_CONVERSATION_TARGET,
 }: ProviderProps) {
-  const [state, dispatch] = useReducer(reducer, INITIAL, initState);
+  const isGlobalTarget = target.kind === "global";
+  const explicitConversationId =
+    target.kind === "work-item" && target.conversationId?.trim()
+      ? target.conversationId.trim()
+      : null;
+  const [state, dispatch] = useReducer(reducer, INITIAL, () =>
+    isGlobalTarget ? initState() : { ...INITIAL },
+  );
   const workspaceId = useWorkspaceId();
 
   // ── Voice-card router state (plan §C.1 / §C.1a) ───────────────────
@@ -995,11 +1017,11 @@ export function OperatorConversationProvider({
   // and is shared between the text path and (later) the EL voice path.
   // SessionStorage is kept as a paint-cache so refresh has no flash —
   // PG hydration overwrites it once the GET resolves.
-  const conversationIdRef = useRef<string | null>(null);
+  const conversationIdRef = useRef<string | null>(explicitConversationId);
   // Mirror conv ID into React state so useSyncQuery's `enabled` flips when
   // it lands. The ref alone is fine for the imperative POST path but a
   // hook gate needs reactive state.
-  const [convId, setConvId] = useState<string | null>(null);
+  const [convId, setConvId] = useState<string | null>(explicitConversationId);
 
   // Infinite-scroll cursors. We track the oldest + newest turn `seq`
   // we've materialized into `state.messages` so we can:
@@ -1056,10 +1078,12 @@ export function OperatorConversationProvider({
   const conversationSync = useSyncQuery<{ id: string }>({
     queryName: "operatorConversations.current",
     args: { workspaceId },
+    enabled: isGlobalTarget,
     staleTime: 30_000,
   });
   const currentConversation = conversationSync.data?.[0];
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (
       !currentConversation?.id ||
       currentConversation.id === conversationIdRef.current
@@ -1068,7 +1092,25 @@ export function OperatorConversationProvider({
     conversationIdRef.current = currentConversation.id;
     setConvId(currentConversation.id);
     hydratedRef.current = false;
-  }, [currentConversation?.id]);
+  }, [currentConversation?.id, isGlobalTarget]);
+
+  // A nested work-item host owns its explicit id. Switching rows clears the
+  // prior transcript immediately; waiting for the new query before clearing
+  // would briefly render one work item's messages under another item.
+  useEffect(() => {
+    if (isGlobalTarget) return;
+    if (conversationIdRef.current === explicitConversationId) return;
+    conversationIdRef.current = explicitConversationId;
+    setConvId(explicitConversationId);
+    hydratedRef.current = false;
+    hydratedConversationRef.current = null;
+    oldestLoadedSeqRef.current = null;
+    newestLoadedSeqRef.current = null;
+    setHasMoreEarlier(false);
+    setOlderBeforeSeq(null);
+    setLoadingEarlier(false);
+    dispatch({ type: "replace_messages", messages: [] });
+  }, [explicitConversationId, isGlobalTarget]);
 
   const initialPageSync = useSyncQuery<TurnPage>({
     queryName: "operatorTurns.page",
@@ -1300,8 +1342,9 @@ export function OperatorConversationProvider({
   // resets on app reopen, matching the mode + sleep semantics. The
   // cap inside writeOperatorMessagesToSession bounds the footprint.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     writeOperatorMessagesToSession(state.messages);
-  }, [state.messages]);
+  }, [isGlobalTarget, state.messages]);
 
   // PG turn write. Called from sendUserMessage and from runGeneration once
   // the assistant turn is parsed. We don't block the UI on the network — the
@@ -1339,7 +1382,16 @@ export function OperatorConversationProvider({
         for (let i = 1; i <= MAX_TRIES; i++) {
           // Re-read per try — an earlier try (or the sync query) may have
           // resolved the id in the meantime.
-          const target = conversationIdRef.current ?? "active";
+          const target =
+            conversationIdRef.current ?? (isGlobalTarget ? "active" : null);
+          if (!target) {
+            dispatch({
+              type: "set_error",
+              error:
+                "This work-item conversation is still resolving and was not written.",
+            });
+            return;
+          }
           try {
             const r = await fetch(
               `/api/operator/conversations/${target}/turns`,
@@ -1407,7 +1459,7 @@ export function OperatorConversationProvider({
       };
       void attempt();
     },
-    [],
+    [isGlobalTarget],
   );
 
   // Multi-window coherence (P-008): another window may have appended turns
@@ -1421,7 +1473,9 @@ export function OperatorConversationProvider({
   const freshenHistory = useCallback(
     async (history: ChatMessage[], timeoutMs = 250): Promise<ChatMessage[]> => {
       try {
-        const target = conversationIdRef.current ?? "active";
+        const target =
+          conversationIdRef.current ?? (isGlobalTarget ? "active" : null);
+        if (!target) return history;
         const r = await fetch(
           `/api/operator/conversations/${target}/turns?limit=30`,
           {
@@ -1465,7 +1519,7 @@ export function OperatorConversationProvider({
         return history;
       }
     },
-    [],
+    [isGlobalTarget],
   );
 
   // Hydrate mode from sessionStorage on mount. If the session is
@@ -1474,6 +1528,7 @@ export function OperatorConversationProvider({
   // pref fetch fails, default to 'active' so the operator-as-collaborator
   // experience works even without persisted prefs.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     const seedFromSession = readOperatorModeFromSession();
     if (seedFromSession) {
       // Mid-session value is authoritative.
@@ -1640,7 +1695,7 @@ export function OperatorConversationProvider({
       );
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isGlobalTarget]);
 
   // ── In-flight generation tracking ───────────────────────────────────
   const inFlightRef = useRef<AbortController | null>(null);
@@ -1693,12 +1748,20 @@ export function OperatorConversationProvider({
         spokenReply?: boolean;
       },
     ) => {
+      if (!isGlobalTarget && !conversationIdRef.current) {
+        dispatch({
+          type: "set_error",
+          error:
+            "This work-item conversation is still resolving. No message was sent.",
+        });
+        return;
+      }
       // Multi-window coherence (P-009): an AUTO-fired generation (terminal
       // tick, welcome, chained continue descending from one) yields while
       // ANOTHER window is mid-generation — two spontaneous brains on one
       // thread read as the operator talking over itself. User sends are
       // never deferred.
-      if (opts?.isAutoFire && peerGeneratingNow()) {
+      if (isGlobalTarget && opts?.isAutoFire && peerGeneratingNow()) {
         console.debug(
           "[operator] auto-fire deferred — a peer window is generating",
         );
@@ -1714,7 +1777,7 @@ export function OperatorConversationProvider({
       dispatch({ type: "set_sub", sub: "generating" });
       dispatch({ type: "set_error", error: null });
       // Cross-window typing indicator + auto-fire deferral beacon (P-009).
-      broadcastGenerating(true);
+      if (isGlobalTarget) broadcastGenerating(true);
       let lastGenBeatMs = Date.now();
       const sayProjector = new OperatorSayStreamProjector();
       let streamedAssistantId: string | null = null;
@@ -1727,8 +1790,9 @@ export function OperatorConversationProvider({
         const stream = await generationFn({
           messages: history,
           trigger,
-          mayAskActive: mayAskActiveNow(snapshot),
-          modality: voiceActiveRef.current ? "voice" : "text",
+          mayAskActive: isGlobalTarget ? mayAskActiveNow(snapshot) : false,
+          modality:
+            isGlobalTarget && voiceActiveRef.current ? "voice" : "text",
           welcomedUser: opts?.welcomedUser,
           signal: ctrl.signal,
           // V8 continue-chain ledger plumbing — server records one
@@ -1755,7 +1819,7 @@ export function OperatorConversationProvider({
           // (peers treat a stale beacon as a crashed writer).
           if (Date.now() - lastGenBeatMs > 5_000) {
             lastGenBeatMs = Date.now();
-            broadcastGenerating(true);
+            if (isGlobalTarget) broadcastGenerating(true);
           }
         }
         if (ctrl.signal.aborted) return;
@@ -1804,7 +1868,7 @@ export function OperatorConversationProvider({
           // Guarded by `spokenReply` (NOT just voiceActiveRef) so a
           // turn the user TYPED while voice happens to be on stays
           // silent. (sentinel-tui-shared-backend-and-cards Phase 1.)
-          if (opts?.spokenReply && sayContent.trim()) {
+          if (isGlobalTarget && opts?.spokenReply && sayContent.trim()) {
             try {
               speak(sayContent.trim(), "system:operator", "polite");
             } catch {
@@ -1829,7 +1893,7 @@ export function OperatorConversationProvider({
           persistTurn(
             "assistant",
             sayContent,
-            opts?.spokenReply ? "voice_tts" : "text_typed",
+            isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",
             streamedAssistantId ?? undefined,
             collectedTools,
             report,
@@ -1841,7 +1905,7 @@ export function OperatorConversationProvider({
         // Successful turn → clear backoff. G14.
         dispatch({ type: "reset_error_count" });
 
-        if (parsed.sleep) {
+        if (isGlobalTarget && parsed.sleep) {
           writeSleepUntilMs(sleepTagToEpochMs(parsed.sleep));
         }
 
@@ -1859,8 +1923,12 @@ export function OperatorConversationProvider({
         // dismissed the operator AND the model's response didn't
         // include <set_mode>passive</set_mode>, force the flip. Plan
         // flagged the gap; this closes it.
-        let effectiveMode = parsed.setMode;
-        if (!effectiveMode && stateRef.current.mode === "active") {
+        let effectiveMode = isGlobalTarget ? parsed.setMode : undefined;
+        if (
+          isGlobalTarget &&
+          !effectiveMode &&
+          stateRef.current.mode === "active"
+        ) {
           const lastUser = [...history]
             .reverse()
             .find((m) => m.role === "user");
@@ -2004,6 +2072,7 @@ export function OperatorConversationProvider({
         // sharedState (operator-shared-state) — different store from
         // state.mode (active/passive).
         const isTerminal =
+          isGlobalTarget &&
           !parsed.continue &&
           !parsed.sleep &&
           !awaitingReply &&
@@ -2062,7 +2131,7 @@ export function OperatorConversationProvider({
         // over (a chained runGeneration replaced inFlightRef synchronously
         // in its prologue — its own lifecycle owns the beacon then).
         if (inFlightRef.current === ctrl) {
-          broadcastGenerating(false);
+          if (isGlobalTarget) broadcastGenerating(false);
         }
         // G15 — aborted with no follow-up taking over → reset sub so
         // the chat doesn't get stranded in 'generating'.
@@ -2075,7 +2144,7 @@ export function OperatorConversationProvider({
         }
       }
     },
-    [generationFn, persistTurn],
+    [generationFn, isGlobalTarget, persistTurn],
   );
 
   // ── Silence timers ──────────────────────────────────────────────────
@@ -2090,6 +2159,7 @@ export function OperatorConversationProvider({
   // and the unified-conversation log fills with two parallel monologues
   // ("Bug B" of the voice/text divergence audit).
   const [voiceActive, setVoiceActive] = useState(() => {
+    if (!isGlobalTarget) return false;
     try {
       return getVoiceState().mode !== "off";
     } catch {
@@ -2101,11 +2171,12 @@ export function OperatorConversationProvider({
   // Provider mounts BEFORE the first generation runs, so the initial
   // ref value matches the first useState init.
   useEffect(() => {
-    voiceActiveRef.current = voiceActive;
-  }, [voiceActive]);
+    voiceActiveRef.current = isGlobalTarget && voiceActive;
+  }, [isGlobalTarget, voiceActive]);
   useEffect(() => {
+    if (!isGlobalTarget) return;
     return subscribeVoiceState((s) => setVoiceActive(s.mode !== "off"));
-  }, []);
+  }, [isGlobalTarget]);
 
   // ── Cross-window operator-state sync (multi-window-chat-coherence) ──
   // Mode/sleep flips made in a peer window (main app ↔ Quick Panel) land
@@ -2113,6 +2184,7 @@ export function OperatorConversationProvider({
   // surface as `peerBusy` (typing indicator + auto-fire deferral).
   const [peerBusy, setPeerBusy] = useState(false);
   useEffect(() => {
+    if (!isGlobalTarget) return;
     return installOperatorWindowSync({
       onModeFromPeer: (mode) => {
         writeOperatorModeToSession(mode);
@@ -2149,7 +2221,7 @@ export function OperatorConversationProvider({
       },
       onPeerGenerating: setPeerBusy,
     });
-  }, []);
+  }, [isGlobalTarget]);
 
   // ── Voice-card router lifecycle (plan §C.1a + C.6) ────────────────
   //
@@ -2171,6 +2243,7 @@ export function OperatorConversationProvider({
   // chat:ask_choice tool_call SSE event lands. Voice-active gates the
   // arming; if the user is text-only, the router stays asleep.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     const onToolCall = (e: Event) => {
       const detail = (e as CustomEvent<{ name?: string; tsMs?: number }>)
         .detail;
@@ -2214,7 +2287,7 @@ export function OperatorConversationProvider({
         onToolCall as EventListener,
       );
     };
-  }, []);
+  }, [isGlobalTarget]);
 
   // Sync active ref to the focused card from state-snapshot.
   // Also publishes 'operator:cardOpen' window events (per
@@ -2224,6 +2297,7 @@ export function OperatorConversationProvider({
   // be spoken when voice is on.
   const announcedCardsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (!voiceActiveRef.current) {
       routerClearActive(routerStateRef.current);
       return;
@@ -2301,21 +2375,23 @@ export function OperatorConversationProvider({
       clearTimeout(routerBufferTimerRef.current);
       routerBufferTimerRef.current = null;
     }
-  }, [focusedCard]);
+  }, [focusedCard, isGlobalTarget]);
 
   // Drop announce-dedup entries for cards that have closed, so a
   // future re-emit at the same correlationId would re-announce.
   // (correlationIds are typically unique-per-card, so this mostly
   // matters for the test surface where ids may be reused.)
   useEffect(() => {
+    if (!isGlobalTarget) return;
     const open = new Set(openCards.map((c) => c.correlationId));
     for (const id of Array.from(announcedCardsRef.current)) {
       if (!open.has(id)) announcedCardsRef.current.delete(id);
     }
-  }, [openCards]);
+  }, [isGlobalTarget, openCards]);
 
   // Voice-off → reset everything.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (!voiceActive) {
       resetRouter(routerStateRef.current);
       if (routerBufferTimerRef.current) {
@@ -2327,22 +2403,24 @@ export function OperatorConversationProvider({
       // back on.
       cancelNudgeGraceTimer();
     }
-  }, [voiceActive, cancelNudgeGraceTimer]);
+  }, [isGlobalTarget, voiceActive, cancelNudgeGraceTimer]);
 
   // Card resolution OR no open card cancels the grace timer. This
   // covers both 'user clicked Ready' and 'card auto-cancelled
   // server-side at 120s'. The focused-card effect already runs on
   // every state-snapshot tick, so this hook is the natural place.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (focusedCard === null) {
       cancelNudgeGraceTimer();
     }
-  }, [focusedCard, cancelNudgeGraceTimer]);
+  }, [focusedCard, isGlobalTarget, cancelNudgeGraceTimer]);
 
   // Track EL teardowns for the proactive-tick cool-off (plan §C.8).
   // When the silence-nudge grace timer tears down EL, we don't want
   // a terminal turn auto-fire to immediately bombard the user.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     const onTeardown = () => {
       lastELTeardownMsRef.current = Date.now();
     };
@@ -2356,23 +2434,25 @@ export function OperatorConversationProvider({
         onTeardown as EventListener,
       );
     };
-  }, []);
+  }, [isGlobalTarget]);
 
   // Live voice-prefs subscription. Tears down the active router ref
   // Seed audienceModeRef from prefs cache and keep it live.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     audienceModeRef.current = loadVoicePrefsClient().audienceMode ?? "engineer";
     const unsub = subscribeVoicePrefsClient((next) => {
       audienceModeRef.current = next.audienceMode ?? "engineer";
     });
     return unsub;
-  }, []);
+  }, [isGlobalTarget]);
 
   // when cardAnsweringEnabled flips OFF mid-session (plan §C.10 +
   // audit gap #2). Hydration also calls the listener so the initial
   // value reflects the server cache, not the DEFAULT_CLIENT_PREFS
   // bootstrap.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     // Seed from current cache.
     cardAnsweringEnabledRef.current =
       loadVoicePrefsClient().cardAnsweringEnabled !== false;
@@ -2386,7 +2466,7 @@ export function OperatorConversationProvider({
       }
     });
     return unsub;
-  }, []);
+  }, [isGlobalTarget]);
 
   // Sleep gate. The LLM emits `<sleep>{minutes}</sleep>` when the user
   // says "give me a minute" / "I'm busy" — the silence-nudge timer must
@@ -2396,6 +2476,7 @@ export function OperatorConversationProvider({
   // sleep deadline passes (or when the user wakes the operator via
   // the navbar chip).
   const [sleepUntilMs, setSleepUntilMsState] = useState(() => {
+    if (!isGlobalTarget) return 0;
     try {
       return readSleepUntilMs();
     } catch {
@@ -2403,14 +2484,16 @@ export function OperatorConversationProvider({
     }
   });
   useEffect(() => {
+    if (!isGlobalTarget) return;
     const refresh = () => setSleepUntilMsState(readSleepUntilMs());
     refresh();
     window.addEventListener("papercusp:operatorSleep", refresh);
     return () => window.removeEventListener("papercusp:operatorSleep", refresh);
-  }, []);
+  }, [isGlobalTarget]);
   // When sleep expires in the future, schedule a wake-up so the silence
   // timer re-arms automatically. Cleared on every effect re-run.
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (sleepUntilMs <= 0) return;
     const remaining = sleepUntilMs - Date.now();
     if (remaining <= 0) {
@@ -2419,7 +2502,7 @@ export function OperatorConversationProvider({
     }
     const t = setTimeout(() => setSleepUntilMsState(0), remaining + 100);
     return () => clearTimeout(t);
-  }, [sleepUntilMs]);
+  }, [isGlobalTarget, sleepUntilMs]);
 
   // G13/G14 — silence ladder respects freshness + applies error backoff.
   // SILENCE_FRESHNESS_MS: only run the ladder if the most recent turn
@@ -2442,6 +2525,7 @@ export function OperatorConversationProvider({
   //
   // Plan: silence-nudge-reliability-2026-05-14.md §C.1
   const fireSilenceNudge = useCallback(async () => {
+    if (!isGlobalTarget) return;
     const id = conversationIdRef.current;
     if (!id) return;
     const prefs = loadVoicePrefsClient();
@@ -2472,9 +2556,10 @@ export function OperatorConversationProvider({
     // Transition sub to 'nudged' so the next render doesn't re-arm
     // the timer (same terminal state as the legacy brain-driven path).
     dispatch({ type: "set_sub", sub: "nudged" });
-  }, [workspaceId, armNudgeGraceTimer]);
+  }, [isGlobalTarget, workspaceId, armNudgeGraceTimer]);
 
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (state.mode !== "active") return;
     if (voiceActive) return; // voice owns the conversation; no nudge filler
     if (sleepUntilMs > Date.now()) return; // operator self-quieted via <sleep> tag
@@ -2505,6 +2590,7 @@ export function OperatorConversationProvider({
     errorMul,
     voiceActive,
     sleepUntilMs,
+    isGlobalTarget,
   ]);
 
   // G10 — opening utterance on fresh chat. Fires ONCE on mount when the
@@ -2513,6 +2599,7 @@ export function OperatorConversationProvider({
   // (e.g. another flag flipping during the in-flight generation).
   const openCanvasFiredRef = useRef(false);
   useEffect(() => {
+    if (!isGlobalTarget) return;
     if (openCanvasFiredRef.current) return;
     if (!hydratedRef.current) return;
     if (state.mode !== "active") return;
@@ -2550,6 +2637,7 @@ export function OperatorConversationProvider({
     voiceActive,
     sleepUntilMs,
     runGeneration,
+    isGlobalTarget,
   ]);
 
   // ── Public actions ──────────────────────────────────────────────────
@@ -2558,6 +2646,14 @@ export function OperatorConversationProvider({
     (text: string, sendOpts?: { spoken?: boolean }) => {
       const trimmed = text.trim();
       if (!trimmed) return;
+      if (!isGlobalTarget && !conversationIdRef.current) {
+        dispatch({
+          type: "set_error",
+          error:
+            "This work-item conversation is still resolving. No message was sent.",
+        });
+        return;
+      }
       // Optimistic id — swapped for the real PG id once the POST
       // returns (see persistTurn). The live-tail Zero reconciler
       // dedupes by id, so a fast Zero echo won't double-render the
@@ -2593,7 +2689,9 @@ export function OperatorConversationProvider({
       persistTurn(
         "user",
         trimmed,
-        sendOpts?.spoken === true ? "voice_stt" : "text_typed",
+        isGlobalTarget && sendOpts?.spoken === true
+          ? "voice_stt"
+          : "text_typed",
         optimisticId,
       );
       // Trigger resolution (priority order):
@@ -2622,7 +2720,7 @@ export function OperatorConversationProvider({
         const merged = await freshenHistory(nextHistory);
         void runGeneration(trigger, {
           messagesOverride: merged,
-          spokenReply: sendOpts?.spoken === true,
+          spokenReply: isGlobalTarget && sendOpts?.spoken === true,
         });
       })();
     },
@@ -2632,6 +2730,7 @@ export function OperatorConversationProvider({
       freshenHistory,
       cancelNudgeGraceTimer,
       resetContinueChain,
+      isGlobalTarget,
     ],
   );
 
@@ -2643,11 +2742,20 @@ export function OperatorConversationProvider({
   // path, which required a dev zellij pui-dock and dropped every turn on a normal
   // desktop ("Agent did not respond").
   useEffect(() => {
+    if (!isGlobalTarget) return;
     setVoiceConverseHandler(sendUserMessage);
     return () => setVoiceConverseHandler(null);
-  }, [sendUserMessage]);
+  }, [isGlobalTarget, sendUserMessage]);
 
   const generateIdeas = useCallback(() => {
+    if (!isGlobalTarget && !conversationIdRef.current) {
+      dispatch({
+        type: "set_error",
+        error:
+          "This work-item conversation is still resolving. No request was sent.",
+      });
+      return;
+    }
     // Explicit user request — reset the chain (it's a new ask) and
     // dispatch user_says_ready. Works in both active and passive
     // modes because it's user-initiated. NOT marked as isAutoFire
@@ -2656,9 +2764,18 @@ export function OperatorConversationProvider({
     resetContinueChain();
     cancelNudgeGraceTimer();
     void runGeneration("user_says_ready");
-  }, [runGeneration, resetContinueChain, cancelNudgeGraceTimer]);
+  }, [
+    runGeneration,
+    resetContinueChain,
+    cancelNudgeGraceTimer,
+    isGlobalTarget,
+  ]);
 
   const flipMode = useCallback((mode: OperatorMode) => {
+    if (!isGlobalTarget) {
+      dispatch({ type: "set_mode", mode });
+      return;
+    }
     writeOperatorModeToSession(mode);
     // Flipping TO active wakes the operator if it was sleeping —
     // otherwise the user-visible chip says "Active" while the silence
@@ -2681,7 +2798,7 @@ export function OperatorConversationProvider({
       /* ignore */
     }
     dispatch({ type: "set_mode", mode });
-  }, []);
+  }, [isGlobalTarget]);
 
   // Banner text for transient sub-states (silence prompts).
   const bannerText = useMemo<string | null>(() => {

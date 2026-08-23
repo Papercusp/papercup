@@ -14,6 +14,7 @@
  */
 import {
   appendTurn,
+  getConversationById,
   getOrCreateActiveConversation,
   listTurnsRecent,
   type TurnRole,
@@ -33,13 +34,21 @@ interface Body {
   report?: unknown;
 }
 
+async function resolveConversationId(raw: string): Promise<string | null> {
+  if (raw === 'active') return (await getOrCreateActiveConversation()).id;
+  return (await getConversationById(raw))?.id ?? null;
+}
+
 const get = defineTool({
   method: 'GET',
   path: '/operator/conversations/:id/turns',
   auth: 'public',
   async handler(req, ctx) {
     const raw = ctx.params.id as string;
-    const id = raw === 'active' ? (await getOrCreateActiveConversation()).id : raw;
+    const id = await resolveConversationId(raw);
+    if (!id) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
+    }
     const url = new URL(req.url);
     const beforeRaw = url.searchParams.get('beforeSeq');
     const limitRaw = url.searchParams.get('limit');
@@ -59,7 +68,10 @@ const post = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const raw = ctx.params.id as string;
-    const id = raw === 'active' ? (await getOrCreateActiveConversation()).id : raw;
+    const id = await resolveConversationId(raw);
+    if (!id) {
+      return Response.json({ error: 'conversation not found' }, { status: 404 });
+    }
     const body = (await req.json()) as Body;
     if (!body || typeof body.text !== 'string' || !body.role) {
       return Response.json({ error: 'role and text required' }, { status: 400 });
