@@ -1504,6 +1504,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     maxResubmits = 3,
     quietMs = 50,
     writeCr,
+    onExhausted,
   }: {
     output: (t: number) => number;
     input?: (t: number) => number;
@@ -1512,10 +1513,20 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     maxResubmits?: number;
     quietMs?: number;
     writeCr?: () => void;
+    onExhausted?: (details: {
+      polls: number;
+      resubmits: number;
+      outputObservedAfterResubmit: boolean;
+    }) => void;
   }) {
     let t = 0;
     const crs: number[] = [];
     const resubmitCalls: number[] = [];
+    const exhaustedCalls: Array<{
+      polls: number;
+      resubmits: number;
+      outputObservedAfterResubmit: boolean;
+    }> = [];
     const v = makeSubmitVerifier({
       lastOutputAt: () => output(t),
       lastInputAt: input ? () => input(t) : undefined,
@@ -1529,8 +1540,12 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
         t += ms;
       },
       onResubmit: (n: number) => resubmitCalls.push(n),
+      onExhausted: (details) => {
+        exhaustedCalls.push(details);
+        onExhausted?.(details);
+      },
     });
-    return { v, crs, resubmitCalls };
+    return { v, crs, resubmitCalls, exhaustedCalls };
   }
 
   it('a submitted turn (output flowing at every poll) needs no resubmit', async () => {
@@ -1551,12 +1566,26 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     expect(resubmitCalls).toEqual([1, 2, 3]);
   });
 
+  it('reports exhaustion once when the bounded CR window ends without output', async () => {
+    const { v, crs, exhaustedCalls } = rig({ output: () => 0, polls: 4, maxResubmits: 2 });
+    await v.verify();
+    expect(crs).toEqual([100, 200]);
+    expect(exhaustedCalls).toEqual([
+      {
+        polls: 2,
+        resubmits: 2,
+        outputObservedAfterResubmit: false,
+      },
+    ]);
+  });
+
   it('stops resubmitting once a resubmit takes (output starts flowing)', async () => {
     // Quiet at poll 1 (t=100) → one CR; from t=150 the turn is running.
-    const { v, crs } = rig({ output: (t) => (t >= 150 ? t : 0) });
+    const { v, crs, exhaustedCalls } = rig({ output: (t) => (t >= 150 ? t : 0) });
     const r = await v.verify();
     expect(r.resubmits).toBe(1);
     expect(crs).toEqual([100]);
+    expect(exhaustedCalls).toEqual([]);
   });
 
   it('covers the compact trap: busy residual output first, THEN the quiet reveal', async () => {
