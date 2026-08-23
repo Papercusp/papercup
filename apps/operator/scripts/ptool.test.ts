@@ -83,6 +83,8 @@ describe('ptool bearer-token resolution', () => {
 describe('ptool call deadlines', () => {
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
+    expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
     expect(timeoutForTool('git-sync:run')).toBe(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS);
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);

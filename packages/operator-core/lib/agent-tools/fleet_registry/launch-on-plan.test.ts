@@ -69,6 +69,7 @@ describe('persisted fleet launch profile recovery guard (D-004)', () => {
   it('accepts omission, repeated values, and a headless placement delta', () => {
     expect(persistedFleetLaunchProfileConflicts({}, saved)).toEqual([]);
     expect(persistedFleetLaunchProfileConflicts({ headless: true } as never, saved)).toEqual([]);
+    expect(persistedFleetLaunchProfileConflicts({ name: 'Profiled Fleet', count: 30, placement: 'local' } as never, saved)).toEqual([]);
     expect(persistedFleetLaunchProfileConflicts({ plan: 'byoc-plan', model: 'gpt-5.6-sol:high' }, saved)).toEqual([]);
   });
 

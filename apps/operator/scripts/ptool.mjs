@@ -731,6 +731,12 @@ export const PTOOL_CONNECT_TIMEOUT_MS = PSU_REQUEST_TIMEOUT_MS;
 // long-running call by passing timeoutMs: 0 to the exported helper.
 export const PTOOL_CALL_TOOL_TIMEOUT_MS = 30_000;
 
+// `fleet:launch-on-plan` opens terminals/processes in waves and then waits for
+// bounded first-turn verification. A five-member visible wave has measured
+// multi-minute completion time under fleet load; keep ptool from abandoning the
+// call at its ordinary 30s ceiling while the server is still doing real work.
+export const PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS = 300_000;
+
 // `git-sync:run` is an acknowledged long-running call: its server handler
 // bounds the sync fire at 45s and may spend up to 5s each reading HEAD before
 // and after that fire. Keep the normal ptool liveness ceiling for ordinary
@@ -784,6 +790,7 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 195_000;
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
+  ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],

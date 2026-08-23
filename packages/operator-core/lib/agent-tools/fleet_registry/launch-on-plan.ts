@@ -233,7 +233,12 @@ export function persistedFleetLaunchProfileConflicts(
   };
   const conflicts: PersistedFleetLaunchProfileConflict[] = [];
   for (const [field, requestedValue] of Object.entries(requested)) {
-    if (field === 'headless' || field === 'members' || field === 'perMemberLaunchContext' || requestedValue === undefined) continue;
+    // The runtime args object also contains launch controls such as `name`,
+    // `count`, and `placement`. They are intentionally not persisted in the
+    // homogeneous boot profile, so they cannot conflict with one. Compare only
+    // fields represented in savedValues; the member-specific overrides below
+    // remain explicit conflicts by design.
+    if (requestedValue === undefined || !Object.hasOwn(savedValues, field)) continue;
     const savedValue = savedValues[field];
     if (JSON.stringify(requestedValue) !== JSON.stringify(savedValue)) {
       conflicts.push({ field, saved: savedValue, requested: requestedValue });
