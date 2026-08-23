@@ -88,6 +88,9 @@ export interface AwaitRow {
   firedAt: string | null;
   firedReason: string | null;
   cancelledAt: string | null;
+  /** Why an active await was cancelled, when the cancellation came from a
+   *  user-facing control surface. Internal lifecycle cleanup leaves this null. */
+  cancelReason: string | null;
   /** Cardinality (unify-watch-primitive D-001): true = one-shot (fires once,
    *  auto-consumes via fired_at — today's await); false = standing watch (a fire
    *  queues a delivery WITHOUT consuming the row — the pot-style recurring wake). */

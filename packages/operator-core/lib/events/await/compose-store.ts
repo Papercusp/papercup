@@ -378,7 +378,11 @@ export async function voidTreeDescendants(rootId: number): Promise<{ leaves: num
  * descendant node + every leaf + the anchor — subscriber-scoped (you cannot cancel a peer's).
  * Returns true if the root was live and got cancelled.
  */
-export async function cancelComposedTree(input: { rootId: number; subscriberId: string }): Promise<boolean> {
+export async function cancelComposedTree(input: {
+  rootId: number;
+  subscriberId: string;
+  source?: 'operator';
+}): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const root = await sql`
@@ -398,7 +402,7 @@ export async function cancelComposedTree(input: { rootId: number; subscriberId: 
   `;
   await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(), cancel_reason = ${input.source === 'operator' ? 'operator' : null}
      WHERE workspace_id = ${ws} AND root_id = ${input.rootId}
        AND fired_at IS NULL AND cancelled_at IS NULL
   `;
