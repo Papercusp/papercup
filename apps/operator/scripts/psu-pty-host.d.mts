@@ -939,11 +939,19 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     ttlMs?: number | undefined;
     now?: (() => number) | undefined;
 }): {
-    /** True when `id` was already marked accepted within the TTL. `id` may be
+    /** Return the live state for `id`, or null when it is new/expired. */
+    state(id: any): any;
+    /** True when `id` is pending or completed within the TTL. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
     isDuplicate(id: any): boolean;
-    /** Record `id` as accepted, starting its TTL window. No-op for a falsy id. */
+    /** Record the early ACK commitment while the detached gated pipeline runs. */
+    markPending(id: any): void;
+    /** Record the point at which the gated pipeline committed its delivery. */
+    markCompleted(id: any): void;
+    /** A terminal failed/deferred pipeline is eligible for a later retry. */
+    clearPending(id: any): void;
+    /** Backward-compatible name for callers that already have a committed delivery. */
     markAccepted(id: any): void;
     size(): number;
 };
