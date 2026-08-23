@@ -33,6 +33,7 @@ import {
   checkAgainstJsonSchema,
   missingRequiredJsonSchemaKeys,
   jsonSchemaRequiredKeys,
+  withoutTopLevelRequired,
 } from '../../json-schema-validation';
 
 /** The two schema-source columns of a plan, as the checks need them. */
@@ -69,25 +70,18 @@ function asData(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
-/**
- * The schema with its TOP-LEVEL `required` dropped — everything else (types, enums,
- * formats, additionalProperties, nested required) still enforced.
- *
- * Required-ness has exactly ONE owner in this module: `planRequiredKeys` +the
- * `missing` computation in the start gate. Letting ajv ALSO enforce it would give
- * two owners and two messages for one rule — and, worse, would make `validatePlanData`
- * reject partial data, which is precisely what D-004 forbids: a writer that rejects
- * every incomplete state makes a plan impossible to draft incrementally.
- *
- * Nested required stays enforced deliberately: if you supply an object, the parts of
- * it you supplied must be well-formed. `missing` only ever speaks about top-level
- * fields, so nothing here is left unowned.
+/*
+ * Top-level `required` is dropped before ajv validation via
+ * `withoutTopLevelRequired` (json-schema-validation.ts — moved there when the
+ * goal seam, goal-io-validation.ts / P-021, became its second caller).
+ * Required-ness has exactly ONE owner in this module: `planRequiredKeys` + the
+ * `missing` computation in the start gate. Letting ajv ALSO enforce it would
+ * give two owners and two messages for one rule — and, worse, would make
+ * `validatePlanData` reject partial data, which is precisely what D-004
+ * forbids: a writer that rejects every incomplete state makes a plan
+ * impossible to draft incrementally. Nested required stays enforced: `missing`
+ * only ever speaks about top-level fields, so nothing is left unowned.
  */
-function withoutTopLevelRequired(schema: Record<string, unknown>): Record<string, unknown> {
-  if (!Array.isArray((schema as { required?: unknown }).required)) return schema;
-  const { required: _required, ...rest } = schema;
-  return rest;
-}
 
 /** Which schema source this plan declares (or `conflict` when it declares both). */
 export function planSchemaSource(ref: PlanSchemaRef): PlanSchemaSource {

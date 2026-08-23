@@ -119,6 +119,25 @@ export function jsonSchemaRequiredKeys(
 }
 
 /**
+ * `schema` with its TOP-LEVEL `required` dropped — everything else (types,
+ * enums, formats, additionalProperties, NESTED required) still enforced.
+ *
+ * For callers that own required-ness themselves (a start/publish gate computing
+ * an actionable `missing[]` list): validating with the full schema would give
+ * the same rule two owners and two messages, so they validate against this and
+ * report absence separately. Moved here from plan-input-validation.ts when the
+ * goal seam (goal-io-validation.ts, work-on-everything-goal-2026-08-23 P-021)
+ * became its second caller.
+ */
+export function withoutTopLevelRequired(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Array.isArray((schema as { required?: unknown }).required)) return schema;
+  const { required: _required, ...rest } = schema;
+  return rest;
+}
+
+/**
  * Which of the schema's top-level required keys are absent from `value`.
  *
  * `undefined` counts as absent; an explicit `null` does NOT — supplying null is
