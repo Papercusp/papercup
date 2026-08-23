@@ -2531,7 +2531,14 @@ export async function writeFrozenCandidateRepairQueue(
   } else {
     await sql.unsafe(
       `UPDATE harness_shared.routines
-          SET metadata = COALESCE(metadata, '{}'::jsonb) - 'repair_queue', updated_at = now()
+          SET metadata = CASE
+                WHEN metadata #>> '{gate_health,inconclusive,status}'
+                       IN ('repair-in-progress', 'repair-staging-mismatch')
+                  THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
+                       #- '{gate_health,inconclusive}'
+                ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
+              END,
+              updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
           AND target_role = 'system:green-checkpoint'`,

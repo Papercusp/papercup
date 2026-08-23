@@ -1908,7 +1908,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       3,
       expect.stringMatching(
-        /metadata = COALESCE\(metadata, '\{\}'::jsonb\) - 'repair_queue'[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
+        /metadata = CASE[\s\S]+gate_health,inconclusive,status[\s\S]+repair-in-progress[\s\S]+repair-staging-mismatch[\s\S]+#- '\{gate_health,inconclusive\}'[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
       ),
       ['ws-42', 'my-harness'],
     );
