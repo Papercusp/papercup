@@ -2159,6 +2159,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain }?: {
     mode_subject?: string | undefined;
     mode?: string | undefined;
     auto?: boolean | undefined;
+    carry?: any;
     agent: any;
     workspace: any;
     harness_slug: any;

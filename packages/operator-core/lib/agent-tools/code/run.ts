@@ -21,7 +21,7 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { captureRecipe, type RecipeCaptureDisposition } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
-import { recipeRevision } from '../../recipe-authority';
+import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { recordRecipeRun } from '../../code-recipes-store';
 import {
@@ -263,9 +263,20 @@ export default defineTool({
     // isolating the bad ref, but a captured recipe with a known-bad name is a poor thing to reuse.
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
     // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
+    // WI-40896 fault 2: ALSO refuse capture when the script's authority cannot be
+    // resolved. recipes:run rejects such a recipe with authority_unresolved every
+    // time, and that refusal is permanent — capturing it anyway mints a recipe that
+    // can never run, then lets it accrue run/success counts that certify it.
     if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
-      recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract);
-      similarRecipes = recipeCapture?.similarRecipes ?? [];
+      if (await isRecipeCaptureAuthorityEligible(args.script)) {
+        recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract);
+        similarRecipes = recipeCapture?.similarRecipes ?? [];
+      } else {
+        // Logged, not silent: this is the one capture-skip reason that is invisible
+        // in the result (the run itself succeeded), so without this line a missing
+        // recipe looks like a capture bug rather than a deliberate refusal.
+        ctx.log('code:run recipe capture skipped: authority unresolved (recipes:run would permanently refuse this script)');
+      }
     }
     // Failed, dry-run, capture-disabled, and capture-failed scripts still get a
     // durable trace row. A successful capture already recorded this same trace
@@ -456,6 +467,42 @@ export function isRecipeCaptureEligible(
       .filter((name): name is string => typeof name === 'string'),
   );
   return (result.childFailures ?? []).every((failure) => failure.kind === 'semantic' && readTools.has(failure.tool));
+}
+
+/**
+ * WI-40896 fault 2: capture must not certify what execution permanently refuses.
+ *
+ * `isRecipeCaptureEligible` above asks "did this RUN go well enough to reuse?" and
+ * never consults authority — so a script whose authority cannot be resolved (an
+ * opaque `dev:pg_query`, a dynamically-dispatched `tools:invoke`) was captured as a
+ * reusable recipe and then accumulated run/success counts, even though `recipes:run`
+ * refuses it with `authority_unresolved` EVERY time. That refusal is documented as
+ * PERMANENT — "no proof, nested or top-level, can ever fix it" — so those success
+ * counts certify a recipe that can never be run once (EI-20480783262024773 is a
+ * reported instance: a saved recipe that recipes:run permanently refuses).
+ *
+ * This is deliberately a SEPARATE predicate rather than a clause inside
+ * `isRecipeCaptureEligible`: that one is sync, never receives the script, and is
+ * covered by tests that should keep passing unchanged. Authority derivation is
+ * async, so the gate belongs at the async capture site.
+ *
+ * FAILS CLOSED if derivation THROWS, because the invariant being restored is
+ * "capture agrees with execution", and execution also fails closed there. Skipping
+ * capture is safe — the run still returns normally and records a trace-only row.
+ *
+ * Note what this does NOT do: a syntactically broken script does not throw and is
+ * not reported unresolved (it parses to zero tool calls, so nothing is unprovable)
+ * — it comes back resolvable. That is correct here, because such a script's run
+ * fails and `isRecipeCaptureEligible`'s `result.ok` check already rejects it
+ * upstream. This predicate answers only "can this script's authority be proven?",
+ * never "did this script work?" — keep the two questions separate.
+ */
+export async function isRecipeCaptureAuthorityEligible(script: string): Promise<boolean> {
+  try {
+    return !(await deriveRecipeAuthority(script)).unresolved;
+  } catch {
+    return false;
+  }
 }
 
 interface CodeRunRecipeCapture {

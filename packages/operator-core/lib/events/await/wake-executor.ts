@@ -1454,14 +1454,32 @@ async function injectPsuHostWake(
     // CLIENT believes is fresh (its ack-wait timed out, or the host's ack write
     // back failed) is recognized by the host as the SAME delivery it already
     // committed to, instead of injecting a second real duplicate turn.
-    const ok = await injectPsuHost(sock, {
+    const injectMsg = {
       mode: 'turn',
       data: warmText,
       fireNumber,
       routineId,
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
-    });
+    } as const;
+    // The real transport can report the host's early `accepted` ACK. That ACK
+    // only means the detached gate pipeline was queued; it is not proof that a
+    // turn started. Keep the durable wake parked until a later retry observes a
+    // completed/duplicate outcome. Boolean test stubs retain today's behavior.
+    const confirming =
+      deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    if (confirming) {
+      const result = await confirming(sock, injectMsg);
+      if (!result.ok) return null;
+      if (result.reason === 'accepted' || result.reason === 'pending-delivery-id') {
+        return {
+          kind: 'park',
+          reason: `psu-host ${result.reason}: delivery accepted before turn-start proof; retry remains durable`,
+        };
+      }
+      return { kind: 'delivered', channel: 'psu-socket-inject' };
+    }
+    const ok = await injectPsuHost(sock, injectMsg);
     return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
   };
 
@@ -1689,14 +1707,22 @@ async function injectPsuHostWake(
     };
     let ok: boolean;
     let confirmation: InjectConfirmation | null = null;
+    let confirmationReason: string | null | undefined;
     if (confirming) {
       const r = await confirming(sock, injectMsg);
       ok = r.ok;
       confirmation = r.confirmation;
+      confirmationReason = r.reason;
     } else {
       ok = await injectPsuHost(sock, injectMsg);
     }
     if (ok) {
+      if (confirmationReason === 'accepted' || confirmationReason === 'pending-delivery-id') {
+        return {
+          kind: 'park',
+          reason: `psu-host ${confirmationReason}: delivery accepted before turn-start proof; retry remains durable`,
+        };
+      }
       // A re-exec the host never confirmed is reported as such instead of as a clean success.
       const unconfirmed = confirmation === 'assumed-close';
       const channel: WakeChannel =

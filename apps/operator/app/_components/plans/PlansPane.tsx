@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 /**
  * PlansPane (owner-plans-single-pane-2026-07-17 P-001/P-002) — the simplified
@@ -28,32 +28,17 @@
  * agent-driveable: `?plq` search, `?plf` show-finished, `?plFilters` filter
  * disclosure, `?pplan` popup plan, `?ppv` popup tab (see PlanPopupModal).
  */
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import {
-  Archive,
-  ChevronRight,
-  ClipboardList,
-  Search,
-  SlidersHorizontal,
-  X,
-} from "lucide-react";
-import {
-  parseAsBoolean,
-  parseAsString,
-  parseAsStringEnum,
-  useQueryState,
-} from "nuqs";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { toast } from "sonner";
-import { useSyncQuery } from "@papercusp/sync";
-import { Tooltip } from "@/app/harness/Tooltip";
-import { useDebouncedValue } from "@/app/harness/picker-kit";
-import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
-import { preloadVditor } from "@/app/_components/MarkdownEditor";
-import {
-  beginInteraction,
-  PERF_INTERACTIONS,
-} from "@/app/_components/perf/perf-marks";
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Archive, ChevronRight, ClipboardList, Search, SlidersHorizontal, X } from 'lucide-react';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { toast } from 'sonner';
+import { useSyncQuery } from '@papercusp/sync';
+import { Tooltip } from '@/app/harness/Tooltip';
+import { useDebouncedValue } from '@/app/harness/picker-kit';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { preloadVditor } from '@/app/_components/MarkdownEditor';
+import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import {
   bucketOf,
   setPlanArchived,
@@ -61,23 +46,19 @@ import {
   usePlanList,
   type PlanBucket,
   type PlanListRow,
-} from "@/app/admin/plans/plans-api";
+} from '@/app/admin/plans/plans-api';
 import {
   PLAN_TRIGGER_FILTERS,
   type PlanTriggerFilter,
-} from "@/app/admin/plans/plan-filtering";
-import { effectiveTier, useInboxAttention } from "../inbox/use-inbox-pending";
-import { useWorkspaceId } from "@/lib/use-workspace-id";
-import PlanPopupModal from "./PlanPopupModal";
-import "./plans-pane.css";
-import { advRosterArgs } from "@/lib/adv-roster-args";
+} from '@/app/admin/plans/plan-filtering';
+import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
+import PlanPopupModal from './PlanPopupModal';
+import './plans-pane.css';
+import { advRosterArgs } from '@/lib/adv-roster-args';
 
 /** Buckets shown by default — "not started + started", never the finished. */
-const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set([
-  "draft",
-  "ready",
-  "running",
-]);
+const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'running']);
 
 /** An active plan with no real activity for this long reads as "stale" — a
  *  visibility nudge against plan sprawl (owner-plans-single-pane P-008). */
@@ -127,10 +108,7 @@ function BlenderIcon({ size = 16 }: { size?: number }) {
 }
 
 /** True when an active plan hasn't been touched in ≥ STALE_MS. Pure. */
-export function isStale(
-  updated: string | null | undefined,
-  now = Date.now(),
-): boolean {
+export function isStale(updated: string | null | undefined, now = Date.now()): boolean {
   if (!updated) return false;
   const t = Date.parse(updated);
   return Number.isFinite(t) && now - t >= STALE_MS;
@@ -138,11 +116,11 @@ export function isStale(
 
 /** Compact relative recency — same local convention as the roster/backup panes. */
 export function agoLabel(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (!iso) return '—';
   const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (!Number.isFinite(ms) || ms < 0) return '—';
   const m = Math.floor(ms / 60_000);
-  if (m < 1) return "now";
+  if (m < 1) return 'now';
   if (m < 60) return `${m}m`;
   const h = Math.round(m / 60);
   if (h < 48) return `${h}h`;
@@ -150,18 +128,16 @@ export function agoLabel(iso: string | null | undefined): string {
 }
 
 /** done / total-open+done item progress from the list row's itemCounts. */
-export function progressOf(
-  row: Pick<PlanListRow, "itemCounts">,
-): { done: number; total: number } | null {
+export function progressOf(row: Pick<PlanListRow, 'itemCounts'>): { done: number; total: number } | null {
   const c = row.itemCounts;
   if (!c) return null;
   let done = 0;
   let total = 0;
   for (const [k, v] of Object.entries(c)) {
     const n = v ?? 0;
-    if (k === "unknown") continue;
+    if (k === 'unknown') continue;
     total += n;
-    if (k === "done") done += n;
+    if (k === 'done') done += n;
   }
   return total > 0 ? { done, total } : null;
 }
@@ -188,10 +164,10 @@ export function buildGlanceRows(opts: {
     if (plan.archived || plan.isLegacy) continue;
     const bucket = bucketOf(plan);
     if (!opts.showFinished && !ACTIVE_BUCKETS.has(bucket)) continue;
-    if (opts.triggerFilter === "triggered" && plan.triggered !== true) continue;
-    if (opts.triggerFilter === "one-time" && plan.triggered === true) continue;
+    if (opts.triggerFilter === 'triggered' && plan.triggered !== true) continue;
+    if (opts.triggerFilter === 'one-time' && plan.triggered === true) continue;
     if (q) {
-      const hay = `${plan.title ?? ""} ${plan.slug}`.toLowerCase();
+      const hay = `${plan.title ?? ''} ${plan.slug}`.toLowerCase();
       if (!hay.includes(q)) continue;
     }
     rows.push({
@@ -215,22 +191,17 @@ interface RosterPayloadRow {
 }
 
 export default function PlansPane() {
-  const [query, setQuery] = useQueryState("plq", parseAsString.withDefault(""));
-  const [showFinished, setShowFinished] = useQueryState(
-    "plf",
-    parseAsBoolean.withDefault(false),
-  );
+  const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
+  const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
   const [filtersOpen, setFiltersOpen] = useQueryState(
-    "plFilters",
+    'plFilters',
     parseAsBoolean.withDefault(false),
   );
   const [triggerFilter, setTriggerFilter] = useQueryState(
-    "plTrigger",
-    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault(
-      "all",
-    ),
+    'plTrigger',
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
   );
-  const [popupPlan, setPopupPlan] = useQueryState("pplan", parseAsString);
+  const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
 
   // Warm the Vditor stack shortly after the Plans face mounts, so the first
   // plan popup opens WARM (~430ms) instead of paying the ~600ms cold Lute/WASM
@@ -260,7 +231,7 @@ export default function PlansPane() {
   // `endedLimit`, and an omitted field is a different query key even though the
   // resolver defaults it to the same value. advRosterArgs makes it true.
   const roster = useSyncQuery<RosterPayloadRow>({
-    queryName: "advRoster.list",
+    queryName: 'advRoster.list',
     args: advRosterArgs(workspaceId),
   });
 
@@ -268,7 +239,7 @@ export default function PlansPane() {
     const m = new Map<string, number>();
     for (const i of attentionItems) {
       if (!i.planSlug) continue;
-      if (effectiveTier(i) !== "decision") continue;
+      if (effectiveTier(i) !== 'decision') continue;
       m.set(i.planSlug, (m.get(i.planSlug) ?? 0) + 1);
     }
     return m;
@@ -295,21 +266,11 @@ export default function PlansPane() {
         liveByPlan,
         triggerFilter,
       }),
-    [
-      plans,
-      debouncedQuery,
-      showFinished,
-      needsYouByPlan,
-      liveByPlan,
-      triggerFilter,
-    ],
+    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter],
   );
 
-  const popupRow = popupPlan
-    ? ((plans ?? []).find((p) => p.slug === popupPlan) ?? null)
-    : null;
-  const activeFilterCount =
-    Number(showFinished) + Number(triggerFilter !== "all");
+  const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
+  const activeFilterCount = Number(showFinished) + Number(triggerFilter !== 'all');
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
   // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
@@ -325,29 +286,21 @@ export default function PlansPane() {
   const onArchive = useCallback(
     async (plan: PlanListRow) => {
       const ok = await askConfirm({
-        title: "Archive this plan?",
+        title: 'Archive this plan?',
         body: `“${plan.title ?? plan.slug}” will drop out of your plan lists. You can restore it later — archiving is reversible and never deletes anything.`,
-        confirmLabel: "Archive",
+        confirmLabel: 'Archive',
       });
       if (!ok) return;
       try {
-        const res = await setPlanArchived({
-          slug: plan.slug,
-          archived: true,
-          harness: plan.harness,
-        });
+        const res = await setPlanArchived({ slug: plan.slug, archived: true, harness: plan.harness });
         if ((res as { ok?: boolean }).ok === false) {
-          toast.error(
-            `Could not archive: ${(res as { error?: string }).error ?? "unknown error"}`,
-          );
+          toast.error(`Could not archive: ${(res as { error?: string }).error ?? 'unknown error'}`);
           return;
         }
         toast.success(`Archived “${plan.title ?? plan.slug}”.`);
         planList.refresh();
       } catch (e) {
-        toast.error(
-          `Could not archive: ${e instanceof Error ? e.message : "unknown error"}`,
-        );
+        toast.error(`Could not archive: ${e instanceof Error ? e.message : 'unknown error'}`);
       }
     },
     [askConfirm, planList],

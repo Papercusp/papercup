@@ -15423,7 +15423,7 @@
           "POST"
         ]
       },
-      "description": "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
+      "description": "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, then supplied win and ? PREDICTED yields before ✓ VERIFIED); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],

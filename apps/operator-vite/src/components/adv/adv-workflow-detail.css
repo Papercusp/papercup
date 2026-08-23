@@ -13,7 +13,10 @@
 
 .pc-workflow-detail {
   --wf-line: color-mix(in srgb, var(--border, #26384a), transparent 8%);
-  --wf-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), transparent 12%);
+  /* OPAQUE on purpose — see adv-workflows-landing.css: a background mixed toward
+     `transparent` is alpha/dynamic, so the contrast lint cannot statically verify it
+     and the surface ships contrast-UNCHECKED behind a snapshot skip. */
+  --wf-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), black 4%);
   --wf-panel-2: color-mix(in srgb, var(--bg-raised, #0d1a27), white 2%);
   display: flex;
   flex-direction: column;

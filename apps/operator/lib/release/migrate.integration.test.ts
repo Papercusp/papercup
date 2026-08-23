@@ -10,7 +10,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { getTestPg } from '@papercusp/test-config/pg';
-import { applyStagedMigrations } from './migrate';
+import {
+  applyStagedMigrations,
+  assertMigrationCreatePrivileges,
+  migrationCreateSchemas,
+} from './migrate';
 
 let dbUrl: string;
 let sqlDir: string;
@@ -35,6 +39,40 @@ beforeEach(async () => {
 afterEach(() => rmSync(sqlDir, { recursive: true, force: true }));
 
 describe('applyStagedMigrations', () => {
+  it('detects schema-qualified creates without treating comments or indexes as schema-create needs', () => {
+    expect(
+      migrationCreateSchemas(`
+        -- CREATE TABLE ignored_schema.comment_only (id int);
+        CREATE TABLE IF NOT EXISTS papercusp_auth.hosted_sessions (id text);
+        CREATE OR REPLACE FUNCTION "papercusp_auth".rotate_session() RETURNS void LANGUAGE sql AS $$ SELECT $$;
+        CREATE INDEX hosted_sessions_idx ON papercusp_auth.hosted_sessions (id);
+        CREATE VIEW harness_shared.hosted_session_ids AS SELECT id FROM papercusp_auth.hosted_sessions;
+      `),
+    ).toEqual(['harness_shared', 'papercusp_auth']);
+  });
+
+  it('fails with the role, schema owner, and required grant before executing DDL', async () => {
+    const client = {
+      unsafe: async () => [
+        {
+          query_role: 'harness_admin',
+          schema_owner: 'postgres_app',
+          has_create: false,
+        },
+      ],
+    } as unknown as Parameters<typeof assertMigrationCreatePrivileges>[0];
+
+    await expect(
+      assertMigrationCreatePrivileges(
+        client,
+        '902-hosted-session-webhook-receipts.sql',
+        'CREATE TABLE papercusp_auth.hosted_sessions (id text);',
+      ),
+    ).rejects.toThrow(
+      /902-hosted-session-webhook-receipts\.sql: migration role harness_admin lacks CREATE on existing schema papercusp_auth \(owner postgres_app\)/,
+    );
+  });
+
   it('applies a pending migration and is idempotent', async () => {
     writeFileSync(
       join(sqlDir, '900-reltest-apply.sql'),

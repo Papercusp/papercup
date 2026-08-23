@@ -23,7 +23,7 @@
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { readProcessIdentity } from '../process-identity';
-import { buildTaskScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
+import { buildExactEnvPayload, buildTaskScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -260,8 +260,19 @@ export async function managedSpawn(
   }
 
   const scopeUnit = scopeOk ? scopeUnitForTask(taskId) : null;
+
+  // WI-40906 — a caller-supplied env belongs to the PAYLOAD, never to the
+  // `systemd-run` client. The client reaches the user manager over
+  // `$DBUS_SESSION_BUS_ADDRESS`; handed an env that redirects or drops it, the
+  // launch fails before the payload execs and the caller gets a handle to a
+  // process that never ran. See `buildExactEnvPayload` for the measured failure.
+  //
+  // So the two environments are split here: the client keeps ours, and the
+  // payload gets the caller's exactly, via `env -i`. Unconfined spawns are
+  // untouched — there is no client to protect, and node applies `env` itself.
+  const payloadEnv = opts.spawnOptions?.env;
   const launchArgv = scopeOk
-    ? buildTaskScopeArgv([command, ...args], {
+    ? buildTaskScopeArgv(payloadEnv ? buildExactEnvPayload([command, ...args], payloadEnv) : [command, ...args], {
         unit: scopeUnit!,
         slice: sliceForClass(spec.class),
         memoryMaxBytes: spec.memoryMaxBytes,
@@ -271,9 +282,17 @@ export async function managedSpawn(
       })
     : [command, ...args];
 
+  // Everything else the caller asked for (stdio, cwd, detached) still applies to
+  // the client, and a `--scope` payload inherits all three from it.
+  let launchSpawnOptions: SpawnOptions = opts.spawnOptions ?? {};
+  if (scopeOk && payloadEnv) {
+    const { env: _payloadEnvMovedIntoArgv, ...rest } = launchSpawnOptions;
+    launchSpawnOptions = rest;
+  }
+
   let child: ChildProcess;
   try {
-    child = spawnFn(launchArgv[0]!, launchArgv.slice(1), opts.spawnOptions ?? {});
+    child = spawnFn(launchArgv[0]!, launchArgv.slice(1), launchSpawnOptions);
   } catch (e) {
     // The row already exists; close it honestly rather than leaving a pending
     // row the reconciler will later strand with a vaguer reason. A failure to
@@ -434,6 +453,26 @@ function wireExit(
     }
     if (signal) {
       close('killed', code, `signal ${signal}`);
+    } else if (confined && code !== 0) {
+      // WI-40906 — for a confined task this is the CLIENT's exit, and a client that
+      // exits non-zero with an empty scope has two very different readings: the
+      // payload ran and failed, or the scope never started so the payload never ran
+      // at all. `--collect` has already garbage-collected a failed unit by now, so
+      // the two are genuinely indistinguishable from here.
+      //
+      // Say that, instead of recording a bare exit code that reads as the first one.
+      // The distinction is what a caller needs and cannot otherwise get: the whole
+      // class of "my process silently never started" is invisible when the client's
+      // stderr went to `stdio: 'ignore'`, which is exactly how the accessibility-bus
+      // case above stayed hidden. This is evidence, deliberately not a verdict —
+      // inventing one here is the mistake WI-37509 documents on the line above.
+      close(
+        'exited',
+        code,
+        `client exited ${code} with an empty scope — either the payload failed or the scope never started ` +
+          '(a scope-launch failure means the payload never ran; systemd-run reports it on stderr, ' +
+          'which is discarded when the caller passes stdio:"ignore")',
+      );
     } else {
       close('exited', code, null);
     }

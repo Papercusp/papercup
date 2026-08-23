@@ -22,6 +22,7 @@
 
 import { useCallback, useMemo, useState, type FormEvent } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { Table, type TableColumn } from '@/app/harness/Table';
 import {
   buildActiveNow,
   buildNeedsYou,
@@ -187,31 +188,15 @@ export default function WorkflowsLanding({
         {ledger.length === 0 ? (
           <p className="pc-workflows__empty">No workflows installed yet.</p>
         ) : (
-          <table className="pc-workflows__ledger">
-            <thead>
-              <tr>
-                <th scope="col">Workflow</th>
-                <th scope="col">Chain</th>
-                <th scope="col">Last</th>
-                <th scope="col">Spend</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(showFullLedger ? ledger : ledger.slice(0, LEDGER_PREVIEW)).map((row) => (
-                <tr
-                  key={row.id}
-                  className={row.needsAttention ? 'is-attention' : undefined}
-                  onClick={() => onOpenWorkflow(row.id)}
-                >
-                  <th scope="row">{row.label}</th>
-                  <td>{row.chain}</td>
-                  {/* A never-fired workflow shows an em dash, not a fabricated time. */}
-                  <td>{row.lastLabel ?? '—'}</td>
-                  <td>{row.spendLabel}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table
+            className="pc-workflows__ledger"
+            style={{ fontSize: '0.83rem' }}
+            columns={LEDGER_COLUMNS}
+            rows={showFullLedger ? ledger : ledger.slice(0, LEDGER_PREVIEW)}
+            getRowKey={(row) => row.id}
+            onRowClick={(row) => onOpenWorkflow(row.id)}
+            rowClassName={(row) => (row.needsAttention ? 'is-attention' : undefined)}
+          />
         )}
         {!showFullLedger && ledger.length > LEDGER_PREVIEW ? (
           <p className="pc-workflows__more">{ledger.length - LEDGER_PREVIEW} more in the full ledger</p>
@@ -222,6 +207,22 @@ export default function WorkflowsLanding({
 }
 
 const LEDGER_PREVIEW = 5;
+
+const LEDGER_COLUMNS: TableColumn<WorkflowLedgerRow>[] = [
+  {
+    key: 'workflow',
+    header: 'Workflow',
+    render: (row) => <span className="pc-workflows__ledger-label">{row.label}</span>,
+  },
+  { key: 'chain', header: 'Chain', render: (row) => row.chain },
+  {
+    key: 'last',
+    header: 'Last',
+    // A never-fired workflow shows an em dash, not a fabricated time.
+    render: (row) => row.lastLabel ?? '—',
+  },
+  { key: 'spend', header: 'Spend', render: (row) => row.spendLabel },
+];
 
 function WorkflowCard({ row, onOpen }: { row: WorkflowLedgerRow; onOpen: () => void }) {
   return (

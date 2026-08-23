@@ -12,7 +12,12 @@
 
 .pc-workflows {
   --wfl-line: color-mix(in srgb, var(--border, #26384a), transparent 8%);
-  --wfl-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), transparent 12%);
+  /* OPAQUE on purpose. Mixing toward `transparent` makes the computed background
+     alpha/dynamic, which the contrast lint cannot statically verify — the pair then
+     lands in the "could NOT statically verify" snapshot and the surface ships
+     contrast-UNCHECKED. Mixing toward an opaque colour keeps the same visual intent
+     and stays verifiable; this matches adv-automations.css's panel idiom. */
+  --wfl-panel: color-mix(in srgb, var(--bg-raised, #0d1a27), black 4%);
   --wfl-panel-2: color-mix(in srgb, var(--bg-raised, #0d1a27), white 2%);
   display: flex;
   flex-direction: column;
@@ -291,11 +296,11 @@
   background: var(--wfl-panel);
 }
 
-.pc-workflows__ledger tbody tr.is-attention th[scope='row'] {
+.pc-workflows__ledger tbody tr.is-attention .pc-workflows__ledger-label {
   color: var(--warn, #fbbf24);
 }
 
-.pc-workflows__ledger tbody th[scope='row'] {
+.pc-workflows__ledger-label {
   font-weight: 600;
 }
 

@@ -46,6 +46,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createTextCollector } from '../../child-output';
 import { captureCommand, captureFit, sandboxXEnv, type DesktopTarget } from './desktop-driver';
 import { provisionSandboxDesktop, type SandboxDesktop } from './desktop-provisioner';
 
@@ -112,15 +113,12 @@ function paintDetail(display: string, holdSec: number): { errors: () => string }
   );
   // Keep stderr: a content probe that fails SILENTLY turns every assertion downstream into
   // a mystery ("did the downscale break it?" — no, the app never started).
-  let err = '';
-  child.stderr?.on('data', (d: Buffer) => {
-    err += d.toString();
-  });
+  const stderr = createTextCollector(child.stderr);
   child.on('error', (e) => {
-    err += String(e);
+    stderr.append(String(e));
   });
   child.unref();
-  return { errors: () => err.trim() };
+  return { errors: () => stderr.peek().trim() };
 }
 
 describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', () => {

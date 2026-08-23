@@ -136,6 +136,63 @@ function appendTaskEnvironment(argv: string[], env: TaskScopeProperties['env']):
   }
 }
 
+/**
+ * `env` is absolute on purpose. systemd-run resolves the payload binary with the
+ * CLIENT's PATH, and the whole point of this wrapper is that the client's env and
+ * the payload's env are no longer the same thing — so resolving `env` itself
+ * through either one would reintroduce the coupling in the one place it is
+ * hardest to see.
+ */
+const ENV_BIN = '/usr/bin/env';
+
+/**
+ * Wrap a payload so it runs under EXACTLY `env`, independently of the environment
+ * the `systemd-run` client itself needs (WI-40906).
+ *
+ * ── WHY THIS EXISTS (measured 2026-08-23) ───────────────────────────────────
+ *
+ * A `--scope` payload is forked from the systemd-run client, so it inherits the
+ * client's environment. That made `spawn(systemd-run …, { env })` look like it
+ * set the payload's env — and it does — but it sets the CLIENT's too, and the
+ * client needs its own env to work at all: `systemd-run --user` reaches the user
+ * manager over `$DBUS_SESSION_BUS_ADDRESS`. Hand it an env that points that
+ * variable somewhere else and the launch dies before the payload ever execs:
+ *
+ *     Failed to start transient scope unit:
+ *       The name org.freedesktop.systemd1 was not provided by any .service files
+ *
+ * That is not a hypothetical. A sandbox desktop publishes its own accessibility
+ * bus and hands apps `DBUS_SESSION_BUS_ADDRESS` for it; every GUI app launched
+ * into such a desktop therefore failed to start, silently — the caller passes
+ * `stdio: 'ignore'`, so the message above went nowhere and `managedSpawn`
+ * returned a healthy-looking handle for a process that had never run. It reads as
+ * "the app doesn't work on this desktop", which is why it cost a day to find.
+ *
+ * Any caller passing a deliberately stripped env hits the same wall, so the fix
+ * belongs here rather than in that one caller: run the client with the operator's
+ * own environment, and give the payload its exact env through `env -i`. Measured:
+ * the payload still lands in its own scope cgroup, so confinement is unaffected.
+ *
+ * Semantics match `child_process.spawn({ env })` deliberately — total
+ * replacement, not a merge, and `undefined` values are dropped — because callers
+ * reach this path by passing exactly that option and must not get a second,
+ * subtly different env model depending on whether confinement happened to be
+ * available.
+ */
+export function buildExactEnvPayload(base: readonly string[], env: NodeJS.ProcessEnv): string[] {
+  const pairs: string[] = [];
+  for (const [name, value] of Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    // `undefined` is dropped by node's own spawn; a name carrying `=` or NUL cannot
+    // be expressed as an `env` operand at all, and passing it would silently shift
+    // every later operand. Dropping it keeps the payload's env a subset of what was
+    // asked for, never a different one.
+    if (value === undefined) continue;
+    if (name.length === 0 || name.includes('=') || name.includes('\0')) continue;
+    pairs.push(`${name}=${value}`);
+  }
+  return [ENV_BIN, '-i', ...pairs, ...base];
+}
+
 export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): string[] {
   const argv = [
     'systemd-run',

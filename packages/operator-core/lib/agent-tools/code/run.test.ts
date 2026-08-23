@@ -84,6 +84,7 @@ import {
   buildFacadeHelp,
   shapeCodeRunSimilarRecipes,
   isRecipeCaptureEligible,
+  isRecipeCaptureAuthorityEligible,
   codeRunReturnedContextBytes,
   codeRunFailureClass,
   withCodeRunCaptureMode,
@@ -390,6 +391,57 @@ describe('code:run → recipe capture (P-003)', () => {
       expect(
         isRecipeCaptureEligible({ ok: true, unknownRefs: ['nope.doStuff'], childFailures: [] }, [read, write]),
       ).toBe(false);
+    });
+  });
+
+  describe('WI-40896 fault 2: capture must not certify what recipes:run permanently refuses', () => {
+    // recipes:run rejects these with authority_unresolved on EVERY invocation, and
+    // that refusal is documented as permanent — no proof can ever satisfy it.
+    const opaqueScript = `await tools.dev.pg_query({ sql: 'SELECT 1' });`;
+    const dynamicDispatchScript = `await tools.tools.invoke({ name: chosenVerb, args: {} });`;
+    const resolvableScript = `return await tools.plans.list({});`;
+
+    it('refuses capture for a script whose authority can never be resolved', async () => {
+      await expect(isRecipeCaptureAuthorityEligible(opaqueScript)).resolves.toBe(false);
+      await expect(isRecipeCaptureAuthorityEligible(dynamicDispatchScript)).resolves.toBe(false);
+    });
+
+    it('still allows capture for a resolvable script', async () => {
+      await expect(isRecipeCaptureAuthorityEligible(resolvableScript)).resolves.toBe(true);
+    });
+
+    // THE DEFECT, pinned: the run-quality predicate and the authority predicate
+    // DISAGREE about the opaque script. isRecipeCaptureEligible says "capture it"
+    // (the run genuinely succeeded — dev:pg-query is a read tool and a semantic
+    // diagnostic on it is explicitly allowed above), while execution would refuse
+    // it forever. Before the fix only the first predicate was consulted, so exactly
+    // this script was captured and then accumulated run/success counts certifying a
+    // recipe that can never be run once.
+    it('pins the defect: run-quality says capture, authority says never — and only authority is right', async () => {
+      const read = { effect: 'read', expose: { mcp: { name: 'dev:pg-query' } } };
+
+      const runQualitySaysCapture = isRecipeCaptureEligible(
+        { ok: true, childFailures: [{ tool: 'dev:pg-query', kind: 'semantic' }] },
+        [read],
+      );
+      const authoritySaysCapture = await isRecipeCaptureAuthorityEligible(opaqueScript);
+
+      expect(runQualitySaysCapture).toBe(true);
+      expect(authoritySaysCapture).toBe(false);
+      // If these ever agree, this test has stopped covering the gap it was written for.
+      expect(runQualitySaysCapture).not.toBe(authoritySaysCapture);
+    });
+
+    // MEASURED, not assumed. A syntactically broken script does NOT throw and is NOT
+    // reported unresolved: it parses to zero tool calls, so there is nothing for the
+    // analyzer to find unprovable, and it comes back resolvable-with-empty-refs. That
+    // is fine HERE only because such a script never reaches this gate — its run fails,
+    // and `isRecipeCaptureEligible`'s `result.ok` check rejects it upstream. This test
+    // records that division of labour so nobody "hardens" this predicate against
+    // malformed input under the impression it is the thing standing in the way.
+    it('does not gate malformed input — that is result.ok upstream, not authority', async () => {
+      await expect(isRecipeCaptureAuthorityEligible('const = = = ;')).resolves.toBe(true);
+      expect(isRecipeCaptureEligible({ ok: false, childFailures: [] }, [])).toBe(false);
     });
   });
 

@@ -80,6 +80,30 @@ function walk(display: string, bus: string) {
   return parsed;
 }
 
+/**
+ * A registered app is a precondition this suite PROVISIONS, so its absence is a
+ * failure — never a skip.
+ *
+ * The distinction is the whole point: a precondition supplied by the environment
+ * (a display, a toolkit) may reasonably be skipped, but one the suite creates
+ * itself cannot be, because "it isn't there" means the suite's own setup broke.
+ * Written as a log-and-`return` it PASSES, and an early return is indistinguishable
+ * from a real pass in every report vitest prints — worse than `ctx.skip()`, which at
+ * least appears in the summary as its own count. That is not hypothetical: three
+ * tests here reported green for a day while the GTK app silently failed to start
+ * (WI-40906 — `systemd-run` could not create the scope, and the caller's
+ * `stdio: 'ignore'` swallowed the reason).
+ */
+function expectRegisteredApp(apps: number): void {
+  expect(
+    apps,
+    'no application registered on the a11y bus — this suite launches one, so its absence is a ' +
+      'FAILURE of the desktop/app-spawn path, not a reason to skip. Check that the app process ' +
+      'is actually running on the display (a confined spawn that cannot create its scope dies ' +
+      'silently under stdio:"ignore").',
+  ).toBeGreaterThan(0);
+}
+
 /** Stand up a desktop with a GTK dialog on it and let it settle. */
 async function gtkDesktop(): Promise<SandboxDesktop> {
   const d = await provisionSandboxDesktop({
@@ -122,14 +146,13 @@ describe.skipIf(!LIVE)('accessibility observation — live', () => {
     if (!bus) throw new Error('precondition: desktop published no a11y bus');
     const parsed = walk(d.display, bus);
 
-    // PRECONDITION, checked FIRST and separately: an app must have registered. If the
-    // GTK app failed to start, that is not an accessibility-path regression, and
-    // attributing it to one is exactly the misdiagnosis this ordering prevents.
-    if (parsed.apps === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[P-007] SKIP: no application registered on the a11y bus (the GTK app did not start)');
-      return;
-    }
+    // PRECONDITION, checked FIRST and separately so a failure to START the app is not
+    // misread as an accessibility-path regression. It is still a FAILURE: this suite
+    // launches the app itself, so nothing registering means the thing under test never
+    // happened. It used to log and `return`, which PASSES — and a suite of those exits
+    // 0 while proving nothing (measured: 3 of 5 tests here were green and vacuous while
+    // the GTK app was silently failing to start).
+    expectRegisteredApp(parsed.apps);
 
     const { roots, stats } = compressA11yTree(buildA11yTree(parsed.nodes));
     const tree = renderA11yTree(roots);
@@ -159,11 +182,7 @@ describe.skipIf(!LIVE)('accessibility observation — live', () => {
     const bus = busFor(d.display);
     if (!bus) throw new Error('precondition: desktop published no a11y bus');
     const parsed = walk(d.display, bus);
-    if (parsed.apps === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[P-007] SKIP: no application registered; nothing to measure');
-      return;
-    }
+    expectRegisteredApp(parsed.apps);
     const { roots, stats } = compressA11yTree(buildA11yTree(parsed.nodes));
     const tree = renderA11yTree(roots);
 
@@ -195,11 +214,7 @@ describe.skipIf(!LIVE)('accessibility observation — live', () => {
     const bus = busFor(d.display);
     if (!bus) throw new Error('precondition: desktop published no a11y bus');
     const before = walk(d.display, bus);
-    if (before.apps === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[P-007] SKIP: no application registered; nothing to activate');
-      return;
-    }
+    expectRegisteredApp(before.apps);
     const { roots } = compressA11yTree(buildA11yTree(before.nodes));
 
     // GTK4's zeroed SCREEN extents are why activation is the primary click path. Assert
@@ -214,11 +229,12 @@ describe.skipIf(!LIVE)('accessibility observation — live', () => {
       n.children.forEach(visit);
     };
     roots.forEach(visit);
-    if (cancel.length === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[P-007] SKIP: dialog exposed no Cancel-like element to activate');
-      return;
-    }
+    // Also suite-provisioned: the dialog this suite launches HAS a Cancel button, so
+    // its absence is a real finding about the walker, not a reason to pass quietly.
+    expect(
+      cancel.length,
+      'no Cancel-like interactive element in a dialog that has one — the walk or the interactivity test is wrong',
+    ).toBeGreaterThan(0);
 
     const cmd = actionCommand(d.display, bus, cancel[0]!.ref, 'click');
     const res = run(cmd.bin, cmd.args, cmd.env);

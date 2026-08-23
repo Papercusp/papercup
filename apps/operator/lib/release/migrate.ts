@@ -30,6 +30,71 @@ import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 import { readMigratePolicy } from '@papercusp/operator-core/lib/migrate-policy';
 
+type MigrationClient = ReturnType<typeof postgres>;
+
+type SchemaCreatePrivilege = {
+  query_role: string;
+  schema_owner: string;
+  has_create: boolean;
+};
+
+const SCHEMA_QUALIFIED_CREATE =
+  /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|SEQUENCE|TYPE|FUNCTION|PROCEDURE)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"((?:[^"]|"")+)"|([a-z_][a-z0-9_$]*))\s*\./gi;
+
+/**
+ * Existing schemas a migration will create objects in.
+ *
+ * This intentionally ignores CREATE INDEX: PostgreSQL authorizes that against
+ * the target table owner, not the schema CREATE privilege. Comments are removed
+ * first so a runbook example in a migration cannot invent a false dependency.
+ */
+export function migrationCreateSchemas(rawSql: string): string[] {
+  const sql = rawSql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\n\r]*/g, ' ');
+  const schemas = new Set<string>();
+  for (const match of sql.matchAll(SCHEMA_QUALIFIED_CREATE)) {
+    const schema = match[1]?.replaceAll('""', '"') ?? match[2];
+    if (schema) schemas.add(schema);
+  }
+  return [...schemas].sort();
+}
+
+/**
+ * Fail before executing a migration whose connection role cannot create the
+ * schema-qualified objects it declares.
+ *
+ * Native Postgres deliberately keeps `harness_admin` non-superuser, while the
+ * embedded/test role is superuser. Without this check that test topology masks
+ * a live ACL mismatch until deploy-time DDL throws a raw "permission denied for
+ * schema" after the release checkout has already swapped (EI-21233784335643404).
+ */
+export async function assertMigrationCreatePrivileges(
+  client: MigrationClient,
+  filename: string,
+  rawSql: string,
+): Promise<void> {
+  for (const schema of migrationCreateSchemas(rawSql)) {
+    const literal = schema.replaceAll("'", "''");
+    const rows = (await client.unsafe(`
+      SELECT current_user AS query_role,
+             pg_get_userbyid(n.nspowner) AS schema_owner,
+             has_schema_privilege(current_user, n.oid, 'CREATE') AS has_create
+        FROM pg_namespace n
+       WHERE n.nspname = '${literal}'
+    `)) as unknown as SchemaCreatePrivilege[];
+    const privilege = rows[0];
+    // A missing schema is governed by database CREATE permission and will be
+    // created by the migration itself. This guard targets the distinct existing-
+    // schema ACL class that PostgreSQL otherwise reports only at object creation.
+    if (!privilege || privilege.has_create) continue;
+    throw new Error(
+      `[migrate] ${filename}: migration role ${privilege.query_role} lacks CREATE on existing schema ${schema} ` +
+        `(owner ${privilege.schema_owner}); grant CREATE on that schema to ${privilege.query_role} before retrying`,
+    );
+  }
+}
+
 export interface MigrateOpts {
   /** Defaults to <releaseRoot>/libs/papercusp/libs/db/sql, else cwd-relative. */
   sqlDir?: string;
@@ -119,6 +184,7 @@ export async function applyStagedMigrations(opts: MigrateOpts = {}): Promise<Mig
       sqlDir,
       continueOnError: false, // FAIL-LOUD — a deploy migration failure aborts the deploy
       log,
+      beforeApply: (filename, rawSql) => assertMigrationCreatePrivileges(client, filename, rawSql),
     });
     if (failed.length > 0) {
       throw new Error(
