@@ -443,7 +443,7 @@ describe('applyResultDoor', () => {
     });
 
     it('bounds a 35K fan-out cohort and writes every aggregate overflow as a distinct spill', () => {
-      const results = Array.from({ length: 7 }, (_, index) =>
+      const results: DoorableResult[] = Array.from({ length: 7 }, (_, index) =>
         applyResultDoor(
           {
             content: [
@@ -452,7 +452,7 @@ describe('applyResultDoor', () => {
                 text: `${index}:` + String(index).repeat(4_998),
               },
             ],
-          },
+          } as DoorableResult,
           {
             toolName: 'plans:get',
             workspaceId: 'ws-1',
@@ -510,7 +510,9 @@ describe('applyResultDoor', () => {
         workspaceId: 'ws-1',
         runId: '22222222-3333-4444-8555-666666666666',
       });
-      expect((doored._meta as { resultDoor?: { truncated?: boolean } }).resultDoor?.truncated).toBe(true);
+      expect(
+        ((doored as DoorableResult)._meta as { resultDoor?: { truncated?: boolean } }).resultDoor?.truncated,
+      ).toBe(true);
       expect(measureResultContextBytes(doored)).toBeLessThan(measureResultContextBytes(projected));
       expect(readSpill('ws-1', 'plans:get', '22222222-3333-4444-8555-666666666666')).toContain('[projection:');
     });
