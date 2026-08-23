@@ -19,6 +19,8 @@ export interface ClaimSpecSubject {
   paths: string[];
   plan: string | null;
   planItem: string[];
+  /** EI-13524: fleet lane stamp (`payload.fleet_slug`), or null when unstamped. */
+  fleet: string | null;
   age: number | null;
   riskTier: string | null;
   redundancy: number | null;
@@ -145,6 +147,7 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
         : itemId
           ? [itemId]
           : strings(payload.source_plan_item_ids),
+    fleet: typeof payload.fleet_slug === 'string' && payload.fleet_slug ? payload.fleet_slug : null,
     age: Number.isFinite(createdMs) ? createdMs : null,
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     // WI-38326: `COALESCE(redundancy, 1)`. The default is the whole fix for this field, not a
@@ -202,6 +205,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'paths': return subject.paths;
     case 'plan': return subject.plan;
     case 'plan_item': return subject.planItem;
+    case 'fleet': return subject.fleet;
     case 'age': return subject.age;
     case 'risk_tier': return subject.riskTier;
     case 'redundancy': return subject.redundancy;

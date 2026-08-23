@@ -51,6 +51,7 @@ import {
   type RankTerm,
   DEFAULT_CLAIM_SPEC,
   positiveIdCohortIds,
+  claimSpecReferencesField,
 } from './claim-spec';
 import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
@@ -132,6 +133,8 @@ export interface GetNextOpts {
   workspaceId?: string;
   /** THIS Swarm's id — when set, the affinity/redundancy FLOORS honor it (per-Hive lease). */
   swarmId?: string;
+  /** EI-13524: claimant fleet used to authorize its own fleet-stamped plan lane. */
+  fleetSlug?: string;
   /**
    * EI-18805386252364731: override the claim ladder's time budget in ms (default
    * CLAIM_LADDER_BUDGET_MS, per-attempt capped at CLAIM_ATTEMPT_BUDGET_MS). Lets a caller with
@@ -318,6 +321,9 @@ const FIELD_MAP: Record<string, FieldMap> = {
     )`,
     kind: 'text-array',
   },
+  // EI-13524: fleet-owned plan-lane provenance stamped by fleet launch promotion.
+  // Filter-only (claim-spec.ts excludes it from rank); shared by both claim families.
+  fleet: { col: (sql) => sql`payload->>'fleet_slug'`, kind: 'scalar-text' },
   // Not first-class columns — projected out of payload jsonb (no schema change).
   // `risk_tier` is FILTER-ONLY (EI-19286311763526137): `payload->>'risk_tier'` is TEXT
   // however numeric the authored value looks, so a bare `risk_tier` rank sorts lexically
@@ -930,9 +936,22 @@ export function issueClaimCandidateSubquery(
     issueWs: string;
     operatorScopeSlug: string;
     rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
   },
 ): SqlFragment {
-  const { compiled, assignee, cooldown, harness, states, issueWs, operatorScopeSlug, rigAvailable } = args;
+  const {
+    compiled,
+    assignee,
+    cooldown,
+    harness,
+    states,
+    issueWs,
+    operatorScopeSlug,
+    rigAvailable,
+    claimantFleetSlug,
+    claimSpecReferencesFleet,
+  } = args;
   return sql`
     SELECT
       wi.*,
@@ -943,7 +962,10 @@ export function issueClaimCandidateSubquery(
       (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
       (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
-      (${reservedPlanLaneExclusionSql(sql, assignee)})                  AS ok_plan_lane,
+      (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
+        claimantFleetSlug,
+        claimSpecReferencesFleet,
+      })})                                                             AS ok_plan_lane,
       (${federationDetectorExclusionSql(sql)})                          AS ok_federation,
       (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
       (${alreadyTerminallyCompletedExclusionSql(sql)})                  AS ok_completed,
@@ -1005,6 +1027,8 @@ export async function aggregateIssueClaimExclusions(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
@@ -1032,6 +1056,8 @@ export async function aggregateIssueClaimExclusions(
     issueWs,
     operatorScopeSlug,
     rigAvailable: opts.rigAvailable,
+    claimantFleetSlug: opts.claimantFleetSlug,
+    claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
   });
 
   const rows = (await sql`
@@ -1161,6 +1187,8 @@ export async function sampleIssueClaimExclusions(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
@@ -1185,6 +1213,8 @@ export async function sampleIssueClaimExclusions(
     issueWs,
     operatorScopeSlug,
     rigAvailable: opts.rigAvailable,
+    claimantFleetSlug: opts.claimantFleetSlug,
+    claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
   });
 
   // Each floor's sample is its own bounded scalar subquery over the materialized `sub`
@@ -1307,6 +1337,8 @@ export async function listIssueClaimableRows(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
     /** The validated claim spec whose rank orders the survivors (defaults to
      *  DEFAULT_CLAIM_SPEC's fixed feature_order→created ordering). Reusing compileRank
      *  makes the listing order match what get_next under this spec would actually claim. */
@@ -1346,6 +1378,8 @@ export async function listIssueClaimableRows(
     issueWs,
     operatorScopeSlug,
     rigAvailable: opts.rigAvailable,
+    claimantFleetSlug: opts.claimantFleetSlug,
+    claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
   });
 
   const rows = (await sql`
@@ -1498,6 +1532,8 @@ export async function aggregateAdmittedComposition(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
     client?: OrgSql;
     /** EI-18802055183255275: see {@link aggregateIssueClaimExclusions}'s same-named opt. */
     precomputedTable?: string;
@@ -1516,6 +1552,8 @@ export async function aggregateAdmittedComposition(
     issueWs,
     operatorScopeSlug,
     rigAvailable: opts.rigAvailable,
+    claimantFleetSlug: opts.claimantFleetSlug,
+    claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
   });
 
   const rows = (await sql`
@@ -1584,6 +1622,8 @@ export async function readIssueClaimability(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
     spec?: ClaimSpec;
     /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
     client?: OrgSql;
@@ -1607,6 +1647,8 @@ export async function readIssueClaimability(
     states: opts.states,
     assignee: opts.assignee,
     rigAvailable: opts.rigAvailable,
+    claimantFleetSlug: opts.claimantFleetSlug,
+    claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
   };
 
   return (await sql.begin(async (tx) => {
@@ -1661,6 +1703,8 @@ export async function readIssueClaimability(
       issueWs,
       operatorScopeSlug,
       rigAvailable: opts.rigAvailable,
+      claimantFleetSlug: opts.claimantFleetSlug,
+      claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
     });
     const precomputedTable = 'claim_candidate_snapshot';
     await client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`;
@@ -2202,6 +2246,7 @@ export async function getNextWorkItem(
   // `states` (set once by the fleet leader / queen via scheduler:set_claim_spec, inherited
   // by every member); neither present ⇒ claimFloorsWhereSql's own `['todo']` default.
   const effectiveStates = opts.states ?? spec.states;
+  const claimSpecReferencesFleet = claimSpecReferencesField(spec, 'fleet');
 
   const floorOpts = {
     harness: opts.harness,
@@ -2218,6 +2263,8 @@ export async function getNextWorkItem(
     // query this fragment). Omitted/false ⇒ a payload.needs_2_machine_rig feature is excluded
     // for a single-box caller, matching the issue-family tier-3 floor (claimNextIssueWorkItem).
     rigAvailable: opts.rigAvailable,
+    claimantFleetSlug: opts.fleetSlug,
+    claimSpecReferencesFleet,
   };
 
   // EI-18805386252364731: the claim query runs on the `harness_admin` pool, which carries a
@@ -2396,6 +2443,8 @@ export async function getNextWorkItem(
         swarmId: opts.swarmId,
         excludeRedundant: opts.excludeRedundant,
         rigAvailable: opts.rigAvailable,
+        claimantFleetSlug: opts.fleetSlug,
+        claimSpecReferencesFleet,
       },
       ws,
       {

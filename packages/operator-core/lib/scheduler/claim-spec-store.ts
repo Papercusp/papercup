@@ -636,6 +636,7 @@ export async function getNextForBee(args: {
       ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
       ...(args.states ? { states: args.states } : {}),
       ...(args.rigAvailable ? { rigAvailable: true } : {}),
+      ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
     });
     if (!result) {
       // P-006: this IS "the claim-spec view is empty" — when the caller opted in,
