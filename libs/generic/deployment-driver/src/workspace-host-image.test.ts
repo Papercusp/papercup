@@ -300,6 +300,18 @@ describe("workspace-host image compatibility", () => {
     );
   });
 
+  it("rejects a release digest that differs from the build manifest", () => {
+    const candidate = artifact();
+    const errors = validateWorkspaceHostImageArtifact({
+      ...candidate,
+      release: { ...candidate.release, bundleSha256: "f".repeat(64) },
+    });
+
+    expect(errors).toContain(
+      "release.bundleSha256 must equal buildManifest.releaseArtifact.sha256",
+    );
+  });
+
   it("rejects a signing-key digest that does not pin the supplied public key", () => {
     const candidate = artifact();
     const errors = validateWorkspaceHostImageArtifact({
