@@ -1174,35 +1174,56 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # bundle archaeology once already before the freeze was even suspected.
   # Poll the newest mtime under assets/; require it unchanged for
   # QUIESCE_STABLE_SEC before trusting it's a complete build, bounded by
-  # QUIESCE_MAX_WAIT_SEC so a wedged watcher (EI-5202) can never hang the boot
-  # — warn and freeze anyway on timeout rather than blocking indefinitely.
+  # QUIESCE_MAX_WAIT_SEC so a wedged watcher (EI-5202) can never hang the boot.
+  # A missing or empty assets/ directory is NOT quiescence: Vite can leave the
+  # already-written index.html in place while it empties/rebuilds the bundle,
+  # and treating that empty state as stable freezes a blank SPA. Wait for a
+  # non-empty bundle first; only a present bundle that keeps changing may use
+  # the bounded "warn and freeze" fallback.
   QUIESCE_STABLE_SEC="${PAPERCUSP_SPA_QUIESCE_STABLE_SEC:-20}"
   QUIESCE_MAX_WAIT_SEC="${PAPERCUSP_SPA_QUIESCE_MAX_WAIT_SEC:-90}"
   QUIESCE_POLL_SEC=2
-  if [ -d "$SHARED_SPA_DIST/assets" ]; then
-    quiesce_started=$(date +%s)
-    last_newest=""
-    stable_since=$(date +%s)
-    while :; do
-      now=$(date +%s)
+  quiesce_started=$(date +%s)
+  last_newest=""
+  stable_since=$(date +%s)
+  while :; do
+    now=$(date +%s)
+    newest=""
+    assets_ready=0
+    if [ -d "$SHARED_SPA_DIST/assets" ]; then
       newest=$(find "$SHARED_SPA_DIST/assets" -type f -newermt "@0" -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+      [ -n "$newest" ] && assets_ready=1
+    fi
+    if [ "$assets_ready" -eq 1 ]; then
       if [ "$newest" != "$last_newest" ]; then
         last_newest="$newest"
         stable_since=$now
       fi
       elapsed_stable=$((now - stable_since))
-      elapsed_total=$((now - quiesce_started))
-      if [ "$elapsed_stable" -ge "$QUIESCE_STABLE_SEC" ]; then
-        [ "$elapsed_total" -gt "$QUIESCE_POLL_SEC" ] && log "shared SPA dist quiesced after ${elapsed_total}s (stable ${elapsed_stable}s) — freezing now."
-        break
-      fi
-      if [ "$elapsed_total" -ge "$QUIESCE_MAX_WAIT_SEC" ]; then
+    else
+      # Missing/empty assets can remain unchanged forever while index.html is
+      # still present. Reset the stability clock instead of calling that state
+      # a quiesced build.
+      last_newest=""
+      stable_since=$now
+      elapsed_stable=0
+    fi
+    elapsed_total=$((now - quiesce_started))
+    if [ "$assets_ready" -eq 1 ] && [ "$elapsed_stable" -ge "$QUIESCE_STABLE_SEC" ]; then
+      [ "$elapsed_total" -gt "$QUIESCE_POLL_SEC" ] && log "shared SPA dist quiesced after ${elapsed_total}s (stable ${elapsed_stable}s) — freezing now."
+      break
+    fi
+    if [ "$elapsed_total" -ge "$QUIESCE_MAX_WAIT_SEC" ]; then
+      if [ "$assets_ready" -eq 1 ]; then
         log "WARNING: shared SPA dist did NOT quiesce within ${QUIESCE_MAX_WAIT_SEC}s (still changing every <${QUIESCE_STABLE_SEC}s) — freezing anyway. The watcher may be mid-rebuild-storm or genuinely wedged (EI-5202); a fatal error naming an identifier absent from current source is the tell that this snapshot straddled a rebuild — re-run check-freshness.sh or just restart the instance."
         break
       fi
-      sleep "$QUIESCE_POLL_SEC"
-    done
-  fi
+      log "FATAL: shared SPA dist did NOT produce a non-empty assets/ bundle within ${QUIESCE_MAX_WAIT_SEC}s — refusing to freeze an incomplete snapshot (index.html exists but its referenced application assets are missing). Re-run after the watcher finishes."
+      rm -rf "$WORK"
+      exit 1
+    fi
+    sleep "$QUIESCE_POLL_SEC"
+  done
   SPA_DIST="$WORK/spa"
   mkdir -p "$SPA_DIST"
   # Copy the whole tree, then re-copy index.html LAST so the frozen index matches
