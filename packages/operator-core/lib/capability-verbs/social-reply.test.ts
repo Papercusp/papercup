@@ -64,7 +64,7 @@ const OWNED_SOURCE = {
   cursor: {},
 };
 
-function recordingAdapter(platform: 'mastodon' | 'bluesky' = 'mastodon') {
+function recordingAdapter(platform: 'mastodon' | 'bluesky' | 'linkedin' = 'mastodon') {
   const seen: SocialReplyRequest[] = [];
   const adapter: SocialWriteAdapter = {
     platform,
@@ -79,6 +79,7 @@ function recordingAdapter(platform: 'mastodon' | 'bluesky' = 'mastodon') {
 afterEach(() => {
   unregisterSocialWriteAdapter('mastodon');
   unregisterSocialWriteAdapter('bluesky');
+  unregisterSocialWriteAdapter('linkedin');
   vi.restoreAllMocks();
 });
 
@@ -165,11 +166,46 @@ describe('social:reply — rail 1', () => {
 });
 
 describe('social:reply — gate ORDER', () => {
-  it('refuses a Bluesky reply at the WRITE GATE even when an adapter is registered', async () => {
-    // The ordering property. Registering an adapter is not evidence that the
-    // lexicon is known — D-005 recorded Bluesky's write path as unread, and
-    // D-006 ruling (b) makes that machine-enforced. If this test ever fails,
-    // an unverified createRecord shape can reach a real public identity.
+  it('refuses a registry-refused platform even when an adapter is registered', async () => {
+    // The ordering property: registering an adapter is never evidence that the
+    // platform may be written to, so a refused platform must not reach it.
+    //
+    // This was asserted against Bluesky while its write path was unread. P-011
+    // verified that path, so the subject moved to a platform the registry still
+    // refuses (LinkedIn is `blockedOn` an owner-side app review). Note the
+    // refusal now arrives from the USABILITY gate inside coordinate resolution
+    // rather than the write-verified gate — earlier, not later, so the property
+    // this test protects is strictly stronger, not weaker. If it ever fails, an
+    // unusable platform can reach a real public identity.
+    const { adapter, seen } = recordingAdapter('linkedin');
+    registerSocialWriteAdapter(adapter);
+    const sql = fakeSql([
+      [
+        {
+          ...MASTODON_DOC,
+          source: 'linkedin',
+          externalId: 'urn:li:share:123',
+          metadata: { uri: 'urn:li:share:123' },
+        },
+      ],
+      [{ ...OWNED_SOURCE, kind: 'linkedin' }],
+    ]);
+
+    await expect(
+      replyToCanonicalSocialPost(sql, {
+        ...BASE,
+        ref: 'linkedin:urn:li:share:123',
+        text: 'hello',
+      }),
+    ).rejects.toThrow(/social_platform_unusable:linkedin/);
+
+    expect(seen, 'a refused platform must not reach its adapter').toHaveLength(0);
+  });
+
+  it('now lets a Bluesky reply REACH the adapter — write path verified 2026-08-23 (P-011)', async () => {
+    // The state change, asserted so it cannot silently regress. The strong ref
+    // (uri AND cid) is what atproto requires for both parent and root, and is
+    // exactly what the verified lexicon pinned.
     const { adapter, seen } = recordingAdapter('bluesky');
     registerSocialWriteAdapter(adapter);
     const sql = fakeSql([
@@ -184,15 +220,13 @@ describe('social:reply — gate ORDER', () => {
       [{ ...OWNED_SOURCE, kind: 'bluesky' }],
     ]);
 
-    await expect(
-      replyToCanonicalSocialPost(sql, {
-        ...BASE,
-        ref: 'bluesky:at://did:plc:abc/app.bsky.feed.post/3k',
-        text: 'hello',
-      }),
-    ).rejects.toThrow(/write-unverified/);
+    await replyToCanonicalSocialPost(sql, {
+      ...BASE,
+      ref: 'bluesky:at://did:plc:abc/app.bsky.feed.post/3k',
+      text: 'hello',
+    });
 
-    expect(seen).toHaveLength(0);
+    expect(seen, 'a verified platform must now reach its adapter').toHaveLength(1);
   });
 
   it('reports a missing adapter distinctly from an unverified write path', async () => {

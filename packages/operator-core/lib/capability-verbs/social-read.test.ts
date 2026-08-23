@@ -189,14 +189,35 @@ describe('mintSocialPostRef — refs are minted, never assembled', () => {
 });
 
 describe('socialWriteAvailability — read verified, write refused, told at read time', () => {
-  it('reports Bluesky as readable but NOT replyable, with the registry reason', () => {
-    // The read/write split is the whole point of the separate gate: Bluesky's
-    // event stream is specified (mintable above) while its write path is not.
+  it('reports Bluesky as BOTH readable and replyable since its write path verified', () => {
+    // Bluesky was this suite's standing example of readable-but-not-replyable.
+    // P-011 verified its write path (2026-08-23), so it is now the example of
+    // the opposite. Asserted rather than deleted so a regression to
+    // write-unverified fails here instead of silently re-arming a stale story.
     const minted = mintSocialPostRef('bluesky', 'at://did:plc:x/app.bsky.feed.post/1');
     expect(minted.ok).toBe(true);
-    const availability = socialWriteAvailability('bluesky', 'reply');
+    expect(socialWriteAvailability('bluesky', 'reply').allowed).toBe(true);
+  });
+
+  it('reports a refused platform as NOT replyable, with the registry reason', () => {
+    // The reporting behaviour itself: the verdict is COMPUTED from the registry
+    // rather than assumed, and it carries the reason so a caller can tell an
+    // owner why.
+    //
+    // The reason is `unverified`, NOT `owner-blocked`, and the difference is a
+    // fact about gate ORDER rather than about LinkedIn: `assertSocialPlatformUsable`
+    // tests `verifiedAt`/`sources` before it tests `blockedOn`, so an
+    // unverified row never reaches the owner-blocked branch even when it also
+    // carries a `blockedOn`. Reading the row's fields suggests the opposite —
+    // which is exactly why this asserts the gate's answer and not the row's.
+    //
+    // Note what is no longer representable in real data: a row that is
+    // read-verified AND write-refused. Every Wave A row is now write-verified
+    // and every other row is unverified, so that combination is covered
+    // synthetically in social.test.ts against a constructed row instead.
+    const availability = socialWriteAvailability('linkedin', 'reply');
     expect(availability.allowed).toBe(false);
-    expect(availability.reason).toBe('write-unverified');
+    expect(availability.reason).toBe('unverified');
   });
 
   it('never throws for a registered platform — it is a report, not a gate', () => {
@@ -206,9 +227,14 @@ describe('socialWriteAvailability — read verified, write refused, told at read
   });
 
   it('CONTROL: a hardcoded "replyable: true" would advertise a reply the write path refuses', () => {
+    // Re-pointed 2026-08-23: this control named Bluesky, and when P-011 verified
+    // Bluesky's write path the control stopped discriminating — the naive
+    // implementation and the real one began agreeing. A control is only a
+    // control while they still disagree, so it moved to a platform that is
+    // still refused.
     const naive = () => ({ allowed: true });
     expect(naive().allowed).toBe(true);
-    expect(socialWriteAvailability('bluesky', 'reply').allowed).toBe(false);
+    expect(socialWriteAvailability('linkedin', 'reply').allowed).toBe(false);
   });
 });
 
@@ -293,12 +319,16 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
     );
   });
 
-  it('carries the reply verdict onto each hit', () => {
+  it('carries the reply verdict onto each hit, derived from the registry', () => {
+    // The property is that the verdict is CARRIED from the registry, not that
+    // it holds any particular value — so it is asserted against the registry
+    // itself. Written this way it survives a platform's verification state
+    // changing (as Bluesky's did on 2026-08-23) without a test edit, while
+    // still failing if a hit ever reports something the registry disagrees with.
     const { hits } = collectSocialHits([
       storeRow({ source: 'bluesky', externalId: 'at://did:plc:x/app.bsky.feed.post/1' }),
     ]);
-    expect(hits[0]?.replyable.allowed).toBe(false);
-    expect(hits[0]?.replyable.reason).toBe('write-unverified');
+    expect(hits[0]?.replyable).toEqual(socialWriteAvailability('bluesky', 'reply'));
   });
 
   it('reads the author from the payload, falling back to the participants', () => {
