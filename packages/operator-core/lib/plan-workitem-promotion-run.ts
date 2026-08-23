@@ -45,6 +45,7 @@ import {
 } from './plan-items/convert';
 import { getFeatureBlockers, syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
 import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-items/reconcile-linked-work-items';
+import { planItemTextHash } from './plan-items/text-drift';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 import { phaseRequiresTwoMachineRig } from './plan-phase-rig';
 import {
@@ -382,10 +383,19 @@ export async function promotePlanItems(opts: {
   const rawByPlanItem = new Map(rawItems.map((item) => [item.id, item]));
   for (const spec of specs) {
     const itemId = spec.sourcePlanItemIds[0];
+    // WI-40825: stamp the item-text fingerprint on the PROMOTE path too, not only on
+    // convert-at-pickup. `plans:start` → promote is the dominant way a plan item becomes a
+    // work-item, so hashing only in convert.ts would leave the read-side drift verdict
+    // (`work_items:get.planItemTextDrift`) answering `unknown` for most rows — honest, but
+    // inert. `textById` already holds the parser's SEMANTIC text (readRawPlanItems takes
+    // `.text` from the PG-canonical row or the parsed item, never the raw line), which is
+    // why a status flip or a blocked-by edit still does not read as drift.
+    const itemTextHash = planItemTextHash(textById.get(itemId));
     const stamp: PlanItemStamp = {
       plan_slug: opts.planSlug,
       item_id: itemId,
       harness_slug: opts.harnessSlug,
+      ...(itemTextHash ? { item_text_hash: itemTextHash } : {}),
     };
     // D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
     // promoted work-item per (workspace, harness, plan, item), serialized IN POSTGRES —

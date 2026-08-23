@@ -26,6 +26,30 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { planItemTextHash } from './plan-items/text-drift';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
+
+/**
+ * WI-40870: read a REAL migration rather than hand-rolling a copy of its DDL, matching the
+ * pattern plan-item-convert.integration.test.ts and work-items-claim.integration.test.ts
+ * already use (EI-21214779999375504). Deriving from the owning migration is why this cannot
+ * drift the way a hand-copied CREATE TABLE does.
+ */
+const readMigration = (f: string) =>
+  readFileSync(resolve(SQL_DIR, f), 'utf8')
+    // Throwaway test DBs do not create the runtime roles. Remove the guarded
+    // grant-only DO block as one unit; line-filtering just the GRANT statements
+    // leaves an invalid empty BEGIN/EXCEPTION shell behind.
+    .replace(/DO \$grant\$[\s\S]*?\$grant\$;/g, '')
+    .split('\n')
+    .filter(
+      (line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
+    )
+    .join('\n');
 
 const COORD_EVENT_LOG_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
@@ -144,6 +168,12 @@ beforeAll(async () => {
   db = await createFreshPgDb('plan-workitem-promotion-run');
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
+  // WI-40870: promotion mints work-items, and every real emit upserts EI-13705's per-key
+  // fire latch (harness_shared.event_key_fires, migration 632) BEFORE claiming await rows.
+  // That write is fail-soft in production, but it console.warns on failure and
+  // vitest-fail-on-console escalates a warn into a hard red — so a fixture missing this one
+  // table failed 28 of 34 tests here with an error naming the CONSOLE guard, never the table.
+  await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
@@ -291,6 +321,39 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     `;
     expect(rows.map((row) => row.title)).toEqual(['Live rig drill', 'Single-box setup']);
     expect(rows.map((row) => row.payload.needs_2_machine_rig)).toEqual([true, false]);
+  });
+
+  it('WI-40825: stamps item_text_hash off the SEMANTIC item text, so the read side can derive drift', async () => {
+    // The gap this closes: convert-at-pickup hashed the item text, but `plans:start` →
+    // promote is the DOMINANT mint path. Stamping only in convert.ts left
+    // work_items:get.planItemTextDrift answering `unknown` for most rows — honest, but inert.
+    const TEXT = 'Wire the drift detector end-to-end';
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: TEXT }] });
+
+    expect((await run.promotePlanItems(base)).promoted).toBe(1);
+    const rows = await db.sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind = 'feature'
+       ORDER BY feature_id
+    `;
+    const stamp = rows[0]!.payload.plan_item as Record<string, unknown>;
+
+    // EXHAUSTIVE on purpose: the sibling convert test caught this change precisely because
+    // its assertion was exhaustive, so a new stamp field cannot land here unnoticed either.
+    expect(stamp).toEqual({
+      plan_slug: PLAN,
+      item_id: 'P-001',
+      harness_slug: HARNESS,
+      item_text_hash: planItemTextHash(TEXT),
+    });
+
+    // CALIBRATION — without these two, a hash function that returned a constant, or one
+    // that never moved, would pass the assertion above and detect nothing in production.
+    // (a) invariant to whitespace/formatting, so a re-wrap is not reported as a re-spec…
+    expect(stamp.item_text_hash).toBe(planItemTextHash('  Wire   the drift\n  detector end-to-end  '));
+    // …(b) but it MUST move when the prose is genuinely re-specced.
+    expect(stamp.item_text_hash).not.toBe(planItemTextHash('Wire the drift detector for plans only'));
   });
 
   it('is IDEMPOTENT — re-running mints no duplicates (promoted=0, same rows)', async () => {
