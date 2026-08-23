@@ -273,7 +273,14 @@ function compactCampaignValue(value: unknown, recentCap: number, depth = 0): unk
   const source = asDict(value);
   if (!source) return String(value);
   const out: Dict = {};
-  for (const [key, item] of Object.entries(source).slice(0, depth >= 3 ? 10 : 20)) {
+  // EI-6803: terminal audit rows deliberately carry twelve small, independently
+  // useful fields. The generic deep-object cap used to remove the final two
+  // (`countsTowardBurnDown` and `terminalizedAt`) from the leader-facing result.
+  // Preserve the whole typed audit row without widening arbitrary deep payloads.
+  const fieldCap = depth >= 3 && 'terminalOwner' in source && 'terminalizedAt' in source
+    ? 16
+    : depth >= 3 ? 10 : 20;
+  for (const [key, item] of Object.entries(source).slice(0, fieldCap)) {
     if (key === 'rows' && Array.isArray(item)) {
       out.rows = item.slice(0, recentCap).map((entry) => compactCampaignValue(entry, recentCap, depth + 1));
       continue;

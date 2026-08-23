@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import leaderBriefTool from './leader-brief';
-import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 
 function largeBrief() {
   const members = Array.from({ length: 53 }, (_, index) => ({
@@ -86,6 +86,58 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.campaign).toMatchObject({
       boundary: { source: 'fleet-created-at' },
       axes: { speaking: { available: true, writer: 'writer:speaking' } },
+    });
+  });
+
+  it('keeps every typed terminal audit-feed field through campaign compaction', () => {
+    const row = {
+      id: 'WI-42',
+      kind: 'change',
+      title: 'Add the fleet completion feed',
+      status: 'done',
+      terminalOwner: 'su-member',
+      terminalCompletionRef: 'verified implementation',
+      completionEvidence: {
+        verifiedHow: 'unit',
+        testsRun: 'npm run test:file -- fleet-campaign.test.ts',
+        testResult: 'green',
+        addedTests: true,
+        filesChanged: ['fleet-campaign.ts'],
+      },
+      verifiedHow: 'unit',
+      addedTests: true,
+      completionAuthority: 'committed',
+      countsTowardBurnDown: true,
+      terminalizedAt: '2026-08-23T00:00:00.000Z',
+    };
+    const campaign = compactCampaign({
+      boundary: { at: '2026-08-23T00:00:00.000Z', source: 'fleet-created-at' },
+      everMembers: { available: true, count: 1 },
+      axes: {
+        terminals: {
+          available: true,
+          writer: 'harness_shared.work_items',
+          units: { auditFeed: 'terminal completion rows' },
+          cap: { aggregates: 'none', recentRows: 12 },
+          data: { auditFeed: { total: 1, shown: 1, truncated: false, rows: [row] } },
+        },
+      },
+    }, 1) as Record<string, unknown>;
+
+    expect(campaign).toMatchObject({
+      axes: {
+        terminals: {
+          data: {
+            auditFeed: {
+              rows: [{
+                completionEvidence: row.completionEvidence,
+                countsTowardBurnDown: true,
+                terminalizedAt: row.terminalizedAt,
+              }],
+            },
+          },
+        },
+      },
     });
   });
 
