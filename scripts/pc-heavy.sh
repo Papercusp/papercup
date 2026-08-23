@@ -94,12 +94,13 @@
 #                         a broad sweep's 15-minute queue budget. An explicit
 #                         PC_HEAVY_TIMEOUT_SEC still wins for callers that need a
 #                         different bound.
-#   PC_HEAVY_FOCUSED_SLOTS  concurrent focused `test:file` runs allowed in the
-#                         separate lane while a release-gate reserve is live
-#                         (default 1). This lane prevents the scoped verification
-#                         recommended during gate classifier phases from waiting
-#                         behind the reserve's last ordinary slot; it remains
-#                         bounded so the gate still retains host headroom.
+#   PC_HEAVY_FOCUSED_SLOTS  concurrent focused `test:file` or explicitly scoped
+#                         `lint:tsc* --files=…` runs allowed in the separate lane
+#                         while a release-gate reserve is live (default 1). This
+#                         lane prevents the scoped verification recommended during
+#                         gate classifier phases from waiting behind the reserve's
+#                         last ordinary slot; it remains bounded so the gate still
+#                         retains host headroom.
 #   PC_HEAVY_DIR          slot-file dir (default ${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots)
 #   PC_HEAVY_NICE         nice increment (default 10)
 #   PC_HEAVY_IONICE       ionice spec: "best-effort N" | "idle" | "" to skip
@@ -691,23 +692,31 @@ if [ "$_gate_active" = 1 ]; then
   _gate_refuse_broad_sweep "$@"
 fi
 
-# EI-20223200344608082 — a scoped `test:file` is the safe verification path
-# during the gate's classifier phases, but the reserve clamp applies to every
-# ordinary heavy command. On a saturated host that leaves one shared slot; an
-# unrelated holder can therefore starve the exact-file check the guard just
-# prescribed. Give test-files.mjs one small, independent lane while the gate
-# reserve is live. The lane is intentionally bounded (default one slot) and
-# only exists for the scoped runner; broad sweeps continue to use the protected
-# ordinary pool.
+# EI-20223200344608082 / EI-21239272593686546 — scoped verification is the safe
+# path during the gate's classifier phases, but the reserve clamp applies to
+# every ordinary heavy command. On a saturated host that leaves one shared slot;
+# an unrelated holder can therefore starve the exact-file test or typecheck the
+# guard just prescribed. Give test-files.mjs and explicit `lint:tsc* --files=…`
+# runs one small, independent lane while the gate reserve is live. The lane is
+# intentionally bounded (default one slot) and only exists for scoped runners;
+# broad sweeps continue to use the protected ordinary pool.
 _is_focused_test=0
+_is_scoped_tsc=0
+_has_explicit_scope=0
 for _arg in "$@"; do
   case "$_arg" in
-    scripts/test-files.mjs|*/scripts/test-files.mjs) _is_focused_test=1; break ;;
+    scripts/test-files.mjs|*/scripts/test-files.mjs) _is_focused_test=1 ;;
+    scripts/lint-tsc*.mjs|*/scripts/lint-tsc*.mjs) _is_scoped_tsc=1 ;;
+    --files=*|--files-from=*) _has_explicit_scope=1 ;;
   esac
 done
+_is_focused_command=0
+if [ "$_is_focused_test" = 1 ] || { [ "$_is_scoped_tsc" = 1 ] && [ "$_has_explicit_scope" = 1 ]; }; then
+  _is_focused_command=1
+fi
 _focused_lane=0
 _focused_slots=0
-if [ "$_gate_active" = 1 ] && [ "$_is_focused_test" = 1 ]; then
+if [ "$_gate_active" = 1 ] && [ "$_is_focused_command" = 1 ]; then
   _focused_lane=1
   _focused_slots="${PC_HEAVY_FOCUSED_SLOTS:-1}"
   case "$_focused_slots" in ''|*[!0-9]*) _focused_slots=1 ;; esac
