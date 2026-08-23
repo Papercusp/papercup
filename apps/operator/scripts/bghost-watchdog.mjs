@@ -208,7 +208,8 @@
  *
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
  *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS,SUSTAINED_HEALTHY_POLLS,
- *   POOL_SHED_GRACE_S,SATURATION_MAX_SUPPRESS_S,SATURATION_ALERT_AFTER_S,BOOT_PROGRESS_SAMPLE_MS,BOOT_PROGRESS_MIN_TICKS},
+ *   POOL_SHED_GRACE_S,SATURATION_MAX_SUPPRESS_S,SATURATION_ALERT_AFTER_S,BOOT_PROGRESS_SAMPLE_MS,BOOT_PROGRESS_MIN_TICKS,
+ *   HOT_PATH_ACTIVATION_CHECK_MS},
  *   PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
@@ -306,6 +307,11 @@ const BOOT_PROGRESS_MIN_TICKS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_BOO
  *  reading freshness (not silently early-returning) — the operability gap that made this whole class
  *  invisible for 44h. First healthy poll logs immediately, then at most every HEARTBEAT_MS. */
 const HEARTBEAT_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEARTBEAT_MS) || 10 * 60_000;
+/** EI-18133447445064828: committed routine-code activation is deliberately much less frequent than
+ * freeze detection. A 30s freeze poll is useful; running two git reads and a cgroup scan every 30s is
+ * not. The guard below also prevents an overlapping poll from launching a second coordinated restart. */
+const HOT_PATH_ACTIVATION_CHECK_MS =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HOT_PATH_ACTIVATION_CHECK_MS) || 5 * 60_000;
 /** Durable, journald-INDEPENDENT decision log (EI-2434: journald can't be trusted to capture stdout). */
 const LOG_FILE = process.env.PAPERCUSP_BGHOST_WATCHDOG_LOG || join(homedir(), '.papercusp', 'bghost-watchdog.log');
 /** deploys:vintage self-report sink (fleet-reliability-verification-2026-07-10 P-008) — see the
@@ -344,6 +350,9 @@ let saturationSuppressSinceMs = null;
 let saturationSuppressPasses = 0;
 let saturationAlerted = false;
 let saturationSuppressLastAtMs = 0;
+let hotPathActivationCheckInFlight = false;
+let lastHotPathActivationCheckMs = 0;
+let lastHotPathActivationDecisionKey = null;
 let logDirEnsured = false;
 const log = (m) => {
   const line = `[bghost-watchdog ${new Date().toISOString()}] ${m}`;
@@ -361,7 +370,7 @@ const log = (m) => {
 
 function sh(cmd, args, opts = {}) {
   return new Promise((resolve_) => {
-    const child = execFile(cmd, args, { timeout: 10_000 }, (err, stdout, stderr) =>
+    const child = execFile(cmd, args, { timeout: opts.timeout ?? 10_000 }, (err, stdout, stderr) =>
       resolve_({ err, stdout: stdout || '', stderr: stderr || '' }),
     );
     // Optional stdin payload (EI-9419: psql only interpolates -v variables in stdin/file
@@ -774,6 +783,296 @@ export async function readCollateral(deps = {}) {
 }
 
 /**
+ * Keep this standalone list in parity with service-health.ts's BG_HOST_HOT_PATHS. The watchdog is a
+ * plain external Node process and deliberately does not import operator-core TypeScript (doing so would
+ * couple the last-resort watchdog's boot to the host it watches). The test suite compares the two lists
+ * so this duplication cannot silently drift.
+ */
+export const BG_HOST_COMMITTED_HOT_PATHS = Object.freeze([
+  'packages/operator-core/lib/dbos',
+  'packages/operator-core/lib/harness/routines',
+  'packages/operator-core/lib/harness/git-sync',
+  'packages/operator-core/lib/events',
+  'packages/operator-core/lib/agent-tools/loop',
+]);
+
+/** Pathspec exclusions for the COMMITTED-change read only. A test-only commit does not change the
+ * running host's behavior and therefore must not trigger a restart. The cleanliness read below is
+ * intentionally stricter: ANY dirty/untracked file under a hot-path directory suppresses activation,
+ * including a test file, because it proves a peer is still working in the restart-sensitive lane. */
+const BG_HOST_COMMITTED_HOT_PATH_TEST_EXCLUSIONS = Object.freeze([
+  ':(exclude,glob)**/*.test.ts',
+  ':(exclude,glob)**/*.test.tsx',
+  ':(exclude,glob)**/*.spec.ts',
+  ':(exclude,glob)**/*.spec.tsx',
+  ':(exclude,glob)**/__tests__/**',
+]);
+
+/** Pure, fail-closed committed-code activation verdict (EI-18133447445064828).
+ *
+ * A restart is allowed only when ALL evidence is positive:
+ *  - the running generation age is known;
+ *  - a committed, non-test hot-path change is newer than that generation;
+ *  - every hot-path directory is clean, including untracked files; and
+ *  - the cgroup snapshot is known and contains zero collateral processes.
+ *
+ * Unknown is never reinterpreted as safe. `code` is stable test/log vocabulary. */
+export function evaluateCommittedHotPathActivation({
+  activeForSec,
+  latestCommitMs,
+  nowMs,
+  dirtyEntries,
+  collateral,
+}) {
+  if (activeForSec == null || !Number.isFinite(activeForSec) || activeForSec < 0) {
+    return { activate: false, code: 'generation_unknown' };
+  }
+  if (nowMs == null || !Number.isFinite(nowMs) || nowMs <= 0) {
+    return { activate: false, code: 'clock_unknown' };
+  }
+  if (latestCommitMs == null || !Number.isFinite(latestCommitMs) || latestCommitMs <= 0) {
+    return { activate: false, code: 'commit_unknown' };
+  }
+  // A future-dated commit is not trustworthy evidence about generation ordering. Fail closed rather
+  // than turning workstation clock skew into a fleet-wide restart trigger.
+  if (latestCommitMs > nowMs) {
+    return { activate: false, code: 'commit_time_future' };
+  }
+  const bootMs = nowMs - activeForSec * 1000;
+  if (!Number.isFinite(bootMs) || bootMs < 0) {
+    return { activate: false, code: 'generation_unknown' };
+  }
+  if (latestCommitMs <= bootMs) {
+    return { activate: false, code: 'generation_current', bootMs, latestCommitMs };
+  }
+  if (!Array.isArray(dirtyEntries)) {
+    return { activate: false, code: 'cleanliness_unknown', bootMs, latestCommitMs };
+  }
+  if (dirtyEntries.length > 0) {
+    return {
+      activate: false,
+      code: 'hot_paths_dirty',
+      bootMs,
+      latestCommitMs,
+      dirtyCount: dirtyEntries.length,
+      dirtySample: dirtyEntries.slice(0, 5),
+    };
+  }
+  if (!collateral || !Number.isFinite(collateral.collateral) || collateral.collateral < 0) {
+    return { activate: false, code: 'collateral_unknown', bootMs, latestCommitMs };
+  }
+  if (collateral.collateral !== 0) {
+    return {
+      activate: false,
+      code: 'collateral_present',
+      bootMs,
+      latestCommitMs,
+      collateral: collateral.collateral,
+    };
+  }
+  return { activate: true, code: 'activate', bootMs, latestCommitMs };
+}
+
+/** Pure throttle/reentrancy verdict. A separate helper keeps the timing boundary falsifiable without
+ * launching git, systemctl, or ptool from tests. */
+export function shouldCheckCommittedHotPathActivation({ inFlight, lastCheckMs, nowMs, intervalMs }) {
+  if (inFlight === true) return false;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(lastCheckMs) || !Number.isFinite(intervalMs)) return false;
+  if (intervalMs < 0 || nowMs < lastCheckMs) return false;
+  return lastCheckMs === 0 || nowMs - lastCheckMs >= intervalMs;
+}
+
+/** Read the newest committed NON-TEST hot-path change and the current hot-path dirtiness. Every read is
+ * fail-closed: the caller receives null for the evidence it could not establish. */
+export async function readCommittedHotPathState(deps = {}) {
+  const shImpl = deps.sh ?? sh;
+  let root = deps.root ?? process.env.PAPERCUSP_INTEGRATION_ROOT ?? null;
+  if (!root) {
+    const scriptDir = dirname(fileURLToPath(import.meta.url));
+    const rootRead = await shImpl('git', ['-C', scriptDir, 'rev-parse', '--show-toplevel']);
+    if (rootRead.err || !String(rootRead.stdout).trim()) {
+      return { root: null, latestCommitMs: null, latestCommitHash: null, dirtyEntries: null, error: 'root_unknown' };
+    }
+    root = String(rootRead.stdout).trim();
+  }
+
+  const [commitRead, dirtyRead] = await Promise.all([
+    shImpl('git', [
+      '-C',
+      root,
+      'log',
+      '-1',
+      '--format=%ct%x00%H',
+      '--',
+      ...BG_HOST_COMMITTED_HOT_PATHS,
+      ...BG_HOST_COMMITTED_HOT_PATH_TEST_EXCLUSIONS,
+    ]),
+    shImpl('git', [
+      '-C',
+      root,
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=all',
+      '--',
+      ...BG_HOST_COMMITTED_HOT_PATHS,
+    ]),
+  ]);
+
+  let latestCommitMs = null;
+  let latestCommitHash = null;
+  if (!commitRead.err) {
+    const [epochSec, hash] = String(commitRead.stdout).trim().split('\0');
+    const parsedMs = Number(epochSec) * 1000;
+    if (Number.isFinite(parsedMs) && parsedMs > 0 && hash?.trim()) {
+      latestCommitMs = parsedMs;
+      latestCommitHash = hash.trim();
+    }
+  }
+  const dirtyEntries = dirtyRead.err
+    ? null
+    : String(dirtyRead.stdout)
+        .split('\0')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+  return {
+    root,
+    latestCommitMs,
+    latestCommitHash,
+    dirtyEntries,
+    error: commitRead.err ? 'commit_unknown' : dirtyRead.err ? 'cleanliness_unknown' : null,
+  };
+}
+
+function parsePtoolJson(stdout) {
+  const raw = String(stdout ?? '').trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Defensive fallback for a launcher prelude: ptool itself currently emits one JSON line, but the
+    // watchdog should not turn a harmless wrapper banner into an UNKNOWN restart outcome.
+    const lines = raw.split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        return JSON.parse(lines[i]);
+      } catch {
+        /* keep scanning */
+      }
+    }
+    return null;
+  }
+}
+
+/** Invoke the EXISTING coordinated restart tool, never raw systemctl, for committed-code activation.
+ * The wrapper owns boot-integrity, green-gate collision, exclusive-resource drain, audit, and the ~13m
+ * bg-host cooldown/coalescing rail. max_drain_sec:0 makes this automatic lane refuse immediately when a
+ * live resource holder exists rather than waiting through consequential work. */
+export async function requestCommittedHotPathRestart(latestCommitHash, deps = {}) {
+  const shImpl = deps.sh ?? sh;
+  const ptoolScript = deps.ptoolScript ?? join(dirname(fileURLToPath(import.meta.url)), 'ptool.mjs');
+  const shortHash = String(latestCommitHash ?? 'unknown').slice(0, 12);
+  const args = {
+    target: 'bg-host',
+    confirm: true,
+    authorize: true,
+    max_drain_sec: 0,
+    reason: `auto-activate committed bg-host hot-path ${shortHash}; clean tree and zero cgroup collateral`,
+  };
+  const run = await shImpl(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
+    stdin: JSON.stringify(args),
+    timeout: 30_000,
+  });
+  if (run.err) {
+    return { ok: false, restarted: false, coalesced: false, code: 'ptool_failed', error: run.err.message };
+  }
+  const body = parsePtoolJson(run.stdout);
+  if (!body || body.ok !== true) {
+    return {
+      ok: false,
+      restarted: false,
+      coalesced: false,
+      code: body?.reason ?? 'ptool_result_unknown',
+      body,
+    };
+  }
+  return {
+    ok: true,
+    restarted: body.restarted === true,
+    coalesced: body.coalesced === true,
+    verified: body.verified,
+    code: body.restarted === true ? 'restarted' : body.coalesced === true ? 'coalesced' : 'no_restart',
+    body,
+  };
+}
+
+async function maybeActivateCommittedHotPathCode() {
+  const nowMs = Date.now();
+  if (
+    !shouldCheckCommittedHotPathActivation({
+      inFlight: hotPathActivationCheckInFlight,
+      lastCheckMs: lastHotPathActivationCheckMs,
+      nowMs,
+      intervalMs: HOT_PATH_ACTIVATION_CHECK_MS,
+    })
+  ) {
+    return { restartRequested: false, code: 'throttled_or_in_flight' };
+  }
+  hotPathActivationCheckInFlight = true;
+  lastHotPathActivationCheckMs = nowMs;
+  try {
+    const [activeForSec, state] = await Promise.all([unitActiveForSec(), readCommittedHotPathState()]);
+    // Avoid the cgroup scan unless generation ordering + tree cleanliness already say a restart could
+    // be safe. Passing null first makes the pure verdict tell us whether collateral is the only missing
+    // proof; every other failure exits without touching /proc.
+    let verdict = evaluateCommittedHotPathActivation({
+      activeForSec,
+      latestCommitMs: state.latestCommitMs,
+      nowMs,
+      dirtyEntries: state.dirtyEntries,
+      collateral: null,
+    });
+    if (verdict.code === 'collateral_unknown') {
+      const collateral = await readCollateral();
+      verdict = evaluateCommittedHotPathActivation({
+        activeForSec,
+        latestCommitMs: state.latestCommitMs,
+        nowMs,
+        dirtyEntries: state.dirtyEntries,
+        collateral,
+      });
+    }
+
+    // Log only a NEW actionable/suppressed state. A current generation is ordinary and silent; a
+    // dirty/collateral suppression is important, but repeating it every 5m adds no information.
+    const decisionKey = `${state.latestCommitHash ?? 'unknown'}:${verdict.code}:${verdict.dirtyCount ?? ''}:${verdict.collateral ?? ''}`;
+    if (verdict.code !== 'generation_current' && decisionKey !== lastHotPathActivationDecisionKey) {
+      lastHotPathActivationDecisionKey = decisionKey;
+      const dirty = verdict.dirtySample?.length ? ` dirty=${verdict.dirtySample.join(' | ')}` : '';
+      const collateral = verdict.collateral == null ? '' : ` collateral=${verdict.collateral}`;
+      log(
+        `committed hot-path activation ${verdict.activate ? 'READY' : 'SUPPRESSED'} (${verdict.code})` +
+          ` commit=${state.latestCommitHash?.slice(0, 12) ?? 'UNKNOWN'}${dirty}${collateral}`,
+      );
+    }
+    if (!verdict.activate) return { restartRequested: false, code: verdict.code };
+
+    const outcome = await requestCommittedHotPathRestart(state.latestCommitHash);
+    log(
+      outcome.ok
+        ? `committed hot-path activation via dev:restart: ${outcome.code} (commit ${state.latestCommitHash?.slice(0, 12)})`
+        : `committed hot-path activation REFUSED/FAILED by dev:restart (${outcome.code}) — freeze monitoring continues`,
+    );
+    return { restartRequested: outcome.restarted === true, code: outcome.code };
+  } catch (e) {
+    log(`committed hot-path activation probe FAILED CLOSED: ${e instanceof Error ? e.message : String(e)}`);
+    return { restartRequested: false, code: 'probe_failed' };
+  } finally {
+    hotPathActivationCheckInFlight = false;
+  }
+}
+
+/**
  * Best-effort, fail-soft broadcast to every running agent (WI-3630) — the durable log file (LOG_FILE) is
  * journald-independent but nobody actively tails it (the EI-2434 precedent: a real freeze-storm sat
  * invisible for 44h). Writes DIRECTLY into `harness_shared.coord_event_log` — the same table
@@ -1032,6 +1331,12 @@ async function poll() {
     // not active → a crash; Restart=always handles that. Don't interfere.
     return;
   }
+  // EI-18133447445064828: activation is independent of freeze recovery. A HEALTHY bg-host can run
+  // stale committed routine code indefinitely, so check it before the PG freshness path. The helper is
+  // internally throttled + reentrancy-guarded and can only request a coordinated restart after the
+  // fail-closed generation/commit/cleanliness/collateral verdict passes.
+  const activation = await maybeActivateCommittedHotPathCode();
+  if (activation.restartRequested) return;
   const dbUrl = await resolveDbUrlAsync();
   const idleSec = await routineIdleSec(dbUrl);
   if (idleSec == null) {
@@ -1267,6 +1572,7 @@ function start() {
       `boot-grace ${BOOT_GRACE_MS}ms (extendable at ANY unit age while >=${BOOT_PROGRESS_MIN_TICKS} CPU ticks per ${BOOT_PROGRESS_SAMPLE_MS}ms /proc sample, alarms at ${SATURATION_ALERT_AFTER_S}s, hard bound ${SATURATION_MAX_SUPPRESS_S}s of CONTINUOUS suppression — reset by any routine firing), ` +
       `alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, ` +
       `pool-shed-grace ${POOL_SHED_GRACE_S}s (suppression requires a live ${BGHOST_HEALTH_URL} within ${BGHOST_HEALTH_TIMEOUT_MS}ms, alarms at ${POOL_SHED_ALERT_AFTER_S}s, hard bound ${POOL_SHED_MAX_SUPPRESS_S}s); ` +
+      `committed-hot-path activation check ${HOT_PATH_ACTIVATION_CHECK_MS}ms (dev:restart only; clean tree + zero collateral required); ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,
   );
   // WI-37501: a recurrence guard, not just a fix — if POLL_MS/BOOT_GRACE_MS/MAX_RESTARTS_HR are ever
