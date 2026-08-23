@@ -762,7 +762,12 @@ interface FileAdapter {
    */
   parseParts?: (line: string) => ParsedPart[];
   /** Best-effort provenance derived from the file path. */
-  meta: (filePath: string) => { sessionId: string; owner: string | null };
+  meta: (filePath: string) => {
+    sessionId: string;
+    owner: string | null;
+    /** Managed OMP homes encode the adv_sessions row id in their path. */
+    advSessionId?: number | null;
+  };
   /**
    * P-002: per-TOOL / per-VERB usage extracted from the same pass, for the
    * bash→tool substitution metric.
@@ -802,6 +807,30 @@ export function codexTranscriptMeta(filePath: string): { sessionId: string; owne
     }
   }
   return { sessionId: sessionMatch ? sessionMatch[1] : stem, owner };
+}
+
+/**
+ * Resolve OMP transcript identity from its filename and, when present, the
+ * managed per-session home. Shared ~/.omp transcripts intentionally have no
+ * coordination owner. A psu-launched OMP home is named
+ * `su-omp-homes/session-<advSessionId>/...`; the numeric directory is the
+ * durable join key to adv_sessions, while the filename suffix is OMP's native
+ * thread/session id.
+ */
+export function ompTranscriptMeta(filePath: string): {
+  sessionId: string;
+  owner: string | null;
+  advSessionId: number | null;
+} {
+  const stem = basename(filePath, '.jsonl');
+  const us = stem.indexOf('_');
+  const sessionId = us >= 0 ? stem.slice(us + 1) : stem;
+  const managed = filePath.match(/(?:^|\/)su-omp-homes\/session-(\d+)\/agent\/sessions(?:\/|$)/);
+  if (!managed) return { sessionId, owner: null, advSessionId: null };
+  const advSessionId = Number(managed[1]);
+  return Number.isSafeInteger(advSessionId) && advSessionId > 0
+    ? { sessionId, owner: null, advSessionId }
+    : { sessionId, owner: null, advSessionId: null };
 }
 
 /** Metadata that can be recovered from a managed Codex transcript without
@@ -919,12 +948,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
     ],
     parseLine: parseOmpLine,
     classifyLine: classifyOmpLine,
-    meta: (filePath) => {
-      // <ts>_<uuid>.jsonl — the uuid is the session id.
-      const stem = basename(filePath, '.jsonl');
-      const us = stem.indexOf('_');
-      return { sessionId: us >= 0 ? stem.slice(us + 1) : stem, owner: null };
-    },
+    meta: ompTranscriptMeta,
   },
   {
     sourceKind: 'codex',
@@ -1394,6 +1418,33 @@ async function backfillSessionOwners(
        AND turns.session_id = resolved.session_id
        AND turns.owner IS DISTINCT FROM resolved.owner
   `;
+}
+
+/**
+ * Resolve managed OMP transcript homes to coordination owners in one query per
+ * adapter sweep. The path's adv_sessions id is authoritative; joining by the
+ * native OMP thread id would miss the period before lazy thread-linking runs.
+ * Shared ~/.omp files never enter this map and remain deliberately unowned.
+ */
+async function loadOmpSessionOwners(
+  sql: Sql,
+  advSessionIds: Iterable<number>,
+): Promise<Map<number, string>> {
+  const ids = [...new Set([...advSessionIds].filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (!ids.length) return new Map();
+  const rows = await sql<Array<{ id: string | number; coord_owner_id: string | null }>>`
+    SELECT id, coord_owner_id
+      FROM harness_shared.adv_sessions
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND mode = 'omp'
+       AND coord_owner_id IS NOT NULL
+       AND id = ANY(${sql.array(ids)}::bigint[])
+  `;
+  return new Map(
+    rows
+      .filter((row) => typeof row.coord_owner_id === 'string' && row.coord_owner_id.trim())
+      .map((row) => [Number(row.id), row.coord_owner_id!.trim()]),
+  );
 }
 
 /** Repair the launch identity that Codex cannot provide at bootstrap time.
@@ -2429,13 +2480,32 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       let filesThisAdapter = 0;
       const ownerBackfill = new Map<string, string>();
       const codexMetadataBackfill = new Map<number, CodexAdvSessionMetadata>();
+      let ompOwnersByAdvSession = new Map<number, string>();
+      if (adapter.sourceKind === 'omp') {
+        const managedIds = candidates
+          .map((candidate) => adapter.meta(candidate.path).advSessionId)
+          .filter((id): id is number => id != null);
+        try {
+          ompOwnersByAdvSession = await loadOmpSessionOwners(sql, managedIds);
+        } catch (err) {
+          stats.errors += 1;
+          if ((stats.errorSample ??= []).length < 3) {
+            stats.errorSample.push(`omp owner lookup: ${(err as Error).message.slice(0, 200)}`);
+          }
+        }
+      }
       for (const cand of candidates) {
         if (budget.turns <= 0 || filesThisAdapter >= MAX_FILES_PER_TICK) break;
         stats.filesScanned += 1;
         try {
           const st = stateMap.get(cand.path) ?? { ...EMPTY_STATE };
           const meta = adapter.meta(cand.path);
-          if (meta.owner) ownerBackfill.set(meta.sessionId, meta.owner);
+          const owner = meta.owner ?? (
+            adapter.sourceKind === 'omp' && meta.advSessionId != null
+              ? ompOwnersByAdvSession.get(meta.advSessionId) ?? null
+              : null
+          );
+          if (owner) ownerBackfill.set(meta.sessionId, owner);
           // Collect metadata BEFORE the byte-offset short circuit. A paused
           // session commonly has no late transcript turn, but its already
           // indexed rollout still carries the native id/config needed to repair
@@ -2460,7 +2530,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             session_id: t.sessionId ?? meta.sessionId,
             turn_idx: st.turn_count + i,
             ts: t.ts ? t.ts.toISOString() : null,
-            owner: meta.owner,
+            owner,
             harness_slug: null,
             cwd: t.cwd ?? null,
             speaker: t.speaker,
@@ -2474,7 +2544,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             stats.partsInserted = (stats.partsInserted ?? 0) + await insertParts(sql, partRowsFrom(parts, {
               sourceKind: adapter.sourceKind,
               sessionId: meta.sessionId,
-              owner: meta.owner,
+              owner,
               partCount: st.part_count,
             }));
           } catch (err) {

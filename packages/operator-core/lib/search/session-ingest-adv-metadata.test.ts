@@ -13,6 +13,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import {
   codexAdvSessionMetadata,
   parseCodexEffectiveConfig,
+  ompTranscriptMeta,
 } from './session-ingest';
 
 const NATIVE_ID = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
@@ -110,5 +111,49 @@ describe('Codex adv-session backfill wiring', () => {
     expect(block).not.toMatch(/\bended_at\s*=/);
     expect(block).not.toMatch(/\bstarted_at\s*=/);
     expect(block).not.toMatch(/\bexit_code\s*=/);
+  });
+});
+
+describe('OMP transcript metadata', () => {
+  it('extracts the native thread id and managed adv-session id', () => {
+    expect(ompTranscriptMeta(
+      '/home/test/.papercusp/su-omp-homes/session-14830/agent/sessions/-repo/2026-08-11T19-31-28-125Z_019ff24e-f2fd-7000-a2ff-36c02fc83c32.jsonl',
+    )).toEqual({
+      sessionId: '019ff24e-f2fd-7000-a2ff-36c02fc83c32',
+      owner: null,
+      advSessionId: 14830,
+    });
+  });
+
+  it('keeps shared OMP transcripts unowned', () => {
+    expect(ompTranscriptMeta(
+      '/home/test/.omp/agent/sessions/-repo/2026-08-11T19-31-28-125Z_thread-shared.jsonl',
+    )).toEqual({
+      sessionId: 'thread-shared',
+      owner: null,
+      advSessionId: null,
+    });
+  });
+
+  it('rejects malformed managed-home ids instead of inventing an owner join', () => {
+    expect(ompTranscriptMeta(
+      '/home/test/.papercusp/su-omp-homes/session-not-a-number/agent/sessions/-repo/t_thread.jsonl',
+    ).advSessionId).toBeNull();
+  });
+});
+
+describe('OMP owner backfill wiring', () => {
+  const source = readFileSync(new URL('./session-ingest.ts', import.meta.url), 'utf8');
+
+  it('loads managed owners once before the per-file loop and feeds resolved owners to rows', () => {
+    const adapterSweep = source.indexOf('for (const adapter of FILE_ADAPTERS)');
+    const ownerLoad = source.indexOf('loadOmpSessionOwners(sql, managedIds)', adapterSweep);
+    const fileLoop = source.indexOf('for (const cand of candidates)', adapterSweep);
+    expect(adapterSweep).toBeGreaterThanOrEqual(0);
+    expect(ownerLoad).toBeGreaterThan(adapterSweep);
+    expect(ownerLoad).toBeLessThan(fileLoop);
+    expect(source).toContain("AND mode = 'omp'");
+    expect(source).toContain('ownerBackfill.set(meta.sessionId, owner)');
+    expect(source).toContain('owner,\n            harness_slug: null');
   });
 });
