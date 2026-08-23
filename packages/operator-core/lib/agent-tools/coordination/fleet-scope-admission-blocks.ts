@@ -23,6 +23,7 @@
  */
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import type { FleetDependencyEscape } from '../../scheduler/fleet-scope-admission';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /** The coord message category every fleet-scope admission notice is sent under. */
 export const FLEET_ADMISSION_BLOCK_CATEGORY = 'fleet-scope-admission';
@@ -77,6 +78,24 @@ export interface FleetAdmissionBlockRow {
   stamp: unknown;
 }
 
+export type FleetAdmissionBlockTerminalResolver = (
+  block: FleetAdmissionBlock,
+  harness: string | null,
+) => Promise<boolean>;
+
+export interface FetchFleetAdmissionBlocksOptions {
+  nowMs?: number;
+  lookbackMs?: number;
+  scanCap?: number;
+  rowCap?: number;
+  /** Concrete harness from the caller when it already has one (leader-brief). */
+  harness?: string | null;
+  /** Test seam; production resolves the target from the canonical work/plan ledger. */
+  isTargetTerminal?: FleetAdmissionBlockTerminalResolver;
+  /** Test seam; production reads the fleet sentinel's authored claim-spec harness. */
+  resolveFleetHarness?: (fleetSlug: string, workspaceId: string) => Promise<string | null>;
+}
+
 const clipReason = (value: unknown, max = 240): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -96,9 +115,7 @@ const asDependencyEscape = (value: unknown): FleetDependencyEscape | null => {
   const dependency = rec.dependency as Record<string, unknown> | undefined;
   const routes = Array.isArray(rec.routes) ? rec.routes : [];
   const routeKinds = routes.map((route) =>
-    route && typeof route === 'object' && !Array.isArray(route)
-      ? (route as Record<string, unknown>).kind
-      : null,
+    route && typeof route === 'object' && !Array.isArray(route) ? (route as Record<string, unknown>).kind : null,
   );
   if (
     rec.kind !== 'dependency_escape' ||
@@ -112,7 +129,8 @@ const asDependencyEscape = (value: unknown): FleetDependencyEscape | null => {
     !routeKinds.includes('spec_widen') ||
     !routeKinds.includes('outside_lane_placement') ||
     !routeKinds.includes('leader_claim')
-  ) return null;
+  )
+    return null;
   return value as FleetDependencyEscape;
 };
 
@@ -138,9 +156,7 @@ export function parseAdmissionBlockStamp(
   const member = asId(rec.member);
   if (!itemId || !member) return null;
   if (!Number.isFinite(meta.atMs) || meta.atMs <= 0) return null;
-  const revision = typeof rec.specRevision === 'number' && Number.isFinite(rec.specRevision)
-    ? rec.specRevision
-    : null;
+  const revision = typeof rec.specRevision === 'number' && Number.isFinite(rec.specRevision) ? rec.specRevision : null;
   return {
     itemId,
     member,
@@ -189,6 +205,70 @@ export function dedupeAdmissionBlocks(
   return [...byPair.values()].sort((a, b) => b.atMs - a.atMs).slice(0, cap);
 }
 
+const PLAN_ITEM_ADDRESS = /^(.+)#(P-\d+)$/;
+
+/**
+ * Revalidate a historical refusal against the target's CURRENT lifecycle.
+ *
+ * A refusal envelope is append-only evidence that a block once happened; it is
+ * not evidence that the target is still actionable. Return true only on a
+ * positively resolved terminal state. Missing targets, missing harness scope,
+ * and read failures all fail open (the caller keeps the block), because hiding a
+ * genuine live refusal is more expensive than retaining an uncertain advisory.
+ */
+export async function admissionBlockTargetIsTerminal(
+  block: FleetAdmissionBlock,
+  harness: string | null,
+): Promise<boolean> {
+  const itemId = block.itemId?.trim();
+  if (!itemId) return false;
+
+  const planItem = PLAN_ITEM_ADDRESS.exec(itemId);
+  if (planItem) {
+    if (!harness) return false;
+    const [{ planItemEffectiveStatus }, { isTerminalStatus }] = await Promise.all([
+      import('../../plan-items/assignments'),
+      import('../plans/set-status'),
+    ]);
+    const state = await planItemEffectiveStatus(harness, planItem[1]!, planItem[2]!);
+    return state != null && isTerminalStatus(state);
+  }
+
+  // A bare WI/F id is only unique inside a harness. EI snowflakes are globally
+  // unique, so they remain safely resolvable when a legacy fleet has no authored
+  // harness. Unknown id families retain the historical block.
+  if (!/^(?:WI|EI|F)-/.test(itemId)) return false;
+  if (!harness && !itemId.startsWith('EI-')) return false;
+  const { getWorkItem } = await import('../../work-items');
+  const item = await getWorkItem(itemId, harness ?? undefined);
+  return item != null && ANY_FAMILY_TERMINAL_STATES.includes(item.state);
+}
+
+/** Drop only blocks whose referenced target is proven terminal right now. */
+export async function filterCurrentAdmissionBlocks(
+  blocks: readonly FleetAdmissionBlock[],
+  opts: Pick<FetchFleetAdmissionBlocksOptions, 'harness' | 'isTargetTerminal'> = {},
+): Promise<FleetAdmissionBlock[]> {
+  const isTargetTerminal = opts.isTargetTerminal ?? admissionBlockTargetIsTerminal;
+  const harness = opts.harness?.trim() || null;
+  const filtered = await Promise.all(
+    blocks.map(async (block) => {
+      try {
+        return (await isTargetTerminal(block, harness)) ? null : block;
+      } catch {
+        return block;
+      }
+    }),
+  );
+  return filtered.filter((block): block is FleetAdmissionBlock => block !== null);
+}
+
+async function claimSpecHarnessForFleet(fleetSlug: string, workspaceId: string): Promise<string | null> {
+  const { fleetSpecBeeKey, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+  const record = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
+  return record.harnessSlug?.trim() || null;
+}
+
 /**
  * Fleet-health read: the distinct admission blocks raised against THIS fleet's
  * spec inside the lookback window.
@@ -201,7 +281,7 @@ export function dedupeAdmissionBlocks(
  */
 export async function fetchFleetAdmissionBlocks(
   fleetSlug: string,
-  opts: { nowMs?: number; lookbackMs?: number; scanCap?: number; rowCap?: number } = {},
+  opts: FetchFleetAdmissionBlocksOptions = {},
 ): Promise<FleetAdmissionBlock[]> {
   if (!fleetSlug || !coordHasPgFastPath()) return [];
   try {
@@ -235,7 +315,15 @@ export async function fetchFleetAdmissionBlocks(
       });
       if (block) parsed.push(block);
     }
-    return dedupeAdmissionBlocks(parsed, opts.rowCap ?? FLEET_ADMISSION_BLOCK_ROW_CAP);
+    const deduped = dedupeAdmissionBlocks(parsed, opts.rowCap ?? FLEET_ADMISSION_BLOCK_ROW_CAP);
+    if (deduped.length === 0) return [];
+    const harness =
+      opts.harness?.trim() ||
+      (await (opts.resolveFleetHarness ?? claimSpecHarnessForFleet)(fleetSlug, ws).catch(() => null));
+    return filterCurrentAdmissionBlocks(deduped, {
+      harness,
+      isTargetTerminal: opts.isTargetTerminal,
+    });
   } catch {
     return [];
   }

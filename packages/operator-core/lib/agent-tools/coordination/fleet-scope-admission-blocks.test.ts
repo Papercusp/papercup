@@ -8,9 +8,11 @@ import { describe, expect, it } from 'vitest';
 import {
   FLEET_ADMISSION_BLOCK_ROW_CAP,
   dedupeAdmissionBlocks,
+  filterCurrentAdmissionBlocks,
   parseAdmissionBlockStamp,
   type FleetAdmissionBlock,
 } from './fleet-scope-admission-blocks';
+import { detectFleetAdmissionTransitions } from '../../fleet-transition-events';
 
 const META = { msgId: 'msg-1', atMs: 1_700_000_000_000 };
 
@@ -118,9 +120,12 @@ describe('parseAdmissionBlockStamp', () => {
   });
 
   it('drops a malformed dependency escape without dropping the admission block', () => {
-    const parsed = parseAdmissionBlockStamp(stamp({
-      dependencyEscape: { kind: 'dependency_escape', blockedHeldItemIds: [] },
-    }), META);
+    const parsed = parseAdmissionBlockStamp(
+      stamp({
+        dependencyEscape: { kind: 'dependency_escape', blockedHeldItemIds: [] },
+      }),
+      META,
+    );
     expect(parsed).not.toBeNull();
     expect(parsed?.dependencyEscape).toBeNull();
   });
@@ -158,9 +163,7 @@ describe('dedupeAdmissionBlocks', () => {
   });
 
   it('orders newest-first and caps the row list', () => {
-    const many = Array.from({ length: 40 }, (_, i) =>
-      block({ itemId: `WI-${i}`, atMs: 1_000 + i }),
-    );
+    const many = Array.from({ length: 40 }, (_, i) => block({ itemId: `WI-${i}`, atMs: 1_000 + i }));
     const rows = dedupeAdmissionBlocks(many);
     expect(rows).toHaveLength(FLEET_ADMISSION_BLOCK_ROW_CAP);
     expect(rows[0]?.itemId).toBe('WI-39');
@@ -182,5 +185,45 @@ describe('dedupeAdmissionBlocks', () => {
 
   it('returns an empty list for no input', () => {
     expect(dedupeAdmissionBlocks([])).toEqual([]);
+  });
+});
+
+describe('filterCurrentAdmissionBlocks', () => {
+  it('drops a historical refusal after its target becomes terminal', async () => {
+    const historical = [block({ itemId: 'WI-done', member: 'su-grader' })];
+    const isTargetTerminal = async () => true;
+
+    const current = await filterCurrentAdmissionBlocks(historical, {
+      harness: 'papercusp',
+      isTargetTerminal,
+    });
+
+    expect(current).toEqual([]);
+    // A fresh sweep snapshot starts at zero. The historical envelope must not
+    // manufacture the field incident's false 0→1 edge after terminalization.
+    expect(
+      detectFleetAdmissionTransitions(new Map([['acceptance', 0]]), [
+        { fleetSlug: 'acceptance', blockedCount: current.length },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('retains a nonterminal refusal and passes the concrete harness to the resolver', async () => {
+    const isTargetTerminal = async (_block: FleetAdmissionBlock, harness: string | null) => {
+      expect(harness).toBe('papercusp');
+      return false;
+    };
+    const live = block({ itemId: 'WI-open' });
+    await expect(filterCurrentAdmissionBlocks([live], { harness: 'papercusp', isTargetTerminal })).resolves.toEqual([
+      live,
+    ]);
+  });
+
+  it('fails open when lifecycle revalidation is unavailable', async () => {
+    const historical = block({ itemId: 'WI-unknown' });
+    const isTargetTerminal = async () => {
+      throw new Error('ledger unavailable');
+    };
+    await expect(filterCurrentAdmissionBlocks([historical], { isTargetTerminal })).resolves.toEqual([historical]);
   });
 });

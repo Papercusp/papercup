@@ -92,10 +92,7 @@ import {
   type UnownedCriticalCandidate,
   type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
-import {
-  fetchFleetAdmissionBlocks,
-  type FleetAdmissionBlock,
-} from '../coordination/fleet-scope-admission-blocks';
+import { fetchFleetAdmissionBlocks, type FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import {
@@ -374,9 +371,7 @@ export function fleetCapacityProviderForMembers(
   return providers.size === 1 ? [...providers][0] : null;
 }
 
-export async function readPoolDegradedState(
-  provider: AccountProvider,
-): Promise<PoolDegradedState | null> {
+export async function readPoolDegradedState(provider: AccountProvider): Promise<PoolDegradedState | null> {
   try {
     const hr = await fetchGatewayHeadroom({ timeoutMs: 1500, provider });
     const accountAvailability = await readProviderAvailability(provider);
@@ -646,7 +641,9 @@ export function computeBenchSuggestion(
             `BUT the shared inference ACCOUNT POOL is ${poolCapacity.poolExhausted ? 'EXHAUSTED' : 'DEGRADED'} ` +
             `right now (factor ${poolCapacity.factor.toFixed(2)}` +
             (poolCapacity.usableAccounts != null ? `, ${poolCapacity.usableAccounts} usable account(s)` : '') +
-            (poolCapacity.queueDepth != null ? `, ~${poolCapacity.queueDepth} request(s) already queued at the gateway` : '') +
+            (poolCapacity.queueDepth != null
+              ? `, ~${poolCapacity.queueDepth} request(s) already queued at the gateway`
+              : '') +
             ') — this member is most likely QUEUED FOR INFERENCE, not declining work. DO NOT wake it: ' +
             'coord:send wake:required just adds another request behind the same congestion, worsening it. ' +
             'DO NOT fleet:bench it either — the lane is not drained. Re-check fleet:capacity before acting ' +
@@ -688,7 +685,7 @@ export function computeBenchSuggestion(
           "right now under this fleet's own spec (EI-18681259560385029) — the lane is NOT drained. " +
           'DO NOT fleet:bench this member: benching sleeps it next to work it should be taking. ' +
           'Wake it to re-run scheduler:get_next (coord:send wake:required), and if it wakes and ' +
-          'still takes nothing, that is a claim-floor problem — read work_items:claimable\'s ' +
+          "still takes nothing, that is a claim-floor problem — read work_items:claimable's " +
           'excludedBreakdown rather than assuming the member is at fault.',
         item: null,
         itemTitle: null,
@@ -712,12 +709,10 @@ export function computeBenchSuggestion(
           `alive with NO claim and nothing queued, but this lane is GATED, not drained: ` +
           `${laneGating?.matchedByFilter} row(s) match this fleet's own filter and 0 survive the ` +
           `claim floors` +
-          (gatedFloors.length > 0
-            ? ` (${gatedFloors.map(([k, n]) => `${k}=${n}`).join(', ')}; buckets overlap)`
-            : '') +
+          (gatedFloors.length > 0 ? ` (${gatedFloors.map(([k, n]) => `${k}=${n}`).join(', ')}; buckets overlap)` : '') +
           '. DO NOT fleet:bench this member — benching parks it on a completion event that ' +
           'cannot fire, since nothing is in flight to complete. Act on the floor instead: ' +
-          'clear/redirect the dominant exclusion above (work_items:claimable\'s excludedBreakdown ' +
+          "clear/redirect the dominant exclusion above (work_items:claimable's excludedBreakdown " +
           'names it), or widen the spec via scheduler:set_claim_spec. If the gating is correct ' +
           'and permanent, the honest move is fleet:wind-down, not an idle member.',
         item: null,
@@ -988,9 +983,7 @@ function evaluatePositivePlanFilter(
     };
   }
   if (leaf.op === 'in' && Array.isArray(leaf.value)) {
-    const positivePlanSlugs = uniquePlanSlugs(
-      leaf.value.filter((value): value is string => typeof value === 'string'),
-    );
+    const positivePlanSlugs = uniquePlanSlugs(leaf.value.filter((value): value is string => typeof value === 'string'));
     if (positivePlanSlugs.length === 0) return { verdict: 'unknown', positivePlanSlugs };
     return {
       verdict: positivePlanSlugs.includes(declaredPlanSlug),
@@ -1026,17 +1019,22 @@ export function computeDeclaredPlanSpecDivergenceAlert(input: {
   specFilter?: FilterNode | null;
   harness?: string | null;
   fleet?: string | null;
-}): {
-  reason: string;
-  falsifier: AlertFalsifier;
-  positivePlanSlugs: string[];
-  divergentMembers: DeclaredPlanSpecDivergentMember[];
-} | undefined {
+}):
+  | {
+      reason: string;
+      falsifier: AlertFalsifier;
+      positivePlanSlugs: string[];
+      divergentMembers: DeclaredPlanSpecDivergentMember[];
+    }
+  | undefined {
   try {
     const positivePlanSlugs = positivePlanSlugsFromFilter(input.specFilter);
     if (positivePlanSlugs.length === 0) return undefined;
     const divergentMembers = input.members
-      .filter((member) => member.alive === true && typeof member.declaredPlanSlug === 'string' && member.declaredPlanSlug.length > 0)
+      .filter(
+        (member) =>
+          member.alive === true && typeof member.declaredPlanSlug === 'string' && member.declaredPlanSlug.length > 0,
+      )
       .filter((member) => evaluatePositivePlanFilter(input.specFilter, member.declaredPlanSlug!).verdict === false)
       .map((member) => ({ agentId: member.agentId, declaredPlanSlug: member.declaredPlanSlug! }));
     if (divergentMembers.length === 0) return undefined;
@@ -1054,7 +1052,7 @@ export function computeDeclaredPlanSpecDivergenceAlert(input: {
         check: renderFalsifierCall('fleet:assignments', { fleet: input.fleet }),
         measurement:
           'the FRESH live member declarations (`declaredPlanSlug`) from fleet:assignments — ' +
-          'independent of this brief\'s roster snapshot and effective-spec read',
+          "independent of this brief's roster snapshot and effective-spec read",
         kills:
           'no live member still declares a plan outside the positive plan predicates, or the ' +
           'current spec no longer carries those predicates → the divergence was stale; re-run ' +
@@ -1207,8 +1205,8 @@ export function computeSpecStarvedFleetAlert(input: {
     },
     reason:
       `fleet-wide wip is 0 and this fleet's effective claim spec matches 0 of ${input.poolSize} claimable ` +
-      'row(s) right now (EI-18655873409999215) — every member\'s scheduler:get_next will report a clean ' +
-      'scoped miss, indistinguishable from a genuinely drained lane. Check the spec\'s view.filter (a ' +
+      "row(s) right now (EI-18655873409999215) — every member's scheduler:get_next will report a clean " +
+      "scoped miss, indistinguishable from a genuinely drained lane. Check the spec's view.filter (a " +
       'not:/!= fence over a NULLABLE field, an "=" comparison against an array-typed field like `tags` ' +
       '— use `contains` instead, or a scope that no longer matches any open row) via ' +
       'scheduler:set_claim_spec — do not assume the lane is genuinely drained.',
@@ -1250,9 +1248,7 @@ export function computeSpecAuthorshipAlert(input: {
 }): { reason: string; falsifier: AlertFalsifier } | undefined {
   if (!input.readerId) return undefined;
   if (input.updatedBy && input.updatedBy === input.readerId) return undefined;
-  const who = input.updatedBy
-    ? `\`${input.updatedBy}\``
-    : 'an UNATTRIBUTED writer (the row carries no updated_by)';
+  const who = input.updatedBy ? `\`${input.updatedBy}\`` : 'an UNATTRIBUTED writer (the row carries no updated_by)';
   const when = input.updatedAt ? ` on ${input.updatedAt}` : '';
   return {
     falsifier: {
@@ -1268,7 +1264,7 @@ export function computeSpecAuthorshipAlert(input: {
       // so it can contradict the alert instead of restating it.
       measurement:
         'what the lane ACTUALLY admits under the current spec, from the live claim oracle — ' +
-        'the alert fired on the spec row\'s updated_by/revision, which say who wrote it and ' +
+        "the alert fired on the spec row's updated_by/revision, which say who wrote it and " +
         'never what it now selects',
       kills:
         'the admitted set matches the scope you intended → the rewrite was an honest merge, ' +
@@ -1278,7 +1274,7 @@ export function computeSpecAuthorshipAlert(input: {
     reason:
       `this fleet's claim spec was last written by ${who}${when}, at revision ` +
       `${input.revision ?? 'unknown'} — not by you. A third-party rewrite is invisible by ` +
-      'construction: set_claim_spec validates the spec\'s SHAPE and refuses a lane that ' +
+      "construction: set_claim_spec validates the spec's SHAPE and refuses a lane that " +
       'COLLAPSES, so a WIDENING passes every write-time guard (the observed breach took ' +
       '`kind` from [bug] to [bug,change], ~907 extra items against a bug-only mandate). Read ' +
       'the live filter with scheduler:get_claim_spec { fleet } and confirm the scope is the ' +
@@ -1396,7 +1392,7 @@ export function computeIdleWithClaimableAlert(input: {
       '(EI-18681259560385029) — idle members beside a nonempty queue is the one state a drain ' +
       'fleet must never sit in. This is NOT a drained lane and benching is the wrong remedy: ' +
       'coord:send { wake: "required" } those members so they re-run scheduler:get_next now. ' +
-      'If they wake and still claim nothing, read work_items:claimable\'s excludedBreakdown — ' +
+      "If they wake and still claim nothing, read work_items:claimable's excludedBreakdown — " +
       'a claim floor is holding the rows, not the members.',
   };
 }
@@ -1468,9 +1464,7 @@ export function computeFloorStarvedFleetAlert(input: {
     reason:
       `${input.idleMemberCount} member(s) are alive with NO claim while this fleet's spec matches ` +
       `${input.matchedByFilter} row(s) of which ZERO survive the claim floors ` +
-      (floors.length > 0
-        ? `(${floors.map(([k, n]) => `${k}=${n}`).join(', ')}; buckets overlap) `
-        : '') +
+      (floors.length > 0 ? `(${floors.map(([k, n]) => `${k}=${n}`).join(', ')}; buckets overlap) ` : '') +
       '(EI-18689489507862177) — the lane is GATED, not drained, and no other fleet alert can ' +
       'see this state. Do NOT fleet:bench these members: benching parks them on a completion ' +
       'event that cannot fire, because nothing is in flight to complete. Act on the dominant ' +
@@ -1484,12 +1478,7 @@ export function computeFloorStarvedFleetAlert(input: {
  * another. Named as a closed union rather than left implicit in prose because the whole
  * point of the verdict below is that exactly ONE of them is the leader's next action.
  */
-export type FleetBlockLayer =
-  | 'fleet-paused'
-  | 'inference-pool'
-  | 'spec-scope'
-  | 'claim-floors'
-  | 'members';
+export type FleetBlockLayer = 'fleet-paused' | 'inference-pool' | 'spec-scope' | 'claim-floors' | 'members';
 
 /** The arbitrated answer to "is my fleet blocked, and AT WHICH LAYER". */
 export interface FleetBlockVerdict {
@@ -1641,8 +1630,7 @@ export function computeFleetBlockVerdict(input: {
         'are not the constraint — there is nothing for them to withhold. The scope itself is ' +
         'the block.',
       remedy:
-        'Widen the scope via scheduler:set_claim_spec, or fleet:wind-down if the lane is ' +
-        'genuinely finished.',
+        'Widen the scope via scheduler:set_claim_spec, or fleet:wind-down if the lane is ' + 'genuinely finished.',
       subordinate: subordinateTo('specStarvedAlert'),
       falsifier: {
         tool: 'work_items:claimable',
@@ -1700,8 +1688,7 @@ export function computeFleetBlockVerdict(input: {
           ? ' — EXCEPT that the inference pool could NOT be read on this brief, so layer 2 was ' +
             'not ruled out. Probe it before acting: this layer is the only one whose remedy ' +
             '(waking members) makes a congested pool WORSE.'
-          : ' (pool read and healthy, spec matching, floors clear). The members themselves are ' +
-            'the block.'),
+          : ' (pool read and healthy, spec matching, floors clear). The members themselves are ' + 'the block.'),
       remedy: poolUnread
         ? 'Run the falsifier FIRST. If the pool is genuinely usable, coord:send { wake: "required" } ' +
           'those members so they re-run scheduler:get_next.'
@@ -1711,9 +1698,7 @@ export function computeFleetBlockVerdict(input: {
         ? {
             tool: 'fleet:capacity',
             check: renderFalsifierCall('fleet:capacity', {}),
-            measurement:
-              'the inference-pool state this brief could not read — the layer that dominates ' +
-              'this one',
+            measurement: 'the inference-pool state this brief could not read — the layer that dominates ' + 'this one',
             kills:
               'the pool is degraded/exhausted with a nonzero queue → this verdict is WRONG, the ' +
               'real layer is inference-pool, and waking these members worsens it.',
@@ -1857,7 +1842,8 @@ export function resolveComposedParkedOn(
     }
     for (const leaf of tree.leaves) consumedLeafKeys.add(leaf);
     const of = tree.leaves.length;
-    const mode: ComposedParkEntry['mode'] = tree.required >= of && of > 0 ? 'all' : tree.required <= 1 ? 'any' : 'k-of-n';
+    const mode: ComposedParkEntry['mode'] =
+      tree.required >= of && of > 0 ? 'all' : tree.required <= 1 ? 'any' : 'k-of-n';
     composedEntries.push({
       kind: 'composed',
       rootId,
@@ -1883,7 +1869,9 @@ export function resolveComposedParkedOn(
  * falls back to the raw flat list exactly as before this fix. Mutates in place,
  * matching `decorateParkedOn`'s own contract.
  */
-export async function decorateComposedParkedOn<T extends { agentId: string } & Pick<DecoratedAgent, 'parkedOn' | 'parkedOnResolved'>>(
+export async function decorateComposedParkedOn<
+  T extends { agentId: string } & Pick<DecoratedAgent, 'parkedOn' | 'parkedOnResolved'>,
+>(
   agents: T[],
   deps: {
     listActiveComposedRoots?: typeof listActiveComposedRoots;
@@ -1949,20 +1937,16 @@ export function selectLeaderBriefMembers(
   includeStale = false,
 ): { rows: DecoratedAgent[]; census: FleetPopulationCensus } {
   const ofThisFleet = entries.filter((entry) => entry.fleetSlug === fleet);
-  return selectFleetPopulation(
-    ofThisFleet,
-    (entry) => includeStale || entry.claims.length > 0 || entry.alive,
-    {
-      population: `member(s) of fleet '${fleet}'`,
-      basis:
-        'A row is on the roster if presence records it in this fleet; it is shown here if it holds ' +
-        'a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
-      withheldReason:
-        'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
-        'are dying, which is when the count matters most',
-      reveal: 'include_stale: true',
-    },
-  );
+  return selectFleetPopulation(ofThisFleet, (entry) => includeStale || entry.claims.length > 0 || entry.alive, {
+    population: `member(s) of fleet '${fleet}'`,
+    basis:
+      'A row is on the roster if presence records it in this fleet; it is shown here if it holds ' +
+      'a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
+    withheldReason:
+      'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
+      'are dying, which is when the count matters most',
+    reveal: 'include_stale: true',
+  });
 }
 
 /**
@@ -2038,9 +2022,7 @@ export function projectMember(
     lastToolCallAgeMs,
     productiveToolCallAgeMs,
     doing: a.doing,
-    workItemIds: a.claims
-      .filter((claim) => claim.type === 'work-item' && claim.id)
-      .map((claim) => claim.id as string),
+    workItemIds: a.claims.filter((claim) => claim.type === 'work-item' && claim.id).map((claim) => claim.id as string),
     queuedCount: a.queued.length,
     load: a.load,
     stalled: a.stalled === true && !speakingNow,
@@ -2070,10 +2052,7 @@ export function projectMember(
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
     ...(computeDormantAlert(a, fleetPaused) ? { dormant: true } : {}),
-    ...(computeSpinningAlert(
-      { ...a, lastToolCallAgeMs, productiveToolCallAgeMs },
-      fleetPaused,
-    )
+    ...(computeSpinningAlert({ ...a, lastToolCallAgeMs, productiveToolCallAgeMs }, fleetPaused)
       ? { spinning: true }
       : {}),
   };
@@ -2150,7 +2129,9 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe("Fleet slug to brief. Defaults to the caller's current presence membership (launch environment is a failure-only fallback) — pass explicitly when monitoring a fleet you didn't launch into."),
+      .describe(
+        "Fleet slug to brief. Defaults to the caller's current presence membership (launch environment is a failure-only fallback) — pass explicitly when monitoring a fleet you didn't launch into.",
+      ),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
     include_stale: z
@@ -2176,7 +2157,7 @@ export default defineTool({
       .max(40)
       .optional()
       .describe(
-        "P-022: measure `delta` from this ISO timestamp instead of your last wake. The snapshot-only axes (pool factor, prior spec revision) have no history to re-read at an arbitrary time and stay unavailable — they are never back-filled from a boundary they did not observe.",
+        'P-022: measure `delta` from this ISO timestamp instead of your last wake. The snapshot-only axes (pool factor, prior spec revision) have no history to re-read at an arbitrary time and stay unavailable — they are never back-filled from a boundary they did not observe.',
       ),
   }),
   async handler(args, ctx) {
@@ -2272,838 +2253,816 @@ export async function buildLeaderBrief(
   },
   caller: LeaderBriefCaller,
 ) {
-    const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites } = caller;
-    const membership = caller.resolveCallerMembership
-      ? await resolvePresenceFleet(ownerId, deriveFleetMembership())
-      : { fleetSlug: null as string | null };
-    const fleet = args.fleet ?? membership.fleetSlug;
-    if (!fleet) {
-      return {
-        data: {
-          ok: false,
-          error: 'no_fleet',
-          hint:
-            'No fleet resolvable from current presence or launch context and no { fleet } ' +
-            'was passed. Pass { fleet: "<slug>" } explicitly, or use fleet:assignments for the ' +
-            'whole-workspace roster.',
-        },
-      };
-    }
-    // EI-13820: ctx.workspaceId is the literal '*' sentinel for an unscoped su
-    // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
-    // never leaks into the roster/presence workspace filter (see the identical
-    // fix + rationale in fleet:assignments' handler).
-    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
-    // fleet:status's presence-primary roster is the membership authority. The
-    // old claim-primary read omitted live idle members whose assignment view had
-    // no row, so leader-brief and fleet:status reported different rosters.
-    const rosterResult = await listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId });
-    const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
-      ...entry,
-      ...(entry.wakeMode === 'auto' || entry.wakeMode === 'manual'
-        ? { wakeMode: entry.wakeMode }
-        : { wakeMode: undefined }),
-    }));
-    // ── P-004 / D-096: leadership self-claim ────────────────────────────────
-    // Decided from `rosterEntries` — the UNFILTERED roster — and NOT from
-    // `grouped` below, which drops idle members with a stale heartbeat unless
-    // include_stale is set. A live-but-idle leader is routinely absent from the
-    // filtered view, and reading that as "no leader" would seize leadership from
-    // someone still working. The whole rule is in leadership-disposition.ts.
-    let notLeader: NotLeaderNotice | undefined;
-    let leadershipClaimed: AutoClaimedNotice | undefined;
-    let leaderControl: LeaderControlOutcome | undefined;
-    let fleetCreatedAtMs: number | null = null;
-    try {
-      const fleetRecord = await getFleet(workspaceId, fleet);
-      fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
-      const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
-      const leaderRow = registeredLeader
-        ? rosterEntries.find((e) => e.agentId === registeredLeader)
-        : undefined;
-      const disposition = decideLeadershipDisposition({
-        callerOwnerId: ownerId,
-        registeredLeader,
-        leaderSessionState: leaderRow?.sessionState,
-      });
-      if (disposition.kind === 'not-leader') {
-        // A READ — the notice only reports who the registered leader is, so a
-        // read-only viewer still gets it.
-        notLeader = buildNotLeaderNotice(disposition, fleet);
-      } else if (
-        disposition.kind === 'auto-claim' &&
-        // P-002: a viewer never seizes a vacant leader seat. Without this a
-        // human opening the popup would install their own session as leader of
-        // a fleet they are merely looking at.
-        allowLeadershipWrites &&
-        fleetRecord &&
-        agentIdentity &&
-        ownerId
-      ) {
-        const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
-          harnessSlug: args.harness,
-        });
-        leaderControl = out.control;
-        leadershipClaimed = {
-          claimed: true,
-          reason: disposition.reason,
-          previousLeader: out.previousLeader,
-          notified: out.notified,
-          note:
-            disposition.reason === 'no-registered-leader'
-              ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
-              : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
-        };
-      } else if (disposition.kind === 'is-leader' && allowLeadershipWrites && fleetRecord && ownerId) {
-        // Also a WRITE (it refreshes the leader's control row), so it is gated
-        // too — a viewer reading a leader's brief must not touch that leader's
-        // control state.
-        leaderControl = await ensureFleetLeaderControl({
-          workspaceId,
-          ownerId,
-          fleetSlug: fleet,
-          harnessSlug: args.harness,
-        });
-      }
-    } catch {
-      /* best-effort: leadership bookkeeping must NEVER fail the health brief */
-    }
-    // P-015 / D-005: one profile-derived discovery advisory, read from the
-    // existing event-await store after leader-control has had a chance to repair
-    // the standing watches. No fleet metrics or populations are copied here.
-    const monitoringBlindAdvisory = await readLeaderMonitoringBlindAdvisory(fleet);
-    // Reconcile liveness BEFORE selecting the population. A stale directed
-    // wake can make a dead owner look `live` through recent agent_activity;
-    // selecting first would bake that ghost into the census even after the
-    // authoritative psu-host check marks the row ended.
-    await reconcileWakeability(rosterEntries).catch(() => {});
-    // Missing host is a liveness signal only for known visible members. Keep
-    // this best-effort so absent roles never reinterpret bootstrapping/remote
-    // rows as desktop deaths.
-    try {
-      const presence = await listPresence({ workspaceId });
-      reconcilePsuHostLiveness(
-        rosterEntries,
-        new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)),
-      );
-    } catch {
-      /* host reconciliation never blocks the health brief */
-    }
-    const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(
-      rosterEntries,
-      fleet,
-      args.include_stale,
-    );
-    await decorateParkedOn(grouped).catch(() => {});
-    // EI-18732218464905145: collapse a composed-await park (root + leaf sentinels)
-    // into ONE structured entry before projection — best-effort, never blocks.
-    await decorateComposedParkedOn(grouped).catch(() => {});
-    await decorateLoopMonitorStates(grouped).catch(() => {});
-    await decorateMemberVerdicts(grouped).catch(() => {});
-    // EI-19307414464301772: the productive-only sibling of lastToolCallAt, feeding
-    // computeSpinningAlert below — best-effort, never blocks the rest of the brief.
-    await decorateProductiveToolCalls(grouped).catch(() => {});
-    await decorateContextPressure(grouped).catch(() => {});
-    await decorateUnansweredDirected(grouped).catch(() => {});
-    // P-013: what the LEDGER says happened, beside what the member said. Scoped to
-    // the caller's own directives — you are accountable for what you instructed.
-    await decorateDirectiveActuation(grouped, ownerId).catch(() => {});
-    await decorateCoordDeafness(grouped).catch(() => {});
-    // P-005: a fired one-shot wait disappears from parkedOn, but its
-    // authoritative stalled/absent verdict is durable. Surface that evidence
-    // beside the member that must own the wake/takeover remedy.
-    const verifiedWaitTakeovers = await listVerifiedWaitTakeoversForSubscribers(
-      grouped.map((a) => a.agentId),
-    ).catch(() => []);
-    const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
-    for (const alert of verifiedWaitTakeovers) {
-      const current = takeoversBySubscriber.get(alert.subscriberId) ?? [];
-      current.push(alert);
-      takeoversBySubscriber.set(alert.subscriberId, current);
-    }
-    for (const agent of grouped) {
-      agent.verifiedWaitTakeovers = takeoversBySubscriber.get(agent.agentId) ?? [];
-    }
-    // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
-    // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.
-    const unownedCriticalsAll: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
-      fleet,
-      harness: args.harness,
-      workspaceId,
-      ageHours: args.unowned_critical_age_hours,
-    });
-    // WI-6846: a majority-remote-origin backlog reads as urgent unowned work a
-    // leader is expected to act on, when in fact `origin:'remote'` rows are
-    // structurally un-actionable here (cannot claim — the claimable pre-filter
-    // already excludes them; cannot close — work_items:set_state refuses remote-
-    // authored mutation locally). Partition so `unownedCriticals` stays a
-    // trustworthy "CLAIM these" signal, and surface the remote-origin count
-    // separately rather than dropping it.
-    const { actionable: unownedCriticals, federatedUnresolvable: unownedCriticalsFederated } =
-      partitionUnownedCriticalsByOrigin(unownedCriticalsAll);
-    // EI-18680302159738037: members refused by THIS fleet's claim spec. The remedy is
-    // a spec write only the leader can make, so the block is leader-actionable by
-    // construction — yet it was delivered as ordinary inbox mail, where one
-    // action-required row does not survive a 5-figure inbox. Read failures already
-    // fail soft to `[]` inside fetchFleetAdmissionBlocks.
-    const admissionBlocked: FleetAdmissionBlock[] = await fetchFleetAdmissionBlocks(fleet);
-    const admissionDependencyEscapes = admissionBlocked.filter((block) => block.dependencyEscape != null);
-    // EI-18693470222331709: items released mid-flight (progress recorded, now
-    // unassigned) — read failures already fail soft to `[]`.
-    const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
-      fleet,
-      harness: args.harness,
-      workspaceId,
-      minAgeMinutes: args.orphan_min_age_minutes,
-    });
-    // EI-18681259560385029: read the fleet's LIVE claimable count before projecting members
-    // — the per-member bench suggestion must not assert "drained or scoped-out" without it.
-    // Fails soft to null (UNKNOWN), never 0.
-    const fleetLaneHealth = await readFleetLaneHealth({
-      fleet,
-      harness: args.harness,
-      workspaceId: actorWorkspace,
-      assignee: ownerId,
-    });
-    const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
-    const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
-    const fleetLaneGating =
-      fleetLaneEffective?.matchedByFilter == null
-        ? null
-        : {
-            matchedByFilter: fleetLaneEffective.matchedByFilter,
-            ...(fleetLaneEffective.excluded ? { excluded: fleetLaneEffective.excluded } : {}),
-          };
-    // EI-18703234178947959: the fleet's OWN durable control state (mig 575) — the same
-    // `winding-down` bit `fleetControlWindDownRefusal` floors every member's claim on.
-    // Read it BEFORE projecting members so a paused fleet never emits a wake-me/bench-me
-    // suggestion for a member that is correctly standing down. Fail-soft to NOT-paused:
-    // a registry hiccup must never silence a genuine starvation alert.
-    const fleetPause = await (async (): Promise<{ paused: boolean; reason: string | null }> => {
-      try {
-        const { getFleet } = await import('../../agent-fleets-store');
-        const rec = await getFleet(workspaceId, fleet);
-        return rec?.controlState === 'winding-down'
-          ? { paused: true, reason: rec.controlReason ?? null }
-          : { paused: false, reason: null };
-      } catch {
-        return { paused: false, reason: null };
-      }
-    })();
-    // EI-19313376980892266: the AUTHORITATIVE per-member concurrency verdict — read from
-    // `work_items.taken_by` in ONE batched query and decided by the same
-    // `evaluateClaimConcurrency` the scheduler refuses on. Without it the bench suggestion
-    // branches on the presence layer's `load`, which omits parked-but-held rows and so
-    // reports AT-CAPACITY members as `idle-with-claimable`.
-    //
-    // The fleet's OWN spec limit is resolved first, deliberately: defaulting to 1 when a
-    // leader authored concurrency > 1 would mark a legitimately-free member blocked and
-    // SUPPRESS a real starvation signal — a false negative on the exact alert this brief
-    // exists to raise. Fails soft to an EMPTY map (which suppresses nothing anywhere),
-    // never to a fabricated verdict.
-    const concurrencyByOwner = await (async (): Promise<
-      Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>
-    > => {
-      try {
-        const { readClaimConcurrencyBatch, getClaimSpecRecord, fleetSpecBeeKey } = await import(
-          '../../scheduler/claim-spec-store'
-        );
-        const rec = await getClaimSpecRecord({
-          cupId: fleetSpecBeeKey(fleet),
-          workspaceId,
-        }).catch(() => null);
-        return await readClaimConcurrencyBatch({
-          cupIds: grouped.map((a) => a.agentId),
-          // `actorWorkspace` is string|null; the reader takes an optional string and
-          // falls back to DEFAULT_COORD_WORKSPACE, which is what null means here too.
-          workspaceId: actorWorkspace ?? undefined,
-          maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
-        });
-      } catch {
-        return new Map();
-      }
-    })();
-    // WI-37161 / EI-20243921934115652: read the live shared-inference-pool verdict BEFORE
-    // projecting members, scoped to THIS fleet's observed model provider. The old no-arg
-    // reader always used the legacy Claude pool, so a Codex fleet inherited Claude exhaustion
-    // and the brief told its leader not to wake 25 healthy Luna lanes. Mixed/unknown model
-    // families fail soft to UNKNOWN instead of borrowing either provider's capacity.
-    const capacityAgentByOwner = await (async (): Promise<
-      Map<string, 'claude' | 'omp' | 'codex' | null>
-    > => {
-      try {
-        const { advSessionsByCoordOwner } = await import('../../adv-sessions');
-        const sessions = await advSessionsByCoordOwner();
-        return new Map(
-          [...sessions].map(([ownerId, session]) => [ownerId, session.agent] as const),
-        );
-      } catch {
-        return new Map();
-      }
-    })();
-    const capacityProvider = fleetCapacityProviderForMembers(grouped, capacityAgentByOwner);
-    const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
-    const nowMs = Date.now();
-    const members = grouped.map((a) =>
-      projectMember(
-        a,
-        nowMs,
-        fleetClaimableCount,
-        fleetLaneGating,
-        fleetPause.paused,
-        concurrencyByOwner.get(a.agentId) ?? null,
-        poolCapacity,
-      ),
-    );
-    // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
-    // no row of its own in the fleet, so nothing is marked for it.
-    const markedMembers = markSelfRows(members, self, 'agentId');
-    const summary = {
-      fleet,
-      members: members.length,
-      // P-010: what `members` (and every count below it, all of which are filters
-      // OVER the same list) is a count OF. Without this the number is only
-      // comparable to itself: the same fleet read 11 / 11 / 14 / 8 / 9 across
-      // leader-brief and fleet:assignments within minutes, each defensible, none
-      // reconciled inline.
-      population: memberCensus,
-      speaking: members.filter((m) => m.verdict === 'speaking').length,
-      monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
-      waiting: members.filter((m) => m.monitorState === 'waiting').length,
-      parked_awaiting_capability: members.filter((m) => m.monitorState === 'parked-awaiting-capability').length,
-      stalled: members.filter((m) => m.verdict === 'stalled' || m.stalled).length,
-      dead: members.filter((m) => m.verdict === 'dead').length,
-      unanswered_directed: members.filter((m) => (m.unanswered?.count ?? 0) > 0).length,
-      high_context: members.filter((m) => m.contextPressure === 'high').length,
-      critical_context: members.filter((m) => m.contextPressure === 'critical').length,
-      parked: members.filter((m) => (m.parkedOn?.length ?? 0) > 0).length,
-      verified_wait_takeovers: members.reduce(
-        (count, member) => count + (member.verifiedWaitTakeovers?.length ?? 0),
-        0,
-      ),
-      // P-001 coord-deafness: live members NOT seeing their coord mail right
-      // now — a coord:send to them silently queues until they settle/wake.
-      coord_deaf: members.filter((m) => m.coordHook != null).length,
-      // EI-9943: members alive+speaking but not advancing and not yet benched —
-      // the live-loop-polling-on-a-blocker pattern this whole item targets.
-      bench_suggested: members.filter((m) => m.benchSuggestion != null).length,
-      // EI-18681259560385029: of those, the ones that must NOT be benched — alive,
-      // unclaimed, and idle beside a queue that is NOT empty. `bench_suggested` alone
-      // was read as benign (it counts a REMEDY); this counts a STARVATION SYMPTOM.
-      idle_with_claimable: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable').length,
-      // EI-18689489507862177: members idle against an EMPTY (or unread) queue. Distinct from
-      // idle_with_claimable above, which by construction only counts them when claimable > 0
-      // — so in a fully-GATED lane (claimable 0, spec matching plenty) that field reads 0 and
-      // these members land here instead. This is the count computeFloorStarvedFleetAlert
-      // keys on; without it the gated-lane alert could never fire.
-      laneless_idle: members.filter((m) => m.benchSuggestion?.kind === 'laneless-idle').length,
-      // EI-18730414627683753: members with ZERO self-wake mechanism (no loop, no park, no
-      // claim) — distinct from laneless_idle above, which does not distinguish a healthy
-      // loop-armed member (will re-cycle on its own) from one that will never wake again.
-      // >0 here means the leader must wake these members NOW; waiting out a tick does nothing.
-      dormant: members.filter((m) => m.dormant === true).length,
-      // EI-19307414464301772: members alive and visibly taking turns whose calls are
-      // entirely per-turn housekeeping (coord:glance/activity:report/journal:record-turn/
-      // flags:get/sessions:ingest-gate-event) for well past budget — every OTHER surface
-      // here (stalled, dead) reads these as healthy. >0 means wake it explicitly and
-      // investigate; do not assume the loop will self-correct.
-      spinning: members.filter((m) => m.spinning === true).length,
-      // EI-19381528967421062: members whose loop is backed off from a provider wall right
-      // now — `active:true`/`sessionState:parked` read identical to a healthy between-wakes
-      // member on every OTHER surface. >0 here means those claims are stranded until
-      // `throttled.until`, not lost; do not relaunch/reclaim solely on this, but do NOT read
-      // the fleet as fully healthy either — see each member's `throttled` field for when.
-      throttled: members.filter((m) => m.throttled != null).length,
-      // The live authoritative claimable total behind the two fields above (the same
-      // number work_items:claimable reports). null ⇒ could not be read on this brief —
-      // NOT zero, and never to be read as a drained lane.
-      claimable_now: fleetClaimableCount,
-      // EI-19313376980892266 fix B: WHICH scoping produced the number above. A bare
-      // count is not comparable to another surface's count — beside
-      // work_items:claimable's default-spec total this one reads as a contradiction
-      // when the two are simply different questions. null when the lane read failed
-      // (i.e. claimable_now is null too), never a fabricated scoping.
-      claimable_now_spec: fleetLaneHealth
-        ? {
-            ...fleetLaneHealth.spec,
-            families: {
-              issue: fleetLaneHealth.issueFamily,
-              feature: fleetLaneHealth.featureFamily,
-              effective: fleetLaneHealth.effective,
-            },
-            note:
-              `claimable_now (${fleetLaneHealth.effective.claimable ?? 'unknown'}) uses the ` +
-              `${fleetLaneHealth.effective.basis} verdict for rows admitted by ` +
-              `${fleetLaneHealth.spec.ref} within harness '${fleetLaneHealth.spec.harness}'. ` +
-              `work_items:claimable{harness} asks a DIFFERENT question (the default spec, ` +
-              `harness-wide) and a larger number there is expected, not a contradiction — ` +
-              `compare only against the same spec+harness.`,
-          }
-        : null,
-      // WI-3818: make any incomplete canonical roster read explicit to callers
-      // instead of silently presenting a partial membership list.
-      degraded_roster_legs: rosterResult.degradedLegs,
-      // WI-5213: unowned criticals (filing is not fixing) THIS fleet's claim
-      // spec would admit — >0 here means an escalation the leader should act
-      // on (reclaim/reassign/nudge), not weather to wait out. WI-6846: this is
-      // now LOCAL-origin only (actionable here) — see unowned_criticals_federated.
-      unowned_criticals: unownedCriticals.length,
-      // WI-6846: origin:'remote' rows from the SAME spec-admitted set above —
-      // this node can neither claim nor close them (see unownedCriticalsFederated
-      // in the payload for the recovery-state list + note). Nonzero here is
-      // explicitly NOT an escalation for THIS leader to act on.
-      unowned_criticals_federated: unownedCriticalsFederated.length,
-      // EI-18693470222331709: orphaned in-flight items (filing is not fixing, same
-      // as unowned_criticals above) — >0 means near-complete work stranded by a
-      // release/reap, the cheapest claimable win on this brief.
-      // WI-6678: renamed from `orphaned_in_flight`. "Orphan" made every leader reach for
-      // work_items:release (the standing "reclaim orphans" monitor instruction says so) —
-      // but this condition REQUIRES assignee IS NULL, so a release cannot possibly clear
-      // it and returns ok:true having done nothing. Observed live: a leader "reclaimed"
-      // two of these and reported it to the owner, changing nothing. The only resolving
-      // action is a member CLAIMING and finishing the item.
-      abandoned_unclaimed: orphanedInFlight.length,
-      // EI-18680302159738037: DISTINCT (item, member) pairs this fleet's own claim
-      // spec refused in the last 24h. Unlike every other advisory here, the blocked
-      // party already told you — as inbox mail, which is where it got buried. >0
-      // means a member is structurally UNABLE to claim work it was pointed at, and
-      // the only remedy is a spec write YOU make (scheduler:set_claim_spec); no
-      // amount of member discipline clears it. See `admissionBlocked` for the rows.
-      admission_blocked: admissionBlocked.length,
-      // P-006: the critical subset whose refused item is an unresolved dependency
-      // of work the member already holds. Rows carry the exact dependency + three routes.
-      admission_dependency_escapes: admissionDependencyEscapes.length,
-      // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
-      // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
-      // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
-      // the pause, so "no alert" here means "no action needed", not "nothing was checked".
-      // Lift with fleet:resume; until then the claim path refuses these members work.
-      fleet_paused: fleetPause.paused,
-      // WI-37161: the live shared-inference-pool verdict (the same read `fleet:capacity`
-      // reports), surfaced HERE — not only folded into the per-member `throttled` field — so a
-      // leader reading the summary alone can see the pool is degraded/exhausted even though
-      // `throttled` (a DIFFERENT, per-member signal — see PoolDegradedState's doc comment) can
-      // legitimately read 0 for every member at once while the pool itself is congested. null
-      // means unread this call, never "healthy".
-      pool_capacity: poolCapacity,
+  const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites } = caller;
+  const membership = caller.resolveCallerMembership
+    ? await resolvePresenceFleet(ownerId, deriveFleetMembership())
+    : { fleetSlug: null as string | null };
+  const fleet = args.fleet ?? membership.fleetSlug;
+  if (!fleet) {
+    return {
+      data: {
+        ok: false,
+        error: 'no_fleet',
+        hint:
+          'No fleet resolvable from current presence or launch context and no { fleet } ' +
+          'was passed. Pass { fleet: "<slug>" } explicitly, or use fleet:assignments for the ' +
+          'whole-workspace roster.',
+      },
     };
-    const totalLoad = members.reduce((sum, m) => sum + m.load, 0);
-    // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
-    const strandedFleetAlert = computeStrandedFleetAlert({
-      totalLoad,
-      parkedCount: summary.parked,
-      unownedCriticalCount: unownedCriticals.length,
-      harness: args.harness ?? null,
-      fleet,
+  }
+  // EI-13820: ctx.workspaceId is the literal '*' sentinel for an unscoped su
+  // session (EI-9013) — normalize through resolveConcreteWorkspaceId so '*'
+  // never leaks into the roster/presence workspace filter (see the identical
+  // fix + rationale in fleet:assignments' handler).
+  const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+  // fleet:status's presence-primary roster is the membership authority. The
+  // old claim-primary read omitted live idle members whose assignment view had
+  // no row, so leader-brief and fleet:status reported different rosters.
+  const rosterResult = await listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId });
+  const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
+    ...entry,
+    ...(entry.wakeMode === 'auto' || entry.wakeMode === 'manual'
+      ? { wakeMode: entry.wakeMode }
+      : { wakeMode: undefined }),
+  }));
+  // ── P-004 / D-096: leadership self-claim ────────────────────────────────
+  // Decided from `rosterEntries` — the UNFILTERED roster — and NOT from
+  // `grouped` below, which drops idle members with a stale heartbeat unless
+  // include_stale is set. A live-but-idle leader is routinely absent from the
+  // filtered view, and reading that as "no leader" would seize leadership from
+  // someone still working. The whole rule is in leadership-disposition.ts.
+  let notLeader: NotLeaderNotice | undefined;
+  let leadershipClaimed: AutoClaimedNotice | undefined;
+  let leaderControl: LeaderControlOutcome | undefined;
+  let fleetCreatedAtMs: number | null = null;
+  try {
+    const fleetRecord = await getFleet(workspaceId, fleet);
+    fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
+    const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
+    const leaderRow = registeredLeader ? rosterEntries.find((e) => e.agentId === registeredLeader) : undefined;
+    const disposition = decideLeadershipDisposition({
+      callerOwnerId: ownerId,
+      registeredLeader,
+      leaderSessionState: leaderRow?.sessionState,
     });
-    // EI-18655873409999215: the SPEC-STARVED alert — best-effort, fail-soft (a
-    // preview error or missing spec must never break the brief). Measures the
-    // fleet's OWN effective claim spec against the live claimable pool, the same
-    // compiled-filter count scheduler:set_claim_spec's write-time guard uses.
-    // EI-18681259560385029: idle members beside a NONEMPTY queue — the shape both alerts
-    // below are structurally blind to (see computeIdleWithClaimableAlert).
-    const idleWithClaimableAlert = computeIdleWithClaimableAlert({
-      claimableCount: fleetClaimableCount,
-      idleMemberCount: summary.idle_with_claimable,
-      fleetPaused: fleetPause.paused,
-      harness: args.harness ?? null,
-      // The SAME predicate the count above is derived from, so the falsifier can never
-      // name a member the alert is not actually accusing.
-      idleMemberIds: members
-        .filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable')
-        .map((m) => m.agentId),
-      poolCapacity,
-    });
-    // EI-18689489507862177: the GATED-lane twin of the alert above. `idle_with_claimable`
-    // is 0 by construction in this state (its bench branch requires claimableCount > 0), so
-    // this one counts laneless-idle members instead — keying it to idle_with_claimable would
-    // ship an alert that can never fire.
-    const floorStarvedAlert = computeFloorStarvedFleetAlert({
-      claimable: fleetClaimableCount,
-      matchedByFilter: fleetLaneEffective?.matchedByFilter ?? null,
-      idleMemberCount: summary.laneless_idle,
-      excluded: fleetLaneEffective?.excluded ?? null,
-      fleetPaused: fleetPause.paused,
-      harness: args.harness ?? null,
-      fleet,
-    });
-    // fleet-lead-instrumentation-audit-2026-08-09 P-019/P-012: ARBITRATE the alerts above
-    // into ONE dominant layer. Computed from the same inputs the siblings fired on (never a
-    // second read), so it cannot disagree with them — it only ORDERS them.
-    const blockedAt = computeFleetBlockVerdict({
-      fleetPaused: fleetPause.paused,
-      poolCapacity,
-      claimable: fleetClaimableCount,
-      matchedByFilter: fleetLaneEffective?.matchedByFilter ?? null,
-      idleMemberCount: summary.idle_with_claimable,
-      lanelessIdleCount: summary.laneless_idle,
-      harness: args.harness ?? null,
-      fleet,
-    });
-    let specStarvedAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
-    // WI-5937 acceptance #3: "leader-brief returns spec filter + both counts + per-member
-    // doing in one read" — the fleet's OWN active view.filter (so a leader reads WHAT is
-    // scoped without a separate scheduler:get_claim_spec round-trip) plus BOTH claimable
-    // counts side by side: the harness-WIDE pool (what work_items:claimable{harness} would
-    // show, pre-spec-narrowing) and the spec-scoped matched count (pre-floor) — the exact
-    // pair whose conflation (1037 harness-wide vs 0 spec-scoped) produced the false
-    // spec-starved ruling this item's own root-cause section documents. Best-effort/optional:
-    // a preview failure must never block the rest of the brief.
-    let specFilter: FilterNode | null | undefined;
-    let harnessWidePool: number | undefined;
-    let specMatched: number | undefined;
-    // P-005: the spec row's own authorship, surfaced beside the filter it describes. A
-    // leader reading `specFilter` alone cannot tell their own lane from one an automated
-    // peer rewrote under them.
-    let specRevision: number | undefined;
-    let specUpdatedBy: string | null | undefined;
-    let specUpdatedAt: string | null | undefined;
-    let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
-    let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
+    if (disposition.kind === 'not-leader') {
+      // A READ — the notice only reports who the registered leader is, so a
+      // read-only viewer still gets it.
+      notLeader = buildNotLeaderNotice(disposition, fleet);
+    } else if (
+      disposition.kind === 'auto-claim' &&
+      // P-002: a viewer never seizes a vacant leader seat. Without this a
+      // human opening the popup would install their own session as leader of
+      // a fleet they are merely looking at.
+      allowLeadershipWrites &&
+      fleetRecord &&
+      agentIdentity &&
+      ownerId
+    ) {
+      const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
+        harnessSlug: args.harness,
+      });
+      leaderControl = out.control;
+      leadershipClaimed = {
+        claimed: true,
+        reason: disposition.reason,
+        previousLeader: out.previousLeader,
+        notified: out.notified,
+        note:
+          disposition.reason === 'no-registered-leader'
+            ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
+            : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
+      };
+    } else if (disposition.kind === 'is-leader' && allowLeadershipWrites && fleetRecord && ownerId) {
+      // Also a WRITE (it refreshes the leader's control row), so it is gated
+      // too — a viewer reading a leader's brief must not touch that leader's
+      // control state.
+      leaderControl = await ensureFleetLeaderControl({
+        workspaceId,
+        ownerId,
+        fleetSlug: fleet,
+        harnessSlug: args.harness,
+      });
+    }
+  } catch {
+    /* best-effort: leadership bookkeeping must NEVER fail the health brief */
+  }
+  // P-015 / D-005: one profile-derived discovery advisory, read from the
+  // existing event-await store after leader-control has had a chance to repair
+  // the standing watches. No fleet metrics or populations are copied here.
+  const monitoringBlindAdvisory = await readLeaderMonitoringBlindAdvisory(fleet);
+  // Reconcile liveness BEFORE selecting the population. A stale directed
+  // wake can make a dead owner look `live` through recent agent_activity;
+  // selecting first would bake that ghost into the census even after the
+  // authoritative psu-host check marks the row ended.
+  await reconcileWakeability(rosterEntries).catch(() => {});
+  // Missing host is a liveness signal only for known visible members. Keep
+  // this best-effort so absent roles never reinterpret bootstrapping/remote
+  // rows as desktop deaths.
+  try {
+    const presence = await listPresence({ workspaceId });
+    reconcilePsuHostLiveness(rosterEntries, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
+  } catch {
+    /* host reconciliation never blocks the health brief */
+  }
+  const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(rosterEntries, fleet, args.include_stale);
+  await decorateParkedOn(grouped).catch(() => {});
+  // EI-18732218464905145: collapse a composed-await park (root + leaf sentinels)
+  // into ONE structured entry before projection — best-effort, never blocks.
+  await decorateComposedParkedOn(grouped).catch(() => {});
+  await decorateLoopMonitorStates(grouped).catch(() => {});
+  await decorateMemberVerdicts(grouped).catch(() => {});
+  // EI-19307414464301772: the productive-only sibling of lastToolCallAt, feeding
+  // computeSpinningAlert below — best-effort, never blocks the rest of the brief.
+  await decorateProductiveToolCalls(grouped).catch(() => {});
+  await decorateContextPressure(grouped).catch(() => {});
+  await decorateUnansweredDirected(grouped).catch(() => {});
+  // P-013: what the LEDGER says happened, beside what the member said. Scoped to
+  // the caller's own directives — you are accountable for what you instructed.
+  await decorateDirectiveActuation(grouped, ownerId).catch(() => {});
+  await decorateCoordDeafness(grouped).catch(() => {});
+  // P-005: a fired one-shot wait disappears from parkedOn, but its
+  // authoritative stalled/absent verdict is durable. Surface that evidence
+  // beside the member that must own the wake/takeover remedy.
+  const verifiedWaitTakeovers = await listVerifiedWaitTakeoversForSubscribers(grouped.map((a) => a.agentId)).catch(
+    () => [],
+  );
+  const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
+  for (const alert of verifiedWaitTakeovers) {
+    const current = takeoversBySubscriber.get(alert.subscriberId) ?? [];
+    current.push(alert);
+    takeoversBySubscriber.set(alert.subscriberId, current);
+  }
+  for (const agent of grouped) {
+    agent.verifiedWaitTakeovers = takeoversBySubscriber.get(agent.agentId) ?? [];
+  }
+  // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
+  // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.
+  const unownedCriticalsAll: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
+    fleet,
+    harness: args.harness,
+    workspaceId,
+    ageHours: args.unowned_critical_age_hours,
+  });
+  // WI-6846: a majority-remote-origin backlog reads as urgent unowned work a
+  // leader is expected to act on, when in fact `origin:'remote'` rows are
+  // structurally un-actionable here (cannot claim — the claimable pre-filter
+  // already excludes them; cannot close — work_items:set_state refuses remote-
+  // authored mutation locally). Partition so `unownedCriticals` stays a
+  // trustworthy "CLAIM these" signal, and surface the remote-origin count
+  // separately rather than dropping it.
+  const { actionable: unownedCriticals, federatedUnresolvable: unownedCriticalsFederated } =
+    partitionUnownedCriticalsByOrigin(unownedCriticalsAll);
+  // EI-18680302159738037: members refused by THIS fleet's claim spec. The remedy is
+  // a spec write only the leader can make, so the block is leader-actionable by
+  // construction — yet it was delivered as ordinary inbox mail, where one
+  // action-required row does not survive a 5-figure inbox. Read failures already
+  // fail soft to `[]` inside fetchFleetAdmissionBlocks.
+  const admissionBlocked: FleetAdmissionBlock[] = await fetchFleetAdmissionBlocks(fleet, {
+    harness: args.harness,
+  });
+  const admissionDependencyEscapes = admissionBlocked.filter((block) => block.dependencyEscape != null);
+  // EI-18693470222331709: items released mid-flight (progress recorded, now
+  // unassigned) — read failures already fail soft to `[]`.
+  const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
+    fleet,
+    harness: args.harness,
+    workspaceId,
+    minAgeMinutes: args.orphan_min_age_minutes,
+  });
+  // EI-18681259560385029: read the fleet's LIVE claimable count before projecting members
+  // — the per-member bench suggestion must not assert "drained or scoped-out" without it.
+  // Fails soft to null (UNKNOWN), never 0.
+  const fleetLaneHealth = await readFleetLaneHealth({
+    fleet,
+    harness: args.harness,
+    workspaceId: actorWorkspace,
+    assignee: ownerId,
+  });
+  const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
+  const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
+  const fleetLaneGating =
+    fleetLaneEffective?.matchedByFilter == null
+      ? null
+      : {
+          matchedByFilter: fleetLaneEffective.matchedByFilter,
+          ...(fleetLaneEffective.excluded ? { excluded: fleetLaneEffective.excluded } : {}),
+        };
+  // EI-18703234178947959: the fleet's OWN durable control state (mig 575) — the same
+  // `winding-down` bit `fleetControlWindDownRefusal` floors every member's claim on.
+  // Read it BEFORE projecting members so a paused fleet never emits a wake-me/bench-me
+  // suggestion for a member that is correctly standing down. Fail-soft to NOT-paused:
+  // a registry hiccup must never silence a genuine starvation alert.
+  const fleetPause = await (async (): Promise<{ paused: boolean; reason: string | null }> => {
     try {
-      const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
-      const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
-      if (rec.source !== 'default') {
-        specFilter = rec.spec.view?.filter ?? null;
-        specRevision = rec.revision ?? undefined;
-        specUpdatedBy = rec.updatedBy;
-        specUpdatedAt = rec.updatedAt;
-        // P-005: computed from the record ALONE, and deliberately BEFORE the pool preview
-        // below — the preview is the fragile half (it compiles the filter and counts the
-        // pool), and coupling a drift signal to it would mean a preview outage silently
-        // takes the drift check with it. That is the same class of blindness this alert
-        // exists to report, one level up.
-        specAuthorshipAlert = computeSpecAuthorshipAlert({
-          readerId: ownerId ?? null,
-          updatedBy: rec.updatedBy,
-          revision: rec.revision,
-          updatedAt: rec.updatedAt,
-          harness: args.harness ?? null,
-          fleet,
-        });
-        try {
-          const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
-          const effect = await previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
-          specStarvedAlert = computeSpecStarvedFleetAlert({
-            totalLoad,
-            specMatched: effect.matched,
-            poolSize: effect.pool,
-            harness: args.harness ?? null,
-            fleet,
-          });
-          harnessWidePool = effect.pool;
-          specMatched = effect.matched;
-        } catch {
-          /* best-effort — a pool-effect failure must not cost the authorship read above */
+      const { getFleet } = await import('../../agent-fleets-store');
+      const rec = await getFleet(workspaceId, fleet);
+      return rec?.controlState === 'winding-down'
+        ? { paused: true, reason: rec.controlReason ?? null }
+        : { paused: false, reason: null };
+    } catch {
+      return { paused: false, reason: null };
+    }
+  })();
+  // EI-19313376980892266: the AUTHORITATIVE per-member concurrency verdict — read from
+  // `work_items.taken_by` in ONE batched query and decided by the same
+  // `evaluateClaimConcurrency` the scheduler refuses on. Without it the bench suggestion
+  // branches on the presence layer's `load`, which omits parked-but-held rows and so
+  // reports AT-CAPACITY members as `idle-with-claimable`.
+  //
+  // The fleet's OWN spec limit is resolved first, deliberately: defaulting to 1 when a
+  // leader authored concurrency > 1 would mark a legitimately-free member blocked and
+  // SUPPRESS a real starvation signal — a false negative on the exact alert this brief
+  // exists to raise. Fails soft to an EMPTY map (which suppresses nothing anywhere),
+  // never to a fabricated verdict.
+  const concurrencyByOwner = await (async (): Promise<
+    Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>
+  > => {
+    try {
+      const { readClaimConcurrencyBatch, getClaimSpecRecord, fleetSpecBeeKey } =
+        await import('../../scheduler/claim-spec-store');
+      const rec = await getClaimSpecRecord({
+        cupId: fleetSpecBeeKey(fleet),
+        workspaceId,
+      }).catch(() => null);
+      return await readClaimConcurrencyBatch({
+        cupIds: grouped.map((a) => a.agentId),
+        // `actorWorkspace` is string|null; the reader takes an optional string and
+        // falls back to DEFAULT_COORD_WORKSPACE, which is what null means here too.
+        workspaceId: actorWorkspace ?? undefined,
+        maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
+      });
+    } catch {
+      return new Map();
+    }
+  })();
+  // WI-37161 / EI-20243921934115652: read the live shared-inference-pool verdict BEFORE
+  // projecting members, scoped to THIS fleet's observed model provider. The old no-arg
+  // reader always used the legacy Claude pool, so a Codex fleet inherited Claude exhaustion
+  // and the brief told its leader not to wake 25 healthy Luna lanes. Mixed/unknown model
+  // families fail soft to UNKNOWN instead of borrowing either provider's capacity.
+  const capacityAgentByOwner = await (async (): Promise<Map<string, 'claude' | 'omp' | 'codex' | null>> => {
+    try {
+      const { advSessionsByCoordOwner } = await import('../../adv-sessions');
+      const sessions = await advSessionsByCoordOwner();
+      return new Map([...sessions].map(([ownerId, session]) => [ownerId, session.agent] as const));
+    } catch {
+      return new Map();
+    }
+  })();
+  const capacityProvider = fleetCapacityProviderForMembers(grouped, capacityAgentByOwner);
+  const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
+  const nowMs = Date.now();
+  const members = grouped.map((a) =>
+    projectMember(
+      a,
+      nowMs,
+      fleetClaimableCount,
+      fleetLaneGating,
+      fleetPause.paused,
+      concurrencyByOwner.get(a.agentId) ?? null,
+      poolCapacity,
+    ),
+  );
+  // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
+  // no row of its own in the fleet, so nothing is marked for it.
+  const markedMembers = markSelfRows(members, self, 'agentId');
+  const summary = {
+    fleet,
+    members: members.length,
+    // P-010: what `members` (and every count below it, all of which are filters
+    // OVER the same list) is a count OF. Without this the number is only
+    // comparable to itself: the same fleet read 11 / 11 / 14 / 8 / 9 across
+    // leader-brief and fleet:assignments within minutes, each defensible, none
+    // reconciled inline.
+    population: memberCensus,
+    speaking: members.filter((m) => m.verdict === 'speaking').length,
+    monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
+    waiting: members.filter((m) => m.monitorState === 'waiting').length,
+    parked_awaiting_capability: members.filter((m) => m.monitorState === 'parked-awaiting-capability').length,
+    stalled: members.filter((m) => m.verdict === 'stalled' || m.stalled).length,
+    dead: members.filter((m) => m.verdict === 'dead').length,
+    unanswered_directed: members.filter((m) => (m.unanswered?.count ?? 0) > 0).length,
+    high_context: members.filter((m) => m.contextPressure === 'high').length,
+    critical_context: members.filter((m) => m.contextPressure === 'critical').length,
+    parked: members.filter((m) => (m.parkedOn?.length ?? 0) > 0).length,
+    verified_wait_takeovers: members.reduce((count, member) => count + (member.verifiedWaitTakeovers?.length ?? 0), 0),
+    // P-001 coord-deafness: live members NOT seeing their coord mail right
+    // now — a coord:send to them silently queues until they settle/wake.
+    coord_deaf: members.filter((m) => m.coordHook != null).length,
+    // EI-9943: members alive+speaking but not advancing and not yet benched —
+    // the live-loop-polling-on-a-blocker pattern this whole item targets.
+    bench_suggested: members.filter((m) => m.benchSuggestion != null).length,
+    // EI-18681259560385029: of those, the ones that must NOT be benched — alive,
+    // unclaimed, and idle beside a queue that is NOT empty. `bench_suggested` alone
+    // was read as benign (it counts a REMEDY); this counts a STARVATION SYMPTOM.
+    idle_with_claimable: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable').length,
+    // EI-18689489507862177: members idle against an EMPTY (or unread) queue. Distinct from
+    // idle_with_claimable above, which by construction only counts them when claimable > 0
+    // — so in a fully-GATED lane (claimable 0, spec matching plenty) that field reads 0 and
+    // these members land here instead. This is the count computeFloorStarvedFleetAlert
+    // keys on; without it the gated-lane alert could never fire.
+    laneless_idle: members.filter((m) => m.benchSuggestion?.kind === 'laneless-idle').length,
+    // EI-18730414627683753: members with ZERO self-wake mechanism (no loop, no park, no
+    // claim) — distinct from laneless_idle above, which does not distinguish a healthy
+    // loop-armed member (will re-cycle on its own) from one that will never wake again.
+    // >0 here means the leader must wake these members NOW; waiting out a tick does nothing.
+    dormant: members.filter((m) => m.dormant === true).length,
+    // EI-19307414464301772: members alive and visibly taking turns whose calls are
+    // entirely per-turn housekeeping (coord:glance/activity:report/journal:record-turn/
+    // flags:get/sessions:ingest-gate-event) for well past budget — every OTHER surface
+    // here (stalled, dead) reads these as healthy. >0 means wake it explicitly and
+    // investigate; do not assume the loop will self-correct.
+    spinning: members.filter((m) => m.spinning === true).length,
+    // EI-19381528967421062: members whose loop is backed off from a provider wall right
+    // now — `active:true`/`sessionState:parked` read identical to a healthy between-wakes
+    // member on every OTHER surface. >0 here means those claims are stranded until
+    // `throttled.until`, not lost; do not relaunch/reclaim solely on this, but do NOT read
+    // the fleet as fully healthy either — see each member's `throttled` field for when.
+    throttled: members.filter((m) => m.throttled != null).length,
+    // The live authoritative claimable total behind the two fields above (the same
+    // number work_items:claimable reports). null ⇒ could not be read on this brief —
+    // NOT zero, and never to be read as a drained lane.
+    claimable_now: fleetClaimableCount,
+    // EI-19313376980892266 fix B: WHICH scoping produced the number above. A bare
+    // count is not comparable to another surface's count — beside
+    // work_items:claimable's default-spec total this one reads as a contradiction
+    // when the two are simply different questions. null when the lane read failed
+    // (i.e. claimable_now is null too), never a fabricated scoping.
+    claimable_now_spec: fleetLaneHealth
+      ? {
+          ...fleetLaneHealth.spec,
+          families: {
+            issue: fleetLaneHealth.issueFamily,
+            feature: fleetLaneHealth.featureFamily,
+            effective: fleetLaneHealth.effective,
+          },
+          note:
+            `claimable_now (${fleetLaneHealth.effective.claimable ?? 'unknown'}) uses the ` +
+            `${fleetLaneHealth.effective.basis} verdict for rows admitted by ` +
+            `${fleetLaneHealth.spec.ref} within harness '${fleetLaneHealth.spec.harness}'. ` +
+            `work_items:claimable{harness} asks a DIFFERENT question (the default spec, ` +
+            `harness-wide) and a larger number there is expected, not a contradiction — ` +
+            `compare only against the same spec+harness.`,
         }
-      }
-      declaredPlanSpecDivergenceAlert = computeDeclaredPlanSpecDivergenceAlert({
-        members: grouped,
-        specFilter: rec.spec.view?.filter,
+      : null,
+    // WI-3818: make any incomplete canonical roster read explicit to callers
+    // instead of silently presenting a partial membership list.
+    degraded_roster_legs: rosterResult.degradedLegs,
+    // WI-5213: unowned criticals (filing is not fixing) THIS fleet's claim
+    // spec would admit — >0 here means an escalation the leader should act
+    // on (reclaim/reassign/nudge), not weather to wait out. WI-6846: this is
+    // now LOCAL-origin only (actionable here) — see unowned_criticals_federated.
+    unowned_criticals: unownedCriticals.length,
+    // WI-6846: origin:'remote' rows from the SAME spec-admitted set above —
+    // this node can neither claim nor close them (see unownedCriticalsFederated
+    // in the payload for the recovery-state list + note). Nonzero here is
+    // explicitly NOT an escalation for THIS leader to act on.
+    unowned_criticals_federated: unownedCriticalsFederated.length,
+    // EI-18693470222331709: orphaned in-flight items (filing is not fixing, same
+    // as unowned_criticals above) — >0 means near-complete work stranded by a
+    // release/reap, the cheapest claimable win on this brief.
+    // WI-6678: renamed from `orphaned_in_flight`. "Orphan" made every leader reach for
+    // work_items:release (the standing "reclaim orphans" monitor instruction says so) —
+    // but this condition REQUIRES assignee IS NULL, so a release cannot possibly clear
+    // it and returns ok:true having done nothing. Observed live: a leader "reclaimed"
+    // two of these and reported it to the owner, changing nothing. The only resolving
+    // action is a member CLAIMING and finishing the item.
+    abandoned_unclaimed: orphanedInFlight.length,
+    // EI-18680302159738037: DISTINCT (item, member) pairs this fleet's own claim
+    // spec refused in the last 24h. Unlike every other advisory here, the blocked
+    // party already told you — as inbox mail, which is where it got buried. >0
+    // means a member is structurally UNABLE to claim work it was pointed at, and
+    // the only remedy is a spec write YOU make (scheduler:set_claim_spec); no
+    // amount of member discipline clears it. See `admissionBlocked` for the rows.
+    admission_blocked: admissionBlocked.length,
+    // P-006: the critical subset whose refused item is an unresolved dependency
+    // of work the member already holds. Rows carry the exact dependency + three routes.
+    admission_dependency_escapes: admissionDependencyEscapes.length,
+    // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
+    // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
+    // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
+    // the pause, so "no alert" here means "no action needed", not "nothing was checked".
+    // Lift with fleet:resume; until then the claim path refuses these members work.
+    fleet_paused: fleetPause.paused,
+    // WI-37161: the live shared-inference-pool verdict (the same read `fleet:capacity`
+    // reports), surfaced HERE — not only folded into the per-member `throttled` field — so a
+    // leader reading the summary alone can see the pool is degraded/exhausted even though
+    // `throttled` (a DIFFERENT, per-member signal — see PoolDegradedState's doc comment) can
+    // legitimately read 0 for every member at once while the pool itself is congested. null
+    // means unread this call, never "healthy".
+    pool_capacity: poolCapacity,
+  };
+  const totalLoad = members.reduce((sum, m) => sum + m.load, 0);
+  // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
+  const strandedFleetAlert = computeStrandedFleetAlert({
+    totalLoad,
+    parkedCount: summary.parked,
+    unownedCriticalCount: unownedCriticals.length,
+    harness: args.harness ?? null,
+    fleet,
+  });
+  // EI-18655873409999215: the SPEC-STARVED alert — best-effort, fail-soft (a
+  // preview error or missing spec must never break the brief). Measures the
+  // fleet's OWN effective claim spec against the live claimable pool, the same
+  // compiled-filter count scheduler:set_claim_spec's write-time guard uses.
+  // EI-18681259560385029: idle members beside a NONEMPTY queue — the shape both alerts
+  // below are structurally blind to (see computeIdleWithClaimableAlert).
+  const idleWithClaimableAlert = computeIdleWithClaimableAlert({
+    claimableCount: fleetClaimableCount,
+    idleMemberCount: summary.idle_with_claimable,
+    fleetPaused: fleetPause.paused,
+    harness: args.harness ?? null,
+    // The SAME predicate the count above is derived from, so the falsifier can never
+    // name a member the alert is not actually accusing.
+    idleMemberIds: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable').map((m) => m.agentId),
+    poolCapacity,
+  });
+  // EI-18689489507862177: the GATED-lane twin of the alert above. `idle_with_claimable`
+  // is 0 by construction in this state (its bench branch requires claimableCount > 0), so
+  // this one counts laneless-idle members instead — keying it to idle_with_claimable would
+  // ship an alert that can never fire.
+  const floorStarvedAlert = computeFloorStarvedFleetAlert({
+    claimable: fleetClaimableCount,
+    matchedByFilter: fleetLaneEffective?.matchedByFilter ?? null,
+    idleMemberCount: summary.laneless_idle,
+    excluded: fleetLaneEffective?.excluded ?? null,
+    fleetPaused: fleetPause.paused,
+    harness: args.harness ?? null,
+    fleet,
+  });
+  // fleet-lead-instrumentation-audit-2026-08-09 P-019/P-012: ARBITRATE the alerts above
+  // into ONE dominant layer. Computed from the same inputs the siblings fired on (never a
+  // second read), so it cannot disagree with them — it only ORDERS them.
+  const blockedAt = computeFleetBlockVerdict({
+    fleetPaused: fleetPause.paused,
+    poolCapacity,
+    claimable: fleetClaimableCount,
+    matchedByFilter: fleetLaneEffective?.matchedByFilter ?? null,
+    idleMemberCount: summary.idle_with_claimable,
+    lanelessIdleCount: summary.laneless_idle,
+    harness: args.harness ?? null,
+    fleet,
+  });
+  let specStarvedAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
+  // WI-5937 acceptance #3: "leader-brief returns spec filter + both counts + per-member
+  // doing in one read" — the fleet's OWN active view.filter (so a leader reads WHAT is
+  // scoped without a separate scheduler:get_claim_spec round-trip) plus BOTH claimable
+  // counts side by side: the harness-WIDE pool (what work_items:claimable{harness} would
+  // show, pre-spec-narrowing) and the spec-scoped matched count (pre-floor) — the exact
+  // pair whose conflation (1037 harness-wide vs 0 spec-scoped) produced the false
+  // spec-starved ruling this item's own root-cause section documents. Best-effort/optional:
+  // a preview failure must never block the rest of the brief.
+  let specFilter: FilterNode | null | undefined;
+  let harnessWidePool: number | undefined;
+  let specMatched: number | undefined;
+  // P-005: the spec row's own authorship, surfaced beside the filter it describes. A
+  // leader reading `specFilter` alone cannot tell their own lane from one an automated
+  // peer rewrote under them.
+  let specRevision: number | undefined;
+  let specUpdatedBy: string | null | undefined;
+  let specUpdatedAt: string | null | undefined;
+  let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
+  let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
+  try {
+    const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
+    const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
+    if (rec.source !== 'default') {
+      specFilter = rec.spec.view?.filter ?? null;
+      specRevision = rec.revision ?? undefined;
+      specUpdatedBy = rec.updatedBy;
+      specUpdatedAt = rec.updatedAt;
+      // P-005: computed from the record ALONE, and deliberately BEFORE the pool preview
+      // below — the preview is the fragile half (it compiles the filter and counts the
+      // pool), and coupling a drift signal to it would mean a preview outage silently
+      // takes the drift check with it. That is the same class of blindness this alert
+      // exists to report, one level up.
+      specAuthorshipAlert = computeSpecAuthorshipAlert({
+        readerId: ownerId ?? null,
+        updatedBy: rec.updatedBy,
+        revision: rec.revision,
+        updatedAt: rec.updatedAt,
         harness: args.harness ?? null,
         fleet,
       });
-    } catch {
-      /* best-effort — never block the brief on a spec-effect preview failure */
+      try {
+        const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
+        const effect = await previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
+        specStarvedAlert = computeSpecStarvedFleetAlert({
+          totalLoad,
+          specMatched: effect.matched,
+          poolSize: effect.pool,
+          harness: args.harness ?? null,
+          fleet,
+        });
+        harnessWidePool = effect.pool;
+        specMatched = effect.matched;
+      } catch {
+        /* best-effort — a pool-effect failure must not cost the authorship read above */
+      }
     }
-    // P-014: leader-REGISTERED custom invariants, evaluated here alongside the
-    // built-in alerts above. The built-ins are checks somebody thought to build in
-    // advance; this is where a leader's own ad-hoc check lives instead of dying with
-    // the turn that wrote it. Same best-effort discipline as the preview above — and
-    // internally each invariant is isolated too, so one bad registry entry reports
-    // itself as errored rather than costing the leader the rest of the brief.
-    let customInvariants: InvariantEvaluation[] | undefined;
-    let customInvariantAlert: { reason: string } | undefined;
-    const { readFleetInvariantEvaluations, computeCustomInvariantAlert } = await import('./invariants');
-    customInvariants = await readFleetInvariantEvaluations({ workspaceId, fleetSlug: fleet });
-    if (customInvariants) customInvariantAlert = computeCustomInvariantAlert(customInvariants);
-    // P-023: the PER-MEMBER "why is this idle" verdict, computed AFTER `blockedAt` because it
-    // is deliberately subordinate to it. Attributing idleness to a member while the pool is at
-    // factor 0 is exactly the inversion P-002 measured; deriving a per-member answer
-    // independently would reproduce that once per member, and a specific per-member reason
-    // reads as BETTER evidence than a fleet-wide one, so it would be believed harder.
-    const membersWithVerdict = markedMembers.map((m) => ({
-      ...m,
-      idleVerdict: computeMemberIdleVerdict(
-        {
-          sessionState: m.sessionState,
-          load: m.load,
-          stalled: m.stalled,
-          lastToolCallAgeMs: m.lastToolCallAgeMs,
-          contextPressure: m.contextPressure,
-          throttled: (m as { throttled?: unknown }).throttled,
-          loopMode: m.loopMode,
-          nextFireAt: m.nextFireAt,
-          parkedOn: m.parkedOn,
+    declaredPlanSpecDivergenceAlert = computeDeclaredPlanSpecDivergenceAlert({
+      members: grouped,
+      specFilter: rec.spec.view?.filter,
+      harness: args.harness ?? null,
+      fleet,
+    });
+  } catch {
+    /* best-effort — never block the brief on a spec-effect preview failure */
+  }
+  // P-014: leader-REGISTERED custom invariants, evaluated here alongside the
+  // built-in alerts above. The built-ins are checks somebody thought to build in
+  // advance; this is where a leader's own ad-hoc check lives instead of dying with
+  // the turn that wrote it. Same best-effort discipline as the preview above — and
+  // internally each invariant is isolated too, so one bad registry entry reports
+  // itself as errored rather than costing the leader the rest of the brief.
+  let customInvariants: InvariantEvaluation[] | undefined;
+  let customInvariantAlert: { reason: string } | undefined;
+  const { readFleetInvariantEvaluations, computeCustomInvariantAlert } = await import('./invariants');
+  customInvariants = await readFleetInvariantEvaluations({ workspaceId, fleetSlug: fleet });
+  if (customInvariants) customInvariantAlert = computeCustomInvariantAlert(customInvariants);
+  // P-023: the PER-MEMBER "why is this idle" verdict, computed AFTER `blockedAt` because it
+  // is deliberately subordinate to it. Attributing idleness to a member while the pool is at
+  // factor 0 is exactly the inversion P-002 measured; deriving a per-member answer
+  // independently would reproduce that once per member, and a specific per-member reason
+  // reads as BETTER evidence than a fleet-wide one, so it would be believed harder.
+  const membersWithVerdict = markedMembers.map((m) => ({
+    ...m,
+    idleVerdict: computeMemberIdleVerdict(
+      {
+        sessionState: m.sessionState,
+        load: m.load,
+        stalled: m.stalled,
+        lastToolCallAgeMs: m.lastToolCallAgeMs,
+        contextPressure: m.contextPressure,
+        throttled: (m as { throttled?: unknown }).throttled,
+        loopMode: m.loopMode,
+        nextFireAt: m.nextFireAt,
+        parkedOn: m.parkedOn,
+      },
+      { blockedAtLayer: blockedAt?.layer ?? null, midTurnFreshnessMs: VERDICT_SPEAKING_FRESH_MS },
+    ),
+  }));
+  const idleCauses = summariseIdleCauses(membersWithVerdict.map((m) => m.idleVerdict));
+  // P-024 / D-013: the reservation plan. Built on the P-023 causes above rather than on a
+  // second read of member state, so "who is holding work" cannot differ between the two
+  // blocks. Recommends nothing at all when the pool is not scarce, and never recommends a
+  // bench — the trade P-024 exists because the leader was forced to make.
+  const reservation = computePoolReservation(
+    membersWithVerdict.map((m) => ({ agentId: m.agentId, idleCause: m.idleVerdict.cause })),
+    { factor: poolCapacity?.factor ?? null, queueDepth: poolCapacity?.queueDepth ?? null },
+  );
+  const memberVerdicts = compactLeaderBriefMemberVerdicts(membersWithVerdict);
+  const boundedMembers = trimToByteBudget(membersWithVerdict, LEADER_BRIEF_MEMBER_DETAIL_BUDGET);
+  const boundedReservationMembers = trimToByteBudget(reservation.members, LEADER_BRIEF_RESERVATION_DETAIL_BUDGET);
+  const reservationForResponse = {
+    ...reservation,
+    members: boundedReservationMembers.kept,
+    ...(boundedReservationMembers.truncated
+      ? {
+          membersTruncated: true,
+          membersReturned: boundedReservationMembers.kept.length,
+          membersHint:
+            'Reservation details are bounded for transport; use memberVerdicts for the complete member index.',
+        }
+      : {}),
+  };
+  // P-022 / D-011: the wake-to-wake delta. Every field above this line is point-in-time,
+  // which is what made "what changed since my last wake" a hand-reconstruction from
+  // checkpoint prose. Boundary is REPORTED, never implied, and an axis with no baseline
+  // reports available:false rather than a zero — a "nothing changed" that actually means
+  // "I have no baseline" is the exact bug class this plan exists to catalogue.
+  // Best-effort like its neighbours: a delta failure must not cost the leader the brief.
+  let delta: FleetBriefDelta | undefined;
+  let deltaSummary: string | undefined;
+  if (ownerId) {
+    try {
+      const { resolveFleetBriefDelta } = await import('../../fleet-brief-delta-store');
+      const resolved = await resolveFleetBriefDelta({
+        key: { workspaceId, fleetSlug: fleet, ownerId },
+        harnessSlug: args.harness ?? null,
+        observation: {
+          at: new Date().toISOString(),
+          // The ROSTER, not the shown list: a member going stale-idle drops out of
+          // `members` but has not left the fleet, and reading that as a departure is
+          // precisely the visibility-for-membership confusion P-010 documented.
+          rosterSize: memberCensus.candidates ?? null,
+          countedMembers: members.length,
+          specRevision: specRevision ?? null,
+          poolFactor: poolCapacity?.factor ?? null,
         },
-        { blockedAtLayer: blockedAt?.layer ?? null, midTurnFreshnessMs: VERDICT_SPEAKING_FRESH_MS },
-      ),
-    }));
-    const idleCauses = summariseIdleCauses(membersWithVerdict.map((m) => m.idleVerdict));
-    // P-024 / D-013: the reservation plan. Built on the P-023 causes above rather than on a
-    // second read of member state, so "who is holding work" cannot differ between the two
-    // blocks. Recommends nothing at all when the pool is not scarce, and never recommends a
-    // bench — the trade P-024 exists because the leader was forced to make.
-    const reservation = computePoolReservation(
-      membersWithVerdict.map((m) => ({ agentId: m.agentId, idleCause: m.idleVerdict.cause })),
-      { factor: poolCapacity?.factor ?? null, queueDepth: poolCapacity?.queueDepth ?? null },
-    );
-    const memberVerdicts = compactLeaderBriefMemberVerdicts(membersWithVerdict);
-    const boundedMembers = trimToByteBudget(membersWithVerdict, LEADER_BRIEF_MEMBER_DETAIL_BUDGET);
-    const boundedReservationMembers = trimToByteBudget(
-      reservation.members,
-      LEADER_BRIEF_RESERVATION_DETAIL_BUDGET,
-    );
-    const reservationForResponse = {
-      ...reservation,
-      members: boundedReservationMembers.kept,
-      ...(boundedReservationMembers.truncated
+        fireCount: await (async () => {
+          try {
+            const { getLoopStatus } = await import('../../harness/routines/loop');
+            return (await getLoopStatus(ownerId))?.fireCount ?? null;
+          } catch {
+            return null;
+          }
+        })(),
+        since: args.since ?? null,
+      });
+      if (resolved) {
+        delta = resolved.delta;
+        deltaSummary = resolved.summary;
+      }
+    } catch {
+      /* best-effort — an absent delta block reads as absent, never as a set of zeroes */
+    }
+  }
+  // P-007: cross-epoch campaign measurements are derived live from authoritative
+  // writers. Keep this adjacent to the existing wake delta: delta answers "what
+  // changed since my last wake" while campaign answers "what has this fleet done
+  // since the explicit/fleet-created boundary". Best-effort preserves the health
+  // brief if any campaign reader is unavailable; individual axes carry their own
+  // unavailable-not-zero verdicts.
+  let campaign: FleetCampaign | undefined;
+  if (fleetCreatedAtMs != null) {
+    try {
+      const { readFleetCampaign } = await import('./fleet-campaign');
+      campaign = await readFleetCampaign({
+        workspaceId,
+        fleetSlug: fleet,
+        fleetCreatedAtMs,
+        since: args.since ?? null,
+        harnessSlug: args.harness ?? null,
+      });
+    } catch {
+      /* best-effort — absence is not a fabricated empty campaign */
+    }
+  }
+  return {
+    data: {
+      ok: true,
+      ...(self ? { self } : {}),
+      // P-004/D-096: the caller is acting on this fleet without holding its
+      // leadership. Surfaced BEFORE the summary so it is not lost under the
+      // member rows — the value of this branch is that the caller learns it.
+      ...(notLeader ? { notLeader } : {}),
+      ...(leadershipClaimed ? { leadershipClaimed } : {}),
+      ...(leaderControl ? { leaderControl } : {}),
+      ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
+      // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
+      // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
+      // reading them in field order is what produced the inverted remedy this fixes.
+      // Absent ⇒ no layer is blocking (every member working), not "unknown".
+      ...(blockedAt ? { blockedAt } : {}),
+      summary: {
+        ...summary,
+        strandedFleetAlert: strandedFleetAlert != null,
+        specStarvedAlert: specStarvedAlert != null,
+        declaredPlanSpecDivergenceAlert: declaredPlanSpecDivergenceAlert != null,
+        // P-005: unlike its siblings this one is not about SUPPLY — it says the lane you
+        // are reading was authored by someone else, so every other spec figure here
+        // describes a scope you have not ratified.
+        specAuthorshipAlert: specAuthorshipAlert != null,
+        idleWithClaimableAlert: idleWithClaimableAlert != null,
+        floorStarvedAlert: floorStarvedAlert != null,
+        ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
+      },
+      // P-022: placed directly under the summary it differences. `deltaSummary` is the
+      // one-line "since your last wake — members ±N, closes +N, spec rev X→Y, pool factor
+      // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
+      // reader can tell an unmeasured axis from a quiet one.
+      ...(delta ? { delta, deltaSummary } : {}),
+      ...(campaign ? { campaign } : {}),
+      // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
+      // invites reading an unpopulated cause as a measured absence.
+      idleCauses,
+      // P-024: included only when the pool is actually scarce. Under a healthy pool the plan
+      // is "recommend nothing", and rendering that every wake would be one more always-present
+      // block a leader learns to skip past.
+      ...(reservation.scarcity.scarce ? { reservation: reservationForResponse } : {}),
+      // EI-20226510994156306: this compact index is intentionally complete even when the
+      // verbose member rows below are bounded. It is the stable recovery surface for a
+      // 50-member fleet: every id + verdict remains available without a full-tier fetch.
+      memberVerdicts,
+      members: boundedMembers.kept,
+      ...(boundedMembers.truncated
         ? {
             membersTruncated: true,
-            membersReturned: boundedReservationMembers.kept.length,
+            membersReturned: boundedMembers.kept.length,
             membersHint:
-              'Reservation details are bounded for transport; use memberVerdicts for the complete member index.',
+              'Verbose member rows are bounded for transport; use memberVerdicts for all ids/verdicts and narrow fleet:assignments { agent } for detail.',
           }
         : {}),
-    };
-    // P-022 / D-011: the wake-to-wake delta. Every field above this line is point-in-time,
-    // which is what made "what changed since my last wake" a hand-reconstruction from
-    // checkpoint prose. Boundary is REPORTED, never implied, and an axis with no baseline
-    // reports available:false rather than a zero — a "nothing changed" that actually means
-    // "I have no baseline" is the exact bug class this plan exists to catalogue.
-    // Best-effort like its neighbours: a delta failure must not cost the leader the brief.
-    let delta: FleetBriefDelta | undefined;
-    let deltaSummary: string | undefined;
-    if (ownerId) {
-      try {
-        const { resolveFleetBriefDelta } = await import('../../fleet-brief-delta-store');
-        const resolved = await resolveFleetBriefDelta({
-          key: { workspaceId, fleetSlug: fleet, ownerId },
-          harnessSlug: args.harness ?? null,
-          observation: {
-            at: new Date().toISOString(),
-            // The ROSTER, not the shown list: a member going stale-idle drops out of
-            // `members` but has not left the fleet, and reading that as a departure is
-            // precisely the visibility-for-membership confusion P-010 documented.
-            rosterSize: memberCensus.candidates ?? null,
-            countedMembers: members.length,
-            specRevision: specRevision ?? null,
-            poolFactor: poolCapacity?.factor ?? null,
-          },
-          fireCount: await (async () => {
-            try {
-              const { getLoopStatus } = await import('../../harness/routines/loop');
-              return (await getLoopStatus(ownerId))?.fireCount ?? null;
-            } catch {
-              return null;
-            }
-          })(),
-          since: args.since ?? null,
-        });
-        if (resolved) {
-          delta = resolved.delta;
-          deltaSummary = resolved.summary;
-        }
-      } catch {
-        /* best-effort — an absent delta block reads as absent, never as a set of zeroes */
-      }
-    }
-    // P-007: cross-epoch campaign measurements are derived live from authoritative
-    // writers. Keep this adjacent to the existing wake delta: delta answers "what
-    // changed since my last wake" while campaign answers "what has this fleet done
-    // since the explicit/fleet-created boundary". Best-effort preserves the health
-    // brief if any campaign reader is unavailable; individual axes carry their own
-    // unavailable-not-zero verdicts.
-    let campaign: FleetCampaign | undefined;
-    if (fleetCreatedAtMs != null) {
-      try {
-        const { readFleetCampaign } = await import('./fleet-campaign');
-        campaign = await readFleetCampaign({
-          workspaceId,
-          fleetSlug: fleet,
-          fleetCreatedAtMs,
-          since: args.since ?? null,
-          harnessSlug: args.harness ?? null,
-        });
-      } catch {
-        /* best-effort — absence is not a fabricated empty campaign */
-      }
-    }
-    return {
-      data: {
-        ok: true,
-        ...(self ? { self } : {}),
-        // P-004/D-096: the caller is acting on this fleet without holding its
-        // leadership. Surfaced BEFORE the summary so it is not lost under the
-        // member rows — the value of this branch is that the caller learns it.
-        ...(notLeader ? { notLeader } : {}),
-        ...(leadershipClaimed ? { leadershipClaimed } : {}),
-        ...(leaderControl ? { leaderControl } : {}),
-        ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
-        // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
-        // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
-        // reading them in field order is what produced the inverted remedy this fixes.
-        // Absent ⇒ no layer is blocking (every member working), not "unknown".
-        ...(blockedAt ? { blockedAt } : {}),
-        summary: {
-          ...summary,
-          strandedFleetAlert: strandedFleetAlert != null,
-          specStarvedAlert: specStarvedAlert != null,
-          declaredPlanSpecDivergenceAlert: declaredPlanSpecDivergenceAlert != null,
-          // P-005: unlike its siblings this one is not about SUPPLY — it says the lane you
-          // are reading was authored by someone else, so every other spec figure here
-          // describes a scope you have not ratified.
-          specAuthorshipAlert: specAuthorshipAlert != null,
-          idleWithClaimableAlert: idleWithClaimableAlert != null,
-          floorStarvedAlert: floorStarvedAlert != null,
-          ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
-        },
-        // P-022: placed directly under the summary it differences. `deltaSummary` is the
-        // one-line "since your last wake — members ±N, closes +N, spec rev X→Y, pool factor
-        // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
-        // reader can tell an unmeasured axis from a quiet one.
-        ...(delta ? { delta, deltaSummary } : {}),
-        ...(campaign ? { campaign } : {}),
-        // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
-        // invites reading an unpopulated cause as a measured absence.
-        idleCauses,
-        // P-024: included only when the pool is actually scarce. Under a healthy pool the plan
-        // is "recommend nothing", and rendering that every wake would be one more always-present
-        // block a leader learns to skip past.
-        ...(reservation.scarcity.scarce ? { reservation: reservationForResponse } : {}),
-        // EI-20226510994156306: this compact index is intentionally complete even when the
-        // verbose member rows below are bounded. It is the stable recovery surface for a
-        // 50-member fleet: every id + verdict remains available without a full-tier fetch.
-        memberVerdicts,
-        members: boundedMembers.kept,
-        ...(boundedMembers.truncated
-          ? {
-              membersTruncated: true,
-              membersReturned: boundedMembers.kept.length,
-              membersHint:
-                'Verbose member rows are bounded for transport; use memberVerdicts for all ids/verdicts and narrow fleet:assignments { agent } for detail.',
-            }
-          : {}),
-        ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
-        ...(unownedCriticalsFederated.length > 0
-          ? {
-              unownedCriticalsFederated,
-              // WI-6846: carry the non-actionability with the finding, same discipline as
-              // abandonedUnclaimedAction below — a bare count invites a leader to try to
-              // claim/close these and hit a refusal for every one.
-              unownedCriticalsFederatedNote:
-                `${unownedCriticalsFederated.length} unowned critical(s) this fleet's spec would admit are ` +
-                `origin:'remote' — authored on a DIFFERENT node. This node can neither claim them ` +
-                `(already excluded from self-select) nor close them (work_items:set_state refuses to ` +
-                `mutate a remote-authored row locally). Only the authoring peer resolving it, or ` +
-                `federation delivering that resolution, clears one. Not this leader's escalation to act on.`,
-            }
-          : {}),
-        ...(orphanedInFlight.length > 0
-          ? {
-              abandonedUnclaimed: orphanedInFlight,
-              // WI-6678: carry the RESOLVING ACTION with the finding. The field name alone
-              // could not carry it — and a leader acting on the wrong verb gets ok:true.
-              abandonedUnclaimedAction:
-                `${orphanedInFlight.length} item(s) show progress then abandonment, and are ALREADY unassigned. ` +
-                `work_items:release does NOTHING here (it returns ok:true on the no-op — WI-6678). ` +
-                `Resolve by CLAIMING them, or promote them with work_items:set_priority { priority } so the ` +
-                `queue hands them to a member — the count falls only when one is claimed and finished.`,
-            }
-          : {}),
-        ...(admissionBlocked.length > 0
-          ? {
-              admissionBlocked,
-              // Same discipline as abandonedUnclaimedAction above: carry the RESOLVING
-              // ACTION with the finding. It matters more here than anywhere else on this
-              // brief, because the natural reading of "a member is not claiming its work"
-              // is a discipline problem — and acting on that reading produces a fleet-wide
-              // directive that cannot possibly help, which is exactly what happened in the
-              // incident that filed this (EI-18680302159738037).
-              // Front-loaded deliberately: the monitor projection CLIPS this to 220
-              // chars, so the anti-misreading ("not discipline") and the lever
-              // (set_claim_spec) must both land inside the first sentence or the
-              // clipped copy reads as a bare complaint.
-              admissionBlockedAction:
-                `NOT member discipline — ${admissionBlocked.length} (item, member) pair(s) were refused by THIS ` +
-                `fleet's claim spec; only YOUR spec write clears it: scheduler:set_claim_spec { fleet, … } to widen ` +
-                `the lane, or route the item to a member whose lane admits it. ` +
-                (admissionDependencyEscapes.length > 0
-                  ? `${admissionDependencyEscapes.length} row(s) are typed DEPENDENCY ESCAPES: each names the ` +
-                    `dependency and blocked held item ids, preserves the member's ownership, and carries three ` +
-                    `routes (spec_widen, outside_lane_placement, leader_claim). `
-                  : '') +
-                `Each row names the specId + revision that refused it; after a widen the member self-claims on its ` +
-                `next scheduler:get_next, with no re-dispatch. \`occurrences\` > 1 means that member is stuck in a ` +
-                `refusal LOOP, burning a wake each time.`,
-            }
-          : {}),
-        // EI-19313376980892266 item C: every alert ships its FALSIFIER beside its reason
-        // — the read-only one-liner whose output either confirms or KILLS the alert. The
-        // reason is what the leader believes; the falsifier is what they can run. Emitted
-        // as a sibling field rather than folded into the reason string so it survives a
-        // truncating renderer and is machine-checkable (alert-falsifier-reality.test.ts).
-        ...(strandedFleetAlert
-          ? {
-              strandedFleetAlertReason: strandedFleetAlert.reason,
-              strandedFleetAlertFalsifier: strandedFleetAlert.falsifier,
-            }
-          : {}),
-        ...(specStarvedAlert
-          ? {
-              specStarvedAlertReason: specStarvedAlert.reason,
-              specStarvedAlertFalsifier: specStarvedAlert.falsifier,
-            }
-          : {}),
-        ...(specAuthorshipAlert
-          ? {
-              specAuthorshipAlertReason: specAuthorshipAlert.reason,
-              specAuthorshipAlertFalsifier: specAuthorshipAlert.falsifier,
-            }
-          : {}),
-        ...(declaredPlanSpecDivergenceAlert
-          ? {
-              declaredPlanSpecDivergenceAlertReason: declaredPlanSpecDivergenceAlert.reason,
-              declaredPlanSpecDivergenceAlertFalsifier: declaredPlanSpecDivergenceAlert.falsifier,
-            }
-          : {}),
-        ...(idleWithClaimableAlert
-          ? {
-              idleWithClaimableAlertReason: idleWithClaimableAlert.reason,
-              idleWithClaimableAlertFalsifier: idleWithClaimableAlert.falsifier,
-            }
-          : {}),
-        ...(floorStarvedAlert
-          ? {
-              floorStarvedAlertReason: floorStarvedAlert.reason,
-              floorStarvedAlertFalsifier: floorStarvedAlert.falsifier,
-            }
-          : {}),
-        // P-014: always carried when ANY invariant is registered — including the
-        // all-satisfied case. A leader must be able to tell "my checks ran and found
-        // nothing" from "my checks are not running", which a reason-only field cannot
-        // express (that is the same false-clean shape the invariants exist to catch).
-        ...(customInvariants ? { customInvariants } : {}),
-        ...(customInvariantAlert ? { customInvariantAlertReason: customInvariantAlert.reason } : {}),
-        // EI-18703234178947959: the owner's own stated pause reason, verbatim, so the
-        // leader reads WHY the fleet is standing down without a second registry lookup.
-        ...(fleetPause.paused && fleetPause.reason
-          ? { fleetPausedReason: fleetPause.reason }
-          : {}),
-        // WI-5937 acceptance #3 — see the comment above the preview call: the fleet's own
-        // active claim-spec filter, plus both claimable counts (harness-wide pool vs
-        // spec-scoped matched) side by side, so a leader never has to compare member prose
-        // against a summary count without the two authoritative reads one call away.
-        ...(specFilter !== undefined ? { specFilter } : {}),
-        // P-005: the filter's PROVENANCE, emitted whenever the filter itself is — a
-        // revision the leader can diff wake-to-wake, and the identity that last moved it.
-        // Present-but-null updatedBy is meaningful (an unattributed write), so these ride
-        // the same presence test as specFilter rather than being dropped when null.
-        ...(specRevision !== undefined ? { specRevision } : {}),
-        ...(specUpdatedBy !== undefined ? { specUpdatedBy } : {}),
-        ...(specUpdatedAt !== undefined ? { specUpdatedAt } : {}),
-        ...(harnessWidePool !== undefined ? { harnessWidePool } : {}),
-        ...(specMatched !== undefined ? { specMatched } : {}),
-      },
-    };
+      ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
+      ...(unownedCriticalsFederated.length > 0
+        ? {
+            unownedCriticalsFederated,
+            // WI-6846: carry the non-actionability with the finding, same discipline as
+            // abandonedUnclaimedAction below — a bare count invites a leader to try to
+            // claim/close these and hit a refusal for every one.
+            unownedCriticalsFederatedNote:
+              `${unownedCriticalsFederated.length} unowned critical(s) this fleet's spec would admit are ` +
+              `origin:'remote' — authored on a DIFFERENT node. This node can neither claim them ` +
+              `(already excluded from self-select) nor close them (work_items:set_state refuses to ` +
+              `mutate a remote-authored row locally). Only the authoring peer resolving it, or ` +
+              `federation delivering that resolution, clears one. Not this leader's escalation to act on.`,
+          }
+        : {}),
+      ...(orphanedInFlight.length > 0
+        ? {
+            abandonedUnclaimed: orphanedInFlight,
+            // WI-6678: carry the RESOLVING ACTION with the finding. The field name alone
+            // could not carry it — and a leader acting on the wrong verb gets ok:true.
+            abandonedUnclaimedAction:
+              `${orphanedInFlight.length} item(s) show progress then abandonment, and are ALREADY unassigned. ` +
+              `work_items:release does NOTHING here (it returns ok:true on the no-op — WI-6678). ` +
+              `Resolve by CLAIMING them, or promote them with work_items:set_priority { priority } so the ` +
+              `queue hands them to a member — the count falls only when one is claimed and finished.`,
+          }
+        : {}),
+      ...(admissionBlocked.length > 0
+        ? {
+            admissionBlocked,
+            // Same discipline as abandonedUnclaimedAction above: carry the RESOLVING
+            // ACTION with the finding. It matters more here than anywhere else on this
+            // brief, because the natural reading of "a member is not claiming its work"
+            // is a discipline problem — and acting on that reading produces a fleet-wide
+            // directive that cannot possibly help, which is exactly what happened in the
+            // incident that filed this (EI-18680302159738037).
+            // Front-loaded deliberately: the monitor projection CLIPS this to 220
+            // chars, so the anti-misreading ("not discipline") and the lever
+            // (set_claim_spec) must both land inside the first sentence or the
+            // clipped copy reads as a bare complaint.
+            admissionBlockedAction:
+              `NOT member discipline — ${admissionBlocked.length} (item, member) pair(s) were refused by THIS ` +
+              `fleet's claim spec; only YOUR spec write clears it: scheduler:set_claim_spec { fleet, … } to widen ` +
+              `the lane, or route the item to a member whose lane admits it. ` +
+              (admissionDependencyEscapes.length > 0
+                ? `${admissionDependencyEscapes.length} row(s) are typed DEPENDENCY ESCAPES: each names the ` +
+                  `dependency and blocked held item ids, preserves the member's ownership, and carries three ` +
+                  `routes (spec_widen, outside_lane_placement, leader_claim). `
+                : '') +
+              `Each row names the specId + revision that refused it; after a widen the member self-claims on its ` +
+              `next scheduler:get_next, with no re-dispatch. \`occurrences\` > 1 means that member is stuck in a ` +
+              `refusal LOOP, burning a wake each time.`,
+          }
+        : {}),
+      // EI-19313376980892266 item C: every alert ships its FALSIFIER beside its reason
+      // — the read-only one-liner whose output either confirms or KILLS the alert. The
+      // reason is what the leader believes; the falsifier is what they can run. Emitted
+      // as a sibling field rather than folded into the reason string so it survives a
+      // truncating renderer and is machine-checkable (alert-falsifier-reality.test.ts).
+      ...(strandedFleetAlert
+        ? {
+            strandedFleetAlertReason: strandedFleetAlert.reason,
+            strandedFleetAlertFalsifier: strandedFleetAlert.falsifier,
+          }
+        : {}),
+      ...(specStarvedAlert
+        ? {
+            specStarvedAlertReason: specStarvedAlert.reason,
+            specStarvedAlertFalsifier: specStarvedAlert.falsifier,
+          }
+        : {}),
+      ...(specAuthorshipAlert
+        ? {
+            specAuthorshipAlertReason: specAuthorshipAlert.reason,
+            specAuthorshipAlertFalsifier: specAuthorshipAlert.falsifier,
+          }
+        : {}),
+      ...(declaredPlanSpecDivergenceAlert
+        ? {
+            declaredPlanSpecDivergenceAlertReason: declaredPlanSpecDivergenceAlert.reason,
+            declaredPlanSpecDivergenceAlertFalsifier: declaredPlanSpecDivergenceAlert.falsifier,
+          }
+        : {}),
+      ...(idleWithClaimableAlert
+        ? {
+            idleWithClaimableAlertReason: idleWithClaimableAlert.reason,
+            idleWithClaimableAlertFalsifier: idleWithClaimableAlert.falsifier,
+          }
+        : {}),
+      ...(floorStarvedAlert
+        ? {
+            floorStarvedAlertReason: floorStarvedAlert.reason,
+            floorStarvedAlertFalsifier: floorStarvedAlert.falsifier,
+          }
+        : {}),
+      // P-014: always carried when ANY invariant is registered — including the
+      // all-satisfied case. A leader must be able to tell "my checks ran and found
+      // nothing" from "my checks are not running", which a reason-only field cannot
+      // express (that is the same false-clean shape the invariants exist to catch).
+      ...(customInvariants ? { customInvariants } : {}),
+      ...(customInvariantAlert ? { customInvariantAlertReason: customInvariantAlert.reason } : {}),
+      // EI-18703234178947959: the owner's own stated pause reason, verbatim, so the
+      // leader reads WHY the fleet is standing down without a second registry lookup.
+      ...(fleetPause.paused && fleetPause.reason ? { fleetPausedReason: fleetPause.reason } : {}),
+      // WI-5937 acceptance #3 — see the comment above the preview call: the fleet's own
+      // active claim-spec filter, plus both claimable counts (harness-wide pool vs
+      // spec-scoped matched) side by side, so a leader never has to compare member prose
+      // against a summary count without the two authoritative reads one call away.
+      ...(specFilter !== undefined ? { specFilter } : {}),
+      // P-005: the filter's PROVENANCE, emitted whenever the filter itself is — a
+      // revision the leader can diff wake-to-wake, and the identity that last moved it.
+      // Present-but-null updatedBy is meaningful (an unattributed write), so these ride
+      // the same presence test as specFilter rather than being dropped when null.
+      ...(specRevision !== undefined ? { specRevision } : {}),
+      ...(specUpdatedBy !== undefined ? { specUpdatedBy } : {}),
+      ...(specUpdatedAt !== undefined ? { specUpdatedAt } : {}),
+      ...(harnessWidePool !== undefined ? { harnessWidePool } : {}),
+      ...(specMatched !== undefined ? { specMatched } : {}),
+    },
+  };
 }
