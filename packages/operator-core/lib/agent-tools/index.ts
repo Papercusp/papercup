@@ -989,6 +989,7 @@ import './work_items/release';
 // no sanctioned path forward.
 import './work_items/request_release';
 import './work_items/decline_release_request';
+import './work_items/withdraw_release_request';
 // Park a work-item resumably: checkpoint + release + broadcast in one verb
 // (modes-and-intake-ux-2026-07-05 P-004 — the named form of "parked with a
 // complete resume checkpoint").

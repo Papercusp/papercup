@@ -199,6 +199,60 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     const res = await rr.resolveWorkItemReleaseRequest('WI-rr-5', { harness: H, resolution: 'holder-released' });
     expect(res).toBeNull();
   });
+
+  it('stale holder snapshot cannot create a request against a fresh successor', async () => {
+    await seedIssue('WI-rr-holder-race', { takenBy: 'old-holder' });
+
+    // Simulate the requester's read, followed by consequence-reclaim and a fresh
+    // serializer taking the claim before the write reaches the release-request row.
+    const expectedHolder = 'old-holder';
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET taken_by = 'fresh-holder', updated_ts = ${Date.now()}
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-rr-holder-race'`;
+
+    const rec = await rr.setWorkItemReleaseRequest('WI-rr-holder-race', {
+      harness: H,
+      by: 'requester',
+      holder: expectedHolder,
+      expectedHolder,
+      reason: 'stale snapshot',
+      onSilence: 'reclaim',
+      deadlineAt: Date.now() + 60_000,
+    });
+
+    expect(rec).toBeNull();
+    expect(rr.readWorkItemReleaseRequest(await readPayload('WI-rr-holder-race'))).toBeNull();
+  });
+
+  it('requester/holder CAS guards prevent withdrawing a different pending request', async () => {
+    await seedIssue('WI-rr-withdraw-cas', { takenBy: 'holder-1' });
+    await rr.setWorkItemReleaseRequest('WI-rr-withdraw-cas', {
+      harness: H,
+      by: 'requester-1',
+      holder: 'holder-1',
+      reason: 'stalled',
+      onSilence: 'reclaim',
+      deadlineAt: Date.now() + 60_000,
+    });
+
+    const wrongRequester = await rr.resolveWorkItemReleaseRequest('WI-rr-withdraw-cas', {
+      harness: H,
+      resolution: 'requester-withdrawn',
+      expectedBy: 'requester-2',
+      expectedHolder: 'holder-1',
+    });
+    expect(wrongRequester).toBeNull();
+    expect(rr.readWorkItemReleaseRequest(await readPayload('WI-rr-withdraw-cas'))).toMatchObject({ resolved: false, by: 'requester-1' });
+
+    const withdrawn = await rr.resolveWorkItemReleaseRequest('WI-rr-withdraw-cas', {
+      harness: H,
+      resolution: 'requester-withdrawn',
+      expectedBy: 'requester-1',
+      expectedHolder: 'holder-1',
+    });
+    expect(withdrawn).toMatchObject({ resolved: true, resolution: 'requester-withdrawn', by: 'requester-1', holder: 'holder-1' });
+  });
 });
 
 describe('findDueReleaseRequests', () => {

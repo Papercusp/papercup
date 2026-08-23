@@ -33,6 +33,9 @@
  *   - holder-declined     → work_items:decline_release_request — the holder explicitly
  *                           pushed back before the deadline: instant resolve, no
  *                           consequence (the requester must escalate manually).
+ *   - requester-withdrawn → work_items:withdraw_release_request — the requester
+ *                           withdrew before the deadline: instant resolve, no
+ *                           consequence.
  *   - consequence-reclaim  → deadline passed unanswered, onSilence:'reclaim' fired: the
  *                           sweep force-frees the item.
  *   - consequence-escalate → deadline passed unanswered, onSilence:'escalate' fired: the
@@ -50,6 +53,7 @@ export type ReleaseRequestOnSilence = 'reclaim' | 'escalate' | 'nothing';
 export type ReleaseRequestResolution =
   | 'holder-released'
   | 'holder-declined'
+  | 'requester-withdrawn'
   | 'consequence-reclaim'
   | 'consequence-escalate'
   | 'consequence-nothing'
@@ -131,8 +135,10 @@ export function readWorkItemReleaseRequest(payload: unknown): WorkItemReleaseReq
 /**
  * Record a NEW release request on the item (overwrites any prior — the tool handler is
  * responsible for refusing to stomp a live pending request from a DIFFERENT requester;
- * see `work_items:request_release`'s conflict guard). Returns null when the item can't
- * be located.
+ * see `work_items:request_release`'s conflict guard). `expectedHolder` closes the
+ * requester's read→write window: if the claim changed after the holder was observed,
+ * the UPDATE matches zero rows and no request is written against the successor. Returns
+ * null when the item can't be located or the expected holder no longer owns it.
  */
 export async function setWorkItemReleaseRequest(
   id: string,
@@ -140,6 +146,7 @@ export async function setWorkItemReleaseRequest(
     harness?: string;
     by: string;
     holder: string;
+    expectedHolder?: string;
     reason: string;
     onSilence: ReleaseRequestOnSilence;
     deadlineAt: number;
@@ -148,6 +155,7 @@ export async function setWorkItemReleaseRequest(
   const { sql } = getOrgPg();
   const located = await locateWorkItem(sql, id, req.harness);
   if (!located) return null;
+  const expectedHolder = req.expectedHolder?.trim() || null;
   const requestedAt = Date.now();
   const patch = JSON.stringify({
     release_request_by: req.by,
@@ -160,11 +168,16 @@ export async function setWorkItemReleaseRequest(
     release_request_resolution: null,
     release_request_resolved_at: null,
   });
-  await sql`
+  const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
        SET payload = COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb,
            updated_ts = ${Date.now()}
-     WHERE workspace_id = ${located.workspaceId} AND feature_id = ${id}`;
+     WHERE workspace_id = ${located.workspaceId} AND feature_id = ${id}
+       -- The handler read the holder before this write. Keep the request tied to
+       -- that exact claim, so a transfer cannot retarget it to a fresh successor.
+       AND (${expectedHolder}::text IS NULL OR taken_by = ${expectedHolder})
+     RETURNING feature_id`;
+  if (!rows[0]) return null;
   return { id, harness: located.harnessSlug, workspaceId: located.workspaceId };
 }
 
@@ -178,12 +191,14 @@ export async function setWorkItemReleaseRequest(
  */
 export async function resolveWorkItemReleaseRequest(
   id: string,
-  opts: { harness?: string; resolution: ReleaseRequestResolution },
+  opts: { harness?: string; resolution: ReleaseRequestResolution; expectedBy?: string; expectedHolder?: string },
 ): Promise<WorkItemReleaseRequest | null> {
   const { sql } = getOrgPg();
   const located = await locateWorkItem(sql, id, opts.harness);
   if (!located) return null;
   const resolvedAt = Date.now();
+  const expectedBy = opts.expectedBy?.trim() || null;
+  const expectedHolder = opts.expectedHolder?.trim() || null;
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
@@ -202,6 +217,8 @@ export async function resolveWorkItemReleaseRequest(
      WHERE workspace_id = ${located.workspaceId} AND feature_id = ${id}
        AND payload ? 'release_request_by'
        AND COALESCE(payload->>'release_request_resolved', 'false') <> 'true'
+       AND (${expectedBy}::text IS NULL OR payload->>'release_request_by' = ${expectedBy})
+       AND (${expectedHolder}::text IS NULL OR payload->>'release_request_holder' = ${expectedHolder})
      RETURNING payload`;
   if (!rows[0]) return null;
   return readWorkItemReleaseRequest(rows[0].payload);
