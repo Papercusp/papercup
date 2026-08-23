@@ -1181,7 +1181,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       enrolment,
       {
         state: job.status === 'timed_out' ? 'timed_out' : job.status === 'killed' ? 'killed' : 'exited',
-        exitCode: code,
+        // The durable task ledger is the source behind `processes:list`, so it
+        // must receive the same normalized verdict as the in-memory job and its
+        // JOB END marker. A missing command hidden inside an otherwise-successful
+        // pipeline has a child code of 0 but is normalized to failed/127 above;
+        // recording the raw code made processes:list report a false green.
+        exitCode: job.exitCode,
         exitReason: job.status === 'timed_out' ? `exceeded ${effectiveTimeoutMs}ms timeout` : null,
       },
       { scopeCgroupPath },
