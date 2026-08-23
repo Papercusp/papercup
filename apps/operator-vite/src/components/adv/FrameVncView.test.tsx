@@ -80,13 +80,38 @@ describe('<FrameVncView>', () => {
     // The mint POST carried the watch mode + display.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/deploy/frame-1/vnc-session');
-    expect(JSON.parse(String(init.body))).toEqual({ display: 2, mode: 'watch' });
+    // target defaults to 'frame' — the pre-P-004 behaviour, now stated explicitly
+    // on the wire so the server never has to guess which desktop is meant.
+    expect(JSON.parse(String(init.body))).toEqual({ display: 2, mode: 'watch', target: 'frame' });
 
     expect(h.instances).toHaveLength(1);
     const rfb = h.instances[0];
     expect(rfb.url).toBe('ws://127.0.0.1/vnc');
     expect(rfb.viewOnly).toBe(true); // watch ⇒ view-only client-side too
     expect(rfb.scaleViewport).toBe(true);
+  });
+
+  it('target="local" is sent through so the server takes the no-SSH local path (P-004)', async () => {
+    const fetchMock = stubFetch(() => ({ ok: true, json: async () => ({ ok: true, wsUrl: 'ws://x/vnc' }) }));
+    await renderView({ target: 'local', display: 110 });
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({
+      display: 110,
+      mode: 'watch',
+      target: 'local',
+    });
+  });
+
+  it('surfaces a local-display refusal as an error rather than a blank screen', async () => {
+    // The server rejects a display no agent desktop registered; the viewer must
+    // say so, since this is the path a mistyped or just-released display takes.
+    stubFetch(() => ({
+      ok: false,
+      json: async () => ({ ok: false, error: ':0 is not a registered local agent desktop' }),
+    }));
+    const { container } = await renderView({ target: 'local', display: 0 });
+    expect(container.querySelector('.pc-frame-vnc')!.getAttribute('data-state')).toBe('error');
+    expect(screen.getByText(/not a registered local agent desktop/)).toBeTruthy();
+    expect(h.instances).toHaveLength(0); // no RFB was ever constructed
   });
 
   it('drive=true mints a takeover session and the RFB is NOT view-only', async () => {
