@@ -597,14 +597,10 @@ export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt
  * Human-input abort: any human keystroke after verification starts cancels the
  * remaining polls (never fight a human who is editing the staged line —
  * `lastInputAt` is the same signal makeIdleGate defers on).
- * `onExhausted` fires once when the bounded CR cap is reached without observing
- * output after a resubmit. It is suppressed when a resubmit produces output.
  *
  * Pure (injectable clock/sleep + getters); exported for tests.
  */
 export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
-    lastOutputAt?: (() => number) | undefined;
-    writeCr?: (() => void) | undefined;
     lastInputAt?: (() => number) | undefined;
     quietMs?: number | undefined;
     pollMs?: number | undefined;
@@ -613,11 +609,7 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs
     now?: (() => number) | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     onResubmit?: (() => void) | undefined;
-    onExhausted?: ((details: {
-        polls: number;
-        resubmits: number;
-        outputObservedAfterResubmit: boolean;
-    }) => void) | undefined;
+    onExhausted?: (() => void) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted } (aborted = 'human-input' | null). */
@@ -1102,6 +1094,13 @@ export function controlWritesForAgent(decoded: any, agent: any, env?: Environmen
  *  this as a slash command: Claude Code / OMP `/clear`; Codex starts a fresh
  *  conversation with `/new`. Pure — exported for tests. */
 export function contextClearCommandForAgent(agent: any): "/new" | "/clear";
+/** Backend-aware cold-reset delivery. Claude and OMP can clear their context in
+ * place, but Codex's `/new` command only changes the visible TUI state; the
+ * long-lived Codex process still retains the context that the cold boundary is
+ * meant to discard. Route Codex reset envelopes through the existing hard
+ * recycle path so a fresh child process is guaranteed. Pure — exported for
+ * tests. */
+export function coldResetModeForAgent(agent: any): "reset" | "recycle";
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
  *  Session-env tunable, module default as fallback.
  *  @param {EnvironmentMap} [env]
