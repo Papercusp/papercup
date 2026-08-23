@@ -75,7 +75,7 @@ flight with \`projection\`.
 tool's own args, never inside them — with \`tools:invoke\` that means alongside
 \`name\`/\`args\`, NOT nested in \`args\`, where the inner tool rejects it as an unknown key.
 
-    projection: { pick: ["results[].id", "results[].state"] }   // object-root body
+    projection: { pick: ["results[].id", "results[].workItem.state"] } // work_items:get object-root envelope
     projection: { pick: ["[].id", "[].title"] }                 // ARRAY-root body (a bare list)
     projection: { pipe: [{ op: "grep", pattern: "ERROR" }, { op: "tail", n: 20 }] }
 
