@@ -28,7 +28,7 @@ export interface FleetLaneHealth {
 type Possible = { yes: boolean; no: boolean };
 const SUBJECT: ClaimSpecSubject = {
   id: null, title: null, kind: null, priority: null, tags: [], paths: [], plan: null,
-  planItem: [], age: null, riskTier: null, redundancy: null, estCost: null,
+  planItem: [], fleet: null, age: null, riskTier: null, redundancy: null, estCost: null,
   assignee: null, severity: null, goal: null,
 };
 
