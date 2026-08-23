@@ -40,6 +40,7 @@
  *     the walk below exists.
  */
 import { htmlToText } from '../../html-to-text';
+import { assertSocialEgressAllowed } from './social-egress';
 import type {
   SocialAdapter,
   SocialNormalizedEvent,
@@ -205,15 +206,31 @@ export interface MastodonReadClient {
  * different scheme. Returning null when it is absent is the honest answer — a
  * guessed streaming URL fails at connect time, on a different host, which is a
  * much worse place to discover the mistake than here.
+ *
+ * ⚠ THE VALUE IS SUPPLIED BY THE INSTANCE, SO IT IS NOT TRUSTED (P-024). This is
+ * the one place in the social lane where the host we are about to open an
+ * authenticated connection to is named by the remote side. An instance that
+ * advertised `wss://collector.example/` would otherwise be obeyed, and the user's
+ * token would go with us. `instanceHost` is therefore REQUIRED rather than
+ * optional: an optional guard is one every future call site is free to omit, and
+ * this function has exactly one correct usage.
+ *
+ * An out-of-budget host THROWS rather than returning null, because null already
+ * means "the instance advertised nothing" — collapsing "silent about it" and
+ * "pointed us somewhere else" into one return value would hide the second behind
+ * the first, which is the failure this whole check exists to make impossible.
  */
-export function mastodonStreamingUrl(instance: unknown): string | null {
+export function mastodonStreamingUrl(instance: unknown, instanceHost: string): string | null {
   if (!instance || typeof instance !== 'object') return null;
   const configuration = (instance as { configuration?: unknown }).configuration;
   if (!configuration || typeof configuration !== 'object') return null;
   const urls = (configuration as { urls?: unknown }).urls;
   if (!urls || typeof urls !== 'object') return null;
   const streaming = (urls as { streaming?: unknown }).streaming;
-  return typeof streaming === 'string' && streaming.trim() ? streaming.trim() : null;
+  if (typeof streaming !== 'string' || !streaming.trim()) return null;
+  const advertised = streaming.trim();
+  assertSocialEgressAllowed('mastodon', advertised, { connectionHost: instanceHost });
+  return advertised;
 }
 
 /* -------------------------------------------------------------------------- */

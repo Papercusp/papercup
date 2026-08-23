@@ -280,6 +280,59 @@ export interface SocialRateBudget {
   notes?: string;
 }
 
+/**
+ * How a platform's API host is determined (P-024).
+ *
+ * - `fixed`           — the vendor serves one set of hosts for every account, so
+ *                       the allowlist is a closed set this file can name.
+ * - `per-connection`  — the host comes from the CONNECTION, not the platform
+ *                       (a Mastodon instance, a Bluesky PDS). There is no
+ *                       platform-wide host to allowlist, so the budget is
+ *                       "the connection's own host, and hosts under it".
+ *
+ * The distinction is load-bearing rather than descriptive: a fixed-host platform
+ * whose declared list is empty must DENY everything, while a per-connection one
+ * with an empty list is fully operational. Collapsing them into one shape would
+ * make "nothing declared" mean two opposite things.
+ */
+export type SocialEgressHostPolicy = 'fixed' | 'per-connection';
+
+/**
+ * The hosts one platform's adapters may reach — the P-024 allowlist.
+ *
+ * WHY A CALL TARGET AND A PERMALINK ARE SEPARATE FIELDS. Every adapter in this
+ * directory emits payload URLs (`https://bsky.app/profile/...`,
+ * `https://www.reddit.com<permalink>`) that are DISPLAY strings we never fetch,
+ * and reaches API hosts (`graph.facebook.com`) it does fetch. A guard that
+ * cannot tell the two apart is useless in both directions: pooled together, a
+ * permalink host silently widens the call budget, and the containment gate must
+ * either flag every display URL as egress or stop flagging anything. Declaring
+ * them separately means the runtime allowlist consults ONLY `apiHosts`, while
+ * the static gate can still account for every host literal in the source.
+ *
+ * Hosts are bare lowercase hostnames — no scheme, no port, no path, no wildcard.
+ * A wildcard is deliberately unrepresentable: `*.facebook.com` would admit any
+ * host an attacker can get provisioned under it, and every real entry here is a
+ * single documented host.
+ */
+export interface SocialEgressSpec {
+  hostPolicy: SocialEgressHostPolicy;
+  /**
+   * Hosts the adapter may CALL. Exhaustive for `fixed`; for `per-connection` it
+   * lists only the platform-wide hosts that exist IN ADDITION to the
+   * connection's own host (usually none).
+   */
+  apiHosts: string[];
+  /**
+   * Hosts that appear only inside emitted payload URLs and are never fetched.
+   * Present so the containment gate can attribute a display-URL literal without
+   * granting it call permission.
+   */
+  permalinkHosts?: string[];
+  /** Where these hosts came from, or why the set is empty. */
+  notes?: string;
+}
+
 export interface SocialPlatformRow {
   id: SocialPlatformId;
   label: string;
@@ -333,6 +386,13 @@ export interface SocialPlatformRow {
     notes?: string;
   };
   limits: SocialRateBudget;
+  /**
+   * The hosts this platform's adapters may reach (P-024). REQUIRED, so a new
+   * platform cannot be added without stating its egress budget — an omitted
+   * field would default to "unconstrained" at exactly the moment nobody has
+   * thought about it.
+   */
+  egress: SocialEgressSpec;
   /** Automation/ToS restrictions that constrain what we may build, not just what the API allows. */
   policyNotes?: string;
   /**
@@ -347,6 +407,16 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   bluesky: {
     id: 'bluesky',
     label: 'Bluesky',
+    egress: {
+      // The row's own write note: "POST /xrpc/com.atproto.repo.createRecord
+      // against the account PDS". The PDS is a property of the ACCOUNT, so
+      // there is no platform-wide API host to allowlist here.
+      hostPolicy: 'per-connection',
+      apiHosts: [],
+      permalinkHosts: ['bsky.app'],
+      notes:
+        'XRPC is served by the account PDS, discovered per connection. bsky.app appears only in the emitted post URL (bluesky-adapter, bluesky-write-adapter) and is never called.',
+    },
     wave: 'A',
     verifiedAt: '2026-08-23',
     sources: [
@@ -393,6 +463,14 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   mastodon: {
     id: 'mastodon',
     label: 'Mastodon',
+    egress: {
+      // Federated: the instance IS the host, and the adapter refuses to
+      // construct without one (`mastodon_adapter_requires_instance_host`).
+      hostPolicy: 'per-connection',
+      apiHosts: [],
+      notes:
+        'The API host is the connection\'s instance. The streaming endpoint may be a DIFFERENT host advertised by the instance itself (configuration.urls.streaming) — provider-supplied, therefore checked against the connection host rather than trusted (P-024).',
+    },
     wave: 'A',
     verifiedAt: '2026-08-23',
     sources: [
@@ -426,6 +504,15 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   reddit: {
     id: 'reddit',
     label: 'Reddit',
+    egress: {
+      hostPolicy: 'fixed',
+      // Stated verbatim by this row's own auth notes: "API calls go to
+      // oauth.reddit.com, not www.reddit.com".
+      apiHosts: ['oauth.reddit.com'],
+      permalinkHosts: ['www.reddit.com'],
+      notes:
+        'www.reddit.com is a PERMALINK host only — the adapters prefix it onto thing.permalink. Calling it with a bearer token is the documented mistake this split exists to prevent.',
+    },
     wave: 'A',
     verifiedAt: '2026-08-23',
     sources: [
@@ -487,6 +574,16 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   youtube: {
     id: 'youtube',
     label: 'YouTube',
+    egress: {
+      hostPolicy: 'fixed',
+      // The Data API is served from www.googleapis.com — the host in this row's
+      // own scopes and in the write adapter's verified endpoint
+      // (`POST https://www.googleapis.com/youtube/v3/comments`).
+      apiHosts: ['www.googleapis.com'],
+      permalinkHosts: ['www.youtube.com'],
+      notes:
+        'www.youtube.com is the watch-URL host emitted in payloads; the API itself is never served from it. Video uploads use the same googleapis.com host under a different path, not a separate upload host.',
+    },
     wave: 'B',
     verifiedAt: '2026-08-23',
     sources: [
@@ -572,6 +669,15 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   'facebook-pages': {
     id: 'facebook-pages',
     label: 'Facebook Pages',
+    egress: {
+      hostPolicy: 'fixed',
+      // FACEBOOK_GRAPH_ORIGIN in facebook-common.ts — the single origin every
+      // Pages call in this directory is built from.
+      apiHosts: ['graph.facebook.com'],
+      permalinkHosts: ['www.facebook.com'],
+      notes:
+        'www.facebook.com is the permalink host ("https://www.facebook.com/ plus the page_post_id"), never an API target.',
+    },
     wave: 'B',
     verifiedAt: '2026-08-23',
     sources: [
@@ -670,6 +776,15 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   instagram: {
     id: 'instagram',
     label: 'Instagram',
+    egress: {
+      hostPolicy: 'fixed',
+      // INSTAGRAM_GRAPH_ORIGIN in instagram-common.ts. Instagram shares
+      // Facebook's Graph host — that is a fact about the vendor, not a copied
+      // constant, so both rows declare it independently.
+      apiHosts: ['graph.facebook.com'],
+      notes:
+        'Instagram Platform is served by the Facebook Graph host. Declared on this row in its own right: if Instagram ever moves to graph.instagram.com, only this row changes.',
+    },
     wave: 'B',
     verifiedAt: '2026-08-23',
     sources: [
@@ -785,6 +900,14 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   threads: {
     id: 'threads',
     label: 'Threads',
+    egress: {
+      hostPolicy: 'fixed',
+      // THREADS_GRAPH_ORIGIN in threads-common.ts — "A THIRD HOST, not a third
+      // product on a shared host", as this row's own note records.
+      apiHosts: ['graph.threads.net'],
+      notes:
+        'Threads is served from its own Graph host, NOT graph.facebook.com. Allowlisting the Meta host here would silently re-admit the confusion the separate origin constant exists to prevent.',
+    },
     wave: 'B',
     verifiedAt: '2026-08-23',
     sources: [
@@ -916,6 +1039,14 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   linkedin: {
     id: 'linkedin',
     label: 'LinkedIn',
+    egress: {
+      // Unverified row: an empty FIXED list denies everything, which is the
+      // correct posture for a platform whose facts nobody has read yet (D-005).
+      // P-021 fills this in as part of its just-in-time verification.
+      hostPolicy: 'fixed',
+      apiHosts: [],
+      notes: 'Not yet verified — P-021 declares the hosts when it verifies this row. Empty means DENY, not "unconstrained".',
+    },
     wave: 'C',
     verifiedAt: null,
     sources: [],
@@ -929,6 +1060,11 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   tiktok: {
     id: 'tiktok',
     label: 'TikTok',
+    egress: {
+      hostPolicy: 'fixed',
+      apiHosts: [],
+      notes: 'Not yet verified — P-022 declares the hosts when it verifies this row. Empty means DENY, not "unconstrained".',
+    },
     wave: 'C',
     verifiedAt: null,
     sources: [],
@@ -942,6 +1078,11 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
   'x-twitter': {
     id: 'x-twitter',
     label: 'X (Twitter)',
+    egress: {
+      hostPolicy: 'fixed',
+      apiHosts: [],
+      notes: 'Not yet verified — P-020 is parked on an owner cost decision (D-002). Empty means DENY, not "unconstrained".',
+    },
     wave: 'C',
     verifiedAt: null,
     sources: [],

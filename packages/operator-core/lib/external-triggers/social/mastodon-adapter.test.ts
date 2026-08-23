@@ -382,20 +382,59 @@ describe('rate limiting — the reset TIMESTAMP, because that is what is publish
 });
 
 describe('instance discovery — the streaming host is not derivable from the API host', () => {
+  const HOST = 'mastodon.test';
+  const advertising = (streaming: unknown) => ({ configuration: { urls: { streaming } } });
+
   it('reads configuration.urls.streaming', () => {
-    expect(mastodonStreamingUrl({ configuration: { urls: { streaming: 'wss://stream.mastodon.test' } } })).toBe(
+    expect(mastodonStreamingUrl(advertising('wss://stream.mastodon.test'), HOST)).toBe(
       'wss://stream.mastodon.test',
+    );
+  });
+
+  it('accepts a streaming host that IS the instance host', () => {
+    expect(mastodonStreamingUrl(advertising('wss://mastodon.test/api/v1/streaming'), HOST)).toBe(
+      'wss://mastodon.test/api/v1/streaming',
     );
   });
 
   it('returns null rather than guessing when it is absent or malformed', () => {
     // A guessed streaming URL fails at connect time against a different host —
     // a far worse place to discover the mistake than here.
-    expect(mastodonStreamingUrl({ configuration: { urls: {} } })).toBeNull();
-    expect(mastodonStreamingUrl({ configuration: {} })).toBeNull();
-    expect(mastodonStreamingUrl({})).toBeNull();
-    expect(mastodonStreamingUrl(null)).toBeNull();
-    expect(mastodonStreamingUrl({ configuration: { urls: { streaming: '   ' } } })).toBeNull();
+    expect(mastodonStreamingUrl({ configuration: { urls: {} } }, HOST)).toBeNull();
+    expect(mastodonStreamingUrl({ configuration: {} }, HOST)).toBeNull();
+    expect(mastodonStreamingUrl({}, HOST)).toBeNull();
+    expect(mastodonStreamingUrl(null, HOST)).toBeNull();
+    expect(mastodonStreamingUrl(advertising('   '), HOST)).toBeNull();
+  });
+
+  // ── P-024: the value is supplied by the remote instance ─────────────────────
+  // These four are the whole reason the parameter is required. Each is a legal
+  // string an instance is free to put in its own configuration, and each would
+  // otherwise be obeyed with the user's token attached.
+  it('REFUSES a streaming host outside the instance, and says so instead of returning null', () => {
+    expect(() => mastodonStreamingUrl(advertising('wss://collector.example/'), HOST)).toThrow(
+      /social_egress_denied:mastodon:host-not-declared/,
+    );
+  });
+
+  it('REFUSES a sibling host that merely shares a suffix', () => {
+    // 'evil-mastodon.test' ends with 'mastodon.test' as a STRING but is a
+    // different domain; only a label boundary makes it a subdomain.
+    expect(() => mastodonStreamingUrl(advertising('wss://evil-mastodon.test/'), HOST)).toThrow(
+      /host-not-declared/,
+    );
+  });
+
+  it('REFUSES a plaintext downgrade of a legitimate host', () => {
+    expect(() => mastodonStreamingUrl(advertising('ws://stream.mastodon.test'), HOST)).toThrow(
+      /forbidden-scheme/,
+    );
+  });
+
+  it('REFUSES userinfo smuggling the instance host into the credential slot', () => {
+    expect(() => mastodonStreamingUrl(advertising('wss://mastodon.test@evil.example/'), HOST)).toThrow(
+      /embedded-credentials/,
+    );
   });
 });
 
