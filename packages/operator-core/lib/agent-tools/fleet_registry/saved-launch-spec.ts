@@ -103,7 +103,11 @@ export type SavedFleetLaunchSpecResolution =
   | {
       ok: false;
       found: boolean;
-      error: 'saved_launch_spec_read_failed' | 'saved_launch_spec_missing' | 'saved_launch_spec_invalid' | 'saved_launch_spec_conflict';
+      error:
+        | 'saved_launch_spec_read_failed'
+        | 'saved_launch_spec_missing'
+        | 'saved_launch_spec_invalid'
+        | 'saved_launch_spec_conflict';
       message: string;
       conflicts: SavedFleetLaunchSpecDelta[];
       provenance: SavedFleetLaunchSpecProvenance;
@@ -126,11 +130,7 @@ const SAVED_FIELD_ORDER: readonly SavedFleetLaunchField[] = [
   'extraArgs',
 ];
 
-function provenanceFor(
-  workspaceId: string,
-  fleetSlug: string,
-  target: number | null,
-): SavedFleetLaunchSpecProvenance {
+function provenanceFor(workspaceId: string, fleetSlug: string, target: number | null): SavedFleetLaunchSpecProvenance {
   return { source: SAVED_FLEET_LAUNCH_SPEC_SOURCE, workspaceId, fleetSlug, target };
 }
 
@@ -239,7 +239,13 @@ function reconstructionConflicts(
   const conflicts: SavedFleetLaunchSpecDelta[] = [];
   if (requested.members?.length) {
     conflicts.push(
-      diagnostic('members', 'fleet-wide persisted profile', `${requested.members.length} member override(s)`, provenance, reusePath),
+      diagnostic(
+        'members',
+        'fleet-wide persisted profile',
+        `${requested.members.length} member override(s)`,
+        provenance,
+        reusePath,
+      ),
     );
   }
   if (requested.perMemberLaunchContext?.length) {
@@ -255,7 +261,13 @@ function reconstructionConflicts(
   }
   if (requested.claimKinds?.length) {
     conflicts.push(
-      diagnostic('claimKinds', 'fleet claim spec (preserved separately)', [...requested.claimKinds], provenance, reusePath),
+      diagnostic(
+        'claimKinds',
+        'fleet claim spec (preserved separately)',
+        [...requested.claimKinds],
+        provenance,
+        reusePath,
+      ),
     );
   }
   for (const field of ['addDir', 'allowSubagents', 'brain', 'feature', 'profile', 'display'] as const) {
