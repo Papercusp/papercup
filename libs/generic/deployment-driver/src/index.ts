@@ -192,6 +192,52 @@ export {
   _resetWorkspaceHostProvidersForTests,
 } from './workspace-host-registry';
 export type {
+  WorkspaceHostBuildParameterValue,
+  WorkspaceHostBuildMaterial,
+  WorkspaceHostBuildParameter,
+  WorkspaceHostBuildTarget,
+  WorkspaceHostBuildManifestInput,
+  WorkspaceHostBuildManifestPayload,
+  WorkspaceHostBuildManifest,
+  WorkspaceHostBuildManifestVerification,
+} from "./workspace-host-build-manifest";
+export {
+  WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+  WORKSPACE_HOST_BUILD_MANIFEST_SCHEMA_VERSION,
+  WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WorkspaceHostBuildManifestError,
+  normalizeWorkspaceHostBuildManifestInput,
+  canonicalWorkspaceHostBuildManifestPayload,
+  buildWorkspaceHostBuildManifest,
+  verifyWorkspaceHostBuildManifest,
+} from "./workspace-host-build-manifest";
+export type {
+  WorkspaceHostImageAction,
+  WorkspaceHostImageLifecycleState,
+  WorkspaceHostImageCompatibilityRule,
+  WorkspaceHostImageLifecycleMetadata,
+  WorkspaceHostImageArtifact,
+  WorkspaceHostImageCompatibilityIssueCode,
+  WorkspaceHostImageCompatibilityIssue,
+  WorkspaceHostImageCompatibilityRequest,
+  WorkspaceHostImageCompatibilityResult,
+  WorkspaceHostCleanRoomInstallSpec,
+  WorkspaceHostCleanRoomInstallFixture,
+  WorkspaceHostCleanRoomExecutor,
+  WorkspaceHostCleanRoomAcceptanceCheck,
+  WorkspaceHostCleanRoomAcceptanceReport,
+} from "./workspace-host-image";
+export {
+  WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_IMAGE_ACTIONS,
+  WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES,
+  validateWorkspaceHostImageArtifact,
+  evaluateWorkspaceHostImageCompatibility,
+  buildWorkspaceHostCleanRoomInstallFixture,
+  runWorkspaceHostCleanRoomAcceptance,
+  workspaceHostCleanRoomFixtureAttestation,
+} from "./workspace-host-image";
+export type {
   WorkspaceHostBootstrapPhase,
   WorkspaceHostBootstrapCheckName,
   WorkspaceHostBootstrapRelease,

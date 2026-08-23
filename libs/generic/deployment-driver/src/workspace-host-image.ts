@@ -37,10 +37,13 @@ export const WORKSPACE_HOST_IMAGE_ACTIONS = [
 export type WorkspaceHostImageAction =
   (typeof WORKSPACE_HOST_IMAGE_ACTIONS)[number];
 
+export const WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES = [
+  "active",
+  "deprecated",
+  "withdrawn",
+] as const;
 export type WorkspaceHostImageLifecycleState =
-  | "active"
-  | "deprecated"
-  | "withdrawn";
+  (typeof WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES)[number];
 
 /** One exact cell in the provider × architecture × OS acceptance matrix. */
 export interface WorkspaceHostImageCompatibilityRule {
@@ -227,6 +230,20 @@ export function validateWorkspaceHostImageArtifact(
   if (!SHA256.test(artifact.release.signingKeySha256)) {
     errors.push("release.signingKeySha256 must be a lowercase SHA-256 digest");
   }
+  requireText(
+    artifact.release.signingPublicKey,
+    "release.signingPublicKey",
+    errors,
+  );
+  if (
+    createHash("sha256")
+      .update(artifact.release.signingPublicKey, "utf8")
+      .digest("hex") !== artifact.release.signingKeySha256
+  ) {
+    errors.push(
+      "release.signingKeySha256 must equal the SHA-256 of signingPublicKey",
+    );
+  }
 
   const publishedAt = timestamp(
     artifact.lifecycle.publishedAt,
@@ -247,6 +264,11 @@ export function validateWorkspaceHostImageArtifact(
         errors,
       )
     : undefined;
+  if (
+    !WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES.includes(artifact.lifecycle.state)
+  ) {
+    errors.push(`unsupported lifecycle.state '${artifact.lifecycle.state}'`);
+  }
   if (artifact.lifecycle.state === "active" && deprecatedAt !== undefined) {
     errors.push("active artifacts must not carry lifecycle.deprecatedAt");
   }
@@ -467,16 +489,28 @@ export function evaluateWorkspaceHostImageCompatibility(
         code: "rollback-source-missing",
         message: "Rollback requires the currently installed artifact metadata",
       });
-    } else if (
-      !sameImage(
-        request.currentArtifact.lifecycle.rollbackTarget,
-        artifact.image,
-      )
-    ) {
-      issues.push({
-        code: "rollback-target-mismatch",
-        message: `Current image ${request.currentArtifact.image.id}@${request.currentArtifact.image.version} does not name ${artifact.image.id}@${artifact.image.version} as its rollback target`,
-      });
+    } else {
+      const invalidCurrentArtifact = validateWorkspaceHostImageArtifact(
+        request.currentArtifact,
+      );
+      if (invalidCurrentArtifact.length > 0) {
+        issues.push(
+          ...invalidCurrentArtifact.map((message) => ({
+            code: "invalid-artifact" as const,
+            message: `currentArtifact: ${message}`,
+          })),
+        );
+      } else if (
+        !sameImage(
+          request.currentArtifact.lifecycle.rollbackTarget,
+          artifact.image,
+        )
+      ) {
+        issues.push({
+          code: "rollback-target-mismatch",
+          message: `Current image ${request.currentArtifact.image.id}@${request.currentArtifact.image.version} does not name ${artifact.image.id}@${artifact.image.version} as its rollback target`,
+        });
+      }
     }
   }
   return { compatible: issues.length === 0, matchedRule, issues };
@@ -530,7 +564,11 @@ export function buildWorkspaceHostCleanRoomInstallFixture(
         .join("; ")}`,
     );
   }
-  requireText(spec.fixtureId, "fixtureId", []);
+  const fixtureErrors: string[] = [];
+  requireText(spec.fixtureId, "fixtureId", fixtureErrors);
+  if (fixtureErrors.length > 0) {
+    throw new Error(fixtureErrors.join("; "));
+  }
   const bootstrapInput = fixtureBootstrapInput(artifact, spec);
   const bootstrapScript = buildWorkspaceHostBootstrap(bootstrapInput);
   return {

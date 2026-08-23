@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -23,7 +25,11 @@ import {
 } from "./workspace-host-image";
 
 const RELEASE_DIGEST = "a".repeat(64);
-const KEY_DIGEST = "b".repeat(64);
+const SIGNING_PUBLIC_KEY =
+  "untrusted comment: Papercusp release key\nRWQpublickey";
+const KEY_DIGEST = createHash("sha256")
+  .update(SIGNING_PUBLIC_KEY, "utf8")
+  .digest("hex");
 
 function artifact(
   version = "2026.8.22-1",
@@ -77,8 +83,7 @@ function artifact(
       bundleUrl: `https://releases.papercusp.com/server/${version}.tgz`,
       bundleSha256: RELEASE_DIGEST,
       signatureUrl: `https://releases.papercusp.com/server/${version}.tgz.minisig`,
-      signingPublicKey:
-        "untrusted comment: Papercusp release key\nRWQpublickey",
+      signingPublicKey: SIGNING_PUBLIC_KEY,
       signingKeySha256: KEY_DIGEST,
     },
     lifecycle: { state: "active", publishedAt: "2026-08-22T00:00:00Z" },
@@ -156,6 +161,12 @@ describe("workspace-host image compatibility", () => {
         imageVersion: candidate.image.version,
       },
     });
+    expect(() =>
+      buildWorkspaceHostCleanRoomInstallFixture(
+        candidate,
+        spec({ fixtureId: " " }),
+      ),
+    ).toThrow("fixtureId must be a non-empty string");
   });
 
   it("runs the deterministic fixture through the existing exact bootstrap attestation gate", async () => {
@@ -238,10 +249,27 @@ describe("workspace-host image compatibility", () => {
       observedAt: "2026-08-23T00:00:00Z",
       currentArtifact: current,
     });
+    const untrustedRollback = evaluateWorkspaceHostImageCompatibility(
+      previous,
+      {
+        action: "rollback",
+        provider: "gcp",
+        architecture: "x86_64",
+        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+        observedAt: "2026-08-23T00:00:00Z",
+        currentArtifact: {
+          ...current,
+          release: { ...current.release, bundleSha256: "f".repeat(64) },
+        },
+      },
+    );
     expect(install.issues.map((issue) => issue.code)).toContain(
       "deprecated-artifact",
     );
     expect(rollback).toMatchObject({ compatible: true, issues: [] });
+    expect(untrustedRollback.issues.map((issue) => issue.code)).toContain(
+      "invalid-artifact",
+    );
   });
 
   it("rejects tampered manifest identity and release bytes as one invalid artifact", () => {
@@ -269,6 +297,17 @@ describe("workspace-host image compatibility", () => {
     ).toBe(true);
     expect(result.issues.map((issue) => issue.message).join("\n")).toMatch(
       /manifestIdentity|bundleSha256/,
+    );
+  });
+
+  it("rejects a signing-key digest that does not pin the supplied public key", () => {
+    const candidate = artifact();
+    const errors = validateWorkspaceHostImageArtifact({
+      ...candidate,
+      release: { ...candidate.release, signingKeySha256: "b".repeat(64) },
+    });
+    expect(errors).toContain(
+      "release.signingKeySha256 must equal the SHA-256 of signingPublicKey",
     );
   });
 
