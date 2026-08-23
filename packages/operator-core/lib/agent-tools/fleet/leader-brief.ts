@@ -2480,6 +2480,9 @@ export async function buildLeaderBrief(
   // fail soft to `[]` inside fetchFleetAdmissionBlocks.
   const admissionBlocked: FleetAdmissionBlock[] = await fetchFleetAdmissionBlocks(fleet, {
     harness: args.harness,
+    liveMemberIds: grouped
+      .filter((member) => member.alive !== false && member.verdict !== 'dead')
+      .map((member) => member.agentId),
   });
   const admissionDependencyEscapes = admissionBlocked.filter((block) => block.dependencyEscape != null);
   // EI-18693470222331709: items released mid-flight (progress recorded, now

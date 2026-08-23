@@ -78,6 +78,12 @@ export interface FleetAdmissionBlockRow {
   stamp: unknown;
 }
 
+/** The authored fleet claim-spec head used to validate historical refusals. */
+export interface FleetAdmissionSpecHead {
+  specId: string | null;
+  revision: number | null;
+}
+
 export type FleetAdmissionBlockTerminalResolver = (
   block: FleetAdmissionBlock,
   harness: string | null,
@@ -94,6 +100,17 @@ export interface FetchFleetAdmissionBlocksOptions {
   isTargetTerminal?: FleetAdmissionBlockTerminalResolver;
   /** Test seam; production reads the fleet sentinel's authored claim-spec harness. */
   resolveFleetHarness?: (fleetSlug: string, workspaceId: string) => Promise<string | null>;
+  /**
+   * Current fleet claim-spec head. A null/partial head is treated as unknown and
+   * therefore fails open: an unreadable spec must not hide a live refusal.
+   */
+  resolveFleetSpec?: (fleetSlug: string, workspaceId: string) => Promise<FleetAdmissionSpecHead | null>;
+  /**
+   * Authoritative post-liveness member ids from fleet:leader-brief. When supplied,
+   * refusals from dead/removed members are historical noise and are dropped. An
+   * empty set is meaningful (the fleet has no live members), unlike an omitted set.
+   */
+  liveMemberIds?: readonly string[] | ReadonlySet<string>;
 }
 
 const clipReason = (value: unknown, max = 240): string | null => {
@@ -263,10 +280,53 @@ export async function filterCurrentAdmissionBlocks(
   return filtered.filter((block): block is FleetAdmissionBlock => block !== null);
 }
 
+/**
+ * Keep only refusals that still belong to the current fleet lane.
+ *
+ * Both filters fail open when their authoritative input is absent or incomplete:
+ * an unavailable claim-spec read or a legacy stamp without spec metadata must not
+ * manufacture a green dashboard by hiding evidence the leader may still need.
+ */
+export function filterCurrentFleetAdmissionBlocks(
+  blocks: readonly FleetAdmissionBlock[],
+  opts: {
+    currentSpec?: FleetAdmissionSpecHead | null;
+    liveMemberIds?: readonly string[] | ReadonlySet<string>;
+  } = {},
+): FleetAdmissionBlock[] {
+  const liveMemberIds = opts.liveMemberIds == null ? null : new Set(opts.liveMemberIds);
+  const currentSpec = opts.currentSpec ?? null;
+  const canCompareSpec =
+    currentSpec?.specId != null && currentSpec.specId.length > 0 && currentSpec.revision != null;
+
+  return blocks.filter((block) => {
+    if (liveMemberIds && !liveMemberIds.has(block.member ?? '')) return false;
+    // Older refusal stamps may not carry one or both spec-head fields. Keep those
+    // rows rather than guessing that a missing field means "not current".
+    if (
+      canCompareSpec &&
+      block.specId != null &&
+      block.specRevision != null &&
+      (block.specId !== currentSpec!.specId || block.specRevision !== currentSpec!.revision)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
 async function claimSpecHarnessForFleet(fleetSlug: string, workspaceId: string): Promise<string | null> {
   const { fleetSpecBeeKey, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
   const record = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
   return record.harnessSlug?.trim() || null;
+}
+
+async function claimSpecHeadForFleet(fleetSlug: string, workspaceId: string): Promise<FleetAdmissionSpecHead | null> {
+  const { fleetSpecBeeKey, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+  const record = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
+  const specId = asId(record.spec?.specId);
+  const revision = typeof record.revision === 'number' && Number.isFinite(record.revision) ? record.revision : null;
+  return { specId, revision };
 }
 
 /**
@@ -317,10 +377,16 @@ export async function fetchFleetAdmissionBlocks(
     }
     const deduped = dedupeAdmissionBlocks(parsed, opts.rowCap ?? FLEET_ADMISSION_BLOCK_ROW_CAP);
     if (deduped.length === 0) return [];
+    const currentSpec = await (opts.resolveFleetSpec ?? claimSpecHeadForFleet)(fleetSlug, ws).catch(() => null);
+    const currentFleetBlocks = filterCurrentFleetAdmissionBlocks(deduped, {
+      currentSpec,
+      liveMemberIds: opts.liveMemberIds,
+    });
+    if (currentFleetBlocks.length === 0) return [];
     const harness =
       opts.harness?.trim() ||
       (await (opts.resolveFleetHarness ?? claimSpecHarnessForFleet)(fleetSlug, ws).catch(() => null));
-    return filterCurrentAdmissionBlocks(deduped, {
+    return filterCurrentAdmissionBlocks(currentFleetBlocks, {
       harness,
       isTargetTerminal: opts.isTargetTerminal,
     });

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FLEET_ADMISSION_BLOCK_ROW_CAP,
   dedupeAdmissionBlocks,
+  filterCurrentFleetAdmissionBlocks,
   filterCurrentAdmissionBlocks,
   parseAdmissionBlockStamp,
   type FleetAdmissionBlock,
@@ -225,5 +226,42 @@ describe('filterCurrentAdmissionBlocks', () => {
       throw new Error('ledger unavailable');
     };
     await expect(filterCurrentAdmissionBlocks([historical], { isTargetTerminal })).resolves.toEqual([historical]);
+  });
+});
+
+describe('filterCurrentFleetAdmissionBlocks', () => {
+  it('drops superseded revisions and members absent from the live roster', () => {
+    const current = block({ itemId: 'WI-current', member: 'su-live', specRevision: 7 });
+    const superseded = block({ itemId: 'WI-old-revision', member: 'su-live', specRevision: 6 });
+    const deadMember = block({ itemId: 'WI-dead-member', member: 'su-dead', specRevision: 7 });
+
+    expect(
+      filterCurrentFleetAdmissionBlocks([current, superseded, deadMember], {
+        currentSpec: { specId: 'gui-chat-controls', revision: 7 },
+        liveMemberIds: ['su-live'],
+      }),
+    ).toEqual([current]);
+  });
+
+  it('keeps legacy or unresolved rows when the authoritative head is incomplete', () => {
+    const legacy = block({ specId: null, specRevision: null });
+    const historical = block({ specRevision: 2 });
+
+    expect(filterCurrentFleetAdmissionBlocks([legacy, historical], { currentSpec: null })).toEqual([
+      legacy,
+      historical,
+    ]);
+    expect(filterCurrentFleetAdmissionBlocks([legacy], { currentSpec: { specId: 'lane', revision: null } })).toEqual([
+      legacy,
+    ]);
+  });
+
+  it('treats an explicitly empty live roster as authoritative', () => {
+    expect(
+      filterCurrentFleetAdmissionBlocks([block()], {
+        currentSpec: { specId: 'gui-chat-controls', revision: 3 },
+        liveMemberIds: new Set(),
+      }),
+    ).toEqual([]);
   });
 });
