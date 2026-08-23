@@ -7,23 +7,36 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const EMPTY_SYNC_DATA: unknown[] = [];
 const EMPTY_CARDS: unknown[] = [];
 const SYNC = vi.hoisted(() => ({
   turnPage: null as null | { turns: unknown[]; hasMoreEarlier: boolean },
+  revision: 0,
+  listeners: new Set<() => void>(),
 }));
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: (input: { queryName?: string; enabled?: boolean }) => ({
-    data:
-      input.queryName === "operatorTurns.page" &&
-      input.enabled !== false &&
-      SYNC.turnPage
-        ? [SYNC.turnPage]
-        : EMPTY_SYNC_DATA,
-  }),
+  useSyncQuery: (input: { queryName?: string; enabled?: boolean }) => {
+    useSyncExternalStore(
+      (listener) => {
+        SYNC.listeners.add(listener);
+        return () => SYNC.listeners.delete(listener);
+      },
+      () => SYNC.revision,
+      () => SYNC.revision,
+    );
+    return {
+      data:
+        input.queryName === "operatorTurns.page" &&
+        input.enabled !== false &&
+        SYNC.turnPage
+          ? [SYNC.turnPage]
+          : EMPTY_SYNC_DATA,
+    };
+  },
 }));
 
 vi.mock("@/lib/use-workspace-id", () => ({
@@ -114,6 +127,11 @@ function AnswerChoiceProbe() {
       <div data-testid="choice-messages">
         {conversation.messages.map((message) => message.content).join("|")}
       </div>
+      <div data-testid="choice-turns">
+        {conversation.messages
+          .map((message) => `${message.id ?? ""}:${message.seq ?? ""}`)
+          .join("|")}
+      </div>
       <button
         type="button"
         onClick={() =>
@@ -130,6 +148,12 @@ function AnswerChoiceProbe() {
   );
 }
 
+function publishTurnPage(page: { turns: unknown[]; hasMoreEarlier: boolean }) {
+  SYNC.turnPage = page;
+  SYNC.revision += 1;
+  for (const listener of [...SYNC.listeners]) listener();
+}
+
 describe("OperatorConversationProvider streamed say projection", () => {
   afterEach(() => {
     cleanup();
@@ -139,6 +163,8 @@ describe("OperatorConversationProvider streamed say projection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     SYNC.turnPage = null;
+    SYNC.revision = 0;
+    SYNC.listeners.clear();
     sessionStorage.clear();
     sessionStorage.setItem(
       "papercusp.operatorMessages",
@@ -308,9 +334,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
     expect(
       vi
         .mocked(fetch)
-        .mock.calls.some(([input]) =>
-          String(input).includes("/turn-answer"),
-        ),
+        .mock.calls.some(([input]) => String(input).includes("/turn-answer")),
     ).toBe(true);
     expect(
       vi
@@ -361,6 +385,118 @@ describe("OperatorConversationProvider streamed say projection", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("choice-state").textContent).toBe("answered"),
+    );
+  });
+
+  it("reconciles persisted answered tools after SSE invalidation/refetch when the page length is unchanged", async () => {
+    const conversationId = "choice-conversation-invalidation-43";
+    const unansweredTools = [
+      {
+        name: "chat:ask_choice",
+        input: {
+          question: "Keep this change?",
+          options: [{ option_id: "keep", label: "Keep" }],
+        },
+      },
+    ];
+    const answeredTools = [
+      {
+        ...unansweredTools[0],
+        answered: {
+          picks: [{ option_id: "keep", label: "Keep" }],
+          at: 2000,
+        },
+      },
+    ];
+    const pageBeforeAnswer = {
+      turns: [
+        {
+          id: "user-41",
+          conversationId,
+          seq: 41,
+          role: "user",
+          text: "Earlier context",
+          createdAt: 1000,
+        },
+        {
+          id: "assistant-42",
+          conversationId,
+          seq: 42,
+          role: "assistant",
+          text: "",
+          createdAt: 1001,
+          tools: unansweredTools,
+        },
+      ],
+      hasMoreEarlier: false,
+    };
+    const pageAfterAnswer = {
+      // The server's tail still contains two rows: the assistant row was
+      // mutated in place and the appended card-pick row replaced the older
+      // user row at the fixed page boundary.
+      turns: [
+        {
+          id: "assistant-42",
+          conversationId,
+          seq: 42,
+          role: "assistant",
+          text: "",
+          createdAt: 1001,
+          tools: answeredTools,
+        },
+        {
+          id: "user-43",
+          conversationId,
+          seq: 43,
+          role: "user",
+          text: "Keep",
+          createdAt: 2001,
+        },
+      ],
+      hasMoreEarlier: false,
+    };
+    SYNC.turnPage = pageBeforeAnswer;
+    const generationFn: GenerationFn = vi.fn(async () => ({
+      chunks: (async function* () {})(),
+    }));
+
+    render(
+      <OperatorConversationProvider
+        generationFn={generationFn}
+        target={{ kind: "work-item", conversationId }}
+      >
+        <AnswerChoiceProbe />
+      </OperatorConversationProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("choice-state").textContent).toBe("live"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Answer choice" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("choice-state").textContent).toBe("answered"),
+    );
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([input]) => String(input).includes("/turn-answer")),
+    ).toBe(true);
+
+    // Model the server's notifySyncInvalidate('operatorTurns.page', ...)
+    // reaching an active useSyncQuery observer, followed by its refetch.
+    // This deliberately avoids view.rerender: a real SSE invalidation must
+    // wake the query subscription itself.
+    publishTurnPage(pageAfterAnswer);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("choice-state").textContent).toBe("answered"),
+    );
+    expect(screen.getByTestId("choice-messages").textContent).toContain("Keep");
+    await waitFor(() =>
+      expect(screen.getByTestId("choice-turns").textContent).toContain(
+        "user-43:43",
+      ),
     );
   });
 
