@@ -23,6 +23,7 @@ import type { ExemptReason, ProcessScope } from './scope-class';
 import type { ScannedProcess } from './reconcile';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { redactSensitiveText } from '../sensitive-text';
+import { readSuperuserToken } from '../superuser-token';
 
 // The PURE, dependency-free slice of this model lives in the CLIENT-SAFE `./inventory-shared`
 // (WI-8191). A `'use client'` hook value-importing `cpuBusyPercent` from HERE dragged this
@@ -209,17 +210,29 @@ function scopeRank(scope: ProcessScope): number {
   return scope === 'abandoned-window' ? 2 : 3;
 }
 
-function safeDisplayText(text: string, maxChars: number): string {
+function safeDisplayText(
+  text: string,
+  maxChars: number,
+  knownSecrets: readonly string[] = [],
+): string {
   // Redact BEFORE capping so a secret crossing the boundary cannot be partially
   // preserved in a client payload.
-  return redactSensitiveText(text).slice(0, maxChars);
+  return redactSensitiveText(text, knownSecrets).slice(0, maxChars);
+}
+
+function localDiagnosticSecrets(): readonly string[] {
+  const token = readSuperuserToken();
+  return token ? [token] : [];
 }
 
 /** Pure projection for a `/proc` row crossing into a task-manager client. */
-export function projectLiveProcess(p: ScannedProcess): LiveProcessRow {
+export function projectLiveProcess(
+  p: ScannedProcess,
+  knownSecrets: readonly string[] = localDiagnosticSecrets(),
+): LiveProcessRow {
   return {
     pid: p.pid,
-    cmdline: p.cmdline ? safeDisplayText(p.cmdline, 300) : null,
+    cmdline: p.cmdline ? safeDisplayText(p.cmdline, 300, knownSecrets) : null,
     cgroupPath: p.cgroupPath,
     owned: p.owned,
     scope: p.scope,
@@ -310,6 +323,7 @@ export function projectScheduleRows(
     detail?: Record<string, unknown>;
   }[],
 ): ScheduleTaskRow[] {
+  const diagnosticSecrets = localDiagnosticSecrets();
   // Guarantees a UNIQUE key per row, structurally — not by hoping the discriminator
   // list below is complete.
   //
@@ -353,7 +367,7 @@ export function projectScheduleRows(
       armed: r.armed ?? null,
       lastFire: r.lastFire ?? null,
       nextFire: r.nextFire ?? null,
-      lastError: r.lastError ? safeDisplayText(r.lastError, 300) : null,
+      lastError: r.lastError ? safeDisplayText(r.lastError, 300, diagnosticSecrets) : null,
       // Strict `=== true`, so a missing/odd `detail` can never read as federated. The
       // whole point of the flag is that it licenses trusting armed/lastFire.
       federated: r.detail?.federated === true,
@@ -381,7 +395,7 @@ async function runScheduleScan(): Promise<ScheduleScanResult> {
     return {
       schedules: [],
       scheduleSummary: { total: 0, bySource: {}, byTier: {} },
-      scheduleError: safeDisplayText((e as Error).message, 300),
+      scheduleError: safeDisplayText((e as Error).message, 300, localDiagnosticSecrets()),
     };
   }
 }
@@ -398,6 +412,7 @@ function scanLive(now: number): Promise<LiveScanResult> {
 }
 
 async function runLiveScan(): Promise<LiveScanResult> {
+  const diagnosticSecrets = localDiagnosticSecrets();
   // Never let a scan fault take the PANE down — a task manager that goes blank
   // exactly when the box is unhealthy is worse than one that renders the ledger
   // with a "live view unavailable" note.
@@ -410,12 +425,14 @@ async function runLiveScan(): Promise<LiveScanResult> {
       live: {
         ...tick.summary,
         degraded: tick.degraded,
-        degradedReason: tick.degradedReason ? safeDisplayText(tick.degradedReason, 300) : undefined,
+        degradedReason: tick.degradedReason
+          ? safeDisplayText(tick.degradedReason, 300, diagnosticSecrets)
+          : undefined,
         scan: tick.scan,
         unaccounted: tick.result.unaccounted.map((g) => ({
           cgroupPath: g.cgroupPath,
           pids: g.pids,
-          sample: safeDisplayText(g.sampleCmdline, 200),
+          sample: safeDisplayText(g.sampleCmdline, 200, diagnosticSecrets),
         })),
       },
       // Owned first (enrolled lineage), then the genuine escapes, then the
@@ -432,10 +449,13 @@ async function runLiveScan(): Promise<LiveScanResult> {
         .slice()
         .sort((a, b) => scopeRank(a.scope) - scopeRank(b.scope) || a.pid - b.pid)
         .slice(0, MAX_LIVE_PROCESS_ROWS)
-        .map(projectLiveProcess),
+        .map((process) => projectLiveProcess(process, diagnosticSecrets)),
     };
   } catch (e) {
-    return { live: { error: safeDisplayText((e as Error).message, 300) }, liveProcesses: [] };
+    return {
+      live: { error: safeDisplayText((e as Error).message, 300, diagnosticSecrets) },
+      liveProcesses: [],
+    };
   }
 }
 
@@ -475,12 +495,13 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
   // client could not distinguish "not attributed" from "field missing" — and the
   // sync layer's row-delta negotiation diffs on key presence. Normalising here is
   // what makes the wire shape total.
+  const diagnosticSecrets = localDiagnosticSecrets();
   const mappedRows: TaskInventoryRow[] = rows.map((r) => ({
       taskId: r.taskId,
       parentTaskId: r.parentTaskId ?? null,
       rootTaskId: r.rootTaskId,
       class: r.class,
-      title: safeDisplayText(r.title, 300),
+      title: safeDisplayText(r.title, 300, diagnosticSecrets),
       state: r.state,
       launchedBy: r.launchedBy,
       workItemId: r.workItemId ?? null,
@@ -496,8 +517,8 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
       memoryMaxBytes: r.memoryMaxBytes ?? null,
       deadlineAt: r.deadlineAt ?? null,
       exitCode: r.exitCode ?? null,
-      exitReason: r.exitReason ? safeDisplayText(r.exitReason, 500) : null,
-      logPath: r.logPath ? safeDisplayText(r.logPath, 500) : null,
+      exitReason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
+      logPath: r.logPath ? safeDisplayText(r.logPath, 500, diagnosticSecrets) : null,
     }));
 
   // WI-7371: the totals run over their OWN unfiltered fetch, NOT `mappedRows`. `rows`

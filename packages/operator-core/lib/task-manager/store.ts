@@ -18,6 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
+import { readSuperuserToken } from '../superuser-token';
 import {
   TASK_STATES,
   isTerminalState,
@@ -580,11 +581,14 @@ export async function upsertUnaccounted(
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const seen: string[] = [];
+  const localBearer = readSuperuserToken();
+  const diagnosticSecrets = localBearer ? [localBearer] : [];
   for (const g of groups) {
     // Residue samples originate in `/proc/<pid>/cmdline` and are persisted so the
     // reconciler can retain history. Redact before the durable boundary, and before
     // capping, so a credential-shaped assignment cannot survive in the ledger.
-    const title = redactSensitiveText(g.sampleCmdline).slice(0, 200) || '(unknown)';
+    const title =
+      redactSensitiveText(g.sampleCmdline, diagnosticSecrets).slice(0, 200) || '(unknown)';
     await sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,

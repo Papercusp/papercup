@@ -20,6 +20,7 @@ import { defaultForeignSignature } from '../../task-manager/scan';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { TASK_STATES } from '../../task-manager/types';
 import { redactSensitiveText } from '../../sensitive-text';
+import { readSuperuserToken } from '../../superuser-token';
 
 function mb(bytes: number | null | undefined): number | null {
   return bytes == null ? null : Math.round(bytes / 1048576);
@@ -30,9 +31,18 @@ function ageSec(startedAt: string): number {
   return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
 }
 
-function safeDiagnosticText(text: string, maxChars?: number): string {
-  const redacted = redactSensitiveText(text);
+function safeDiagnosticText(
+  text: string,
+  maxChars?: number,
+  knownSecrets: readonly string[] = [],
+): string {
+  const redacted = redactSensitiveText(text, knownSecrets);
   return maxChars === undefined ? redacted : redacted.slice(0, maxChars);
+}
+
+function localDiagnosticSecrets(): readonly string[] {
+  const token = readSuperuserToken();
+  return token ? [token] : [];
 }
 
 const taskResultSchema = z.object({
@@ -146,6 +156,10 @@ export default defineTool({
       };
     }
 
+    // Read once per inventory, not once per row. readSuperuserToken() tracks the
+    // token file's mtime, so a rotation is reflected on the next tool call.
+    const diagnosticSecrets = localDiagnosticSecrets();
+
     const hasTaskSelector =
       args.state !== undefined ||
       (args.states?.length ?? 0) > 0 ||
@@ -182,18 +196,18 @@ export default defineTool({
               cgroupPath: g.cgroupPath,
               scopeUnit: g.scopeUnit,
               pids: g.pids,
-              sample: safeDiagnosticText(g.sampleCmdline, 160),
+              sample: safeDiagnosticText(g.sampleCmdline, 160, diagnosticSecrets),
             })),
             foreignGroups: tick.result.foreign.map((g) => ({
               cgroupPath: g.cgroupPath,
               pids: g.pids,
-              sample: safeDiagnosticText(g.sampleCmdline, 160),
+              sample: safeDiagnosticText(g.sampleCmdline, 160, diagnosticSecrets),
             })),
             verifierGroups: tick.result.verifierScope.map((g) => ({
               cgroupPath: g.cgroupPath,
               scopeUnit: g.scopeUnit,
               pids: g.pids,
-              sample: safeDiagnosticText(g.sampleCmdline, 160),
+              sample: safeDiagnosticText(g.sampleCmdline, 160, diagnosticSecrets),
             })),
           };
     }
@@ -227,7 +241,7 @@ export default defineTool({
               tasks: rows.map((r) => ({
                 taskId: r.taskId,
                 class: r.class,
-                title: safeDiagnosticText(r.title),
+                title: safeDiagnosticText(r.title, undefined, diagnosticSecrets),
                 state: r.state,
                 launchedBy: r.launchedBy,
                 workItemId: r.workItemId,
@@ -244,8 +258,14 @@ export default defineTool({
                 memoryMaxMb: mb(r.memoryMaxBytes),
                 deadlineAt: r.deadlineAt,
                 exitCode: r.exitCode,
-                exitReason: r.exitReason == null ? r.exitReason : safeDiagnosticText(r.exitReason),
-                logPath: r.logPath == null ? r.logPath : safeDiagnosticText(r.logPath),
+                exitReason:
+                  r.exitReason == null
+                    ? r.exitReason
+                    : safeDiagnosticText(r.exitReason, undefined, diagnosticSecrets),
+                logPath:
+                  r.logPath == null
+                    ? r.logPath
+                    : safeDiagnosticText(r.logPath, undefined, diagnosticSecrets),
               })),
             },
             null,

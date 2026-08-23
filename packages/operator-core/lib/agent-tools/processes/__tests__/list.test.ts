@@ -10,6 +10,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { mockResolvedTyped } from '../../../testing/typed-mock';
 import type { TaskRow } from '../../../task-manager/types';
 
+const { LOCAL_SUPERUSER_BEARER } = vi.hoisted(() => ({
+  LOCAL_SUPERUSER_BEARER: '8c91f74d2e6a4bbf90f44a71d142d095',
+}));
+
 vi.mock('../../../task-manager/enabled', () => ({
   isTaskManagerEnabled: vi.fn(async () => true),
 }));
@@ -20,6 +24,10 @@ vi.mock('../../../task-manager/store', () => ({
 
 vi.mock('../../../task-manager/reconcile-tick', () => ({
   reconcileTick: vi.fn(),
+}));
+
+vi.mock('../../../superuser-token', () => ({
+  readSuperuserToken: () => LOCAL_SUPERUSER_BEARER,
 }));
 
 await import('../list');
@@ -247,7 +255,9 @@ describe('processes:list structured output', () => {
             cgroupPath: '/user.slice/papercusp.slice/pc-orphan-redaction.scope',
             scopeUnit: 'pc-orphan-redaction.scope',
             pids: [11],
-            sampleCmdline: 'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
+            sampleCmdline:
+              `python3 - http://127.0.0.1:9071 ${LOCAL_SUPERUSER_BEARER} ` +
+              'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
           },
         ],
         verifierScope: [],
@@ -288,9 +298,12 @@ describe('processes:list structured output', () => {
       live: { unaccountedGroups: Array<{ sample: string }> };
       tasks: Array<{ title: string }>;
     };
-    expect(structured.live.unaccountedGroups[0]!.sample).toBe('AWS_ACCESS_KEY_ID=[redacted]');
+    expect(structured.live.unaccountedGroups[0]!.sample).toBe(
+      'python3 - http://127.0.0.1:9071 [redacted] AWS_ACCESS_KEY_ID=[redacted]',
+    );
     expect(structured.tasks[0]!.title).toBe('DATABASE_URL=[redacted]');
     expect(JSON.stringify(structured)).not.toContain('opaque-');
+    expect(JSON.stringify(structured)).not.toContain(LOCAL_SUPERUSER_BEARER);
   });
 
   it('omits unrelated global groups from a filtered live task read', async () => {

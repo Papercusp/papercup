@@ -28,6 +28,27 @@ export function redactSelfIdentifyingSecrets(text: string): string {
   return text.replace(SELF_IDENTIFYING_SECRET_RE, '[redacted]');
 }
 
+/**
+ * Scrub exact secret values whose format is deliberately opaque.
+ *
+ * Papercusp's local superuser bearer is random base64url-like text with no
+ * self-identifying prefix. Treating every same-length alphanumeric string as a
+ * secret would erase hashes and ids from diagnostics, so callers that know an
+ * opaque value pass it explicitly. Ignore short values to avoid turning a bad
+ * fixture or empty configuration into a broad text replacement.
+ */
+export function redactKnownSecrets(
+  text: string,
+  secrets: readonly (string | null | undefined)[],
+): string {
+  let output = text;
+  for (const secret of secrets) {
+    if (typeof secret !== 'string' || secret.length < 16) continue;
+    output = output.split(secret).join('[redacted]');
+  }
+  return output;
+}
+
 /** Scrub opaque values identified by a credential key/header next to them. */
 export function redactKeyDirectedSecrets(text: string): string {
   return text.replace(KEY_DIRECTED_SECRET_RE, (_match, ...groups: unknown[]) => {
@@ -40,8 +61,14 @@ export function redactKeyDirectedSecrets(text: string): string {
 }
 
 /** Defense-in-depth composition for arbitrary diagnostic text. */
-export function redactSensitiveText(text: string): string {
-  return redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(text));
+export function redactSensitiveText(
+  text: string,
+  knownSecrets: readonly (string | null | undefined)[] = [],
+): string {
+  return redactKnownSecrets(
+    redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(text)),
+    knownSecrets,
+  );
 }
 
 /**

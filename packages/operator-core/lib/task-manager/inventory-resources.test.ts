@@ -16,9 +16,13 @@ const NOW = 1_785_740_000_000;
 
 describe('public process projection', () => {
   it('redacts credential-bearing argv before it reaches a task-manager client', () => {
+    const localBearer = '8c91f74d2e6a4bbf90f44a71d142d095';
     const row: ScannedProcess = {
       pid: 42,
-      cmdline: 'worker.ts --api-key=opaque-value-123 Authorization: Bearer another-opaque-value',
+      cmdline:
+        'worker.ts --api-key=opaque-value-123 ' +
+        `http://127.0.0.1:9071 ${localBearer} ` +
+        'Authorization: Bearer another-opaque-value',
       cgroupPath: '/papercusp.slice/pc-task.scope',
       processIdentity: 'linux:boot:42',
       owned: true,
@@ -26,10 +30,12 @@ describe('public process projection', () => {
       exemptReason: null,
     };
 
-    const projected = projectLiveProcess(row);
+    const projected = projectLiveProcess(row, [localBearer]);
     expect(projected.cmdline).toContain('--api-key=[redacted]');
     expect(projected.cmdline).toContain('Authorization: Bearer [redacted]');
     expect(projected.cmdline).not.toContain('opaque-value');
+    expect(projected.cmdline).not.toContain(localBearer);
+    expect(projected.cmdline).toContain('http://127.0.0.1:9071 [redacted]');
   });
 });
 

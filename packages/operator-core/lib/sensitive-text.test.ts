@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   redactKeyDirectedSecrets,
+  redactKnownSecrets,
   redactSelfIdentifyingSecrets,
   redactSensitiveText,
   redactSensitiveValue,
@@ -18,6 +19,21 @@ describe('sensitive diagnostic text', () => {
     expect(output).toContain('--api-key=[redacted]');
     expect(output).toContain('Authorization: Bearer [redacted]');
     expect(output).not.toContain('opaque-value');
+  });
+
+  it('redacts explicitly known opaque bearers without guessing from their shape', () => {
+    const token = '8c91f74d2e6a4bbf90f44a71d142d095';
+    const input = `python3 - http://127.0.0.1:9071 ${token} owner-id`;
+    expect(redactKnownSecrets(input, [token])).toBe(
+      'python3 - http://127.0.0.1:9071 [redacted] owner-id',
+    );
+    expect(redactSensitiveText(input, [token])).not.toContain(token);
+  });
+
+  it('ignores missing and short known-secret values', () => {
+    expect(redactKnownSecrets('task id abc123 remains visible', [null, '', 'abc123'])).toBe(
+      'task id abc123 remains visible',
+    );
   });
 
   it('preserves ordinary diagnostic context while composing both passes', () => {
