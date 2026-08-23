@@ -1,0 +1,16 @@
+[Unit]
+Description=Check the Papercusp systemd user manager every minute (EI-14906)
+
+[Timer]
+# This timer belongs to the SYSTEM manager and therefore survives the failure it
+# detects. A wall-clock trigger also re-arms across manager/host restarts; the
+# script's durable /run marker supplies the separate 60-second down-state grace.
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=5s
+RandomizedDelaySec=0
+Unit=papercusp-user-manager-watchdog.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,3 +1,60 @@
+# Root user-manager watchdog — installation (EI-14906)
+
+`papercusp-user-manager-watchdog.{service,timer}` is the recovery actor for a
+failure that user-scoped monitoring cannot repair: `user@1000.service` itself
+dying. The timer runs under the system manager, verifies that uid 1000 still has
+`Linger=yes`, and waits for two observations spanning at least 60 seconds before
+starting the manager. `activating`, `deactivating`, and `reloading` states reset
+the observation window, so a deliberate restart cannot race the watchdog.
+
+## Install or update
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+sudo install -o root -g root -m 0755 papercusp-user-manager-watchdog.sh \
+  /etc/systemd/system/papercusp-user-manager-watchdog.sh
+sudo install -o root -g root -m 0644 papercusp-user-manager-watchdog.service \
+  /etc/systemd/system/papercusp-user-manager-watchdog.service
+sudo install -o root -g root -m 0644 papercusp-user-manager-watchdog.timer \
+  /etc/systemd/system/papercusp-user-manager-watchdog.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now papercusp-user-manager-watchdog.timer
+```
+
+Install root-owned copies rather than symlinks. A system service must never load
+its unit or root-executed script from the user-writable shared checkout.
+
+The checked-in service targets uid 1000. On a host where the Papercusp operator
+account has another uid, install a system drop-in that overrides
+`PAPERCUSP_USER_MANAGER_WATCHDOG_UID`; do not edit the checked-in unit.
+
+## Verify
+
+```bash
+systemd-analyze verify /etc/systemd/system/papercusp-user-manager-watchdog.service \
+  /etc/systemd/system/papercusp-user-manager-watchdog.timer
+systemctl is-enabled papercusp-user-manager-watchdog.timer
+systemctl is-active papercusp-user-manager-watchdog.timer
+sudo systemctl start papercusp-user-manager-watchdog.service
+journalctl -u papercusp-user-manager-watchdog.service --since "5 min ago" --no-pager
+```
+
+A healthy manual run logs `user@1000.service is active` and clears any stale
+`/run/papercusp-user-manager-watchdog/user-1000.down-since` marker. Test the
+actual repair path only in an attended maintenance window: stopping the user
+manager intentionally stops every Papercusp user service and the desktop
+session's service plane.
+
+## Roll back
+
+```bash
+sudo systemctl disable --now papercusp-user-manager-watchdog.timer
+sudo rm -f /etc/systemd/system/papercusp-user-manager-watchdog.{service,timer,sh}
+sudo systemctl daemon-reload
+```
+
+---
+
 # Marketplace API — installation
 
 `marketplace-api.service` keeps the registry API on `:3057`. It deliberately
@@ -128,12 +185,14 @@ The script also runs a small SQL summary at the end (passed / failed
 ## Cost envelope
 
 Per the plan §9 cost math:
+
 - 12 operator scenarios + 3 oracle scenarios = 15 scenarios
 - Average matrix N=3 for judge-heavy scenarios (most are)
 - Sonnet SUT + Sonnet judge: ~$1.50–2.50 per matrix
 - Nightly total: ~$25–40 / run = ~$750–$1200 / month
 
 Tighten by:
+
 - Editing `LLM_TEST_TARGETS` in the .service to drop oracle
 - Setting `LLM_TEST_SUT_MODEL=claude-haiku-4-5` to use Haiku for SUT
   (judges still Sonnet for cross-model bias mitigation)
@@ -142,6 +201,7 @@ Tighten by:
 ## Tighten the cron cadence
 
 Edit the `.timer` file's `OnCalendar=` line:
+
 - `OnCalendar=*-*-* 03:30:00` — nightly at 03:30 (default)
 - `OnCalendar=Mon *-*-* 03:30:00` — weekly Mondays
 - `OnCalendar=*-*-* 09,21:00:00` — twice a day at 09:00 + 21:00
@@ -194,9 +254,10 @@ on the infra panel as `warn` ("host SLO monitor blind") instead of silent `unkno
 P-005). Point an MCP client (Claude Code) at the proxy and a `:3070` restart becomes
 invisible — the client→proxy connection stays up, and a `tools/call` issued mid-restart
 just waits a beat instead of erroring + stranding the session toolless. Code: `../../bin/mcp-proxy.ts`
-+ `../../lib/mcp-proxy/proxy.ts` (tested: `proxy.test.ts`).
 
-SAFETY: the proxy RETRIES only a *refused* upstream (the request provably never reached
+- `../../lib/mcp-proxy/proxy.ts` (tested: `proxy.test.ts`).
+
+SAFETY: the proxy RETRIES only a _refused_ upstream (the request provably never reached
 `:3070`), never a post-connect error — so a non-idempotent `tools/call` is never double-applied.
 
 ## Install + run the proxy (harmless on its own — nothing connects until you repoint a client)
