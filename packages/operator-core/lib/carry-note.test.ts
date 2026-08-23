@@ -991,6 +991,48 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
   });
 
   describe("rowsMode 'merge' — the rows you did not mention SURVIVE", () => {
+    it('preserves omitted structured narrative sections, checks, and explicit blank clears', () => {
+      const priorNote = renderCarryNote({
+        did: 'landed the merge fix',
+        left: 'run the focused suites',
+        insight: 'the locked prior is authoritative',
+        next: 're-read the current note',
+        checks: [check(1)],
+      });
+      const merged = mergeCarryRows({
+        priorNote,
+        baseNote: renderCarryNote({ next: 'run the focused suites now' }),
+        narrativeFields: { next: 'run the focused suites now' },
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+
+      expect(parseCarryNote(merged.narrativeBody)).toMatchObject({
+        did: 'landed the merge fix',
+        left: 'run the focused suites',
+        insight: 'the locked prior is authoritative',
+        next: 'run the focused suites now',
+      });
+      expect(merged.checks).toHaveLength(1);
+      expect(parseCarryNote(merged.note).checks).toMatchObject([
+        { claim: 'claim 1', verified: expect.stringContaining('ok 1') },
+      ]);
+
+      const cleared = mergeCarryRows({
+        priorNote,
+        baseNote: renderCarryNote({ next: 'run the focused suites now' }),
+        narrativeFields: { did: '', next: 'run the focused suites now' },
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(parseCarryNote(cleared.narrativeBody)).toEqual({
+        left: 'run the focused suites',
+        insight: 'the locked prior is authoritative',
+        next: 'run the focused suites now',
+      });
+      expect(parseCarryNote(cleared.note).checks).toHaveLength(1);
+    });
+
     it('adding ONE row keeps the other five (the measured loss shape, now averted)', () => {
       const merged = mergeCarryRows({
         priorNote: priorNoteWith([1, 2, 3, 4, 5].map(check)),

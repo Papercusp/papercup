@@ -1004,6 +1004,13 @@ export function mergeCarryRows(opts: {
   /** Whether this call writes a narrative at all (structured fields or a raw note). */
   hasNoteWrite: boolean;
   /**
+   * Structured narrative fields supplied by the caller. An omitted property is
+   * inherited under `mode:'merge'`; an explicit empty string clears that section.
+   * This metadata is separate from `baseNote` because renderCarryNote intentionally
+   * omits blank sections, so the rendered string cannot distinguish those two cases.
+   */
+  narrativeFields?: Pick<CarryNoteFields, 'did' | 'left' | 'insight' | 'next'>;
+  /**
    * P-013 — how a supplied row list combines with the carried set.
    *
    * ⚠ THIS FUNCTION DEFAULTS TO `'replace'`. The merge default is a property of the
@@ -1097,7 +1104,18 @@ export function mergeCarryRows(opts: {
             opts.nowMs,
           )
         : priorCheckParts.checks;
-  const narrativeBody = opts.hasNoteWrite ? rawCheckParts.body : priorCheckParts.body;
+  const priorNarrative = parseCarryNote(priorCheckParts.body);
+  const narrativeBody =
+    opts.hasNoteWrite && merging && opts.narrativeFields
+      ? renderCarryNote({
+          did: opts.narrativeFields.did !== undefined ? opts.narrativeFields.did : priorNarrative.did,
+          left: opts.narrativeFields.left !== undefined ? opts.narrativeFields.left : priorNarrative.left,
+          insight: opts.narrativeFields.insight !== undefined ? opts.narrativeFields.insight : priorNarrative.insight,
+          next: opts.narrativeFields.next !== undefined ? opts.narrativeFields.next : priorNarrative.next,
+        })
+      : opts.hasNoteWrite
+        ? rawCheckParts.body
+        : priorCheckParts.body;
   return {
     note: withCarryNoteWalls(withCarryNoteChecks(narrativeBody, checks), walls),
     narrativeBody,
