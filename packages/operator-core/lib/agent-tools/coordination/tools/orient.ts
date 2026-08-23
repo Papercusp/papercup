@@ -2142,6 +2142,17 @@ export async function composeOrient(
   // rather than an escalation). BEST-EFFORT.
   if (args.intent) {
     let declared: { claims?: unknown } | undefined;
+    // `coord:orient.planItems` is intentionally permissive because recovery callers
+    // can carry WI-/EI-/F- work-item refs in the same lane-shaped field. The nested
+    // coord:declare-intent.items contract is narrower (P-NNN plan items only), so a
+    // recovery ref must not reject the whole presence/intent declaration. Preserve
+    // the explicit [] release operation; when a non-empty request contains no plan
+    // items, omit `items` so existing plan claims are left untouched and the caller
+    // can use the work-item fallback in laneClaim.
+    const planItemsForDeclaration =
+      args.planItems && args.planItems.length > 0
+        ? args.planItems.filter((item) => /^P-\d{3,}$/i.test(item))
+        : args.planItems;
     // EI-21127719036550806: bounded — this is a WRITE (claims the caller's plan-item
     // lane), so a hang here used to block the ENTIRE orient call past any external
     // deadline. Bounding it changes nothing about the write itself (it still runs to
@@ -2155,7 +2166,10 @@ export async function composeOrient(
       call('coord:declare-intent', {
         intent: args.intent,
         ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
-        ...(args.planItems ? { items: args.planItems } : {}),
+        ...(planItemsForDeclaration !== undefined &&
+        (planItemsForDeclaration.length > 0 || args.planItems?.length === 0)
+          ? { items: planItemsForDeclaration }
+          : {}),
         ...(args.harness ? { harness: args.harness } : {}),
         ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
       }),

@@ -3127,6 +3127,43 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+
+    it('keeps work-item recovery refs out of declare-intent while preserving the declaration', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { call, calls } = fakeCall({
+          ...LANE_CORE,
+          // Model the nested tool's strict P-NNN schema. Before the fix, orient
+          // forwards the EI ref and this handler rejects the whole declaration.
+          'coord:declare-intent': (args) => {
+            if (Object.prototype.hasOwnProperty.call(args, 'items')) {
+              throw new Error('P-NNN form required');
+            }
+            return { ok: true };
+          },
+        });
+
+        const r = await composeOrient(
+          {
+            intent: 'resume the recovered work-item',
+            planSlug: 'p',
+            planItems: ['EI-21189833138443321'],
+            harness: 'h',
+          },
+          call,
+          'me',
+        );
+
+        const declaration = calls.find((c) => c.name === 'coord:declare-intent')!;
+        expect(declaration.args).not.toHaveProperty('items');
+        expect(r.intentDeclared).toBe(true);
+        expect(r.laneClaim?.requested).toEqual(['EI-21189833138443321']);
+        expect(r.laneClaim?.warning).toContain('work_items:claim');
+        expect(r.laneClaim?.warning).toContain('scheduler:get_next');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 });
 
