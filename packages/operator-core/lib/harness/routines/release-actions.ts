@@ -1322,6 +1322,102 @@ export function isProvenStaleCandidate(retriage?: GateStallRetriage | null): boo
   return retriage?.classification === 'stale-candidate' && retriage.refireBlockedBy !== 'charged-budget';
 }
 
+/** The announcement a torn sweep produces. Shaped like the other emitters here: one
+ *  global key plus one install-scoped key, sharing a payload. */
+export type TornSweepAnnouncement = {
+  readonly keys: readonly string[];
+  readonly summary: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+};
+
+/**
+ * Plan gate-resilience-vs-torn-git-sync-sweeps..., P-003 (final clause), D-002.
+ *
+ * WHY THIS EXISTS. The streak-carry above is the CORRECTION for a torn sweep — it stops a
+ * pass that judged an already-superseded tree from advancing `consecutiveReds`. But a
+ * correction is not a REPORT: today the phenomenon is absorbed perfectly and announced
+ * nowhere. `consecutiveReds` deliberately does not move, no alarm escalates, and the only
+ * trace is a log line nobody is subscribed to — so "how often does git-sync tear a sweep,
+ * and which files does it strand?" is unanswerable without reading gate logs by hand. That
+ * is the gap this closes: the streak stays flat AND the event is observable.
+ *
+ * NOT reusable from the existing red emitters. `emitLegacyRedVerdictEvent` fires on EVERY
+ * not-green verdict, so a subscriber cannot tell a record-only tick from a real red, and its
+ * payload carries no tip — hence no sha RANGE, which is precisely the field that makes a torn
+ * sweep diagnosable (it names the window in which the fix landed).
+ *
+ * Pure + exported so it has a DB-free regression test, matching the convention
+ * `shouldWarnOnStallClearMiss` / `classifyGateStallStatus` / `gateStallRecordOnlyLogMessage`
+ * already set in this file.
+ *
+ * Returns null when this is not a torn sweep, so the caller never has to re-derive the
+ * predicate. A MIXED red — some files healed at tip, at least one still failing — is BY
+ * SPECIFICATION a real red (D-002) and is not announced here: it never reaches
+ * `classification: 'stale-candidate'` at all.
+ */
+export function buildTornSweepAnnouncement(input: {
+  installSlug: string;
+  candidate?: string | null;
+  failingTests?: readonly string[] | null;
+  retriage?: { classification?: 'real-red' | 'stale-candidate' | 'unknown' | null; tip?: string | null } | null;
+  runId?: string | null;
+}): TornSweepAnnouncement | null {
+  if (input.retriage?.classification !== 'stale-candidate') return null;
+
+  const candidate = input.candidate ?? null;
+  const tip = input.retriage?.tip ?? null;
+  const files = (input.failingTests ?? []).filter((f) => typeof f === 'string' && f.length > 0);
+  // The range is the diagnostic payload: it bounds where the healing commit landed. When
+  // either end is missing it is reported as null rather than as a half-range, so a reader
+  // cannot mistake an unknown bound for a measured one.
+  const shaRange = candidate && tip ? `${candidate.slice(0, 12)}..${tip.slice(0, 12)}` : null;
+
+  const named = files.length > 0 ? files.slice(0, 3).join(', ') : 'no named files';
+  const more = files.length > 3 ? `, +${files.length - 3} more` : '';
+  const summary =
+    `[${input.installSlug}] green-checkpoint TORN SWEEP — ${files.length} failing file(s) judged at ` +
+    `${candidate ? candidate.slice(0, 8) : 'an unknown candidate'} PASS at tip ` +
+    `${tip ? tip.slice(0, 8) : '(tip unknown)'}${shaRange ? ` (healed within ${shaRange})` : ''}: ` +
+    `${named}${more}. The red streak was NOT advanced — this pass judged an already-superseded ` +
+    `tree, so do not fix the files it named without re-verifying at tip.`;
+
+  return {
+    keys: ['green-checkpoint:torn-sweep', `green-checkpoint:torn-sweep:${input.installSlug}`],
+    summary,
+    payload: {
+      installSlug: input.installSlug,
+      candidate,
+      tip,
+      shaRange,
+      failingTests: files,
+      fileCount: files.length,
+      classification: 'stale-candidate',
+      streakAdvanced: false,
+      runId: input.runId ?? null,
+    },
+  };
+}
+
+/** Emit the torn-sweep announcement. Never throws: a failed announcement must not take down
+ *  the gate tick that produced it — the streak-carry is the correctness-bearing half and has
+ *  already been applied by the time this runs. */
+async function emitTornSweepEvent(announcement: TornSweepAnnouncement): Promise<void> {
+  try {
+    for (const key of announcement.keys) {
+      await emitAwaitedEvent({
+        key,
+        summary: announcement.summary,
+        payload: announcement.payload,
+        source: 'green-checkpoint',
+      });
+    }
+  } catch (e) {
+    console.warn(
+      `${orchestratorStdoutTag()} torn-sweep emit failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
 /**
  * WI-39841 (Defect 2) — the status for a run that produced NO parseable result marker.
  *
