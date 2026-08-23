@@ -579,6 +579,97 @@ describe('isOrphanWal', () => {
   });
 });
 
+/**
+ * `writerKnownDead` — immediate post-timeout recovery (2026-08-23).
+ *
+ * MEASURED DEFECT: the timeout site logged "the next tick's cleanCrashResidue()
+ * preflight recovers it" and left the poison in place until then. On 2026-08-23
+ * the 19:35 tick was SIGKILLed at 19:55 (1202s against a 1200s budget) and the
+ * next preflight was not due until 20:35, so every GitNexus graph read segfaulted
+ * fleet-wide for ~40 minutes of that hour. Reproduced directly: a read-only
+ * LadybugDB open SUCCEEDS against the poisoned index and the first `MATCH (n)
+ * RETURN count(n)` dies with SIGSEGV.
+ *
+ * The staleness term is why the kill site could not simply call the existing
+ * function: the shadow it must clean was created seconds earlier, so
+ * `isDeadShadow` is false for another five minutes — exactly the window that
+ * matters. `writerKnownDead` substitutes the caller's proof for the proxy.
+ */
+describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery)', () => {
+  function poisonedRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-killsite-'));
+    mkdirSync(join(root, '.gitnexus'));
+    const { db, shadow, wal, walCheckpoint } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+    writeFileSync(shadow, ''); // ZERO BYTES — killed before writing a byte
+    writeFileSync(wal, 'pending wal');
+    writeFileSync(walCheckpoint, '');
+    return root;
+  }
+
+  it('REPRODUCES the deferral gap: a seconds-old poison is NOT cleaned without the flag', () => {
+    // This is the whole defect in one assertion — the residue is real and
+    // present, and the default policy declines to touch it because it cannot
+    // yet distinguish it from a live build.
+    const root = poisonedRoot();
+    const { shadow } = gitnexusDbPaths(root);
+
+    expect(cleanCrashResidue(root).cleaned).toBe(false);
+    expect(existsSync(shadow)).toBe(true);
+  });
+
+  it('cleans that same fresh poison when the caller has just killed the writer', () => {
+    const root = poisonedRoot();
+    const { db, shadow, wal, walCheckpoint } = gitnexusDbPaths(root);
+
+    const result = cleanCrashResidue(root, { writerKnownDead: true });
+
+    expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('dead-shadow-wal');
+    expect(existsSync(shadow)).toBe(false);
+    expect(existsSync(wal)).toBe(false);
+    expect(existsSync(walCheckpoint)).toBe(false);
+    // The 4.5 GiB index itself is never a cleanup target — only the residue.
+    expect(existsSync(db)).toBe(true);
+  });
+
+  it('STILL refuses to delete a non-empty shadow, even with the writer known dead', () => {
+    // The zero-byte term is the half that must survive: a shadow with bytes in
+    // it can belong to a concurrent MANUAL `gitnexus analyze` on the same root,
+    // which this must never destroy. Relaxing staleness must not relax that.
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-livebuild-'));
+    mkdirSync(join(root, '.gitnexus'));
+    const { db, shadow } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+    writeFileSync(shadow, 'partially built shadow');
+
+    const result = cleanCrashResidue(root, { writerKnownDead: true });
+
+    expect(result.cleaned).toBe(false);
+    expect(existsSync(shadow)).toBe(true);
+  });
+
+  it('is inert on a healthy tree, so the kill site cannot damage a clean index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-healthy-'));
+    mkdirSync(join(root, '.gitnexus'));
+    const { db } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+
+    expect(cleanCrashResidue(root, { writerKnownDead: true }).cleaned).toBe(false);
+    expect(existsSync(db)).toBe(true);
+  });
+
+  it('CALIBRATION: the default path still cleans a STALE poison, so the flag adds only immediacy', () => {
+    // Guards against "fixing" the gap by making the default arm over-eager.
+    const root = poisonedRoot();
+    const { shadow } = gitnexusDbPaths(root);
+    const old = (Date.now() - (DEAD_SHADOW_STALE_MS + 60_000)) / 1000;
+    utimesSync(shadow, old, old);
+
+    expect(cleanCrashResidue(root).cleaned).toBe(true);
+  });
+});
+
 describe('cleanCrashResidue', () => {
   function freshRoot(): string {
     const root = mkdtempSync(join(tmpdir(), 'gitnexus-orphan-'));

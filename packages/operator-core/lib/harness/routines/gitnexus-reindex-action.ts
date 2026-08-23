@@ -484,7 +484,27 @@ export interface OrphanShadowCleanup {
  * exactly the "someone else already cleaned it" case and is swallowed like the rest of
  * this fail-soft action.
  */
-export function cleanCrashResidue(root: string): OrphanShadowCleanup {
+export interface CleanCrashResidueOptions {
+  /**
+   * Set ONLY by a caller that has itself just killed the writer for this root.
+   *
+   * `DEAD_SHADOW_STALE_MS` is a PROXY for "no writer is alive"; a caller standing
+   * at the kill site holds the FACT, so the proxy is redundant there — and
+   * actively harmful, because the shadow it must clean is by definition seconds
+   * old and so fails the staleness term for the next five minutes.
+   *
+   * It relaxes ONLY the staleness term. The zero-byte requirement stays, because
+   * that is the unambiguous half of the signal: a shadow with bytes in it could
+   * belong to a concurrent MANUAL `gitnexus analyze` on the same root, which this
+   * must never delete. Emptiness plus a known-dead writer cannot.
+   */
+  writerKnownDead?: boolean;
+}
+
+export function cleanCrashResidue(
+  root: string,
+  opts: CleanCrashResidueOptions = {},
+): OrphanShadowCleanup {
   const { db, shadow, walCheckpoint, wal } = gitnexusDbPaths(root);
   const dbExists = existsSync(db);
   const shadowExists = existsSync(shadow);
@@ -497,7 +517,9 @@ export function cleanCrashResidue(root: string): OrphanShadowCleanup {
   if (shadowExists) {
     try {
       const st = statSync(shadow);
-      shadowIsDead = isDeadShadow(true, st.size, Date.now() - st.mtimeMs);
+      shadowIsDead = opts.writerKnownDead
+        ? st.size === 0
+        : isDeadShadow(true, st.size, Date.now() - st.mtimeMs);
     } catch {
       // Vanished between the check and the stat — that IS the not-present case.
       shadowIsDead = false;
@@ -987,9 +1009,33 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const success = ranClean && (canary == null || canary.healthy);
 
   if (r.timedOut) {
+    // Recover the residue HERE, not on the next tick.
+    //
+    // Deferring it to the preflight was measured to leave GitNexus segfaulting
+    // fleet-wide for the whole gap — on 2026-08-23 the 19:35 tick was killed at
+    // 19:55 and the next preflight was not due until 20:35, so every graph read
+    // died for ~40 minutes of that hour. The kill above is positive proof the
+    // writer is gone, which is exactly the fact `writerKnownDead` exists to
+    // carry: without it the just-created shadow is younger than
+    // DEAD_SHADOW_STALE_MS and no arm fires.
+    //
+    // Fail-soft like the rest of this action: a cleanup that cannot run must
+    // never turn a timed-out tick into a thrown one, because the next tick's
+    // preflight is still there as the backstop.
+    let recovered: OrphanShadowCleanup | null = null;
+    try {
+      recovered = cleanCrashResidue(root, { writerKnownDead: true });
+    } catch (e) {
+      console.warn(
+        `[gitnexus-reindex] post-timeout residue cleanup could not run: ${e instanceof Error ? e.message : e}`,
+      );
+    }
     console.warn(
       `[gitnexus-reindex] TIMED OUT after ${timeoutMs}ms (${elapsedSec}s) — process tree killed. ` +
-        'That kill can leave crash residue (D-016); the next tick\'s cleanCrashResidue() preflight recovers it.',
+        (recovered?.cleaned
+          ? `Crash residue (D-016) recovered IMMEDIATELY (${recovered.kind}): ${recovered.removed.join(', ')} — ` +
+            'reads stay answerable instead of segfaulting until the next tick.'
+          : 'No crash residue was present to recover; the next tick\'s cleanCrashResidue() preflight remains the backstop.'),
     );
   } else if (r.code !== 0) {
     console.warn(`[gitnexus-reindex] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
