@@ -170,6 +170,15 @@ export default defineTool({
       'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
+  // EI-21228209276284649: this is a correctness payload, not a browseable list.
+  // A trimmed MCP session used the framework's generic bounded projection on a
+  // 29,746-char, 26-criterion result before the result door saw it. The door's
+  // otherwise-lossless spill therefore contained only 12 skeleton rows plus a
+  // truncation marker and six canonical ratings while `criteriaCount` still
+  // truthfully said 26. Ignore only the AMBIENT session tier so the door receives
+  // the complete validation result and can spill it losslessly; an explicit
+  // caller `payloadTier:'trimmed'` still wins, and the 30k hard ceiling remains.
+  ignoreSessionPayloadTier: true,
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
