@@ -242,10 +242,26 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     label: 'Reddit',
     wave: 'A',
     verifiedAt: '2026-08-23',
-    sources: ['https://github.com/reddit-archive/reddit/wiki/API'],
+    sources: [
+      'https://github.com/reddit-archive/reddit/wiki/API',
+      'https://github.com/reddit-archive/reddit/wiki/JSON',
+      'https://github.com/reddit-archive/reddit/wiki/OAuth2',
+      // P-013 read the handlers themselves after www.reddit.com refused to
+      // serve its own docs (HTTP 403 to every non-browser client). These are
+      // the WRITERS of the behaviour the row claims, which is why two of the
+      // row's original claims did not survive contact with them — see D-016.
+      'https://raw.githubusercontent.com/reddit-archive/reddit/master/r2/r2/controllers/api.py',
+      'https://raw.githubusercontent.com/reddit-archive/reddit/master/r2/r2/controllers/listingcontroller.py',
+      'https://raw.githubusercontent.com/reddit-archive/reddit/master/r2/r2/lib/validator/validator.py',
+    ],
     auth: {
       mode: 'self-serve-oauth',
       scopes: ['identity', 'read', 'submit', 'edit'],
+      notes:
+        'Bearer tokens expire after 1 hour; API calls go to oauth.reddit.com, not www.reddit.com. Scope is per ' +
+        'endpoint: /api/submit and /api/comment need `submit`, /api/del needs `edit`. /api/comment routes on the ' +
+        'PARENT\'S TYPE — a t4_ (message) parent creates a private message and needs `privatemessages` instead, so a ' +
+        'content-reply path must refuse t4_ rather than rely on scope to stop it.',
     },
     read: {
       transport: 'poll-cursor',
@@ -254,9 +270,23 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     },
     write: {
       verbs: ['reply', 'post', 'delete'],
+      // 'none' is the WEAKEST verb's guarantee, not a claim about the platform.
+      // Idempotency here is PER-VERB and this scalar cannot say so, so it is
+      // pinned to the value that is SAFE to act on: guarding a verb that did not
+      // need it costs a wasted check, while trusting a mechanism that does not
+      // cover your verb double-posts publicly. D-016 carries the per-verb truth.
       idempotency: 'none',
       verifiedAt: '2026-08-23',
-      notes: 'No documented idempotency mechanism, so the adapter must carry its own write-dedupe guard.',
+      notes:
+        'PER-VERB, read from r2/r2/controllers/api.py — the original "no documented idempotency mechanism" was ' +
+        'wrong for two of three verbs. reply (POST /api/comment): nothing at all, the guard is entirely ours. ' +
+        'post (POST /api/submit): for kind=link reddit has a real DEFAULT-ON server-side duplicate check — "if a ' +
+        'link with the same URL has already been submitted to the specified subreddit an error will be returned ' +
+        'unless `resubmit` is true" — so a write path must send resubmit:false to keep it armed and must treat the ' +
+        'refusal as success-equivalent rather than retrying; kind=self has no equivalent. delete (POST /api/del): ' +
+        'IDEMPOTENT BY CONSTRUCTION (`was_deleted` guard, early return on an unresolvable thing), so it needs no ' +
+        'guard — but it is @noresponse, so it cannot report WHETHER anything was removed and an adapter must ' +
+        'confirm via /api/info rather than return a success the caller reads as "I deleted it".',
     },
     limits: {
       requestsPerMinute: 60,
