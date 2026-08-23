@@ -113,11 +113,60 @@ beforeEach(() => {
 });
 
 describe('capability:bash_output — durable task attachment', () => {
-  it('requires exactly one process-local or durable handle', () => {
+  // EI-21240465530065342: capability:bash returns BOTH ids, so an agent holding
+  // the launch result naturally sends both back. Requiring exactly one put a
+  // schema error on the recovery path — the path that matters most, because the
+  // JOBS map is worker-local and a read is routinely served by a worker that
+  // never saw the launch. At least one handle is the real requirement.
+  it('accepts either handle alone AND both together, and requires at least one', () => {
     expect(bashOutput.args.safeParse({ bash_id: 'bash-1' }).success).toBe(true);
     expect(bashOutput.args.safeParse({ task_id: 'task-1' }).success).toBe(true);
+    expect(bashOutput.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(true);
     expect(bashOutput.args.safeParse({}).success).toBe(false);
-    expect(bashOutput.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(false);
+  });
+
+  it('resolves through task_id when both handles are supplied and agree', async () => {
+    const result = await bashOutput.handler(
+      { bash_id: 'bash-carry-1', task_id: 'task-carry-1' },
+      ctx(),
+    );
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+    expect(result.isError).toBeUndefined();
+    expect(jobs.getJob).toHaveBeenCalledWith('bash-carry-1');
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-carry-1',
+      task_id: 'task-carry-1',
+      status: 'running',
+      running: true,
+      output: 'still working\n',
+    });
+    expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
+  // Accepting both handles must not become "silently believe the durable one".
+  // A bash_id naming a different job means the caller is confused about WHICH
+  // job it is polling; answering with the task_id job's output would hand back
+  // the wrong job's bytes under an id the caller trusts.
+  it('refuses two handles that name different jobs, reading nothing', async () => {
+    const result = await bashOutput.handler(
+      { bash_id: 'bash-some-other-job', task_id: 'task-carry-1' },
+      ctx(),
+    );
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+    expect(result.isError).toBe(true);
+    expect(payload).toMatchObject({
+      ok: false,
+      reason: 'handle_mismatch',
+      bash_id: 'bash-some-other-job',
+      task_id: 'task-carry-1',
+      durable_bash_id: 'bash-carry-1',
+    });
+    expect(jobs.getJob).not.toHaveBeenCalled();
+    expect(jobs.readJobOutput).not.toHaveBeenCalled();
+    expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
   it('reattaches by task_id to the existing job and never launches a duplicate', async () => {

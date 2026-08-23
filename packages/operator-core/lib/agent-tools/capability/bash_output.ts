@@ -650,10 +650,17 @@ export default defineTool({
       peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
     })
     .superRefine((args, refinementCtx) => {
-      if (Boolean(args.bash_id) === Boolean(args.task_id)) {
+      // EI-21240465530065342: capability:bash hands the caller BOTH ids at
+      // launch, so passing both back is the NATURAL recovery call — and it is
+      // exactly the call an agent makes after a carry, when it still holds the
+      // launch result. Rejecting that shape put a schema error on the one path
+      // that recovers a job whose worker-local JOBS entry is gone. Only the
+      // no-handle case is a real caller error here; a both-ids call that
+      // disagrees is caught in the handler, where the ledger can adjudicate.
+      if (!args.bash_id && !args.task_id) {
         refinementCtx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Pass exactly one of bash_id or task_id.',
+          message: 'Pass at least one of bash_id or task_id.',
           path: ['bash_id'],
         });
       }
@@ -744,10 +751,34 @@ export default defineTool({
           isError: true,
         };
       }
+      // Both handles supplied: task_id is the durable, authoritative one and
+      // wins. A bash_id that names a DIFFERENT job is a real caller error, not
+      // a shape to silently resolve — reading the task_id job under a bash_id
+      // the caller believes in is how a poll ends up reporting the wrong job's
+      // output. Refuse, read nothing, and say which handle to send alone.
+      if (args.bash_id && args.bash_id !== durableBashId) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'handle_mismatch',
+                task_id: args.task_id,
+                bash_id: args.bash_id,
+                durable_bash_id: durableBashId,
+                advice:
+                  'bash_id and task_id identify DIFFERENT jobs. Nothing was read and no job was restarted. Send task_id alone (the durable handle, correct after a carry or across operator workers), or bash_id alone to read the process-local job in its launching context.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       bashId = durableBashId;
     }
 
-    // The schema enforces exactly one handle. Keep the runtime guard because
+    // The schema enforces at least one handle. Keep the runtime guard because
     // direct handler tests/callers can bypass schema parsing.
     if (!bashId) {
       return {
