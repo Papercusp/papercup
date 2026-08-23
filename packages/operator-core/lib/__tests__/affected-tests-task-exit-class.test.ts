@@ -93,6 +93,56 @@ describe('classifyTaskExit', () => {
       classifyTaskExit({ status: 2, notCheckedExitCode: 3, notCheckedIsNonGating: true }),
     ).toBe('failed');
   });
+
+  it('classifies explicit fork/resource exhaustion output as undetermined', () => {
+    expect(
+      classifyTaskExit({
+        status: 245,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        stderr: '/usr/bin/bash: fork: retry: Resource temporarily unavailable',
+      }),
+    ).toBe('undetermined');
+  });
+
+  it('classifies a short, zero-output death of a long-estimated task as undetermined', () => {
+    expect(
+      classifyTaskExit({
+        status: null,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        capturedBytes: 0,
+        elapsedMs: 3_000,
+        durationEstimateMs: 22 * 60 * 1_000,
+      }),
+    ).toBe('undetermined');
+  });
+
+  it('does not over-classify short tasks, captured output, or ordinary failures', () => {
+    expect(
+      classifyTaskExit({
+        status: 1,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        capturedBytes: 0,
+        elapsedMs: 3_000,
+        durationEstimateMs: 9 * 60 * 1_000,
+      }),
+    ).toBe('failed');
+    expect(
+      classifyTaskExit({
+        status: 1,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        capturedBytes: 1,
+        elapsedMs: 3_000,
+        durationEstimateMs: 22 * 60 * 1_000,
+      }),
+    ).toBe('failed');
+    expect(
+      classifyTaskExit({
+        status: 1,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        stderr: 'test assertion failed: expected 1 to be 2',
+      }),
+    ).toBe('failed');
+  });
 });
 
 describe('isGatingFailure — the retry decision (EI-20107132436867486)', () => {
@@ -111,6 +161,10 @@ describe('isGatingFailure — the retry decision (EI-20107132436867486)', () => 
   it('does not retry a pass or a quarantined failure', () => {
     expect(isGatingFailure('pass')).toBe(false);
     expect(isGatingFailure('quarantined')).toBe(false);
+  });
+
+  it('does not treat an undetermined task as a retryable gating failure', () => {
+    expect(isGatingFailure('undetermined')).toBe(false);
   });
 
   // End-to-end over the two decisions the runner actually makes, in the exact shape that

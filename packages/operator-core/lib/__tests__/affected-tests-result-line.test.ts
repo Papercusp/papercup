@@ -59,7 +59,14 @@ const AFFECTED_TESTS = process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT
 const source = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
 /** Every field a caller is entitled to find on the marker line, on every path. */
-const REQUIRED_MARKER_FIELDS = ['status', 'tasks', 'failed', 'quarantinedFailed', 'timedOutTasks'] as const;
+const REQUIRED_MARKER_FIELDS = [
+  'status',
+  'tasks',
+  'failed',
+  'quarantinedFailed',
+  'timedOutTasks',
+  'undeterminedTasks',
+] as const;
 
 function runAffected(args: string[]): { stdout: string; stderr: string; status: number | null } {
   const r = spawnSync(process.execPath, [AFFECTED_TESTS, ...args], {
@@ -229,9 +236,9 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
   });
 
   describe('source shape: the paths too expensive to execute here', () => {
-    it('defines resultLine() from the same failed/quarantinedFailed/tasks counters that decide the exit code', () => {
+    it('defines resultLine() from the same verdict counters that decide the exit code', () => {
       expect(source).toMatch(
-        /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\}`;/,
+        /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\} undeterminedTasks=\$\{undeterminedTasks\}`;/,
       );
     });
 

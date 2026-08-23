@@ -24,8 +24,33 @@
 // affected-tests-repo-wide-invariant-guards.test.ts), so this adds no third copy of the 2.
 
 /**
- * @typedef {'pass' | 'not-checked' | 'quarantined' | 'failed'} TaskExitClass
+ * @typedef {'pass' | 'not-checked' | 'undetermined' | 'quarantined' | 'failed'} TaskExitClass
  */
+
+// A task that was estimated to take this long but ended almost immediately without
+// producing any bytes likely never reached its test runner. These bounds are deliberately
+// conservative: a short task with a stale estimate must not be silently reclassified, and
+// any captured output is enough evidence that the child made observable progress.
+const LONG_TASK_ESTIMATE_MS = 10 * 60 * 1000;
+const VERY_SHORT_TASK_MS = 10 * 1000;
+
+const FORK_STARVATION_OUTPUT =
+  /\b(?:fork|spawn)\b[\s\S]{0,200}\b(?:eagain|resource temporarily unavailable)\b|\b(?:eagain|resource temporarily unavailable)\b[\s\S]{0,200}\b(?:fork|spawn)\b/i;
+
+function hasForkStarvationEvidence(output) {
+  return FORK_STARVATION_OUTPUT.test(output);
+}
+
+function hasConservativeNeverStartedEvidence({ capturedBytes, elapsedMs, durationEstimateMs }) {
+  return (
+    capturedBytes === 0 &&
+    Number.isFinite(elapsedMs) &&
+    elapsedMs >= 0 &&
+    elapsedMs <= VERY_SHORT_TASK_MS &&
+    Number.isFinite(durationEstimateMs) &&
+    durationEstimateMs >= LONG_TASK_ESTIMATE_MS
+  );
+}
 
 /**
  * Classify a finished task's exit status.
@@ -39,6 +64,12 @@
  * @param {number} opts.notCheckedExitCode the caller's EXIT_NOT_CHECKED mirror
  * @param {boolean} [opts.notCheckedIsNonGating] does THIS task's registration forgive "I could not look"?
  * @param {boolean} [opts.quarantined] is this task quarantined?
+ * @param {string} [opts.output] combined captured stdout/stderr
+ * @param {string} [opts.stdout] captured stdout, when the caller keeps the streams separate
+ * @param {string} [opts.stderr] captured stderr, when the caller keeps the streams separate
+ * @param {number} [opts.capturedBytes] bytes captured from the child process
+ * @param {number} [opts.elapsedMs] elapsed time before the child exited
+ * @param {number} [opts.durationEstimateMs] historical duration estimate for this task
  * @returns {TaskExitClass}
  */
 export function classifyTaskExit({
@@ -46,8 +77,27 @@ export function classifyTaskExit({
   notCheckedExitCode,
   notCheckedIsNonGating = false,
   quarantined = false,
+  output,
+  stdout,
+  stderr,
+  capturedBytes,
+  elapsedMs,
+  durationEstimateMs,
 }) {
   if (status === 0) return 'pass';
+  // A fork-starved child has not produced a trustworthy test verdict. This check intentionally
+  // precedes the existing not-checked/quarantine buckets: an explicit process-launch failure
+  // must remain visible as uncertainty even when another registration flag would otherwise
+  // hide the non-zero exit.
+  const capturedOutput = [output, stdout, stderr]
+    .filter((part) => typeof part === 'string' && part.length > 0)
+    .join('\n');
+  if (
+    hasForkStarvationEvidence(capturedOutput) ||
+    hasConservativeNeverStartedEvidence({ capturedBytes, elapsedMs, durationEstimateMs })
+  ) {
+    return 'undetermined';
+  }
   // Only a task whose REGISTRATION opts in is forgiven. Without the flag, exit 2 stays a
   // failure — a guard that is not declared non-gating and could not look must still red the
   // run, or this helper would silently widen the forgiveness to every task in the repo.
