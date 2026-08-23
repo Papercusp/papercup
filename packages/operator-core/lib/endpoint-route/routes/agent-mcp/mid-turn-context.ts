@@ -59,6 +59,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 // pure sync function its tests can call directly.
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
 import { recordInjectionCoverage } from '../../../memory/injection-delivery-coverage';
+import { takePendingFailureLoopHint, type FailureLoopHint } from '../../../failure-loop-circuit-breaker';
 
 /** Query clamp — embed the head of a long command, not a pasted heredoc. */
 const QUERY_CLAMP = 1_000;
@@ -539,9 +540,7 @@ const MANGLED_TO_COLON: ReadonlyMap<string, string> = (() => {
     const mangled = colon.replace(/:/g, '_');
     const prior = map.get(mangled);
     if (prior && prior !== colon) {
-      throw new Error(
-        `mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`,
-      );
+      throw new Error(`mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`);
     }
     map.set(mangled, colon);
   }
@@ -623,9 +622,7 @@ function normalizeOmpXdCall(tool: string, input: unknown): NormalizedXdCall | nu
   if (!path.startsWith(OMP_XD_MCP_PREFIX)) return null;
 
   const deviceName = path.slice('xd://'.length);
-  const mangled = path.startsWith(OMP_XD_PAPERCUSP_PREFIX)
-    ? path.slice(OMP_XD_PAPERCUSP_PREFIX.length)
-    : '';
+  const mangled = path.startsWith(OMP_XD_PAPERCUSP_PREFIX) ? path.slice(OMP_XD_PAPERCUSP_PREFIX.length) : '';
   return {
     tool: (mangled && MANGLED_TO_COLON.get(mangled)) || deviceName,
     input: asRecord(outer.content) ?? {},
@@ -651,9 +648,7 @@ function deriveQueryAtDepth(tool: string, input: unknown, depth: number): Derive
   if (xdCall) {
     if (depth >= MAX_QUERY_DERIVE_DEPTH) return { query: '', miss: 'no-signal' };
     const inner = deriveQueryAtDepth(xdCall.tool, xdCall.input, depth + 1);
-    return inner.miss === 'unknown-tool' && !inner.missTool
-      ? { ...inner, missTool: xdCall.tool }
-      : inner;
+    return inner.miss === 'unknown-tool' && !inner.missTool ? { ...inner, missTool: xdCall.tool } : inner;
   }
 
   const spec = specFor(tool);
@@ -662,8 +657,7 @@ function deriveQueryAtDepth(tool: string, input: unknown, depth: number): Derive
   // one that silently zeroed codex and omp for the life of this endpoint.
   if (!spec) return { query: '', miss: 'unknown-tool' };
 
-  const done = (text: string): DerivedQuery =>
-    text ? { query: text, miss: null } : { query: '', miss: 'no-signal' };
+  const done = (text: string): DerivedQuery => (text ? { query: text, miss: null } : { query: '', miss: 'no-signal' });
 
   // ── `tools:invoke` DISPATCHES: the signal is the INNER call, never its own args ──
   // Measured 2026-08-09 it is the single biggest miss in the whole vocabulary
@@ -767,6 +761,27 @@ export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CH
   // must not be clamped away either): composeWithCorpus renders it at `##`.
   if (block.startsWith(`## ${CORPUS_BLOCK_HEADING}`)) return block;
   return clampSection(block, budget);
+}
+
+/**
+ * The failure intervention has its own bounded budget and must survive every
+ * memory-recall early return. Keep composition here, at the shared delivery
+ * seam, rather than teaching the memory pipeline about failure-loop state.
+ */
+export function composeMidTurnContextText(memoryBlock: string, failureHint: string): string {
+  const parts = [failureHint.trim(), clampToBudget(memoryBlock).trim()].filter(Boolean);
+  return parts.join('\n\n');
+}
+
+async function resolveFailureLoopHintText(hint: FailureLoopHint): Promise<string> {
+  try {
+    // Lazy by design: ordinary PostToolBatch requests never load the insight
+    // reader, recipe search, or DB path.
+    const { buildFailureLoopHintText } = await import('../../../failure-loop-hints');
+    return await buildFailureLoopHintText(hint);
+  } catch {
+    return '';
+  }
 }
 
 /** The char clamp itself, applied to ONE section. PURE. */
@@ -930,7 +945,12 @@ export function splitLegQueries(derived: string): { cosine: string; lexical: str
   // the generic tokens "no"/"result" are pull without meaning.
   const cosine = stripped
     .split('·')
-    .map((seg) => seg.replace(/\(no result\)/g, ' ').replace(/\s+/g, ' ').trim())
+    .map((seg) =>
+      seg
+        .replace(/\(no result\)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
     .filter((seg) => /[A-Za-z0-9]/.test(seg))
     .join(' · ');
   return { cosine: cosine || lexical, lexical };
@@ -960,6 +980,17 @@ const midTurnContext = defineTool({
     }
     const owner = (body.owner ?? '').trim();
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
+
+    // Drain before any query/admission branch. A repeated-failure advisory is
+    // orthogonal to memory recall, so it must still be delivered when this
+    // batch has no recall signal, is a duplicate, or the recall lane is full.
+    const pendingFailureHint = takePendingFailureLoopHint(owner);
+    const failureHintText = pendingFailureHint ? resolveFailureLoopHintText(pendingFailureHint) : Promise.resolve('');
+    const respond = async (memoryBlock = ''): Promise<Response> =>
+      Response.json({
+        ok: true,
+        text: composeMidTurnContextText(memoryBlock, await failureHintText),
+      });
 
     try {
       // P-005 / D-005 §3b — derive DETAILED so a miss can leave a TRACE.
@@ -1006,14 +1037,14 @@ const midTurnContext = defineTool({
 
       // No signal in this tool call — drop before spending anything. The
       // difference from before is that the drop is now RECORDED above.
-      if (!derived) return Response.json({ ok: true, text: '' });
+      if (!derived) return respond();
       // P-044: one derived signal, two per-leg queries. See splitLegQueries().
       const { cosine: query, lexical: lexicalQuery } = splitLegQueries(derived);
       // The cost guards key on the FULL derived text, not the stripped cosine
       // half — two batches that differ only in which files were read are
       // genuinely different questions for the lexical leg, and collapsing them
       // here would suppress the second one's recall entirely.
-      if (!admitCall(owner, derived, Date.now())) return Response.json({ ok: true, text: '' });
+      if (!admitCall(owner, derived, Date.now())) return respond();
       pruneRateState(Date.now());
 
       let harness = (body.harness ?? '').trim();
@@ -1039,15 +1070,12 @@ const midTurnContext = defineTool({
 
       const { withMidTurnMemoryAdmission } = await import('../../../memory/mid-turn-admission');
       const admitted = await withMidTurnMemoryAdmission(async () => {
-        const [
-          { buildMemoryContextBlock },
-          { getSessionUserOrDefault },
-          { resolveClaimedWorkItemIdForOwner },
-        ] = await Promise.all([
-          import('../../../memory/injection'),
-          import('../../../auth'),
-          import('../../../memory/agent-signals'),
-        ]);
+        const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { resolveClaimedWorkItemIdForOwner }] =
+          await Promise.all([
+            import('../../../memory/injection'),
+            import('../../../auth'),
+            import('../../../memory/agent-signals'),
+          ]);
         const [user, currentWorkItemId] = await Promise.all([
           getSessionUserOrDefault().catch(() => null),
           resolveClaimedWorkItemIdForOwner({ ownerId: owner, workspaceId }).catch(() => undefined),
@@ -1084,7 +1112,7 @@ const midTurnContext = defineTool({
           })) ?? ''
         );
       });
-      if (!admitted.admitted) return Response.json({ ok: true, text: '' });
+      if (!admitted.admitted) return respond();
       const block = admitted.value;
 
       // The recall RAN. Separate "returned context" from "found nothing
@@ -1093,9 +1121,9 @@ const midTurnContext = defineTool({
       void recordInjectionCoverage([{ ...coverage, outcome: block ? 'recalled' : 'no-recall' }]);
 
       // The budget is advisory inside buildMemoryContextBlock; see clampToBudget.
-      return Response.json({ ok: true, text: clampToBudget(block) });
+      return respond(block);
     } catch {
-      return Response.json({ ok: true, text: '' });
+      return respond();
     }
   },
 });

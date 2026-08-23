@@ -48,6 +48,7 @@ import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readAgentStateStamp } from './agent-state-stamp';
 import { classifyCallOrigin } from './telemetry-call-origin';
 import { recordMcpTraffic } from './coverage-census/attribution/sink';
+import { observeFailureLoop } from './failure-loop-circuit-breaker';
 
 /**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
@@ -753,6 +754,22 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // Best-effort + non-blocking — swallow throws so a reaction never breaks its
   // trigger. The handler is installed by `lib/events` at startup.
   postInvoke: (event) => {
+    // EI-6139: this is the one shared point where every transport's settled
+    // result, canonical tool name, argument shape, and attributable agent meet.
+    // The observer is synchronous/process-local and records no argument values;
+    // the heavier insight/recipe lookup is deferred until mid-turn delivery
+    // drains a third-failure signal.
+    try {
+      const ownerId = resolveAgentIdentity(event.ctx).ownerId;
+      observeFailureLoop({
+        ownerId,
+        toolName: event.toolName,
+        args: event.args,
+        result: event.result,
+      });
+    } catch {
+      // Identity gaps and detector faults must never break the triggering tool.
+    }
     try {
       reactionPostInvoke?.(event);
     } catch {
