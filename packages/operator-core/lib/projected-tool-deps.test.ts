@@ -36,18 +36,14 @@ vi.mock('./decision-ledger/emit', async (importOriginal) => ({
   recordDecisionLedger: vi.fn(),
 }));
 
-import {
-  PROJECTED_DEPS,
-  setReactionPostInvoke,
-  jsonbSafeStringify,
-  isPaletteUiPollRead,
-} from './projected-tool-deps';
+import { PROJECTED_DEPS, setReactionPostInvoke, jsonbSafeStringify, isPaletteUiPollRead } from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
 import { PASS_THROUGH } from '@papercusp/agent-mcp';
 import type { PostInvokeEvent, UnifiedToolContext } from '@papercusp/agent-mcp';
+import { __resetFailureLoopCircuitBreakerForTests, takePendingFailureLoopHint } from './failure-loop-circuit-breaker';
 
 function ctx(over: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
   return { workspaceId: 'default', ...over } as UnifiedToolContext;
@@ -55,6 +51,7 @@ function ctx(over: Partial<UnifiedToolContext> = {}): UnifiedToolContext {
 
 afterEach(() => {
   vi.clearAllMocks();
+  __resetFailureLoopCircuitBreakerForTests();
   // The reaction port is a module-level singleton — reset between tests so an
   // installed handler does not leak.
   setReactionPostInvoke(null);
@@ -151,6 +148,32 @@ describe('PROJECTED_DEPS.postInvoke — decision-ledger emit + never breaks its 
   it('records a decision-ledger row on every settled dispatch', () => {
     PROJECTED_DEPS.postInvoke!(event());
     expect(recordDecisionLedger).toHaveBeenCalledOnce();
+  });
+
+  it('attributes settled failures and queues the third identical signal for mid-turn delivery', () => {
+    const failed = event();
+    failed.ctx = ctx({
+      principal: {
+        slug: 'system:failure-loop-test',
+        workspaceId: 'default',
+        capabilities: new Set<string>(),
+      },
+    }) as PostInvokeEvent['ctx'];
+    failed.result = {
+      ok: false,
+      error: { code: 'invalid_input', message: 'raw detail' },
+    } as PostInvokeEvent['result'];
+
+    PROJECTED_DEPS.postInvoke!(failed);
+    PROJECTED_DEPS.postInvoke!(failed);
+    PROJECTED_DEPS.postInvoke!(failed);
+
+    expect(takePendingFailureLoopHint('system:failure-loop-test')).toMatchObject({
+      ownerId: 'system:failure-loop-test',
+      toolName: 'plans.set-status',
+      errorClass: 'dispatch:invalid_input',
+      count: 3,
+    });
   });
 
   it('forwards the event to the installed reaction handler', () => {
@@ -318,9 +341,7 @@ describe('isPaletteUiPollRead -- exclude palette UI poll-reads from telemetry (E
   });
 
   it('RECORDS when spawnId is absent (no palette identity to key on)', () => {
-    expect(
-      isPaletteUiPollRead({ toolName: 'coord:wake-queue', ctx: ctx({}), args: { action: 'list' } }),
-    ).toBe(false);
+    expect(isPaletteUiPollRead({ toolName: 'coord:wake-queue', ctx: ctx({}), args: { action: 'list' } })).toBe(false);
   });
 
   it('tolerates a non-object / missing args payload without throwing', () => {
