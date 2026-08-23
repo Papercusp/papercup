@@ -248,6 +248,23 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toMatch(/msg-complete-structured/);
   });
 
+  it('stays silent when completion belongs to a different item in a scoped consolidation message', async () => {
+    const duplicate = 'EI-21201399884691584';
+    const canonical = 'EI-21201391254071051';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-scoped-consolidation',
+        ts: '2026-08-23T00:29:10.000Z',
+        from: 'me',
+        summary:
+          `Consolidation is complete: ${duplicate} is dropped; ${canonical} remains canonical and I am releasing that claim now.`,
+      } as never,
+    ]);
+
+    const b = await body({ id: canonical });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
   it('stays silent for negated or still-in-progress completion language', async () => {
     outboxM.mockResolvedValue([
       {

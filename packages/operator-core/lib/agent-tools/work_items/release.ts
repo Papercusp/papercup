@@ -117,13 +117,28 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
   return refs.some((candidate) => ref.test(candidate.trim()));
 }
 
+/**
+ * Keep an affirmative completion phrase attached to the clause that names the
+ * item. A message can legitimately contain both "consolidation is complete"
+ * and a still-open item that is being released; treating the whole message as
+ * one segment makes the former look like a claim about the latter.
+ */
+function completionClauses(segment: string): string[] {
+  return segment
+    .split(/(?:\r?\n|[.!?;]+|:\s+|,\s+(?=[A-Z0-9])|\s+(?:—|–|--)+\s+)/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
 function assertsCompletionForItem(message: unknown, itemId: string): boolean {
   if (hasStructuredCompletionPremise(message, itemId)) return true;
   const itemRef = escapedRegExp(itemId);
   return completionAssertionText(message).some((segment) => {
-    if (!itemRef.test(segment)) return false;
-    if (!COMPLETION_ASSERTION_PATTERNS.some((pattern) => pattern.test(segment))) return false;
-    return !NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(segment));
+    return completionClauses(segment).some((clause) => {
+      if (!itemRef.test(clause)) return false;
+      if (!COMPLETION_ASSERTION_PATTERNS.some((pattern) => pattern.test(clause))) return false;
+      return !NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(clause));
+    });
   });
 }
 
