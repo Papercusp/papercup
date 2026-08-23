@@ -293,7 +293,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // the badge and the ledger it labels drift apart until the next mount.
     'learning.retainCounts',
   ],
-  'harness_shared.plan_revisions': ['plans.revisions'],
+  // planActivity.list (plan-visibility-revamp-2026-08-23 P-004) — the plan
+  // dashboard's merged activity feed reads revisions as its EDITS leg. Full-bust:
+  // the feed is planSlug-keyed and this trigger carries no plan_slug natural key.
+  'harness_shared.plan_revisions': ['plans.revisions', 'planActivity.list'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
   // Runs-tab history+rollup (plans.runHistory, { planSlug }) — a row write busts both.
   'harness_shared.plan_runs': ['plans.runs', 'plans.runHistory'],
@@ -525,6 +528,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // max(GREATEST(updated_ts, last_progress_at)) per source_plan_slug, so any
     // work-item write can move it. Full-bust: workspace-keyed, not row-keyed.
     'planWorkActivity.list',
+    // planActivity.list (P-004) — the plan dashboard's activity feed's WORK leg
+    // (per-item latest movement). Full-bust: planSlug-keyed, no scope can match.
+    'planActivity.list',
     // rubrics.* / scorecards.* (rubrics-tab-scorecard-ui-2026-07-09 P-002): a
     // scorecard IS an engineer_issues row (compat view over work_items — THIS base
     // table is the invalidation producer), so a newly filed grading refreshes the
