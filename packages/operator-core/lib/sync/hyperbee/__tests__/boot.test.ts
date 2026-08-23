@@ -3458,6 +3458,11 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
       loadRevokedOverride: async () => new Set<string>(),
       joinerPotHomeSlugOverride: async () => null,
       potHomeSlugForHarnessOverride: async () => HIVE_HOME,
+      announceIdentityOverride: makeAnnounceIdentityOverride(
+        'wi3288-offline',
+        3_288,
+        `wi3288-${workspaceId}`,
+      ).override,
       openRemoteLogOverride: async (_store: unknown, logKeyHex: string) => fakeRemoteLog(logKeyHex),
     };
   }
