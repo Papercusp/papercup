@@ -167,7 +167,7 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
     expect(diagnoseFromLedger(row, probe)).toEqual({ kind: 'ledger_inconclusive' });
   });
 
-  it('never reports progress after the pinned process execs a different command', () => {
+  it('keeps the liveness proof after the pinned process execs a different command', () => {
     const row = fakeRow({
       state: 'running',
       pid: 999,
@@ -180,7 +180,14 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
       cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
       cmdline: 'node unrelated-worker.mjs',
     });
-    expect(diagnoseFromLedger(row, probe)).toEqual({ kind: 'ledger_inconclusive' });
+    // The command line may legitimately change when the shell execs npm/tsc.
+    // Boot/start identity + owned cgroup still prove this is the same task.
+    expect(diagnoseFromLedger(row, probe)).toEqual({
+      kind: 'confirmed_alive',
+      pid: 999,
+      scopeUnit: 'pc-tsk0000001.scope',
+      taskId: 'tsk0000001',
+    });
   });
 
   it('reports ledger_inconclusive when the row is non-terminal but carries no pid/processIdentity to re-probe', () => {

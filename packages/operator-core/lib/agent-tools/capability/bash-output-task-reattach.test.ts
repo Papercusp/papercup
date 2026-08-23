@@ -209,6 +209,27 @@ describe('capability:bash_output — durable task attachment', () => {
     expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
+  it('prefers the ledger log path over a stale same-id local-worker log', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-ledger-log-precedence-'));
+    const ledgerLogPath = join(stateDir, 'authoritative.log');
+    try {
+      mkdirSync(join(stateDir, 'scratch'), { recursive: true });
+      writeFileSync(join(stateDir, 'scratch', 'bash-bash-carry-1.log'), 'stale local worker bytes\n');
+      writeFileSync(ledgerLogPath, 'authoritative growing bytes\n');
+      store.getTask.mockResolvedValue(taskRow({ logPath: ledgerLogPath }));
+      jobs.getJob.mockReturnValue(null);
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(payload.output_tail).toBe('authoritative growing bytes\n');
+      expect(payload.output).toBe('authoritative growing bytes\n');
+      expect(payload.log_path).toBe(ledgerLogPath);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('recovers a queued service-backed job from ActiveState and preserves its durable tail', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'bash-scope-recovery-'));
     const output = 'queued behind pc-heavy\n';

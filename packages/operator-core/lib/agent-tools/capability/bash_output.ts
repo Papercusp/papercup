@@ -7,7 +7,6 @@
  */
 
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -258,14 +257,6 @@ export interface TaskProcessLivenessProbe {
   cmdline: string;
 }
 
-function cmdlineFingerprint(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function persistedCmdline(row: TaskRow): string {
-  return row.argv.join(' ').trim();
-}
-
 function probeTaskProcess(pid: number): TaskProcessLivenessProbe {
   return {
     processIdentity: readProcessIdentity(pid),
@@ -289,19 +280,18 @@ export function diagnoseFromLedger(
     };
   }
   // pending/running/unaccounted/foreign: the ledger THINKS a process is alive.
-  // Re-probe every identity pin before calling a verifier alive. PID identity
-  // prevents PID reuse, the dedicated cgroup proves CPU movement belongs to this
-  // task rather than a shared worker pool, and the command fingerprint prevents a
-  // same-process exec from inheriting the old task's identity. Missing data fails
-  // to inconclusive; liveness is never inferred from a partial pin set.
-  if (row.pid && row.processIdentity && row.confined && row.scopeUnit && row.cgroupPath && row.argv.length > 0) {
+  // Re-probe the stable identity + owned cgroup before calling a verifier alive.
+  // The command line is intentionally NOT a liveness pin: a shell can naturally
+  // exec the workload (npm/tsc/etc.) while retaining the same boot/start identity
+  // and cgroup. Requiring byte-identical argv made the first recovery read green
+  // and a later read downgrade the same live job to `job_liveness_unknown`.
+  // Missing identity/cgroup data still fails closed to inconclusive; liveness is
+  // never inferred from a partial pin set.
+  if (row.pid && row.processIdentity && row.confined && row.scopeUnit && row.cgroupPath) {
     const now = probe(row.pid);
-    const expectedCmdline = persistedCmdline(row);
     if (
       now.processIdentity === row.processIdentity &&
-      now.cgroupPath === row.cgroupPath &&
-      now.cmdline.length > 0 &&
-      cmdlineFingerprint(now.cmdline) === cmdlineFingerprint(expectedCmdline)
+      now.cgroupPath === row.cgroupPath
     ) {
       return { kind: 'confirmed_alive', pid: row.pid, scopeUnit: row.scopeUnit ?? null, taskId: row.taskId };
     }
@@ -799,9 +789,12 @@ export default defineTool({
         ...(ledgerRow?.taskId ? { task_id: ledgerRow.taskId } : {}),
       };
       const ledgerVerdict = diagnoseFromLedger(ledgerRow);
+      // The ledger path is authoritative across workers. Only fall back to the
+      // local deterministic path when the durable path is absent/unreadable;
+      // otherwise a stale same-ID file on this worker can mask a growing log.
       const stranded =
-        strandedJobLookup(bashId, ctx.stateDir) ??
-        (ledgerRow?.logPath ? strandedJobLookupAtPath(ledgerRow.logPath) : null);
+        (ledgerRow?.logPath ? strandedJobLookupAtPath(ledgerRow.logPath) : null) ??
+        strandedJobLookup(bashId, ctx.stateDir);
       if (stranded || ledgerRow) {
         const strandedLog: StrandedJobLogInspection = stranded
           ? inspectStrandedJobLog(stranded, args.filter)
