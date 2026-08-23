@@ -68,7 +68,10 @@ export interface CodeRunInstrumentationRollup {
 
 export const CODE_RUN_INSTRUMENTATION_SQL = `
 WITH code_runs AS (
-  SELECT metadata_json
+  -- invoked_at + output_ref are carried for the spill-resolution correlation below:
+  -- output_ref holds the papercusp:// spill URI, metadata_json->>'spillPath' the filesystem
+  -- path, and a later capability:read may address the spill by EITHER.
+  SELECT metadata_json, invoked_at, output_ref
   FROM harness_shared.tool_invocations
   WHERE invoked_at >= now() - (($1)::int || ' days')::interval
     AND transport = 'mcp'
