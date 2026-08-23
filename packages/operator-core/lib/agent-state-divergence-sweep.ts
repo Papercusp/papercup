@@ -223,6 +223,13 @@ export async function loadRecentCalls(opts: {
        -- every call as system-authored lifecycle. Contextual agent traffic uses
        -- coord:send and remains eligible evidence.
        AND i.tool_name <> 'coord:emit'
+       -- coord:declare-intent settles before its lifecycle append can update
+       -- the in-process pointer, so its retrospective intent_event_id points
+       -- at the PREVIOUS declaration. If the agent changed goals while
+       -- redeclaring, treating this control write as an action manufactures a
+       -- goal-drift finding inside that previous bucket. The declaration is
+       -- state, not evidence of an action taken under the old intent.
+       AND i.tool_name <> 'coord:declare-intent'
        -- Platform reaction rows are telemetry about the wake mechanism, not
        -- agent-authored actions. Keep the predicate deliberately narrow: an
        -- unattributed pot:wake with the event source and its stamped reason.

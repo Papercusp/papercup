@@ -80,6 +80,11 @@ describe('loadRecentCalls', () => {
     // side of an agent reasoning/action divergence. `coord:send` is the
     // contextual, agent-authored sibling and must remain in the population.
     expect(query).toContain("tool_name <> 'coord:emit'");
+    // A declaration invocation settles before its lifecycle append updates the
+    // pointer, so its retrospective intent_event_id belongs to the prior
+    // declaration. Keeping it would manufacture drift when the goal changed
+    // as part of a legitimate re-declaration.
+    expect(query).toContain("tool_name <> 'coord:declare-intent'");
     expect(query).not.toContain("tool_name <> 'coord:send'");
     expect(query).toContain("tool_name = 'pot:wake'");
     expect(query).toContain("call_origin IS NULL");
