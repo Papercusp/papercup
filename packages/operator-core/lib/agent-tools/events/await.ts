@@ -66,7 +66,7 @@ export default defineTool({
   description:
     'Register a one-shot WAKE on an event key/pattern; when it fires you are re-invoked, so end your turn instead of polling. Patterns wake on their first match; `spec` threshold trees wake when satisfied.',
   guidance: {
-    when: 'You are blocked on a known event key: lock grant, plan run, peer answer, deploy/gate, or another emitter (patterns/macros cover families; see `event`). For `work-item:status:<id>` / `work-item:done:<id>`, the id must belong to a DIFFERENT assignee: awaiting your own item is an unsatisfiable self-deadlock and is refused before registration. Pair key? Its completion OWNER must declare it (`events:emit { announce:true }`); await the RETURNED key, never a hand-typed chat key. `work-item:unblocked:<id>` latches at registration and returns `already_unblocked` when already clear.',
+    when: 'You are blocked on a known event key: lock grant, plan run, peer answer, deploy/gate, or another emitter (patterns/macros cover families; see `event`). For `work-item:status:<id>` / `work-item:done:<id>` / `claim:released:<id>`, the id must belong to a DIFFERENT assignee: awaiting your own item is an unsatisfiable self-deadlock and is refused before registration. Pair key? Its completion OWNER must declare it (`events:emit { announce:true }`); await the RETURNED key, never a hand-typed chat key. `work-item:unblocked:<id>` latches at registration and returns `already_unblocked` when already clear.',
     notWhen:
       'Ambient interest (use watch:create { targetKind:"topic", wake:false }), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining: 'Recipe: `events:catalog` → `events:await { event }` (or sugar) → END YOUR TURN → wake carries payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the same key retires your prior wait; `events:cancel` retracts, `events:status` inspects.',
@@ -676,11 +676,12 @@ export default defineTool({
     // ── EI-18731480441007330 (the WI-6095 unbreakable self-deadlock incident):
     // the SELF-AWAIT guard. An agent can hold a work-item as its own assignee
     // AND register an events:await on that SAME item's `work-item:status:<id>`
-    // / `work-item:done:<id>` key — but that key can only fire when the
-    // awaiter itself acts (completes / transitions the item), so the wait is
-    // unsatisfiable by construction: a permanent self-deadlock that no fleet
-    // health check surfaces (the resulting verdict — `parked-awaiting-
-    // capability` — looks identical to a legitimate wait on a PEER's work).
+    // / `work-item:done:<id>` / `claim:released:<id>` key — but each key is
+    // driven by the awaiter's own claim lifecycle (the first two by acting on
+    // the item, the latter by releasing its claim), so the wait is unsatisfiable
+    // by construction: a permanent self-deadlock that no fleet health check
+    // surfaces (the resulting verdict — `parked-awaiting-capability` — looks
+    // identical to a legitimate wait on a PEER's work).
     // We actively teach members to "park on the event that unblocks you"
     // (correct advice in general — see EI-18730414627683753's opposite
     // failure, dormant members that never park at all), and a member holding
@@ -693,7 +694,7 @@ export default defineTool({
     // already-settled item (liveAssigneeProbe returns 'settled' — no
     // deadlock risk; the doneTarget latch above already short-circuits that
     // case for `work-item:done:<id>` before we even get here).
-    const selfAwaitTarget = patternAwait ? undefined : /^work-item:(?:status|done):([^:]+)$/.exec(eventKey)?.[1];
+    const selfAwaitTarget = patternAwait ? undefined : /^(?:work-item:(?:status|done)|claim:released):([^:]+)$/.exec(eventKey)?.[1];
     if (selfAwaitTarget) {
       const probe = await withBoundedTimeout(liveAssigneeProbe(selfAwaitTarget), {
         fallback: { verdict: 'unknown' as const },

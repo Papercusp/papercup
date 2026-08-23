@@ -134,7 +134,7 @@ describe('events:await wrapper defaults', () => {
   it('guidance warns before registration that self-assignee status/done awaits are refused', () => {
     const guidance = awaitTool.guidance;
     expect(guidance).toBeDefined();
-    expect(guidance!.when).toMatch(/work-item:status:<id>.*work-item:done:<id>/);
+    expect(guidance!.when).toMatch(/work-item:status:<id>.*work-item:done:<id>.*claim:released:<id>/);
     expect(guidance!.when).toMatch(/unsatisfiable self-deadlock/);
     expect(guidance!.when).toMatch(/before registration/);
   });
@@ -857,6 +857,15 @@ describe('the SELF-AWAIT guard (EI-18731480441007330 — the WI-6095 unbreakable
     const out = await call({ event: 'work-item:done:WI-6095' });
     expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'work-item:done:WI-6095', work_item_id: 'WI-6095' });
     expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES a claim:released:<id> await when the caller still holds the item claim', async () => {
+    vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-awaiter' });
+    const out = await call({ event: 'claim:released:WI-6095' });
+    expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'claim:released:WI-6095', work_item_id: 'WI-6095' });
+    expect(out.advice).toContain('CURRENT ASSIGNEE');
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(liveAssigneeProbe).toHaveBeenCalledWith('WI-6095');
   });
 
   it('a DIFFERENT assignee (a legitimate wait on a peer\'s work) registers exactly as before', async () => {
