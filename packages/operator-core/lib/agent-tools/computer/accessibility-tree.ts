@@ -539,19 +539,91 @@ export function elementClickPoint(
 }
 
 /**
- * The walker invocation for a display. `gjs -c <program>` rather than a checked-in
- * script path — see the module header for why an asset path is the wrong dependency
- * for a bundled package.
+ * Env keys that bind a process to the operator's own D-Bus / accessibility session.
  *
- * The env comes from `sandboxXEnv`, which is what makes the observation path inherit
- * the SAME deny-by-default rail as every input action: the walker cannot be pointed
- * at the operator's `:0`, so reading a desktop is exactly as sandboxed as driving one.
- * That matters more here than it looks — a tree read is the one desktop operation
- * that feels passive enough to justify skipping the guard, and a tree of the
- * operator's real session is a straight exfiltration of the fleet's terminals.
+ * 🚨 THE LEAK THIS CLOSES, measured on the box 2026-08-23 and NOT hypothetical.
+ * Binding `DISPLAY` to a sandbox is sufficient for `xdotool` and `import`, so it is
+ * natural to assume it is sufficient for the a11y walker too. It is not.
+ * `atspi_init()` resolves its bus in a LADDER: `AT_SPI_BUS_ADDRESS`, then the
+ * `AT_SPI_BUS` property on the X root window, and finally the ambient session bus at
+ * `$XDG_RUNTIME_DIR/bus`. A sandbox desktop with no a11y bus of its own has no root
+ * property, so the ladder falls all the way through to the LAST rung — the
+ * operator's real login session.
+ *
+ * Observed: a walk bound to sandbox display `:119`, whose only app was one zenity
+ * dialog, returned **69 applications** — the owner's actual desktop. It did not warn,
+ * error, or return empty. It returned a rich, plausible, completely wrong tree, which
+ * is the worst possible failure mode: the model would have read the operator's real
+ * screen and had no way to know.
+ *
+ * The fix is therefore NOT to strip these and hope. Stripping alone still leaves the
+ * `$XDG_RUNTIME_DIR/bus` rung reachable — which is exactly the configuration that
+ * produced the 69-app walk. The bus must be named EXPLICITLY (`requireA11yBus`).
  */
-export function walkerCommand(display: string): { bin: string; args: string[]; env: Record<string, string> } {
-  return { bin: 'gjs', args: ['-c', ATSPI_WALKER_JS], env: sandboxXEnv(display) };
+export const HOST_BUS_ENV_KEYS: readonly string[] = Object.freeze([
+  'DBUS_SESSION_BUS_ADDRESS',
+  'AT_SPI_BUS_ADDRESS',
+  'DBUS_STARTER_ADDRESS',
+  'DBUS_STARTER_BUS_TYPE',
+]);
+
+/**
+ * Read the a11y bus advertised by a display, so the walker can be pinned to it.
+ *
+ * This is the ONLY authority for "which accessibility bus belongs to this desktop":
+ * the property is written on the sandbox's own root window by `at-spi-bus-launcher`,
+ * so it cannot name another display's bus.
+ */
+export function a11yBusProbeCommand(display: string): { bin: string; args: string[]; env: Record<string, string> } {
+  return { bin: 'xprop', args: ['-display', display, '-root', 'AT_SPI_BUS'], env: sandboxXEnv(display) };
+}
+
+/**
+ * Parse `xprop -root AT_SPI_BUS` output into a bus address.
+ *
+ * Returns null for the absent case — `AT_SPI_BUS:  no such atom on any window.` —
+ * which is a REAL answer meaning "this desktop has no accessibility bus", and is the
+ * exact condition that must refuse rather than fall through to the host's.
+ */
+export function parseAtSpiBusProperty(stdout: string): string | null {
+  const m = /AT_SPI_BUS\s*\(STRING\)\s*=\s*"([^"]+)"/.exec(stdout ?? '');
+  const addr = m?.[1]?.trim();
+  return addr && addr.length > 0 ? addr : null;
+}
+
+export class NoAccessibilityBusError extends Error {
+  constructor(display: string) {
+    super(
+      `computer:observe — display ${display} advertises no accessibility bus (no AT_SPI_BUS property on its root window). ` +
+        'REFUSING to fall back to the ambient session bus: that fallback resolves to the OPERATOR\'S OWN desktop and ' +
+        'returns a rich, plausible, completely wrong tree (measured: 69 host applications for a sandbox running one dialog). ' +
+        `To fix: provision the desktop with accessibility enabled (it needs ${A11Y_APT_PACKAGES.join(' + ')} and an ` +
+        'at-spi bus bound to this display), or use capability:computer screenshot instead.',
+    );
+    this.name = 'NoAccessibilityBusError';
+  }
+}
+
+/**
+ * The walker invocation for a display, PINNED to that display's own a11y bus.
+ *
+ * Two rails, and both are load-bearing:
+ *  1. `sandboxXEnv` — the same deny-by-default guard every input action passes, so the
+ *     walker can never be pointed at `:0`. A tree read is the one desktop operation
+ *     passive enough to feel like it does not need the guard, and a tree of the
+ *     operator's session is a straight exfiltration of the fleet's terminals.
+ *  2. `busAddress` is REQUIRED and the host bus keys are stripped — see
+ *     `HOST_BUS_ENV_KEYS` for the measured leak this exists to stop.
+ */
+export function walkerCommand(
+  display: string,
+  busAddress: string,
+): { bin: string; args: string[]; env: Record<string, string> } {
+  if (!busAddress || !busAddress.trim()) throw new NoAccessibilityBusError(display);
+  const env = sandboxXEnv(display);
+  for (const key of HOST_BUS_ENV_KEYS) delete env[key];
+  env.AT_SPI_BUS_ADDRESS = busAddress.trim();
+  return { bin: 'gjs', args: ['-c', ATSPI_WALKER_JS], env };
 }
 
 /**
