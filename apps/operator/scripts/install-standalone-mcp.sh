@@ -1821,7 +1821,7 @@ if [ -f "$PTOOL_LAUNCHER" ]; then
 # repo-keyed install mutex used by npm-install-safe before loading that graph so
 # an in-flight npm reify cannot expose a half-extracted SDK to the CLI.
 exec node "${REPO_ROOT}/scripts/npm-install-safe.mjs" \
-  --repo-root "${REPO_ROOT}" --exec-under-lock -- \\
+  --repo-root "${REPO_ROOT}" --exec-under-lock -- \
   node "${PTOOL_LAUNCHER}" "\$@"
 WRAPEOF
   chmod 755 "$PTOOL_PATH"
