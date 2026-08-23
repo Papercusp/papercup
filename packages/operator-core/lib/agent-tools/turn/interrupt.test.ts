@@ -5,7 +5,13 @@
  * legs are covered separately (a4bf4's Phase 3 e2e + a live smoke).
  */
 import { describe, it, expect } from 'vitest';
-import { performInterrupt, type InterruptDeps, type InterruptInput } from './interrupt';
+import {
+  forceEndTurn,
+  performInterrupt,
+  type InterruptDeps,
+  type InterruptInput,
+  type InterruptResult,
+} from './interrupt';
 
 function baseInput(over: Partial<InterruptInput> = {}): InterruptInput {
   return { actor: 'su-actor', workspaceId: 'ws', owner: 'su-target', mode: 'cooperative', reason: 'obsolete work', ...over };
@@ -148,5 +154,37 @@ describe('turn:interrupt — performInterrupt (P-016/P-018; headless P-020)', ()
     const r = await performInterrupt(baseInput({ mode: 'force' }), d); // no key
     expect(r.channel).toBe('pty-ctrl-c');
     expect(keys).toEqual(['sigint']);
+  });
+});
+
+describe('forceEndTurn flight record', () => {
+  const input = {
+    actor: 'stall-waker',
+    workspaceId: 'ws',
+    owner: 'su-target',
+    reason: 'recover wedged turn',
+  };
+
+  it('captures only after a successful forced interrupt and never releases the claim', async () => {
+    const events: string[] = [];
+    const capture = async () => {
+      events.push('capture');
+      return { capturedIds: ['WI-1'] };
+    };
+    const success = async (): Promise<InterruptResult> => {
+      events.push('interrupt-ok');
+      return { ok: true, mode: 'force', channel: 'pty-esc' };
+    };
+    const failed = async (): Promise<InterruptResult> => {
+      events.push('interrupt-failed');
+      return { ok: false, mode: 'force', error: 'no live session' };
+    };
+
+    await forceEndTurn(input, { perform: success, capture });
+    expect(events).toEqual(['interrupt-ok', 'capture']);
+
+    events.length = 0;
+    await forceEndTurn(input, { perform: failed, capture });
+    expect(events).toEqual(['interrupt-failed']);
   });
 });

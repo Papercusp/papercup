@@ -23,6 +23,7 @@ import { releaseWorkItem } from './work-items';
 import { releaseAllClaimsForOwner } from './work-item-claims';
 import { issuesScopeWorkspace } from './issues-engineer';
 import { activeWorkspaceId } from './workspace-registry';
+import { captureWorkItemFlightRecordsForItems, harnessFromIssueScope } from './work-item-flight-record';
 
 export interface OwnerLeaseReleaseResult {
   /** Work-item ids whose lease was released (or found already clear). */
@@ -43,6 +44,44 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
     const { sql } = getOrgPg();
     const featureWs = activeWorkspaceId();
     const issueWs = issuesScopeWorkspace();
+    const [featureRows, issueRows] = await Promise.all([
+      sql<Array<{ id: string; harness: string }>>`
+        SELECT feature_id AS id, harness_slug AS harness
+          FROM harness_shared.harness_features_consolidated
+         WHERE workspace_id = ${featureWs} AND taken_by = ${ownerId}`,
+      sql<Array<{ id: string; scope: string | null }>>`
+        SELECT issue_id AS id, scope
+          FROM harness_shared.engineer_issues
+         WHERE workspace_id = ${issueWs} AND assignee = ${ownerId}`,
+    ]);
+    // Snapshot recovery evidence while the holder relationship is still intact.
+    // This MUST finish before either claim ledger or lease row is mutated.
+    const featureRefs = featureRows.map((r) => ({ id: r.id, harness: r.harness }));
+    const issueRefs = issueRows.map((r) => ({ id: r.id, harness: harnessFromIssueScope(r.scope) }));
+    if (featureWs === issueWs) {
+      await captureWorkItemFlightRecordsForItems({
+        ownerId,
+        workspaceId: featureWs,
+        cause: 'lease-release',
+        items: [...featureRefs, ...issueRefs],
+      });
+    } else {
+      await Promise.all([
+        captureWorkItemFlightRecordsForItems({
+          ownerId,
+          workspaceId: featureWs,
+          cause: 'lease-release',
+          items: featureRefs,
+        }),
+        captureWorkItemFlightRecordsForItems({
+          ownerId,
+          workspaceId: issueWs,
+          cause: 'lease-release',
+          items: issueRefs,
+        }),
+      ]);
+    }
+
     // Clear the coordination claim ledger BEFORE releasing the work-item rows.
     // releaseWorkItem() also schedules best-effort lease cleanup, so doing this
     // afterward made the explicit cleanup race with that fire-and-forget path and
@@ -53,16 +92,6 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
     } catch (e) {
       console.warn(`[work-item-lease-release] claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
     }
-    const [featureRows, issueRows] = await Promise.all([
-      sql<Array<{ id: string; harness: string }>>`
-        SELECT feature_id AS id, harness_slug AS harness
-          FROM harness_shared.harness_features_consolidated
-         WHERE workspace_id = ${featureWs} AND taken_by = ${ownerId}`,
-      sql<Array<{ id: string }>>`
-        SELECT issue_id AS id
-          FROM harness_shared.engineer_issues
-         WHERE workspace_id = ${issueWs} AND assignee = ${ownerId}`,
-    ]);
     for (const r of featureRows) {
       try {
         const released = await releaseWorkItem(r.id, { harness: r.harness, expectedAssignee: ownerId });

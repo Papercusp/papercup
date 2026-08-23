@@ -31,6 +31,7 @@ import { latestAdvSessionByCoordOwner } from '../../adv-sessions';
 import { interruptViaPty } from '../../events/await/psu-pty-discovery';
 import { readIdentity } from '../locks/identity';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
+import { captureHeldWorkItemFlightRecordsForOwner } from '../../work-item-flight-record';
 
 /** Storm guard (D-009): max interrupts one actor may issue per rolling window
  *  before we refuse — the audit log IS the rate source (no extra table). */
@@ -303,41 +304,70 @@ async function liveSessionPid(owner: string): Promise<number | null> {
  * SIGINT to the headless session pid. Reuses the SAME audit, storm rate-limit, self-interrupt refusal, and
  * held-lock warning as the `turn:interrupt` tool. Never throws — every failure is a structured result.
  */
-export async function forceEndTurn(input: {
-  actor: string;
-  workspaceId: string;
-  owner: string;
-  reason: string;
-  coordinationDomain?: string | null;
-}): Promise<InterruptResult> {
-  return performInterrupt(
-    { actor: input.actor, workspaceId: input.workspaceId, owner: input.owner, mode: 'force', reason: input.reason, key: 'esc' },
-    {
-      heldLockPaths: async (owner) => {
-        if (!input.coordinationDomain) return [];
-        try {
-          await ensureBootstrap();
-          const sql = getTxPool();
-          const q = await readQueue(sql, { coordinationDomain: input.coordinationDomain, owner });
-          return q.active_locks.map((l) => l.path);
-        } catch {
-          return [];
-        }
-      },
-      recentInterrupts: recentInterruptCount,
-      liveSessionPid,
-      ptyForce: (owner, key) => interruptViaPty(owner, key),
-      sigint: (pid) => {
-        try {
-          process.kill(pid, 'SIGINT');
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      audit: writeInterruptAudit,
+export async function forceEndTurn(
+  input: {
+    actor: string;
+    workspaceId: string;
+    owner: string;
+    reason: string;
+    coordinationDomain?: string | null;
+  },
+  testDeps?: {
+    perform?: typeof performInterrupt;
+    capture?: typeof captureHeldWorkItemFlightRecordsForOwner;
+    interruptDeps?: InterruptDeps;
+  },
+): Promise<InterruptResult> {
+  const interruptDeps = testDeps?.interruptDeps ?? {
+    heldLockPaths: async (owner) => {
+      if (!input.coordinationDomain) return [];
+      try {
+        await ensureBootstrap();
+        const sql = getTxPool();
+        const q = await readQueue(sql, { coordinationDomain: input.coordinationDomain, owner });
+        return q.active_locks.map((l) => l.path);
+      } catch {
+        return [];
+      }
     },
+    recentInterrupts: recentInterruptCount,
+    liveSessionPid,
+    ptyForce: (owner, key) => interruptViaPty(owner, key),
+    sigint: (pid) => {
+      try {
+        process.kill(pid, 'SIGINT');
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    audit: writeInterruptAudit,
+  };
+  const result = await (testDeps?.perform ?? performInterrupt)(
+    {
+      actor: input.actor,
+      workspaceId: input.workspaceId,
+      owner: input.owner,
+      mode: 'force',
+      reason: input.reason,
+      key: 'esc',
+    },
+    interruptDeps,
   );
+  // A failed/no-op interrupt must never manufacture a flight record. A successful
+  // force captures recovery evidence but deliberately leaves every claim intact.
+  if (result.ok) {
+    try {
+      await (testDeps?.capture ?? captureHeldWorkItemFlightRecordsForOwner)({
+        ownerId: input.owner,
+        workspaceId: input.workspaceId,
+        cause: 'forced-interrupt',
+      });
+    } catch {
+      /* fail-soft: interrupt success stands even if evidence capture is unavailable */
+    }
+  }
+  return result;
 }
 
 export default defineTool({
