@@ -288,6 +288,8 @@ export default defineTool({
         const authority = await validateRecipeAuthorityProof({
           script: recipe.script,
           updatedAt: recipe.updatedAt,
+          bindingSchema: recipe.bindingSchema,
+          capabilityManifest: recipe.capabilityManifest,
           proof: it.authority
             ? isAuthorityMetadata(it.authority)
               ? {

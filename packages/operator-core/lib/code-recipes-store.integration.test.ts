@@ -13,6 +13,9 @@
  * Part of code-recipes-2026-06-21 Phase 1 (P-002, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertRecipe,
@@ -25,6 +28,19 @@ import {
 } from './code-recipes-store';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const here = dirname(fileURLToPath(import.meta.url));
+const contractMigration = join(
+  here,
+  '..',
+  '..',
+  '..',
+  'libs',
+  'papercusp',
+  'libs',
+  'db',
+  'sql',
+  '897-code-recipe-contract.sql.DRAFT',
+);
 
 /** A throwaway 768-dim embedding (the store only round-trips presence, not value). */
 const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 768 }, () => seed);
@@ -34,6 +50,10 @@ describe('code_recipes store (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    // Migration 897 remains deliberately unarmed while its consumers land.
+    // Apply the exact draft in this isolated database so store coverage and the
+    // production DDL cannot drift while the live shared DB stays untouched.
+    await db.adminSql.unsafe(readFileSync(contractMigration, 'utf8')).simple();
   }, 120_000);
 
   afterAll(async () => {
@@ -94,6 +114,65 @@ describe('code_recipes store (real PG)', () => {
     expect(second.toolsUsed).toEqual(['coord:send']);
     const list = await listRecipes(db.adminSql, { includeTrivial: true });
     expect(list.filter((r) => r.id === 'note')).toHaveLength(1);
+  });
+
+  it('round-trips the exact versioned recipe contract and clears it when a later revision omits it', async () => {
+    const bindingSchema = {
+      version: 1 as const,
+      properties: {
+        plan: { type: 'string' as const, required: true, lifetime: { kind: 'stable' as const } },
+      },
+      additionalProperties: false as const,
+    };
+    const capabilityManifest = {
+      version: 1 as const,
+      representation: 'recipe-script' as const,
+      topology: { premises: ['host:same' as const] as ['host:same'] },
+      requirements: [{ capability: 'tools:plans:get' as const }],
+      lifecycle: { allowed: ['foreground' as const], default: 'foreground' as const },
+      replay: { class: 'read-only' as const },
+      content: { emits: ['text' as const] },
+    };
+    const row = await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'typed-contract',
+      title: 'Typed contract',
+      description: 'reads a plan selected at runtime',
+      script: 'return await tools.plans.get({ slug: inputs.plan });',
+      bindingSchema,
+      capabilityManifest,
+    });
+    expect(row.bindingSchema).toEqual(bindingSchema);
+    expect(row.capabilityManifest).toEqual(capabilityManifest);
+    await expect(getRecipe(db.adminSql, row.id)).resolves.toMatchObject({
+      bindingSchema,
+      capabilityManifest,
+    });
+
+    const listed = (await listRecipes(db.adminSql, { includeTrivial: true })).find((item) => item.id === row.id);
+    expect(listed).not.toHaveProperty('bindingSchema');
+    expect(listed).not.toHaveProperty('capabilityManifest');
+
+    const legacyRevision = await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      script: 'return await tools.plans.list({});',
+    });
+    expect(legacyRevision.bindingSchema).toBeNull();
+    expect(legacyRevision.capabilityManifest).toBeNull();
+  });
+
+  it('refuses a binding schema without the manifest that defines its admission contract', async () => {
+    await expect(upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'invalid-contract',
+      title: 'Invalid contract',
+      description: 'must fail before SQL',
+      script: 'return 1;',
+      bindingSchema: { version: 1, properties: {}, additionalProperties: false },
+    })).rejects.toThrow('bindingSchema requires capabilityManifest');
   });
 
   it('upsert PRESERVES an existing embedding when re-run without one', async () => {

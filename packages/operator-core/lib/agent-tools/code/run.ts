@@ -1339,7 +1339,7 @@ async function maybeCaptureRecipe(
     return captured
       ? {
           id: captured.row.id,
-          revision: recipeRevision(captured.row.script, captured.row.updatedAt),
+          revision: recipeRevision(captured.row.script, captured.row.updatedAt, captured.row),
           disposition: captured.disposition,
           similarRecipes: captured.similarRecipes,
         }

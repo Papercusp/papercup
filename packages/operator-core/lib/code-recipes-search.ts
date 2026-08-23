@@ -213,7 +213,8 @@ export async function searchSimilarRecipes(
   const ids = results.map((r) => r.source_id).filter((id) => id !== input.excludeId);
   if (ids.length === 0) return [];
   const metaRows = (await sql`
-    SELECT id, title, description, script, run_count, tools_used, updated_at
+    SELECT id, title, description, script, binding_schema, capability_manifest,
+           run_count, tools_used, updated_at
       FROM harness_shared.code_recipes
      WHERE id = ANY(${ids})
        AND status = 'active'
@@ -222,6 +223,8 @@ export async function searchSimilarRecipes(
     title: string;
     description: string;
     script: string;
+    binding_schema: unknown | null;
+    capability_manifest: unknown | null;
     run_count: number | string;
     tools_used: string[] | null;
     updated_at: Date | string;
@@ -241,6 +244,8 @@ export async function searchSimilarRecipes(
     const authority = await buildRecipeAuthorityRecommendation({
       script: meta.script,
       updatedAt: typeof meta.updated_at === 'string' ? meta.updated_at : meta.updated_at.toISOString(),
+      bindingSchema: meta.binding_schema,
+      capabilityManifest: meta.capability_manifest,
       context: input.recommendationContext,
     });
     // P-008: semantic similarity is never authority. Opaque, stale-unverifiable,

@@ -91,7 +91,7 @@ export default defineTool({
             tags: recipe.tags,
             authority: {
               version: 1,
-              revision: recipeRevision(recipe.script, updatedAt),
+              revision: recipeRevision(recipe.script, updatedAt, recipe),
               refs: authority.refs,
               requiresContext: authority.bound,
               runnable: !authority.unresolved,

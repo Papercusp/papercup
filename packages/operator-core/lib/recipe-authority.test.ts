@@ -10,6 +10,60 @@ import {
   validateRecipeAuthorityProof,
 } from './recipe-authority';
 
+describe('recipe revision contract (P-015)', () => {
+  it('preserves legacy hashes and binds proofs to canonical schema + manifest material', async () => {
+    const script = 'return await tools.plans.list({});';
+    const updatedAt = '2026-08-22T22:00:00.000Z';
+    const bindingSchema = {
+      version: 1,
+      properties: { plan: { type: 'string', lifetime: { kind: 'stable' }, required: true } },
+      additionalProperties: false,
+    };
+    const capabilityManifest = {
+      version: 1,
+      representation: 'recipe-script',
+      topology: { premises: ['host:same'] },
+      requirements: [{ capability: 'tools:plans:list' }],
+      lifecycle: { allowed: ['foreground'], default: 'foreground' },
+      replay: { class: 'read-only' },
+      content: { emits: ['text'] },
+    };
+
+    expect(recipeRevision(script, updatedAt, { bindingSchema: null, capabilityManifest: null }))
+      .toBe(recipeRevision(script, updatedAt));
+    expect(recipeRevision(script, updatedAt, {
+      bindingSchema: {
+        additionalProperties: false,
+        properties: { plan: { required: true, lifetime: { kind: 'stable' }, type: 'string' } },
+        version: 1,
+      },
+      capabilityManifest,
+    })).toBe(recipeRevision(script, updatedAt, { bindingSchema, capabilityManifest }));
+
+    const recommendation = await buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt,
+      bindingSchema,
+      capabilityManifest,
+    });
+    expect(recommendation).not.toBeNull();
+    await expect(validateRecipeAuthorityProof({
+      script,
+      updatedAt,
+      bindingSchema,
+      capabilityManifest,
+      proof: recommendation!.proof,
+    })).resolves.toMatchObject({ ok: true });
+    await expect(validateRecipeAuthorityProof({
+      script,
+      updatedAt,
+      bindingSchema: { ...bindingSchema, properties: {} },
+      capabilityManifest,
+      proof: recommendation!.proof,
+    })).resolves.toMatchObject({ ok: false, error: 'authority_stale_revision' });
+  });
+});
+
 describe('recipe recommendation authority (P-008)', () => {
   const script = `
     await tools.plans.get({ slug: 'release-plan' });
