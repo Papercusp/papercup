@@ -189,7 +189,21 @@ export const ALLOWLIST = new Map([
  * clean one — so a parked defect cannot go quiet the way the old blind spot did.
  */
 export const KNOWN_DEFECTS = new Map([
-  // EMPTY, and that is the intended steady state — not a mechanism nobody used.
+  // WI-41108 — the site that MOTIVATED trigger (3), parked here rather than allowlisted
+  // because its lifetime IS ours to own, which is precisely what ALLOWLIST must not say.
+  // Status: the LEAK is fixed twice over (WI-41043) — a11y-bus.ts now releases the real
+  // forked pid via `--print-pid=1` + createOwnedDaemonRelease, and desktop/a11y-bus-sweep.ts
+  // reaps buses stranded by an operator death, hourly. What is still MISSING is the thing
+  // this guard actually asks for: the daemon is not in the TASK LEDGER, so `processes:list`
+  // cannot see it and the reconciler cannot account for it. Enrolling it is not a one-liner
+  // — `beginSyncEnrolment` also CONFINES into a cgroup scope and is itself flag-gated
+  // (WI-6499), and confinement interacts with the sweep's "stranded" test — so it is a
+  // deliberate change on WI-41108, not a drive-by. Remove this entry when it enrols.
+  [
+    'packages/operator-core/lib/desktop/a11y-bus.ts',
+    'WI-41108: `dbus-daemon --fork` is reaped (createOwnedDaemonRelease + hourly a11y-bus-sweep) but still UNLEDGERED, so it is invisible to processes:list. Enrolment pending — beginSyncEnrolment also confines + is flag-gated (WI-6499).',
+  ],
+  // Below: why this map exists at all, and the bar for an entry.
   // local-whisper-service.ts was the one entry (WI-39563): the widened trigger caught it
   // parking a `detached: false` whisper-server in module-scope `state.child`. It was fixed
   // rather than exempted — it now goes through `managedSpawn`, so the enrolment-import
