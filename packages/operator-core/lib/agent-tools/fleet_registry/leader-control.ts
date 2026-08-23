@@ -9,7 +9,14 @@
  */
 import { getModes, setMode } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
-import { buildLoopWakePrompt, getLoopStatus, materializeLoop, type LoopStatus } from '../../harness/routines/loop';
+import {
+  buildLoopWakePrompt,
+  getLoopStatus,
+  materializeLoop,
+  readActiveLoopFacts,
+  type LoopStatus,
+  type PriorLoopFacts,
+} from '../../harness/routines/loop';
 import { cancelAwait, listActiveAwaits, registerAwait, retireLifecycleBoundWatches } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
@@ -294,6 +301,19 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
   } catch (error) {
     errors.push(`loop-read: ${error instanceof Error ? error.message : String(error)}`);
   }
+  // getLoopStatus intentionally omits the potentially multi-KB kickoff. When a
+  // recovery is about to replace an INACTIVE row, read the full prior payload so
+  // the repair can retain an explicit cadence/lifecycle/mode and any blocker
+  // premise embedded in the kickoff. Active rows return above without this extra
+  // read and remain completely untouched.
+  let priorLoopFacts: PriorLoopFacts | null = null;
+  if (priorLoop && !priorLoop.active) {
+    try {
+      priorLoopFacts = await readActiveLoopFacts(input.ownerId);
+    } catch (error) {
+      errors.push(`loop-recovery-read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   let presence: Awaited<ReturnType<typeof getPresence>> = null;
   try {
     presence = await getPresence(input.ownerId);
@@ -323,32 +343,36 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     errors.push(`loop: ${loop.error}`);
   } else {
     try {
-      const goal = monitorGoal(input.fleetSlug, input.planSlug);
-      const carry = input.carry ?? priorLoop?.carry ?? 'warm';
-      const kickoff = buildLoopWakePrompt({
+      const goal = priorLoopFacts?.goal ?? priorLoop?.goal ?? monitorGoal(input.fleetSlug, input.planSlug);
+      const intervalSec = priorLoop?.intervalSec ?? priorLoopFacts?.intervalSec ?? LEADER_MONITOR_INTERVAL_SEC;
+      const carry = input.carry ?? priorLoop?.carry ?? priorLoopFacts?.carry ?? 'warm';
+      const continuation = priorLoop?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
+      const mode = priorLoop?.mode ?? priorLoopFacts?.mode ?? 'monitor';
+      const kickoff = priorLoopFacts?.kickoff?.trim() || buildLoopWakePrompt({
         ownerId: input.ownerId,
-        intervalSec: LEADER_MONITOR_INTERVAL_SEC,
+        intervalSec,
         harness,
         goal,
         carry,
-        continuation: 'settle',
-        mode: 'monitor',
+        continuation,
+        mode,
       });
       await materializeLoop({
         workspaceId: input.workspaceId,
         harnessSlug: harness,
         ownerId: input.ownerId,
-        intervalSec: LEADER_MONITOR_INTERVAL_SEC,
+        intervalSec,
         kickoff,
         goal,
         carry,
-        continuation: 'settle',
-        mode: 'monitor',
+        continuation,
+        mode,
+        ...(priorLoopFacts?.customWakePrompt === true ? { customWakePrompt: true } : {}),
       });
       loop.healthy = true;
       loop.changed = true;
-      loop.intervalSec = LEADER_MONITOR_INTERVAL_SEC;
-      loop.mode = 'monitor';
+      loop.intervalSec = intervalSec;
+      loop.mode = mode;
       repaired = true;
     } catch (error) {
       loop.error = error instanceof Error ? error.message : String(error);

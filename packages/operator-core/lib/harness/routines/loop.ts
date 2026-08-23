@@ -1842,7 +1842,7 @@ export async function countAgentToolCallsInWindow(
  * The lean facts the arm-time overwrite guard (EI-18221784742583615) needs about the
  * loop a `loop:arm` upsert is ABOUT to replace: whether it is active, its interval, the
  * full kickoff (so the arming verb can compare the incoming goal against the loop's
- * current goal), its fireCount, carry/mode, and armedAt. Kept SEPARATE from
+ * current goal), its fireCount, carry/continuation/mode, and armedAt. Kept SEPARATE from
  * getLoopStatus so the roster/watchdog batch reads (getLoopStatuses) never have to carry
  * the potentially-multi-KB kickoff text. Returns null when the owner has no loop routine
  * at all. Reads the latest routine per owner (active first), mirroring materializeLoop's
@@ -1861,6 +1861,7 @@ export interface PriorLoopFacts {
   customWakePrompt?: boolean;
   fireCount: number;
   carry: 'warm' | 'cold';
+  continuation: 'settle' | 'gated';
   mode: 'work' | 'monitor';
   armedAt: string | null;
 }
@@ -1903,6 +1904,7 @@ export async function readActiveLoopFacts(
     customWakePrompt: pt.customWakePrompt === true,
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     carry: pt.carry === 'cold' ? 'cold' : 'warm',
+    continuation: pt.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt.mode === 'monitor' ? 'monitor' : 'work',
     armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
   };

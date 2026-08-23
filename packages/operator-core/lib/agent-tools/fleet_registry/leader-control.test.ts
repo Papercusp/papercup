@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const getModes = vi.fn();
 const setMode = vi.fn();
 const getLoopStatus = vi.fn();
+const readActiveLoopFacts = vi.fn();
 const materializeLoop = vi.fn();
 const buildLoopWakePrompt = vi.fn((_args: unknown) => 'wake prompt');
 const listActiveAwaits = vi.fn();
@@ -24,6 +25,7 @@ vi.mock('../../modes/store', () => ({
 
 vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: (...args: unknown[]) => getLoopStatus(...args),
+  readActiveLoopFacts: (...args: unknown[]) => readActiveLoopFacts(...args),
   materializeLoop: (...args: unknown[]) => materializeLoop(...args),
   buildLoopWakePrompt: (args: unknown) => buildLoopWakePrompt(args),
 }));
@@ -105,6 +107,7 @@ beforeEach(() => {
     mode: 'monitor',
     carry: 'warm',
   });
+  readActiveLoopFacts.mockResolvedValue(null);
   materializeLoop.mockResolvedValue(undefined);
   listActiveAwaits.mockResolvedValue(activeWatches());
   captureWakeHandleForOwner.mockResolvedValue({
@@ -242,9 +245,9 @@ describe('ensureFleetLeaderControl', () => {
         workspaceId: 'ws-1',
         harnessSlug: 'papercusp',
         ownerId: 'leader-1',
-        intervalSec: LEADER_MONITOR_INTERVAL_SEC,
+        intervalSec: 300,
         carry: 'cold',
-        mode: 'monitor',
+        mode: 'work',
       }),
     );
     expect(registerAwait).toHaveBeenCalledTimes(5);
@@ -269,6 +272,61 @@ describe('ensureFleetLeaderControl', () => {
     for (const eventKey of ['fleet:claim-released:alpha', 'fleet:drained:alpha', 'fleet:admission-blocked:alpha']) {
       expect(registrations.find((args) => args.eventKey === eventKey)).not.toHaveProperty('payloadFilter');
     }
+  });
+
+  it('preserves an inactive loop control payload and pending watches during recovery', async () => {
+    const priorGoal = 'lead the fleet at the widened fallback cadence';
+    const priorKickoff =
+      '⏸ BACKOFF PREMISE — re-check the blocked gate before proceeding.\n\ncustom monitor kickoff';
+    getLoopStatus.mockResolvedValue({
+      active: false,
+      harnessSlug: 'papercusp',
+      intervalSec: 1200,
+      mode: 'monitor',
+      carry: 'cold',
+      continuation: 'gated',
+      goal: priorGoal,
+    });
+    readActiveLoopFacts.mockResolvedValue({
+      active: false,
+      intervalSec: 1200,
+      harnessSlug: 'papercusp',
+      goal: priorGoal,
+      kickoff: priorKickoff,
+      customWakePrompt: true,
+      fireCount: 12,
+      carry: 'cold',
+      continuation: 'gated',
+      mode: 'monitor',
+      armedAt: '2026-08-22T23:00:00.000Z',
+    });
+    listActiveAwaits.mockResolvedValue(activeWatches());
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(out.healthy).toBe(true);
+    expect(out.loop).toMatchObject({
+      healthy: true,
+      changed: true,
+      intervalSec: 1200,
+      mode: 'monitor',
+    });
+    expect(materializeLoop).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      ownerId: 'leader-1',
+      intervalSec: 1200,
+      kickoff: priorKickoff,
+      goal: priorGoal,
+      carry: 'cold',
+      continuation: 'gated',
+      mode: 'monitor',
+      customWakePrompt: true,
+    });
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(cancelAwait).not.toHaveBeenCalled();
+    expect(out.watches.active).toEqual(standardEventKeys());
+    expect(out.watches.awaitIds).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('preserves an active deliberately retuned work loop instead of overwriting its cadence and goal', async () => {
