@@ -1073,10 +1073,17 @@ export function mergeCarryRows(opts: {
  * overflows the cap, supplied rows move first so normalization evicts the carried tail
  * rather than the row the caller just supplied; that eviction surfaces through the
  * ordinary `droppedChecks` report.
+ *
+ * WHICH carried row yields is decided by EVIDENCE, not position (EI-21229591144264047).
+ * The supplied-beats-carried rule above says nothing about ordering *within* the yielding
+ * remainder, and leaving it positional meant a ✓ VERIFIED row could be evicted while a
+ * ? PREDICTED one survived purely by sitting earlier in the note — losing the expensive
+ * half of the pair. {@link evidenceFirst} sinks the PREDICTED rows to the tail so the cap
+ * cuts the cheapest-to-reproduce rows first.
  */
 function upsertOntoPrior<T extends { id?: string; claim: string }>(
   supplied: ReadonlyArray<T>,
-  prior: ReadonlyArray<{ id?: string; claim: string }>,
+  prior: ReadonlyArray<{ id?: string; claim: string; verified?: string; contested?: string }>,
   merging: boolean,
   maxRows: number,
 ): ReadonlyArray<T | { id?: string; claim: string }> {
@@ -1089,7 +1096,10 @@ function upsertOntoPrior<T extends { id?: string; claim: string }>(
   // would evict a row, prefer the caller's supplied rows and let the carried tail yield.
   // This is intentionally conditional: reordering every additive write would make
   // otherwise stable carry notes churn on every wake.
-  if (unionKeys.size > maxRows) return [...supplied, ...prior.filter((p) => !suppliedKeys.has(carryRowKey(p)))];
+  if (unionKeys.size > maxRows) {
+    const yielding = prior.filter((p) => !suppliedKeys.has(carryRowKey(p)));
+    return [...supplied, ...evidenceFirst(yielding)];
+  }
 
   const out: Array<T | { id?: string; claim: string }> = [];
   const used = new Set<string>();
@@ -1103,6 +1113,29 @@ function upsertOntoPrior<T extends { id?: string; claim: string }>(
     if (!used.has(carryRowKey(s))) out.push(s);
   }
   return out;
+}
+
+/** Does this carried row carry an OBSERVATION — ✓ VERIFIED, or ⚠ CONTESTED (evidence that
+ *  contradicts its own claim, which is a warning worth more than a guess, not less) — as
+ *  opposed to a bare ? PREDICTED hypothesis? Deliberately the same `verified ?? contested`
+ *  evidence test {@link normalizeCheckEntries} already uses when deciding whether to stamp
+ *  a row's evidence, so "has evidence" cannot come to mean two different things in one file.
+ *
+ *  A {@link WallEntry} has NEITHER field, so every wall reads as evidence-less and
+ *  {@link evidenceFirst} is the identity for walls — wall order is unchanged by this rule. */
+function carriesEvidence(row: { verified?: string; contested?: string }): boolean {
+  return Boolean((row.verified ?? row.contested ?? '').trim());
+}
+
+/** Stable partition putting evidence-bearing rows ahead of PREDICTED ones, so a downstream
+ *  cap that cuts from the tail cuts the cheapest-to-reproduce rows first. Stable WITHIN each
+ *  tier: two rows of equal evidence status keep their established relative order, so this
+ *  reorders a note only when the cap was about to destroy evidence anyway. */
+function evidenceFirst<T extends { verified?: string; contested?: string }>(rows: ReadonlyArray<T>): T[] {
+  const withEvidence: T[] = [];
+  const predicted: T[] = [];
+  for (const row of rows) (carriesEvidence(row) ? withEvidence : predicted).push(row);
+  return [...withEvidence, ...predicted];
 }
 
 /** Prior claims absent from the surviving set, compared on the SAME {@link carryRowKey}
