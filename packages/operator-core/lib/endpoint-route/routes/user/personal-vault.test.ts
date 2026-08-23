@@ -52,6 +52,8 @@ vi.mock('../../../oauth/providers', () => ({
   GOOGLE_CALENDAR_READONLY_SCOPE: 'https://www.googleapis.com/auth/calendar.readonly',
   GOOGLE_CALENDAR_EVENTS_SCOPE: 'https://www.googleapis.com/auth/calendar.events',
   GOOGLE_CONTACTS_READONLY_SCOPE: 'https://www.googleapis.com/auth/contacts.readonly',
+  GOOGLE_YOUTUBE_READONLY_SCOPE: 'https://www.googleapis.com/auth/youtube.readonly',
+  GOOGLE_YOUTUBE_FORCE_SSL_SCOPE: 'https://www.googleapis.com/auth/youtube.force-ssl',
   GOOGLE_WORKSPACE_SCOPES: [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.compose',
