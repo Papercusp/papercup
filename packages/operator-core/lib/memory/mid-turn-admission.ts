@@ -26,7 +26,11 @@ import { registerResource, tryAcquireResource, tryReleaseResource } from '../age
 
 export const MID_TURN_MEMORY_RESOURCE = 'memory-injection:mid-turn';
 export const MID_TURN_MEMORY_MAX_HOLDERS = 2;
-export const MID_TURN_MEMORY_LOCK_TTL_SEC = 30;
+// Longer than the ~55–60s MCP transport window: several best-effort hygiene
+// reads run after the individually bounded 5s availability/hive/search phases,
+// and an expired lease must never let a still-running zombie build exceed the
+// host cap. A crashed worker suppresses optional recall for at most two minutes.
+export const MID_TURN_MEMORY_LOCK_TTL_SEC = 120;
 
 const REGISTRATION_RETRY_MS = 60_000;
 const WARNING_INTERVAL_MS = 60_000;
@@ -101,7 +105,7 @@ export async function guardMidTurnMemoryAdmission<T>(
       return { admitted: true, value: await run() };
     } finally {
       // Release failure must not discard a successfully built context block.
-      // The 30s lease is the correctness backstop; surface a throttled
+      // The two-minute lease is the correctness backstop; surface a throttled
       // diagnostic so an expiry-backed release never looks healthy.
       try {
         await store.release(ownerId, acquired.lockId);
