@@ -191,6 +191,7 @@ describe('startEventLoopSentinel', () => {
     const h = startEventLoopSentinel({
       env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
       log: () => {},
+      allowHeartbeatInTest: true,
     });
     try {
       if (!h.active()) return; // spawn unsupported here — covered by the test above

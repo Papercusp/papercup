@@ -66,6 +66,6 @@ export default defineTool({
       rows = args.group === '' ? rows.filter((r) => r.groupSlug === null) : rows.filter((r) => r.groupSlug === args.group);
     }
     const summary = summarizeInventory(rows);
-    return { content: [{ type: 'text', text: JSON.stringify({ summary, rows }) }] };
+    return { data: { summary, rows } };
   },
 });

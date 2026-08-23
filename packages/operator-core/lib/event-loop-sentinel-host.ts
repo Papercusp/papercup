@@ -227,6 +227,12 @@ export function startEventLoopSentinel(
      * constructor has already returned successfully.
      */
     workerPath?: string;
+    /**
+     * Explicit test seam for the one focused test that exercises the REAL
+     * heartbeat. Keep false by default so importing/booting a host under
+     * Vitest cannot arm background intervals accidentally.
+     */
+    allowHeartbeatInTest?: boolean;
   } = {},
 ): EventLoopSentinelHandle {
   const env = opts.env ?? process.env;
@@ -310,7 +316,11 @@ export function startEventLoopSentinel(
     // liveness here is only observable by emitting a beat and watching it stop,
     // the same shape as D-004's PID-liveness example. A subscription cannot
     // express it: a blocked loop would also fail to deliver the event.
-    { category: 'watchdog', classification: 'must-sample' },
+    {
+      category: 'watchdog',
+      classification: 'must-sample',
+      allowInTest: opts.allowHeartbeatInTest ?? false,
+    },
   );
 
   log('[event-loop-sentinel] armed', {
