@@ -85,7 +85,9 @@ export function encodePng(
   };
 
   const raw = Buffer.alloc(height * (stride + 1));
-  let previous = new Uint8Array(stride);
+  // Annotated: the initializer narrows to Uint8Array<ArrayBuffer>, while packRow's declared
+  // return is Uint8Array<ArrayBufferLike>, and the reassignment below would not typecheck.
+  let previous: Uint8Array = new Uint8Array(stride);
   for (let y = 0; y < height; y += 1) {
     const row = packRow(y);
     raw[y * (stride + 1)] = filter;

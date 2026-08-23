@@ -1,7 +1,29 @@
+import { execFileSync } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
 import { buildFrameBootstrap, FRAME_BOOTSTRAP_STEPS } from './frame-bootstrap';
 
 const baseEnv = { setup: [], install: [], build: [], test: [], run: [], services: [], ports: [], env: {} };
+
+/**
+ * Parse the script with `bash -n` (syntax only — nothing executes).
+ *
+ * This exists because every other assertion in this file is a `toContain`, and a substring
+ * check cannot see a SYNTAX error: the script can contain every expected fragment and still
+ * be unparseable, in which case the frame's whole bootstrap dies on a remote VM at deploy
+ * time with none of these tests having gone red. That is not hypothetical — building the GL
+ * section (P-002) emitted a `case` pattern containing an unquoted space
+ * (`*software rasterizer*`), which bash rejects outright, taking the entire section with it.
+ * Any generator that interpolates values into shell can reintroduce that class, so the guard
+ * is on the emitted script itself rather than on any one fragment of it.
+ */
+function assertParses(script: string, label: string): void {
+  try {
+    execFileSync('bash', ['-n'], { input: script, stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (e) {
+    const err = e as { stderr?: Buffer };
+    throw new Error(`emitted bootstrap (${label}) is not valid bash:\n${err.stderr?.toString() ?? String(e)}`);
+  }
+}
 
 describe('buildFrameBootstrap', () => {
   it('emits a valid bash header + every step for a full coding frame', () => {
@@ -236,5 +258,70 @@ describe('buildFrameBootstrap', () => {
     expect(script).toContain('( /usr/local/bin/papercusp-desktop-capture >/var/log/papercusp-desktop/capture.log 2>&1 & )');
     // x11vnc is on-demand (Phase 3) — never a boot-time listener.
     expect(script).not.toMatch(/^\s*\(?\s*x11vnc /m);
+  });
+});
+
+describe('the emitted bootstrap is valid bash', () => {
+  // Matrix rather than one case: the desktop/GL section is conditional, so a syntax error
+  // introduced there is invisible to any configuration that omits it.
+  const configs: Array<{ label: string; opts: Parameters<typeof buildFrameBootstrap>[0] }> = [
+    { label: 'minimal', opts: { harnessSlug: 'papercup' } },
+    { label: 'desktop: true', opts: { harnessSlug: 'papercup', desktop: true } },
+    {
+      label: 'desktop with custom geometry',
+      opts: { harnessSlug: 'papercup', desktop: { displays: 2, geometry: '1280x1024x24' } },
+    },
+    {
+      label: 'full coding frame with desktop',
+      opts: {
+        harnessSlug: 'papercup',
+        repoUrl: 'https://github.com/acme/repo.git',
+        desktop: true,
+        claudeCredentialsRemotePath: '/root/creds.json',
+        environment: {
+          ...baseEnv,
+          setup: ['nvm install 22'],
+          install: ['npm ci'],
+          services: [{ name: 'redis', command: 'redis-server', port: 6379 }],
+          env: { NODE_ENV: 'production' },
+        },
+      },
+    },
+  ];
+
+  it('CONTROL: assertParses rejects the exact shape that broke the GL section', () => {
+    // A permanent deliberately-wrong control, so the guard above is never a check that has
+    // only ever been seen to pass. This is the real defect verbatim: a `case` pattern whose
+    // marker contains an unquoted space. Bash rejects it at PARSE time, which is why no
+    // amount of `toContain` assertions could have caught it.
+    expect(() =>
+      assertParses('case "$x" in\n  *llvmpipe*|*software rasterizer*) ;;\nesac\n', 'known-bad'),
+    ).toThrow(/not valid bash/);
+
+    // ...and the corrected form, which is what the emitter now produces, must parse.
+    expect(() =>
+      assertParses('case "$x" in\n  *llvmpipe*|*"software rasterizer"*) ;;\nesac\n', 'known-good'),
+    ).not.toThrow();
+  });
+
+  for (const { label, opts } of configs) {
+    it(`parses: ${label}`, () => {
+      assertParses(buildFrameBootstrap(opts).script, label);
+    });
+  }
+
+  it('installs the mesa packages the desktop needs to paint at all', () => {
+    // A frame is GPU-less, so the software rasterizer in libgl1-mesa-dri IS its GL. Without
+    // it every GTK/WebKitGTK capture is blank regardless of what the app did.
+    const { script } = buildFrameBootstrap({ harnessSlug: 'papercup', desktop: true });
+    expect(script).toContain('libgl1-mesa-dri');
+    expect(script).toContain('mesa-utils');
+    expect(script).toContain('PAPERCUSP_GL_TIER');
+  });
+
+  it('does not emit the GL probe when no desktop was requested', () => {
+    const { script } = buildFrameBootstrap({ harnessSlug: 'papercup' });
+    expect(script).not.toContain('PAPERCUSP_GL_TIER');
+    expect(script).not.toContain('libgl1-mesa-dri');
   });
 });
