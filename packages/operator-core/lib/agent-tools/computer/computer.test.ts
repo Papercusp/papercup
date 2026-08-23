@@ -93,7 +93,7 @@ describe('runComputerAction — capability:computer handler', () => {
 
     const xd = calls.find((c) => c.bin === 'xdotool');
     expect(xd?.env).toEqual({ DISPLAY: ':99' }); // bound to the sandbox, never :0
-    expect(xd?.args).toEqual(['mousemove', '--sync', '400', '300', 'click', '1']);
+    expect(xd?.args).toEqual(['mousemove', '399', '300', 'mousemove', '--sync', '400', '300', 'click', '1']);
 
     // returns the one-line ledger entry + the post-action screenshot the bee reasons over
     expect(r.content.some((c) => c.type === 'text')).toBe(true);
@@ -149,7 +149,7 @@ describe('runComputerAction — capability:computer handler', () => {
     __setComputerExecForTests(exec);
     await runComputerAction({ action: 'mouse_move', coordinate: [99999, 99999] });
     const xd = calls.find((c) => c.bin === 'xdotool');
-    expect(xd?.args).toEqual(['mousemove', '--sync', '799', '599']); // clamped to 800x600
+    expect(xd?.args).toEqual(['mousemove', '798', '599', 'mousemove', '--sync', '799', '599']); // clamped to 800x600
   });
 
   // open-Q#2: the handler runs in the OPERATOR process (a fleet bee's call lands at
