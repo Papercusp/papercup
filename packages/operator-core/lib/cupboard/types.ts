@@ -85,6 +85,15 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *   recipe        → install   (a captured multi-step tool orchestration — the
  *                              code_recipes unit — installed into the workspace
  *                              recipe store.)
+ *   goal          → install   (a GOAL PACKAGE — title + duties body/kickoff brief +
+ *                              standing flag + tripwire/budget-window/launch-setting
+ *                              defaults + input/output schemas, per
+ *                              work-on-everything-goal-2026-08-23 P-006/D-002.
+ *                              Installing lands an INACTIVE goal stub (status
+ *                              'paused', no agent, no spend), NO-CLOBBER on the
+ *                              package identity; STARTING it is a separate
+ *                              deliberate act. May declare `requires_rubrics`,
+ *                              same as `plan`.)
  *   app           → download  (STANDALONE) | install (BUNDLE) — a whole
  *                              distributable application (cupboard-app-distribution
  *                              -2026-07-14 [owner 2026-07-14]). The
@@ -117,6 +126,7 @@ export const LISTING_KINDS = [
   'rubric',
   'plan',
   'recipe',
+  'goal',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
@@ -208,6 +218,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'rubric':
     case 'plan':
     case 'recipe':
+    case 'goal':
       return 'install';
     case 'app':
       return l.delivery_type === 'bundle' ? 'install' : 'download';

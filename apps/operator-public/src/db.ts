@@ -39,7 +39,14 @@ import type { Env } from './env.ts';
  *  optional METHOD.md) installed into the layered rubric store's user layer. A `plan`
  *  is a plan TEMPLATE — goal + item DAG + decisions + schedule with live state stripped
  *  at publish — and may declare `requires_rubrics`. A `recipe` is a captured multi-step
- *  tool orchestration. All three install. */
+ *  tool orchestration. All three install.
+ *
+ *  `goal` (migration 016 / work-on-everything-goal-2026-08-23 P-006, D-002
+ *  [owner 2026-08-23]): a GOAL PACKAGE — title + duties body/kickoff brief + standing
+ *  flag + tripwire/budget-window/launch-setting defaults + input/output schemas, as a
+ *  self-describing dir (goal.json + listing.json). Installing lands an INACTIVE goal
+ *  stub (no agent, no spend), NO-CLOBBER; starting it is a separate deliberate act.
+ *  May declare `requires_rubrics`, same as `plan`. */
 export const LISTING_KINDS = [
   'harness',
   'blueprint',
@@ -51,6 +58,7 @@ export const LISTING_KINDS = [
   'rubric',
   'plan',
   'recipe',
+  'goal',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
