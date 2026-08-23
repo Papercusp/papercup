@@ -1008,6 +1008,8 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('work_items:release'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:complete'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:get'))).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'tools:invoke', arguments: { name: 'tools:find', args: {} } } })))).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'tools:invoke', arguments: { name: 'work_items:list', args: {} } } })))).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
 
@@ -1090,7 +1092,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
@@ -1106,7 +1108,8 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     await new Promise((r) => setTimeout(r, 40));
     expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
 
-    const controlPlaneBody = JSON.stringify({ method: 'tools/call', params: { name: controlPlaneTool, arguments: {} } });
+    const wrappedDiscovery = controlPlaneTool === 'tools:invoke → tools:find';
+    const controlPlaneBody = JSON.stringify({ method: 'tools/call', params: wrappedDiscovery ? { name: 'tools:invoke', arguments: { name: 'tools:find', args: {} } } : { name: controlPlaneTool, arguments: {} } });
     const heldControlPlane = request(port(proxy), controlPlaneBody);
     await new Promise((r) => setTimeout(r, 40));
     releaseUpstream();

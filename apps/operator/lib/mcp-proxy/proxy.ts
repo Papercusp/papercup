@@ -764,6 +764,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
 // recognized. Keep this deliberately narrow: only the stateless, write-free calls required to
 // establish/prove a session, not every idempotent resources/prompts request.
 const RESERVED_CONTROL_PLANE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
+const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 
 // psu launch/resume preflight uses plain REST rather than JSON-RPC. These calls
 // are the human/fleet entry point and must retain access to the reserve while
@@ -808,12 +809,17 @@ export function isReservedControlPlaneCall(rawBody: Buffer, requestPath?: string
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     return messages.some((message) => {
       if (!message || typeof message !== 'object') return false;
-      const call = message as { method?: unknown; params?: { name?: unknown } };
+      const call = message as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
       if (typeof call.method !== 'string') return false;
       if (RESERVED_CONTROL_PLANE_METHODS.has(call.method)) return true;
-      return call.method === 'tools/call'
-        && typeof call.params?.name === 'string'
-        && RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(call.params.name));
+      if (call.method !== 'tools/call' || typeof call.params?.name !== 'string') return false;
+      const calledTool = normalizeMcpName(call.params.name);
+      if (RESERVED_CONTROL_PLANE_TOOLS.has(calledTool)) return true;
+      if (calledTool !== TOOLS_INVOKE_NAME) return false;
+      const invokeArgs = call.params.arguments;
+      if (!invokeArgs || typeof invokeArgs !== 'object' || Array.isArray(invokeArgs)) return false;
+      const target = (invokeArgs as { name?: unknown }).name;
+      return typeof target === 'string' && RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(target));
     });
   } catch {
     return false;
