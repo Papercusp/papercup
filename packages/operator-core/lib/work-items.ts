@@ -5547,6 +5547,10 @@ export async function setWorkItemClaimHold(
      *  (`_claimHold` + `claim_hold_*`). For AUTOMATED liveness-triggered lifts (the inline
      *  expired-lease chokepoint); explicit agent clears stay full. */
     leaseOnly?: boolean;
+    /** When clearing a lease, require the stored `held_open_by` to match this holder.
+     *  Consequence reclaims pass the holder captured by the due-row read so a raced
+     *  successor's lease cannot be cleared accidentally. */
+    expectedLeaseHolder?: string;
   } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
   const { sql } = getOrgPg();
@@ -5575,6 +5579,7 @@ export async function setWorkItemClaimHold(
      LIMIT 1`;
   if (!located[0]) return null;
   const ws = located[0].workspace_id;
+  const expectedLeaseHolder = opts.expectedLeaseHolder?.trim() || null;
   const holdPatch = JSON.stringify({
     _claimHold: true,
     ...(opts.by ? { held_open_by: opts.by, held_open_at: new Date().toISOString() } : {}),
@@ -5593,6 +5598,11 @@ export async function setWorkItemClaimHold(
            END,
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws} AND feature_id = ${id}
+       AND (
+         ${hold}
+         OR ${expectedLeaseHolder}::text IS NULL
+         OR COALESCE(payload, '{}'::jsonb) ->> 'held_open_by' = ${expectedLeaseHolder}
+       )
      RETURNING payload`;
   if (!rows[0]) return null;
   // EI-18672701535825889 finding #3: a floor that hides work from a whole fleet had ZERO
