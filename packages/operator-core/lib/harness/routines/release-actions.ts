@@ -560,21 +560,11 @@ export interface CheckpointVerdict {
   crashed?: boolean;
   /** D-001 / WI-39944: structural mirror of the serialized frozen repair queue.
    * Presence means the gate already dispatched/owns the targeted fixer, so the legacy
-   * moving-tip dispatcher must not launch a second agent. */
-  repairQueue?: {
-    schemaVersion: 1 | 2;
-    phase: 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
-    candidate: string;
-    base: string | null;
-    repairHead: string;
-    affectedTestProofGroup?: string | null;
-    worktreePath: string;
-    attempts: number;
-    openedAtMs: number;
-    updatedAtMs: number;
-    fixerSpawnId: string | null;
-    failingTests: string[];
-  };
+   * moving-tip dispatcher must not launch a second agent. Derive this field from
+   * the canonical queue type: its schema version and phase vocabulary evolve
+   * together, and a hand-copied subset already drifted at schema v3
+   * (EI-21222252991281747). */
+  repairQueue?: FrozenCandidateRepairQueue;
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's

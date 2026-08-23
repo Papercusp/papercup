@@ -146,7 +146,10 @@ import {
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
 import type { FlakeSuspect } from '../../dev-data';
-import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
+import {
+  FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+  type FrozenCandidateRepairQueue,
+} from '../../release/frozen-candidate-repair-queue';
 
 describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   it('builds a green-checkpoint-stall body with streak, age, capped candidate + failing tests', () => {
@@ -1882,7 +1885,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
 
     await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual({
       ...queue,
-      schemaVersion: 2,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,
