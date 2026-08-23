@@ -67,6 +67,12 @@ const baseEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   // memory-clamp tests below override it explicitly to exercise it.
   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '4096',
   PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+  // Neutralise the caller-cgroup typecheck guard (EI-21206772578500745). The
+  // suite itself may run inside a finite CI/agent cgroup; every unrelated test
+  // must see a deterministic unlimited envelope. The focused guard cases below
+  // inject the finite max/current pair explicitly.
+  PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
+  PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '0',
   ...extra,
 });
 
@@ -701,6 +707,76 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
       PC_HEAVY_MEM_PSI_OVERRIDE: '99',
     });
     expect(starved).toBe(1);
+  });
+});
+
+describe('pc-heavy.sh — finite-cgroup typecheck admission (EI-21206772578500745)', () => {
+  const typecheckFixture = (): string => {
+    const file = join(dir, 'lint-tsc-fixture.mjs');
+    writeFileSync(file, 'process.stdout.write("typecheck-ran")');
+    return file;
+  };
+
+  it('refuses before execution when heap + wrapper overhead cannot fit the caller cgroup', () => {
+    const marker = typecheckFixture();
+    const slots = join(dir, 'never-created-by-refused-typecheck');
+    const r = runSync(['node', marker], {
+      PC_HEAVY_DIR: slots,
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PAPERCUSP_TSC_HEAP_MB: '8192',
+    });
+
+    expect(r.status).toBe(75);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('REFUSED typecheck');
+    expect(r.stderr).toContain('5376 MiB headroom');
+    expect(r.stderr).toContain('9216 MiB compiler floor');
+    expect(r.stderr).toContain('capability:inspect');
+    expect(existsSync(slots)).toBe(false); // refused before coalescing/slot acquisition
+  });
+
+  it('runs the same typecheck when a finite cgroup has enough headroom', () => {
+    const r = runSync(['node', typecheckFixture()], {
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '12288',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '1024',
+      PAPERCUSP_TSC_HEAP_MB: '8192',
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('typecheck-ran');
+    expect(r.stderr).not.toContain('REFUSED typecheck');
+  });
+
+  it('fails open for an unlimited envelope and does not block a non-typecheck in a small cgroup', () => {
+    const unlimited = runSync(['node', typecheckFixture()], {
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '999999',
+    });
+    expect(unlimited.status).toBe(0);
+    expect(unlimited.stdout).toBe('typecheck-ran');
+
+    const light = runSync(['bash', '-c', 'printf light-ran'], {
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '1024',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '1000',
+    });
+    expect(light.status).toBe(0);
+    expect(light.stdout).toBe('light-ran');
+  });
+
+  it('keeps the release-gate bypass authoritative even in a small finite cgroup', () => {
+    const slots = join(dir, 'release-never-creates-slots');
+    const r = runSync(['node', typecheckFixture()], {
+      PC_HEAVY_RELEASE_GATE: '1',
+      PC_HEAVY_DIR: slots,
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '2048',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '1024',
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('typecheck-ran');
+    expect(r.stderr).not.toContain('REFUSED typecheck');
+    expect(existsSync(slots)).toBe(false);
   });
 });
 

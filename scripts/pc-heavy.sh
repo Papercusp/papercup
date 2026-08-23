@@ -55,6 +55,15 @@
 #   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE / PC_HEAVY_MEM_PSI_OVERRIDE  inject
 #                         MemAvailable-GiB / PSI for the clamp (tests — same
 #                         convention as PC_HEAVY_LOAD1_OVERRIDE).
+#   PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE /
+#   PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE  inject the caller-cgroup
+#                         envelope for tests. `max` means unlimited. In normal
+#                         operation these are read from cgroup-v2 directly.
+#   PC_HEAVY_TYPECHECK_OVERHEAD_MIB  non-V8 headroom required beside the
+#                         configured TypeScript heap (default 1024). A full
+#                         typecheck is refused when its finite caller cgroup
+#                         cannot hold heap + overhead; use the detached
+#                         capability:inspect/build:typecheck path instead.
 #   PC_HEAVY_GATE_RESERVE "1"(default)/"0" — while a green-checkpoint run is in
 #                         flight, clamp the effective slot count to a quarter of
 #                         the steady-state target (min 1) so the gate's isolation
@@ -204,6 +213,90 @@ if [ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]; then
   export PC_HEAVY_BYPASS=1
   exec "$@"
 fi
+
+# ── Finite-cgroup typecheck admission (EI-21206772578500745) ────────────────
+# Host-wide slot admission is necessary but not sufficient. A headless fleet
+# member is itself confined: the measured incident scope had MemoryMax=6144 MiB
+# while the repository's compiler policy gives tsc an 8192 MiB V8 heap. The
+# member plus npm/node wrappers already occupied part of those 6144 MiB, so one
+# correctly slot-admitted operator-core typecheck reached 5.86 GiB anon RSS,
+# hit memory.max 463 times, and was OOM-killed. Host memory PSI full avg60 rose
+# from 1.30 to 11.02 while it allocated. The semaphore answered "may another
+# heavy job start on this HOST?" but never the prior question "can this CALLER
+# cgroup hold even one?".
+#
+# Refuse only compiler-shaped commands, only when cgroup-v2 exposes a FINITE
+# envelope, and fail open on every unreadable/legacy/unlimited shape. The
+# established detached verifier is the escape route: it gives the compile its
+# own tracked execution envelope rather than making the agent session and the
+# compiler fight inside one 6 GiB bucket. Release-gate calls remain exempt above
+# because that path owns its own scope and must never be blocked by agent
+# admission policy.
+_is_full_typecheck_command() {
+  local _arg _base
+  for _arg in "$@"; do
+    _base="${_arg##*/}"
+    case "$_base" in
+      lint-tsc*.mjs|tsc|tsc.cmd) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+_caller_cgroup_headroom_mib() {
+  local _max_mib="${PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE:-}"
+  local _current_mib="${PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE:-}"
+  local _rel _dir _raw
+
+  if [ -z "$_max_mib" ] || [ -z "$_current_mib" ]; then
+    _rel="$(awk -F: '$1 == "0" { print $3; exit }' /proc/self/cgroup 2>/dev/null)"
+    [ -n "$_rel" ] || return 0
+    _dir="/sys/fs/cgroup${_rel}"
+    if [ -z "$_max_mib" ]; then
+      _raw="$(head -1 "$_dir/memory.max" 2>/dev/null)"
+      [ "$_raw" = "max" ] && return 0
+      case "$_raw" in ''|*[!0-9]*) return 0 ;; esac
+      _max_mib=$(( _raw / 1048576 ))
+    fi
+    if [ -z "$_current_mib" ]; then
+      _raw="$(head -1 "$_dir/memory.current" 2>/dev/null)"
+      case "$_raw" in ''|*[!0-9]*) return 0 ;; esac
+      _current_mib=$(( _raw / 1048576 ))
+    fi
+  fi
+
+  [ "$_max_mib" = "max" ] && return 0
+  case "$_max_mib" in ''|*[!0-9]*) return 0 ;; esac
+  case "$_current_mib" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$_current_mib" -ge "$_max_mib" ]; then
+    echo 0
+  else
+    echo $(( _max_mib - _current_mib ))
+  fi
+}
+
+_guard_typecheck_cgroup_headroom() {
+  _is_full_typecheck_command "$@" || return 0
+
+  local _headroom _heap _overhead _needed
+  _headroom="$(_caller_cgroup_headroom_mib)"
+  [ -n "$_headroom" ] || return 0  # unlimited / unreadable / cgroup-v1 → fail open
+
+  _heap="${PAPERCUSP_TSC_HEAP_MB:-8192}"
+  _overhead="${PC_HEAVY_TYPECHECK_OVERHEAD_MIB:-1024}"
+  case "$_heap" in ''|*[!0-9]*) _heap=8192 ;; esac
+  case "$_overhead" in ''|*[!0-9]*) _overhead=1024 ;; esac
+  _needed=$(( _heap + _overhead ))
+  [ "$_headroom" -ge "$_needed" ] && return 0
+
+  echo "[pc-heavy] REFUSED typecheck: caller cgroup has ${_headroom} MiB headroom, below the ${_needed} MiB compiler floor (${_heap} MiB configured V8 heap + ${_overhead} MiB agent/wrapper overhead)." >&2
+  echo "[pc-heavy] This is the EI-212067 memcg-OOM class, not a TypeScript verdict. Run the check outside the agent-session cgroup with tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"<package>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }, or use build:typecheck for a bounded foreground check." >&2
+  return 75
+}
+
+_guard_typecheck_cgroup_headroom "$@"
+_typecheck_guard_rc=$?
+[ "$_typecheck_guard_rc" -eq 0 ] || exit "$_typecheck_guard_rc"
 
 _cores="$(nproc 2>/dev/null || echo 8)"
 _floor=$(( _cores / 32 ))
