@@ -552,6 +552,42 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(stranded.ref).toEqual({ kind: 'owner-wall', wallSource: 'work-item', wallOwnerId: 'su-xyz', wallRef: 'WI-42' });
   });
 
+  it('owner-wall: an explicit non-actionable oracle verdict demotes a stale row to an Alert', () => {
+    const a = ownerWallToAttention({
+      source: 'loop-carry-note',
+      ownerId: 'su-ended',
+      claim: 'answer the parked question',
+      waitingHours: 8,
+      // The source status can be stale while an independently-read oracle says
+      // the owner is ended; the oracle classification wins at read time.
+      status: 'waiting',
+      actionability: 'non-actionable',
+      livenessState: 'ended',
+    });
+
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
+    expect(a.status).toBe('stranded');
+    expect(a.body).toContain('STRANDED');
+    expect(a.actions.some((action) => action.id === 'answer')).toBe(false);
+  });
+
+  it('owner-wall: unknown liveness remains visible but is not counted as waiting on the owner', () => {
+    const a = ownerWallToAttention({
+      source: 'loop-carry-note',
+      ownerId: 'su-unknown',
+      claim: 'resolve the unresolved wall',
+      status: 'unknown',
+      actionability: 'unknown',
+      livenessState: null,
+    });
+
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
+    expect(a.status).toBe('unknown');
+    expect(a.body).toContain('LIVENESS UNKNOWN');
+  });
+
   it('dark-flag-ratification: a Decision naming the flag key, falling back to a generic body', () => {
     const withReason = darkFlagRatificationToAttention({ flagKey: 'papercusp-open-signup', justification: 'SECURITY: internet-reachable.' });
     expect(withReason.kind).toBe('dark-flag-ratification');
@@ -592,6 +628,35 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     });
     expect(noQuestion.title).toContain('permission prompt');
     expect(noQuestion.body).toContain('D-002 capability matrix');
+  });
+
+  it('blocked-session: ended and unknown owners are Alerts with diagnostic status', () => {
+    const ended = blockedSessionToAttention({
+      sessionId: 'sess-ended',
+      client: 'codex',
+      refId: 'ref-ended',
+      gateKind: 'ask',
+      question: 'an old question',
+      actionability: 'non-actionable',
+      livenessState: 'ended',
+    });
+    expect(ended.tier).toBe('alert');
+    expect(ended.needsHuman).toBe(false);
+    expect(ended.status).toBe('stranded (codex)');
+    expect(ended.body).toContain('STRANDED');
+
+    const unknown = blockedSessionToAttention({
+      sessionId: 'sess-unknown',
+      client: 'codex',
+      refId: 'ref-unknown',
+      gateKind: 'permission_wait',
+      actionability: 'unknown',
+      livenessState: null,
+    });
+    expect(unknown.tier).toBe('alert');
+    expect(unknown.needsHuman).toBe(false);
+    expect(unknown.status).toBe('unknown (codex)');
+    expect(unknown.body).toContain('LIVENESS UNKNOWN');
   });
 
   it('all four: id is kind-prefixed, ref.kind matches, needsHuman === (tier === decision), category set', () => {

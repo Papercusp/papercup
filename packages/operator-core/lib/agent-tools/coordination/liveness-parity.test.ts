@@ -29,6 +29,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  classifyReadActionability,
   deriveVerdict,
   resolveSessionStates,
   applyPsuHostAuthority,
@@ -144,6 +145,21 @@ function subjectOf(s: CanonicalState): LivenessSubject {
 }
 
 describe('cross-surface liveness parity (P-001)', () => {
+  it('classifies read-time owner gates conservatively', () => {
+    expect(classifyReadActionability('live')).toBe('actionable');
+    expect(classifyReadActionability('parked')).toBe('actionable');
+    expect(classifyReadActionability('recorded')).toBe('actionable');
+
+    expect(classifyReadActionability('draining')).toBe('non-actionable');
+    expect(classifyReadActionability('suspect')).toBe('non-actionable');
+    expect(classifyReadActionability('ended')).toBe('non-actionable');
+
+    // A missing oracle row means the liveness read degraded; it must never
+    // silently become an owner-facing Decision.
+    expect(classifyReadActionability(null)).toBe('unknown');
+    expect(classifyReadActionability(undefined)).toBe('unknown');
+  });
+
   it('deriveVerdict (the oracle / coord:presence path) matches the canonical table', () => {
     for (const s of STATES) {
       const v = deriveVerdict(subjectOf(s), s.wake, recordedSet, NOW, probeFor(STATES));

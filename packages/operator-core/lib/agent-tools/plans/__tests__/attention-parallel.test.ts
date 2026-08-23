@@ -30,6 +30,7 @@ const M = vi.hoisted(() => ({
   readNeedsHumanWorkItems: vi.fn(async () => [] as unknown[]),
   listOwnerWalls: vi.fn(async () => ({ walls: [] as unknown[] })),
   listPendingGates: vi.fn(async () => [] as unknown[]),
+  resolveSessionStates: vi.fn(async () => new Map()),
 }));
 
 // NOTE: vi.mock paths resolve relative to THIS test file (one level deeper, in
@@ -69,6 +70,10 @@ vi.mock('../../../attention/needs-human-work-items-source', () => ({
 // happen to hold when the suite runs).
 vi.mock('../../coordination/tools/walls', () => ({ listOwnerWalls: M.listOwnerWalls }));
 vi.mock('../../../attention/gate-store', () => ({ listPendingGates: M.listPendingGates }));
+vi.mock('../../coordination/liveness-oracle', async (orig) => {
+  const actual = await orig<typeof import('../../coordination/liveness-oracle')>();
+  return { ...actual, resolveSessionStates: M.resolveSessionStates };
+});
 vi.mock('../../../harness/improvements/read-items', () => ({ readImprovementItems: vi.fn(async () => []) }));
 vi.mock('../../../operator-standing-candidates', () => ({ readCandidates: vi.fn(async () => []) }));
 vi.mock('../../../scout/routed-ledger', () => ({ readRoutedIdeas: vi.fn(async () => []) }));
@@ -103,7 +108,16 @@ const run = async () => {
   // dispatch layer serializes it per payload tier; tests read the data directly.
   const res = (await tool.handler({} as never, CTX)) as {
     data: {
-      groups: Array<{ items: Array<{ id: string; kind: string }> }>;
+      groups: Array<{
+        items: Array<{
+          id: string;
+          kind: string;
+          tier: string;
+          needsHuman: boolean;
+          status: string;
+          body: string;
+        }>;
+      }>;
       tierCounts: Record<string, number>;
     };
   };
@@ -131,6 +145,7 @@ beforeEach(async () => {
   M.readNeedsHumanWorkItems.mockResolvedValue([]);
   M.listOwnerWalls.mockResolvedValue({ walls: [] });
   M.listPendingGates.mockResolvedValue([]);
+  M.resolveSessionStates.mockResolvedValue(new Map());
   // plans:attention now caches its aggregation (cache-expensive-tool-reads P-003);
   // this test characterizes the RAW source aggregation, so disable the cache (bypass)
   // + reset the singleton so each case re-runs every source with its freshly-set mocks.
@@ -178,6 +193,56 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     expect(M.readNeedsHumanWorkItems).not.toHaveBeenCalled();
     expect(M.listOwnerWalls).not.toHaveBeenCalled();
     expect(M.listPendingGates).not.toHaveBeenCalled();
+  });
+
+  it('passes pending-gate owners through the liveness oracle before projecting attention', async () => {
+    const openedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    M.listPendingGates.mockResolvedValue([
+      {
+        session_id: 'sess-live',
+        client: 'codex',
+        ref_id: 'ref-live',
+        kind: 'ask',
+        question: 'continue?',
+        owner_id: 'su-live',
+        harness_slug: 'papercusp',
+        opened_at: openedAt,
+      },
+      {
+        session_id: 'sess-ended',
+        client: 'codex',
+        ref_id: 'ref-ended',
+        kind: 'ask',
+        question: 'old question',
+        owner_id: 'su-ended',
+        harness_slug: 'papercusp',
+        opened_at: openedAt,
+      },
+    ]);
+    M.resolveSessionStates.mockResolvedValue(
+      new Map([
+        ['su-live', { ownerId: 'su-live', sessionState: 'live' }],
+        ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
+      ]),
+    );
+
+    const items = allItems(await run()).filter((item) => item.kind === 'blocked-session');
+    expect(items).toHaveLength(2);
+    expect(M.resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-live' }, { ownerId: 'su-ended' }],
+      { hydratePerId: true },
+    );
+
+    const live = items.find((item) => item.id.includes('sess-live'))!;
+    expect(live.tier).toBe('decision');
+    expect(live.needsHuman).toBe(true);
+    expect(live.status).toBe('blocked (codex)');
+
+    const ended = items.find((item) => item.id.includes('sess-ended'))!;
+    expect(ended.tier).toBe('alert');
+    expect(ended.needsHuman).toBe(false);
+    expect(ended.status).toBe('stranded (codex)');
+    expect(ended.body).toContain('STRANDED');
   });
 
   it('aggregates items from MULTIPLE independent parallel sources (none dropped)', async () => {
