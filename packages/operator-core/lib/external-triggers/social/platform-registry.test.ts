@@ -21,6 +21,45 @@ import {
 describe('social platform registry', () => {
   const rows = listSocialPlatforms();
 
+  /**
+   * Rows that declare a readable stream.
+   *
+   * `read` became nullable in P-021 for LinkedIn, whose content is unreachable
+   * at every grant tier we hold. The read invariants below genuinely do not
+   * apply to such a row — but narrowing them by filtering is only safe while
+   * something ELSE pins the excluded population, or a future row could opt out
+   * of every read invariant just by setting `read: null`. The test immediately
+   * following does that pinning, and is the reason this filter is not a hole.
+   */
+  const readableRows = rows.filter(
+    (row): row is SocialPlatformRow & { read: NonNullable<SocialPlatformRow['read']> } => row.read !== null,
+  );
+
+  it('admits a write-only row ONLY when it also declares no read scopes and says why', () => {
+    // The guard that makes `readableRows` safe to filter on. A `read: null` is
+    // a strong claim — "this platform cannot be read by us at all" — and it
+    // must not be reachable by accident, because every read invariant below
+    // stops applying to a row that makes it.
+    const writeOnly = rows.filter((row) => row.read === null);
+
+    // Pin the population rather than the mere shape. If a second platform ever
+    // becomes write-only that is a real finding worth a deliberate edit here,
+    // not something to absorb silently.
+    expect(writeOnly.map((row) => row.id)).toEqual(['linkedin']);
+
+    for (const row of writeOnly) {
+      // A row that cannot be read must not claim a read-shaped scope. This is
+      // the assertion that would have caught the tempting wrong version of the
+      // LinkedIn row: requesting r_member_social "just in case" while declaring
+      // no read path is either a phantom scope (D-034) or an unimplemented read.
+      for (const scope of row.auth.scopes) {
+        expect(scope.startsWith('r_'), `${row.id} declares read scope '${scope}' but no readable stream`).toBe(false);
+      }
+      // …and it must say so where an owner will see it, not only in code.
+      expect(row.blockedOn ?? '', `${row.id} is write-only but explains nothing`).not.toBe('');
+    }
+  });
+
   it('exposes a non-empty registry whose keys match their row ids', () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
@@ -34,13 +73,13 @@ describe('social platform registry', () => {
     // all. If a future row needs one, the fix is to reopen D-003 (and the Svix
     // ingest question it defers to), not to widen the transport union.
     const outboundOnly = new Set(['outbound-websocket', 'poll-cursor']);
-    for (const row of rows) {
+    for (const row of readableRows) {
       expect(outboundOnly.has(row.read.transport), `${row.id} declares a non-outbound transport`).toBe(true);
     }
   });
 
   it('keeps transport and replay class coherent', () => {
-    for (const row of rows) {
+    for (const row of readableRows) {
       if (row.read.transport === 'poll-cursor') {
         // Polling admits exactly two gap behaviours, and the difference is the
         // whole of D-021. Either the provider accepts a time filter, so reading
@@ -63,7 +102,7 @@ describe('social platform registry', () => {
     // never looks at `streams` is left CONSERVATIVE rather than wrong. Overstating
     // is the failure that matters: it would promise a replay guarantee the
     // weakest stream cannot deliver, and the loss would be silent.
-    const withStreams = rows.filter((row) => row.read.streams);
+    const withStreams = readableRows.filter((row) => row.read.streams);
     expect(withStreams.length, 'expected at least one row declaring per-stream reads').toBeGreaterThan(0);
 
     for (const row of withStreams) {
@@ -88,7 +127,7 @@ describe('social platform registry', () => {
     // class is added to the union and NOT ranked here, the lookup returns
     // undefined and every comparison silently becomes NaN — a guard that
     // passes because it stopped measuring. Pin the population instead.
-    for (const row of rows) {
+    for (const row of readableRows) {
       expect(SOCIAL_REPLAY_STRENGTH[row.read.replay], `${row.id} scalar replay is unranked`).toBeTypeOf('number');
       for (const spec of Object.values(row.read.streams ?? {})) {
         expect(SOCIAL_REPLAY_STRENGTH[spec.replay], `${row.id} stream replay is unranked`).toBeTypeOf('number');
