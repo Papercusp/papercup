@@ -30,7 +30,6 @@ import {
 } from '@papercusp/operator-core/lib/testing-run-store';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
-import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 interface TestRunRow {
   filePath: string;
@@ -42,38 +41,18 @@ interface TestRunRow {
   worktreeDirty: boolean;
 }
 
-let _loopLagMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
-
-function ensureLoopLagMonitor(): void {
-  if (_loopLagMonitor) return;
-  try {
-    _loopLagMonitor = monitorEventLoopDelay({ resolution: 20 });
-    _loopLagMonitor.enable();
-  } catch {
-    _loopLagMonitor = null;
-  }
-}
-
 function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
-  let loopLagP95Ms: number | null = null;
-  try {
-    ensureLoopLagMonitor();
-    const p95Ns = _loopLagMonitor?.percentile(95);
-    if (typeof p95Ns === 'number' && Number.isFinite(p95Ns)) {
-      loopLagP95Ms = Math.round((p95Ns / 1_000_000) * 10) / 10;
-    }
-    _loopLagMonitor?.reset();
-  } catch {
-    loopLagP95Ms = null;
-  }
-
+  // This reporter is a child process. Its event loop is mostly idle while
+  // Playwright workers run, so it cannot measure the operator host loop used
+  // by testing:runs' critical-band classifier. Persist no false-provenance
+  // sample; the reader will expose saturationSuspect as unknown.
   let rssMb: number | null = null;
   try {
     rssMb = Math.round((process.memoryUsage().rss / 1_048_576) * 10) / 10;
   } catch {
     rssMb = null;
   }
-  return { loopLagP95Ms, rssMb };
+  return { loopLagP95Ms: null, rssMb };
 }
 
 function toWorkspaceRel(absPath: string): string {
@@ -165,7 +144,6 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private worktreeBefore: WorktreeGitSnapshot | null = null;
 
   onBegin(): void {
-    ensureLoopLagMonitor();
     this.worktreeBefore = captureWorktreeSnapshot();
   }
 

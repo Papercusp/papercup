@@ -72,11 +72,12 @@ const iso = toIso;
  * explain the failure away, it marks the row as unable to settle the question
  * and tells the caller to re-run before chasing it.
  *
- * NULL lag is explicitly NOT suspect — the comment is emphatic that NULL means
- * no monitor was running, which is not a claim the host was calm.
+ * NULL lag is explicitly UNKNOWN — the comment is emphatic that NULL means no
+ * trustworthy host signal was recorded, which is not a claim the host was calm.
  */
-export function isSaturationSuspect(loopLagP95Ms: number | null): boolean {
-  return loopLagP95Ms !== null && loopLagP95Ms >= CRITICAL_P95_MS;
+export function isSaturationSuspect(loopLagP95Ms: number | null): boolean | null {
+  if (loopLagP95Ms === null) return null;
+  return loopLagP95Ms >= CRITICAL_P95_MS;
 }
 
 /** file_path is matched as a literal SUBSTRING — the corpus overwhelmingly
@@ -127,7 +128,7 @@ export default defineTool({
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
-      '`saturationSuspect` = this row was recorded while host event-loop p95 was past the critical band, so it is NOT reliable evidence of a genuine red — re-run before chasing it. NULL lag is not suspect (it means no monitor was running, not that the host was calm).',
+      '`saturationSuspect` is true only when a trustworthy host event-loop p95 sample was past the critical band, so the row is NOT reliable evidence of a genuine red — re-run before chasing it. false means a valid calm sample; null means the signal is unknown (no trustworthy host sample), not that the host was calm.',
       'SCOPE: no workspace/harness predicate is applied by default, deliberately. CI/gate rows carry NULL workspace_id/harness_slug (the CI reporter derives them from env vars CI never sets), so scoping by workspace silently excludes every CI row and reads as a clean "no failures" (EI-19324633485547042). Pass `workspace` only for per-hive Tests-tab rows, knowing it excludes CI.',
       "Status values are 'pass'/'fail'/'skip'/'cancelled'/'error'/'running' — never 'passed'/'failed'.",
     ].join(' '),

@@ -208,12 +208,10 @@ describe('testing:runs filePath matching', () => {
 });
 
 describe('isSaturationSuspect', () => {
-  it('does NOT treat a NULL lag sample as suspect', () => {
-    // The column comment is emphatic: NULL means no monitor was running on
-    // that process — it is NOT a claim the host was calm. Treating NULL as
-    // suspect would quietly mark most historical rows unreliable and give
-    // every red an excuse, which is the "blame high load" failure inverted.
-    expect(isSaturationSuspect(null)).toBe(false);
+  it('returns UNKNOWN for a NULL lag sample', () => {
+    // NULL means no trustworthy host signal was recorded. It is not evidence
+    // of saturation, but it is also not evidence that the host was calm.
+    expect(isSaturationSuspect(null)).toBeNull();
   });
 
   it('flags a sample at or past the critical band', () => {
