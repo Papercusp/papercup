@@ -35,6 +35,19 @@ describe('social platform registry', () => {
     (row): row is SocialPlatformRow & { read: NonNullable<SocialPlatformRow['read']> } => row.read !== null,
   );
 
+  /**
+   * Read a row's stream spec in a test that already knows the row is readable.
+   *
+   * Preferred over a `!` assertion: if one of these platforms ever became
+   * write-only, `!` would fail with a bare "cannot read property of null" from
+   * whichever line got there first, whereas this names the row and the
+   * expectation that broke.
+   */
+  function readOf(row: SocialPlatformRow): NonNullable<SocialPlatformRow['read']> {
+    expect(row.read, `${row.id} is expected to declare a readable stream`).not.toBeNull();
+    return row.read as NonNullable<SocialPlatformRow['read']>;
+  }
+
   it('admits a write-only row ONLY when it also declares no read scopes and says why', () => {
     // The guard that makes `readableRows` safe to filter on. A `read: null` is
     // a strong claim — "this platform cannot be read by us at all" — and it
@@ -243,18 +256,18 @@ describe('social platform registry', () => {
     // Pins the specific measured facts so a later edit that "tidies" them has
     // to consciously contradict the cited sources in D-005.
     const bluesky = assertSocialPlatformUsable('bluesky');
-    expect(bluesky.read.transport).toBe('outbound-websocket');
-    expect(bluesky.read.replay).toBe('bounded-cursor-window');
+    expect(readOf(bluesky).transport).toBe('outbound-websocket');
+    expect(readOf(bluesky).replay).toBe('bounded-cursor-window');
 
     const mastodon = assertSocialPlatformUsable('mastodon');
-    expect(mastodon.read.replay).toBe('no-replay-rest-backfill');
+    expect(readOf(mastodon).replay).toBe('no-replay-rest-backfill');
     // The Idempotency-Key header is the only thing standing between a retry and
     // a duplicate public post on Mastodon.
     expect(mastodon.write.idempotency).toBe('header');
 
     const reddit = assertSocialPlatformUsable('reddit');
     expect(reddit.limits.requestsPerMinute).toBe(60);
-    expect(reddit.read.transport).toBe('poll-cursor');
+    expect(readOf(reddit).transport).toBe('poll-cursor');
   });
 
   it('records the YouTube facts P-015 actually verified against the vendor docs', () => {
@@ -268,9 +281,9 @@ describe('social platform registry', () => {
 
     // D-021: the two streams do NOT share a replay guarantee, and the scalar
     // reports the weaker one so it cannot overstate.
-    expect(youtube.read.streams?.activities.replay).toBe('poll-cursor');
-    expect(youtube.read.streams?.comments.replay).toBe('watermark-rescan');
-    expect(youtube.read.replay).toBe('watermark-rescan');
+    expect(readOf(youtube).streams?.activities.replay).toBe('poll-cursor');
+    expect(readOf(youtube).streams?.comments.replay).toBe('watermark-rescan');
+    expect(readOf(youtube).replay).toBe('watermark-rescan');
 
     // D-020: three non-fungible budgets. The upload ceiling counts CALLS, not
     // units — the correction that matters, since the endpoint costs 1 unit and
