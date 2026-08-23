@@ -456,6 +456,80 @@ describe("cc PreToolUse activity-report hook — operator-independent paths", ()
     expect(r.stdout).toBe("");
   });
 
+  it("rewrites an exact colon-form ToolSearch select to Claude's indexed MCP id", () => {
+    const r = runActivityPre(
+      { PAPERCUSP_SID: "sid-tool-search" },
+      payload({
+        tool_name: "ToolSearch",
+        tool_input: { query: "select:sessions:read", max_results: 7 },
+        tool_use_id: "tool-search-1",
+        session_id: "session-1",
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: {
+          query: "select:mcp__papercusp-su__sessions_read",
+          max_results: 7,
+        },
+      },
+    });
+  });
+
+  it.each([
+    ["keyword search", "find the sessions read tool"],
+    ["already-mangled id", "select:mcp__papercusp-su__sessions_read"],
+    ["plugin dot name", "select:repomix.pack"],
+    ["too many colon segments", "select:sessions:read:extra"],
+  ])("preserves %s ToolSearch queries", (_label, query) => {
+    const r = runActivityPre(
+      { PAPERCUSP_SID: "sid-tool-search-preserve" },
+      payload({
+        tool_name: "ToolSearch",
+        tool_input: { query },
+        tool_use_id: "tool-search-preserve",
+        session_id: "session-preserve",
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+  });
+
+  it("does not rewrite colon syntax on another tool or outside a Papercusp session", () => {
+    const sameQueryOnRead = runActivityPre(
+      { PAPERCUSP_SID: "sid-not-tool-search" },
+      payload({
+        tool_name: "Read",
+        tool_input: { query: "select:sessions:read" },
+      }),
+    );
+    const toolSearchWithoutSid = runActivityPre(
+      {},
+      payload({
+        tool_name: "ToolSearch",
+        tool_input: { query: "select:sessions:read" },
+      }),
+    );
+    expect(sameQueryOnRead.status).toBe(0);
+    expect(sameQueryOnRead.stdout).toBe("");
+    expect(toolSearchWithoutSid.status).toBe(0);
+    expect(toolSearchWithoutSid.stdout).toBe("");
+  });
+
+  it("fails open when ToolSearch input is malformed", () => {
+    const r = runActivityPre(
+      { PAPERCUSP_SID: "sid-tool-search-malformed" },
+      payload({
+        tool_name: "ToolSearch",
+        tool_input: { query: ["select:sessions:read"] },
+      }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+  });
+
   it("detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang", () => {
     const t0 = Date.now();
     const r = runActivityPre({
