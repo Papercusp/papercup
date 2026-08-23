@@ -174,7 +174,10 @@ describe('applyGoalDisposition — disposition → goals.status mapping', () => 
     expect(calls).toHaveLength(1);
     // COALESCE(${nextStatus}::text, status): the first value IS the new status.
     expect(calls[0].values[0]).toBe(expectedStatus);
-    const stamp = JSON.parse(String(calls[0].values[1])) as Record<string, unknown>;
+    // Param order (P-021): [nextStatus, outputs, stamp, goalId, workspaceId].
+    // No outputs supplied ⇒ null into COALESCE, so an earlier record survives.
+    expect(calls[0].values[1]).toBeNull();
+    const stamp = JSON.parse(String(calls[0].values[2])) as Record<string, unknown>;
     expect(stamp.disposition).toBe(disposition);
     expect(stamp.dispositionBy).toBe('su-abc');
     expect(typeof stamp.dispositionAt).toBe('string');
@@ -194,9 +197,22 @@ describe('applyGoalDisposition — disposition → goals.status mapping', () => 
       sql: tag,
     });
     expect(calls[0].values[0]).toBeNull();
-    const stamp = JSON.parse(String(calls[0].values[1])) as Record<string, unknown>;
+    const stamp = JSON.parse(String(calls[0].values[2])) as Record<string, unknown>;
     expect(stamp.disposition).toBe('handoff');
     expect(stamp.handoffTo).toBe('su-next');
+  });
+
+  it('records validated outputs as the second param (P-021) — JSON when supplied', async () => {
+    const { tag, calls } = recordingSql();
+    await applyGoalDisposition({
+      workspaceId: 'ws-1',
+      goalId: 'g-1',
+      disposition: 'achieved',
+      dispositionBy: 'su-abc',
+      outputs: { shipped: true },
+      sql: tag,
+    });
+    expect(JSON.parse(String(calls[0].values[1]))).toEqual({ shipped: true });
   });
 });
 
@@ -212,7 +228,15 @@ describe('activeGoalForOwner — positive-finding-only resolution', () => {
   it('returns the goal ref (with any recorded disposition) for an active goal', async () => {
     getModeSubjectMock.mockResolvedValue('g-1');
     const { tag } = recordingSql([
-      [{ id: 'g-1', title: 'Ship it', install_slug: 'papercusp', disposition: null }],
+      [
+        {
+          id: 'g-1',
+          title: 'Ship it',
+          install_slug: 'papercusp',
+          disposition: null,
+          output_schema: { fields: { url: 'string' } },
+        },
+      ],
     ]);
     const got = await activeGoalForOwner({ workspaceId: 'ws-1', ownerId: 'su-abc', sql: tag });
     expect(got).toEqual({
@@ -220,6 +244,9 @@ describe('activeGoalForOwner — positive-finding-only resolution', () => {
       title: 'Ship it',
       installSlug: 'papercusp',
       recordedDisposition: null,
+      // P-021: the resolver carries the goal's output_schema so wind-down can
+      // validate reported outputs against it without a second read.
+      outputSchema: { fields: { url: 'string' } },
     });
   });
 

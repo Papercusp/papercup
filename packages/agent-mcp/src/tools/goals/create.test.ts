@@ -167,7 +167,15 @@ describe('goals:create — a goal must declare its holder policy', () => {
   const holderWritten = () => {
     const insert = calls.find((c) => /INSERT INTO harness_shared\.goals/.test(c.sql))!;
     expect(insert.sql).toMatch(/launch_settings/);
-    const raw = insert.params[insert.params.length - 1];
+    // Params ride in COLUMN order, so read launch_settings by its position in
+    // the INSERT's column list — "last param" broke the moment P-021 appended
+    // input_schema/inputs/output_schema after it, and would break again on the
+    // next append.
+    const cols = /\(([^)]*)\)\s*VALUES/i
+      .exec(insert.sql.replace(/\s+/g, ' '))![1]
+      .split(',')
+      .map((c) => c.trim());
+    const raw = insert.params[cols.indexOf('launch_settings')];
     return raw == null ? null : (JSON.parse(String(raw)) as { holder?: Record<string, unknown> }).holder;
   };
 
