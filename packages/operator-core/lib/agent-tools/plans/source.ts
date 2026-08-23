@@ -794,6 +794,41 @@ export async function resolvePlanHarnessSlug(
   return rows[0]?.harness_slug ?? null;
 }
 
+
+/**
+ * Batched exact-slug scope recovery (EI-21194994217912029) — the INVERSE
+ * sibling of {@link planSlugsForHarness}: a caller holding one or more EXACT
+ * plan slugs but NO harness to scope them to asks which harnesses own them
+ * (the plans:get / plans:items omit-harness recovery path). Returns, per
+ * requested slug, every harness in this workspace holding a store-backed row,
+ * most-recently-updated first — index 0 is the same deterministic pick
+ * {@link resolvePlanHarnessSlug} makes. Requested slugs absent from the map
+ * are not store-backed anywhere in this workspace. One query; never throws;
+ * invalid slugs simply come back absent.
+ */
+export async function planHarnessesForSlugs(
+  workspaceId: string,
+  slugs: readonly string[],
+): Promise<Map<string, string[]>> {
+  const valid = [...new Set(slugs)].filter(
+    (s): s is string => typeof s === 'string' && VALID_PLAN_SLUG.test(s),
+  );
+  const out = new Map<string, string[]>();
+  if (valid.length === 0) return out;
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ plan_slug: string; harness_slug: string }[]>`
+      SELECT plan_slug, harness_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND plan_slug = ANY(${valid})
+       ORDER BY updated_at DESC
+    `;
+  });
+  for (const row of rows) {
+    const list = out.get(row.plan_slug);
+    if (list) list.push(row.harness_slug);
+    else out.set(row.plan_slug, [row.harness_slug]);
+  }
+  return out;
+}
 /**
  * The set of plan slugs owned by `harnessSlug` in this workspace — the batch
  * sibling of `resolvePlanHarnessSlug` (one plan → its harness) for a caller
