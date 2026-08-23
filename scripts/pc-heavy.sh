@@ -994,8 +994,9 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # ── Result-affecting ENVIRONMENT (EI-18699972365875475; blocker filed by EI-78) ──
   # cwd+argv+token is a COLLIDING key for any command that takes result-changing
   # input through the ENVIRONMENT rather than argv, and that is not hypothetical:
-  # it is why the entire `test:*` family is pinned to PC_HEAVY_COALESCE=0 today.
-  # EI-78 stated it exactly — "its key is cwd+argv+tree-state and does NOT include
+  # it is why the entire `test:*` family was pinned to PC_HEAVY_COALESCE=0 until
+  # its affected-test entrypoints declared these inputs explicitly.
+  # EI-78 stated the original hazard exactly — "its key is cwd+argv+tree-state and does NOT include
   # the ENVIRONMENT — while the gate varies AFFECTED_BASE via env alone. Two runs
   # at the same HEAD with different bases would collide and hand one of them a
   # verdict computed for a different delta". That is the same
