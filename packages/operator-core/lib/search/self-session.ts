@@ -286,13 +286,15 @@ export async function resolveSelfSession(
       : join(home, '.papercusp', 'su-codex-homes', `session-${r.id}`);
     const isolated = await listJsonlUnder(join(codexHome, 'sessions'));
     files.push(...isolated);
-    const pinned = uuid
-      ? isolated.find((f) => basename(f, '.jsonl').toLowerCase().endsWith(uuid.toLowerCase()))
-      : await newestOf(isolated);
-    if (pinned) {
-      const stem = basename(pinned, '.jsonl');
+    // A cold carry-respawn keeps the original adv_sessions.session_id while
+    // Codex writes the successor rollout into this same managed home. The
+    // recorded id is therefore stale while the old rollout remains on disk;
+    // self-recall must follow the newest live transcript.
+    const newest = await newestOf(isolated);
+    if (newest) {
+      const stem = basename(newest, '.jsonl');
       const parsed = stem.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i)?.[1] ?? uuid;
-      if (parsed) return { sourceKind: 'codex', sessionId: parsed, filePath: pinned };
+      if (parsed) return { sourceKind: 'codex', sessionId: parsed, filePath: newest };
     }
 
     // Codex 0.144+ can update state_5.sqlite/history.jsonl while the recorded

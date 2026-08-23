@@ -40,6 +40,37 @@ describe('resolveSelfSession — fresh Codex without a rollout', () => {
   });
 });
 
+describe('resolveSelfSession — Codex cold-carry respawn chain', () => {
+  const STALE = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+  const CURRENT = '119f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+
+  it('resolves the newest managed rollout instead of the stale adv-session id', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+    roots.push(home);
+    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-11801');
+    const rolloutDir = join(codexHome, 'sessions', '2026', '08', '23');
+    await mkdir(rolloutDir, { recursive: true });
+    const stalePath = join(rolloutDir, `rollout-2026-08-23T07-00-00-${STALE}.jsonl`);
+    const currentPath = join(rolloutDir, `rollout-2026-08-23T08-00-00-${CURRENT}.jsonl`);
+    await writeFile(stalePath, '{}\n');
+    await writeFile(currentPath, '{}\n');
+    await utimes(stalePath, new Date(1_600_000_000_000), new Date(1_600_000_000_000));
+    await utimes(currentPath, new Date(1_600_000_600_000), new Date(1_600_000_600_000));
+
+    const resolved = await resolveSelfSession('su-current', {
+      home,
+      loadActiveSessions: async () => [{
+        id: 11801,
+        agent: 'codex',
+        session_id: STALE,
+        omp_thread_id: null,
+      }],
+    });
+
+    expect(resolved).toEqual({ sourceKind: 'codex', sessionId: CURRENT, filePath: currentPath });
+  });
+});
+
 describe('resolveSelfSession — claude cold-carry respawn chain (WI-5644)', () => {
   const ORIGINAL = '0a52099c-de9f-43d4-ae49-8e72ca176ee8'; // frozen in the discovery record at first launch
   const CURRENT = 'c95d04fe-a291-4879-b93f-b49f9fb75144'; // newest transcript, minted by a later carry-respawn
