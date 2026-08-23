@@ -28,7 +28,8 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
 }));
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn(async () => null) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../adv-sessions')>()),
   markAdvSessionShutdownAcceptedByOwner: vi.fn(async () => true),
 }));
 vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }));

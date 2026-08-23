@@ -25,7 +25,10 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
 vi.mock('./work-items', () => ({ releaseWorkItem: h.release }));
 vi.mock('./work-item-claims', () => ({ releaseAllClaimsForOwner: h.claims }));
 vi.mock('./issues-engineer', () => ({ issuesScopeWorkspace: () => 'ws' }));
