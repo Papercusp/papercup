@@ -244,6 +244,7 @@ describe('recipe recommendation authority (P-008)', () => {
     ).toBe('/tmp/run-1786896331.log');
     for (const path of [
       '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      '/tmp/papercusp-capability/scratch/bash-8d7857db-c59.log',
       '/home/jdoe/.papercusp/checkpoint-logs/2026-08-12T19-34-01-974Z-base-8779b1c7f288-cand-53f4676ffa37.log',
       '/home/jdoe/.papercusp/checkpoint-logs/2026-08-21T00-03-33-331Z-base-a2d69cef50d5-cand-1bbf7e4fe81c.log',
     ]) {
@@ -260,8 +261,25 @@ describe('recipe recommendation authority (P-008)', () => {
     expect(findVolatileRunArtifactLiteral(`const p = '/tmp/papercup-green-checkpoint.log';`)).toBeNull();
     // a path DERIVED at runtime is the correct shape and must not be flagged
     expect(findVolatileRunArtifactLiteral('const p = `/tmp/gate-${runId}-${stamp}.log`;')).toBeNull();
+    expect(findVolatileRunArtifactLiteral('const p = `/tmp/papercusp-capability/scratch/bash-${bashId}.log`;')).toBeNull();
     // non-ephemeral roots are addresses, not artifacts
     expect(findVolatileRunArtifactLiteral(`const p = 'docs/plans/my-plan-2026-08-13.md';`)).toBeNull();
+  });
+
+  it('fails closed for a pinned capability:bash scratch log without rejecting runtime-derived paths', async () => {
+    const path = '/tmp/papercusp-capability/scratch/bash-8d7857db-c59.log';
+    const frozenLogScript = `const path = '${path}';
+      const r = await tools.capability.read({ file_path: path, tail: 500 });
+      return { path, finalLine: r };`;
+    await expect(deriveRecipeAuthority(frozenLogScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: { kind: 'volatile-run-artifact-path', path },
+    });
+
+    const runtimeResolvedScript = 'const path = `/tmp/papercusp-capability/scratch/bash-${bashId}.log`;';
+    await expect(deriveRecipeAuthority(runtimeResolvedScript)).resolves.toMatchObject({
+      unresolved: false,
+    });
   });
 
   it('keeps a live-resolved checkpoint-log recipe recommendable (the calibration case)', async () => {

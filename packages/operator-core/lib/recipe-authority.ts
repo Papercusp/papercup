@@ -193,6 +193,9 @@ const RUN_SCOPED_PATH_TOKEN = /\d{4}-\d{2}-\d{2}|\d{8,}/;
 /** A manual checkpoint unit's log is run-scoped even when its unit id has no timestamp. */
 const MANUAL_CHECKPOINT_UNIT_LOG = /^papercup-green-checkpoint-manual-[a-z0-9-]+\.log$/i;
 
+/** capability:bash spills each run to this fixed directory with its job id in the filename. */
+const CAPABILITY_BASH_SCRATCH_LOG = /^papercusp-capability\/scratch\/bash-[^/]+\.log$/i;
+
 /** Persisted checkpoint logs encode the base/candidate identity in their filename. */
 const PERSISTED_CHECKPOINT_LOG_PATH = /(?:^|\/)\.papercusp\/checkpoint-logs\/[^/]+-base-[^/]+-cand-[^/]+\.log$/i;
 
@@ -218,7 +221,11 @@ export function findVolatileRunArtifactLiteral(script: string): string | null {
     const root = EPHEMERAL_PATH_ROOTS.find((r) => value.toLowerCase().startsWith(r));
     if (root) {
       const rootRelativePath = value.slice(root.length);
-      if (RUN_SCOPED_PATH_TOKEN.test(rootRelativePath) || MANUAL_CHECKPOINT_UNIT_LOG.test(rootRelativePath)) {
+      if (
+        RUN_SCOPED_PATH_TOKEN.test(rootRelativePath) ||
+        MANUAL_CHECKPOINT_UNIT_LOG.test(rootRelativePath) ||
+        CAPABILITY_BASH_SCRATCH_LOG.test(rootRelativePath)
+      ) {
         return value;
       }
     }
