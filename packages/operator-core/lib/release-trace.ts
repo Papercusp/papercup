@@ -450,14 +450,21 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
     add('gate-not-firing', true, gate.fireStaleReason ?? 'The green-checkpoint is not producing fresh verdicts.');
   if (position.targetSha && targetIsNotGreenPinned(position)) {
     const measured = position.verdictProvenance.targetIncludedInGreenPin;
+    const targetInMain = position.positions.inMain;
+    const summary =
+      measured === false
+        ? targetInMain
+          ? 'The target is in origin/main but is not contained by the recorded green pin; main/deploy presence does not prove gate testing.'
+          : 'The target is not in origin/main and is not contained by the recorded green pin; neither origin/main visibility nor green-pin containment proves gate testing.'
+        : !targetInMain
+          ? 'The target is not in origin/main, and green-pin containment was not measured; this trace cannot prove the target was gate-tested.'
+          : 'The target-to-green-pin ancestry could not be measured, so this trace cannot prove the target was gate-tested.';
     add(
-      measured === false || (measured === undefined && !position.positions.inMain)
+      measured === false || (measured === undefined && !targetInMain)
         ? 'target-not-green-pinned'
         : 'green-pin-containment-unmeasured',
       true,
-      measured === false || (measured === undefined && !position.positions.inMain)
-        ? 'The target is in origin/main but is not contained by the recorded green pin; main/deploy presence does not prove gate testing.'
-        : 'The target-to-green-pin ancestry could not be measured, so this trace cannot prove the target was gate-tested.',
+      summary,
     );
   }
   if (position.verdictProvenance.deployOrigin === 'ahead-of-gate') {

@@ -325,6 +325,26 @@ describe('buildReleaseTrace', () => {
     expect(out.testedDeployedParity).toMatchObject({ state: 'target-not-included', ok: false });
     expect(out.constraints.map((constraint) => constraint.code)).toContain('target-not-green-pinned');
   });
+  it('does not claim a staging-only target is in origin/main when the green pin excludes it', () => {
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+          verdictProvenance: {
+            ...position().verdictProvenance,
+            targetIncludedInGreenPin: false,
+            deployOrigin: 'ahead-of-gate',
+          },
+        }),
+      }),
+    );
+
+    const constraint = out.constraints.find((entry) => entry.code === 'target-not-green-pinned');
+    expect(out.target.presence.inMain).toBe(false);
+    expect(constraint?.summary).toBe(
+      'The target is not in origin/main and is not contained by the recorded green pin; neither origin/main visibility nor green-pin containment proves gate testing.',
+    );
+  });
   it('returns one safe green-pin deploy trigger when main is ahead of live', () => {
     const out = buildReleaseTrace(
       input({
