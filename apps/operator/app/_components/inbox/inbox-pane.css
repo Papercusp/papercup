@@ -189,6 +189,7 @@
   background: linear-gradient(135deg, color-mix(in srgb, #1688ff 13%, var(--bg-3, #112235)), color-mix(in srgb, var(--bg-1, #0b1220) 92%, transparent));
   box-shadow: 0 0 0 1px color-mix(in srgb, #1688ff 18%, transparent), 0 10px 28px color-mix(in srgb, #1688ff 12%, transparent);
 }
+.op-inbox__row-summary { position: relative; }
 .op-inbox__rowbtn {
   position: relative;
   width: 100%; min-width: 0; min-height: 82px; display: flex; flex-direction: column; gap: 5px; padding: 12px 34px 12px 56px;
@@ -276,20 +277,40 @@
   position: absolute; top: 50%; right: 8px; color: var(--fg-mute, #8a8a91);
   transform: translateY(-50%); transition: color .12s ease, transform .12s ease;
 }
-.op-inbox__rowbtn:hover .op-inbox__row-chevron,
-.op-inbox__row.is-selected .op-inbox__row-chevron {
+.op-inbox__rowbtn:hover .op-inbox__row-chevron {
   color: var(--accent-strong, #7dd3fc); transform: translate(2px, -50%);
 }
+.op-inbox__row.is-selected .op-inbox__row-chevron {
+  color: var(--accent-strong, #7dd3fc);
+  transform: translateY(-50%) rotate(90deg);
+}
 .op-inbox__detail {
-  padding: 0 6px 6px; border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  padding: 0 6px 8px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
   /* Slightly recessed vs the (orange-tinted) selected row header, so the
      expanded card reads as the row's own drawer rather than more list. */
   background: color-mix(in srgb, var(--bg-2, rgba(0, 0, 0, 0.18)) 55%, transparent);
   border-radius: 0 0 7px 7px;
 }
-/* The Queue detail pane, compacted for the chat-sidebar width. */
+/* The Queue detail card, compacted for an expanded chat-sidebar row. */
 .op-inbox__detail .pc-items__detail { min-width: 0; padding: 6px 0 0; }
 .op-inbox__detail .pc-items__detail-toolbar { flex-wrap: wrap; row-gap: 3px; }
+.op-inbox__detail .pc-items__detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: visible;
+  padding: 8px 10px 4px;
+}
+.op-inbox__detail .pc-items__detail-actions {
+  width: 100%;
+  margin: 0;
+}
+.op-inbox__detail .pc-items__action {
+  flex: 1 1 110px;
+  justify-content: center;
+  min-height: 34px;
+}
 .op-inbox__foot {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding-top: 3px; color: var(--fg-mute, #8a8a91); font-size: 10.5px;
@@ -300,161 +321,8 @@
 }
 .op-inbox__queue-link:hover { text-decoration: underline; }
 
-/* ── Option A master-detail shell ────────────────────────────────────────
-   At the default chat width the Inbox is a calm list→detail flow. A selected
-   row replaces the list and exposes an explicit Back affordance. The parent
-   op-chat container — not the viewport — decides when there is enough room to
-   keep both columns visible. */
-.op-inbox__detail-pane {
-  display: none;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #7dd3fc) 18%, transparent);
-  border-radius: 11px;
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent, #38bdf8) 7%, transparent), transparent 42%),
-    color-mix(in srgb, var(--bg-1, #0b1220) 94%, transparent);
-}
-.op-inbox--has-selection .op-inbox__master { display: none; }
-.op-inbox--has-selection .op-inbox__detail-pane { display: flex; }
-
-.op-inbox__detail-head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 0 0 auto;
-  min-width: 0;
-  padding: 13px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong, #7dd3fc) 15%, transparent);
-}
-.op-inbox__detail-back,
-.op-inbox__detail-chat {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 28px;
-  flex: 0 0 auto;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #7dd3fc) 24%, transparent);
-  border-radius: 8px;
-  color: var(--fg-dim, #b9d4e8);
-  background: color-mix(in srgb, var(--bg-3, #112235) 82%, transparent);
-  font-size: 10.5px;
-  font-weight: 680;
-  cursor: pointer;
-}
-.op-inbox__detail-back:hover,
-.op-inbox__detail-chat:hover {
-  border-color: color-mix(in srgb, var(--accent, #38bdf8) 52%, transparent);
-  color: var(--fg, #e7f7ff);
-}
-.op-inbox__detail-title-group {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-.op-inbox__detail-title-group strong {
-  overflow: hidden;
-  color: var(--fg, #e7f7ff);
-  font-size: 17px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.op-inbox__detail-kicker {
-  overflow: hidden;
-  color: var(--accent-strong, #7dd3fc);
-  font-size: 10px;
-  font-weight: 730;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.op-inbox__detail-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-.op-inbox__detail-scroll .pc-items__detail {
-  width: 100%;
-  min-width: 0;
-  min-height: 100%;
-  padding: 12px;
-  border: 0;
-  background: transparent;
-}
-.op-inbox__detail-scroll .pc-items__detail-toolbar {
-  flex-wrap: wrap;
-  row-gap: 5px;
-}
-.op-inbox__detail-scroll .pc-items__detail-actions {
-  width: 100%;
-  margin-top: 7px;
-  margin-left: 0;
-}
-.op-inbox__detail-scroll .pc-items__action {
-  min-height: 38px;
-  flex: 1 1 110px;
-  justify-content: center;
-  padding-inline: 14px;
-  border-radius: 9px;
-  font-size: 13px;
-}
-.op-inbox__detail-scroll .pc-items__action--primary {
-  border-color: color-mix(in srgb, #1688ff 78%, transparent);
-  background: linear-gradient(145deg, #1688ff, #0872e8);
-  color: #fff;
-  box-shadow: 0 7px 18px color-mix(in srgb, #1688ff 22%, transparent);
-}
-.op-inbox__detail-scroll .pc-items__detail-body { padding-inline: 0; }
-.op-inbox__detail-empty {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 24px;
-  text-align: center;
-  color: var(--fg-mute, #8a8a91);
-}
-.op-inbox__detail-empty strong { color: var(--fg-dim, #b9d4e8); font-size: 13px; }
-.op-inbox__detail-empty span:last-child { max-width: 260px; font-size: 11px; line-height: 1.45; }
-.op-inbox__detail-empty-icon {
-  width: 36px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--accent, #38bdf8) 24%, transparent);
-  border-radius: 999px;
-  color: var(--accent-strong, #7dd3fc);
-  background: color-mix(in srgb, var(--accent, #38bdf8) 8%, transparent);
-}
-
-@container op-chat (min-width: 700px) {
-  .op-inbox {
-    display: grid;
-    grid-template-columns: minmax(270px, .9fr) minmax(330px, 1.25fr);
-    gap: 10px;
-  }
-  .op-inbox__master,
-  .op-inbox--has-selection .op-inbox__master { display: flex; }
-  .op-inbox__detail-pane,
-  .op-inbox--has-selection .op-inbox__detail-pane { display: flex; }
-  .op-inbox__detail-back { display: none; }
-}
-
 @container op-chat (max-width: 420px) {
   .op-inbox__chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .op-inbox__chips::-webkit-scrollbar { display: none; }
   .op-inbox__chip { flex: 0 0 auto; }
-  .op-inbox__detail-chat span { display: none; }
 }

@@ -23,8 +23,9 @@
  *   - data: useInboxAttention → the SAME `plans.attention` sync feed the
  *     Queue + Overview render (shared cache entry, SSE-invalidated);
  *   - detail: the Queue's own exported OtherDetail — the unified
- *     AskChoiceCard + triage audit + QueueCardActions — rendered inline under
- *     the selected row, so acting from the sidebar IS acting in the Queue;
+ *     AskChoiceCard + triage audit + QueueCardActions — rendered inline inside
+ *     the selected row, with the full body before its actions, so acting from
+ *     the sidebar IS acting in the Queue;
  *   - tier semantics: effectiveTier (mirrors AdvOverviewTab's fallback).
  *
  * "Discuss" here opens a chat with PAPERCUP about the item (owner ask
@@ -46,7 +47,6 @@ import {
   parseAsBoolean,
 } from 'nuqs';
 import {
-  ArrowLeft,
   ClipboardList,
   ChevronRight,
   Inbox as InboxIcon,
@@ -319,6 +319,15 @@ export default function InboxPane({ onDiscussInChat }: {
   const lastScrolledSel = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Resolve selection against the SCOPED feed, not the filtered list. The
+  // selected row is admitted below even when a deep link's tier/kind/search
+  // filter would otherwise hide it, so inspection remains inline without
+  // silently clearing the owner's current filters.
+  const selectedItem = useMemo(
+    () => scoped.find((item) => item.id === sel) ?? null,
+    [scoped, sel],
+  );
+
   const visible = useMemo(() => {
     const filtered = scoped.filter((i) => {
       const tier = effectiveTier(i);
@@ -330,7 +339,7 @@ export default function InboxPane({ onDiscussInChat }: {
     });
     // Stable sort: decisions on top, then alerts; within a tier, newest first
     // (an item with no occurredAt keeps its server order via the idx tiebreak).
-    return filtered
+    const ordered = filtered
       .map((item, idx) => ({ item, idx }))
       .sort((a, b) => {
         const tierDelta = TIER_RANK[effectiveTier(a.item)] - TIER_RANK[effectiveTier(b.item)];
@@ -344,14 +353,11 @@ export default function InboxPane({ onDiscussInChat }: {
         return a.idx - b.idx;
       })
       .map((x) => x.item);
-  }, [scoped, filter, selectedKinds, q]);
-
-  // Resolve selection against the SCOPED feed, not the filtered list: a deep
-  // link remains inspectable while its tier/kind/search filter is adjusted.
-  const selectedItem = useMemo(
-    () => scoped.find((item) => item.id === sel) ?? null,
-    [scoped, sel],
-  );
+    if (selectedItem && !ordered.some((item) => item.id === selectedItem.id)) {
+      return [selectedItem, ...ordered];
+    }
+    return ordered;
+  }, [scoped, filter, selectedKinds, q, selectedItem]);
 
   // Virtualize the row list (WI-5339): even scoped, the inbox can hold many rows.
   const rowVirtualizer = useVirtualizer({
@@ -361,6 +367,16 @@ export default function InboxPane({ onDiscussInChat }: {
     overscan: 8,
     getItemKey: (i) => visible[i]?.id ?? i,
   });
+
+  // owner-inbox D-012: expanding/collapsing a disclosure must preserve the
+  // list's scroll position. ReactVirtualizerOptions does not expose this core
+  // switch, but the returned Virtualizer's public typed property does.
+  useEffect(() => {
+    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
+    return () => {
+      rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
+    };
+  }, [rowVirtualizer]);
 
   // Scroll a freshly deep-linked selection (opcis) into view.
   useEffect(() => {
@@ -377,10 +393,7 @@ export default function InboxPane({ onDiscussInChat }: {
   }, [sel, visible, rowVirtualizer]);
 
   return (
-    <div
-      className={`op-inbox${selectedItem ? ' op-inbox--has-selection' : ''}`}
-      data-testid="inbox-tab"
-    >
+    <div className="op-inbox" data-testid="inbox-tab">
       <section className="op-inbox__master" aria-label="Resolution inbox items">
       <header className="op-inbox__masthead">
         <span className="op-inbox__masthead-icon" aria-hidden="true">
@@ -533,6 +546,7 @@ export default function InboxPane({ onDiscussInChat }: {
                 }}
               >
                 <div className={`op-inbox__row op-inbox__row--${tier}${isSel ? ' is-selected' : ''}`}>
+              <div className="op-inbox__row-summary">
               <span className="op-inbox__row-icon" aria-hidden="true">
                 <InboxRowIcon kind={i.kind} />
               </span>
@@ -544,6 +558,7 @@ export default function InboxPane({ onDiscussInChat }: {
                 className="op-inbox__rowbtn"
                 data-testid={`inbox-row-${i.id}`}
                 aria-expanded={isSel}
+                aria-controls={`inbox-expanded-${i.id}`}
                 onClick={() => void setSel(isSel ? null : i.id)}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -588,6 +603,23 @@ export default function InboxPane({ onDiscussInChat }: {
                 <span className="op-inbox__status">{i.status}</span>
                 <ChevronRight className="op-inbox__row-chevron" size={16} aria-hidden="true" />
               </div>
+              </div>
+              {isSel ? (
+                <div
+                  id={`inbox-expanded-${i.id}`}
+                  className="op-inbox__detail"
+                  data-testid={`inbox-expanded-${i.id}`}
+                >
+                  <OtherDetail
+                    key={i.id}
+                    item={i}
+                    actionsPlacement="after-body"
+                    onResolved={onResolved}
+                    onDiscuss={onDiscuss}
+                    onNavigate={onNavigate}
+                  />
+                </div>
+              ) : null}
                 </div>
               </div>
             );
@@ -606,61 +638,6 @@ export default function InboxPane({ onDiscussInChat }: {
           Open full queue →
         </button>
       </div>
-      </section>
-
-      <section className="op-inbox__detail-pane" aria-label="Selected blocker detail">
-        {selectedItem ? (
-          <>
-            <header className="op-inbox__detail-head">
-              <button
-                type="button"
-                className="op-inbox__detail-back"
-                data-testid="inbox-detail-back"
-                onClick={() => void setSel(null)}
-              >
-                <ArrowLeft size={15} aria-hidden="true" />
-                Inbox
-              </button>
-              <span className="op-inbox__detail-title-group">
-                <span className="op-inbox__detail-kicker">
-                  {KIND_LABEL[selectedItem.kind] ?? selectedItem.kind}
-                  {selectedItem.itemRef ? ` · ${selectedItem.itemRef}` : ''}
-                </span>
-                <strong>{selectedItem.title}</strong>
-              </span>
-              {selectedItem.ownerAgentId ? (
-                <Tooltip label={`Open live chat with ${selectedItem.ownerLabel ?? selectedItem.ownerAgentId}`}>
-                  <button
-                    type="button"
-                    className="op-inbox__detail-chat"
-                    aria-label={`Open live chat with ${selectedItem.ownerLabel ?? selectedItem.ownerAgentId}`}
-                    onClick={() => void setChatOwner(selectedItem.ownerAgentId ?? null)}
-                  >
-                    <MessageCircle size={15} aria-hidden="true" />
-                    <span>Agent</span>
-                  </button>
-                </Tooltip>
-              ) : null}
-            </header>
-            <div className="op-inbox__detail-scroll" data-testid="inbox-detail">
-              <OtherDetail
-                key={selectedItem.id}
-                item={selectedItem}
-                onResolved={onResolved}
-                onDiscuss={onDiscuss}
-                onNavigate={onNavigate}
-              />
-            </div>
-          </>
-        ) : (
-          <div className="op-inbox__detail-empty" data-testid="inbox-detail-empty">
-            <span className="op-inbox__detail-empty-icon" aria-hidden="true">
-              <ChevronRight size={20} />
-            </span>
-            <strong>Select a blocker</strong>
-            <span>Its full context and type-aware resolution actions will appear here.</span>
-          </div>
-        )}
       </section>
 
       <SessionChatModal

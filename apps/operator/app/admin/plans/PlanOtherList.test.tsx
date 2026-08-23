@@ -32,7 +32,7 @@ vi.mock('@/lib/flag-hooks', () => ({
 }));
 
 import { FLAGS } from '@papercusp/flags';
-import PlanOtherList from './PlanOtherList';
+import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import type { AttentionGroup, AttentionItem } from './plans-api';
 
 afterEach(() => cleanup());
@@ -193,5 +193,24 @@ describe('PlanOtherList — Queue unification (includePlanItems)', () => {
     await waitFor(() => expect(last).not.toBeNull());
     expect(last!.get('other')).toBe('coord-escalation:e1');
     expect(last!.get('item')).toBeNull();
+  });
+});
+
+describe('OtherDetail — host action placement', () => {
+  it('places the action-loading affordance after the body for an inline Inbox host', () => {
+    render(
+      <OtherDetail
+        item={item({ body: 'Full owner-visible description' })}
+        actionsPlacement="after-body"
+        onResolved={() => {}}
+      />,
+    );
+
+    const body = document.querySelector('.pc-items__detail-body');
+    const loading = screen.getByTestId('detail-actions-loading');
+    expect(body).toBeTruthy();
+    expect(body?.contains(loading)).toBe(true);
+    expect(body?.textContent).toContain('Full owner-visible description');
+    expect(body?.lastElementChild).toBe(loading);
   });
 });

@@ -45,13 +45,14 @@ vi.mock('@tanstack/react-virtual', () => ({
 // the hosted item id and exposes the onDiscuss seam (parity behavior is the
 // Queue suites' job).
 vi.mock('@/app/admin/plans/PlanOtherList', () => ({
-  OtherDetail: ({ item, onDiscuss, onResolved, onNavigate }: {
+  OtherDetail: ({ item, onDiscuss, onResolved, onNavigate, actionsPlacement }: {
     item: { id: string };
     onDiscuss?: (i: unknown) => boolean;
     onResolved: () => void;
     onNavigate?: (i: unknown, actionId: 'open' | 'message-owner') => boolean;
+    actionsPlacement?: 'toolbar' | 'after-body';
   }) => (
-    <div data-testid="other-detail" data-item={item.id}>
+    <div data-testid="other-detail" data-item={item.id} data-actions-placement={actionsPlacement}>
       <button type="button" data-testid="stub-discuss" onClick={() => onDiscuss?.(item)} />
       <button type="button" data-testid="stub-resolve" onClick={onResolved} />
       <button type="button" data-testid="stub-open" onClick={() => onNavigate?.(item, 'open')} />
@@ -258,14 +259,16 @@ describe('<InboxPane>', () => {
   // the DEFAULT 'needs' filter that row is hidden, so a deep-linked ?opcis lands
   // on nothing ("Open just opens the inbox page"). The drill-in fix also writes
   // ?opci=all, which is what actually makes the row visible + selectable.
-  it("an ALERT-tier selection remains inspectable even when the current list filter hides its row", () => {
+  it("an ALERT-tier deep-link keeps its row visible without clearing the current filter", () => {
     seedAttention([
       mkItem('coord-escalation:m9', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
       mkItem('d1'),
     ]);
     renderPane('?opcis=coord-escalation:m9'); // default 'needs' filter
-    expect(screen.queryByTestId('inbox-row-coord-escalation:m9')).toBeNull(); // filtered out
-    expect(screen.getByTestId('other-detail').getAttribute('data-item')).toBe('coord-escalation:m9');
+    const row = screen.getByTestId('inbox-row-coord-escalation:m9');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('inbox-filter-needs').getAttribute('aria-pressed')).toBe('true');
+    expect(row.closest('.op-inbox__row')?.contains(screen.getByTestId('other-detail'))).toBe(true);
   });
 
   it("?opci=all + ?opcis SELECTS the deep-linked alert escalation (the drill-in target)", () => {
@@ -279,15 +282,20 @@ describe('<InboxPane>', () => {
     expect(screen.getByTestId('other-detail').getAttribute('data-item')).toBe('coord-escalation:m9');
   });
 
-  it('clicking a row writes ?opcis; selection renders OtherDetail in a dedicated sibling pane', async () => {
+  it('clicking a row writes ?opcis and expands OtherDetail inside that row', async () => {
     seedAttention([mkItem('d1'), mkItem('d2')]);
     const { lastQuery } = renderPane('?opcis=d2');
     // Pre-seeded selection renders the detail for d2 only.
     const detail = screen.getByTestId('other-detail');
     expect(detail.getAttribute('data-item')).toBe('d2');
     expect(screen.getAllByTestId('other-detail')).toHaveLength(1);
-    expect(screen.getByTestId('inbox-row-d2').contains(detail)).toBe(false);
-    expect(screen.getByTestId('inbox-tab').classList.contains('op-inbox--has-selection')).toBe(true);
+    const row = screen.getByTestId('inbox-row-d2');
+    const expanded = screen.getByTestId('inbox-expanded-d2');
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    expect(row.getAttribute('aria-controls')).toBe('inbox-expanded-d2');
+    expect(expanded.contains(detail)).toBe(true);
+    expect(detail.getAttribute('data-actions-placement')).toBe('after-body');
+    expect(screen.getByTestId('inbox-row-d1')).toBeTruthy();
     // Clicking another row re-targets the selection (the adapter reports URL
     // writes on the next tick).
     fireEvent.click(screen.getByTestId('inbox-row-d1'));
@@ -297,18 +305,34 @@ describe('<InboxPane>', () => {
     await waitFor(() => expect(lastQuery()).not.toContain('opcis='));
   });
 
-  it('the narrow-pane Back affordance clears selection and a resolution refreshes the feed', async () => {
+  it('clicking the expanded row collapses it and a resolution refreshes the feed', async () => {
     seedAttention([mkItem('d1')]);
     const source = H.results['plans.attention']!;
     const { lastQuery } = renderPane('?opcis=d1');
 
-    fireEvent.click(screen.getByTestId('inbox-detail-back'));
+    fireEvent.click(screen.getByTestId('inbox-row-d1'));
     await waitFor(() => expect(lastQuery()).not.toContain('opcis='));
 
     cleanup();
     renderPane('?opcis=d1');
     fireEvent.click(screen.getByTestId('stub-resolve'));
     expect(source.invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles an inline row with Enter and Space while preserving aria state', async () => {
+    seedAttention([mkItem('d1')]);
+    const { lastQuery } = renderPane();
+    const row = screen.getByTestId('inbox-row-d1');
+
+    fireEvent.keyDown(row, { key: 'Enter' });
+    await waitFor(() => expect(lastQuery()).toContain('opcis=d1'));
+
+    cleanup();
+    const rerendered = renderPane('?opcis=d1');
+    const selectedRow = screen.getByTestId('inbox-row-d1');
+    expect(selectedRow.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(selectedRow, { key: ' ' });
+    await waitFor(() => expect(rerendered.lastQuery()).not.toContain('opcis='));
   });
 
   it('a row with an ownerAgentId shows a chat-launch button that opens SessionChatModal without also selecting the row', async () => {

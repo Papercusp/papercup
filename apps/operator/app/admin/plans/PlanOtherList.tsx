@@ -416,7 +416,13 @@ export default function PlanOtherList({
   );
 }
 
-export function OtherDetail({ item: listItem, onResolved, onDiscuss, onNavigate }: {
+export function OtherDetail({
+  item: listItem,
+  onResolved,
+  onDiscuss,
+  onNavigate,
+  actionsPlacement = 'toolbar',
+}: {
   item: AttentionItem | null;
   onResolved: () => void;
   /** Host override for the Discuss pick (owner ask 2026-07-16: the sidebar
@@ -427,6 +433,10 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss, onNavigate 
    *  uses this to open the shared work-item popup or focus SessionChatModal;
    *  the Queue keeps its existing explanatory fallback. */
   onNavigate?: (item: AttentionItem, actionId: AttentionActionId) => boolean;
+  /** The Queue keeps compact actions in its toolbar. The Resolution Inbox's
+   *  inline disclosure follows owner-inbox D-012: full body first, actions
+   *  immediately beneath it. */
+  actionsPlacement?: 'toolbar' | 'after-body';
 }) {
   // The row arrives from the SLIMMED list feed (body clipped, `actions` dropped
   // — slim-plans-attention-sync-payload-2026-07-26 P-003), so the detail pane
@@ -532,6 +542,19 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss, onNavigate 
     }
   };
 
+  const actions = hydrated ? (
+    <QueueCardActions
+      options={spec.options}
+      answered={answered}
+      busy={busy}
+      onResponse={(r) => void onResponse(r)}
+    />
+  ) : (
+    <span className="pc-items__detail-loading" data-testid="detail-actions-loading">
+      loading actions…
+    </span>
+  );
+
   return (
     <aside className="pc-items__detail">
       <div className="pc-items__detail-toolbar">
@@ -555,18 +578,7 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss, onNavigate 
             Held back until the detail fetch lands: `actions` is dropped from the
             list feed, so rendering the bar early would show ZERO buttons — which
             reads as "this item has no actions" rather than "still loading". */}
-        {hydrated ? (
-          <QueueCardActions
-            options={spec.options}
-            answered={answered}
-            busy={busy}
-            onResponse={(r) => void onResponse(r)}
-          />
-        ) : (
-          <span className="pc-items__detail-loading" data-testid="detail-actions-loading">
-            loading actions…
-          </span>
-        )}
+        {actionsPlacement === 'toolbar' ? actions : null}
       </div>
       {/* A1 (P-005): the "why it's here" line — who must sign off + why. The
           autonomy-policy deep-link for queen-eligible items is gone with the tier
@@ -593,6 +605,7 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss, onNavigate 
           hideOptions
           onResponse={(r) => void onResponse(r)}
         />
+        {actionsPlacement === 'after-body' ? actions : null}
         {answerOpen ? (
           <InputCard
             prompt={
