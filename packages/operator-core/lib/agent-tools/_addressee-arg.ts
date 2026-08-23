@@ -1,8 +1,9 @@
 /**
  * Shared `addressee` argument for the create-shaped capability verbs
- * (D-020 rail 2). Declared once so mail:send, chat:post and calendar:propose
- * cannot drift into three subtly different provenance vocabularies — and so
- * the prompt weight of explaining it is paid once per tool, not re-derived.
+ * (D-020 rail 2). Declared once so mail:send, chat:post, calendar:propose and
+ * social:post cannot drift into four subtly different provenance vocabularies
+ * — and so the prompt weight of explaining it is paid once per tool, not
+ * re-derived.
  */
 import { z } from 'zod';
 import type { AddresseeProvenance } from '../capability-verbs/addressing';
