@@ -4,7 +4,9 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   createExternalTriggerBinding,
   createExternalTriggerSource,
+  detachExternalTriggerBinding,
   loadExternalTriggerAdminSnapshot,
+  loadExternalTriggerPlanAdminSnapshot,
   setExternalTriggerBindingArmed,
   updateExternalTriggerBindingStormPolicy,
 } from './admin';
@@ -31,13 +33,25 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = ${`plan-schedule-${PLAN}`}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
 
   await sql`
     INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
+      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items,
+       schedule, schedule_active, tzid, input_schema)
     VALUES (${WS}, ${HARNESS}, ${PLAN}, 'Trigger admin fixture', 'ready',
-            ${`---\nslug: ${PLAN}\n---\n# Trigger admin fixture`}, 'trigger-admin-v1', '[]'::jsonb)`;
+            ${`---\nslug: ${PLAN}\n---\n# Trigger admin fixture`}, 'trigger-admin-v1', '[]'::jsonb,
+            '{"kind":"cron","cron":"0 9 * * 1-5"}'::jsonb, FALSE, 'America/New_York',
+            '{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}'::jsonb)`;
+  await sql`
+    INSERT INTO harness_shared.routines
+      (workspace_id, install_slug, name, trigger_kind, trigger_config, target_role,
+       payload_template, active, last_fired_at, next_fire_at)
+    VALUES (${WS}, ${HARNESS}, ${`plan-schedule-${PLAN}`}, 'cron', '{}'::jsonb,
+            'system:plan-run', '{}'::jsonb, FALSE,
+            '2026-08-22T12:00:00.000Z'::timestamptz,
+            '2026-08-23T13:00:00.000Z'::timestamptz)`;
   const sources = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_sources
       (workspace_id, kind, status, credential_ref, last_connected_at)
@@ -87,6 +101,40 @@ describe('external-trigger admin shared seam', () => {
     const rows = await sql<Array<{ armed: boolean }>>`
       SELECT armed FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS} AND id = ${bindingId}`;
     expect(rows[0].armed).toBe(false);
+  });
+
+  it('reads schedule fire state and the manual source for one plan', async () => {
+    expect(await loadExternalTriggerPlanAdminSnapshot(sql, WS, HARNESS, PLAN)).toMatchObject({
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      schedule: { kind: 'cron', cron: '0 9 * * 1-5' },
+      scheduleActive: false,
+      tzid: 'America/New_York',
+      lastFire: '2026-08-22T12:00:00.000Z',
+      nextFire: '2026-08-23T13:00:00.000Z',
+      manualSource: 'input-schema',
+    });
+  });
+
+  it('soft-detaches while preserving settled history and cancelling queued runs', async () => {
+    await sql`
+      INSERT INTO harness_shared.trigger_runs
+        (workspace_id, binding_id, dedupe_key, status, args)
+      VALUES (${WS}, ${bindingId}, 'gmail:queued-before-detach', 'pending', '{}'::jsonb)`;
+    expect(await detachExternalTriggerBinding(sql, WS, bindingId)).toMatchObject({ id: bindingId });
+
+    const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
+    expect(snapshot.bindings).toEqual([]);
+    expect(snapshot.counts.bindings).toBe(0);
+    const runs = await sql<Array<{ dedupeKey: string; status: string }>>`
+      SELECT dedupe_key AS "dedupeKey", status
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND binding_id = ${bindingId}
+       ORDER BY dedupe_key`;
+    expect(runs).toEqual([
+      { dedupeKey: 'gmail:admin-fixture', status: 'failed' },
+      { dedupeKey: 'gmail:queued-before-detach', status: 'cancelled' },
+    ]);
   });
 
   it('validates and persists the binding-engine storm-policy vocabulary', async () => {
