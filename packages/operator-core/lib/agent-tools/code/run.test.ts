@@ -562,7 +562,14 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(payload.ok).toBe(true);
     expect(payload.summary).toMatchObject({ markerCount: 1, lineCount: 81, returnedChars: 54822 });
     expect(payload.summary.lines.length).toBeLessThan(81);
-    expect(payload.summary.lines.every((line: string) => line.length <= 360)).toBe(true);
+    // EI-21254588525256811: this used to assert `line.length <= 360` — the projection ladder's
+    // internal rung CONSTANT, not a contract. Pinning it is what hid the defect: the ladder
+    // stopped at the first rung that fit, so it returned ~11% of the budget it was entitled to
+    // spend. Assert the two real invariants instead — bounded BY THE BUDGET, and the budget
+    // actually USED — both derived from the exported constant so neither can drift from it.
+    const summaryChars = JSON.stringify(payload.summary).length;
+    expect(summaryChars).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    expect(summaryChars).toBeGreaterThan(CODE_RUN_SUMMARY_CHAR_BUDGET * 0.75);
     expect(payload.summaryNotice).toMatchObject({
       truncated: true,
       originalChars: expect.any(Number),
