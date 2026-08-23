@@ -116,6 +116,16 @@ const WS = 'default';
 const HARNESS = 'papercup';
 const PLAN = 'demo-plan';
 
+// WI-40825: convert stamps a fingerprint of the item text it minted FROM, so a
+// later plan rewrite of that item is DERIVABLE rather than silent.
+// Pinned as a LITERAL on purpose: the drift suite (text-drift.test.ts) pins the
+// normalize/detect SEMANTICS but never a hash value, so this is the only place a
+// silent change to the hash function (algorithm, digest length, normalization)
+// fails a test. Deriving it by calling planItemTextHash() here would move with
+// such a change and assert nothing. Value = sha256(text)[:16] of the P-001 seed
+// text below ('Build the convert-at-pickup verb end-to-end').
+const P001_TEXT_HASH = '30a3890041fbfc89';
+
 const base = {
   workspaceId: WS,
   harnessSlug: HARNESS,
@@ -226,6 +236,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
       plan_slug: PLAN,
       item_id: 'P-001',
       harness_slug: HARNESS,
+      item_text_hash: P001_TEXT_HASH,
     });
 
     // The plan-item lease is held.
@@ -302,7 +313,12 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     // The Queen's situational overlay rides payload.brief…
     expect(payload.brief).toBe(BRIEF);
     // …without disturbing the plan_item stamp the reflect rules read.
-    expect(payload.plan_item).toEqual({ plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS });
+    expect(payload.plan_item).toEqual({
+      plan_slug: PLAN,
+      item_id: 'P-001',
+      harness_slug: HARNESS,
+      item_text_hash: P001_TEXT_HASH,
+    });
   });
 
   it('P-021: omitting the brief leaves payload.brief unset (additive — byte-identical to before)', async () => {
@@ -311,7 +327,12 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     if (r.status !== 'converted') return;
     const payload = r.workItem.payload as { plan_item?: unknown; brief?: unknown };
     expect(payload.brief).toBeUndefined();
-    expect(payload.plan_item).toEqual({ plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS });
+    expect(payload.plan_item).toEqual({
+      plan_slug: PLAN,
+      item_id: 'P-001',
+      harness_slug: HARNESS,
+      item_text_hash: P001_TEXT_HASH,
+    });
   });
 
   it('re-pickup RESUMES the same work_item — no duplicate row, same id (idempotent)', async () => {
