@@ -1694,6 +1694,7 @@ export function makeSubmitVerifier({
   now = Date.now,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   onResubmit = () => {},
+  onExhausted = () => {},
 } = {}) {
   const getOut = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
   const getIn = typeof lastInputAt === 'function' ? lastInputAt : () => 0;
@@ -1703,21 +1704,66 @@ export function makeSubmitVerifier({
     async verify() {
       const inputAtStart = getIn() || 0;
       let resubmits = 0;
+      let outputObservedAfterResubmit = false;
+      let outputAtLastResubmit = null;
+      let exhaustionNotified = false;
       let i = 0;
+      const notifyExhausted = () => {
+        // A resubmit can legitimately wake a previously silent turn. Once any
+        // output is observed after a resubmit, this verifier must never turn a
+        // later quiet interval into a host-killing exhaustion signal.
+        if (
+          exhaustionNotified ||
+          outputObservedAfterResubmit ||
+          resubmits < maxResubmits
+        ) {
+          return;
+        }
+        exhaustionNotified = true;
+        try {
+          onExhausted({
+            polls: i,
+            resubmits,
+            outputObservedAfterResubmit,
+          });
+        } catch {
+          /* an exhaustion observer must never break verifier cleanup */
+        }
+      };
       for (; i < polls; i++) {
         await sleep(pollMs);
+        const outputAtPoll = getOut() || 0;
+        if (
+          outputAtLastResubmit != null &&
+          outputAtPoll > outputAtLastResubmit
+        ) {
+          outputObservedAfterResubmit = true;
+        }
         if ((getIn() || 0) > inputAtStart) return { polls: i + 1, resubmits, aborted: 'human-input' };
-        const quietFor = now() - (getOut() || 0);
+        const quietFor = now() - outputAtPoll;
         if (quietFor < quietMs) continue; // output flowing — a turn is running
-        if (resubmits >= maxResubmits) break;
+        if (resubmits >= maxResubmits) {
+          notifyExhausted();
+          break;
+        }
         resubmits++;
+        const outputBeforeResubmit = getOut() || 0;
         try {
           writeCr();
         } catch {
           /* child may have exited mid-verify */
         }
+        const outputAfterResubmit = getOut() || 0;
+        if (outputAfterResubmit > outputBeforeResubmit) {
+          outputObservedAfterResubmit = true;
+        }
+        outputAtLastResubmit = outputAfterResubmit;
         onResubmit(resubmits);
       }
+      // If the bounded poll window ends on the final resubmit, there is no
+      // following iteration to observe a quiet poll. Treat the window itself as
+      // exhausted, but keep the same output-after-resubmit suppression rule.
+      if (i >= polls) notifyExhausted();
       return { polls: i, resubmits, aborted: null };
     },
   };
@@ -3066,6 +3112,11 @@ export function hostThroughPty(o) {
   let wireChildData = () => {};
   let wireChildExit = () => {};
   let recycleChild = async () => {};
+  // WI-41044: submit verification is created per injected turn, but exhaustion
+  // is terminal for this host. Keep the guard at host scope so a detached
+  // verifier cannot let later injections create another unbounded CR window.
+  let submitVerifyExhausted = false;
+  let terminateSubmitVerifyExhaustion = () => false;
 
   // Output taps (mcp-transport-resilience P-003): live subscribers to the
   // child's raw output bytes — the mcp-reconnect macro reads the TUI screen
@@ -3410,6 +3461,18 @@ export function hostThroughPty(o) {
         } catch {
           /* never let a diagnostic write break the session */
         }
+      },
+      onExhausted: ({ polls, resubmits, outputObservedAfterResubmit }) => {
+        terminateSubmitVerifyExhaustion({
+          label,
+          polls,
+          resubmits,
+          maxResubmits: positiveNumber(
+            env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR,
+            SUBMIT_VERIFY_MAX_RESUBMITS,
+          ),
+          outputObservedAfterResubmit,
+        });
       },
     });
     return verifier.verify();
@@ -4779,6 +4842,33 @@ export function hostThroughPty(o) {
       } else {
         finishExit();
       }
+    };
+    // WI-41044: a verifier window that reaches its CR cap without observing any
+    // output after a resubmit is a stranded submit, not a recoverable quiet
+    // interval. End the whole managed host so the discovery key, socket, and
+    // child subtree are released and the launcher records a nonzero outcome.
+    terminateSubmitVerifyExhaustion = (details = {}) => {
+      if (cleaned || submitVerifyExhausted) return false;
+      submitVerifyExhausted = true;
+      const extra = {
+        label: details.label ?? 'submit',
+        polls: details.polls ?? null,
+        resubmits: details.resubmits ?? null,
+        maxResubmits: details.maxResubmits ?? null,
+        outputObservedAfterResubmit: Boolean(details.outputObservedAfterResubmit),
+        reason: 'max-resubmits-without-output',
+      };
+      appendHostEvent(ownerId, 'submit-verify-exhausted', extra);
+      try {
+        process.stderr.write(
+          `psu-pty-host: ${extra.label} submit verification exhausted for ${ownerId} ` +
+            `after ${extra.resubmits ?? '?'} resubmit CRs — terminating host (WI-41044)\n`,
+        );
+      } catch {
+        /* diagnostic only */
+      }
+      cleanup(1, 'SIGTERM');
+      return true;
     };
 
     // Child-exit wiring, re-attachable for RECYCLE (P-004b). Double-guarded so a

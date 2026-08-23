@@ -597,10 +597,14 @@ export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt
  * Human-input abort: any human keystroke after verification starts cancels the
  * remaining polls (never fight a human who is editing the staged line —
  * `lastInputAt` is the same signal makeIdleGate defers on).
+ * `onExhausted` fires once when the bounded CR cap is reached without observing
+ * output after a resubmit. It is suppressed when a resubmit produces output.
  *
  * Pure (injectable clock/sleep + getters); exported for tests.
  */
-export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, }?: {
+export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+    lastOutputAt?: (() => number) | undefined;
+    writeCr?: (() => void) | undefined;
     lastInputAt?: (() => number) | undefined;
     quietMs?: number | undefined;
     pollMs?: number | undefined;
@@ -609,6 +613,11 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs
     now?: (() => number) | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     onResubmit?: (() => void) | undefined;
+    onExhausted?: ((details: {
+        polls: number;
+        resubmits: number;
+        outputObservedAfterResubmit: boolean;
+    }) => void) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted } (aborted = 'human-input' | null). */

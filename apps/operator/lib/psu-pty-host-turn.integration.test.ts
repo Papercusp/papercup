@@ -28,6 +28,7 @@ import {
   hostThroughPty,
   socketPathFor,
   metaPathFor,
+  eventLogPathForOwner,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side discovery + inject seam (operator-core published
 // subpath). Importing it keeps this an integration test of the actual chain a
@@ -190,6 +191,12 @@ function echoChildCode(ttlMs: number): string {
   );
 }
 
+/** Child that consumes submitted bytes but never emits output, modeling a
+ *  swallowed submit from the host verifier's perspective. */
+function silentChildCode(ttlMs: number): string {
+  return `process.stdin.resume();setTimeout(()=>process.exit(0),${ttlMs});`;
+}
+
 /** A child that models the Claude Code TUI's PASTE detector (the naive echoChild
  *  does NOT): a CR is a SUBMIT only when it arrives as its OWN read, >W ms after
  *  the previous bytes. A CR riding in the SAME chunk as bulk text is a paste — a
@@ -298,6 +305,58 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       // Cleaned up on exit.
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
+    'terminates and records a bounded submit-verification exhaustion instead of accepting endless CR retries (WI-41044)',
+    async () => {
+      const ownerId = uniqueOwner('SUBMIT-EXHAUSTED');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { io } = fakeIo();
+
+      let exitCode: number | null = null;
+      let exitSignal: string | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', silentChildCode(8000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          // Keep the recurrence test fast while preserving a second quiet poll
+          // after the final CR, which is when exhaustion is declared.
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '1',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number, signal: string | null) => {
+          exitCode = c;
+          exitSignal = signal;
+        },
+      });
+
+      const host = await waitForHost(ownerId);
+      expect(host).not.toBeNull();
+      expect(await injectIntoHost(host!.sock, { mode: 'turn', data: 'never-confirmed' })).toBe(true);
+
+      const code = await done;
+      expect(code).toBe(1);
+      expect(exitCode).toBe(1);
+      expect(exitSignal).toBe('SIGTERM');
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+      expect(events).toContain('"kind":"submit-verify-exhausted"');
+      expect(events).toContain('"resubmits":2');
     },
     20_000,
   );
