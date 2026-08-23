@@ -174,6 +174,45 @@ describe('fleetCapacityProviderForMembers (EI-20243921934115652)', () => {
     ).toBeNull();
   });
 
+  // WI-41005: the leader OBSERVES this pool, it does not pull from it. Counting its row made
+  // every cross-backend-led fleet read as mixed, so poolCapacity stayed null and blockedAt told
+  // the leader the pool "could NOT be read" no matter how often it probed.
+  it('ignores a Claude leader supervising a Codex worker fleet', () => {
+    expect(
+      fleetCapacityProviderForMembers(
+        [
+          { agentId: 'su-leader', model: null, alive: true, fleetRole: 'leader' },
+          { agentId: 'su-worker-1', model: null, alive: true, fleetRole: 'member' },
+          { agentId: 'su-worker-2', model: null, alive: true, fleetRole: 'member' },
+        ],
+        new Map([
+          ['su-leader', 'claude'],
+          ['su-worker-1', 'codex'],
+          ['su-worker-2', 'codex'],
+        ]),
+      ),
+    ).toBe('codex');
+  });
+
+  // The leader exclusion must not swallow a REAL mixed-worker fleet: that ambiguity is
+  // load-bearing, because no single pool reading can describe those members.
+  it('still reports unknown when the WORKERS themselves span providers', () => {
+    expect(
+      fleetCapacityProviderForMembers(
+        [
+          { agentId: 'su-leader', model: null, alive: true, fleetRole: 'leader' },
+          { agentId: 'su-worker-codex', model: null, alive: true, fleetRole: 'member' },
+          { agentId: 'su-worker-claude', model: null, alive: true, fleetRole: 'member' },
+        ],
+        new Map([
+          ['su-leader', 'codex'],
+          ['su-worker-codex', 'codex'],
+          ['su-worker-claude', 'claude'],
+        ]),
+      ),
+    ).toBeNull();
+  });
+
   it('does not infer a provider from OMP without a model', () => {
     expect(
       fleetCapacityProviderForMembers(
@@ -2028,7 +2067,14 @@ describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the 
         poolCapacity: null,
       });
       expect(v?.layer).toBe('members');
-      expect(v?.reason).toMatch(/could NOT be read/i);
+      expect(v?.reason).toMatch(/no single inference pool could be RESOLVED/i);
+      expect(v?.reason).toMatch(/layer 2\s+was not ruled out/i);
+      // WI-41005: it must NOT assert an I/O failure. A null pool is also what a fleet spanning
+      // providers looks like, and a leader told "could not be READ" re-probes forever — the
+      // probe succeeds every time and the verdict never changes, because reading was never
+      // the problem. The message has to leave that second cause reachable.
+      expect(v?.reason).toMatch(/more than one provider/i);
+      expect(v?.reason).not.toMatch(/could NOT be read/i);
       expect(v?.remedy).toMatch(/falsifier FIRST/i);
       // the falsifier must point at the layer that was NOT ruled out, not at the queue
       expect(v?.falsifier.tool).toBe('fleet:capacity');
