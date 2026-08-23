@@ -153,15 +153,16 @@ describe('fetchWakeability (real PG)', () => {
     opts: { status: 'pending' | 'delivered' | 'dropped' | 'dead'; channel?: string | null; agoSec?: number },
   ): Promise<void> {
     const owner = own(id);
+    const eventKey = `${COORD_INBOX_WAKE_PREFIX}${owner}`;
     const awaitRows = await admin<{ id: number }[]>`
       INSERT INTO harness_shared.event_awaits (subscriber_id, event_key)
-      VALUES (${owner}, ${COORD_INBOX_WAKE_PREFIX}${owner})
+      VALUES (${owner}, ${eventKey})
       RETURNING id`;
     const at = new Date(Date.now() - (opts.agoSec ?? 0) * 1000);
     await admin`
       INSERT INTO harness_shared.event_wake_deliveries
         (await_id, subscriber_id, event_key, status, channel, created_at, delivered_at)
-      VALUES (${awaitRows[0]!.id}, ${owner}, ${COORD_INBOX_WAKE_PREFIX}${owner}, ${opts.status},
+      VALUES (${awaitRows[0]!.id}, ${owner}, ${eventKey}, ${opts.status},
               ${opts.channel ?? null}, ${at},
               ${opts.status === 'delivered' ? at : null})`;
   }
@@ -262,9 +263,9 @@ describe('fetchWakeability (real PG)', () => {
 
     const m = await fetchWakeability([own('miss'), own('picked'), own('pending'), own('inbox')]);
     expect(m.get(own('miss'))).toMatchObject({ wakeable: true, liveTurn: true, wakeAttemptMiss: true });
-    expect(m.get(own('picked'))).toMatchObject({ wakeAttemptMiss: undefined });
-    expect(m.get(own('pending'))).toMatchObject({ wakeAttemptMiss: undefined });
-    expect(m.get(own('inbox'))).toMatchObject({ wakeAttemptMiss: undefined });
+    expect(m.get(own('picked'))?.wakeAttemptMiss).toBeUndefined();
+    expect(m.get(own('pending'))?.wakeAttemptMiss).toBeUndefined();
+    expect(m.get(own('inbox'))?.wakeAttemptMiss).toBeUndefined();
   });
 
   it('returns an empty map for an empty ownerIds list (no query fired)', async () => {
