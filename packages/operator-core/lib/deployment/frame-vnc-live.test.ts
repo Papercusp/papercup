@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { collectChildOutput } from '../child-output';
 import { localVncCommand } from './frame-vnc';
 
 const LIVE = process.env.PAPERCUSP_FRAME_VNC_LIVE === '1';
@@ -44,8 +45,7 @@ function readGreeting(display: number, mode: 'watch' | 'takeover', ms = 15_000):
   const { cmd, args } = localVncCommand(display, mode);
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
+    const output = collectChildOutput(child);
     const done = (fn: () => void) => {
       clearTimeout(timer);
       try {
@@ -56,20 +56,19 @@ function readGreeting(display: number, mode: 'watch' | 'takeover', ms = 15_000):
       fn();
     };
     const timer = setTimeout(
-      () => done(() => reject(new Error(`no greeting in ${ms}ms; stderr=${err.slice(0, 300)}`))),
+      () => done(() => reject(new Error(`no greeting in ${ms}ms; stderr=${output.stderr.peek().slice(0, 300)}`))),
       ms,
     );
-    child.stdout.on('data', (b: Buffer) => {
-      out += String(b);
-      if (out.length >= 12) done(() => resolve(out));
-    });
-    child.stderr.on('data', (b: Buffer) => {
-      err += String(b);
+    child.stdout.on('data', () => {
+      const greeting = output.stdout.peek();
+      if (greeting.length >= 12) done(() => resolve(greeting));
     });
     child.on('error', (e) => done(() => reject(e)));
-    child.on('close', () =>
-      done(() => (out ? resolve(out) : reject(new Error(`exited with no output; stderr=${err.slice(0, 300)}`)))),
-    );
+    child.on('close', () => {
+      const greeting = output.stdout.text();
+      const stderr = output.stderr.text();
+      done(() => (greeting ? resolve(greeting) : reject(new Error(`exited with no output; stderr=${stderr.slice(0, 300)}`))));
+    });
   });
 }
 
@@ -118,9 +117,8 @@ describe.skipIf(!LIVE)('local VNC bridge, live against a real Xvfb (P-004)', () 
       const { args } = localVncCommand(DISPLAY, 'watch');
       const out = await new Promise<string>((resolve) => {
         const p = spawn('/bin/bash', ['-c', args[1]], { env: { ...process.env, PATH: '/nonexistent' } });
-        let err = '';
-        p.stderr.on('data', (b: Buffer) => (err += String(b)));
-        p.on('close', () => resolve(err));
+        const output = collectChildOutput(p);
+        p.on('close', () => resolve(output.stderr.text()));
       });
       expect(out).toContain('x11vnc-not-installed');
       expect(out).not.toContain('x11vnc-no-port');
