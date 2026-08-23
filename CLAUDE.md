@@ -243,27 +243,6 @@ peer who received a wrong paraphrase has no way back to the source. A decision i
 
 This is not a paperwork nicety — it changes outcomes. 
 
-## Every plan ships with a graded acceptance rubric
-
-## Every plan ships with a graded acceptance rubric
-
-**Every plan completes through TWO independent evidence families: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric** (plans `plan-completion-audit-and-acceptance-verdict-2026-08-13` + `acceptance-rubrics-on-every-plan-2026-08-11`). `plans:set-plan-status → 'shipped'` (and its `done` alias) enforces both. After implementation is verified:
-
-1. **Finish or intentionally drop every item.** `todo`/`blocked`/`needs-human` refuse shipping. A deliberate departure is `plans:set-status { slug, item, status:'dropped', note:'<why>' }`; silence is what the gate forbids.
-2. **Audit the actual code, per item.** `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations count as verification; paths must resolve, optional lines/symbols must exist, and their blob SHAs are stored. `doc`/`none` explicitly mean non-verification and require the tool's reason/note fields. Never treat a work-item, doc, or memory of writing code as code truth. Submit ONLY new/reopened/text-changed/evidence-changed items: earlier entries carry forward automatically with their ORIGINAL per-item sha/time. If `audit_coverage_stale` names items at ship time, re-audit only that list; empty list means no new pass.
-3. **Author the post-implementation rubric.** `rubrics:propose { rubricRef:'<acceptance-rubric-slug>', kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', characteristic:'<measured-outcome>', title:'<rubric-title>', criteria:[3–7 OUTCOME criteria tracing to goal + Decisions] }`. It activates immediately. A pure investigation may use `criteria:[]` with its class. Add structured checks for objectively executable outcomes.
-4. **Vet the rubric's current revision.** Run `consult:get_feedback` (min 1 / max 3), improve the rubric, then attest with `scorecards:emit { rubricRef:'meta-acceptance-rubric', subject:{ kind:'rubric', ref:'<acceptance-rubric>' }, vettingConsult:'<conversation-id>', ratings }`. Any later rubric edit invalidates the attestation.
-5. **Have a NON-implementer grade it.** `scorecards:emit { rubricRef, ratings }`, concrete evidence for every criterion; grader ≠ rubric author. The four class rubrics require the grader to spot-check the implementer's audit citations.
-6. **The implementer records the plan-specific acceptance call.** After reading the independent card, the rubric author re-emits the complete ratings with `acceptance:{ verdict:'accept'|'reject', reasoning:'<why>' }`. The implementer owns the passing bar; there is no universal numeric threshold. A latest `reject` blocks ship until addressed and superseded.
-7. **Ship.** `plans:set-plan-status { slug, status:'shipped' }`; the rubric auto-retires.
-
-Code-truth refusal codes are `plan_items_unfinished`, `acceptance_unaudited`, `audit_coverage_stale`, and `audit_citations_unresolved` (flags `PLAN_ITEM_COMPLETION_GATE` + `PLAN_CODE_AUDIT_GATE`, default ON). Rubric-family refusals are `acceptance_rubric_missing`, `acceptance_rubric_unvetted`, `acceptance_ungraded`, `self_graded_only`, `acceptance_not_recorded`, and `acceptance_rejected`.
-
-`force:{ reason }` on the ship write waives ONLY the four code-truth checks and appends a permanent, actor-attributed `forcedPast` marker naming every waived check. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
-
-Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Full payloads, citation-root rules, and repair recipes: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
-
-
 ## Verify mixed-family work-item citations against the base table
 
 When checking whether a work-item citation is real, do not treat a zero-row
@@ -540,6 +519,56 @@ sampled command has a faithful tool expression appear here. Where the tool genui
 could not do the job the **tool was widened** (that is where `capability:read`'s
 `tail:` and `dev:pg_query`'s `describe:` came from) — and where it still cannot, the
 row says so and bash remains correct.
+
+<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->
+
+> Generated from the audited substitution pairs — run `npm run gen:tool-routing`.
+> Every row below is backed by an `equivalent` verdict computed from a frozen
+> sample of real commands (`packages/operator-core/lib/bash-substitution/`), and
+> the PreToolUse gate enforces the SAME registry. Do not hand-edit: the source is
+> `pairs/*.ts`, and `npm run gen:tool-routing:check` fails the build on drift.
+> Adding a row, promoting one, or arguing with a gate that blocked you:
+> [bash vs tool routing](/internal/docs/agent-insights/bash-vs-tool-routing).
+>
+> ⚠ ToolSearch finding NOTHING for a `use` tool does not mean it is unavailable to you —
+> a trimmed surface (su) exposes only a seed of the ~550-tool catalog, so the exact
+> `select:` name and a keyword search can both come back empty for a tool that exists.
+> `tools:invoke { name: "<server:verb>", args: {…} }` dispatches ANY catalog tool
+> server-side, gated identically to a direct call. Verified end-to-end for `testing:run`
+> (EI-19463947683316510). Reach for that before falling back to the `not` column.
+
+| you want | use | not |
+|---|---|---|
+| a line RANGE of one file | `capability:read { file_path, offset, limit }` | `sed -n 'N,Mp' FILE` (offset=N, limit=M-N+1) |
+| the WHOLE of one file | `capability:read { file_path }` | `cat FILE` (a heredoc or redirect is a WRITE — not this) |
+| the FIRST N lines of a file | `capability:read { file_path, limit: N }` | `head -n N FILE` (a `… \| head` pipe filter is not this) |
+| the LAST N lines of a file (a build / gate log tail) | `capability:read { file_path, tail: N }` | `tail -n N FILE` (`tail -f` streaming has no tool form — keep using bash) |
+| a one-off SELECT against the OPERATOR database | `dev:pg_query { sql }` (read-only txn + row cap + statement_timeout) | `psql -d papercusp -c "SELECT …"`. ⚠ ONLY the operator DB — a `$VAR`/other-database connection has NO tool form, so keep using psql for those rather than risk querying the WRONG database |
+| a table's columns / indexes / constraints | `dev:pg_query { describe: "schema.table" }` (a `*` glob lists relations) | `psql -c "\d table"` (`\df`/`\dn`/`\du` are other object classes — no tool form) |
+| whether a systemd unit is active / failed | `dev:service_health { units:["<unit>"], scope }` — unitStates[].{loadState,activeState,active,failed} for any unit, plus unitsUnknown[] for ones systemd does not know; services[].up / supervision[].healthy for registered units | `systemctl --user is-active <unit>` — note it prints `inactive` for a unit that does not exist, which the tool reports as unitsUnknown instead |
+| whether a local dev service is answering | `dev:service_health` — for the probed set (incl. :3170 staging), when you need only up/down | `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/api/health` — still required for :8788 and other unprobed ports, and whenever you read the body |
+| what is listening on a TCP port / which process owns it | `dev:listening_ports { port }` (or `{ pid }` for the reverse lookup) — structured rows with pid, command and ownerVisible | `ss -ltnp` / `lsof -nP -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp`. ⚠ LISTEN sockets only — an established-connection query (`ss -tn`, `netstat -an`) or one lsof call spanning several ports still needs bash |
+| to read git state (status/log/diff/show/rev-parse/merge-base) | `capability:git { args: ["log","--oneline","-5"], cwd? }` — argv, no shell, gated as git | `git log --oneline -5` — bash is not WRONG here; the gain is argv-safety and git-scoped gating. Shell-substituted argv (`git -C "$D" …`) has no tool form. For "is my edit live", prefer `dev:pipeline_position { path }` |
+| to run specific test files and see which tests failed | `testing:run { files: [...] }` | `npm run test:file -- <paths> 2>&1 \| tail -60` (a run redirected to a log file is not this — the tool writes no artifact) |
+| to run test files without hand-picking a Vitest config | `testing:run { files: [...] }` | `npx vitest run <path>` (a root-level run can match zero files and still exit 0 — the router refuses that) |
+| a service's log lines in a time window, filtered | `logs:read { unit, since, grep?, level?, limit? }` (filter pushed down to `journalctl --grep`; repeats collapsed) | `journalctl --user -u <unit> --since <w> \| grep <pat> \| tail -n` (a streaming `-f` follow, a boot/cursor selection, or `sudo` elevation has no tool form — keep using bash for those) |
+| to typecheck a project and see the errors | `build:typecheck { project: "packages/operator-core" }` | `npx tsc --noEmit -p <project> 2>&1 \| grep …` (the tool refuses a run that checked ZERO files — `-p .` does that here, and a `grep` over its one-line error prints nothing, which reads as clean) |
+| the current date/time | `host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing | `date` / `date -u` / `date +%s`. ⚠ a `$(date …)` substitution INSIDE another command is string interpolation — keep using bash; so is `date -d @<epoch>` (a different instant) |
+| the load average / how busy the box is | `host.load` + `host.cores` — already in your coord:orient payload. Call nothing | `uptime` (`uptime -p` / `-s` ask for BOOT TIME — a different question, still bash) |
+| how many CPU cores this machine has | `host.cores` — already in your coord:orient payload. Call nothing | `nproc` / `nproc --all` |
+| free memory / whether the box is out of RAM | `host.memFreePct` + `host.psiMemSome60` — already in your coord:orient payload. Call nothing | `free -h` / `free -g` |
+| to find where a symbol is DEFINED (and who calls it) | `gitnexus.context { name: "managedSetInterval", kind: "Function" }` | `grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives one matching line; the graph gives the definition plus callers/callees). ⚠ the index is refreshed by hand (`npx gitnexus analyze`) so it can lag new code; exhaustive exact-text search is still grep's job |
+| to install dependencies in this shared tree | `npm run install:safe` (or `npm run install:safe -- ci` / `-- install --legacy-peer-deps`) — serializes concurrent agents behind an fs-mutex, then verifies every declared dep actually landed on disk | a bare `npm install` / `npm ci` — including a named-package add — because it rewrites `node_modules/.bin` under every other agent's in-flight test run. ⚠ NOT claimed: explicit `--prefix` scratch installs or `--dry-run` |
+| one relation's columns and their types | `dev:pg_query { describe: "schema.table" }` (same tool — also returns indexes, constraints and column comments) | a hand-written `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='…' AND table_name='…'`. ⚠ A column SEARCH across relations (`column_name ILIKE '%x%'`) has no describe form — keep querying the catalog for that |
+| to FIND a relation whose name you half-remember | `dev:pg_query { describe: "*fragment*" }` — glob matched case-insensitively against `schema.name`; `{ describe: "schema.*" }` lists one schema | a hand-written `SELECT table_name FROM information_schema.tables WHERE table_name ILIKE '%fragment%'`. ⚠ Names only, one glob per call — an explicit `table_name IN (…)` list, a `table_type` filter, or anything else the catalog holds still wants information_schema |
+| whether migration NNN applied, or the most recent migrations | `db:migrations { like: "795" }` — a bare number is a prefix match; an empty match returns a verdict (pending / draft-not-armed / no-such-migration) rather than an ambiguous zero rows | a hand-written `SELECT filename, applied_at FROM harness_shared.schema_migrations WHERE filename LIKE '795%'`. ⚠ One pattern per call — a `filename IN (…)` list, a POSIX-regex range (`~ '^(79[4-9])'`), `LIKE ANY (ARRAY[…])` or a `>= '750' AND < '760'` number range still wants SQL |
+| a test file's run history, or which tests are failing | `testing:runs { filePath, status: ["fail","error"], sinceHours }` — typed status enum, and `outputTail` comes back on the red rows | `SELECT … FROM test_runs WHERE file_path LIKE '%x%' AND status='failed'` — ⚠ that literal can NEVER match (pass\|fail\|skip\|cancelled\|error\|running), so it reads as a clean "no failures". Aggregates, `DISTINCT ON`, an `output_tail` hunt, a `finished_at` window or `workspace_id IS NULL` still want SQL |
+| to find filed issues by text, state, assignee or scope | `issues:list { q: "fragment", state, assignee, limit }` — `q` matches title + body, `rollup:"state"` gives counts over the whole filtered set | `SELECT … FROM engineer_issues WHERE title ILIKE '%x%'`. ⚠ NO id filter — a single-item read (`WHERE issue_id='WI-123'`) is `work_items:get { id }` — and no time-window arg, so a `created_at` slice, an OR of several fragments, a regex match, and `payload->`/terminal-column forensics stay SQL |
+| the green-checkpoint gate's health (consecutive reds, observed candidate, whether a re-triage is in flight) | `routines:list { name: 'green-checkpoint', installSlug: '<your install>' }` — read `health.gate_health`, plus `nextFireAt` / `lastFiredAt`. ⚠ OMIT installSlug and EVERY install's row comes back (21 here, truncated to 12); row 1 is another pot's and reads healthy | a hand-written `SELECT metadata->'gate_health'->… FROM harness_shared.routines`. ⚠ Unprojected columns (`tier`, `concurrency`), cross-routine aggregates and JOINs still want SQL. "Is my change live" is dev:pipeline_position; the judged sha is state:read { cell:'gate.greenCheckpoint.candidate' } |
+| one work-item (or up to 100) by id, including its terminal/authority columns | `work_items:get { id }` / `{ ids: [...] }` — whole row incl. terminalOwner, completionAuthority, plus holder + checkpoint; add payloadTier:"full" for payload/summary | a hand-written `SELECT … FROM work_items WHERE feature_id='EI-…'`. ⚠ `payload->` PREDICATES, `source_plan_slug` slices, aggregates and JOINs stay SQL |
+| a filtered work-item / issue slice — text, state set, kind, assignee, plan of origin, or a created/updated window | `work_items:list { q, state, states, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes | `SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` spans title+summary (a superset). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL |
+
+<!-- END GENERATED gen:tool-routing -->
 
 The tool call is also cheaper than the shell round-trip it replaces: a structured
 result, no subprocess, and no output to re-parse. When a row's caveat applies (a
@@ -902,7 +931,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **16 part(s) (17,834 chars) did not fit this client's
+> ⚠ **16 part(s) (11,126 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -917,13 +946,13 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 - `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
+- `every-plan-ships-with-a-grad-acceptance-rubric` — *Every plan ships with a graded acceptance rubric* — ## Every plan ships with a graded acceptance rubric
 - `commit-discipline-git-sync-o-one-call-answers-st` — *Commit discipline: git-sync owns commit + push — you do neither* — ✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
 - `commit-discipline-git-sync-o` — *Commit discipline: git-sync owns commit + push — you do neither* — ```
 - `commit-discipline-git-sync-o-it-returns-the-judg` — *Commit discipline: git-sync owns commit + push — you do neither* — It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its…
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
-- `reaching-for-bash-these-read-begin-generated-gen` — *Reaching for bash? These reads already have a tool* — <!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->
 - `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
 - `long-jobs-background-them-at-measure-the-whole-p` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
