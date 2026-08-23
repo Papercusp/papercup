@@ -452,13 +452,7 @@ describe('coord:send', () => {
   it("wake:'required' that QUEUES a delivery returns NO recipient_absent (queued>0 control)", async () => {
     // default mock returns woken:1 per emit (the event-engine queue count) → two targets ⇒ queued:2.
     const res = await coordSend.handler(
-      parse(coordSend, {
-        to: ['su-bee-1', 'su-bee-2'],
-        summary: 'go',
-        expects: 'action',
-        ...ACTION_BODY,
-        wake: 'required',
-      }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     const { wake } = send1(res);
@@ -480,13 +474,7 @@ describe('coord:send', () => {
     // never got the directive. The fix surfaces it LOUDLY.
     resolveWakeMode.mockResolvedValue('manual');
     const res = await coordSend.handler(
-      parse(coordSend, {
-        to: ['su-bee-1'],
-        summary: 'stand down',
-        expects: 'action',
-        ...ACTION_BODY,
-        wake: 'required',
-      }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     // it STAGED, not fired: no wake emitted, the pending-wake was recorded
