@@ -21,6 +21,7 @@
  * logic is unit-testable without pulling the handler's heavy side-effect graph
  * (it registers every first-party tool on import).
  */
+import { normalizeMcpName } from '@papercusp/tooldef';
 import type { LoopPressure } from '../../../event-loop-lag-monitor';
 
 export const ADMISSION_CONTROL_ENABLED = process.env.PAPERCUSP_MCP_ADMISSION_CONTROL !== '0';
@@ -30,10 +31,32 @@ export const ADMISSION_RETRY_AFTER_SEC = Math.max(
 );
 
 /**
+ * EI-20241040709445172 — diagnostics needed to prove or recover from critical
+ * pressure must not be rejected by the pressure gate itself. Keep this list
+ * deliberately narrow: both tools are read-only and internally bounded, so
+ * admitting them cannot add an unbounded unit of work to the saturated loop.
+ *
+ * The outer MCP proxy has the matching capacity-reserve list. This inner gate
+ * still needs its own exemption because direct ptool/staging calls bypass that
+ * proxy, and because a proxy-reserved request can otherwise be shed here after
+ * it reaches the operator.
+ */
+const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
+  ['dev:service_health', 'dev:pg_query'].map(normalizeMcpName),
+);
+
+function isCriticalPressureDiagnostic(toolName: unknown): boolean {
+  return typeof toolName === 'string'
+    && CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalizeMcpName(toolName));
+}
+
+/**
  * Classify a peeked MCP POST body: is it (or a batch containing) a `tools/call`?
  * That's the only sheddable shape — every other JSON-RPC method is cheap protocol
- * traffic we keep serving even when saturated. Also returns the request id to echo
- * in the JSON-RPC error envelope (first tools/call id in a batch; null if none).
+ * traffic we keep serving even when saturated. The narrow bounded diagnostic set
+ * above is also admitted so the pressure condition remains observable/recoverable.
+ * Also returns the request id to echo in the JSON-RPC error envelope (first
+ * sheddable tools/call id in a batch; null if none).
  * PURE + unit-tested.
  */
 export function classifyMcpBody(bodyText: string): { sheddable: boolean; id: string | number | null } {
@@ -48,6 +71,8 @@ export function classifyMcpBody(bodyText: string): { sheddable: boolean; id: str
   let sheddable = false;
   for (const m of msgs) {
     if (m && typeof m === 'object' && (m as { method?: unknown }).method === 'tools/call') {
+      const params = (m as { params?: { name?: unknown } }).params;
+      if (isCriticalPressureDiagnostic(params?.name)) continue;
       sheddable = true;
       const mid = (m as { id?: unknown }).id;
       if (id === null && (typeof mid === 'string' || typeof mid === 'number')) id = mid;

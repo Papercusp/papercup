@@ -1,8 +1,9 @@
 /**
  * P-010 admission control (mcp-reliability-hardening-2026-07-11) — pin the
  * load-shed decision: only a POST tools/call is shed, only under CRITICAL loop
- * pressure, the body is peeked NON-destructively (the handler still gets it), and
- * the shed response is a retryable 429 the proxy absorbs.
+ * pressure, bounded diagnostics remain admitted, the body is peeked
+ * NON-destructively (the handler still gets it), and the shed response is a
+ * retryable 429 the proxy absorbs.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -12,8 +13,8 @@ import {
   admissionShedResponse,
 } from './mcp-admission';
 
-const toolsCall = (id: unknown = 7) =>
-  JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'plans:get', arguments: {} } });
+const toolsCall = (id: unknown = 7, name = 'plans:get') =>
+  JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: {} } });
 
 function post(body: string): Request {
   return new Request('http://127.0.0.1:3070/api/mcp?superuser=1', {
@@ -33,10 +34,26 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       expect(classifyMcpBody(JSON.stringify({ jsonrpc: '2.0', id: 1, method }))).toEqual({ sheddable: false, id: null });
     }
   });
+  it.each([
+    'dev:service_health',
+    'dev:pg_query',
+    'dev_pg_query',
+    'mcp__papercusp-su__dev_pg_query',
+    'mcp__papercusp_su__dev_pg_query',
+  ])('does NOT shed bounded critical-pressure diagnostic %s', (name) => {
+    expect(classifyMcpBody(toolsCall(11, name))).toEqual({ sheddable: false, id: null });
+  });
   it('sheds a batch that CONTAINS a tools/call and echoes the first call id', () => {
     const batch = JSON.stringify([
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
       { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'x' } },
+    ]);
+    expect(classifyMcpBody(batch)).toEqual({ sheddable: true, id: 2 });
+  });
+  it('still sheds an ordinary call batched beside a reserved diagnostic and echoes the ordinary id', () => {
+    const batch = JSON.stringify([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'dev:pg_query' } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'plans:get' } },
     ]);
     expect(classifyMcpBody(batch)).toEqual({ sheddable: true, id: 2 });
   });
@@ -84,6 +101,11 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
   it('admits (null) a non-tools/call even under critical pressure', async () => {
     const req = post(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+  });
+  it('admits bounded dev:pg_query under critical pressure so recovery diagnostics stay live', async () => {
+    const req = post(toolsCall(6, 'dev:pg_query'));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('dev:pg_query');
   });
   it('admits (null) when the kill-switch disables admission control', async () => {
     expect(await evaluateAdmission(post(toolsCall()), 'critical', false)).toBeNull();

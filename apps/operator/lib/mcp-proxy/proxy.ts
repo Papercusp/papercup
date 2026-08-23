@@ -676,6 +676,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'loop:checkpoint',
   'tools:find',
   'dev:service_health',
+  'dev:pg_query',
   'loop:arm',
   'improvements:capture',
   'locks:acquire',
@@ -690,7 +691,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
 ].map(normalizeMcpName));
 
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
- * deferred tool discovery, loop arming, incident capture, file-lock inspection,
+ * deferred tool discovery, bounded diagnostics, loop arming, incident capture, file-lock inspection,
  * file-lock cancellation/release, and continuation checkpoint writes are liveness/control-plane traffic:
  * if they cannot run, workers cannot orient, wake a blocker, persist a safe wake boundary, drain
  * the queue generating proxy load, recover a missing tool surface, keep themselves alive, file
