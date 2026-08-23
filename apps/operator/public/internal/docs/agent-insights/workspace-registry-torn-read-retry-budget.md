@@ -1,7 +1,7 @@
-# A \"torn\" workspace-registry read can recur even after the write side is atomic — widen the read retry budget, don't re-fix the writer
+# A \"torn\" workspace-registry read can recur even after the write side is atomic — widen the read retry budget, do not re-fix the writer
 URL: /internal/docs/agent-insights/workspace-registry-torn-read-retry-budget
 
-EI-21148378726402614: two concurrent MCP calls hit \"Unexpected end of JSON input\" reading ~/.papercusp-workspaces/registry.json, and the file was valid again seconds later — AFTER the WI-39392 atomic-write fix (temp+unique-per-write-name+rename) was already deployed. The writer wasn't the remaining gap; the reader's one-shot retry was. Also: writeRegistry lacked the fsync the Rust writer already had.
+EI-21240803104955276: the deployed 5x4ms reader retry still exhausted on a transient truncated registry read. The canonical reader now uses a bounded progressive 5–320ms schedule (635ms total); both writers remain atomic.
 
 ## Symptom
 
@@ -38,34 +38,16 @@ temp-file-then-`rename`. Before doing that expensive search again:
    helpers. There is no third writer left to find; re-grepping for one is
    wasted effort.
 
-## The actual remaining gaps (fixed here)
+## The remaining gaps and the second recurrence
 
-With the write side genuinely atomic, `rename()` is atomic on POSIX, so a
-reader should NEVER observe a torn file — but the READ side had only ONE
-immediate, zero-delay retry (`readRegistry()` re-read the file exactly once
-more, synchronously, on a parse failure). That is enough headroom for the
-race the write-side fix already eliminated, but not enough margin for
-whatever OTHER transient window can still surface on a heavily-parallel fleet
-(page-cache scheduling under load, a filesystem quirk, another process's I/O
-contention — the exact producer doesn't need to be pinned down for the fix to
-be correct). Two changes:
+With the write side genuinely atomic, `rename()` is atomic on POSIX, so a reader should never observe a torn file. The first recurrence nevertheless proved that the old one-shot, zero-delay read retry was too narrow. That fix added two protections:
 
-1. **`writeRegistry()` now fsyncs the temp file before renaming**
-   (`openSync` + `writeSync` + `fsyncSync` + `closeSync` + `renameSync`),
-   matching what the Rust `write_registry()` already did (`file.sync_all()`).
-   This doesn't change same-process read visibility (page cache is already
-   consistent the moment `writeFileSync` returns) — it closes a durability
-   gap (a crash between rename and disk flush) and removes an unexplained
-   asymmetry between the two writers when diagnosing a future incident.
-2. **`readRegistry()`'s retry is now a bounded loop** (5 retries, 4ms apart,
-   using the repo's existing `Atomics.wait` synchronous-sleep idiom — see
-   `scripts/pg-autotune.ts`) instead of one instantaneous re-read. This only
-   costs anything on the exception path (a parse failure already happened);
-   the happy path is unaffected. A **genuinely** corrupt registry still
-   exhausts the budget and throws `WorkspaceRegistryUnreadableError` — this
-   does NOT relax WI-6734's "never silently treat a corrupt registry as an
-   empty one" invariant, it just gives a transient window more room to
-   resolve on its own before that invariant fires.
+1. **`writeRegistry()` fsyncs the temp file before renaming**, matching the Rust writer. This closes a durability asymmetry; it is not the explanation for a same-process short read.
+2. **`readRegistry()` originally moved to five retries, 4ms apart**. That preserved the hard-fail invariant for persistent corruption while adding 20ms of exception-path recovery.
+
+On 2026-08-23, EI-21240803104955276 reproduced the same `Unexpected end of JSON input` failure in `coord:orient`. The registry was valid again on the immediate forensic read, and `dev:pipeline_position` proved the 5x4ms reader plus atomic writer were deployed and executing. The writer had not regressed; the 20ms budget was still too small.
+
+The current policy is a bounded progressive schedule: **5, 10, 20, 40, 80, 160, and 320ms** (635ms total). Early retries remain fast, a longer scheduler/filesystem window gets sub-second recovery headroom, and a genuinely corrupt registry still exhausts the schedule and throws `WorkspaceRegistryUnreadableError`. The happy path is unchanged because no sleep occurs until a read or parse has already failed.
 
 ## Test pattern for a "torn read" that no longer has a real writer to trigger it
 
@@ -79,8 +61,8 @@ hits the real filesystem), gated by a `vi.hoisted()` counter so both the mock
 factory and the test can see it. Rig it to return a truncated string for a
 CONTROLLED number of calls to the registry path, then assert:
 
-* fewer garbage reads than the retry budget → `readRegistry()` still returns
-  the real, valid content;
+* six consecutive garbage reads (one more than the old five-retry policy) →
+  `readRegistry()` still reaches and returns the real, valid content;
 * far more than the retry budget → it still throws
   `WorkspaceRegistryUnreadableError` (proving retries are bounded, not a
   silent-degrade escape hatch).

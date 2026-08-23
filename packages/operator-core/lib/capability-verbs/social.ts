@@ -334,6 +334,47 @@ export type SocialReplyTarget =
        * gap in the response, not a denial.
        */
       hidden?: boolean;
+    }
+  | {
+      platform: 'threads';
+      /**
+       * The container's `reply_to_id` — THE EXACT THING BEING REPLIED TO, which
+       * on Threads may be a reply as readily as a root post.
+       *
+       * ⚠ THE OPPOSITE OF THE INSTAGRAM FIELD ABOVE, AND THE CONTRAST IS THE
+       * WHOLE REASON BOTH ARE DERIVED HERE RATHER THAN PASSED THROUGH.
+       * Instagram silently RE-PARENTS a reply-to-a-reply up to the top-level
+       * comment, so its target must be normalised UP or the reply lands
+       * somewhere it was not aimed. Threads honours the exact id: "Use the
+       * reply_to_id parameter to reply to a specific reply under the root
+       * post." So the correct Threads value is the stored document's OWN
+       * external id — normalising it up to a parent, by symmetry with
+       * Instagram, would post a visible public reply in the wrong place on
+       * every nested conversation (D-035).
+       */
+      replyToId: string;
+      /**
+       * The root post of the reply tree. Carried for the label, and — more
+       * importantly — as the subject of the ownership gate below.
+       */
+      rootPostId?: string;
+      /**
+       * The profile that owns the ROOT post.
+       *
+       * ⚠ NOT DECORATION: Threads gates replying on "You are the owner of the
+       * root thread post" OR holding threads_keyword_search /
+       * threads_manage_mentions, neither of which this integration requests
+       * (D-039). This carries the fact the adapter checks that gate against.
+       *
+       * OPTIONAL IN THE TYPE AND REFUSED WHEN ABSENT — the opposite posture to
+       * the `canReply` / `canComment` / `hidden` flags above, deliberately.
+       * Those are permissions the provider affirmatively DENIED, so a missing
+       * value means "not reported" and attempting is right. This is a
+       * precondition we must affirmatively ESTABLISH, so a missing value means
+       * "unknown", and attempting on an unknown would publish a public reply on
+       * the strength of a guess.
+       */
+      rootPostOwnerId?: string;
     };
 
 export interface SocialReplyCoordinates {

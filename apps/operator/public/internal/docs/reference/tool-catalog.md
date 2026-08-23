@@ -119,7 +119,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `plugins` | 4 | `fire_event` `invoke_action` `runtime_status` `tui_panes` | `plugins:read` `plugins:write` |
 | `pot` | 30 | `add-member` `ask` `asks` `ban_member` `beacon_consent` `control_policy` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `get-steering` `leave` `list` `membership_decide` `membership_pending` `moderation_queue` `moderation_resolve` `mug_efficiency` `obliterate` `pause` `report` `request_work` `set-steering` `start` `status` `takedown` `update` `wake` | `harness:read` `harness:write` `intel:write` `operator:write` `routines:write` `work_items:read` `work_items:write` |
 | `pot_git` | 2 | `integration_requests` `secrets_exemptions` | `audit:write` |
-| `probe` | 3 | `emit` `get` `record-hop` | `coord:read` `coord:write` |
+| `probe` | 2 | `emit` `get` | `coord:read` `coord:write` |
 | `processes` | 4 | `freeze` `kill` `limit` `list` | `intel:read` `processes:control` `processes:kill` |
 | `projects` | 4 | `get` `list` `spec_revision` `spec_revisions` | `projects:read` |
 | `prompt` | 1 | `role_override` | `operator:write` |

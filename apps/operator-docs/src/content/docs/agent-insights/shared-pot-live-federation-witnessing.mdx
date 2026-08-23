@@ -6,17 +6,17 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Live-witnessing shared-pot federation (the green-rig/red-binary trap + the two-instance smoke gotchas)"
 description: "Shared-pot federation bugs pass the hermetic suite but fail the real binary, because the integration tests mock/inject the substrate. Only the live two-instance smokes catch them. This is how to run those witnesses, the harness gotchas that will eat hours if you don't know them, and the federation model (slug-binding) you need to read the results."
+type: Insight
 discovered: 2026-06-20
-tags: [shared-pot, federation, witnessing, two-instance-smoke, re-key, c-001, a-003, green-rig-red-binary]
+tags: ["shared-pot", "federation", "witnessing", "two-instance-smoke", "re-key", "c-001", "a-003", "green-rig-red-binary"]
 status: active
 documents:
-  - papercusp-desktop/bin/live-federation-gate.sh
-  - packages/operator-core/lib/sync/hyperbee/projections/register-all.ts
-  - packages/operator-core/lib/sync/hyperbee/hive-epoch-boundary-wiring.ts
+  - "papercusp-desktop/bin/live-federation-gate.sh"
+  - "packages/operator-core/lib/sync/hyperbee/projections/register-all.ts"
+  - "packages/operator-core/lib/sync/hyperbee/hive-epoch-boundary-wiring.ts"
 plans:
-  - shared-pot-rekey-2026-06-19
-  - shared-pot-member-content-federation-2026-06-20
-type: Insight
+  - "shared-pot-rekey-2026-06-19"
+  - "shared-pot-member-content-federation-2026-06-20"
 generated:
   by: agent
   at: 2026-06-20
@@ -26,18 +26,18 @@ generated:
 
 The hermetic/integration suite (1090+ hyperbee backbone) **mocks or injects the substrate federation** (`bootHarnessSubstrate` rigs, direct apply-path injection). It validates the merge/projection LOGIC but **not** the live two-instance peer `announce → admit → apply` over a real swarm/DHT on the packaged binary. Bugs it structurally cannot catch: **boot-timing admit races (A-003), from-repo-vs-discovery-join binding differences (WI-259), packaging/minification stripped-seam regressions.** All three shipped green hermetically and were RED only on the binary, caught only by live witnessing. If a federation behavior matters for release, **you must witness it live** — a green suite is necessary, not sufficient.
 
-The live witnesses are `papercusp-desktop/bin/two-instance-*-smoke.sh` (directory / content-matrix / from-repo). `live-federation-gate.sh` (WI-261) wraps them in a load-gated scheduled gate that files an EI on RED, to catch the class automatically.
+The live witnesses are `papercusp-desktop/bin/two-instance-*-smoke.sh` (directory / content-matrix / from-repo). `live-federation-gate.sh` (WI-261) wraps them in a CPU/memory-pressure-admitted scheduled gate that files an EI on RED, to catch the class automatically.
 
 ## Running a witness — the gotchas (each cost hours to find)
 
-1. **Box load is the #1 killer — and the witness ITSELF adds ~+30 to the 1-min load.** The embedded PGs are `shared_buffers≈38GB` each (memory), but the real surprise is CPU: during the cupboard-off DHT discovery the sidecar/swarm pegs **~25 cores** (one `node` proc at ~2500% CPU), so a 2-peer run adds ~+30 to the 1-min load on its own. Above ~load 40 (128-core host) the instances OOM-kill mid-run and discovery flakes ~50%; above ~70 the bg-host wedges. **⇒ `LOAD_GATE` is now CORE-AWARE (P-013), not a flat number** — `max(15, 3*nproc/8)` (48 on a 128-core box). This superseded a flat `< 15` gate: a flat 15 never fired at all on the 128-core fleet box (load routinely sits 35-46), and an intermediate `nproc/4` cut (32) STILL sat below that operating floor and skipped every window — reproducing the exact "gate never runs" failure P-013 exists to kill. A SEPARATE `STORM_GATE` (default `nproc*0.6`, 77 on 128 cores) protects against a mid-run spike: if load is *still* above `STORM_GATE` at verdict time, a would-be RED is downgraded to `SKIPPED-STORM` (starvation, not signal — no EI filed; retry next window) instead of a false RED. So today's practical rule is: **don't hand-pick a load threshold** — run `live-federation-gate.sh` (or its underlying smokes) and trust `LOAD_GATE`/`STORM_GATE`, both derived from `nproc` at invocation time; only override them explicitly (`LOAD_GATE=`, `STORM_GATE=`) if you know your box's empirical kill-zone differs. Never run heavy witnesses during a fleet infra storm regardless of the gate's number — you spike the box and worsen the contention everyone else is fighting even on a SKIP/SKIPPED-STORM exit.
+1. **Admission is based on CPU/memory pressure, not raw host load.** The witness itself is CPU- and memory-intensive, but host loadavg is a shared-box, nice-blind aggregate: it counts runnable work across every tenant and does not say whether the witness frames are stalled. On cgroup-v2 hosts `live-federation-gate.sh` admits only when CPU PSI `some avg60` is at or below `PRESSURE_GATE` (default `30`) and memory PSI `full avg10` is below `MEMORY_PRESSURE_GATE` (default `5`). `LOAD_GATE` survives only as the no-PSI fallback, with default `max(15, 85% of nproc)` (`108` on a 128-core host). A separate `STORM_GATE` (default `nproc*0.9`, 115 on a 128-core host) can still downgrade a would-be RED at verdict time, but frame-local lag evidence outranks that shared-box proxy. Never copy a historic `load1<=77` preflight into a managed witness: invoke the canonical gate or reproduce its CPU PSI + memory PSI admission checks, fresh lock/output paths, and exact artifact attestations.
 2. **`DISCOVERY_RETRIES`** — the smokes poll discovery 40×3s=120s by default, too short under any load. Set `DISCOVERY_RETRIES=100` (300s). Made env-configurable on both smokes.
 3. **The re-key witness block is gated on `WITNESS_PROBE=1`** (in the from-repo smoke). Without it the run silently skips the AK + K0–K3 block and does only the federation smoke — you'll think the re-key passed when it never ran.
 4. **`mcp_call` (MCP-over-HTTP) needs three things** or it 406s/parse-errors: `-H 'accept: application/json, text/event-stream'`, `-H "Authorization: Bearer <$HOME/.papercusp/superuser-token>"`, and a full JSON-RPC envelope `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{...}}`.
 5. **The re-key flag does NOT engage via the `PAPERCUSP_FLAG_PAPERCUSP_HIVE_REKEY=1` env alone** — verified: the owner ends with 0 `hive_epoch_keys`. Flip it at runtime via `POST /api/flags/set {key:'papercusp-pot-rekey',enabled:true}` (persists a pg-override `getFlag` reads) BEFORE the pot is created.
 6. **Stale build = silent re-key no-op.** A `.deb`/`serve.mjs` built before a grant *call* seam landed carries the function but never calls it (e.g. the `grantEpochKeysToMembers` export exists but its call site in `upsertHiveMember`/`hive-membership-store.ts` isn't wired). Rebuild the sidecar (`bin/build-desktop-sidecar.sh`) and gate on a **minification-surviving code string** — an exported function/identifier name (`grantEpochKeysToMembers`) or an emitted event name (`rekey_grant_skipped`), never a comment (esbuild strips comments) and never a one-off log string, which drifts as the call site moves (as it has since this doc was first written).
 7. **content-matrix needs a `.deb`; from-repo supports `HIVE_SMOKE_MODE=sidecar`** (no .deb). To test current HEAD on the content-matrix, rebuild the sidecar then `dpkg-deb -R` a base .deb, swap the fresh sidecar in, `dpkg-deb -b`.
-8. **`live-federation-gate.sh` runs an assert-core self-test (WI-754) BEFORE the load gate** — proves `federation-asserts.sh` port self-discovery logic against synthetic listeners (~2s, no .deb, no extra load). A broken assert core makes every smoke an unexplained RED; catching it first gives a clear error message. Runs on every invocation regardless of fleet load. Override with `GATE_SKIP_SELFTEST=1`.
+8. **`live-federation-gate.sh` runs an assert-core self-test (WI-754) BEFORE the pressure admission gate** — proves `federation-asserts.sh` port self-discovery logic against synthetic listeners (~2s, no .deb, no extra load). A broken assert core makes every smoke an unexplained RED; catching it first gives a clear error message. Runs on every invocation regardless of fleet load. Override with `GATE_SKIP_SELFTEST=1`.
 
 ## The federation model you need to read results (the D-021 slug guard)
 
