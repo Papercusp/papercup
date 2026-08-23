@@ -29,7 +29,7 @@
  * `?ppv` popup tab (see PlanPopupModal).
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Archive, ClipboardList } from 'lucide-react';
+import { Archive, ChevronRight, ClipboardList, Search, SlidersHorizontal, X } from 'lucide-react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { toast } from 'sonner';
@@ -193,6 +193,10 @@ interface RosterPayloadRow {
 export default function PlansPane() {
   const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
   const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
+  const [filtersOpen, setFiltersOpen] = useQueryState(
+    'plFilters',
+    parseAsBoolean.withDefault(false),
+  );
   const [triggerFilter, setTriggerFilter] = useQueryState(
     'plTrigger',
     parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
@@ -266,6 +270,7 @@ export default function PlansPane() {
   );
 
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
+  const activeFilterCount = Number(showFinished) + Number(triggerFilter !== 'all');
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
   // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
@@ -309,24 +314,66 @@ export default function PlansPane() {
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 52,
+    estimateSize: () => 104,
     overscan: 10,
     getItemKey: (i) => `${rows[i]!.plan.harness}:${rows[i]!.plan.slug}`,
   });
 
   return (
     <div className="plans-pane" data-testid="plans-pane">
-      <div className="plans-pane__bar">
-        <input
-          type="search"
-          className="plans-pane__search"
-          placeholder="Search plans…"
-          value={query}
-          onChange={(e) => void setQuery(e.target.value || null)}
-          aria-label="Search plans"
-          data-testid="plans-pane-search"
-        />
-        <Tooltip label={showFinished ? 'Hide finished plans' : 'Also show shipped / superseded plans'}>
+      <header className="plans-pane__masthead">
+        <span className="plans-pane__masthead-icon" aria-hidden="true">
+          <ClipboardList size={20} />
+        </span>
+        <span className="plans-pane__masthead-copy">
+          <strong>Plans</strong>
+          <span>Track active work, decisions, and live progress in one place.</span>
+        </span>
+        <span className="plans-pane__masthead-count" data-testid="plans-pane-count">
+          {rows.length}
+        </span>
+      </header>
+
+      <div className="plans-pane__toolbar">
+        <label className="plans-pane__search-shell">
+          <Search size={14} className="plans-pane__search-icon" aria-hidden="true" />
+          <input
+            type="search"
+            className="plans-pane__search"
+            placeholder="Search plans…"
+            value={query}
+            onChange={(e) => void setQuery(e.target.value || null)}
+            aria-label="Search plans"
+            data-testid="plans-pane-search"
+          />
+          {query ? (
+            <button
+              type="button"
+              className="plans-pane__search-clear"
+              aria-label="Clear plan search"
+              onClick={() => void setQuery(null)}
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          ) : null}
+        </label>
+        <button
+          type="button"
+          className={`plans-pane__filter-toggle${filtersOpen ? ' is-open' : ''}`}
+          aria-expanded={filtersOpen}
+          onClick={() => void setFiltersOpen(filtersOpen ? null : true)}
+          data-testid="plans-pane-filter-toggle"
+        >
+          <SlidersHorizontal size={13} aria-hidden="true" /> Filters
+          {activeFilterCount > 0 ? (
+            <span className="plans-pane__filter-active">{activeFilterCount}</span>
+          ) : null}
+        </button>
+      </div>
+
+      {filtersOpen ? (
+        <div className="plans-pane__filters" data-testid="plans-pane-filters">
+          <Tooltip label={showFinished ? 'Hide finished plans' : 'Also show shipped / superseded plans'}>
           <button
             type="button"
             className={`plans-pane__finished-toggle${showFinished ? ' is-on' : ''}`}
@@ -336,22 +383,22 @@ export default function PlansPane() {
           >
             Finished
           </button>
-        </Tooltip>
-      </div>
-
-      <div className="plans-pane__trigger-filter" role="group" aria-label="Plan trigger type">
-        {PLAN_TRIGGER_FILTERS.map((value) => (
-          <button
-            key={value}
-            type="button"
-            className={`plans-pane__trigger-chip${triggerFilter === value ? ' is-on' : ''}`}
-            aria-pressed={triggerFilter === value}
-            onClick={() => void setTriggerFilter(value === 'all' ? null : value)}
-          >
-            {value}
-          </button>
-        ))}
-      </div>
+          </Tooltip>
+          <div className="plans-pane__trigger-filter" role="group" aria-label="Plan trigger type">
+            {PLAN_TRIGGER_FILTERS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={`plans-pane__trigger-chip${triggerFilter === value ? ' is-on' : ''}`}
+                aria-pressed={triggerFilter === value}
+                onClick={() => void setTriggerFilter(value === 'all' ? null : value)}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {planList.loading && !plans ? (
         <div className="plans-pane__empty">Loading plans…</div>
@@ -411,16 +458,29 @@ export default function PlansPane() {
                   }}
                   data-testid={`plans-pane-row-${plan.slug}`}
                 >
+                  <span className="plans-pane__row-icon" aria-hidden="true">
+                    <ClipboardList size={16} />
+                  </span>
                   <span className="plans-pane__row-main">
-                    <span className="plans-pane__row-title">{plan.title ?? plan.slug}</span>
-                    <span className="plans-pane__row-sub">
-                      {bucket !== 'running' ? (
-                        <span className={`plans-pane__bucket plans-pane__bucket--${bucket}`}>{bucket}</span>
-                      ) : null}
+                    <span className="plans-pane__row-head">
+                      <span className={`plans-pane__bucket plans-pane__bucket--${bucket}`}>
+                        {bucket === 'running' ? 'plan' : bucket}
+                      </span>
                       <span className="plans-pane__row-harness">{plan.harness}</span>
+                      <span className="plans-pane__row-head-spacer" />
                       <span className="plans-pane__row-ago" title={plan.updated ?? undefined}>
                         {agoLabel(plan.updated)}
                       </span>
+                    </span>
+                    <span className="plans-pane__row-title">{plan.title ?? plan.slug}</span>
+                    <span className="plans-pane__row-status">
+                      {needsYou > 0
+                        ? `${needsYou} decision${needsYou === 1 ? '' : 's'} need you`
+                        : liveAgents > 0
+                          ? `${liveAgents} agent${liveAgents === 1 ? '' : 's'} working now`
+                          : progress
+                            ? `${progress.done} of ${progress.total} items done`
+                            : 'Open plan details'}
                     </span>
                   </span>
                   <span className="plans-pane__row-badges">
@@ -492,6 +552,7 @@ export default function PlansPane() {
                       </span>
                     ) : null}
                   </span>
+                  <ChevronRight className="plans-pane__row-chevron" size={16} aria-hidden="true" />
                   {progress ? (
                     // WI-5365: glanceable done/total as a 2px strip along the
                     // row's bottom edge (the n/m badge stays the precise read).
@@ -527,6 +588,11 @@ export default function PlansPane() {
           </div>
         </div>
       )}
+
+      <div className="plans-pane__foot">
+        <span>{rows.length} shown</span>
+        <span>{showFinished ? 'Active + finished' : 'Active plans'}</span>
+      </div>
 
       {confirmEl}
 
