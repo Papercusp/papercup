@@ -32,6 +32,7 @@ import {
   type DeployTerminalMarker,
 } from './release-deploy-terminal';
 import { isRecordableVerdict } from './release/gate-verdict-target';
+import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
 /**
  * The fixed transient systemd unit the detached deploy runs as. MUST match
@@ -612,7 +613,7 @@ export function buildSystemdRunArgv(root: string, deployCliArgs: string[], logPa
   const inner = buildDeployTerminalShell(payload);
   return [
     '--user',
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${DEPLOY_UNIT}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,

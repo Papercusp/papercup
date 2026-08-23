@@ -61,6 +61,7 @@ import {
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
   SCOPE_LAUNCH_FAILURE_RE,
+  SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
 } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
@@ -3099,7 +3100,7 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
   await new Promise<void>((resolve) => {
     const child = spawn('systemd-run', [
       '--user',
-      '--collect',
+      ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
       `--unit=${AUTO_DEPLOY_UNIT}`,
       `--working-directory=${root}`,
       // EI-193: a transient unit inherits the systemd USER-MANAGER environment,

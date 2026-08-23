@@ -39,7 +39,7 @@ import {
 } from './release/green-checkpoint-schedule';
 import { quietCutSecFromEnv } from './release/quiet-cut';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
-import { checkpointScopeMemoryMaxG } from './systemd-scope';
+import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import {
   callerEditsInCandidate,
   containingSubmodulePath,
@@ -1412,7 +1412,7 @@ export function buildCheckpointSystemdArgv(
   return [
     '--user',
     '--no-block',
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${checkpointUnitForRoot(root)}`,
     `--property=MemoryMax=${memoryMaxG}G`,
     '--property=MemorySwapMax=0',

@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { integrationRoot, tsxBin } from '../release-deploy-launch';
-import { buildExactEnvPayload } from '../systemd-scope';
+import { buildExactEnvPayload, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
 
 export const GYM_CYCLE_MAX_RUNTIME_SEC = 4 * 60 * 60;
 export const GYM_CYCLE_RUNNER_REL = 'packages/operator-core/lib/gym/gym-cycle-run.ts';
@@ -59,7 +59,7 @@ export function buildGymCycleSystemdArgv(args: {
   return [
     '--user',
     '--no-block',
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${unit}`,
     `--property=RuntimeMaxSec=${GYM_CYCLE_MAX_RUNTIME_SEC}`,
     `--working-directory=${args.root}`,

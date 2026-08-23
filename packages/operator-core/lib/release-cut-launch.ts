@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
 /** Transient systemd unit for the detached cut. Distinct from DEPLOY_UNIT /
  *  the checkpoint unit — a cut, a deploy and a green-checkpoint touch different trees and
@@ -201,7 +202,7 @@ export function buildCutArgv(
   const inner = `rm -f ${done}; printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; ` + `${resumeReset}${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
   return [
     '--user',
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${unit}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,

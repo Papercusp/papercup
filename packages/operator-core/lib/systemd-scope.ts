@@ -20,6 +20,18 @@
 export const SCOPE_LAUNCH_FAILURE_RE =
   /Failed to connect to bus|Failed to start transient scope|Interactive authentication required|No such file or directory/i;
 
+/**
+ * Keep the CLI's `--collect` spelling, but pin the failure half of its contract
+ * explicitly as a unit property. `--collect` is documented as a shortcut for
+ * this property on current systemd, while the live user manager has still
+ * observed failed transient services with `CollectMode=inactive`; emitting both
+ * makes the intended cleanup policy visible and testable at the D-Bus boundary.
+ */
+export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
+  '--collect',
+  '--property=CollectMode=inactive-or-failed',
+] as const;
+
 /** Shared per-agent scope budget. Headless fleet members and orchestrated agent
  * turns are the same resource shape, so they must resolve the same override and
  * default instead of drifting into capped vs uncapped launch paths. */
@@ -61,7 +73,7 @@ export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): stri
     '--user',
     '--scope',
     '--quiet',
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--property=MemoryMax=${memoryMaxG}G`,
     '--property=MemorySwapMax=0',
     ...base,
@@ -211,10 +223,7 @@ export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): 
     '--user',
     '--scope',
     '--quiet',
-    // --collect: a failed transient unit is garbage-collected instead of lingering
-    // in `systemctl --user list-units` as a permanent phantom the scanner would
-    // then have to special-case.
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${props.unit}`,
     `--slice=${props.slice}`,
   ];
@@ -237,7 +246,7 @@ export function buildTaskServiceArgv(base: string[], props: TaskScopeProperties)
     '--pipe',
     '--wait',
     '--quiet',
-    '--collect',
+    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${props.unit}`,
     `--slice=${props.slice}`,
     // EI-21192501620501693: make the subtree cleanup contract explicit instead
