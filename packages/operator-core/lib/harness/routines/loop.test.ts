@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Sql } from 'postgres';
 
 // Mock B-LOOP-1's upsertRoutine seam so we can assert the EXACT loop-routine row
 // materializeLoop produces — the row fd5c0's fire (loop-fire.ts) + su-15ea2's
@@ -1046,6 +1047,18 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     const s = out.get('su-x')!;
     expect(s.firesSinceArm).toBe(0);
     expect(s.fireCount).toBe(500);
+  });
+
+  it('EI-21219642654072321: a PARKED loop exposes its park age — the designed in-flight sentinel made self-describing', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: rowSql({ parked: true, parked_ms: 95_000 }) as unknown as Sql });
+    const s = out.get('su-x')!;
+    expect(s.parked).toBe(true);
+    expect(s.parkedForSec).toBe(95);
+  });
+
+  it('EI-21219642654072321: NOT parked → parkedForSec is null even when the fire-age column has a value', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: rowSql({ parked: false, parked_ms: 95_000 }) as unknown as Sql });
+    expect(out.get('su-x')!.parkedForSec).toBeNull();
   });
 });
 

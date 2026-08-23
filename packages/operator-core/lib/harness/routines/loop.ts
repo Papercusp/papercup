@@ -1005,6 +1005,14 @@ export interface LoopStatus {
    *  "healthy reading while the thing it monitors is dead" failure this field exists to
    *  surface. Requires ≥3 fires (never flags a freshly-armed loop) — see computeTurnsStalled. */
   turnsStalled: boolean;
+  /** EI-21219642654072321: age of the CURRENT park in seconds — non-null ONLY while
+   *  parked. `parked:true` + `nextFireAt:null` is the DESIGNED in-flight sentinel
+   *  (claim.ts parks a pure loop at 'infinity' while its fired turn runs), NOT a lost
+   *  arm: judge health by THIS age against the recovery ladder (reconcile-loop-routines'
+   *  quick-retry ≈10min, stuck-park backstop ≈max(30min, 4×interval)) plus
+   *  `lastRealTurnAt`, never by the null nextFireAt alone — reading that null as "no
+   *  wake armed" filed a healthy mid-turn loop as structural breakage. */
+  parkedForSec: number | null;
   /** EI-19325288514307343: non-null iff the most recent recorded fire was a
    *  provider-wall lifecycle-death and the loop is waiting out its backoff before
    *  retrying — the "backed off until T (reason)" signal that lets a reader
@@ -1629,6 +1637,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastRealTurnAt: r.last_real_turn_at ? new Date(r.last_real_turn_at).toISOString() : null,
     turnsStalled,
+    parkedForSec: parked && parkedMs != null ? Math.max(0, Math.round(parkedMs / 1000)) : null,
     lifecycleBackoff,
   };
 }
