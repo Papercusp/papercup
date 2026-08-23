@@ -4,17 +4,25 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CLAUDE_OAUTH_DEFAULTS,
+  FACEBOOK_OAUTH_SCOPES,
   GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
   GOOGLE_CONTACTS_READONLY_SCOPE,
   GOOGLE_WORKSPACE_SCOPES,
   compareScopes,
+  __resetRegistryForTest,
+  getProvider,
+  loadAndRegisterProvidersFromDisk,
   loadGoogleProviderFromDesktopClientFile,
   makeClaudeProvider,
+  makeFacebookProvider,
   makeGithubProvider,
   makeGoogleProvider,
 } from './providers';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  __resetRegistryForTest();
+});
 
 describe('compareScopes', () => {
   it('flags exact matches', () => {
@@ -150,6 +158,62 @@ describe('Google Workspace Desktop OAuth provider', () => {
       await expect(loadGoogleProviderFromDesktopClientFile(path, config.redirectUri)).rejects.toThrow(
         /Desktop app credential/,
       );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Meta / Facebook OAuth provider', () => {
+  const config = {
+    clientId: 'facebook-app-id',
+    clientSecret: 'facebook-app-secret',
+    authorizeUrl: 'https://www.facebook.com/dialog/oauth',
+    tokenUrl: 'https://graph.facebook.com/oauth/access_token',
+    redirectUri: 'http://127.0.0.1:3070/api/oauth/callback',
+  };
+
+  it('allowlists the owner profile/posts/photos scopes and exchanges for a long-lived token', async () => {
+    const provider = makeFacebookProvider(config);
+    const authorize = new URL(provider.buildAuthorizeUrl([], 'STATE_TOKEN'));
+    expect(authorize.searchParams.get('scope')?.split(',')).toEqual(FACEBOOK_OAUTH_SCOPES);
+    expect(authorize.searchParams.get('state')).toBe('STATE_TOKEN');
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ access_token: 'short-token', expires_in: 3600 }))
+      .mockResolvedValueOnce(Response.json({ access_token: 'long-token', expires_in: 5_184_000 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const token = await provider.exchangeCode('authorization-code');
+
+    expect(token.accessToken).toBe('long-token');
+    expect(token.refreshToken).toBe('long-token');
+    expect(token.scopes).toEqual(FACEBOOK_OAUTH_SCOPES);
+    const longExchange = new URL(String(fetchMock.mock.calls[1]?.[0]));
+    expect(longExchange.searchParams.get('grant_type')).toBe('fb_exchange_token');
+    expect(longExchange.searchParams.get('fb_exchange_token')).toBe('short-token');
+    expect(longExchange.searchParams.get('client_secret')).toBe(config.clientSecret);
+  });
+
+  it('loads the app secret only from external oauth-apps configuration', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'papercusp-facebook-oauth-'));
+    const secretPath = join(dir, 'facebook.secret');
+    try {
+      await fs.writeFile(secretPath, config.clientSecret, { mode: 0o600 });
+      await fs.writeFile(
+        join(dir, 'oauth-apps.json'),
+        JSON.stringify({
+          facebook: {
+            clientId: config.clientId,
+            clientSecretFile: secretPath,
+            redirectUri: config.redirectUri,
+          },
+        }),
+        { mode: 0o600 },
+      );
+      await expect(loadAndRegisterProvidersFromDisk(dir, null)).resolves.toEqual(['facebook']);
+      const provider = getProvider('facebook');
+      expect(provider?.allowedScopes).toEqual(FACEBOOK_OAUTH_SCOPES);
+      expect(provider?.config.clientSecret).toBe(config.clientSecret);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

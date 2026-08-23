@@ -329,6 +329,78 @@ export async function loadGoogleProviderFromDesktopClientFile(
   });
 }
 
+/* ─── Meta / Facebook provider ─── */
+
+export const FACEBOOK_OAUTH_SCOPES = ['public_profile', 'user_posts', 'user_photos'] as const;
+
+interface FacebookTokenBody {
+  access_token?: string;
+  expires_in?: number;
+  error?: { message?: string };
+}
+
+function facebookToken(body: FacebookTokenBody, scopes = FACEBOOK_OAUTH_SCOPES): TokenResponse {
+  const accessToken = body.access_token?.trim();
+  if (!accessToken) {
+    throw new Error('facebook oauth: ' + (body.error?.message ?? 'no access_token in response'));
+  }
+  return {
+    accessToken,
+    // Meta does not issue a distinct refresh token for this flow. Retaining the
+    // current long-lived token in the refresh slot lets the shared token store
+    // re-run the documented exchange before expiry without inventing a second
+    // credential mechanism.
+    refreshToken: accessToken,
+    expiresAt: body.expires_in ? Date.now() + body.expires_in * 1000 : undefined,
+    scopes: [...scopes],
+  };
+}
+
+/** Facebook Login with an immediate server-side long-lived token exchange. */
+export function makeFacebookProvider(config: OAuthProviderConfig): OAuthProvider {
+  const exchangeLongLived = async (token: string): Promise<TokenResponse> => {
+    const url = new URL(config.refreshUrl ?? config.tokenUrl);
+    url.searchParams.set('grant_type', 'fb_exchange_token');
+    url.searchParams.set('client_id', config.clientId);
+    url.searchParams.set('client_secret', config.clientSecret);
+    url.searchParams.set('fb_exchange_token', token);
+    const response = await fetch(url, { headers: { accept: 'application/json' } });
+    const body = (await response.json().catch(() => ({}))) as FacebookTokenBody;
+    if (!response.ok && !body.error) throw new Error('facebook long-lived token exchange ' + response.status);
+    return facebookToken(body);
+  };
+  return {
+    id: 'facebook',
+    config,
+    defaultScopes: FACEBOOK_OAUTH_SCOPES,
+    allowedScopes: FACEBOOK_OAUTH_SCOPES,
+    buildAuthorizeUrl(scopes, state) {
+      const url = new URL(config.authorizeUrl);
+      url.searchParams.set('client_id', config.clientId);
+      url.searchParams.set('redirect_uri', config.redirectUri);
+      url.searchParams.set('response_type', 'code');
+      url.searchParams.set('scope', (scopes.length ? scopes : FACEBOOK_OAUTH_SCOPES).join(','));
+      url.searchParams.set('state', state);
+      return url.toString();
+    },
+    async exchangeCode(code) {
+      const url = new URL(config.tokenUrl);
+      url.searchParams.set('client_id', config.clientId);
+      url.searchParams.set('client_secret', config.clientSecret);
+      url.searchParams.set('redirect_uri', config.redirectUri);
+      url.searchParams.set('code', code);
+      const response = await fetch(url, { headers: { accept: 'application/json' } });
+      const body = (await response.json().catch(() => ({}))) as FacebookTokenBody;
+      if (!response.ok && !body.error) throw new Error('facebook token exchange ' + response.status);
+      const shortLived = facebookToken(body);
+      return exchangeLongLived(shortLived.accessToken);
+    },
+    refresh(refreshToken) {
+      return exchangeLongLived(refreshToken);
+    },
+  };
+}
+
 /* ─── Claude (Anthropic subscription) provider ─── */
 
 /**
@@ -491,6 +563,11 @@ const DEFAULT_GITHUB_ENDPOINTS = {
   userInfoUrl: 'https://api.github.com/user',
 };
 
+const DEFAULT_FACEBOOK_ENDPOINTS = {
+  authorizeUrl: 'https://www.facebook.com/dialog/oauth',
+  tokenUrl: 'https://graph.facebook.com/oauth/access_token',
+};
+
 async function readClientSecret(entry: OAuthAppsFile[string]): Promise<string> {
   if (entry.clientSecret) return entry.clientSecret;
   if (entry.clientSecretFile) {
@@ -546,6 +623,19 @@ export async function loadAndRegisterProvidersFromDisk(
         };
         registerProvider(makeGithubProvider(cfg));
         registered.push('github');
+      }
+      if (id === 'facebook') {
+        const cfg: OAuthProviderConfig = {
+          clientId: entry.clientId,
+          clientSecret,
+          authorizeUrl: entry.authorizeUrl ?? DEFAULT_FACEBOOK_ENDPOINTS.authorizeUrl,
+          tokenUrl: entry.tokenUrl ?? DEFAULT_FACEBOOK_ENDPOINTS.tokenUrl,
+          refreshUrl: entry.refreshUrl ?? entry.tokenUrl ?? DEFAULT_FACEBOOK_ENDPOINTS.tokenUrl,
+          userInfoUrl: entry.userInfoUrl ?? 'https://graph.facebook.com/me',
+          redirectUri: entry.redirectUri,
+        };
+        registerProvider(makeFacebookProvider(cfg));
+        registered.push('facebook');
       }
       // V2: slack, linear, notion, jira providers.
     }
