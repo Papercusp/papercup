@@ -16,9 +16,20 @@
  * WHY THE GEOMETRY TESTS AND THE CONTENT TEST ARE SEPARATE — this split is load-bearing.
  * Shrinking an image always "saves tokens"; shrinking it to garbage saves more. So the
  * measurement deserves a companion check that the screen SURVIVED the resize. But that
- * check needs something painted on the desktop, and painting inside a provisioned desktop
- * is currently broken here for reasons that have nothing to do with capture geometry
- * (every window comes up 1x1 under the provisioned openbox — EI-21229784052420840).
+ * check needs something painted on the desktop, and at the time this was written painting
+ * inside a provisioned desktop appeared broken for reasons unrelated to capture geometry
+ * (EI-21229784052420840).
+ *
+ * ⚠ CORRECTED 2026-08-23 by P-007 — the reading that filing rested on was WRONG, and the
+ * correction is recorded here because this comment is what a future reader would trust.
+ * "Every window comes up 1x1" was a misreading: the 1x1 windows are GTK GROUP-LEADER
+ * windows, which every GTK app always has and which are never the toplevel, and openbox
+ * reparents the real window so a naive root-children listing misses it. GTK apps DO paint
+ * on a headless Xvfb here — measured, a zenity dialog produces a real 310x210 window with
+ * 177-201 distinct colours in the framebuffer. The blank captures were caused by the
+ * xdg-desktop-portal activation cascade stalling app startup for tens of seconds (see
+ * D-010(c)), which a provisioned desktop no longer triggers now that it runs a minimal
+ * accessibility-only session bus.
  *
  * Folding both into one test made that defect able to masquerade as a capture-geometry
  * regression, and skipping that combined test threw away the geometry evidence with it —

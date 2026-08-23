@@ -93,6 +93,29 @@ export function publishBusPropertyCommand(display: string, busAddress: string): 
   };
 }
 
+/**
+ * Does this a11y bus actually belong to `display`?
+ *
+ * at-spi names its socket after the display it was started under — `bus_110` for
+ * `:110` — so the address is self-describing and this is a cheap, exact check rather
+ * than a heuristic. It exists because the failure it catches is SILENT and severe: a
+ * launcher that inherited the wrong DISPLAY hands back a perfectly well-formed
+ * address for someone else's session (measured: `bus_0`, the operator's own), and
+ * every consumer downstream then works correctly against the wrong desktop.
+ *
+ * A bus whose name carries no display suffix at all is ACCEPTED: at-spi is entitled
+ * to name its socket differently, and refusing an unrecognised shape would disable
+ * accessibility on hosts where nothing is actually wrong. This rejects only the case
+ * that is positively identifiable as another display's bus.
+ */
+export function busBelongsToDisplay(busAddress: string, display: string): boolean {
+  const n = /^:(\d+)/.exec(display.trim())?.[1];
+  if (!n) return false;
+  const named = /at-spi\/bus_(\d+)/.exec(busAddress);
+  if (!named) return true; // no display suffix to contradict us
+  return named[1] === n;
+}
+
 export interface A11yBus {
   /** Address of the desktop's own minimal session bus. */
   sessionBus: string;
@@ -126,11 +149,26 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
     writeFileSync(confPath, minimalSessionBusConfig(serviceDir), 'utf8');
 
     const busCmd = sessionBusCommand(confPath);
+    // 🚨 THE DAEMON'S ENV IS WHAT DECIDES WHICH DISPLAY at-spi BINDS TO, and getting
+    // this wrong is silent. `at-spi-bus-launcher` is activated BY this daemon, so it
+    // inherits THIS env, and it names its bus after the DISPLAY it sees. Spawned with
+    // the operator's inherited environment it sees `DISPLAY=:0` and creates
+    // `…/at-spi/bus_0` — the HOST's bus. Measured exactly that way on the first live
+    // run of this code: a desktop provisioned at :110 came up bound to `bus_0`, which
+    // means the sandbox's own apps would have registered on the OPERATOR'S session and
+    // `observe` would have read the owner's real desktop. Same leak as the walker's
+    // (D-010(b)), entering through the provisioner instead.
+    //
+    // `sandboxXEnv` both refuses `:0` outright and pins DISPLAY to the sandbox; the
+    // host bus keys are stripped on top so an inherited session address cannot win.
+    const daemonEnv = sandboxXEnv(display);
+    delete daemonEnv.DBUS_SESSION_BUS_ADDRESS;
+    delete daemonEnv.AT_SPI_BUS_ADDRESS;
     // NOT managedSpawn: --fork means this process exits immediately and the daemon it
     // left behind is the thing we want, so there is no child handle to enrol. The
     // daemon is reaped with the desktop by `release()`, which kills the bus address's
     // socket owner along with the rest of the display's processes.
-    const started = spawnSync(busCmd.bin, busCmd.args, { encoding: 'utf8', timeout });
+    const started = spawnSync(busCmd.bin, busCmd.args, { encoding: 'utf8', timeout, env: daemonEnv });
     const sessionBus = (started.stdout ?? '').trim();
     if (!sessionBus) return null;
 
@@ -138,6 +176,7 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
     const got = spawnSync(probe.bin, probe.args, { encoding: 'utf8', env: probe.env, timeout });
     const a11yBus = parseA11yBusAddress(got.stdout ?? '');
     if (!a11yBus) return null;
+    if (!busBelongsToDisplay(a11yBus, display)) return null;
 
     const publish = publishBusPropertyCommand(display, a11yBus);
     spawnSync(publish.bin, publish.args, { env: sandboxXEnv(display), timeout: 5000 });
