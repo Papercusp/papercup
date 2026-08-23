@@ -79,6 +79,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 
 const HOST_WORKSPACE = '@papercusp/operator-core';
+const DEPENDENCY_INTEGRITY_SCRIPT = 'lint:dependency-integrity';
+const DEPENDENCY_INTEGRITY_TASK = `${HOST_WORKSPACE} :: ${DEPENDENCY_INTEGRITY_SCRIPT}`;
 const GUARD_SCRIPT = 'lint:chunk-safe';
 const GUARD_TASK = `${HOST_WORKSPACE} :: ${GUARD_SCRIPT}`;
 
@@ -146,6 +148,31 @@ function printAffected(changedPaths: string): string {
   expect(res.status, `print-only probe failed:\n${res.stderr ?? ''}`).toBe(0);
   return `${res.stdout ?? ''}${res.stderr ?? ''}`;
 }
+
+describe('affected-tests: dependency-integrity preflight (EI-20863794002653922)', () => {
+  it('attaches for an ordinary change outside the host workspace', () => {
+    expect(dryTasks(OUTSIDE_TS_PATH)).toContain(DEPENDENCY_INTEGRITY_TASK);
+  });
+
+  it('still attaches when the host suite is selected because that suite cannot inspect its own runner before startup', () => {
+    const out = dryTasks(INSIDE_TS_PATH);
+    expect(out).toContain(`${HOST_WORKSPACE} :: test`);
+    expect(out).toContain(DEPENDENCY_INTEGRITY_TASK);
+  });
+
+  it('keeps the host script pointed at the reused detector and guarded by the install mutex', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    const command = pkg.scripts?.[DEPENDENCY_INTEGRITY_SCRIPT];
+
+    expect(command).toBeTruthy();
+    expect(command).toContain('npm-install-safe.mjs');
+    expect(command).toContain('--exec-under-lock');
+    expect(command).toContain('check-declared-deps-extracted.mjs');
+    expect(command).not.toContain('vitest');
+  });
+});
 
 describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', () => {
   it('attaches the chunk-safe guard for a TS change OUTSIDE its host workspace', () => {

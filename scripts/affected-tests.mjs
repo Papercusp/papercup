@@ -1098,6 +1098,26 @@ const UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR = "scripts/lib/tracked-files.mjs";
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-20863794002653922 — a workspace-local Vitest directory survived npm reify
+    // without its package.json/entrypoints. The package's own test task then failed
+    // before collecting a single test, and test:affected classified the opaque
+    // MODULE_NOT_FOUND as a code regression. No changed-path predicate can predict
+    // this damage: it is mutable checkout state created outside git, so every affected
+    // run must first prove the dependency substrate it is about to execute.
+    //
+    // Reuse the existing check-declared-deps-extracted detector rather than inventing
+    // a gate-only classifier. The host script runs it under npm-install-safe's READ
+    // mutex, so a legitimate concurrent reify is allowed to finish instead of being
+    // observed halfway through. Healthy-tree cost is bounded to filesystem reads plus
+    // the existing lockfile-selected runtime imports; retries occur only on a finding.
+    workspace: "@papercusp/operator-core",
+    script: "lint:dependency-integrity",
+    // Deliberately NO hostSuiteRatchet: operator-core's Vitest suite unit-tests the
+    // detector but does not inspect the real tree. Skipping this task when that suite
+    // is selected would reopen the exact chicken-and-egg hole for package-local Vitest.
+    appliesTo: () => true,
+  },
+  {
     // EI-21219848570251446 — a plain Vitest config bypasses the shared
     // admin-test-runs reporter, making testing:runs return a clean-looking
     // empty for an unmeasured workspace. This guard scans every declared

@@ -46,6 +46,7 @@
     "seed:substitutions": "tsx ../../scripts/seed-substitution-registry.ts",
     "seed:substitutions:check": "tsx ../../scripts/seed-substitution-registry.ts --check",
     "lint:workspace-deps-complete": "node ../../scripts/check-workspace-deps-complete.mjs",
+    "lint:dependency-integrity": "node ../../scripts/npm-install-safe.mjs --exec-under-lock -- node scripts/check-declared-deps-extracted.mjs",
     "lint:vitest-config-enrollment": "node ../../scripts/check-vitest-config-enrollment.mjs",
     "lint:peer-dep-conflicts": "node ../../scripts/check-peer-dep-conflicts.mjs",
     "lint:no-ungated-mug-kettle": "node ../../scripts/check-ungated-mug-kettle.mjs",
