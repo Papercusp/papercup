@@ -18,6 +18,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ompSessionsLinkArgsSchema } from '@papercusp/operator-core/lib/agent-tools/omp/sessions';
+import { loadPairFixtures } from "@papercusp/operator-core/lib/bash-substitution/corpus";
+import { deriveSubstitutionPrefilterHeads } from "@papercusp/operator-core/lib/bash-substitution/routing-table";
 
 import {
   buildActivityArgs,
@@ -5575,48 +5577,57 @@ const SUBSTITUTION_FIXTURE_DIR = resolve(
   '../../../../../../packages/operator-core/lib/bash-substitution/fixtures',
 );
 
-describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the round-trip)', () => {
+describe("substitutionPrefilterHit (OMP pre-filter — decides who pays the round-trip)", () => {
   // A pre-filter MISS is the silent failure this whole describe exists for: no
   // error, no log, just an advisory that never fires for the commands its rule
   // was written for.
   it.each([
-    ['sed range read', "sed -n '1,80p' packages/foo.ts"],
-    ['sed behind a cd', "cd /repo && sed -n '1,80p' packages/foo.ts"],
-    ['cat a file', 'cat packages/operator-core/lib/foo.ts'],
-    ['head a file', 'head -n 20 packages/foo.ts'],
-    ['tail a file', 'tail -n 50 packages/foo.ts'],
-    ['psql select', 'psql -d papercusp -c "SELECT 1"'],
-    ['behind sudo', "sudo sed -n '1,5p' /etc/hosts"],
-    ['behind sudo -n', 'sudo -n cat /etc/hosts'],
-    ['behind an env assignment', 'FOO=bar cat notes.txt'],
-    ['behind nohup', 'nohup tail -f log.txt'],
-    ['behind timeout', 'timeout 5s cat notes.txt'],
-    ['second atom in a pipeline', 'echo hi; cat notes.txt'],
-    ['second atom behind &&', 'npm run lint && cat notes.txt'],
-    ['an absolute path to the verb', '/usr/bin/cat notes.txt'],
-  ])('claims %s', (_label, command) => {
+    ["sed range read", "sed -n '1,80p' packages/foo.ts"],
+    ["sed behind a cd", "cd /repo && sed -n '1,80p' packages/foo.ts"],
+    ["cat a file", "cat packages/operator-core/lib/foo.ts"],
+    ["head a file", "head -n 20 packages/foo.ts"],
+    ["tail a file", "tail -n 50 packages/foo.ts"],
+    ["psql select", 'psql -d papercusp -c "SELECT 1"'],
+    ["behind sudo", "sudo sed -n '1,5p' /etc/hosts"],
+    ["behind sudo -n", "sudo -n cat /etc/hosts"],
+    ["behind an env assignment", "FOO=bar cat notes.txt"],
+    ["behind nohup", "nohup tail -f log.txt"],
+    ["behind timeout", "timeout 5s cat notes.txt"],
+    ["second atom in a pipeline", "echo hi; cat notes.txt"],
+    ["second atom behind &&", "npm run lint && cat notes.txt"],
+    ["an absolute path to the verb", "/usr/bin/cat notes.txt"],
+  ])("claims %s", (_label, command) => {
     expect(substitutionPrefilterHit(command)).toBe(true);
   });
 
   it.each([
-    ['a plain listing', 'ls -la'],
-    ['a word merely CONTAINING a verb', 'echo concatenate the duplicates'],
-    ['a path merely containing a verb', 'node scripts/cat-herder.mjs'],
-    ['an unrelated npm script', 'npm run lint'],
+    ["a plain listing", "ls -la"],
+    ["a word merely CONTAINING a verb", "echo concatenate the duplicates"],
+    ["a path merely containing a verb", "node scripts/cat-herder.mjs"],
+    ["an unrelated npm script", "npm run lint"],
     // The head here must be one the pre-filter does NOT claim, or this case stops
     // testing what it names. It used to be `grep -n cat notes.txt`, which became a
     // FALSE case the moment `grep` was added to SUBSTITUTION_PREFILTER_HEADS for
     // code-search.definition-lookup: the assertion then failed on `grep` being a
     // legitimately-claimed head, not on `cat`-as-an-argument. `rg` keeps the shape
     // (claimed verb appearing only as an argument) with an unclaimed head.
-    ['a verb only as an argument', 'rg -n cat notes.txt'],
-    ['an empty command', ''],
-  ])('does NOT claim %s (no round-trip)', (_label, command) => {
+    ["a verb only as an argument", "rg -n cat notes.txt"],
+    ["an empty command", ""],
+  ])("does NOT claim %s (no round-trip)", (_label, command) => {
     expect(substitutionPrefilterHit(command)).toBe(false);
   });
 
-  it('never throws on pathological input (a pre-filter bug must not wedge a command)', () => {
-    for (const cmd of ['|||', ';;;', '$(', '`', 'FOO=', 'sudo ', '\n\n', '((((']) {
+  it("never throws on pathological input (a pre-filter bug must not wedge a command)", () => {
+    for (const cmd of [
+      "|||",
+      ";;;",
+      "$(",
+      "`",
+      "FOO=",
+      "sudo ",
+      "\n\n",
+      "((((",
+    ]) {
       expect(() => substitutionPrefilterHit(cmd)).not.toThrow();
     }
   });
@@ -5637,25 +5648,27 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
   // call on the box an HTTP round-trip to be told nothing. The exclusion reads
   // the VERDICT off the pair rather than keying on a filename, so it cannot
   // drift from what the matcher actually enforces.
-  it('every atom behind an ENFORCEABLE equivalence verdict passes the pre-filter', () => {
+  it("every atom behind an ENFORCEABLE equivalence verdict passes the pre-filter", () => {
     const enforceable = new Set(
-      BASH_GATE_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
-        (p) => `${p.id}.sample.json`,
-      ),
+      BASH_GATE_PAIRS.filter(
+        (p) => p.expectedVerdict !== "not-a-substitute",
+      ).map((p) => `${p.id}.sample.json`),
     );
     const files = readdirSync(SUBSTITUTION_FIXTURE_DIR).filter(
-      (f) => f.endsWith('.sample.json') && enforceable.has(f),
+      (f) => f.endsWith(".sample.json") && enforceable.has(f),
     );
     // Exact, not `> 0`: a filter that silently dropped fixtures would make this
     // guard vacuously green — the same "passes while testing nothing" failure
     // the scoping itself is meant to avoid.
-    expect(files.length, 'a fixture is missing for some enforceable pair').toBe(enforceable.size);
+    expect(files.length, "a fixture is missing for some enforceable pair").toBe(
+      enforceable.size,
+    );
 
     const missed: string[] = [];
     let atoms = 0;
     for (const file of files) {
       const fixture = JSON.parse(
-        readFileSync(join(SUBSTITUTION_FIXTURE_DIR, file), 'utf8'),
+        readFileSync(join(SUBSTITUTION_FIXTURE_DIR, file), "utf8"),
       ) as { sample: { atom: string }[] };
       for (const { atom } of fixture.sample) {
         atoms += 1;
@@ -5665,114 +5678,53 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
     expect(atoms).toBeGreaterThan(0);
     expect(
       missed,
-      `pre-filter dropped atoms a registry rule claims:\n${missed.join('\n')}`,
+      `pre-filter dropped atoms a registry rule claims:\n${missed.join("\n")}`,
     ).toEqual([]);
   });
 
-  // ── THE OTHER DRIFT DIRECTION, which the replay above structurally CANNOT see ──
-  //
-  // That guard asserts each corpus atom is claimed by SOME head. That is a
-  // DISJUNCTION — any one of an atom's part-heads satisfies it — so a head that
-  // carries no corpus atom of its own is invisible to it. Measured 2026-08-13: of
-  // the 19 heads in the live set, 18 are corpus-evidenced and exactly one
-  // (`vitest`) is not, because every `tests.raw-vitest` fixture atom is spelled
-  // `npx vitest …` and is therefore claimed via `npx`.
-  //
-  // So today, deleting `vitest` from BOTH sets goes GREEN everywhere: the replay
-  // still passes (no atom needed it) and the byte-parity test still passes (both
-  // sets changed together). Enforcement silently narrows with nothing red — the
-  // exact silent-drift failure this describe block exists to prevent.
-  //
-  // The rule below is therefore "evidenced, or DECLARED defensive with a reason",
-  // which also closes the accumulate direction: a head whose pair was deleted
-  // stops being evidenced and must then be justified or dropped.
-  const DEFENSIVE_HEADS: Record<string, string> = {
-    vitest:
-      'tests.raw-vitest fixtures are all `npx vitest …` (head `npx`), but an npm ' +
-      'script invokes the bare binary off node_modules/.bin, so a bare `vitest` ' +
-      'atom is reachable in practice with no corpus atom to evidence it.',
-  };
-
-  /** Heads the frozen corpus exercises, atomized through the hook's OWN code. */
-  const corpusHeads = (): Set<string> => {
-    const enforceable = new Set(
-      BASH_GATE_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
-        (p) => `${p.id}.sample.json`,
-      ),
+  // The replay above proves every FROZEN atom clears the hook. It cannot prove
+  // optional bare spellings that the regex accepts but the corpus happened not
+  // to contain (`npx vitest` → `vitest`, `npx tsc` → `tsc`). The generator now
+  // derives those obligations by progressively stripping accepted leading
+  // tokens. Exact equality here closes both drift directions without another
+  // defensive-head allowlist to maintain by hand.
+  it("matches the complete head set derived from audited pairs and fixtures", () => {
+    const derived = deriveSubstitutionPrefilterHeads(
+      loadPairFixtures(BASH_GATE_PAIRS),
     );
-    const heads = new Set<string>();
-    for (const file of readdirSync(SUBSTITUTION_FIXTURE_DIR).filter(
-      (f) => f.endsWith('.sample.json') && enforceable.has(f),
-    )) {
-      const fixture = JSON.parse(
-        readFileSync(join(SUBSTITUTION_FIXTURE_DIR, file), 'utf8'),
-      ) as { sample: { atom: string }[] };
-      for (const { atom } of fixture.sample) {
-        for (const a of substitutionAtoms(atom)) {
-          const head = substitutionAtomHead(a);
-          if (head) heads.add(head);
-        }
-      }
-    }
-    return heads;
-  };
-
-  it('every prefilter head is corpus-evidenced or a DECLARED defensive head', () => {
-    const evidenced = corpusHeads();
-    // POSITIVE CONTROL. Without it a broken derivation returns an empty set, every
-    // head reads as unevidenced, and the failure message blames the head set for
-    // an instrument fault. `git` is the densest evidenced head in the corpus.
-    expect(
-      evidenced.has('git'),
-      'the corpus derivation found no `git` atom — the instrument is broken, not the head set',
-    ).toBe(true);
-
-    const unjustified = [...SUBSTITUTION_PREFILTER_HEADS].filter(
-      (h) => !evidenced.has(h) && !(h in DEFENSIVE_HEADS),
-    );
-    expect(
-      unjustified,
-      'head(s) claimed by neither a corpus atom nor a DEFENSIVE_HEADS entry. Add a ' +
-        'fixture atom that exercises the head, drop the head, or declare WHY it is ' +
-        `claimed defensively:\n${unjustified.join('\n')}`,
-    ).toEqual([]);
-  });
-
-  it('every DECLARED defensive head is still in the set (deleting one must go red)', () => {
-    // This is the half that closes the hole. Without it a defensive head can be
-    // deleted and nothing anywhere fails.
-    for (const [head, why] of Object.entries(DEFENSIVE_HEADS)) {
-      expect(
-        SUBSTITUTION_PREFILTER_HEADS.has(head),
-        `\`${head}\` is declared defensive but is no longer in SUBSTITUTION_PREFILTER_HEADS. ` +
-          `Removing it silently narrows enforcement — which is what the declaration exists ` +
-          `to prevent. Reason on record: ${why}`,
-      ).toBe(true);
-    }
+    expect(derived).toEqual(expect.arrayContaining(["npx", "vitest", "tsc"]));
+    expect([...SUBSTITUTION_PREFILTER_HEADS].sort()).toEqual(derived);
   });
 });
 
-describe('cross-path parity with the shell hook (D-005 — the duplicated pre-filter)', () => {
+describe("cross-path parity with the shell hook (D-005 — the duplicated pre-filter)", () => {
   // D-002 keeps the RULES in Postgres so neither hook hardcodes patterns. The
   // pre-filter is the one thing genuinely duplicated (each hook must run it with
   // no imports), so it is the one thing that can drift — and drift here is
   // invisible: the command still runs, it just stops reaching the operator on
   // ONE path. These assertions are the mechanical form of "fix one, fix both".
-  const shellHook = readFileSync(SHELL_HOOK_PATH, 'utf8');
+  const shellHook = readFileSync(SHELL_HOOK_PATH, "utf8");
 
   /** The raw source of a `NAME = re.compile(r'...')` pattern in the shell hook. */
   const pyRaw = (name: string): string => {
-    const m = new RegExp(`${name} = re\\.compile\\(\\s*r'([\\s\\S]*?)'\\)`).exec(shellHook);
+    const m = new RegExp(
+      `${name} = re\\.compile\\(\\s*r'([\\s\\S]*?)'\\)`,
+    ).exec(shellHook);
     expect(m, `could not find ${name} in ${SHELL_HOOK_PATH}`).not.toBeNull();
     return m![1];
   };
 
-  it('the atom-head set matches the shell hook byte-for-byte', () => {
+  it("the atom-head set matches the shell hook byte-for-byte", () => {
     const m = /_SUBSTITUTION_HEADS = frozenset\(\(([^)]*)\)\)/.exec(shellHook);
-    expect(m, 'could not find _SUBSTITUTION_HEADS in the shell hook').not.toBeNull();
+    expect(
+      m,
+      "could not find _SUBSTITUTION_HEADS in the shell hook",
+    ).not.toBeNull();
     const shellHeads = [...m![1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
     expect(shellHeads.length).toBeGreaterThan(0);
-    expect([...shellHeads].sort()).toEqual([...SUBSTITUTION_PREFILTER_HEADS].sort());
+    expect([...shellHeads].sort()).toEqual(
+      [...SUBSTITUTION_PREFILTER_HEADS].sort(),
+    );
   });
 
   // The phrase pre-filter is the SAME "fix one, fix both" tax as the atomizer
@@ -5780,8 +5732,10 @@ describe('cross-path parity with the shell hook (D-005 — the duplicated pre-fi
   // set above, so `npm run test:file` is claimed as a phrase on both paths.
   // Widen it on one hook only and the router shape pays the round-trip there and
   // silently skips it on the other — invisible without this assertion.
-  it('the substitution PHRASE pre-filter matches the shell hook byte-for-byte', () => {
-    expect(SUBSTITUTION_PHRASE_RE.source).toBe(pyRaw('_SUBSTITUTION_PHRASE_RE'));
+  it("the substitution PHRASE pre-filter matches the shell hook byte-for-byte", () => {
+    expect(SUBSTITUTION_PHRASE_RE.source).toBe(
+      pyRaw("_SUBSTITUTION_PHRASE_RE"),
+    );
   });
 
   /**
@@ -5793,30 +5747,37 @@ describe('cross-path parity with the shell hook (D-005 — the duplicated pre-fi
    * removed — which is precisely why it needs the mechanical assertion rather
    * than the comment that currently says "mirrors the shell hook".
    */
-  it('the tools:invoke fallback hint matches the shell hook byte-for-byte', () => {
+  it("the tools:invoke fallback hint matches the shell hook byte-for-byte", () => {
     const m = /_INVOKE_HINT = \(([\s\S]*?)\n\)/.exec(shellHook);
-    expect(m, 'could not find _INVOKE_HINT in the shell hook').not.toBeNull();
+    expect(m, "could not find _INVOKE_HINT in the shell hook").not.toBeNull();
     // Join the implicitly-concatenated Python string literals the same way the
     // interpreter does. Asserted non-empty first: a regex that matched but
     // captured nothing would make this guard vacuously green.
-    const shellHint = [...m![1].matchAll(/'([^']*)'/g)].map((x) => x[1]).join('');
+    const shellHint = [...m![1].matchAll(/'([^']*)'/g)]
+      .map((x) => x[1])
+      .join("");
     expect(shellHint.length).toBeGreaterThan(0);
     expect(shellHint).toBe(TOOLS_INVOKE_FALLBACK_HINT);
   });
 
-  it('the three atomizer regexes match the shell hook byte-for-byte', () => {
-    expect(SUBST_SPLIT_RE.source).toBe(pyRaw('_SUBST_SPLIT_RE'));
-    expect(SUBST_RUNNER_RE.source).toBe(pyRaw('_SUBST_RUNNER_RE'));
-    expect(SUBST_ENV_RE.source).toBe(pyRaw('_SUBST_ENV_RE'));
+  it("the three atomizer regexes match the shell hook byte-for-byte", () => {
+    expect(SUBST_SPLIT_RE.source).toBe(pyRaw("_SUBST_SPLIT_RE"));
+    expect(SUBST_RUNNER_RE.source).toBe(pyRaw("_SUBST_RUNNER_RE"));
+    expect(SUBST_ENV_RE.source).toBe(pyRaw("_SUBST_ENV_RE"));
   });
 
-  it('the resource pre-filter matches the shell hook (modulo the capturing-group dialect)', () => {
+  it("the resource pre-filter matches the shell hook (modulo the capturing-group dialect)", () => {
     const m = /re\.search\(r'(systemctl\|[^']*)', command\)/.exec(shellHook);
-    expect(m, 'could not find the resource pre-filter regex in the shell hook').not.toBeNull();
+    expect(
+      m,
+      "could not find the resource pre-filter regex in the shell hook",
+    ).not.toBeNull();
     // The only permitted difference: the shell hook writes a capturing
     // `(dev|build)` where the TS uses a non-capturing `(?:dev|build)`. Neither
     // hook reads the group, so it is dialect, not behaviour.
-    expect(RESOURCE_PREFILTER_RE.source).toBe(m![1].replace('(dev|build)', '(?:dev|build)'));
+    expect(RESOURCE_PREFILTER_RE.source).toBe(
+      m![1].replace("(dev|build)", "(?:dev|build)"),
+    );
   });
 });
 
