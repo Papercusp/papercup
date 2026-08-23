@@ -2444,7 +2444,7 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     ).toContain("none yet");
   });
 
-  it("3. teaches on the empty list, and its Open Arming lands on the Automations AI catalog", () => {
+  it("3. teaches on the empty list, and its Open Arming lands on the Workflows AI catalog", () => {
     improvementsResult = {
       ...improvementsResult,
       data: [
@@ -2476,7 +2476,7 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // this asserts the wrong button (they share a hook, not a call site).
     fireEvent.click(within(empty).getByRole("button", { name: "Open Arming" }));
     expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
-    expect(nuqsState.tab).toBe("automations");
+    expect(nuqsState.tab).toBe("workflows");
     expect(nuqsState.wfView).toBe("catalog");
     expect(nuqsState.wfFilter).toBe("ai");
   });
@@ -3217,11 +3217,11 @@ describe("LearningTab — P-009 first-run orientation", () => {
     expect(screen.queryByText(/learns as you work/)).toBeNull();
   });
 
-  it("the banner's Open Arming deep-links to the full-width Automations AI catalog", () => {
+  it("the banner's Open Arming deep-links to the full-width Workflows AI catalog", () => {
     render(<LearningTab />);
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
     expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
-    expect(nuqsState.tab).toBe("automations");
+    expect(nuqsState.tab).toBe("workflows");
     expect(nuqsState.wfView).toBe("catalog");
     expect(nuqsState.wfFilter).toBe("ai");
   });
