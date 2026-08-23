@@ -86,6 +86,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'cross-hive-outbox-drain', seedScript: 'seed-cross-hive-drain-routine.ts' },
   { name: 'fleet-headcount-governor', seedScript: 'seed-fleet-headcount-routine.ts' },
   { name: 'gc-dead-loops', seedScript: 'seed-gc-dead-loops-routine.ts' },
+  { name: 'gc-desktop-sessions', seedScript: 'seed-gc-desktop-sessions-routine.ts' },
   { name: 'gc-plan-runs', seedScript: 'seed-gc-plan-runs-routine.ts' },
   { name: 'gc-verify-instances', seedScript: 'seed-gc-verify-instances-routine.ts' },
   { name: 'gitnexus-reindex', seedScript: 'seed-gitnexus-reindex-routine.ts' },
