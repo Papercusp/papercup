@@ -136,6 +136,9 @@ describe('fleet:respawn-member (P-008)', () => {
     const p = parse(res);
     expect(p).toMatchObject({ ok: true, fleet: SLUG, oldMember: MEMBER, invokedAs: 'leader' });
     expect(p.changed).toEqual(expect.arrayContaining(['model', 'effort', 'compactionLimit']));
+    expect(resolveSavedFleetLaunchSpec).toHaveBeenCalledWith(
+      expect.objectContaining({ memberOwnerId: MEMBER, fleetSlug: SLUG, workspaceId: 'ws' }),
+    );
     // kill happened, targeting the old member
     expect(killHandler).toHaveBeenCalledWith(expect.objectContaining({ owner: MEMBER, close_terminal: true }), expect.anything());
     // launch into the SAME fleet with the new MemberSpec (declarative path)
