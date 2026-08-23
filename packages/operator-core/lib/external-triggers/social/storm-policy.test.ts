@@ -91,6 +91,19 @@ describe('P-023 storm policy — no platform is left uncapped', () => {
           expect(basis.perDay).toBeGreaterThan(0);
           expect(basis.spendPerRun).toBeGreaterThan(0);
           break;
+        case 'dynamic-quota':
+          // A moving allowance must state the formula it moves by AND the
+          // absolute floor it is anchored to. Without the floor there is no
+          // number to scale, because the usage header reports percentages only —
+          // so a basis carrying just a percentage would be unauditable in the
+          // one way that matters.
+          expect(basis.formula.trim().length).toBeGreaterThan(0);
+          expect(basis.assumedDailyFloor).toBeGreaterThan(0);
+          expect(basis.spendPerRun).toBeGreaterThan(0);
+          // Whether the cap rests on a measurement or on the floor alone must be
+          // legible, so `null` here is a real value and not an omission.
+          expect(basis).toHaveProperty('observedPeakUsagePct');
+          break;
         case 'conservative-default':
           // The fallback must always explain itself; an empty reason would make
           // a guessed cap unauditable at the admin surface.
@@ -374,5 +387,184 @@ describe('P-015 — a verb’s cap comes from the bucket that verb draws on', ()
     const parsed = parseStormPolicy(stored);
     expect(parsed).toMatchObject({ maxRuns: policy.maxRuns, windowSeconds: policy.windowSeconds });
     expect((stored.basis as { bucket?: string }).bucket).toBe('general');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* P-016 — a DYNAMIC allowance (Facebook Pages, D-028)                        */
+/* -------------------------------------------------------------------------- */
+
+describe('P-016 storm policy — an allowance that is not a constant', () => {
+  const facebook = rowFor('facebook-pages');
+  const dq = facebook.limits.dynamicQuota!;
+
+  it('the registry premise still holds: a declared dynamic quota and NO fixed budget', () => {
+    // Guarding the premise rather than assuming it. If a later edit gave this
+    // row a requestsPerMinute, every derivation below would silently change
+    // meaning while still passing on the numbers.
+    expect(dq).toBeDefined();
+    expect(dq.formula).toContain('4800');
+    expect(dq.assumedDailyFloor).toBe(4800);
+    expect(dq.retryExtendsBlock).toBe(true);
+    expect(facebook.limits.requestsPerMinute).toBeUndefined();
+    expect(facebook.limits.buckets).toBeUndefined();
+  });
+
+  it('CONTROL: the conservative fallback would be RECKLESS here, which is why this branch exists', () => {
+    // The number this branch replaces. FALLBACK_MAX_RUNS is conservative against
+    // a per-minute budget that refills continuously, and wildly over-generous
+    // against a small DAILY one — the two failure directions look identical from
+    // the cap alone, so the arithmetic is asserted rather than described.
+    const windowsPerDay = 86_400 / SOCIAL_STORM_WINDOW_SECONDS;
+    const fallbackCallsPerDay = FALLBACK_MAX_RUNS * ASSUMED_REQUESTS_PER_RUN * windowsPerDay;
+    expect(fallbackCallsPerDay).toBeGreaterThan(dq.assumedDailyFloor * 7);
+
+    // ...and what this branch actually derives fits inside the floor.
+    const policy = socialStormPolicyFor(facebook);
+    const derivedCallsPerDay = policy.maxRuns * ASSUMED_REQUESTS_PER_RUN * (86_400 / policy.windowSeconds);
+    expect(derivedCallsPerDay).toBeLessThanOrEqual(dq.assumedDailyFloor);
+  });
+
+  it('with NOTHING observed, the cap rests on the floor and says so', () => {
+    const policy = socialStormPolicyFor(facebook);
+    expect(policy.hold).toBeUndefined();
+    expect(policy.basis).toMatchObject({
+      kind: 'dynamic-quota',
+      assumedDailyFloor: 4800,
+      observedPeakUsagePct: null,
+      headroomPct: 100,
+    });
+    // 4800 calls/day ÷ 10 calls/run = 480 runs/day, against 288 windows/day.
+    expect(policy.maxRuns).toBe(1);
+    expect(policy.windowSeconds).toBe(SOCIAL_STORM_WINDOW_SECONDS);
+  });
+
+  it('a mid-range observation WIDENS THE WINDOW rather than holding — rationing is not throttling', () => {
+    // The distinction the branch exists to make: headroom is low but real, so
+    // the integration keeps working more slowly instead of stopping. Holding
+    // here would take a source that can still reply and silence it.
+    const policy = socialStormPolicyFor(facebook, 'read', { peakUsagePct: 50 });
+    expect(policy.hold).toBeUndefined();
+    expect(policy.maxRuns).toBe(1);
+    expect(policy.windowSeconds).toBeGreaterThan(SOCIAL_STORM_WINDOW_SECONDS);
+    expect(policy.basis).toMatchObject({
+      kind: 'dynamic-quota',
+      observedPeakUsagePct: 50,
+      headroomPct: 50,
+      windowWidened: true,
+    });
+  });
+
+  it('the window widens MONOTONICALLY as the observed allowance is consumed', () => {
+    // A property rather than three magic numbers: more consumed can never buy
+    // more throughput. An inverted comparison in the arithmetic would still
+    // produce plausible-looking single values.
+    const windows = [10, 30, 60, 90, 99].map(
+      (pct) => socialStormPolicyFor(facebook, 'read', { peakUsagePct: pct }).windowSeconds,
+    );
+    for (let i = 1; i < windows.length; i += 1) expect(windows[i]).toBeGreaterThanOrEqual(windows[i - 1]);
+    expect(windows.at(-1)!).toBeGreaterThan(windows[0]!);
+  });
+
+  it('a spent allowance HOLDS, and forbids the retry that would extend the block', () => {
+    const policy = socialStormPolicyFor(facebook, 'read', { peakUsagePct: 100 });
+    expect(policy.maxRuns).toBe(0);
+    expect(policy.hold).toMatchObject({ retryForbidden: true, untilMs: null });
+    expect(policy.hold?.reason).toMatch(/allowance/i);
+    expect(policy.basis).toMatchObject({ kind: 'dynamic-quota', held: true, headroomPct: 0 });
+  });
+
+  it('holds when the remaining share cannot fund even one run', () => {
+    // 0.5% of 4800 = 24 calls, against a 10-call run: that funds runs, so it
+    // widens. 0.1% = 4.8 calls: it does not, so it holds. The boundary is
+    // derived from the floor, not chosen.
+    expect(socialStormPolicyFor(facebook, 'read', { peakUsagePct: 99.5 }).hold).toBeUndefined();
+    expect(socialStormPolicyFor(facebook, 'read', { peakUsagePct: 99.9 }).hold).toBeDefined();
+  });
+
+  it('a REPORTED throttle holds even when the usage percentage looks comfortable', () => {
+    // The two signals are independent, and the provider's own word wins. A
+    // policy that only watched the percentage would keep calling straight
+    // through a throttle it had already been told about — which on this platform
+    // is what extends the block.
+    const policy = socialStormPolicyFor(facebook, 'read', {
+      peakUsagePct: 12,
+      throttled: true,
+      throttleHoldMs: 600_000,
+    });
+    expect(policy.maxRuns).toBe(0);
+    expect(policy.hold).toMatchObject({ retryForbidden: true, untilMs: 600_000 });
+  });
+
+  it('a throttle with NO stated duration carries null, never an invented default', () => {
+    // The vendor documents no fallback duration, so none may be manufactured.
+    // A number here would be a retry loop underneath a no-retry policy.
+    const policy = socialStormPolicyFor(facebook, 'read', { throttled: true, throttleHoldMs: null });
+    expect(policy.hold?.untilMs).toBeNull();
+    expect(policy.hold?.retryForbidden).toBe(true);
+  });
+
+  it('retryForbidden tracks the ROW, so a platform that permits retries is not told not to', () => {
+    // Guards against the flag being hardcoded true because the only platform
+    // that needed it happened to forbid retries.
+    const permissive = {
+      ...facebook,
+      limits: { ...facebook.limits, dynamicQuota: { ...dq, retryExtendsBlock: false } },
+    };
+    expect(socialStormPolicyFor(permissive, 'read', { throttled: true }).hold?.retryForbidden).toBe(false);
+  });
+
+  it('a HOLD retains every event — held, and not mislabelled as coalesced', () => {
+    const policy = socialStormPolicyFor(facebook, 'read', { peakUsagePct: 100 });
+    const events = Array.from({ length: 40 }, (_, i) => ({ dedupeKey: `c${i}` }));
+    const outcome = planCoalesceWithCap(events, policy);
+
+    expect(outcome.launched).toHaveLength(0);
+    // The load-bearing assertion: NOT coalesced. "Coalesced" claims the events
+    // were folded into a run, and under a hold no run exists to fold them into.
+    expect(outcome.coalesced).toHaveLength(0);
+    expect(outcome.held).toHaveLength(40);
+    // The conservation invariant is unchanged by the new bucket.
+    expect(outcome.launched.length + outcome.coalesced.length + outcome.held.length).toBe(events.length);
+  });
+
+  it('still dedupes under a hold, so a redelivery is not counted twice', () => {
+    const policy = socialStormPolicyFor(facebook, 'read', { throttled: true });
+    const outcome = planCoalesceWithCap(
+      [{ dedupeKey: 'x' }, { dedupeKey: 'x' }, { dedupeKey: 'y' }],
+      policy,
+    );
+    expect(outcome.held).toEqual(['x', 'y']);
+    expect(outcome.duplicates).toEqual(['x']);
+  });
+
+  it('REFUSES to persist a hold rather than rounding it into a runnable policy', () => {
+    // Both silent repairs are wrong: `maxRuns: 0` is rejected by the binding
+    // parser, and clamping it to 1 would store a standing licence to call built
+    // out of an instruction to stop. So this throws, and the throw is the
+    // contract.
+    const held = socialStormPolicyFor(facebook, 'read', { throttled: true });
+    expect(() => toBindingStormPolicy(held)).toThrow(/held_not_persistable/);
+
+    // CONTROL: the same projection succeeds for the un-held policy, so the
+    // throw above is about the hold and not about this platform.
+    expect(() => toBindingStormPolicy(socialStormPolicyFor(facebook))).not.toThrow();
+  });
+
+  it('the source-kind default installs a policy the binding engine accepts', () => {
+    const stored = defaultSocialStormPolicyForSourceKind('facebook-pages');
+    expect(stored).not.toBeNull();
+    const parsed = parseStormPolicy(stored as Record<string, unknown>);
+    expect(parsed.maxRuns).toBe(1);
+    expect(parsed.windowSeconds).toBe(SOCIAL_STORM_WINDOW_SECONDS);
+  });
+
+  it('a declared dynamic quota OUTRANKS a fixed number on the same row', () => {
+    // Ordering, asserted. A row carrying both is exactly the case where a stale
+    // constant could win over the field added to overrule it — and it would
+    // present as a working cap, just one calibrated against a budget that no
+    // longer applies.
+    const both = { ...facebook, limits: { ...facebook.limits, requestsPerMinute: 600 } };
+    expect(socialStormPolicyFor(both).basis.kind).toBe('dynamic-quota');
   });
 });

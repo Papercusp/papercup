@@ -19,6 +19,8 @@
  * from the registry row and not from recall.
  */
 
+import type { SocialQuotaObservation } from './storm-policy';
+
 /* -------------------------------------------------------------------------- */
 /* API surface                                                                */
 /* -------------------------------------------------------------------------- */
@@ -388,6 +390,35 @@ export function facebookThrottleHoldMs(error: unknown): number | null {
   const minutes = error.holdMinutes;
   if (minutes === null || !Number.isFinite(minutes) || minutes < 0) return null;
   return Math.ceil(minutes * 60_000);
+}
+
+/**
+ * Translate what a Graph response revealed into the platform-neutral shape the
+ * storm-policy layer consumes.
+ *
+ * WHY THE BRIDGE LIVES HERE AND NOT THERE. The storm-policy layer must not learn
+ * Graph header names or error codes — it already derives caps for four other
+ * platforms, and a vendor conditional inside it is how a generic layer becomes
+ * four special cases. Everything vendor-shaped stops at this function; what
+ * crosses is two facts any platform with a scaling allowance can state.
+ *
+ * NOTE WHAT IS DELIBERATELY NOT DONE: a throttle with no stated duration crosses
+ * as `throttleHoldMs: null`, not as a default. The vendor documents that
+ * continuing to call extends the block and states no fallback duration, so
+ * inventing one here would put a retry loop underneath a policy whose entire
+ * purpose is to prevent one.
+ */
+export function facebookQuotaObservation(
+  usageHeader: string | null | undefined,
+  error?: unknown,
+): SocialQuotaObservation {
+  const throttled = error instanceof FacebookGraphThrottled;
+  const usage = parseFacebookBucUsage(usageHeader);
+  return {
+    peakUsagePct: facebookPeakUsagePct(usage),
+    throttled,
+    throttleHoldMs: throttled ? facebookThrottleHoldMs(error) : null,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

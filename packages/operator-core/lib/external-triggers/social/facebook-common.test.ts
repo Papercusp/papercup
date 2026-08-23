@@ -22,6 +22,7 @@ import {
   facebookIsNewAgainstWatermark,
   facebookNextPageUrl,
   facebookPeakUsagePct,
+  facebookQuotaObservation,
   facebookThrottleFrom,
   facebookThrottleHoldMs,
   isFacebookWatermarkCursor,
@@ -372,5 +373,51 @@ describe('calibration — the boundary logic is genuinely doing the work', () =>
 
     expect(naiveDone).toBe(true);
     expect(facebookNextPageUrl(emptyWithNext)).not.toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* D-028 — the bridge to the platform-neutral storm-policy layer              */
+/* -------------------------------------------------------------------------- */
+
+describe('facebookQuotaObservation (D-028)', () => {
+  const header = (pct: number, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ 'biz-1': [{ type: 'pages', call_count: pct, ...extra }] });
+
+  it('carries the peak percentage across, since that is all the header reports', () => {
+    expect(facebookQuotaObservation(header(37))).toMatchObject({ peakUsagePct: 37, throttled: false });
+  });
+
+  it('reports NOT-OBSERVED as null rather than as zero usage', () => {
+    // The distinction the storm-policy layer branches on. A zero here would
+    // claim a fresh, empty allowance had been measured — the most optimistic
+    // possible reading of having measured nothing at all.
+    expect(facebookQuotaObservation(null).peakUsagePct).toBeNull();
+    expect(facebookQuotaObservation('not json').peakUsagePct).toBeNull();
+  });
+
+  it('flags a throttle and carries the stated hold, in milliseconds', () => {
+    const error = facebookThrottleFrom(
+      { error: { code: FACEBOOK_THROTTLE_CODE_BUC } },
+      header(100, { estimated_time_to_regain_access: 12 }),
+    );
+    const observation = facebookQuotaObservation(header(100), error);
+    expect(observation).toMatchObject({ throttled: true, throttleHoldMs: 12 * 60_000 });
+  });
+
+  it('a throttle with no stated duration crosses as null, NEVER as a default', () => {
+    // Meta documents no fallback duration and documents that continuing to call
+    // extends the block. A number invented here would put a retry underneath a
+    // policy whose whole purpose is to prevent one.
+    const error = new FacebookGraphThrottled(FACEBOOK_THROTTLE_CODE_PLATFORM, null, 'throttled');
+    expect(facebookQuotaObservation(header(88), error).throttleHoldMs).toBeNull();
+  });
+
+  it('a non-throttle error does not masquerade as a throttle', () => {
+    // Only the classifier's own verdict counts. Treating any error as a throttle
+    // would suspend the integration on an unrelated 400.
+    const observation = facebookQuotaObservation(header(5), new Error('network reset'));
+    expect(observation.throttled).toBe(false);
+    expect(observation.throttleHoldMs).toBeNull();
   });
 });

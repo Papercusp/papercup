@@ -225,6 +225,24 @@ export interface SocialRateBudget {
     usageHeader: string;
     /** The `type` value identifying this platform's rows within that header. */
     usageType?: string;
+    /**
+     * The smallest NON-VACUOUS daily allowance the formula can yield, in whole
+     * calls. REQUIRED, and the field that makes a dynamic quota derivable at
+     * all.
+     *
+     * WHY A FLOOR IS THE ONLY ANCHOR AVAILABLE. `usageHeader` reports
+     * PERCENTAGES — "a whole number expressing the percentage" of the
+     * allowance — so an observation tells a consumer what FRACTION remains and
+     * never the absolute budget. Multiplying a fraction by nothing yields
+     * nothing, so a cap still needs one absolute number, and the only one the
+     * vendor commits to is the formula evaluated at its smallest real input
+     * (for Pages: 4800 × 1 engaged user).
+     *
+     * Anchoring to the floor means the cap is understated whenever the Page is
+     * busier than that, which is the safe direction: overstating it spends an
+     * allowance whose exhaustion triggers a throttle that retrying EXTENDS.
+     */
+    assumedDailyFloor: number;
     /** Provider error codes meaning "throttled". */
     throttleCodes?: number[];
     /**
@@ -615,6 +633,10 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
         driver: 'the number of Users who engaged with the Page per 24 hours, over a rolling 24-hour window',
         usageHeader: 'X-Business-Use-Case-Usage',
         usageType: 'pages',
+        // The formula at its smallest real input: 4800 × 1 engaged user. Not a
+        // guess and not a typical value — the least the vendor's own formula can
+        // yield for a Page anyone is actually talking to.
+        assumedDailyFloor: 4800,
         throttleCodes: [80001, 32],
         retryExtendsBlock: true,
       },

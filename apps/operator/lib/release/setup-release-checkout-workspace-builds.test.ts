@@ -159,7 +159,10 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       'the desktop post-install runtime-build block is missing',
     ).not.toBe('');
 
-    const installIndex = SIDECAR_SCRIPT.indexOf('npm install --legacy-peer-deps');
+    const installIndex = Math.max(
+      SIDECAR_SCRIPT.indexOf('node scripts/npm-install-safe.mjs install'),
+      SIDECAR_SCRIPT.indexOf('npm install --legacy-peer-deps'),
+    );
     const blockIndex = SIDECAR_SCRIPT.indexOf('# POST-INSTALL RUNTIME BUILDS');
     const resolutionGuardIndex = SIDECAR_SCRIPT.indexOf('echo "→ verifying workspace deps resolved"');
     expect(installIndex).toBeGreaterThan(-1);
@@ -182,6 +185,16 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     const trace = join(root, 'npm-trace');
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(packageRoot, { recursive: true });
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    writeFileSync(
+      join(root, 'scripts/npm-install-safe.mjs'),
+      [
+        "#!/usr/bin/env node",
+        "import { spawnSync } from 'node:child_process';",
+        "const result = spawnSync('npm', process.argv.slice(2), { stdio: 'inherit' });",
+        'process.exit(result.status ?? 1);',
+      ].join('\n'),
+    );
     writeFileSync(
       join(packageRoot, 'package.json'),
       JSON.stringify({

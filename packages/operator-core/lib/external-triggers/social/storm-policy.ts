@@ -97,10 +97,61 @@ export type SocialStormCapBasis =
       windowWidened?: boolean;
     }
   | {
+      kind: 'dynamic-quota';
+      /** The vendor formula the allowance actually follows (D-028). */
+      formula: string;
+      /** Response header that reports consumption, as percentages. */
+      usageHeader: string;
+      /** The absolute anchor: the formula's smallest non-vacuous daily value. */
+      assumedDailyFloor: number;
+      /** Calls one run is assumed to spend against that allowance. */
+      spendPerRun: number;
+      /**
+       * Peak utilisation percentage actually observed, or null when nothing has
+       * been observed yet. A null is the load-bearing distinction: it means the
+       * cap rests on the floor ALONE, not on a measurement of this account.
+       */
+      observedPeakUsagePct: number | null;
+      /** Percentage of the allowance believed to remain (100 when unobserved). */
+      headroomPct: number;
+      /** The window was widened rather than the cap inflated — see below. */
+      windowWidened?: boolean;
+      /** No run may launch: the allowance is spent, or the provider said stop. */
+      held?: boolean;
+    }
+  | {
       kind: 'conservative-default';
       /** Why no cap could be derived — surfaced, not swallowed. */
       why: string;
     };
+
+/**
+ * What a live call learned about the platform's remaining allowance.
+ *
+ * Deliberately platform-NEUTRAL: this module knows nothing about Graph headers
+ * or error codes, and the vendor-specific translation lives beside the vendor's
+ * parser (`facebookQuotaObservation`). A dynamic quota is not a Facebook
+ * peculiarity — any platform whose allowance scales with usage produces the same
+ * two facts, and both are things only a response can tell you.
+ */
+export interface SocialQuotaObservation {
+  /**
+   * Peak percentage of the current allowance already consumed, 0–100+.
+   * Null/undefined means NOT OBSERVED, which is treated as full headroom
+   * against the floor — never as "fine, proceed" against an unknown budget.
+   */
+  peakUsagePct?: number | null;
+  /** The provider has reported a throttle on this account right now. */
+  throttled?: boolean;
+  /**
+   * Milliseconds the provider stated it will take to regain access, or null
+   * when it stated none. NULL IS NOT ZERO and must never be defaulted to a
+   * number: the platform this exists for documents that continuing to call
+   * extends the block, so an invented duration is a retry loop wearing a
+   * policy's clothes.
+   */
+  throttleHoldMs?: number | null;
+}
 
 export interface SocialStormPolicy {
   /**
@@ -112,6 +163,33 @@ export interface SocialStormPolicy {
   maxRuns: number;
   windowSeconds: number;
   basis: SocialStormCapBasis;
+  /**
+   * Present when NOTHING may launch right now.
+   *
+   * WHY THIS IS NOT JUST `maxRuns: 0`. A zero cap and a hold produce the same
+   * run count and mean opposite things to a reader: zero-as-cap says "this
+   * source is rationed to nothing", a hold says "the provider has told us to
+   * stop, and it expires". `planCoalesceWithCap` also has to account for the
+   * events differently — see `CoalesceOutcome.held` — because calling them
+   * "coalesced" would claim they were folded into a run that never launched.
+   */
+  hold?: {
+    /** Why launching is suspended, in terms a reader of a stored policy can act on. */
+    reason: string;
+    /**
+     * The vendor states that retrying EXTENDS the block. A consumer seeing this
+     * must schedule no retry at all; wrapping this in generic exponential
+     * backoff deepens every throttle it touches, and presents as the platform
+     * being flaky rather than as our own retry loop being the cause.
+     */
+    retryForbidden: boolean;
+    /**
+     * Milliseconds to park, or null when the provider stated no duration.
+     * A null must be surfaced, never replaced with a default — inventing one
+     * reintroduces exactly the retry `retryForbidden` exists to prevent.
+     */
+    untilMs: number | null;
+  };
 }
 
 const SECONDS_PER_DAY = 86_400;
@@ -175,6 +253,129 @@ export function selectQuotaBucket(
 }
 
 /**
+ * Derive a cap for a platform whose allowance is NOT A CONSTANT (D-028).
+ *
+ * THE FACT THAT SHAPES THIS WHOLE FUNCTION: the usage header reports
+ * PERCENTAGES, so an observation says what fraction of the allowance remains
+ * and never how big it is. There is consequently no observation, however fresh,
+ * that yields an absolute budget — the floor from the vendor's formula is the
+ * anchor in every case, and the observation only scales it down.
+ *
+ * TWO CONDITIONS THAT LOOK ALIKE AND ARE NOT:
+ *
+ *  - RATIONING — headroom is low but nonzero. The right answer is to keep
+ *    working more slowly, so the WINDOW widens and the cap stays 1, exactly as
+ *    the daily-bucket path does. Holding here would take an integration that
+ *    can still act once an hour and stop it entirely.
+ *  - THROTTLED — the provider has said stop, or the allowance is spent. Here
+ *    the right answer is to launch nothing, because on this platform the calls
+ *    a retry would make are themselves what extends the block. Widening a
+ *    window would still authorise those calls, just later.
+ *
+ * Conflating them is the failure this split exists to prevent, and it is easy
+ * to conflate because both present as "we are near the limit".
+ */
+function dynamicQuotaPolicy(
+  dq: NonNullable<SocialPlatformRow['limits']['dynamicQuota']>,
+  observation: SocialQuotaObservation | undefined,
+): SocialStormPolicy {
+  const retryForbidden = dq.retryExtendsBlock === true;
+  const spendPerRun = ASSUMED_REQUESTS_PER_RUN;
+  const observed =
+    typeof observation?.peakUsagePct === 'number' && Number.isFinite(observation.peakUsagePct)
+      ? observation.peakUsagePct
+      : null;
+
+  const held = (reason: string, headroomPct: number): SocialStormPolicy => ({
+    mode: 'coalesce-with-cap',
+    // Zero is the honest cap for a hold, and `toBindingStormPolicy` refuses to
+    // persist it rather than rounding it up to something runnable.
+    maxRuns: 0,
+    windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+    basis: {
+      kind: 'dynamic-quota',
+      formula: dq.formula,
+      usageHeader: dq.usageHeader,
+      assumedDailyFloor: dq.assumedDailyFloor,
+      spendPerRun,
+      observedPeakUsagePct: observed,
+      headroomPct,
+      held: true,
+    },
+    hold: {
+      reason,
+      retryForbidden,
+      // Never defaulted. A stated duration or nothing.
+      untilMs:
+        typeof observation?.throttleHoldMs === 'number' && Number.isFinite(observation.throttleHoldMs)
+          ? observation.throttleHoldMs
+          : null,
+    },
+  });
+
+  if (observation?.throttled === true) {
+    return held(
+      `${dq.usageHeader} reported a throttle on this account; ${
+        retryForbidden ? 'retrying would extend the block, so no retry is scheduled' : 'launching is suspended'
+      }`,
+      observed === null ? 0 : Math.max(0, 100 - observed),
+    );
+  }
+
+  const headroomPct = observed === null ? 100 : Math.max(0, 100 - observed);
+  if (headroomPct <= 0) {
+    return held(
+      `${dq.usageHeader} reports ${observed}% of the allowance consumed; the next call is the one that trips the throttle`,
+      0,
+    );
+  }
+
+  const remainingPerDay = dq.assumedDailyFloor * (headroomPct / 100);
+  const runsPerDay = Math.floor(remainingPerDay / spendPerRun);
+
+  const basis = (extra: { windowWidened?: true }): SocialStormCapBasis => ({
+    kind: 'dynamic-quota',
+    formula: dq.formula,
+    usageHeader: dq.usageHeader,
+    assumedDailyFloor: dq.assumedDailyFloor,
+    spendPerRun,
+    observedPeakUsagePct: observed,
+    headroomPct,
+    ...extra,
+  });
+
+  if (runsPerDay < 1) {
+    // Rationing has run out: the share of the allowance believed to remain
+    // cannot fund even one run for the rest of the day. That is materially the
+    // throttled case, so it holds rather than widening to a 24-hour window and
+    // spending the last of the budget on one call.
+    return held(
+      `only ${headroomPct}% of the allowance is believed to remain, which cannot fund a single ${spendPerRun}-call run`,
+      headroomPct,
+    );
+  }
+
+  const windowsPerDay = SECONDS_PER_DAY / SOCIAL_STORM_WINDOW_SECONDS;
+  const perWindow = Math.floor(runsPerDay / windowsPerDay);
+
+  if (perWindow < 1) {
+    return {
+      mode: 'coalesce-with-cap',
+      maxRuns: 1,
+      windowSeconds: Math.ceil(SECONDS_PER_DAY / runsPerDay),
+      basis: basis({ windowWidened: true }),
+    };
+  }
+
+  return {
+    mode: 'coalesce-with-cap',
+    maxRuns: Math.min(perWindow, MAX_RUNS_CEILING),
+    windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+    basis: basis({}),
+  };
+}
+
+/**
  * The default storm policy for a source on this platform, for a given verb.
  *
  * Pure and total: every registry row yields a policy, and no row yields an
@@ -199,7 +400,14 @@ export function selectQuotaBucket(
 export function socialStormPolicyFor(
   row: SocialPlatformRow,
   verb: SocialQuotaVerb = 'read',
+  observation?: SocialQuotaObservation,
 ): SocialStormPolicy {
+  // D-028 outranks every compiled-in figure BY CONSTRUCTION: a declared
+  // `dynamicQuota` is the row saying that any number it also carries describes a
+  // budget that moves. Checking buckets or requestsPerMinute first would let a
+  // stale constant win over the field added to overrule it.
+  if (row.limits.dynamicQuota) return dynamicQuotaPolicy(row.limits.dynamicQuota, observation);
+
   // D-020: a verb's own non-fungible bucket outranks any aggregate figure. A cap
   // derived from `quotaUnitsPerDay` alone is not merely imprecise for a
   // call-capped verb, it is calibrated against an unrelated quantity.
@@ -309,6 +517,19 @@ export function socialStormPolicyFor(
  * only record of whether a cap was measured or guessed would be this source file.
  */
 export function toBindingStormPolicy(policy: SocialStormPolicy): Record<string, unknown> {
+  // A HOLD HAS NO FAITHFUL STORED FORM, and both ways of forcing one are wrong.
+  // The binding parser requires a POSITIVE integer, so `maxRuns: 0` is rejected
+  // there — and the tempting repair, rounding it up to 1, would persist a
+  // standing licence to call built out of an instruction to stop. A hold is also
+  // a live verdict with an expiry, while a binding outlives the throttle that
+  // produced it. So this refuses instead of choosing: a held policy is something
+  // a caller acts on now, never something it writes down.
+  if (policy.hold) {
+    throw new Error(
+      `social_storm_policy_held_not_persistable: ${policy.hold.reason}` +
+        (policy.hold.retryForbidden ? ' (retry forbidden)' : ''),
+    );
+  }
   return {
     maxRuns: policy.maxRuns,
     windowSeconds: policy.windowSeconds,
@@ -341,6 +562,16 @@ export interface CoalesceOutcome {
   /** Dedupe keys folded into an already-launched run within the window. */
   coalesced: string[];
   /**
+   * Dedupe keys held back because the policy holds — retained, not folded.
+   *
+   * Distinct from `coalesced` for a reason that only shows up when reading a
+   * result later: "coalesced" asserts the event WAS handled, by a run that
+   * merged it. Under a hold no run launched at all, so reporting these as
+   * coalesced would describe a batch that does not exist and make a suspended
+   * integration read as a working one.
+   */
+  held: string[];
+  /**
    * Dedupe keys seen more than once in the burst. Deduped before the cap
    * applies, so a redelivery cannot consume cap headroom.
    */
@@ -363,8 +594,10 @@ export function planCoalesceWithCap(
 ): CoalesceOutcome {
   const launched: string[] = [];
   const coalesced: string[] = [];
+  const held: string[] = [];
   const duplicates: string[] = [];
   const seen = new Set<string>();
+  const holding = policy.hold !== undefined;
 
   for (const event of events) {
     const key = event.dedupeKey;
@@ -374,9 +607,13 @@ export function planCoalesceWithCap(
     }
     seen.add(key);
 
-    if (launched.length < policy.maxRuns) launched.push(key);
+    // A hold retains everything. The accounting invariant is unchanged — every
+    // distinct key still lands in exactly one bucket — which is what keeps a
+    // suspended source auditable rather than silently empty.
+    if (holding) held.push(key);
+    else if (launched.length < policy.maxRuns) launched.push(key);
     else coalesced.push(key);
   }
 
-  return { launched, coalesced, duplicates };
+  return { launched, coalesced, held, duplicates };
 }
