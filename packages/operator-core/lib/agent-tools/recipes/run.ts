@@ -146,6 +146,17 @@ const authorityMetadataSchema = z.object({
   }).strict(),
   requiresContext: z.boolean(),
   runnable: z.boolean(),
+  // WI-40896 / D-048: recipes:get now also emits `refsMeasured` + `unresolvedCause`
+  // so an UNMEASURED authority set is distinguishable from an empty one. This
+  // schema is `.strict()`, so those keys MUST be declared here or round-tripping
+  // recipes:get's own metadata straight back into recipes:run would be rejected
+  // as an unrecognized key. Both are optional: older stored payloads predate them.
+  // `unresolvedCause` is accepted but deliberately not re-validated here — it is a
+  // 10-variant discriminated union that this handler never reads (the proof context
+  // is derived from `refs`), so restating it would be a second copy of a type the
+  // authority module already owns, free to drift.
+  refsMeasured: z.boolean().optional(),
+  unresolvedCause: z.unknown().optional(),
 }).strict();
 
 const authorityInputSchema = z.union([authorityProofSchema, authorityMetadataSchema]);
