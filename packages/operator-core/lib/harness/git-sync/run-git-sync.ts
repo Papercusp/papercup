@@ -1021,7 +1021,14 @@ const ensureBranchAttachedForCommit = async (
           `(local ${localSha.slice(0, 12)} != HEAD ${headSha.slice(0, 12)})`,
       };
     }
-    const attach = await runGit(['switch', branch], repo);
+    const attach = await recoverIndexLockContention(
+      await runGit(['switch', branch], repo),
+      () => runGit(['switch', branch], repo),
+      runGit,
+      repo,
+      'git switch',
+      log,
+    );
     if (attach.code !== 0) {
       return {
         error: `${repo}: failed to attach detached HEAD to existing '${branch}': ${(attach.stderr || attach.stdout).trim()}`,
@@ -1036,7 +1043,14 @@ const ensureBranchAttachedForCommit = async (
     };
   }
 
-  const create = await runGit(['switch', '--create', branch], repo);
+  const create = await recoverIndexLockContention(
+    await runGit(['switch', '--create', branch], repo),
+    () => runGit(['switch', '--create', branch], repo),
+    runGit,
+    repo,
+    'git switch --create',
+    log,
+  );
   if (create.code !== 0) {
     return {
       error: `${repo}: failed to create '${branch}' from detached HEAD: ${(create.stderr || create.stdout).trim()}`,
