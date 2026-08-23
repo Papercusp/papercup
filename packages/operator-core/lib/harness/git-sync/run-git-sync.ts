@@ -1275,9 +1275,13 @@ export function addFailureIgnoredPaths(output: string): string[] {
  * remain in the staging command so git-sync does not commit the protected
  * mutation. Conversely, an ignored untracked path is already excluded by Git's
  * normal ignore handling; passing it as a negative pathspec makes `git add`
- * reject the entire command. Exit code 1 means "none matched"; any other
- * non-zero result fails open by returning no matches and preserving all
- * exclusions for the existing add-failure recovery path.
+ * reject the entire command. Probe one path per invocation: `-z` is only valid
+ * with `--stdin`, while this injected RunGit seam has no stdin channel, and
+ * parsing line-delimited output would be unsafe for legal filenames containing
+ * newlines. With one path, the exit status is the answer and `--` keeps leading
+ * dashes literal. Exit code 1 means "not ignored"; any other non-zero result
+ * fails open by returning no matches and preserving all exclusions for the
+ * existing add-failure recovery path.
  */
 export async function ignoredUntrackedSubset(
   runGit: RunGit,
@@ -1285,11 +1289,10 @@ export async function ignoredUntrackedSubset(
   paths: readonly string[],
 ): Promise<Set<string>> {
   const ignored = new Set<string>();
-  for (let i = 0; i < paths.length; i += 500) {
-    const chunk = paths.slice(i, i + 500);
-    const result = await runGit(['check-ignore', '-z', '--', ...chunk], repoPath);
-    if (result.code !== 0 && result.code !== 1) return new Set<string>();
-    for (const path of result.stdout.split('\0')) if (path) ignored.add(path);
+  for (const path of paths) {
+    const result = await runGit(['check-ignore', '--', path], repoPath);
+    if (result.code === 0) ignored.add(path);
+    else if (result.code !== 1) return new Set<string>();
   }
   return ignored;
 }

@@ -409,6 +409,31 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
+  it('EI-21267378554087084: an ignored scratch exclusion does not strand legitimate tracked work', async () => {
+    const ignoredPath = '.papercusp/scratch';
+    const ignoredArtifact = join(repo, ignoredPath, 'transient-artifact');
+    writeFileSync(join(repo, '.gitignore'), `${ignoredPath}/\n`);
+    mkdirSync(join(repo, ignoredPath), { recursive: true });
+    writeFileSync(ignoredArtifact, 'must remain local and untracked\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: [ignoredPath],
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(
+      `${ignoredPath}/transient-artifact`,
+    );
+    expect(readFileSync(ignoredArtifact, 'utf8')).toBe('must remain local and untracked\n');
+    expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
+  });
+
   it('WI-40770: a live-held dirty path stays excluded while the unlocked remainder syncs', async () => {
     writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
@@ -2222,6 +2247,9 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      // This case exercises the post-add stderr recovery path, so model the
+      // preflight truthfully as "neither protected path is ignored" first.
+      if (j.startsWith('check-ignore --')) return { code: 1, stdout: '' };
       if (j.startsWith('add')) {
         addCalls.push(args);
         if (addCalls.length === 1) {
@@ -2276,14 +2304,13 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
       if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
       if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
-      if (j.startsWith('check-ignore -z --')) {
+      if (j.startsWith('check-ignore --')) {
         checkIgnoreCalls.push(args);
         // Default `git check-ignore` suppresses tracked files. The fake models
         // that contract: only the ignored-untracked path is returned, so the
         // tracked protected path must remain in the exclusion pathspec.
-        const queried = args.slice(args.indexOf('--') + 1);
-        const hits = queried.filter((path) => path === ignoredPath);
-        return hits.length ? { code: 0, stdout: `${hits.join('\0')}\0` } : { code: 1, stdout: '' };
+        const queried = args.at(-1);
+        return queried === ignoredPath ? { code: 0, stdout: `${ignoredPath}\n` } : { code: 1, stdout: '' };
       }
       if (j.startsWith('add')) {
         addCalls.push(args);
@@ -2306,9 +2333,10 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     });
 
     expect(out.status).toBe('synced');
-    expect(checkIgnoreCalls).toHaveLength(1);
-    expect(checkIgnoreCalls[0]).toContain(ignoredPath);
-    expect(checkIgnoreCalls[0]).not.toContain('--no-index');
+    expect(checkIgnoreCalls).toEqual([
+      ['check-ignore', '--', ignoredPath],
+      ['check-ignore', '--', stageableProtectedPath],
+    ]);
     expect(addCalls).toHaveLength(1); // no red first attempt + recovery retry
     expect(addCalls[0]).not.toContain(`:(exclude,literal)${ignoredPath}`);
     expect(addCalls[0]).toContain(`:(exclude,literal)${stageableProtectedPath}`);
