@@ -617,9 +617,6 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
  * every dir, dereferenced to the real tree).
  */
 describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules enumeration (EI-5307)', () => {
-  // The exact enumeration step 3's copy loop runs.
-  const FIND_ENUM = 'find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print';
-
   let work: string;
   let realTree: string;
   let linkToTree: string;
@@ -632,6 +629,11 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
     mkdirSync(join(realTree, 'node_modules/@papercusp'), { recursive: true });
     mkdirSync(join(realTree, 'packages/scheduled-registry/node_modules'), { recursive: true });
     mkdirSync(join(realTree, '.git'), { recursive: true });
+    // Coordination state can contain complete repair worktrees with their own dependency
+    // graphs. Those are runtime infrastructure, not product packages, and must never ride
+    // into the checkpoint snapshot. Git metadata is excluded for the same reason.
+    mkdirSync(join(realTree, '.papercusp/worktrees/repair/node_modules'), { recursive: true });
+    mkdirSync(join(realTree, '.git/internal/node_modules'), { recursive: true });
     // The symlink deploy-cli passed as --integration (papercup -> papercusp).
     linkToTree = join(work, 'papercup-link');
     symlinkSync(realTree, linkToTree);
@@ -648,13 +650,14 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
    */
   function enumerate(root: string, normalize: boolean): string[] {
     const lines = ['set -uo pipefail', `INTEGRATION_ROOT=${JSON.stringify(root)}`];
+    lines.push(`source <(sed -n '/^enumerate_node_modules()/,/^}/p' "$SETUP_SCRIPT")`);
     if (normalize) {
       lines.push(
         'RELEASE_ROOT="$INTEGRATION_ROOT"', // the shipped block normalizes both; unused here
         `source <(sed -n '/^# Symlink-safe roots/,/^RELEASE_ROOT="\\$(realpath -m/p' "$SETUP_SCRIPT")`,
       );
     }
-    lines.push(FIND_ENUM);
+    lines.push('enumerate_node_modules');
     const r = spawnSync('bash', ['-c', lines.join('\n')], {
       env: { ...process.env, SETUP_SCRIPT: SCRIPT_PATH },
       encoding: 'utf8',
@@ -675,6 +678,15 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
     const dirs = enumerate(realTree, /* normalize */ false);
     expect(dirs.length).toBe(2);
     expect(dirs.every((d) => d.endsWith('/node_modules'))).toBe(true);
+  });
+
+  it('prunes .papercusp repair worktrees and .git metadata before dependency matching', () => {
+    const dirs = enumerate(realTree, /* normalize */ false);
+    expect(dirs).toEqual([
+      join(realTree, 'node_modules'),
+      join(realTree, 'packages/scheduled-registry/node_modules'),
+    ]);
+    expect(dirs.every((d) => !d.includes('/.papercusp/') && !d.includes('/.git/'))).toBe(true);
   });
 
   it('the fix: the shipped realpath normalization makes a SYMLINKED root enumerate them all', () => {

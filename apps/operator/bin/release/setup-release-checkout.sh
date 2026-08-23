@@ -579,6 +579,24 @@ assert_hardlink_compatible_roots() {
   fi
 }
 
+# Enumerate dependency trees that belong to the PRODUCT checkout only.
+#
+# `.papercusp` is coordination/runtime state, not candidate source. It can contain
+# full repair worktrees, each with its own root + package-local node_modules. Letting
+# `find` descend there made one checkpoint recursively snapshot another checkpoint's
+# dependencies (186 matches on the 2026-08-23 incident host) and exhausted setup's
+# 30-minute deadline before a single test ran. `.git` is likewise checkout metadata,
+# never a dependency source. Prune both at the directory boundary so their contents
+# cannot be mistaken for product package-local dependencies.
+#
+# Named so setup-release-checkout-deps.test.ts executes the shipped predicate rather
+# than carrying a second hand-maintained `find` expression.
+enumerate_node_modules() {
+  find "$INTEGRATION_ROOT" \
+    \( -type d \( -name .papercusp -o -name .git \) -prune \) -o \
+    \( -type d -name node_modules -prune -print \)
+}
+
 # A metadata identity for an already-materialized dependency tree. This deliberately
 # avoids reading file CONTENT: the papercusp root node_modules is currently ~13 GiB /
 # 323k files, and reading it merely to decide whether to avoid a copy recreates the
@@ -702,7 +720,7 @@ if need_node_modules; then
   while IFS= read -r nm; do
     rel="${nm#"$INTEGRATION_ROOT"/}"
     sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
-  done < <(find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print)
+  done < <(enumerate_node_modules)
   # Record WHICH dep state was just copied without touching pinned tracked source.
   # The marker is inside gitignored node_modules and is consumed by
   # need_node_modules() above on the next auto pass.
