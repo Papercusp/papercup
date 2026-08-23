@@ -15,7 +15,6 @@ import {
   Power,
   RefreshCw,
   Search,
-  Workflow,
 } from 'lucide-react';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
@@ -297,11 +296,11 @@ export default function AdvAutomationsTab() {
 
   const pauseAutomaticTriggers = useCallback(async (item: AutomationItem) => {
     if (!item.planSlug) return;
-    const automatic = item.triggers.filter((trigger) => trigger.kind !== 'manual' && trigger.armed === true);
+    const automatic = item.triggers.filter((trigger) => trigger.armed === true);
     if (automatic.length === 0) return;
     if (!(await confirm({
       title: `Pause automatic triggers for ${item.label}?`,
-      body: 'Schedules and external event bindings will stop firing. Manual Run now remains available.',
+      body: 'Schedules and external event bindings will stop firing. Run manually remains available.',
       confirmLabel: 'Pause triggers',
       destructive: true,
     }))) return;
@@ -646,7 +645,7 @@ function AutomationDetail({
   onViewActivity: () => void;
 }) {
   if (!item) return <aside className="pc-automations__detail"><div className="pc-automations__empty">Select an automation.</div></aside>;
-  const automatic = item.triggers.filter((trigger) => trigger.kind !== 'manual');
+  const automatic = item.triggers;
   const runRows = runs?.runs.slice(0, 5) ?? [];
   return (
     <aside className="pc-automations__detail" aria-label="Automation details">
@@ -678,26 +677,24 @@ function AutomationDetail({
         ) : null}
 
         <section className="pc-automations__trigger-section">
-          <header><strong>Triggers</strong><span>installed and armed are separate</span></header>
+          <header><strong>Automatic triggers</strong><span>installed and armed are separate</span></header>
           {item.triggers.map((trigger) => (
             <div className="pc-automations__trigger" key={trigger.id}>
               <span>{trigger.provider}</span>
               <div><strong>{trigger.label}</strong><small>{trigger.detail}</small></div>
-              {trigger.kind === 'manual' ? <em data-on={inputs?.ready === true}> {inputs?.ready === false ? 'Blocked' : 'Ready'} </em> : (
-                <button
-                  type="button"
-                  disabled={busy != null || trigger.armed == null || (trigger.kind === 'external' && !trigger.bindingId)}
-                  onClick={() => {
-                    if (trigger.kind === 'schedule') onToggleSchedule(trigger.armed !== true);
-                    else if (trigger.bindingId) onToggleBinding(trigger.bindingId, trigger.armed !== true);
-                  }}
-                >
-                  <span className="pc-automations__button-inner">{trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}</span>
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={busy != null || trigger.armed == null || (trigger.kind === 'external' && !trigger.bindingId)}
+                onClick={() => {
+                  if (trigger.kind === 'schedule') onToggleSchedule(trigger.armed !== true);
+                  else if (trigger.bindingId) onToggleBinding(trigger.bindingId, trigger.armed !== true);
+                }}
+              >
+                <span className="pc-automations__button-inner">{trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}</span>
+              </button>
             </div>
           ))}
-          {item.triggers.length === 0 ? <div className="pc-automations__empty">No installed triggers.</div> : null}
+          {item.triggers.length === 0 ? <div className="pc-automations__empty">Automatic trigger details are unavailable.</div> : null}
         </section>
 
         <section className="pc-automations__cost">
@@ -708,7 +705,7 @@ function AutomationDetail({
         </section>
 
         <div className="pc-automations__actions">
-          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-automations__button-inner"><Play size={13} aria-hidden /> Run now</span></button> : null}
+          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-automations__button-inner"><Play size={13} aria-hidden /> Run manually</span></button> : null}
           {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><span className="pc-automations__button-inner"><CalendarClock size={13} aria-hidden /> Edit schedule</span></button> : null}
           <button type="button" disabled={busy != null} onClick={onViewActivity}><span className="pc-automations__button-inner"><Activity size={13} aria-hidden /> View activity</span></button>
           {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</span></button> : null}
@@ -776,7 +773,7 @@ function SourcesView({ sources }: { sources: ReturnType<typeof buildAutomationSo
       <div className="pc-automations__sources">
         {sources.map((source) => (
           <article key={source.id}>
-            <div className="pc-automations__source-icon">{source.kind === 'schedule' ? <CalendarClock size={18} /> : source.kind === 'manual' ? <Workflow size={18} /> : <DatabaseZap size={18} />}</div>
+            <div className="pc-automations__source-icon">{source.kind === 'schedule' ? <CalendarClock size={18} /> : <DatabaseZap size={18} />}</div>
             <div><strong>{source.label}</strong><span>{source.detail}</span></div>
             <dl><div><dt>State</dt><dd>{source.status}</dd></div><div><dt>Bindings</dt><dd>{source.armedCount}/{source.bindingCount} armed</dd></div></dl>
           </article>

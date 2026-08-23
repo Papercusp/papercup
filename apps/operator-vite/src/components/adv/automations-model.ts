@@ -54,7 +54,7 @@ export interface AutomationOccurrenceRow {
 
 export interface AutomationTrigger {
   id: string;
-  kind: 'schedule' | 'manual' | 'external';
+  kind: 'schedule' | 'external';
   provider: string;
   label: string;
   detail: string;
@@ -103,7 +103,7 @@ export interface AutomationActivityItem {
 
 export interface AutomationSourceItem {
   id: string;
-  kind: 'schedule' | 'manual' | 'external';
+  kind: 'schedule' | 'external';
   label: string;
   status: string;
   detail: string;
@@ -190,17 +190,16 @@ function planTriggers(
     });
   }
   for (const binding of bindings) triggers.push(sourceForBinding(binding, external));
-  if (sources.has('manual')) {
-    triggers.push({
-      id: `manual:${planKey(plan.harness, plan.slug)}`,
-      kind: 'manual',
-      provider: 'manual',
-      label: 'Run now with declared plan inputs',
-      detail: 'Input readiness is checked by the plan start gate',
-      armed: null,
-    });
-  }
   return triggers;
+}
+
+function hasAutomaticPlanTrigger(
+  plan: AutomationPlanRow,
+  schedule: AutomationScheduleRow | undefined,
+  bindings: readonly ExternalTriggerBindingAdminRow[],
+): boolean {
+  const sources = new Set(plan.triggerSources ?? []);
+  return sources.has('schedule') || sources.has('external') || plan.scheduled === true || schedule != null || bindings.length > 0;
 }
 
 function routineSpendLabel(routine: AutomationRoutine): string {
@@ -239,8 +238,7 @@ function planItem(
     return value != null && (current == null || value > current) ? value : current;
   }, null);
   const running = plan.startStatus === 'started' || bindingRuns.some((run) => run.status === 'running');
-  const automatic = triggers.filter((trigger) => trigger.kind !== 'manual');
-  const paused = automatic.length > 0 && automatic.every((trigger) => trigger.armed === false);
+  const paused = triggers.length > 0 && triggers.every((trigger) => trigger.armed === false);
   const needsAttention =
     plan.maxImportance === 'urgent' ||
     bindingRuns.some((run) => run.status === 'failed' || Boolean(run.error));
@@ -252,8 +250,7 @@ function planItem(
   const observedOutcome = latestBindingRun?.error
     ? 'failed'
     : latestBindingRun?.status ?? occurrences.find((row) => row.lastOutcome)?.lastOutcome ?? null;
-  const automaticArmed = automatic.filter((trigger) => trigger.armed === true).length;
-  const manualInstalled = triggers.some((trigger) => trigger.kind === 'manual');
+  const automaticArmed = triggers.filter((trigger) => trigger.armed === true).length;
   const outcomeState: AutomationFlowSummary['outcomeState'] = running
     ? 'running'
     : observedOutcome === 'failed' || observedOutcome === 'error'
@@ -279,11 +276,9 @@ function planItem(
     spendLabel: 'Run-linked cost available in details',
     flow: {
       sourceLabel: flowSourceLabel(triggers),
-      sourceDetail: automatic.length > 0
-        ? `${automaticArmed}/${automatic.length} automatic armed${manualInstalled ? ' · manual available' : ''}`
-        : manualInstalled
-          ? 'Manual start available'
-          : 'No trigger installed',
+      sourceDetail: triggers.length > 0
+        ? `${automaticArmed}/${triggers.length} automatic armed`
+        : 'Automatic trigger details unavailable',
       sourceState: needsAttention ? 'needs-attention' : paused ? 'paused' : 'ready',
       planDetail: `${plan.harness} · ${sentenceCase(plan.status)}`,
       outcomeLabel: plan.nextAction?.trim() || 'No next action declared',
@@ -363,13 +358,15 @@ export function buildAutomationItems(input: BuildAutomationModelInput): Automati
 
   const items: AutomationItem[] = [];
   for (const plan of input.plans) {
-    if (!plan.triggered && !(plan.triggerSources?.length)) continue;
     const key = planKey(plan.harness, plan.slug);
+    const schedule = schedules.get(key);
+    const planBindings = bindings.get(key) ?? [];
+    if (!hasAutomaticPlanTrigger(plan, schedule, planBindings)) continue;
     items.push(planItem(
       plan,
-      schedules.get(key),
+      schedule,
       occurrences.get(key) ?? [],
-      bindings.get(key) ?? [],
+      planBindings,
       input.external,
       nowMs,
     ));
@@ -432,26 +429,26 @@ export function buildAutomationActivity(input: BuildAutomationModelInput): Autom
 }
 
 export function buildAutomationSources(input: BuildAutomationModelInput): AutomationSourceItem[] {
-  const scheduled = input.plans.filter((plan) => plan.triggerSources?.includes('schedule'));
-  const manual = input.plans.filter((plan) => plan.triggerSources?.includes('manual'));
+  const scheduled = new Map<string, boolean>();
+  for (const plan of input.plans) {
+    if (plan.triggerSources?.includes('schedule') || plan.scheduled) {
+      scheduled.set(planKey(plan.harness, plan.slug), plan.scheduleActive === true);
+    }
+  }
+  for (const schedule of input.schedules) {
+    const key = planKey(schedule.harnessSlug, schedule.templateSlug);
+    scheduled.set(key, scheduled.get(key) === true || schedule.scheduleActive);
+  }
+  const armedSchedules = [...scheduled.values()].filter(Boolean).length;
   const result: AutomationSourceItem[] = [
     {
       id: 'source:schedule',
       kind: 'schedule',
       label: 'Schedule',
-      status: `${scheduled.filter((plan) => plan.scheduleActive).length} armed`,
+      status: `${armedSchedules} armed`,
       detail: 'Recurring and one-shot plan schedules',
-      bindingCount: scheduled.length,
-      armedCount: scheduled.filter((plan) => plan.scheduleActive).length,
-    },
-    {
-      id: 'source:manual',
-      kind: 'manual',
-      label: 'Manual',
-      status: `${manual.length} input-enabled`,
-      detail: 'Run now through each plan’s declared input gate',
-      bindingCount: manual.length,
-      armedCount: manual.length,
+      bindingCount: scheduled.size,
+      armedCount: armedSchedules,
     },
   ];
   for (const source of input.external?.sources ?? []) {

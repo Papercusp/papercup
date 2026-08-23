@@ -50,7 +50,10 @@ vi.mock('@papercusp/sync', () => ({
     const invalidate = vi.fn(() => H.invalidates.push(queryName));
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
-    if (queryName === 'plans.list') return { data: [{ slug: 'customer-digest', title: 'Customer feedback digest', harness: 'papercusp', status: 'ready', nextAction: 'Turns feedback into a prioritized brief', triggered: true, triggerSources: ['schedule', 'external', 'manual'], scheduled: true, scheduleActive: true }], loading: false, invalidate };
+    if (queryName === 'plans.list') return { data: [
+      { slug: 'customer-digest', title: 'Customer feedback digest', harness: 'papercusp', status: 'ready', nextAction: 'Turns feedback into a prioritized brief', triggered: true, triggerSources: ['schedule', 'external', 'manual'], scheduled: true, scheduleActive: true },
+      { slug: 'rubric-ratification', title: 'Rubric ratification', harness: 'papercusp', status: 'ready', nextAction: 'Wait for independent review', triggered: true, triggerSources: ['manual'], scheduled: false, scheduleActive: false },
+    ], loading: false, invalidate };
     if (queryName === 'plans.schedule') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', schedule: { rrule: 'RRULE:FREQ=DAILY;BYHOUR=9', tzid: 'America/New_York' }, scheduledAt: null, expiresAt: null, tzid: 'America/New_York', scheduleActive: true }], loading: false, invalidate };
     if (queryName === 'plans.scheduledOccurrences') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', occurrenceMs: Date.now() + 18 * 60_000, kind: 'recurring', scheduleActive: true, lastOutcome: 'success' }], loading: false, invalidate };
     if (queryName === 'plans.runHistory') return { data: [{ runs: [{ id: 1, status: 'done', trigger: 'manual', outcome: 'success', launchedAt: Date.now() - 60_000, durationMs: 45_000, costUsd: 0.62 }], rollup: { total: 1, successRate: 1, totalCostUsd: 0.62, medianDurationMs: 45_000, running: 0, failed: 0 } }], loading: false, invalidate };
@@ -90,8 +93,10 @@ describe('<AdvAutomationsTab>', () => {
     expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
     expect(screen.getAllByText('Outcome / next').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Trigger flows')).toBeTruthy();
-    const planRow = screen.getByRole('button', { name: /Schedule \+ Slack \+ Manual starts Customer feedback digest/ });
+    const planRow = screen.getByRole('button', { name: /Schedule \+ Slack starts Customer feedback digest/ });
     expect(planRow).toBeTruthy();
+    expect(within(planRow).getByText('2 installed triggers')).toBeTruthy();
+    expect(screen.queryByText('Rubric ratification')).toBeNull();
     fireEvent.click(planRow);
     const details = screen.getByLabelText('Automation details');
     expect(within(details).getByText('Flow inspector')).toBeTruthy();
@@ -99,17 +104,20 @@ describe('<AdvAutomationsTab>', () => {
     expect(within(details).getAllByText('Turns feedback into a prioritized brief').length).toBeGreaterThanOrEqual(2);
     expect(within(details).getByText('schedule')).toBeTruthy();
     expect(within(details).getByText('slack')).toBeTruthy();
-    expect(within(details).getByText('manual')).toBeTruthy();
+    const triggers = within(details).getByText('Automatic triggers').closest('section');
+    expect(triggers).toBeTruthy();
+    expect(within(triggers as HTMLElement).queryByText('manual')).toBeNull();
+    expect(within(details).getByRole('button', { name: 'Run manually' })).toBeTruthy();
     await waitFor(() => expect(within(details).getByText(/2 required · ready/)).toBeTruthy());
     expect(within(details).getByText('$0.62 · 1 runs')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
     expect(screen.getAllByText('git-sync').length).toBeGreaterThan(0);
   });
 
-  it('fires Run now through plans:run-now and keeps role spend inside Activity', async () => {
+  it('fires Run manually through plans:run-now and keeps role spend inside Activity', async () => {
     renderTab();
     fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
-    fireEvent.click(screen.getByRole('button', { name: /Run now/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Run manually/ }));
     await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('plans:run-now', { slug: 'customer-digest', harness: 'papercusp' }));
     fireEvent.click(screen.getByRole('button', { name: /Activity/ }));
     expect(await screen.findByText('Workspace spend · 7 days')).toBeTruthy();

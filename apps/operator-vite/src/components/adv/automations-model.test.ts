@@ -125,17 +125,17 @@ function fixture(): BuildAutomationModelInput {
 }
 
 describe('automations model', () => {
-  it('joins one triggered plan across schedule, Slack, Gmail, and manual inputs', () => {
+  it('joins one triggered plan across its automatic schedule, Slack, and Gmail triggers', () => {
     const items = buildAutomationItems(fixture());
     const plan = items.find((item) => item.kind === 'triggered-plan');
     expect(plan?.label).toBe('Customer feedback digest');
-    expect(plan?.triggers.map((trigger) => trigger.provider)).toEqual(['schedule', 'slack', 'gmail', 'manual']);
+    expect(plan?.triggers.map((trigger) => trigger.provider)).toEqual(['schedule', 'slack', 'gmail']);
     expect(plan?.nextAt).toBe(NOW + 18 * 60_000);
     expect(plan?.timingLabel).toBe('Next in 18m');
     expect(plan?.spendLabel).toContain('Run-linked');
     expect(plan?.flow).toMatchObject({
-      sourceLabel: 'Schedule + Slack + 2 more',
-      sourceDetail: '3/3 automatic armed · manual available',
+      sourceLabel: 'Schedule + Slack + Gmail',
+      sourceDetail: '3/3 automatic armed',
       planDetail: 'papercusp · Ready',
       outcomeLabel: 'Turns feedback into a prioritized brief',
       outcomeDetail: 'Last observed outcome · Done',
@@ -143,7 +143,7 @@ describe('automations model', () => {
     });
   });
 
-  it('builds flow rows only for triggered plans and keeps a truthful undeclared-next fallback', () => {
+  it('excludes manual-only plans from Trigger Flows', () => {
     const input = fixture();
     input.plans = [
       ...input.plans,
@@ -158,16 +158,18 @@ describe('automations model', () => {
     ];
     const items = buildAutomationItems(input);
     const flows = buildAutomationFlows(items);
-    expect(flows).toHaveLength(2);
+    expect(flows).toHaveLength(1);
     expect(flows.every((item) => item.kind === 'triggered-plan')).toBe(true);
-    expect(flows.find((item) => item.planSlug === 'manual-review')?.flow).toMatchObject({
-      sourceLabel: 'Manual',
-      sourceDetail: 'Manual start available',
-      outcomeLabel: 'No next action declared',
-      outcomeDetail: 'No observed run yet',
-      outcomeState: 'waiting',
-    });
+    expect(items.some((item) => item.planSlug === 'manual-review')).toBe(false);
     expect(flows.some((item) => item.label === 'git-sync')).toBe(false);
+  });
+
+  it('counts only automatic triggers when no future run is scheduled', () => {
+    const input = fixture();
+    input.occurrences = [];
+    const plan = buildAutomationItems(input).find((item) => item.kind === 'triggered-plan');
+    expect(plan?.triggers).toHaveLength(3);
+    expect(plan?.timingLabel).toBe('3 installed triggers');
   });
 
   it('keeps AI routines, deterministic tasks, and spend truth separate', () => {
@@ -194,7 +196,7 @@ describe('automations model', () => {
     expect(activity.some((row) => row.automationId?.includes('customer-digest'))).toBe(true);
     expect(activity.map((row) => row.label)).toContain('git-sync');
     const sources = buildAutomationSources(input);
-    expect(sources.map((source) => source.label)).toEqual(['Schedule', 'Manual', 'slack', 'gmail']);
+    expect(sources.map((source) => source.label)).toEqual(['Schedule', 'slack', 'gmail']);
     expect(sources.find((source) => source.label === 'slack')?.armedCount).toBe(1);
   });
 });
