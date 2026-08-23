@@ -48,6 +48,17 @@ export interface ParsedScratchReference {
   payloadByteOffset: number;
 }
 
+/** Build the on-disk manifest header once so writers and cursor metadata agree
+ * on where the plaintext payload begins. */
+export function scratchReferenceHeader(manifest: ScratchReferenceManifest): Buffer {
+  return Buffer.from(`${SCRATCH_REFERENCE_MAGIC}${JSON.stringify(manifest)}\n`, 'utf8');
+}
+
+/** Byte offset of the payload in a self-describing scratch reference file. */
+export function scratchReferencePayloadByteOffset(manifest: ScratchReferenceManifest): number {
+  return scratchReferenceHeader(manifest).byteLength;
+}
+
 export class ScratchReferenceError extends Error {
   constructor(
     readonly code:
@@ -146,7 +157,7 @@ export function writeScratchReference(input: {
     content: [...(input.content ?? [])],
     ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
   };
-  const header = Buffer.from(`${SCRATCH_REFERENCE_MAGIC}${JSON.stringify(manifest)}\n`, 'utf8');
+  const header = scratchReferenceHeader(manifest);
   reserveScratchSpace({ workspaceId: input.workspaceId, bytes: header.length + payload.length });
   mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 });
   writeFileSync(input.filePath, Buffer.concat([header, payload]), { mode: 0o600 });
