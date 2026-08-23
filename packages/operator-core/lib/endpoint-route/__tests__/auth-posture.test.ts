@@ -207,6 +207,11 @@ const RULES: ReadonlyArray<{
       // handler additionally carries the requireAllowedOriginOr403 CSRF
       // backstop (see the route file's own comments).
       { method: 'POST', path: '/admin/coord-inbox-reply', auth: VTL },
+      // Inbox BULK RESOLVE is another owner-desktop write from that same
+      // cookie-less HTTP-fallback path. The handler applies
+      // requireAllowedOriginOr403 before its flag gate or any run mutation,
+      // so keep the intentional VTL declaration explicit in this registry.
+      { method: 'POST', path: '/admin/attention-bulk-resolve', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
