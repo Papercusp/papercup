@@ -263,9 +263,11 @@ export async function managedSpawn(
 
   // WI-40906 — a caller-supplied env belongs to the PAYLOAD, never to the
   // `systemd-run` client. The client reaches the user manager over
-  // `$DBUS_SESSION_BUS_ADDRESS`; handed an env that redirects or drops it, the
-  // launch fails before the payload execs and the caller gets a handle to a
-  // process that never ran. See `buildExactEnvPayload` for the measured failure.
+  // `$DBUS_SESSION_BUS_ADDRESS`; handed an env that points it elsewhere, the launch
+  // fails before the payload execs and the caller gets a handle to a process that
+  // never ran. (Merely UNSETTING it is safe — systemd falls back to
+  // $XDG_RUNTIME_DIR/bus — so the hazard is a redirect, not a thin env; measured
+  // both ways in `buildExactEnvPayload`'s comment.)
   //
   // So the two environments are split here: the client keeps ours, and the
   // payload gets the caller's exactly, via `env -i`. Unconfined spawns are

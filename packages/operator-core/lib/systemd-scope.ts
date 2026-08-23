@@ -168,10 +168,22 @@ const ENV_BIN = '/usr/bin/env';
  * returned a healthy-looking handle for a process that had never run. It reads as
  * "the app doesn't work on this desktop", which is why it cost a day to find.
  *
- * Any caller passing a deliberately stripped env hits the same wall, so the fix
- * belongs here rather than in that one caller: run the client with the operator's
- * own environment, and give the payload its exact env through `env -i`. Measured:
- * the payload still lands in its own scope cgroup, so confinement is unaffected.
+ * BE PRECISE ABOUT WHICH ENVS BREAK IT, because the obvious generalisation is wrong
+ * and would send the next reader hunting for the wrong thing (all measured here):
+ *
+ *   DBUS_SESSION_BUS_ADDRESS unset, XDG_RUNTIME_DIR kept  -> WORKS. systemd falls
+ *       back to $XDG_RUNTIME_DIR/bus, so merely stripping the variable is safe.
+ *       This is why `scrubExecEnv` callers (pty, capability jobs) never hit it.
+ *   DBUS_SESSION_BUS_ADDRESS pointed elsewhere            -> FATAL, message above.
+ *       A redirect defeats the fallback: the address is present and wrong.
+ *   both unset                                            -> FATAL, but a DIFFERENT
+ *       message ("Failed to connect to bus: No medium found").
+ *
+ * So the hazard is a REDIRECTED bus, not a thin env. The fix still belongs here
+ * rather than in the one caller that redirects today: run the client with the
+ * operator's own environment, and give the payload its exact env through `env -i`.
+ * Measured: the payload still lands in its own scope cgroup, so confinement is
+ * unaffected.
  *
  * Semantics match `child_process.spawn({ env })` deliberately — total
  * replacement, not a merge, and `undefined` values are dropped — because callers
