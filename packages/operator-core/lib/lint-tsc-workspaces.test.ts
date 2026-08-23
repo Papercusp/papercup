@@ -561,6 +561,12 @@ describe('pinned TypeScript CLI fan-out (EI-21107417900847684)', () => {
 });
 
 describe('the REAL tree', () => {
+  it('apps/operator is a blocking workspace, not report-only residue', () => {
+    const selected = selectGatedPackages();
+    expect(selected.packages.map((p: { rel: string }) => p.rel)).toContain('apps/operator');
+    expect(selected.stillInvisible.map((p: { rel: string }) => p.rel)).not.toContain('apps/operator');
+  });
+
   // THE anti-silent-un-gating guard for WI-7155 specifically. Its whole complaint was that
   // libs/generic/* was typechecked by no routine gate; the fix works only while these packages
   // keep declaring a typecheck script. Removing one silently un-gates it again — that reds HERE,

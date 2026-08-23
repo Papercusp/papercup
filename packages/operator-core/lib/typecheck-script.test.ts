@@ -68,6 +68,22 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
     expect(s.typecheck).not.toMatch(/^tsc\b/);
   });
 
+  it('apps/operator package.json exposes its baseline-aware gate as `typecheck`', () => {
+    const s = scripts('apps/operator/package.json');
+    expect(s.typecheck, 'apps/operator must not remain invisible to workspace typecheck discovery').toBe(
+      'bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-operator.mjs',
+    );
+    expect(s.typecheck).not.toMatch(/^tsc\b/);
+  });
+
+  it('apps/operator baseline exists and carries per-file diagnostic ceilings', () => {
+    const baseline = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'apps/operator/.tsc-baseline.json'), 'utf-8'),
+    );
+    expect(baseline.files, 'apps/operator baseline must have a files map').toBeTypeOf('object');
+    expect(Object.keys(baseline.files).length).toBeGreaterThan(0);
+  });
+
   it('apps/operator-vite/.tsc-baseline.json exists with a per-file `files` map', () => {
     const baseline = JSON.parse(
       readFileSync(resolve(REPO_ROOT, 'apps/operator-vite/.tsc-baseline.json'), 'utf-8'),
