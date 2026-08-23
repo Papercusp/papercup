@@ -24,7 +24,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -123,6 +123,15 @@ const BEE = { assignee: 'bee-1' };
 beforeAll(async () => {
   db = await createFreshPgDb('sched-get-next');
   h.sql = db.sql;
+  // Every successful claim emits `work-item:claimed:<id>` through the real awaited-event
+  // surface, whose first write is migration 632's durable fire latch. Production treats a
+  // missing latch table as fail-soft, but vitest-fail-on-console correctly turns that warning
+  // into a fixture failure. Keep the fixture honest about the runtime table instead of mocking
+  // the emit away: this suite is meant to exercise the complete claim path.
+  await applyMigrationsForTest(db.sql, ['632-event-key-fire-latch.sql'], {
+    label: 'scheduler/get-next.integration.test.ts',
+    runtimeTables: ['harness_shared.event_key_fires'],
+  });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
