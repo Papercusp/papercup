@@ -39,7 +39,7 @@ function errorBody(result: unknown) {
 }
 
 function makeTx() {
-  const tx = Object.assign(vi.fn(async () => [] as unknown[]), {
+  const tx = Object.assign(vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []), {
     unsafe: vi.fn((value: string) => value),
     array: vi.fn((value: unknown[]) => value),
   });
@@ -64,7 +64,7 @@ beforeEach(() => {
 describe('sessions:timeline owner resolution', () => {
   it('normalizes a unique short owner handle before constructing the history query', async () => {
     const short = 'su-peer';
-    const full = 'su-peer-12345678-1234-4234-8234-123456789abc';
+    const full = 'su-12345678-1234-4234-8234-123456789abc';
     h.resolveRecipients.mockResolvedValue({ resolved: [full], unknown: [], ambiguous: [] });
     const tx = makeTx();
 
@@ -77,7 +77,7 @@ describe('sessions:timeline owner resolution', () => {
   });
 
   it('keeps a full session-shaped owner id queryable after the live session ends', async () => {
-    const full = 'su-peer-12345678-1234-4234-8234-123456789abc';
+    const full = 'su-12345678-1234-4234-8234-123456789abc';
     const tx = makeTx();
 
     await run(full, tx);
@@ -90,8 +90,8 @@ describe('sessions:timeline owner resolution', () => {
   it('refuses an ambiguous short owner handle instead of returning a valid-looking zero', async () => {
     const short = 'su-peer';
     const matches = [
-      'su-peer-12345678-1234-4234-8234-123456789abc',
-      'su-peer-87654321-4321-4234-8234-cba987654321',
+      'su-12345678-1234-4234-8234-123456789abc',
+      'su-87654321-4321-4234-8234-cba987654321',
     ];
     h.resolveRecipients.mockResolvedValue({
       resolved: [],
