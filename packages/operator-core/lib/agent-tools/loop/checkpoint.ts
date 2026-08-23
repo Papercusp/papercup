@@ -382,13 +382,13 @@ export default defineTool({
     // resolved differently across wakes) — writing under the session's transient harness
     // instead of the routine's fixed one creates a SECOND, stale-diverging carry_notes row;
     // a cold reset that resolves the note by the routine's install_slug then reads whichever
-    // row is stale. An EXPLICIT harness is an intentional cross-harness address and must
-    // win (loop:end/status similarly accept explicit owner-scoped control); otherwise
-    // resolve from the armed routine FIRST (the single source of truth the reader also
-    // uses). Only fall back to the old session-context chain when no routine is armed yet
-    // (e.g. a checkpoint written before the first loop:arm — an edge case, since
-    // loop:checkpoint's whole purpose assumes an armed loop already exists).
-    // EI-7734: the pre-armed-routine fallback is routed through resolvePotHomeSlug
+    // row is stale. The ACTIVE routine is authoritative whenever it exists: an explicit
+    // project-scoped harness can be a transient caller scope and must not create a
+    // successfully verified note that the cold reader cannot see. An ended routine is not
+    // evidence for a new checkpoint's scope, so explicit harness / durable session brief /
+    // session-context/home are fallbacks when no active routine exists (e.g. a checkpoint
+    // written before the first loop:arm).
+    // EI-7734: the no-active-routine fallback is routed through resolvePotHomeSlug
     // (not a raw `??` chain) so its '*'-skip logic runs — every superuser/operator
     // session sets ctx.harnessSlug='*' (the wildcard sentinel), which would otherwise
     // win this chain outright and scope the carry-note under the literal '*' namespace.
@@ -407,9 +407,12 @@ export default defineTool({
 
     // An ACTIVE routine is the cold reader's authority: loop-fire stamps its fixed
     // install_slug into the wake marker, so a checkpoint for that loop must use the
-    // same scope even when a stale session brief points elsewhere. An inactive or
-    // unrelated owner routine is only a fallback; preserve EI-211835's wildcard
-    // transport behavior by consulting the durable session scope before that fallback.
+    // same scope even when a stale session brief points elsewhere. An inactive
+    // routine is NOT a fallback: it may be an ended loop left behind by a previous
+    // session or harness, and using its install_slug can strand a delayed
+    // reconciliation checkpoint in the wrong carry-note store. Preserve
+    // EI-211835's wildcard transport behavior by consulting the durable session
+    // scope before the normal session-context/home fallback.
     const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
     const activeRoutineHarness = armedRoutine?.active === true ? armedRoutine.harnessSlug : null;
     const sessionBrief =
@@ -418,10 +421,9 @@ export default defineTool({
       ? resolvePotHomeSlug(sessionBrief!.harnessSlug, undefined)
       : null;
     const harness =
-      explicitHarness ??
       activeRoutineHarness ??
+      explicitHarness ??
       briefHarness ??
-      armedRoutine?.harnessSlug ??
       contextHarness ??
       resolvePotHomeSlug(undefined, ctx.harnessSlug);
     if (!harness) {

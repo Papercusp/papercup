@@ -151,11 +151,11 @@ vi.mock('../../pot/wake', () => ({
     return concrete(explicit) ?? concrete(ctxSlug) ?? 'home-hive';
   }),
 }));
-// WI-2148: loop:checkpoint resolves its default harness from the ARMED routine
-// (getLoopStatus), so it matches whatever the cold-wake reader resolves. A concrete
-// EXPLICIT harness remains an intentional cross-harness address and wins over that
-// default. Most tests have no armed routine (null), so they fall through to the old
-// arg/ctx/home-hive chain.
+// WI-2148: loop:checkpoint resolves its default harness from the ACTIVE routine
+// (getLoopStatus), so it matches whatever the cold-wake reader resolves. An explicit
+// harness is only a fallback when no routine is active; otherwise a transient project
+// scope must not create a verified note invisible to the cold reader. Most tests have no
+// armed routine (null), so they fall through to the old arg/ctx/home-hive chain.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
 vi.mock('../../session-brief', () => ({ getSessionBrief: (...a: unknown[]) => getSessionBrief(...a) }));
 vi.mock('../../bounded-timeout', () => ({
@@ -446,18 +446,18 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
-  it('honors an explicit cross-harness target over another active loop', async () => {
-    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
+  it('EI-21273052750925106: active routine scope wins over a project-scoped harness', async () => {
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: true } as never);
 
-    await call({ next: 'x', harness: 'sidestage' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
+    await call({ next: 'x', harness: 'papercusp' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
 
     expect(getLoopStatus).toHaveBeenCalledWith('su-caller');
     expect(setLoopCarryNote).toHaveBeenCalledWith(
-      expect.objectContaining({ harness: 'sidestage', ownerId: 'su-caller' }),
+      expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
       expect.any(String),
     );
     expect(getLoopCarryNoteWithMeta).toHaveBeenCalledWith(
-      expect.objectContaining({ harness: 'sidestage', ownerId: 'su-caller' }),
+      expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
     );
   });
 
@@ -468,7 +468,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   // loop, purely because ctx.harnessSlug resolved differently — creating two diverging
   // carry_notes rows and risking a cold reset resuming from the stale one.
   it("WI-2148: resolves harness from the ARMED ROUTINE's install_slug, not ctx.harnessSlug — even when they disagree", async () => {
-    getLoopStatus.mockResolvedValueOnce({ harnessSlug: '*' } as never);
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: '*', active: true } as never);
     // ctx says 'papercusp' (as if this wake's session context resolved differently than the
     // routine it was armed under) — the routine's '*' must still win, since that's what the
     // reader will resolve the note by.
@@ -511,6 +511,21 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
+      expect.any(String),
+    );
+  });
+
+  it('EI-21270894164573688: an ended routine does not hijack wildcard checkpoint fallback', async () => {
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: false } as never);
+
+    // Delayed reconciliation can arrive after the loop ended. The wildcard transport
+    // carries no concrete harness, and there is no successor brief to consult; the
+    // ended routine's old install_slug must not become the new checkpoint scope.
+    await call({ next: 'x' }, { harnessSlug: '*', workspaceId: 'ws-1' });
+
+    expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'home-hive', ownerId: 'su-caller' }),
       expect.any(String),
     );
   });
