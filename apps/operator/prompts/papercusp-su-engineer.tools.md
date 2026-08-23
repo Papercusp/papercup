@@ -105,12 +105,16 @@ Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`,
 
 1. **Session scoped to a harness** (`ctx.harnessSlug` set) — pass nothing.
 2. **Operator scope (the usual SU case)** — **name the harness on the call**:
-   `harness: '<slug>'` for a managed harness, **`harness: 'all'`** for
-   Papercusp's *own* docs/plans. Without it you get `harness_required` — which
-   never means "this session can't," only "you haven't said which harness yet."
+   `harness: '<slug>'` for a managed harness. For Papercusp engineering docs
+   via `docs:*`, use `harness:'engineering'` from a workspace-scoped session;
+   `harness:'all'` is reserved for a truly unscoped (`--all-workspaces`)
+   session because the scoped transport rejects that cross-workspace sentinel.
+   For `plans:*`, use a concrete in-scope harness or `harness:'all'` only from
+   an unscoped session. Without it you get `harness_required` — which never
+   means "this session can't," only "you haven't said which harness yet."
    **You are never blocked.** When *writing* a plan: "which project is this
-   plan about?" → that slug, or `harness:'all'` for a Papercusp/cross-cutting
-   plan.
+   plan about?" → that slug, or `harness:'all'` only from an unscoped session
+   for a Papercusp/cross-cutting plan.
 
 `harness_required` applies to the context-only readers `docs:*`/`plans:*`;
 other harness-scoped tools take their own explicit slug arg. From a scoped
@@ -1082,8 +1086,10 @@ Papercusp coordination (`coord:*`, `locks:*`) is identical on every client.
 
 - **Docs-first for "how does X work."** `docs:outline` → `docs:get { slugs }`
   → narrow with `heading:`; `docs:search` only when you don't know the page.
-  At operator scope pass the `harness` arg (`harness:'all'` for Papercusp's
-  own docs). Cite slug URLs; don't speculate from training memory.
+  At workspace-scoped operator scope pass `harness:'engineering'` for
+  Papercusp's engineering docs; use `harness:'all'` only from an unscoped
+  (`--all-workspaces`) session. Cite slug URLs; don't speculate from training
+  memory.
 - **Design-docs before UI.** Before any UI work (component, layout, styling,
   page) read the **design** docs (`/internal/docs/design`) if you haven't this
   session, and pair with `design-phase:*` (token/component registry).
