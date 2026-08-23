@@ -45,6 +45,9 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
+import { readAgentStateStamp } from '../../agent-state-stamp';
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -58,6 +61,64 @@ const RESERVED_INTEGRATION_ENV_NAMES = new Set([
   'XAUTHORITY',
   'WAYLAND_DISPLAY',
 ]);
+
+export interface BashTaskProvenance {
+  launchedBy: string;
+  sessionId: string | null;
+  harnessSlug: string | null;
+  workItemId: string | null;
+  planSlug: string | null;
+  goalRef: string | null;
+}
+
+interface BashTaskProvenanceDeps {
+  resolveIdentity: typeof resolveAgentIdentity;
+  readStamp: typeof readAgentStateStamp;
+  resolveGoal: typeof resolveOwnerGoal;
+}
+
+const DEFAULT_BASH_PROVENANCE_DEPS: BashTaskProvenanceDeps = {
+  resolveIdentity: resolveAgentIdentity,
+  readStamp: readAgentStateStamp,
+  resolveGoal: resolveOwnerGoal,
+};
+
+/**
+ * Resolve background-task provenance at the launch seam, while the caller's
+ * stable identity and live goal are still available.  The task ledger cannot
+ * reconstruct either from a child pid later.  Resolution is fail-soft: an
+ * unattributable caller still gets a working shell, but never a fabricated
+ * work-item association.
+ */
+export async function resolveBashTaskProvenance(
+  ctx: ResolveIdentityCtx,
+  harnessSlug: string | null,
+  deps: BashTaskProvenanceDeps = DEFAULT_BASH_PROVENANCE_DEPS,
+): Promise<BashTaskProvenance> {
+  let ownerId: string | null = null;
+  try {
+    ownerId = deps.resolveIdentity(ctx).ownerId;
+  } catch {
+    ownerId = null;
+  }
+
+  let goalRef = ownerId ? deps.readStamp(ownerId).goalRef : null;
+  if (ownerId && !goalRef) {
+    goalRef = (await deps.resolveGoal(ownerId, 'self'))?.ref ?? null;
+  }
+
+  const workItemId = goalRef && /^(?:WI|EI|F)-[A-Za-z0-9._-]+$/.test(goalRef) ? goalRef : null;
+  const planMatch = goalRef?.match(/^(?:plan:)?(.+?)#P-\d+$/) ?? null;
+  const principalFallback = ctx.principal?.slug?.trim() || 'capability:bash';
+  return {
+    launchedBy: ownerId ?? principalFallback,
+    sessionId: ownerId,
+    harnessSlug,
+    workItemId,
+    planSlug: planMatch?.[1] ?? null,
+    goalRef,
+  };
+}
 
 const integrationEnvSchema = z
   .record(
@@ -119,9 +180,10 @@ export default defineTool({
           `below the ~55s MCP transport cap, so a slow command returns an actionable timeout instead of an opaque ` +
           `transport failure. Raising it past the clamp does nothing: run anything longer with run_in_background. ` +
           `BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — ` +
-          `not bound by the transport cap, but the shell job IS terminated at its own deadline (SIGTERM, then SIGKILL), ` +
+          `not bound by the transport cap, but the whole confined task subtree IS terminated at its own deadline ` +
+          `(systemd RuntimeMaxSec plus the local SIGTERM/SIGKILL path), ` +
           `so raise this for a job that legitimately runs longer. Deliberately daemonized descendants remain tracked ` +
-          `separately and are not given the shell's deadline; stop them with processes:kill when their service lifetime ends.`,
+          `inside the same task and share its deadline; use a dedicated service launcher for a different lifetime.`,
       ),
     run_in_background: z
       .boolean()
@@ -206,6 +268,7 @@ export default defineTool({
       integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
 
     if (args.run_in_background) {
+      const provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null);
       const job = startBackground(
         {
           command: args.command,
@@ -214,6 +277,7 @@ export default defineTool({
           sandboxEnabled,
           ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
           ...(redactValues.length > 0 ? { redactValues } : {}),
+          ...provenance,
         },
         timeoutMs,
       );
@@ -255,8 +319,8 @@ export default defineTool({
                 `Stop: processes:kill { taskId: "${job.taskId}" }. ` +
                 `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
                 `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if the shell job needs longer. ` +
-                `Deliberately daemonized descendants are tracked under the task_id and are not stopped by this shell deadline; ` +
-                `use processes:kill when their service lifetime ends.` +
+                `All descendants in this task's confined service share that deadline; use a dedicated service launcher ` +
+                `when a descendant needs a separate lifetime.` +
                 bufferingNote +
                 heapNote,
             }),

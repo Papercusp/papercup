@@ -42,14 +42,14 @@ vi.mock('./cgroup-read', () => ({
   readProcessCgroupPath: () => '/user.slice/user-1000.slice/user@1000.service/papercup-dev-api.service',
 }));
 
-import {
-  beginSyncEnrolment,
-  completeSyncEnrolment,
-  finishSyncEnrolment,
-  syncEnrolmentScopePath,
-} from './enroll-sync';
+import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment, syncEnrolmentScopePath } from './enroll-sync';
 
-const spec = { class: 'bash-job' as const, title: 't', argv: ['echo'], launchedBy: { kind: 'agent' as const, id: 'a' } };
+const spec = {
+  class: 'bash-job' as const,
+  title: 't',
+  argv: ['echo'],
+  launchedBy: { kind: 'agent' as const, id: 'a' },
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -119,6 +119,8 @@ describe('with the task manager ON', () => {
         '--collect',
         `--unit=${e.scopeUnit}`,
         '--slice=papercusp-bash-job.slice',
+        '--property=KillMode=control-group',
+        '--property=TimeoutStopSec=10s',
         '/bin/bash',
         '-lc',
         'x',
@@ -138,6 +140,8 @@ describe('with the task manager ON', () => {
         '--collect',
         `--unit=${e.scopeUnit}`,
         '--slice=papercusp-bash-job.slice',
+        '--property=KillMode=control-group',
+        '--property=TimeoutStopSec=10s',
         '--setenv=EMPTY=',
         '--setenv=FOO=bar',
         '--setenv=ZED=last',
@@ -277,9 +281,7 @@ describe('with the task manager ON', () => {
 
     await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining(
-        `[task-manager] sync enrollment failed for task ${e.taskId}: database unavailable`,
-      ),
+      expect.stringContaining(`[task-manager] sync enrollment failed for task ${e.taskId}: database unavailable`),
     );
     expect(markSpawned).not.toHaveBeenCalled();
     warn.mockRestore();

@@ -22,7 +22,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
   capabilityExecSandboxEnabled: vi.fn(async () => false),
 }));
 
-import bashTool from './bash';
+import bashTool, { resolveBashTaskProvenance } from './bash';
 import { __resetBashJobs } from './bash-jobs';
 import {
   ensureHiveDesktop,
@@ -93,5 +93,65 @@ describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () =
     // No ctx.harnessSlug → no lease lookup → no DISPLAY bound; the inherited host seat
     // (:5) is stripped, never passed through.
     expect(r.content[0].text).toContain('D=[]');
+  });
+});
+
+describe('capability:bash — durable task provenance', () => {
+  it('stamps the stable caller and its live work-item goal', async () => {
+    const resolveGoal = vi.fn();
+    const result = await resolveBashTaskProvenance({ uiClientId: 'su-owner', isSuperuser: true }, 'papercusp', {
+      resolveIdentity: (() => ({ ownerId: 'su-owner' })) as never,
+      readStamp: (() => ({ intentEventId: 1, assumptionSetId: null, goalRef: 'EI-21192501620501693' })) as never,
+      resolveGoal,
+    });
+
+    expect(result).toEqual({
+      launchedBy: 'su-owner',
+      sessionId: 'su-owner',
+      harnessSlug: 'papercusp',
+      workItemId: 'EI-21192501620501693',
+      planSlug: null,
+      goalRef: 'EI-21192501620501693',
+    });
+    expect(resolveGoal).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the durable goal resolver and preserves a plan-item provenance ref', async () => {
+    const result = await resolveBashTaskProvenance({ uiClientId: 'su-owner', isSuperuser: true }, 'papercusp', {
+      resolveIdentity: (() => ({ ownerId: 'su-owner' })) as never,
+      readStamp: (() => ({ intentEventId: null, assumptionSetId: null, goalRef: null })) as never,
+      resolveGoal: (async () => ({ ref: 'plan:host-pressure-hardening#P-014' })) as never,
+    });
+
+    expect(result).toMatchObject({
+      launchedBy: 'su-owner',
+      sessionId: 'su-owner',
+      workItemId: null,
+      planSlug: 'host-pressure-hardening',
+      goalRef: 'plan:host-pressure-hardening#P-014',
+    });
+  });
+
+  it('fails open without fabricating an item when caller identity is unavailable', async () => {
+    const result = await resolveBashTaskProvenance(
+      { principal: { kind: 'system', slug: 'system:operator', workspaceId: 'papercusp-workspace' } },
+      null,
+      {
+        resolveIdentity: (() => {
+          throw new Error('missing session identity');
+        }) as never,
+        readStamp: vi.fn() as never,
+        resolveGoal: vi.fn() as never,
+      },
+    );
+
+    expect(result).toEqual({
+      launchedBy: 'system:operator',
+      sessionId: null,
+      harnessSlug: null,
+      workItemId: null,
+      planSlug: null,
+      goalRef: null,
+    });
   });
 });

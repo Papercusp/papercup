@@ -161,6 +161,14 @@ export function buildTaskServiceArgv(base: string[], props: TaskScopeProperties)
     '--collect',
     `--unit=${props.unit}`,
     `--slice=${props.slice}`,
+    // EI-21192501620501693: make the subtree cleanup contract explicit instead
+    // of inheriting systemd's defaults. A test runner can print its terminal
+    // summary and let its main shell exit while leaked workers remain. The
+    // transient SERVICE owns that whole control group, terminates every member
+    // when the main process exits, and escalates within a bounded window rather
+    // than leaving a terminal task consuming the host indefinitely.
+    '--property=KillMode=control-group',
+    '--property=TimeoutStopSec=10s',
   ];
   appendTaskEnvironment(argv, props.env);
   appendTaskProperties(argv, props);

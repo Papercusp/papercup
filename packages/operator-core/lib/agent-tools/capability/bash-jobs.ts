@@ -79,6 +79,44 @@ export const MAX_TIMEOUT_MS = 600_000;
  */
 export const DEFAULT_BACKGROUND_TIMEOUT_MS = 4 * 60 * 60 * 1_000; // 4h
 export const MAX_BACKGROUND_TIMEOUT_MS = 12 * 60 * 60 * 1_000; // 12h
+
+/**
+ * A background test runner is the highest-fanout arbitrary command this door
+ * launches.  The 2026-08-22 incident reached 1,517 cgroup pids and 19.4 GiB
+ * peak RSS from one unbudgeted `npx vitest run`, while dozens of peer tasks were
+ * active.  Keep the ceiling local to that task's transient service: an OOM or
+ * pid ceiling must fail the test run, never turn into host-wide reclaim/PSI.
+ *
+ * These are hard defaults, not host-global tuning knobs.  Callers that need the
+ * deliberately larger green-checkpoint envelope already have the dedicated
+ * checkpoint launcher and its capacity policy; arbitrary `capability:bash`
+ * tests must not silently inherit that reserved-machine budget.
+ */
+export const BASH_TEST_MEMORY_MAX_BYTES = 16 * 1024 ** 3;
+export const BASH_TEST_TASKS_MAX = 512;
+
+const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*`;
+const DIRECT_TEST_RUNNER_RE = new RegExp(
+  `${TEST_SEGMENT_PREFIX}(?:(?:npx|bunx|pnpm\\s+exec|yarn\\s+dlx)\\s+)?` +
+    String.raw`(?:vitest|jest|mocha|ava|pytest|playwright\s+test|cargo\s+test|go\s+test)(?:\s|$)`,
+  'i',
+);
+const PACKAGE_TEST_SCRIPT_RE = new RegExp(
+  `${TEST_SEGMENT_PREFIX}(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)?(?:\\s|$)`,
+  'i',
+);
+
+/** Conservative shell-segment classifier for the test budget above.
+ *
+ * It intentionally requires the runner at the start of a shell segment.  A
+ * diagnostic such as `rg vitest` must not acquire a 16 GiB budget merely for
+ * mentioning a runner name, while `cd pkg && npx vitest run` must.  This is
+ * policy classification only; the command is still executed byte-for-byte.
+ */
+export function isBackgroundTestCommand(command: string): boolean {
+  return DIRECT_TEST_RUNNER_RE.test(command) || PACKAGE_TEST_SCRIPT_RE.test(command);
+}
+
 /** Reserved child-env provenance for long-running physical drills. Only the
  * durable background seam may mint this marker; callers cannot override it. */
 export const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV = 'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID';
@@ -331,12 +369,7 @@ function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
 function signalServiceUnit(scopeUnit: string | null | undefined, sig: NodeJS.Signals): void {
   if (!scopeUnit?.endsWith('.service')) return;
   try {
-    execFile(
-      'systemctl',
-      ['--user', 'kill', `--signal=${sig}`, scopeUnit],
-      { timeout: 15_000 },
-      () => {},
-    );
+    execFile('systemctl', ['--user', 'kill', `--signal=${sig}`, scopeUnit], { timeout: 15_000 }, () => {});
   } catch {
     /* the client process-group signal below remains the best effort fallback */
   }
@@ -533,6 +566,12 @@ export interface RunOptions {
    *  attribution in a ledger built for attribution is worse than an honest gap. */
   launchedBy?: string;
   workItemId?: string | null;
+  planSlug?: string | null;
+  harnessSlug?: string | null;
+  sessionId?: string | null;
+  /** The live goal ref used to derive workItemId/planSlug. Diagnostic-only, so a
+   *  future reader can distinguish "no goal" from a parser miss. */
+  goalRef?: string | null;
 }
 
 export interface ForegroundResult {
@@ -934,12 +973,16 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // the scope name can go into the argv; the ledger WRITES happen afterwards,
   // fire-and-forget, and can never block or fail this spawn (see enroll-sync.ts).
   //
-  // EI-20074092697233904: the timeout is the shell job's local deadline, not a
-  // lifetime for every process the command deliberately daemonizes. A
-  // systemd-scope RuntimeMaxSec would kill a surviving qemu/nohup/setsid child
-  // after the shell had already reported exit=0. The task-manager scope still
-  // tracks those descendants; an operator can stop the whole scope explicitly.
-  const enrolment = beginSyncEnrolment({ class: 'bash-job' });
+  // EI-21192501620501693: the task deadline is a REAL cgroup deadline, not only
+  // an in-memory timer owned by this operator process. The old local-only timer
+  // died on operator restart and left the confined subtree immortal. A process
+  // deliberately daemonized inside this arbitrary-command task remains part of
+  // the same task and is reaped at the caller-selected deadline; a service that
+  // needs a separate lifetime belongs behind its dedicated launcher/chokepoint.
+  const runtimeMaxSec = Math.max(1, Math.ceil(effectiveTimeoutMs / 1000));
+  const isTestRun = isBackgroundTestCommand(opts.command);
+  const testBudget = isTestRun ? { memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX } : {};
+  const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec, ...testBudget });
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
 
   // Physical drills are long-running and must survive the interactive caller.
@@ -1023,8 +1066,19 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       cwd: opts.cwd,
       launchedBy: opts.launchedBy ?? 'capability:bash',
       workItemId: opts.workItemId ?? null,
+      planSlug: opts.planSlug ?? null,
+      harnessSlug: opts.harnessSlug ?? null,
+      sessionId: opts.sessionId ?? null,
+      runtimeMaxSec,
+      ...testBudget,
       logPath,
-      detail: { bashJobId: id, sandboxed: Boolean(opts.sandboxEnabled) },
+      detail: {
+        bashJobId: id,
+        sandboxed: Boolean(opts.sandboxEnabled),
+        goalRef: opts.goalRef ?? null,
+        workloadClass: isTestRun ? 'test-run' : 'other',
+        budgetPolicy: isTestRun ? 'capability-bash-test-v1' : 'deadline-only-v1',
+      },
     },
     child.pid ?? null,
   );

@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV,
   CAPABILITY_SANDBOX_TMPDIR,
+  BASH_TEST_MEMORY_MAX_BYTES,
+  BASH_TEST_TASKS_MAX,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   INLINE_OUTPUT_CAP,
@@ -28,6 +30,7 @@ import {
   formatBufferingPipelineAdvice,
   formatJobLogEndMarker,
   getJob,
+  isBackgroundTestCommand,
   killJob,
   readJobOutput,
   runForeground,
@@ -688,16 +691,69 @@ describe('background job deadlines (WI-6677)', () => {
     killJob(job);
   });
 
-  it('does not turn the shell deadline into a cgroup deadline for daemonized descendants (EI-20074092697233904)', () => {
+  it('makes the caller-selected deadline a systemd-enforced cgroup deadline', () => {
     const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
     try {
       const job = startBackground({ command: 'sleep 60', cwd: STATE, stateDir: STATE }, 45_000);
-      expect(begin).toHaveBeenLastCalledWith({ class: 'bash-job' });
-      expect(begin.mock.lastCall?.[0]).not.toHaveProperty('runtimeMaxSec');
+      expect(begin).toHaveBeenLastCalledWith({ class: 'bash-job', runtimeMaxSec: 45 });
       killJob(job);
     } finally {
       begin.mockRestore();
     }
+  });
+
+  it('budgets a test-run subtree and preserves its launcher/work-item provenance in the ledger spec', () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground(
+        {
+          command: 'cd . && npx vitest run',
+          cwd: STATE,
+          stateDir: STATE,
+          launchedBy: 'su-test-owner',
+          sessionId: 'su-test-owner',
+          harnessSlug: 'papercusp',
+          workItemId: 'EI-21192501620501693',
+          goalRef: 'EI-21192501620501693',
+        },
+        45_000,
+      );
+
+      expect(begin).toHaveBeenLastCalledWith({
+        class: 'bash-job',
+        runtimeMaxSec: 45,
+        memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES,
+        tasksMax: BASH_TEST_TASKS_MAX,
+      });
+      expect(complete.mock.lastCall?.[1]).toMatchObject({
+        class: 'bash-job',
+        launchedBy: 'su-test-owner',
+        sessionId: 'su-test-owner',
+        harnessSlug: 'papercusp',
+        workItemId: 'EI-21192501620501693',
+        runtimeMaxSec: 45,
+        memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES,
+        tasksMax: BASH_TEST_TASKS_MAX,
+        detail: {
+          goalRef: 'EI-21192501620501693',
+          workloadClass: 'test-run',
+          budgetPolicy: 'capability-bash-test-v1',
+        },
+      });
+      killJob(job);
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+    }
+  });
+
+  it('classifies only test runners at a shell-segment boundary for the hard test budget', () => {
+    expect(isBackgroundTestCommand('npx vitest run')).toBe(true);
+    expect(isBackgroundTestCommand('cd packages/operator-core && npm run test:file -- x.test.ts')).toBe(true);
+    expect(isBackgroundTestCommand('FOO=1 pnpm exec playwright test')).toBe(true);
+    expect(isBackgroundTestCommand('rg -n vitest packages/operator-core')).toBe(false);
+    expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
   });
 
   it('clamps to the BACKGROUND ceiling, not the foreground one', () => {
