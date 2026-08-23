@@ -5,6 +5,10 @@ import type { ClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { readClaimSpecLaneHealth, type FleetLaneHealth } from '../../fleet/lane-health';
 import { listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
 import { getPlanRow, planItemsForRow } from './source';
+import {
+  analyzePlanDagParallelism,
+  type PlanDagParallelismDiagnostics,
+} from './plan-dag-parallelism';
 
 const ISSUE_KINDS = new Set(['bug', 'change', 'task']);
 
@@ -33,7 +37,8 @@ type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 
 type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' | 'non-actionable-status';
 export type ExactPlanAdmissionReason =
   | 'ready' | 'plan-not-found' | 'no-actionable-plan-items' | 'promotion-lag'
-  | 'duplicate-coverage' | 'lane-unknown' | 'floor-gated' | 'family-disagreement';
+  | 'duplicate-coverage' | 'lane-unknown' | 'floor-gated' | 'family-disagreement'
+  | 'insufficient-executable-width';
 
 export interface ExactPlanAdmission {
   ready: boolean;
@@ -50,6 +55,10 @@ export interface ExactPlanAdmission {
     duplicateActionable: Array<{ planItemId: string; workItemIds: string[] }>;
     sourceCap: number; sourceCapExhausted: boolean;
   };
+  parallelism: PlanDagParallelismDiagnostics;
+  requestedSeats: number | null;
+  executableWidth: number | null;
+  seatShortfall: number | null;
   lane: FleetLaneHealth | null;
   message: string;
 }
@@ -96,9 +105,10 @@ function finish(
 /** PURE verdict over one exact plan snapshot, its promoted rows, and lane oracle. */
 export function evaluateExactPlanAdmission(args: {
   planSlug: string; planItems: PlanItem[]; workItems: AdmissionWorkItem[];
-  laneHealth: FleetLaneHealth | null; sourceCapExhausted?: boolean;
+  laneHealth: FleetLaneHealth | null; sourceCapExhausted?: boolean; requestedSeats?: number;
 }): ExactPlanAdmission {
   const resolved = resolveEffectiveStatusForItems(args.planItems);
+  const parallelism = analyzePlanDagParallelism(args.planItems);
   const actionable = resolved.items.filter(
     (item) => item.effectiveStatus === 'todo' && item.unresolvedBlockers.length === 0 && !item.needsHuman,
   );
@@ -114,6 +124,16 @@ export function evaluateExactPlanAdmission(args: {
     const ids = coverage.get(item.id) ?? [];
     return ids.length > 1 ? [{ planItemId: item.id, workItemIds: ids }] : [];
   });
+  const requestedSeats = Number.isFinite(args.requestedSeats) && (args.requestedSeats ?? 0) > 0
+    ? Math.floor(args.requestedSeats as number)
+    : null;
+  const laneClaimable = args.laneHealth?.effective.claimable ?? null;
+  const executableWidth = laneClaimable == null
+    ? null
+    : Math.min(parallelism.readyWidth, laneClaimable);
+  const seatShortfall = requestedSeats == null || executableWidth == null
+    ? null
+    : Math.max(0, requestedSeats - executableWidth);
   const base = {
     plan: args.planSlug,
     planItems: {
@@ -132,6 +152,10 @@ export function evaluateExactPlanAdmission(args: {
       sourceCap: WORK_ITEMS_MAX_LIMIT,
       sourceCapExhausted: args.sourceCapExhausted === true,
     },
+    parallelism,
+    requestedSeats,
+    executableWidth,
+    seatShortfall,
     lane: args.laneHealth,
   };
 
@@ -153,16 +177,46 @@ export function evaluateExactPlanAdmission(args: {
     return finish(base, 'refused', 'family-disagreement', 'Actionable promoted families disagree with the exact-plan lane reachability/counts.');
   }
   if (args.laneHealth.effective.claimable === 0) return finish(base, 'refused', 'floor-gated', 'The exact-plan lane is structurally reachable but every row is excluded by claim floors.');
+  if (seatShortfall != null && seatShortfall > 0) {
+    const edges = parallelism.blockingEdges
+      .slice(0, 8)
+      .map((edge) => `${edge.itemId}<-${edge.blockerId}(${edge.blockerStatus})`);
+    const edgeSuffix = parallelism.blockingEdges.length > 8
+      ? `, … +${parallelism.blockingEdges.length - 8} more`
+      : '';
+    const nonReady = parallelism.nonReadyItems
+      .slice(0, 8)
+      .map((item) => `${item.itemId}:${item.reason}`);
+    const nonReadySuffix = parallelism.nonReadyItems.length > 8
+      ? `, … +${parallelism.nonReadyItems.length - 8} more`
+      : '';
+    return finish(
+      base,
+      'refused',
+      'insufficient-executable-width',
+      `Requested ${requestedSeats} seat(s), but the exact plan exposes executableWidth=${executableWidth} ` +
+        `(readyWidth=${parallelism.readyWidth}, laneClaimable=${args.laneHealth.effective.claimable}); ` +
+        `shortfall=${seatShortfall}. Ready items: ${parallelism.readyItemIds.join(', ') || 'none'}. ` +
+        `Blocking edges: ${edges.join(', ') || 'none'}${edgeSuffix}. ` +
+        `Other non-ready items: ${nonReady.join(', ') || 'none'}${nonReadySuffix}.`,
+    );
+  }
   return finish(base, 'ready', 'ready', `Exact-plan admission is ready with ${args.laneHealth.effective.claimable} claimable row(s).`);
 }
 
 export async function preflightExactPlanAdmission(args: {
   workspaceId: string; harnessSlug: string; planSlug: string; assignee: string;
-  specId: string; fleetSlug?: string; claimKinds?: readonly string[];
+  specId: string; fleetSlug?: string; claimKinds?: readonly string[]; requestedSeats?: number;
 }): Promise<ExactPlanAdmission> {
   const row = await getPlanRow(args.planSlug, { workspaceId: args.workspaceId, harnessSlug: args.harnessSlug });
   if (!row) {
-    const empty = evaluateExactPlanAdmission({ planSlug: args.planSlug, planItems: [], workItems: [], laneHealth: null });
+    const empty = evaluateExactPlanAdmission({
+      planSlug: args.planSlug,
+      planItems: [],
+      workItems: [],
+      laneHealth: null,
+      requestedSeats: args.requestedSeats,
+    });
     return { ...empty, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
   }
   const built = buildExactPlanClaimSpec(args.specId, args.planSlug, args.claimKinds);
@@ -184,5 +238,6 @@ export async function preflightExactPlanAdmission(args: {
   return evaluateExactPlanAdmission({
     planSlug: args.planSlug, planItems: planItemsForRow(row), workItems, laneHealth,
     sourceCapExhausted: workItems.length >= WORK_ITEMS_MAX_LIMIT,
+    requestedSeats: args.requestedSeats,
   });
 }

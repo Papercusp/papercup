@@ -42,6 +42,7 @@ import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { detectUnparsedItemLines } from './item-parse-feedback';
 import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
+import { analyzePlanDagParallelism } from './plan-dag-parallelism';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -561,6 +562,67 @@ export async function lintParsed(
       code: 'cycle',
       message: `Item ${cid} is part of a blocked-by cycle.`,
       itemId: cid,
+    });
+  }
+
+  // WI-40832: plans are execution graphs, not ordered prose. Surface the graph
+  // shapes that make a fleet look provisioned while only one (or zero) member
+  // can actually pull work. Keep these as authoring warnings: a deliberately
+  // serial plan is valid, but the shape must be visible before launch.
+  const dag = analyzePlanDagParallelism(parsed.items);
+  if (dag.nonTerminal >= 3 && dag.readyWidth <= 1 && dag.criticalPathDepth >= 2) {
+    const path = dag.criticalPathItemIds.length ? ` (${dag.criticalPathItemIds.join(' -> ')})` : '';
+    report.warnings.push({
+      level: 'warning',
+      code: 'dag_low_executable_width',
+      message:
+        `Remaining DAG exposes readyWidth=${dag.readyWidth} across ${dag.nonTerminal} non-terminal item(s); ` +
+        `criticalPathDepth=${dag.criticalPathDepth}${path}. A parallel fleet cannot use more than the ready ` +
+        'width until blockers resolve; remove accidental serialization or size the launch to the executable frontier.',
+    });
+  }
+  if (dag.fanInChokepoints.length > 0) {
+    const sample = dag.fanInChokepoints
+      .slice(0, 5)
+      .map((entry) => `${entry.itemId} <- [${entry.blockerIds.join(', ')}]`)
+      .join('; ');
+    const suffix = dag.fanInChokepoints.length > 5 ? `; … +${dag.fanInChokepoints.length - 5} more` : '';
+    report.warnings.push({
+      level: 'warning',
+      code: 'dag_fan_in_chokepoint',
+      message:
+        `${dag.fanInChokepoints.length} remaining item(s) fan in from multiple unresolved blockers ` +
+        `(${sample}${suffix}). Confirm each convergence edge is required rather than serializing otherwise independent work.`,
+    });
+  }
+  if (dag.phaseInversions.length > 0) {
+    const sample = dag.phaseInversions
+      .slice(0, 5)
+      .map((entry) => `${entry.itemId} (${entry.itemPhase}) <- ${entry.blockerId} (${entry.blockerPhase})`)
+      .join('; ');
+    const suffix = dag.phaseInversions.length > 5 ? `; … +${dag.phaseInversions.length - 5} more` : '';
+    report.warnings.push({
+      level: 'warning',
+      code: 'dag_phase_inversion',
+      message:
+        `${dag.phaseInversions.length} blocked-by edge(s) point from an earlier phase to a later phase ` +
+        `(${sample}${suffix}). Reorder the phases or reverse/remove the accidental dependency.`,
+    });
+  }
+  if (dag.releaseGateBlocksBuild.length > 0) {
+    const sample = dag.releaseGateBlocksBuild
+      .slice(0, 5)
+      .map((entry) => `${entry.itemId} <- ${entry.blockerId}`)
+      .join(', ');
+    const suffix = dag.releaseGateBlocksBuild.length > 5
+      ? `, … +${dag.releaseGateBlocksBuild.length - 5} more`
+      : '';
+    report.warnings.push({
+      level: 'warning',
+      code: 'dag_release_gate_blocks_build',
+      message:
+        `Release/beta/distribution gate(s) block foundational build work on edge(s) ${sample}${suffix}. ` +
+        'Release gates should normally constrain integration or shipment, not prevent independent foundations from starting.',
     });
   }
 

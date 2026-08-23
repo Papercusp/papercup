@@ -756,3 +756,39 @@ describe('plans:lint — terminal_status_stale_now (WI-38303)', () => {
     expect(has(r)).toBe(true);
   });
 });
+
+describe('plans:lint — DAG parallelism diagnostics (WI-40832)', () => {
+  const planDoc = (phases: string) =>
+    `---\ntitle: DAG lint\nslug: dag-lint-test\nstatus: active\ncreated: 2026-08-23\n---\n\n` +
+    `# DAG lint\n\n## Now\n\n**State:** building\n\n**Next:** execute the ready frontier\n\n` +
+    `${phases}\n\n## Decisions\n\n### D-001 — graph\nKeep independent work parallel.\n`;
+
+  it('warns when a remaining DAG is needlessly serial', async () => {
+    const report = await lintParsed(parsePlan(planDoc(
+      `## Phase 1\n\n- **P-001** \`todo\` Build core\n\n` +
+      `## Phase 2\n\n- **P-002** \`todo\` Build adapter blocked-by: P-001\n\n` +
+      `## Phase 3\n\n- **P-003** \`todo\` Integrate adapter blocked-by: P-002`,
+    )), 'dag-lint-test', false);
+
+    const finding = report.warnings.find((entry) => entry.code === 'dag_low_executable_width');
+    expect(finding?.message).toContain('readyWidth=1');
+    expect(finding?.message).toContain('P-001 -> P-002 -> P-003');
+  });
+
+  it('reports exact fan-in, phase-inversion, and release-gate edges', async () => {
+    const report = await lintParsed(parsePlan(planDoc(
+      `## Phase 1\n\n` +
+      `- **P-001** \`todo\` Implement provider foundation blocked-by: P-003\n` +
+      `- **P-002** \`todo\` Build storage adapter\n\n` +
+      `## Phase 2\n\n- **P-004** \`todo\` Integrate providers blocked-by: P-001, P-002\n\n` +
+      `## Phase 4\n\n- **P-003** \`todo\` Beta distribution release gate`,
+    )), 'dag-lint-test', false);
+
+    expect(report.warnings.find((entry) => entry.code === 'dag_fan_in_chokepoint')?.message)
+      .toContain('P-004 <- [P-001, P-002]');
+    expect(report.warnings.find((entry) => entry.code === 'dag_phase_inversion')?.message)
+      .toContain('P-001 (Phase 1) <- P-003 (Phase 4)');
+    expect(report.warnings.find((entry) => entry.code === 'dag_release_gate_blocks_build')?.message)
+      .toContain('P-001 <- P-003');
+  });
+});

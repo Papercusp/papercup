@@ -1330,7 +1330,7 @@ export default defineTool({
       .min(1)
       .optional()
       .describe(
-        `TARGET fleet size — NOT the number of new terminals to open (default 1). Only the DEFICIT opens: with N members already LIVE, count:M opens M−N, and a fleet already at M opens NOTHING (relaunchSuppressed:true). One call opens at most ${MAX_MEMBERS} NEW terminals even when the remaining deficit is larger; re-read live membership before another top-up. Capacity can clamp that wave further, so the fleet can end up SMALLER than count — read \`fleetSize\`/\`shortfall\` on the result, never the opened count alone (a bounded wave can open every terminal it attempted without filling the fleet). To ADD N members to a running fleet, pass count = liveMembers + N.`,
+        `TARGET fleet size — NOT the number of new terminals to open (default 1). Only the DEFICIT opens: with N members already LIVE, count:M opens M−N, and a fleet already at M opens NOTHING (relaunchSuppressed:true). For a plan-scoped launch, an explicit target wider than the plan's currently executable DAG frontier is refused before fleet creation with requestedSeats/executableWidth/seatShortfall and exact blocker diagnostics. One call opens at most ${MAX_MEMBERS} NEW terminals even when the remaining deficit is larger; re-read live membership before another top-up. Capacity can clamp that wave further, so the fleet can end up SMALLER than count — read \`fleetSize\`/\`shortfall\` on the result, never the opened count alone (a bounded wave can open every terminal it attempted without filling the fleet). To ADD N members to a running fleet, pass count = liveMembers + N.`,
       ),
     placement: z
       .enum(['local', 'remote'])
@@ -1811,6 +1811,7 @@ export default defineTool({
           specId: `fleet-launch-${fleetSlug}-plan`,
           fleetSlug,
           claimKinds: args.claimKinds,
+          requestedSeats: args.count,
         });
       } catch (error) {
         admissionError = (error as Error).message;

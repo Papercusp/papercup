@@ -208,6 +208,48 @@ describe('evaluateExactPlanAdmission', () => {
       promotion: { byFamily: { feature: 1, issue: 1 } },
     });
   });
+
+  it('refuses a seat request wider than the executable DAG frontier and names exact blockers', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001'), item('P-002', 'todo', ['P-001']), item('P-003', 'todo', ['P-002'])],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+      requestedSeats: 3,
+    });
+
+    expect(verdict).toMatchObject({
+      ready: false,
+      status: 'refused',
+      reason: 'insufficient-executable-width',
+      requestedSeats: 3,
+      executableWidth: 1,
+      seatShortfall: 2,
+      parallelism: {
+        readyWidth: 1,
+        readyItemIds: ['P-001'],
+        criticalPathDepth: 3,
+      },
+    });
+    expect(verdict.message).toContain('P-002<-P-001(todo)');
+    expect(verdict.message).toContain('P-003<-P-002(todo)');
+  });
+
+  it('keeps seat diagnostics optional for existing callers', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+    });
+
+    expect(verdict).toMatchObject({
+      ready: true,
+      requestedSeats: null,
+      executableWidth: 1,
+      seatShortfall: null,
+    });
+  });
 });
 
 describe('preflightExactPlanAdmission IO wiring', () => {
@@ -233,6 +275,7 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       specId: 'plans-start-plan-a',
       fleetSlug: 'fleet-a',
       claimKinds: ['bug'],
+      requestedSeats: 1,
     });
 
     expect(verdict).toMatchObject({ ready: true, reason: 'ready' });
@@ -256,6 +299,7 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       spec: expect.objectContaining({ specId: 'plans-start-plan-a', states: ['open'] }),
       record: expect.objectContaining({ fleetSlug: 'fleet-a', harnessSlug: 'papercusp' }),
     }));
+    expect(verdict.requestedSeats).toBe(1);
   });
 
   it('builds a validator-clean plan-only claim spec', () => {

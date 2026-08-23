@@ -1160,6 +1160,13 @@ describe('count arg description (P-006 recurrence guard — the doc must not re-
     expect(d).toMatch(/shortfall/);
   });
 
+  it('documents the pre-spawn executable-width refusal and its machine-readable diagnostics', () => {
+    const d = String(countDescription);
+    expect(d).toMatch(/executable DAG frontier/i);
+    expect(d).toMatch(/requestedSeats\/executableWidth\/seatShortfall/);
+    expect(d).toMatch(/exact blocker diagnostics/i);
+  });
+
   it('accepts a large-fleet target above the 12-terminal wave cap', () => {
     const parsed = launchOnPlan.args.safeParse({ name: 'large-fleet', plan: 'p-plan', count: 28 });
     expect(parsed.success).toBe(true);
