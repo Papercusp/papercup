@@ -88,6 +88,7 @@ export function parseSocialPostRef(ref: string): SocialPostRef {
     required: 'social_post_ref_required',
     malformed: 'social_post_ref_malformed',
     shape: '<platform>:<id>',
+    tailName: 'id',
   });
   // Validate through the registry so an unknown platform fails here, with the
   // registry's reason, rather than as a confusing vault miss further down.
@@ -426,9 +427,30 @@ export interface SocialReplyOutcome {
   url?: string;
 }
 
+/** A create-shaped write: new content, at a destination the caller named. */
+export interface SocialPostRequest {
+  destination: string;
+  text: string;
+  visibility: SocialVisibility;
+  /** Derived, never caller-supplied — see `socialPostIdempotencyKey`. */
+  idempotencyKey: string;
+}
+
+export type SocialPostOutcome = SocialReplyOutcome;
+
 export interface SocialWriteAdapter {
   platform: SocialPlatformId;
   reply(request: SocialReplyRequest, context: OutboundContext): Promise<SocialReplyOutcome>;
+  /**
+   * Optional on purpose. The registry already declares per-platform write verbs
+   * (`write.verbs`), and `assertSocialWriteAllowed` refuses a verb a platform
+   * does not support BEFORE this lookup — so a missing `post` here means "the
+   * adapter has not implemented a verb its platform does declare", which is a
+   * distinct and separately-reported condition from "the platform cannot post".
+   * Collapsing the two would report an unimplemented adapter as a platform
+   * limitation, sending someone to verify a lexicon that was never the problem.
+   */
+  post?(request: SocialPostRequest, context: OutboundContext): Promise<SocialPostOutcome>;
 }
 
 const WRITE_ADAPTERS = new Map<SocialPlatformId, SocialWriteAdapter>();
@@ -463,6 +485,29 @@ export function socialReplyIdempotencyKey(ref: SocialPostRef, text: string): str
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return `pc-social-${hash.toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Derive the idempotency key for a create-shaped post.
+ *
+ * Same (target, text) construction and the same deliberate absence of a
+ * timestamp as the reply key above — a retry of the same logical write must
+ * produce the same key, which a clock would defeat.
+ *
+ * The `-post-` infix is load-bearing rather than cosmetic. A post ref and a
+ * destination ref are BOTH `"<platform>:<tail>"`, so a reply to `reddit:abc`
+ * and a post addressed to `reddit:abc` carrying identical text would otherwise
+ * be indistinguishable — and an adapter deduping on the key would silently drop
+ * the second, genuinely different, write. The two key spaces are therefore
+ * disjoint by construction, pinned by test.
+ */
+export function socialPostIdempotencyKey(ref: SocialDestinationRef, text: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of `${formatSocialDestinationRef(ref)}${text.trim()}`) {
+    hash ^= char.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `pc-social-post-${hash.toString(16).padStart(8, '0')}`;
 }
 
 export interface SocialReplyResult extends SocialReplyOutcome {
@@ -566,4 +611,166 @@ export async function assertTrustedSocialDestination(
     address: destination,
     provenance: params.provenance,
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* social:post — create-shaped publishing                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the caller is told BEFORE anything goes out.
+ *
+ * D-004 ruling (b) requires the resolved account and audience to be echoed back
+ * before publish REGARDLESS OF THE FLAG, which is why this is a first-class
+ * return value rather than a log line: with publishing withheld it is the whole
+ * answer, and the owner's ratification decision is made against it.
+ */
+export interface SocialPostEcho {
+  platform: SocialPlatformId;
+  destination: string;
+  destinationRef: string;
+  visibility: SocialVisibility;
+  /** WHICH of the owner's connected accounts would speak. */
+  account: { sourceId: string; kind: string; credentialRef: string | null };
+  /** Rail 2's verdict on the destination the caller named. */
+  destinationStanding: AddresseeDecision['standing'];
+  destinationProvenance: AddresseeDecision['provenance'];
+  destinationVerified: boolean;
+  idempotencyKey: string;
+  characters: number;
+}
+
+export interface SocialPostResult {
+  echo: SocialPostEcho;
+  /** null iff publishing was withheld. */
+  published: (SocialPostOutcome & { platform: SocialPlatformId }) | null;
+  withheld: { reason: 'publish-flag-off'; detail: string } | null;
+}
+
+/**
+ * `social:post` — D-020 rail 2 for social-post, gated by D-004 ruling (b).
+ *
+ * The ordering below is the security content of this function; every gate can
+ * be individually present and the verb still be unsafe if they run out of
+ * order.
+ *
+ *  1. PARSE. An unknown platform fails with the registry's reason before any
+ *     vault or credential work happens.
+ *  2. RAIL 2, before any credential is resolved. A destination the agent could
+ *     only have read out of inbound message content is refused outright — and
+ *     it is refused before the owner's credential is even looked up, so an
+ *     injected destination never reaches a code path holding an identity.
+ *  3. REGISTRY WRITE GATE, before the adapter lookup — same reasoning as
+ *     `replyToCanonicalSocialPost`: having written an adapter is not evidence
+ *     that we know how to call the API correctly.
+ *  4. FLAG, last. It withholds the outbound call ONLY. Everything above it has
+ *     already run, so the echo the owner ratifies against is the real
+ *     resolution and not a prediction of one.
+ *
+ * The flag is read HERE rather than at the tool boundary, deliberately. A
+ * `publish: boolean` parameter would put the publish authority in the caller's
+ * hands, and the next caller to be written is the one that forgets — this way
+ * there is exactly one decision point and no argument that can bypass it.
+ */
+export async function postToCanonicalSocialDestination(
+  sql: postgres.Sql,
+  params: {
+    workspaceId: string;
+    userId: string;
+    destination: string | SocialDestinationRef;
+    text: string;
+    visibility?: SocialVisibility | null;
+    provenance: AddresseeProvenance;
+  },
+): Promise<SocialPostResult> {
+  const text = params.text.trim();
+  if (!text) throw new Error('social_post_text_required');
+  if (text.length > 10_000) throw new Error('social_post_text_too_long');
+
+  const ref =
+    typeof params.destination === 'string'
+      ? parseSocialDestinationRef(params.destination)
+      : params.destination;
+
+  // A create has no parent to inherit from, so the widening rail (D-006 ruling
+  // c) has nothing to compare against and does not apply. An absent value
+  // therefore lands on `public` for the reason recorded in
+  // `normalizeSocialVisibility`: these posts genuinely are public, and
+  // narrowing a create to `direct` would produce a DM, which is not a safer
+  // reading of "post" but a different verb. A MALFORMED value still fails
+  // closed to `direct` through the same normalizer.
+  const visibility =
+    params.visibility === undefined || params.visibility === null
+      ? 'public'
+      : normalizeSocialVisibility(params.visibility);
+
+  const decision = await assertTrustedSocialDestination(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    destination: ref.destination,
+    provenance: params.provenance,
+  });
+
+  const { context } = await resolveSocialOutboundContext(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    platform: ref.platform,
+    verb: 'post',
+  });
+
+  const adapter = getSocialWriteAdapter(ref.platform);
+  if (!adapter) {
+    throw new Error(
+      `social_post_adapter_missing:${ref.platform} — the platform's write path is verified but no adapter is registered yet`,
+    );
+  }
+  if (typeof adapter.post !== 'function') {
+    throw new Error(
+      `social_post_adapter_verb_missing:${ref.platform} — the registry declares this platform can post, but its adapter implements only reply`,
+    );
+  }
+
+  const echo: SocialPostEcho = {
+    platform: ref.platform,
+    destination: ref.destination,
+    destinationRef: formatSocialDestinationRef(ref),
+    visibility,
+    account: {
+      sourceId: context.source.id,
+      kind: context.source.kind,
+      credentialRef: context.source.credentialRef,
+    },
+    destinationStanding: decision.standing,
+    destinationProvenance: decision.provenance,
+    destinationVerified: decision.verified,
+    idempotencyKey: socialPostIdempotencyKey(ref, text),
+    characters: text.length,
+  };
+
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const enabled = await getFlag(FLAGS.SOCIAL_AUTO_PUBLISH, `social-post:${params.workspaceId}`);
+  if (!enabled) {
+    return {
+      echo,
+      published: null,
+      withheld: {
+        reason: 'publish-flag-off',
+        detail:
+          "publishing to the owner's public identity is withheld until the owner ratifies it (flag papercusp-social-auto-publish, default OFF per D-004(b)) — everything above the outbound call ran, so this echo is the real resolution. Flip it via /admin/features.",
+      },
+    };
+  }
+
+  const outcome = await adapter.post(
+    {
+      destination: ref.destination,
+      text,
+      visibility,
+      idempotencyKey: echo.idempotencyKey,
+    },
+    context,
+  );
+
+  return { echo, published: { ...outcome, platform: ref.platform }, withheld: null };
 }
