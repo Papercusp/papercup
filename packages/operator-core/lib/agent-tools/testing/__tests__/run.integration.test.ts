@@ -27,6 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
 import runTool, { discoverKnownHiveCheckoutRoots, normalizeTestFilePaths } from '../run';
 
 /**
@@ -160,6 +161,23 @@ describe('testing:run (integration)', () => {
     expect(typeof out.root).toBe('string');
     const routerScript = await readFile(join(out.root as string, 'scripts', 'test-files.mjs'), 'utf8').catch(() => null);
     expect(routerScript).not.toBeNull();
+  }, 180_000);
+
+  it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {
+    const out = await body(call({ files: [GREEN_TARGET] }));
+
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(typeof out.runId).toBe('string');
+
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ file_path: string; status: string }>>`
+      SELECT file_path, status
+      FROM harness_shared.test_runs
+      WHERE run_group_id = ${out.runId}
+    `;
+    expect(rows).toEqual(expect.arrayContaining([
+      { file_path: GREEN_TARGET, status: 'pass' },
+    ]));
   }, 180_000);
 
   it('accepts a workspace-relative test path and expands it before routing', async () => {

@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { QUEEN_PLACEMENT_ROLES } from '../coordination/roles';
 import { ensureHiveDesktop, hiveDesktop } from './desktop-lease';
+import { DEFAULT_CAPTURE_GEOMETRY } from '../../desktop/desktop-session-registry';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -54,6 +55,8 @@ export default defineTool({
         .describe('GUI apps to launch on the desktop, each an argv array — e.g. [["firefox","--no-remote"],["soffice","--calc"]].'),
       width: z.number().int().positive().max(7680).optional().describe('Screen width in px (default 1024 — best computer-use grounding).'),
       height: z.number().int().positive().max(4320).optional().describe('Screen height in px (default 768).'),
+      capture_width: z.number().int().positive().max(7680).optional().describe('Px width the AGENT is served (default 1024); the screen still runs at `width`.'),
+      capture_height: z.number().int().positive().max(4320).optional().describe('Px height the AGENT is served (default 768). Larger costs proportionally more tokens.'),
     })
     .strict(),
   async handler(args) {
@@ -62,6 +65,8 @@ export default defineTool({
       ...(args.apps ? { apps: args.apps } : {}),
       ...(args.width ? { width: args.width } : {}),
       ...(args.height ? { height: args.height } : {}),
+      ...(args.capture_width ? { captureWidth: args.capture_width } : {}),
+      ...(args.capture_height ? { captureHeight: args.capture_height } : {}),
     });
     return text({
       ok: true,
@@ -69,6 +74,10 @@ export default defineTool({
       display: d.display,
       width: d.width,
       height: d.height,
+      // D-006: report BOTH geometries so the caller can see what the model will be
+      // served — the whole point is that this differs from the screen size.
+      captureWidth: d.capture?.width ?? DEFAULT_CAPTURE_GEOMETRY.width,
+      captureHeight: d.capture?.height ?? DEFAULT_CAPTURE_GEOMETRY.height,
       reused: !!already,
       note: already
         ? 'hive already had a desktop — returned the existing lease (apps NOT re-launched).'

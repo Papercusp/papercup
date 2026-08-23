@@ -172,10 +172,78 @@ export function reconcileFleetStatusLiveness(
   return applyPsuHostAuthority(roster, visibleRoles, findHost);
 }
 
+export type LaunchTransactionUnconfirmedPresence = 'present' | 'absent' | 'unknown';
+
+export interface LaunchTransactionUnconfirmedMemberStatus {
+  ownerId: string;
+  /** `present` means the id has a fleet presence row; `absent` is a clean no-row result. */
+  presence: LaunchTransactionUnconfirmedPresence;
+  /** The roster's liveness verdict, kept separate from presence. */
+  sessionState: string | null;
+  heartbeatFresh: boolean | null;
+  lastActiveSecAgo: number | null;
+  /** Why this row is unknown; absent/present rows are directly classified. */
+  reason?: string;
+}
+
+/**
+ * Join launch-time `unconfirmedMemberIds` against the same presence-primary roster used by status.
+ *
+ * An absent row is actionable only when the presence leg answered. If that leg degraded, returning
+ * `absent` would recreate the defect this field is meant to expose, so the result is explicitly unknown.
+ */
+export function classifyLaunchTransactionUnconfirmedMembers(
+  ids: readonly string[] | null | undefined,
+  roster: ReadonlyArray<
+    Pick<FleetRosterEntry, 'agentId' | 'sessionState' | 'heartbeatFresh' | 'alive' | 'lastActiveSecAgo'>
+  >,
+  degradedLegs: readonly FleetRosterDegradedLeg[] = [],
+): LaunchTransactionUnconfirmedMemberStatus[] {
+  const uniqueIds = [
+    ...new Set((ids ?? []).filter((id): id is string => typeof id === 'string' && id.length > 0)),
+  ];
+  if (uniqueIds.length === 0) return [];
+
+  const byOwner = new Map(roster.map((member) => [member.agentId, member] as const));
+  const presenceDegraded = degradedLegs.includes('presence');
+
+  return uniqueIds.map((ownerId) => {
+    const member = byOwner.get(ownerId);
+    if (member) {
+      return {
+        ownerId,
+        presence: 'present',
+        sessionState: member.sessionState ?? null,
+        heartbeatFresh: member.heartbeatFresh ?? member.alive ?? null,
+        lastActiveSecAgo: member.lastActiveSecAgo ?? null,
+      };
+    }
+
+    if (presenceDegraded) {
+      return {
+        ownerId,
+        presence: 'unknown',
+        sessionState: null,
+        heartbeatFresh: null,
+        lastActiveSecAgo: null,
+        reason: 'fleet roster presence read degraded; absence is unverified',
+      };
+    }
+
+    return {
+      ownerId,
+      presence: 'absent',
+      sessionState: null,
+      heartbeatFresh: null,
+      lastActiveSecAgo: null,
+    };
+  });
+}
+
 export default defineTool({
   name: 'fleet:status',
   description:
-    'Show a fleet\'s identity (title, description, current leader plus its liveness/vacancy signal) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 has background bees but no visible desktop members; use fleet:launch-on-plan for desktop members. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.',
+    'Show a fleet\'s identity (title, description, current leader plus its liveness/vacancy signal) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 has background bees but no visible desktop members; use fleet:launch-on-plan for desktop members. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. When a launch transaction has `unconfirmedMemberIds`, `launchTransactionUnconfirmedMembers` joins those ids to the same roster presence read as `present`, `absent`, or `unknown` (a degraded presence read never becomes a false absence). Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.',
   guidance: {
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',
@@ -306,6 +374,11 @@ export default defineTool({
       (m) => !['ended', 'suspect', 'draining', 'recorded'].includes(m.sessionState ?? ''),
     );
     const { members: memberCount } = splitFleetRosterCounts(liveRoster);
+    const launchTransactionUnconfirmedMembers = classifyLaunchTransactionUnconfirmedMembers(
+      fleet.lastLaunchTransaction?.unconfirmedMemberIds,
+      roster,
+      rosterResult.degradedLegs,
+    );
 
     // The registry's leader is durable, while its liveness belongs to the roster.
     // Do not return that durable id as an unannotated `leader`: callers naturally read
@@ -413,6 +486,9 @@ export default defineTool({
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,
       launchTransaction: fleet.lastLaunchTransaction,
+      ...(launchTransactionUnconfirmedMembers.length > 0
+        ? { launchTransactionUnconfirmedMembers }
+        : {}),
       ...launchVerification,
       ...(fleet.controlState !== 'active'
         ? { controlReason: fleet.controlReason, controlBy: fleet.controlBy, controlAt: fleet.controlAt }

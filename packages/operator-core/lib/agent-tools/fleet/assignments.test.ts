@@ -99,6 +99,35 @@ describe('reconcileWakeability (EI-6077)', () => {
     expect(out.alive).toBe(true);
   });
 
+  it('WI-40871: positive recorded-ended evidence ends a warm, wakeable, claimless owner immediately', async () => {
+    const agent = baseAgent({ alive: false });
+    const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
+    const [out] = await reconcileWakeability(
+      [agent],
+      fetchFn,
+      async () => new Set(),
+      async () => new Map(),
+      async () => new Set(['su-agent-1']),
+    );
+    expect(out.sessionState).toBe('ended');
+    expect(out.wakeable).toBe(true);
+    expect(out.alive).toBe(false);
+  });
+
+  it('WI-40871: a current recorded-live successor outranks stale ended evidence', async () => {
+    const agent = baseAgent({ alive: false });
+    const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: false } });
+    const [out] = await reconcileWakeability(
+      [agent],
+      fetchFn,
+      async () => new Set(['su-agent-1']),
+      async () => new Map(),
+      async () => new Set(['su-agent-1']),
+    );
+    expect(out.sessionState).toBe('recorded');
+    expect(out.alive).toBe(true);
+  });
+
   it('heartbeat-alive AND wakeable with a running turn → sessionState live, alive stays true', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: true } });

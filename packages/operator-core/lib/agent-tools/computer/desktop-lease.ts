@@ -121,6 +121,9 @@ async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): 
       scopeRef: potSlug,
       display: desktop.display,
       displayGeometry: { width: desktop.width, height: desktop.height },
+      // D-006: only sent when the caller REQUESTED a box. Omitted lets the registry
+      // apply DEFAULT_CAPTURE_GEOMETRY, so the default lives in exactly one place.
+      ...(desktop.capture ? { captureGeometry: desktop.capture } : {}),
       // P-005 — the cross-process freeze/kill handle. Without it the lifecycle
       // governor can see this desktop go idle and cannot do anything about it,
       // because `release()` above is a closure in THIS loop.

@@ -189,27 +189,29 @@ describe('confirmed hive discovery visibility (WI-39255)', () => {
   it('fails open when the harness is standalone or hive resolution throws', async () => {
     const { corpus } = buildCorpus();
 
-    await expect(filterCorpusForConfirmedHiveScope(
-      corpus,
-      { workspaceId: 'ws-1', harnessSlug: 'standalone' },
-      vi.fn().mockResolvedValue(null),
-    )).resolves.toBe(corpus);
-    await expect(filterCorpusForConfirmedHiveScope(
-      corpus,
-      { workspaceId: 'ws-1', harnessSlug: 'member-a' },
-      vi.fn().mockRejectedValue(new Error('registry unavailable')),
-    )).resolves.toBe(corpus);
+    await expect(
+      filterCorpusForConfirmedHiveScope(
+        corpus,
+        { workspaceId: 'ws-1', harnessSlug: 'standalone' },
+        vi.fn().mockResolvedValue(null),
+      ),
+    ).resolves.toBe(corpus);
+    await expect(
+      filterCorpusForConfirmedHiveScope(
+        corpus,
+        { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+        vi.fn().mockRejectedValue(new Error('registry unavailable')),
+      ),
+    ).resolves.toBe(corpus);
   });
 
   it('does not resolve hive membership for an unscoped caller', async () => {
     const { corpus } = buildCorpus();
     const resolveHive = vi.fn();
 
-    await expect(filterCorpusForConfirmedHiveScope(
-      corpus,
-      { workspaceId: 'ws-1', harnessSlug: '*' },
-      resolveHive,
-    )).resolves.toBe(corpus);
+    await expect(
+      filterCorpusForConfirmedHiveScope(corpus, { workspaceId: 'ws-1', harnessSlug: '*' }, resolveHive),
+    ).resolves.toBe(corpus);
     expect(resolveHive).not.toHaveBeenCalled();
   });
 
@@ -280,14 +282,33 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
                   },
                   youMayNotKnow: {
                     anyOf: [
-                      { type: 'array', maxItems: 20, items: { type: 'object', properties: { ref: { type: 'string' }, provenance: { type: 'string', enum: ['computed', 'authored'] } }, required: ['ref', 'provenance'] } },
+                      {
+                        type: 'array',
+                        maxItems: 20,
+                        items: {
+                          type: 'object',
+                          properties: {
+                            ref: { type: 'string' },
+                            provenance: { type: 'string', enum: ['computed', 'authored'] },
+                          },
+                          required: ['ref', 'provenance'],
+                        },
+                      },
                       { type: 'string' },
                       { type: 'array', items: {} },
                     ],
                   },
                   couldNotDetermine: {
                     anyOf: [
-                      { type: 'array', maxItems: 20, items: { type: 'object', properties: { what: { type: 'string' }, note: { type: 'string' } }, required: ['what'] } },
+                      {
+                        type: 'array',
+                        maxItems: 20,
+                        items: {
+                          type: 'object',
+                          properties: { what: { type: 'string' }, note: { type: 'string' } },
+                          required: ['what'],
+                        },
+                      },
                       { type: 'string' },
                       { type: 'array', items: {} },
                     ],
@@ -303,7 +324,9 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     };
 
     const compact = compactSchemaForResult(schema);
-    expect(compact).toContain('body?:array(1-20){text:string,premises?:array(≤20),youMayNotKnow?:array(≤20){ref:string,provenance:enum(computed|authored)},couldNotDetermine?:array(≤20){what:string,note?:string}}');
+    expect(compact).toContain(
+      'body?:array(1-20){text:string,premises?:array(≤20),youMayNotKnow?:array(≤20){ref:string,provenance:enum(computed|authored)},couldNotDetermine?:array(≤20){what:string,note?:string}}',
+    );
     expect(compact).toContain('expects?:enum(ack|answer|action|none)');
     expect(compact).not.toContain('body?:string|');
     expect(compact).not.toContain('premises?:array|string');
@@ -383,10 +406,11 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
       },
     });
 
-    expect(compact).toContain(
+    const rendered = compact ?? '';
+    expect(rendered).toContain(
       'pipeline?:string(1-64) Sanitized basename of the integration root that emits the event (for example "papercusp" in release:green:papercusp), not the routine name "green-checkpoint".',
     );
-    expect(compact.length).toBeLessThanOrEqual(2_200);
+    expect(rendered.length).toBeLessThanOrEqual(2_200);
   });
 
   it('returns valid bounded JSON and marks omitted hits', () => {
@@ -416,10 +440,17 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
 describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () => {
   it('activates the matched tools for the session + reports activated:true', async () => {
     const activated: string[][] = [];
-    const ctx = { activateTools: (names: readonly string[]) => { activated.push([...names]); return true; } };
+    const ctx = {
+      activateTools: (names: readonly string[]) => {
+        activated.push([...names]);
+        return true;
+      },
+    };
     const res = await (toolFind as unknown as ToolDef).handler({ query: 'find tools by intent' }, ctx);
     const out = JSON.parse(res.content[0].text) as {
-      activated: boolean; hits: Array<{ tool: string }>; howToCall: string;
+      activated: boolean;
+      hits: Array<{ tool: string }>;
+      howToCall: string;
     };
     // activateTools was called exactly once, with EVERY hit's tool name.
     expect(activated).toHaveLength(1);
@@ -434,7 +465,11 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
   });
 
   it('never breaks discovery when activation throws — hits still returned', async () => {
-    const ctx = { activateTools: () => { throw new Error('surface exploded'); } };
+    const ctx = {
+      activateTools: () => {
+        throw new Error('surface exploded');
+      },
+    };
     const res = await (toolFind as unknown as ToolDef).handler({ query: 'feature flag' }, ctx);
     const out = JSON.parse(res.content[0].text) as { activated: boolean; count: number };
     expect(out.activated).toBe(false); // swallowed

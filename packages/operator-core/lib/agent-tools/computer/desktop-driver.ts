@@ -58,10 +58,59 @@ export interface ComputerActionInput {
 export interface DesktopTarget {
   /** X display, e.g. ":99". */
   display: string;
-  /** Logical width (the canonical computer-use default is 1024). */
+  /**
+   * DISPLAY width — what the X server actually runs at. This is `xdotool`'s
+   * coordinate space, so every synthesized pointer event is expressed here.
+   */
   width: number;
-  /** Logical height (768). */
+  /** DISPLAY height (the canonical computer-use default is 768). */
   height: number;
+  /**
+   * D-006 — the CAPTURE bounding box: what the MODEL is served, independent of
+   * what the X server runs at. Omitted ⇒ the model sees the display 1:1.
+   *
+   * This is a BOUNDING BOX, not an output size: the capture preserves aspect
+   * ratio and only ever SHRINKS, so a 1920x1080 display under a 1024x768 box is
+   * served as 1024x576 (not 1024x768), and an 800x600 display is served
+   * untouched rather than upscaled. `captureFit()` is the one place that math
+   * lives; never re-derive it at a call site.
+   */
+  capture?: { width: number; height: number };
+}
+
+/**
+ * D-006 — resolve what the model is actually served for `target`, and the scale
+ * factor between capture space and display space.
+ *
+ * Two properties this function exists to guarantee, both measured on ImageMagick
+ * 6.9.12 rather than assumed:
+ *
+ *  1. SHRINK-ONLY. `-resize 1024x768` UPSCALES an 800x600 display to 1024x768 —
+ *     which would *increase* the token bill this decision exists to cut. The `>`
+ *     suffix (see `captureCommand`) is what makes it shrink-only, and `scale` is
+ *     clamped to 1 here for the same reason.
+ *  2. UNIFORM SCALE. Aspect ratio is preserved, so one factor maps both axes.
+ *     1920x1080 under a 1024x768 box → scale 0.5333 → 1024x576.
+ *
+ * The scale is what makes a downscaled capture SAFE: the model reads coordinates
+ * off a 1024x576 image, and `coord()` maps them back into the 1920x1080 space
+ * xdotool drives. Without that mapping every click lands at roughly half its
+ * intended position.
+ */
+export function captureFit(target: DesktopTarget): { width: number; height: number; scale: number } {
+  const box = target.capture;
+  if (!box || !(box.width > 0) || !(box.height > 0) || !(target.width > 0) || !(target.height > 0)) {
+    return { width: target.width, height: target.height, scale: 1 };
+  }
+  // min(1, …) is the shrink-only clamp — never magnify a small display.
+  const scale = Math.min(1, box.width / target.width, box.height / target.height);
+  if (scale >= 1) return { width: target.width, height: target.height, scale: 1 };
+  return {
+    // max(1, …) so an extreme box can never round an axis to a zero-pixel image.
+    width: Math.max(1, Math.round(target.width * scale)),
+    height: Math.max(1, Math.round(target.height * scale)),
+    scale,
+  };
 }
 
 /** xdotool wheel buttons: 4 up, 5 down, 6 left, 7 right. */
@@ -135,15 +184,59 @@ export function sandboxXEnv(
   return env;
 }
 
-/** Validate + normalize a coordinate against the target bounds. */
+/**
+ * Validate + normalize a coordinate, mapping CAPTURE space → DISPLAY space.
+ *
+ * D-006: the model reads coordinates off the image it was served, which under a
+ * downscaled capture is SMALLER than the X display. Two things therefore have to
+ * happen here, in this order:
+ *
+ *   1. CLAMP in capture space — the space the coordinate is actually expressed in.
+ *      Clamping against the display instead would let a hallucinated coordinate
+ *      past the edge of the image the model saw.
+ *   2. SCALE into display space — xdotool drives the real X server, so a click the
+ *      model placed at (1000, 500) on a 1024x576 capture belongs at (1875, 938) on
+ *      the 1920x1080 display behind it.
+ *
+ * Skipping step 2 is the failure this mapping exists to prevent: every pointer
+ * event would land at roughly half its intended position, and — because the
+ * screenshot still looks correct — it would present as the model misreading the
+ * screen rather than as a coordinate bug.
+ *
+ * With no capture box, `scale` is 1 and this is exactly the previous behaviour.
+ */
 function coord(input: ComputerActionInput, target: DesktopTarget): [number, number] {
   if (!input.coordinate) throw new Error(`capability:computer — action '${input.action}' requires a coordinate`);
   const [x, y] = input.coordinate;
   if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('capability:computer — non-finite coordinate');
-  // Clamp into the display so a hallucinated coordinate can't escape the screen.
-  const cx = Math.max(0, Math.min(Math.round(x), target.width - 1));
-  const cy = Math.max(0, Math.min(Math.round(y), target.height - 1));
-  return [cx, cy];
+  const fit = captureFit(target);
+  // 1. Clamp into the CAPTURE bounds — the image the model actually saw.
+  const cx = Math.max(0, Math.min(Math.round(x), fit.width - 1));
+  const cy = Math.max(0, Math.min(Math.round(y), fit.height - 1));
+  if (fit.scale >= 1) return [cx, cy];
+  // 2. Map into DISPLAY space, then clamp again: rounding at the far edge can land
+  //    one pixel past the last addressable column/row.
+  return [
+    Math.max(0, Math.min(Math.round(cx / fit.scale), target.width - 1)),
+    Math.max(0, Math.min(Math.round(cy / fit.scale), target.height - 1)),
+  ];
+}
+
+/**
+ * Map a DISPLAY-space point back into CAPTURE space — the inverse of `coord()`.
+ *
+ * `cursor_position` asks the X server where the pointer is, and the answer is in
+ * display space. Returning that raw to the model under a downscaled capture would
+ * report a position that does not exist on the image it is looking at (up to ~1.9x
+ * off on a 1920x1080 frame), so the two directions have to stay symmetric.
+ */
+export function toCaptureCoord(x: number, y: number, target: DesktopTarget): [number, number] {
+  const fit = captureFit(target);
+  if (fit.scale >= 1) return [Math.round(x), Math.round(y)];
+  return [
+    Math.max(0, Math.min(Math.round(x * fit.scale), fit.width - 1)),
+    Math.max(0, Math.min(Math.round(y * fit.scale), fit.height - 1)),
+  ];
 }
 
 /** A planned action — what the executor must do. Pure output of `planAction`. */
@@ -247,7 +340,26 @@ export function planAction(input: ComputerActionInput, target: DesktopTarget): P
 export function captureCommand(target: DesktopTarget): { bin: string; args: string[] } {
   assertSandboxDisplay(target.display);
   // `-silent` suppresses the bell; `png:-` writes PNG to stdout.
-  return { bin: 'import', args: ['-display', target.display, '-silent', '-window', 'root', 'png:-'] };
+  const args = ['-display', target.display, '-silent', '-window', 'root'];
+  const fit = captureFit(target);
+  if (fit.scale < 1) {
+    // D-006: downscale AT CAPTURE, not provider-side. Sending full-size pixels and
+    // letting the provider clamp them costs the same tokens (it meters the image it
+    // receives) or loses accuracy at the clamp — so the shrink has to happen here.
+    //
+    // The `>` suffix is LOAD-BEARING, not decoration: `-resize 1024x768` magnifies an
+    // 800x600 display up to 1024x768, which raises the token bill this exists to cut.
+    // `1024x768>` means "only if larger". Verified on ImageMagick 6.9.12:
+    //   1920x1080 -resize '1024x768>' -> 1024x576   (shrunk, aspect preserved)
+    //    800x600  -resize '1024x768>' ->  800x600   (untouched)
+    //    800x600  -resize '1024x768'  -> 1024x768   (magnified — the trap)
+    //
+    // Safe as a bare argv element: the executor uses spawn() WITHOUT `shell: true`,
+    // so `>` is never interpreted as a redirection.
+    args.push('-resize', `${target.capture!.width}x${target.capture!.height}>`);
+  }
+  args.push('png:-');
+  return { bin: 'import', args };
 }
 
 /** The full `xdotool` invocation for a planned xdotool action, with DISPLAY bound. */

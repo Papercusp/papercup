@@ -91,6 +91,7 @@ describe('WorkItemPopupModal — loading / not-found / found', () => {
     // Inline Discuss is now the only popup-adjacent chat entry point. The
     // Working pane still renders WorkItemDetail's dock-backed action.
     expect(screen.queryByTestId('wi-detail-chat')).toBeNull();
+    expect(screen.queryByTestId('wi-detail-discuss')).toBeNull();
   });
 });
 

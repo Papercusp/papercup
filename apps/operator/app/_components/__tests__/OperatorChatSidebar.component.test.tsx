@@ -225,9 +225,9 @@ vi.mock('../plans/PlansPane', () => ({
   default: () => <div data-testid="plans-pane-stub" />,
 }));
 vi.mock('../inbox/InboxPane', () => ({
-  default: ({ onDiscussInChat }: { onDiscussInChat: () => void }) => (
+  default: () => (
     <div data-testid="inbox-pane-stub">
-      <button type="button" data-testid="inbox-discuss-stub" onClick={onDiscussInChat} />
+      <button type="button" data-testid="inbox-discuss-stub" />
     </div>
   ),
 }));
@@ -600,7 +600,7 @@ describe('OperatorChatSidebar collapse behavior', () => {
   });
 });
 describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D-009/P-012)', () => {
-  it('renders the Inbox toggle, swaps in the lazy pane, and Discuss returns to chat', async () => {
+  it('renders the Inbox toggle and keeps the inline Discuss flow inside that face', async () => {
     render(<OperatorChatSidebar />);
     const toggle = screen.getByTestId('op-chat-inbox-toggle');
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
@@ -611,8 +611,8 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
 
     fireEvent.click(screen.getByTestId('inbox-discuss-stub'));
-    await waitFor(() => expect(screen.getByTestId('operator-chat')).toBeTruthy());
-    expect(screen.queryByTestId('inbox-pane-stub')).toBeNull();
+    expect(screen.getByTestId('inbox-pane-stub')).toBeTruthy();
+    expect(screen.queryByTestId('operator-chat')).toBeNull();
   });
 
   it('still shows the live "needs you" badge (99+ cap) on the collapsed rail — the data layer keeps working', () => {

@@ -56,6 +56,16 @@ export interface SandboxDesktop {
    * frozen — and the governor reports exactly that rather than no-opping.
    */
   taskId: string | null;
+  /**
+   * D-006 — the capture bounding box requested for this lease, if the caller asked
+   * for one. Absent means "use the 1024x768 default", which is what both the
+   * registry and `capability:computer` apply — it does NOT mean "capture full size".
+   *
+   * Optional on purpose: not requesting a box is the overwhelmingly common case, and
+   * making it required would force every construction site to restate the default,
+   * which is how one default becomes three copies that drift.
+   */
+  capture?: { width: number; height: number };
   /** Tear the desktop down — kill apps, WM, Xvfb. Idempotent. */
   release: () => Promise<void>;
 }
@@ -65,6 +75,14 @@ export interface ProvisionOptions {
   displayNumber?: number;
   width?: number;
   height?: number;
+  /**
+   * D-006 — request a larger (or smaller) CAPTURE bounding box than the 1024x768
+   * default. The X server still runs at `width`x`height`; this only changes what
+   * `capability:computer` serves the model, and is the deliberate opt-out for an
+   * agent that genuinely needs more detail and accepts the token cost.
+   */
+  captureWidth?: number;
+  captureHeight?: number;
   /** Launch a window manager (openbox). Default true. */
   windowManager?: boolean;
   /** Apps to launch on the desktop, as argv arrays (e.g. [['xterm'], ['firefox','--no-remote']]). */
@@ -236,7 +254,20 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       );
       procs.push(app.child);
     }
-    return { display, number, width, height, gl, taskId, release };
+    return {
+      display,
+      number,
+      width,
+      height,
+      gl,
+      taskId,
+      // D-006: only carried when the caller actually asked for a box — see the
+      // field's comment for why absent means "the default", not "full size".
+      ...(opts.captureWidth && opts.captureHeight
+        ? { capture: { width: opts.captureWidth, height: opts.captureHeight } }
+        : {}),
+      release,
+    };
   } catch (e) {
     await release(); // never leak a half-provisioned Xvfb
     throw e;

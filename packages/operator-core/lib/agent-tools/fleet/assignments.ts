@@ -28,7 +28,7 @@ import {
   type SelfWakeSource,
 } from '../coordination/presence-selfwake';
 import { deriveVerdict } from '../coordination/liveness-oracle';
-import { recordedLiveOwnerIds } from '../../adv-sessions';
+import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
   lastProductiveToolCallAtByOwner,
@@ -156,13 +156,17 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
    *  than failing the whole assignments read, because a supervisor losing one
    *  column must not cost it the roster it uses to supervise. */
   fetchSelfWakeFn: (ownerIds: string[]) => Promise<Map<string, SelfWakeSignals>> = fetchSelfWake,
+  /** Positive session-log death evidence. A current recorded-live successor
+   *  remains authoritative when both sets contain an owner. */
+  fetchEndedRecordedFn: (ownerIds: string[]) => Promise<Set<string>> = endedRecordedOwnerIds,
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
   const ownerIds = agents.map((a) => a.agentId);
-  const [wakeability, recordedLive, selfWake] = await Promise.all([
+  const [wakeability, recordedLive, selfWake, recordedEnded] = await Promise.all([
     fetchWakeabilityFn(ownerIds),
     fetchRecordedLiveFn(ownerIds),
     fetchSelfWakeFn(ownerIds).catch(() => new Map<string, SelfWakeSignals>()),
+    fetchEndedRecordedFn(ownerIds).catch(() => new Set<string>()),
   ]);
   const nowMs = Date.now();
   for (const a of agents) {
@@ -185,6 +189,7 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
       undefined,
       undefined,
       selfWake.get(a.agentId),
+      recordedEnded,
     );
     a.sessionState = v.sessionState;
     // EI-21125380796386851: `suspect` is recoverable when the coordinator can

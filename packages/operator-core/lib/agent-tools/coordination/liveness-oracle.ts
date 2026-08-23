@@ -70,7 +70,7 @@ import {
   type SelfWakeSource,
 } from './presence-selfwake';
 import { RECORDED_SESSION_SOURCE } from './recorded-sessions';
-import { recordedLiveOwnerIds } from '../../adv-sessions';
+import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 
 /** The per-owner inputs a caller supplies. Everything beyond `ownerId` is
@@ -171,6 +171,8 @@ export interface ResolveSessionStatesOpts {
   fetchWakeabilityFn?: (ids: string[]) => Promise<Map<string, WakeabilitySignals>>;
   fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
   fetchRecordedLiveFn?: (ids: string[]) => Promise<Set<string>>;
+  /** Positive evidence that the owner's most-recent recorded session ended. */
+  fetchRecordedEndedFn?: (ids: string[]) => Promise<Set<string>>;
   probePidFn?: (r: { host?: string | null; pid?: number | null }) => boolean | null;
   findHostFn?: (ownerId: string) => unknown | null;
   getPresenceFn?: (
@@ -203,6 +205,9 @@ export function deriveVerdict(
    *  Omitted ⇒ the verdict carries NO loopArmed/selfWake fields at all, which
    *  reads as UNKNOWN — deliberately NOT `none`. */
   selfWake?: SelfWakeSignals,
+  /** Positive session-log evidence that the owner's most-recent session ended.
+   *  A current recorded-live successor wins over this set. */
+  recordedEnded: ReadonlySet<string> = new Set<string>(),
 ): LivenessVerdict {
   const psuHostKnownRole = subject.agentRole != null && subject.agentRole !== 'cup';
   const psuHostLive =
@@ -222,6 +227,11 @@ export function deriveVerdict(
   let sessionState: SessionState;
   if (recordedLiveOnly) {
     sessionState = 'recorded';
+  } else if (recordedEnded.has(subject.ownerId)) {
+    // A warm heartbeat and a lingering wake-await can outlive the process.
+    // Positive session-log death evidence settles that ambiguity immediately;
+    // claims still held remain suspect until their cleanup is reconciled.
+    sessionState = subject.claimsHeld ? 'suspect' : 'ended';
   } else {
     sessionState = deriveSessionState({
       stale: !!stale,
@@ -281,6 +291,7 @@ export async function resolveSessionStates(
   const nowMs = opts.nowMs ?? Date.now();
   const fetchWake = opts.fetchWakeabilityFn ?? fetchWakeability;
   const fetchRecorded = opts.fetchRecordedLiveFn ?? recordedLiveOwnerIds;
+  const fetchEnded = opts.fetchRecordedEndedFn ?? endedRecordedOwnerIds;
   const probePidFn = opts.probePidFn ?? probeProcessLiveness;
   const findHostFn = opts.findHostFn ?? findLiveHost;
 
@@ -310,12 +321,15 @@ export async function resolveSessionStates(
 
   const ids = hydrated.map((s) => s.ownerId);
   const fetchSelf = opts.fetchSelfWakeFn ?? fetchSelfWake;
-  const [wakeability, recordedLive, selfWake] = await Promise.all([
+  const [wakeability, recordedLive, recordedEnded, selfWake] = await Promise.all([
     fetchWake(ids),
     // Recorded-session authority is an ENRICHMENT leg — best-effort by design
     // (adv_sessions may lag/miss); a failure degrades to "no recorded rescue",
     // never fails the verdict batch.
     fetchRecorded(ids).catch(() => new Set<string>()),
+    // Positive ended-session evidence closes the warm-heartbeat / stale-await
+    // gap. A read failure degrades to the older oracle, never to a death claim.
+    fetchEnded(ids).catch(() => new Set<string>()),
     // Self-wake is likewise an ENRICHMENT leg: a failure degrades every subject
     // to "self-wake unknown" (the fields are simply absent) and never fails the
     // batch — a supervisor losing one column must not cost it the whole roster.
@@ -334,7 +348,16 @@ export async function resolveSessionStates(
     if (!w) continue; // no signal (degraded fetch / federated id) — state unknown
     out.set(
       s.ownerId,
-      deriveVerdict(s, w, recordedLive, nowMs, probePidFn, psuHost, selfWake.get(s.ownerId)),
+      deriveVerdict(
+        s,
+        w,
+        recordedLive,
+        nowMs,
+        probePidFn,
+        psuHost,
+        selfWake.get(s.ownerId),
+        recordedEnded,
+      ),
     );
   }
   return out;

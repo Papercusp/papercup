@@ -69,6 +69,7 @@ import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
  *  makes that budget the tool's own rather than something each agent re-picks. */
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
+const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
 
 const DETACHED_INSPECT_TEST_HINT =
   "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
@@ -464,6 +465,11 @@ export async function runTestFilesCore(opts: {
   const reportPath = join(dir, 'report.json');
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
+    // Vitest treats an explicit --reporter as a replacement for the reporters declared by
+    // the workspace config. Keep the admin ledger reporter in the same invocation, otherwise
+    // testing:run returns correct counts but silently records no harness_shared.test_runs rows.
+    const adminReporterPath = join(root, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+    if (existsSync(adminReporterPath)) vitestArgs.push(`--reporter=${adminReporterPath}`);
     // WI-39830: the JOINED form, never `['-t', pattern]`. Split across two argv entries,
     // vitest's CAC parser reads any `-`-prefixed pattern as a new OPTION instead of as `-t`'s
     // value and dies with an opaque CACError — which makes every test in this repo whose name

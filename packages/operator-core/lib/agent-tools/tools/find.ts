@@ -78,14 +78,13 @@ type JsonSchemaNode = {
   exclusiveMinimum?: unknown;
   exclusiveMaximum?: unknown;
   minLength?: unknown;
+  description?: unknown;
   maxLength?: unknown;
 };
 
 function schemaNodes(node: JsonSchemaNode): JsonSchemaNode[] {
   const unions = [node.anyOf, node.oneOf].find(Array.isArray);
-  const branches = unions
-    ? (unions as unknown[]).filter((n): n is JsonSchemaNode => !!n && typeof n === 'object')
-    : [];
+  const branches = unions ? (unions as unknown[]).filter((n): n is JsonSchemaNode => !!n && typeof n === 'object') : [];
 
   // Some strict Zod schemas deliberately include permissive branches solely so
   // `superRefine` can replace their generic error with teaching text.  Those
@@ -96,8 +95,8 @@ function schemaNodes(node: JsonSchemaNode): JsonSchemaNode[] {
   // callable (`array|string`) and hides the fact that the nested object fields
   // are the accepted shape.  The compact projection should describe the
   // callable branch, not the validation-only refusal branches.
-  const hasTeachingArrayShape = branches.some((branch) =>
-    branch.type === 'array' && (branch.minItems != null || branch.maxItems != null),
+  const hasTeachingArrayShape = branches.some(
+    (branch) => branch.type === 'array' && (branch.minItems != null || branch.maxItems != null),
   );
   if (!hasTeachingArrayShape) return branches;
 
@@ -114,8 +113,8 @@ function schemaNodes(node: JsonSchemaNode): JsonSchemaNode[] {
 
 function schemaType(node: JsonSchemaNode): string {
   const enumValues = Array.isArray(node.enum)
-    ? node.enum.filter((v): v is string | number | boolean =>
-        typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+    ? node.enum.filter(
+        (v): v is string | number | boolean => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
       )
     : [];
   if (enumValues.length > 0) return `enum(${enumValues.join('|')})`;
@@ -141,19 +140,21 @@ function schemaBound(node: JsonSchemaNode): string {
   const numberValue = (value: unknown): number | null =>
     typeof value === 'number' && Number.isFinite(value) ? value : null;
   const lower = nodes
-    .map((n) =>
-      numberValue(n.minimum) ??
-      numberValue(n.exclusiveMinimum) ??
-      numberValue(n.minLength) ??
-      numberValue(n.minItems),
+    .map(
+      (n) =>
+        numberValue(n.minimum) ??
+        numberValue(n.exclusiveMinimum) ??
+        numberValue(n.minLength) ??
+        numberValue(n.minItems),
     )
     .find((value): value is number => value != null);
   const upper = nodes
-    .map((n) =>
-      numberValue(n.maximum) ??
-      numberValue(n.exclusiveMaximum) ??
-      numberValue(n.maxLength) ??
-      numberValue(n.maxItems),
+    .map(
+      (n) =>
+        numberValue(n.maximum) ??
+        numberValue(n.exclusiveMaximum) ??
+        numberValue(n.maxLength) ??
+        numberValue(n.maxItems),
     )
     .find((value): value is number => value != null);
   return lower != null && upper != null
@@ -167,7 +168,9 @@ function schemaBound(node: JsonSchemaNode): string {
 
 function schemaPattern(node: JsonSchemaNode): string {
   const pattern = [node, ...schemaNodes(node)]
-    .map((candidate) => (typeof candidate.pattern === 'string' && candidate.pattern.length > 0 ? candidate.pattern : null))
+    .map((candidate) =>
+      typeof candidate.pattern === 'string' && candidate.pattern.length > 0 ? candidate.pattern : null,
+    )
     .find((value): value is string => value != null);
   return pattern ? `~/${pattern}/` : '';
 }
@@ -175,8 +178,11 @@ function schemaPattern(node: JsonSchemaNode): string {
 function objectProperties(node: JsonSchemaNode): { properties: Record<string, unknown>; required: Set<string> } | null {
   const candidates = [node, ...schemaNodes(node)];
   for (const candidate of candidates) {
-    if (!candidate.properties || typeof candidate.properties !== 'object' || Array.isArray(candidate.properties)) continue;
-    const required = new Set<string>(Array.isArray(candidate.required) ? candidate.required.filter((v): v is string => typeof v === 'string') : []);
+    if (!candidate.properties || typeof candidate.properties !== 'object' || Array.isArray(candidate.properties))
+      continue;
+    const required = new Set<string>(
+      Array.isArray(candidate.required) ? candidate.required.filter((v): v is string => typeof v === 'string') : [],
+    );
     return { properties: candidate.properties as Record<string, unknown>, required };
   }
   return null;
@@ -185,7 +191,9 @@ function objectProperties(node: JsonSchemaNode): { properties: Record<string, un
 /** Keep the compact result useful without letting recursive schemas consume it. */
 const MAX_NESTED_SCHEMA_DEPTH = 4;
 
-function nestedObjectProperties(node: JsonSchemaNode): { properties: Record<string, unknown>; required: Set<string> } | null {
+function nestedObjectProperties(
+  node: JsonSchemaNode,
+): { properties: Record<string, unknown>; required: Set<string> } | null {
   const direct = objectProperties(node);
   if (direct) return direct;
 
@@ -202,7 +210,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number): string {
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
   const names = Object.entries(nested.properties).map(([name, raw]) => {
-    const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as JsonSchemaNode : {};
+    const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
     const shape = schemaShape(child, depth);
     const description = nestedDescription(child, depth);
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
@@ -221,9 +229,10 @@ function nestedDescription(node: JsonSchemaNode, depth: number): string {
   if (depth <= 0 || typeof node.description !== 'string') return '';
   const description = node.description.replace(/\s+/g, ' ').trim();
   if (!description) return '';
-  const bounded = description.length <= COMPACT_NESTED_DESCRIPTION_MAX_CHARS
-    ? description
-    : `${description.slice(0, COMPACT_NESTED_DESCRIPTION_MAX_CHARS - 1)}…`;
+  const bounded =
+    description.length <= COMPACT_NESTED_DESCRIPTION_MAX_CHARS
+      ? description
+      : `${description.slice(0, COMPACT_NESTED_DESCRIPTION_MAX_CHARS - 1)}…`;
   return ` ${bounded}`;
 }
 
@@ -235,9 +244,10 @@ function schemaShape(node: JsonSchemaNode, depth: number): string {
   // silently downgraded locks:release's published_sha to bare `string`, even
   // though the searchable corpus already exposed the pattern.
   const pattern = type.startsWith('enum(') ? '' : schemaPattern(node);
-  const itemConstraint = [node, ...schemaNodes(node)]
-    .map((candidate) => arrayItemConstraintText(candidate))
-    .find((text): text is string => text.length > 0) ?? '';
+  const itemConstraint =
+    [node, ...schemaNodes(node)]
+      .map((candidate) => arrayItemConstraintText(candidate))
+      .find((text): text is string => text.length > 0) ?? '';
   const nested = nestedFieldNames(node, depth + 1);
   return `${type}${bound}${pattern}${itemConstraint}${nested}`;
 }
@@ -252,17 +262,17 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
   const root = inputSchema as JsonSchemaNode;
   const props = root.properties;
   if (!props || typeof props !== 'object' || Array.isArray(props)) return null;
-  const required = new Set<string>(Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : []);
+  const required = new Set<string>(
+    Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : [],
+  );
   const parts = Object.entries(props as Record<string, unknown>).map(([name, raw]) => {
-    const node = raw && typeof raw === 'object' ? raw as JsonSchemaNode : {};
+    const node = raw && typeof raw === 'object' ? (raw as JsonSchemaNode) : {};
     const shape = schemaShape(node, 0);
     return `${name}${required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
   });
   if (parts.length === 0) return null;
   const text = parts.join('; ');
-  return text.length <= DISCOVERY_SCHEMA_MAX_CHARS
-    ? text
-    : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
+  return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
 }
 
 function boundedText(value: string | null, maxChars: number): string | null {
@@ -580,7 +590,8 @@ export default defineTool({
     const projectedHits = hits.map((h) => ({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
-      argSchema: compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+      argSchema:
+        compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
       via: h.via,
     }));
     const howToCall = activated

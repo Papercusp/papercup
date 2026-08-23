@@ -8,8 +8,8 @@
  *     expands the Queue's OtherDetail inline (remount-per-selection key);
  *   - the empty ("inbox zero") state;
  *   - the "Open full queue" jump (?tab=plans&view=queue merge on /adv);
- *   - Discuss → stages a Papercup chat seed + flips back to the chat view
- *     (owner ask 2026-07-16 "opening up a chat with papercup about it");
+ *   - Discuss → writes the scoped work-item target and mounts the durable
+ *     Papercup thread beneath the expanded row without touching global chat;
  *   - useInboxPendingCount / effectiveTier (the header-badge derivation).
  *
  * nuqs runs through the first-party NuqsTestingAdapter (real parsers); the
@@ -89,9 +89,30 @@ vi.mock('../chat/SessionChatModal', () => ({
   },
 }));
 
-import InboxPane, { buildDiscussDraft, formatRelativeDate } from './InboxPane';
+const discussionProps = vi.fn();
+vi.mock('../work-items/WorkItemDiscussion', () => ({
+  WORK_ITEM_DISCUSSION_PARAM: 'opcid',
+  default: (props: {
+    harnessSlug: string;
+    workItemId: string;
+    title?: string | null;
+    onClose?: () => void;
+  }) => {
+    discussionProps(props);
+    return (
+      <div
+        data-testid="work-item-discussion-stub"
+        data-harness={props.harnessSlug}
+        data-work-item={props.workItemId}
+      >
+        <button type="button" data-testid="work-item-discussion-close" onClick={props.onClose} />
+      </div>
+    );
+  },
+}));
+
+import InboxPane, { formatRelativeDate } from './InboxPane';
 import { effectiveTier, useInboxPendingCount, isInboxActive, scopeInboxItems } from './use-inbox-pending';
-import { consumePendingChatSeed } from './chat-seed';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
 function mkItem(id: string, over: Partial<AttentionItem> = {}): AttentionItem {
@@ -134,8 +155,7 @@ function seedAttention(items: AttentionItem[]) {
 
 function renderPane(searchParams = '') {
   const onUrlUpdate = vi.fn();
-  const onDiscussInChat = vi.fn();
-  render(<InboxPane onDiscussInChat={onDiscussInChat} />, {
+  render(<InboxPane />, {
     wrapper: ({ children }) => (
       <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlUpdate}>
         {children}
@@ -146,14 +166,14 @@ function renderPane(searchParams = '') {
     onUrlUpdate.mock.calls.length
       ? onUrlUpdate.mock.calls[onUrlUpdate.mock.calls.length - 1][0].queryString
       : '';
-  return { onUrlUpdate, lastQuery, onDiscussInChat };
+  return { onUrlUpdate, lastQuery };
 }
 
 afterEach(() => {
   cleanup();
   H.results = {};
-  consumePendingChatSeed(); // drain any staged seed between tests
   chatModalProps.mockClear();
+  discussionProps.mockClear();
 });
 
 describe('effectiveTier (badge/filter derivation)', () => {
@@ -397,38 +417,47 @@ describe('<InboxPane>', () => {
     expect(screen.getByTestId('session-chat-modal-stub').getAttribute('data-owner')).toBe('su-live-1');
   });
 
-  it('Discuss stages a Papercup chat seed and flips back to the chat view', () => {
-    seedAttention([mkItem('d1', { planSlug: 'plan-x' })]);
-    const { onDiscussInChat } = renderPane('?opcis=d1');
+  it('Discuss writes the scoped inline target instead of switching or seeding global chat', async () => {
+    seedAttention([
+      mkItem('work-item-needs-human:WI-42', {
+        kind: 'work-item-needs-human',
+        ref: { kind: 'work-item-needs-human', workItemId: 'WI-42', itemKind: 'change' },
+      }),
+    ]);
+    const { lastQuery } = renderPane('?opcis=work-item-needs-human%3AWI-42');
     fireEvent.click(screen.getByTestId('stub-discuss'));
-    expect(onDiscussInChat).toHaveBeenCalledTimes(1);
-    const seed = consumePendingChatSeed();
-    expect(seed).toContain('Title of d1');
-    expect(seed).toContain('plan plan-x');
-    // The ref is the item id verbatim — real feed ids already carry the kind
-    // prefix ("coord-message:m…"), so the draft must not re-prepend i.kind.
-    expect(seed).toContain('ref d1)');
-    expect(seed).not.toContain('coord-message:d1');
+    await waitFor(() => expect(lastQuery()).toContain('opcid=papercusp::WI-42'));
   });
 
-  it('buildDiscussDraft folds kind, location, title and a bounded report digest', () => {
-    // report is a STRUCTURED ReportBlock (title + plan rows), flattened to a
-    // one-liner-per-plan digest and capped at 600 chars.
-    const draft = buildDiscussDraft(
-      mkItem('d9', {
-        planSlug: 'plan-y',
-        report: {
-          title: 'Fleet report',
-          plans: [{ title: 'Rate-limit v2', status: 'active', summary: 'x'.repeat(700) }],
-        },
-      } as Partial<AttentionItem>),
+  it('a deep-linked discussion renders beneath the expanded work-item and close clears only opcid', async () => {
+    seedAttention([
+      mkItem('work-item-needs-human:WI-42', {
+        kind: 'work-item-needs-human',
+        ref: { kind: 'work-item-needs-human', workItemId: 'WI-42', itemKind: 'change' },
+      }),
+    ]);
+    const { lastQuery } = renderPane(
+      '?opcis=work-item-needs-human%3AWI-42&opcid=papercusp%3A%3AWI-42',
     );
-    expect(draft).toContain('message — plan plan-y · harness papercusp');
-    expect(draft).toContain('Title of d9');
-    expect(draft).toContain('Fleet report');
-    expect(draft).toContain('Rate-limit v2 [active]');
-    expect(draft).toContain('x'.repeat(500)); // digest present…
-    expect(draft).not.toContain('x'.repeat(601)); // …but bounded at 600 total
+    const expanded = screen.getByTestId('inbox-expanded-work-item-needs-human:WI-42');
+    const discussion = screen.getByTestId('work-item-discussion-stub');
+    expect(expanded.contains(screen.getByTestId('other-detail'))).toBe(true);
+    expect(expanded.contains(discussion)).toBe(true);
+    expect(discussion.getAttribute('data-harness')).toBe('papercusp');
+    expect(discussion.getAttribute('data-work-item')).toBe('WI-42');
+
+    fireEvent.click(screen.getByTestId('work-item-discussion-close'));
+    await waitFor(() => expect(lastQuery()).not.toContain('opcid='));
+    expect(lastQuery()).toContain('opcis=work-item-needs-human:WI-42');
+  });
+
+  it('Discuss falls back to the Queue panel when the attention item has no canonical work-item id', async () => {
+    seedAttention([mkItem('d1')]);
+    const { lastQuery } = renderPane('?opcis=d1');
+    fireEvent.click(screen.getByTestId('stub-discuss'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lastQuery()).not.toContain('opcid=');
+    expect(screen.queryByTestId('work-item-discussion-stub')).toBeNull();
   });
 
   it('shows the inbox-zero empty state when nothing needs the owner', () => {

@@ -6,10 +6,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertSandboxDisplay,
+  captureFit,
   planAction,
   captureCommand,
   sandboxXEnv,
   stripHostX,
+  toCaptureCoord,
   xdotoolCommand,
   type DesktopTarget,
 } from './desktop-driver';
@@ -194,5 +196,102 @@ describe('command builders bind the sandbox display and refuse :0', () => {
   it('xdotoolCommand refuses :0', () => {
     const plan = planAction({ action: 'left_click' }, T) as { kind: 'xdotool'; args: string[] };
     expect(() => xdotoolCommand(plan, { ...T, display: ':0' })).toThrow(/HOST display :0/);
+  });
+});
+
+/**
+ * D-006 (plan agent-virtual-desktops-2026-08-23, P-006 / WI-40890) — two geometries.
+ *
+ * The display is what X runs at; the capture box is what the MODEL is served. These
+ * pin the three properties that make a downscaled capture SAFE rather than silently
+ * wrong — each MEASURED against ImageMagick 6.9.12 on the box before being encoded:
+ *
+ *   1. shrink-only (a smaller display is never magnified — that RAISES the bill)
+ *   2. aspect-preserving, so ONE scale factor maps both axes
+ *   3. coordinate round-tripping, so a click lands where the model aimed it
+ */
+describe('D-006 capture geometry', () => {
+  const FRAME: DesktopTarget = {
+    display: ':99',
+    width: 1920,
+    height: 1080,
+    capture: { width: 1024, height: 768 },
+  };
+
+  describe('captureFit', () => {
+    it('shrinks 1920x1080 into the box PRESERVING ASPECT — 1024x576, not 1024x768', () => {
+      // The box is a BOUNDING box. Asserting 1024x768 would encode a squashed image
+      // ImageMagick never produces: measured `-resize '1024x768>'` → 1024x576.
+      expect(captureFit(FRAME)).toEqual({ width: 1024, height: 576, scale: 1024 / 1920 });
+    });
+
+    it('NEVER magnifies a display smaller than the box', () => {
+      // The trap: `-resize 1024x768` (no `>`) turns 800x600 into 1024x768 — a token
+      // INCREASE from a change whose entire purpose is to cut cost.
+      const small: DesktopTarget = { display: ':99', width: 800, height: 600, capture: { width: 1024, height: 768 } };
+      expect(captureFit(small)).toEqual({ width: 800, height: 600, scale: 1 });
+    });
+
+    it('is identity when no capture box is set', () => {
+      expect(captureFit(T)).toEqual({ width: 1024, height: 768, scale: 1 });
+    });
+
+    it('scales on the MORE constrained axis (an ultrawide is bound by width)', () => {
+      const ultrawide: DesktopTarget = { display: ':99', width: 3440, height: 1440, capture: { width: 1024, height: 768 } };
+      const fit = captureFit(ultrawide);
+      expect(fit.scale).toBeCloseTo(1024 / 3440, 10);
+      expect(fit).toMatchObject({ width: 1024, height: 429 });
+    });
+
+    it('never rounds an axis down to a zero-pixel image', () => {
+      const sliver: DesktopTarget = { display: ':99', width: 4000, height: 3, capture: { width: 100, height: 100 } };
+      expect(captureFit(sliver).height).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('captureCommand', () => {
+    it('appends a SHRINK-ONLY resize when the display exceeds the box', () => {
+      expect(captureCommand(FRAME).args).toEqual([
+        '-display', ':99', '-silent', '-window', 'root', '-resize', '1024x768>', 'png:-',
+      ]);
+    });
+
+    it('omits the resize entirely when the display already fits', () => {
+      expect(captureCommand(T).args).not.toContain('-resize');
+    });
+  });
+
+  describe('coordinate mapping', () => {
+    it('maps a capture-space click into DISPLAY space', () => {
+      // The model saw a 1024x576 image and clicked (1000, 500); on the real 1920x1080
+      // display that is (1875, 938). Without the mapping the click lands at (1000, 500)
+      // — roughly half-way up and left of where the model aimed.
+      const plan = planAction({ action: 'left_click', coordinate: [1000, 500] }, FRAME) as { args: string[] };
+      expect(plan.args).toEqual(['mousemove', '--sync', '1875', '938', 'click', '1']);
+    });
+
+    it('clamps in CAPTURE space, so the image corner reaches the SCREEN corner', () => {
+      // The regression this pins: width/height once carried the CAPTURE size while the
+      // screenshot stayed full-size, so coord() clamped every click to 1023x767 and the
+      // bottom-right ~72% of a 1920x1080 frame was unreachable.
+      const plan = planAction({ action: 'left_click', coordinate: [99999, 99999] }, FRAME) as { args: string[] };
+      expect(plan.args).toEqual(['mousemove', '--sync', '1919', '1079', 'click', '1']);
+    });
+
+    it('is unchanged when there is no capture box', () => {
+      const plan = planAction({ action: 'mouse_move', coordinate: [300, 250] }, T) as { args: string[] };
+      expect(plan.args).toEqual(['mousemove', '--sync', '300', '250']);
+    });
+
+    it('round-trips display→capture→display within a scaled pixel', () => {
+      // toCaptureCoord is the inverse used by cursor_position. If the two directions
+      // disagree, the pointer the model is TOLD about is not the one it can click.
+      for (const [dx, dy] of [[0, 0], [960, 540], [1919, 1079]] as const) {
+        const [cx, cy] = toCaptureCoord(dx, dy, FRAME);
+        const plan = planAction({ action: 'mouse_move', coordinate: [cx, cy] }, FRAME) as { args: string[] };
+        expect(Math.abs(Number(plan.args[2]) - dx)).toBeLessThanOrEqual(2);
+        expect(Math.abs(Number(plan.args[3]) - dy)).toBeLessThanOrEqual(2);
+      }
+    });
   });
 });

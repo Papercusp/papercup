@@ -30,13 +30,18 @@ import {
   assertSandboxDisplay,
   captureCommand,
   planAction,
+  toCaptureCoord,
   xdotoolCommand,
   type ComputerActionInput,
   type DesktopTarget,
 } from './desktop-driver';
 import { hiveDesktop } from './desktop-lease';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveDesktopForScope } from '../../desktop/desktop-session-registry';
+import {
+  DEFAULT_CAPTURE_GEOMETRY,
+  resolveDesktopForScope,
+  resolveLocalDesktopByDisplay,
+} from '../../desktop/desktop-session-registry';
 import { scrubExecEnv } from '../capability/exec-sandbox';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
@@ -133,7 +138,16 @@ async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
     const leased = hiveDesktop(hive);
     if (leased) {
       assertSandboxDisplay(leased.display); // belt-and-suspenders: a lease is never :0
-      return { display: leased.display, width: leased.width, height: leased.height };
+      // D-006: the lease carries the DISPLAY geometry; the model is served the
+      // capture box. A 1024x768 sandbox (the provisioner default) fits inside the
+      // box, so `captureFit` makes this a no-op there — the resize only engages on
+      // a deliberately larger desktop.
+      return {
+        display: leased.display,
+        width: leased.width,
+        height: leased.height,
+        capture: leased.capture ? { ...leased.capture } : { ...DEFAULT_CAPTURE_GEOMETRY },
+      };
     }
   }
   // 2. P-003 (D-004): the REGISTRY. Finds a session this process does not hold in
@@ -153,11 +167,24 @@ async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
       });
       if (session) {
         assertSandboxDisplay(session.display); // same rail as every other path: never :0
-        // D-006: the AGENT is served capture geometry, not the display geometry.
+        // D-006: BOTH geometries ride the session. `width`/`height` are the DISPLAY
+        // (xdotool's space); `capture` is the bounding box the model is served.
+        //
+        // ⚠ These were previously collapsed onto captureGeometry alone, which was
+        // wrong in a way no test caught: `import -window root` ignores the target's
+        // width/height, so the model received a FULL-SIZE 1920x1080 image while
+        // coord() clamped every click to 1023x767 — the bottom-right ~72% of the
+        // screen was unaddressable, and the agent was still billed for every pixel.
+        // Reachable today via computer:provision_desktop { width: 1920, height: 1080 },
+        // which registers scope='pot' with the 1024x768 capture default.
         return {
           display: session.display,
-          width: session.captureGeometry.width,
-          height: session.captureGeometry.height,
+          width: session.displayGeometry.width,
+          height: session.displayGeometry.height,
+          capture: {
+            width: session.captureGeometry.width,
+            height: session.captureGeometry.height,
+          },
         };
       }
     } catch {
@@ -177,9 +204,71 @@ async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
     );
   }
   assertSandboxDisplay(display); // throws on :0 / malformed
+
+  // D-006 / P-006 — "resolution rides the DesktopSession lease". The frame path
+  // (`PAPERCUSP_AGENT_DISPLAY`, set by orchestrator-runner) exports a display and
+  // NO geometry, so the DEFAULT_W/H below is an ASSUMPTION — and on a frame it is
+  // the wrong one: frame slots run 1920x1080 (deployment config default, mirrored
+  // by display-allocator's registration). Believing 1024x768 there made the model
+  // unable to address the bottom-right ~72% of its own screen.
+  //
+  // The registry already knows the truth for exactly these displays, so ask it
+  // before falling back to a guess. Best-effort by the same reasoning as the scope
+  // lookup above: a missing inventory must not take capability:computer down.
+  try {
+    const byDisplay = await resolveLocalDesktopByDisplay({
+      workspaceId: activeWorkspaceId(),
+      display,
+    });
+    if (byDisplay) {
+      return {
+        display,
+        width: byDisplay.displayGeometry.width,
+        height: byDisplay.displayGeometry.height,
+        capture: {
+          width: byDisplay.captureGeometry.width,
+          height: byDisplay.captureGeometry.height,
+        },
+      };
+    }
+  } catch {
+    /* fall through to the env geometry — a missing inventory is not a missing desktop */
+  }
+
   const w = Number(process.env.PAPERCUSP_COMPUTER_WIDTH) || DEFAULT_W;
   const h = Number(process.env.PAPERCUSP_COMPUTER_HEIGHT) || DEFAULT_H;
-  return { display, width: w, height: h };
+  return { display, width: w, height: h, capture: { ...DEFAULT_CAPTURE_GEOMETRY } };
+}
+
+/**
+ * Rewrite `xdotool getmouselocation --shell` output from DISPLAY space into
+ * CAPTURE space (D-006).
+ *
+ * The output is `X=..\nY=..\nSCREEN=..\nWINDOW=..`; only X and Y are positions, so
+ * SCREEN/WINDOW are passed through untouched — rewriting them would corrupt an id.
+ * An unparseable line is left exactly as-is: this is a reporting convenience, and
+ * mangling xdotool's output would be worse than reporting it unscaled.
+ */
+export function rewriteCursorPosition(raw: string, target: DesktopTarget): string {
+  let x: number | undefined;
+  let y: number | undefined;
+  for (const line of raw.split('\n')) {
+    const m = /^(X|Y)=(-?\d+)$/.exec(line.trim());
+    if (!m) continue;
+    if (m[1] === 'X') x = Number(m[2]);
+    else y = Number(m[2]);
+  }
+  if (x === undefined || y === undefined) return raw;
+  const [cx, cy] = toCaptureCoord(x, y, target);
+  return raw
+    .split('\n')
+    .map((line) => {
+      const t = line.trim();
+      if (/^X=-?\d+$/.test(t)) return `X=${cx}`;
+      if (/^Y=-?\d+$/.test(t)) return `Y=${cy}`;
+      return line;
+    })
+    .join('\n');
 }
 
 /** Capture the sandbox screen → an MCP image content block (base64 PNG). */
@@ -237,7 +326,13 @@ export async function runComputerAction(
 
   if (plan.kind === 'cursor_position') {
     const r = await execImpl('xdotool', ['getmouselocation', '--shell'], { env: { DISPLAY: target.display }, signal });
-    return { content: [{ type: 'text', text: r.stdout.toString().trim() || `exit ${r.status}` }] };
+    const raw = r.stdout.toString().trim();
+    if (!raw) return { content: [{ type: 'text', text: `exit ${r.status}` }] };
+    // D-006: xdotool answers in DISPLAY space. The model is looking at a capture that
+    // may be smaller, so report the position in the space it can actually see —
+    // otherwise `cursor_position` and the screenshot disagree by the scale factor
+    // (~1.9x on a frame), and the inverse of coord() would not round-trip.
+    return { content: [{ type: 'text', text: rewriteCursorPosition(raw, target) }] };
   }
 
   if (plan.kind === 'wait') {

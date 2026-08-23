@@ -34,6 +34,7 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
 import statusTool, {
+  classifyLaunchTransactionUnconfirmedMembers,
   FLEET_STATUS_TIER_CAPS,
   reconcileFleetStatusLiveness,
   shapeFleetStatus,
@@ -117,6 +118,59 @@ describe('fleet:status', () => {
     expect(out.completionStats).toBeUndefined();
     expect(out.launchTransaction).toMatchObject({ transactionId: 'tx-1', state: 'partial' });
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
+  });
+
+  it('labels unconfirmed launch ids by the roster presence read', async () => {
+    h.getFleet.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      leaderOwnerId: 'su-leader',
+      controlState: 'active',
+      lastLaunchTransaction: {
+        unconfirmedMemberIds: ['su-unconfirmed-live', 'su-unconfirmed-absent'],
+      },
+    });
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        {
+          agentId: 'su-leader',
+          ownerLabel: 'Leader',
+          agentRole: 'su',
+          fleetRole: 'leader',
+          alive: true,
+          sessionState: 'live',
+        },
+        {
+          agentId: 'su-unconfirmed-live',
+          agentRole: 'su',
+          fleetRole: 'member',
+          alive: true,
+          heartbeatFresh: true,
+          sessionState: 'live',
+          lastActiveSecAgo: 4,
+        },
+      ],
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.launchTransactionUnconfirmedMembers).toEqual([
+      {
+        ownerId: 'su-unconfirmed-live',
+        presence: 'present',
+        sessionState: 'live',
+        heartbeatFresh: true,
+        lastActiveSecAgo: 4,
+      },
+      {
+        ownerId: 'su-unconfirmed-absent',
+        presence: 'absent',
+        sessionState: null,
+        heartbeatFresh: null,
+        lastActiveSecAgo: null,
+      },
+    ]);
   });
 
   it('returns an ended leader with an explicit liveness annotation', async () => {
@@ -380,6 +434,27 @@ describe('fleet:status', () => {
       expect(out.degraded).toBeUndefined();
       expect(out.degradedLegs).toBeUndefined();
     });
+  });
+});
+
+describe('launch transaction unconfirmed presence classification', () => {
+  it('does not turn a degraded presence read into a false absent verdict', () => {
+    expect(
+      classifyLaunchTransactionUnconfirmedMembers(
+        ['su-missing'],
+        [],
+        ['presence'],
+      ),
+    ).toEqual([
+      {
+        ownerId: 'su-missing',
+        presence: 'unknown',
+        sessionState: null,
+        heartbeatFresh: null,
+        lastActiveSecAgo: null,
+        reason: 'fleet roster presence read degraded; absence is unverified',
+      },
+    ]);
   });
 });
 
