@@ -71,6 +71,7 @@ import {
   summariseByFile,
   syntaxBrokenFiles,
 } from '../../tsc-diagnostics';
+import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { tscHeapEnv } from '../tsc-heap';
 import {
@@ -103,6 +104,35 @@ const MAX_TIMEOUT_MS = 900_000;
  * that drifts silently the day the cap moves.
  */
 const DEFAULT_MAX_ERRORS = 50;
+const MAX_BY_FILE = 30;
+
+interface BoundedDiagnostics {
+  errors: TscDiagnostic[];
+  errorsTruncated: boolean;
+  byFile: TscFileCount[];
+  byFileTruncated: boolean;
+  filesWithErrors: number;
+}
+
+/**
+ * Bound the two potentially large diagnostic arrays without making a bounded
+ * response look complete. The full counts remain available to callers through
+ * `errorCount`/`filesWithErrors`; the flags are deliberately adjacent to the
+ * arrays so a grep or a shallow projection cannot miss the caveat.
+ */
+export function boundDiagnostics(
+  errors: TscDiagnostic[],
+  byFile: TscFileCount[],
+  maxErrors: number,
+): BoundedDiagnostics {
+  return {
+    errors: errors.slice(0, maxErrors),
+    errorsTruncated: errors.length > maxErrors,
+    byFile: byFile.slice(0, MAX_BY_FILE),
+    byFileTruncated: byFile.length > MAX_BY_FILE,
+    filesWithErrors: byFile.length,
+  };
+}
 
 /** Depth-bounded scan for real tsconfigs, used only to make a refusal actionable. */
 const SUGGEST_ROOTS = ['packages', 'apps', 'libs'];
@@ -594,7 +624,7 @@ export default defineTool({
     files: z.array(z.string().min(1)).max(50).optional()
       .describe('Return only diagnostics in these files (matched by path suffix). The server-side form of `| grep -E "myfile"` — the whole project is still checked, so counts stay honest; `errorCount` is the filtered count and `totalErrorCount` the project-wide one.'),
     maxErrors: z.number().int().min(1).max(500).optional()
-      .describe(`Cap the returned errors list (default ${DEFAULT_MAX_ERRORS}). Counts and byFile stay complete; errorsTruncated flags the cut.`),
+      .describe(`Cap the returned errors list (default ${DEFAULT_MAX_ERRORS}). Counts stay complete; errorsTruncated and byFileTruncated flag bounded arrays.`),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
       .describe(
         `Hard budget for the compile. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so an over-long compile returns an actionable timeout instead of an opaque transport error. A project that needs longer (packages/operator-core is ~104s) must run detached via capability:inspect { run_in_background: true }.`,
@@ -747,6 +777,7 @@ export default defineTool({
     // this mode exists to eliminate.
     const shown = args.files && !args.scopeToFiles ? filterToFiles(errors, args.files) : errors;
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
+    const bounded = boundDiagnostics(shown, byFile, maxErrors);
     const reported = parseFoundSummary(outcome.output);
 
     return {
@@ -773,10 +804,11 @@ export default defineTool({
             }
           : {}),
         ...(args.files && !args.scopeToFiles ? { totalErrorCount: errors.length, filteredTo: args.files } : {}),
-        errors: shown.slice(0, maxErrors),
-        errorsTruncated: shown.length > maxErrors,
-        byFile: byFile.slice(0, 30),
-        filesWithErrors: byFile.length,
+        errors: bounded.errors,
+        errorsTruncated: bounded.errorsTruncated,
+        byFile: bounded.byFile,
+        byFileTruncated: bounded.byFileTruncated,
+        filesWithErrors: bounded.filesWithErrors,
         syntaxBroken: syntaxBrokenFiles(errors),
         durationMs,
         exitCode: outcome.code,

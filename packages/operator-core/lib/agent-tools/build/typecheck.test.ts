@@ -16,6 +16,7 @@ import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import * as childProcess from 'node:child_process';
+import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
 
 // ESM module namespaces are frozen (non-configurable), so `vi.spyOn` cannot patch
 // `node:child_process`'s `spawn` export directly — it must be mocked at the module
@@ -34,6 +35,7 @@ import buildTypecheck, {
   runTsc,
   buildScopedTsconfig,
   buildTimeoutHint,
+  boundDiagnostics,
   ambientTypePackages,
   projectDeclaresTypes,
 } from './typecheck';
@@ -74,6 +76,38 @@ describe('registration', () => {
   it('declares the argument surface the substitution audit models', () => {
     expect(Object.keys((buildTypecheck as unknown as { args: { shape: Record<string, unknown> } }).args.shape).sort())
       .toEqual(['files', 'incremental', 'maxErrors', 'project', 'scopeToFiles', 'timeoutMs']);
+  });
+});
+
+describe('bounded diagnostic serialization', () => {
+  const diagnostic = (i: number): TscDiagnostic => ({
+    file: `file-${i}.ts`,
+    line: 1,
+    column: 1,
+    code: 'TS0000',
+    category: 'error',
+    message: 'synthetic',
+  });
+  const fileCount = (i: number): TscFileCount => ({ file: `file-${i}.ts`, count: 1 });
+
+  it('marks both bounded arrays while preserving their complete counts', () => {
+    const errors = Array.from({ length: 3 }, (_, i) => diagnostic(i));
+    const byFile = Array.from({ length: 31 }, (_, i) => fileCount(i));
+    const bounded = boundDiagnostics(errors, byFile, 2);
+
+    expect(bounded.errors).toHaveLength(2);
+    expect(bounded.errorsTruncated).toBe(true);
+    expect(bounded.byFile).toHaveLength(30);
+    expect(bounded.byFileTruncated).toBe(true);
+    expect(bounded.filesWithErrors).toBe(31);
+  });
+
+  it('does not mark complete arrays as truncated', () => {
+    const bounded = boundDiagnostics([diagnostic(0)], [fileCount(0)], 2);
+
+    expect(bounded.errorsTruncated).toBe(false);
+    expect(bounded.byFileTruncated).toBe(false);
+    expect(bounded.filesWithErrors).toBe(1);
   });
 });
 
