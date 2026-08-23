@@ -52,11 +52,11 @@ interface IntegrationStatus {
   capabilities?: GoogleCapabilityStatus[];
 }
 
-type GoogleCapabilityId = "gmail" | "calendar" | "contacts";
+type GoogleCapabilityId = "gmail" | "calendar" | "contacts" | "youtube";
 
 interface GoogleCapabilityStatus {
   id: GoogleCapabilityId;
-  sourceKind: "gmail" | "gcal" | "contacts";
+  sourceKind: "gmail" | "gcal" | "contacts" | "youtube";
   enabled: boolean;
   connected: boolean;
   status:
@@ -110,6 +110,11 @@ const GOOGLE_CAPABILITY_META: Record<
   contacts: {
     label: "Contacts",
     detail: "Sync People API contacts into the owner-local Personal Vault.",
+  },
+  youtube: {
+    label: "YouTube",
+    detail:
+      "Read channel activity and comments, and reply to comments. Replying needs the force-ssl scope, which also allows deleting your own comments.",
   },
 };
 

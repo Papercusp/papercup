@@ -35,6 +35,8 @@ import {
   GOOGLE_GMAIL_COMPOSE_SCOPE,
   GOOGLE_GMAIL_READONLY_SCOPE,
   GOOGLE_WORKSPACE_SCOPES,
+  GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
+  GOOGLE_YOUTUBE_READONLY_SCOPE,
   getProvider,
   loadAndRegisterProvidersFromDisk,
 } from '../../../oauth/providers';
@@ -71,11 +73,11 @@ interface SafeIntegrationStatus {
   capabilities?: SafeGoogleCapability[];
 }
 
-type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts';
+type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts' | 'youtube';
 
 interface SafeGoogleCapability {
   id: GoogleCapabilityId;
-  sourceKind: 'gmail' | 'gcal' | 'contacts';
+  sourceKind: 'gmail' | 'gcal' | 'contacts' | 'youtube';
   enabled: boolean;
   connected: boolean;
   status: 'needs-app-config' | 'available' | 'connected' | 'disabled' | 'needs-consent' | 'degraded' | 'error';
@@ -101,6 +103,22 @@ const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
     id: 'contacts',
     sourceKind: 'contacts',
     requiredScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+  },
+  {
+    // P-015. Rides the SAME Google Workspace OAuth source as Gmail and Calendar
+    // (the external-triggers D-010 one-credential-path pattern) — a scope
+    // addition with an incremental-consent upgrade, never a second credential
+    // path.
+    //
+    // ⚠ D-019: both scopes are in GOOGLE_WORKSPACE_ALLOWED_SCOPES (requestable)
+    // and listed here (required), and NEITHER is in GOOGLE_WORKSPACE_SCOPES.
+    // That list is presumed-granted for legacy connections, so putting them
+    // there would make this capability report connected:true with no
+    // missingScopes for an owner who never consented — surfacing as a 403 at
+    // call time instead of as an honest needs-consent here.
+    id: 'youtube',
+    sourceKind: 'youtube',
+    requiredScopes: [GOOGLE_YOUTUBE_READONLY_SCOPE, GOOGLE_YOUTUBE_FORCE_SSL_SCOPE],
   },
 ];
 

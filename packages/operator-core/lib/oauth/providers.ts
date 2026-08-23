@@ -182,7 +182,39 @@ export const GOOGLE_WORKSPACE_SCOPES = [
   GOOGLE_CONTACTS_READONLY_SCOPE,
 ] as const;
 
-export const GOOGLE_WORKSPACE_ALLOWED_SCOPES = [...GOOGLE_WORKSPACE_SCOPES, GOOGLE_CALENDAR_EVENTS_SCOPE] as const;
+/**
+ * YouTube Data API scopes (social-platform-integrations-2026-08-23 P-015).
+ *
+ * `force-ssl` is the ONLY scope `comments.insert` accepts, and it also confers
+ * DELETE rights on the authenticated channel's comments — which is why it is
+ * requested per-capability rather than being folded into the default Workspace
+ * set that every connection asks for.
+ */
+export const GOOGLE_YOUTUBE_READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+export const GOOGLE_YOUTUBE_FORCE_SSL_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
+
+/**
+ * ⚠ D-019 — WHY THESE ARE HERE AND NOT IN `GOOGLE_WORKSPACE_SCOPES`.
+ *
+ * `GOOGLE_WORKSPACE_SCOPES` is the PRESUMED-GRANTED set: `googleGrantedScopes()`
+ * falls back to it whole for any legacy connection that stored no scope
+ * metadata. So a scope placed there is reported as granted for every such
+ * connection whether or not the user ever consented to it — which would make an
+ * ungranted YouTube capability read `connected: true`, `missingScopes: []`, and
+ * fail only later with a 403 at call time, far from the cause.
+ *
+ * `GOOGLE_WORKSPACE_ALLOWED_SCOPES` is the set the authorize URL may REQUEST.
+ * Adding a scope here lets the incremental-consent upgrade ask for it, while the
+ * capability's own `requiredScopes` entry is what decides whether it was
+ * actually granted. That is the same split `GOOGLE_CALENDAR_EVENTS_SCOPE`
+ * already uses, and it is the reason it is not in the presumed set either.
+ */
+export const GOOGLE_WORKSPACE_ALLOWED_SCOPES = [
+  ...GOOGLE_WORKSPACE_SCOPES,
+  GOOGLE_CALENDAR_EVENTS_SCOPE,
+  GOOGLE_YOUTUBE_READONLY_SCOPE,
+  GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
+] as const;
 
 export const GOOGLE_OAUTH_CLIENT_PATH = join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');
 

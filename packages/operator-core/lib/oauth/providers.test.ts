@@ -10,6 +10,8 @@ import {
   GOOGLE_CONTACTS_READONLY_SCOPE,
   GOOGLE_WORKSPACE_ALLOWED_SCOPES,
   GOOGLE_WORKSPACE_SCOPES,
+  GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
+  GOOGLE_YOUTUBE_READONLY_SCOPE,
   compareScopes,
   __resetRegistryForTest,
   getProvider,
@@ -95,7 +97,37 @@ describe('Google Workspace Desktop OAuth provider', () => {
       GOOGLE_CONTACTS_READONLY_SCOPE,
     ]);
     expect(GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT).toBe('https://people.googleapis.com/v1/people/me/connections');
-    expect(GOOGLE_WORKSPACE_ALLOWED_SCOPES).toEqual([...GOOGLE_WORKSPACE_SCOPES, GOOGLE_CALENDAR_EVENTS_SCOPE]);
+    expect(GOOGLE_WORKSPACE_ALLOWED_SCOPES).toEqual([
+      ...GOOGLE_WORKSPACE_SCOPES,
+      GOOGLE_CALENDAR_EVENTS_SCOPE,
+      GOOGLE_YOUTUBE_READONLY_SCOPE,
+      GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
+    ]);
+  });
+
+  it('D-019: a per-capability scope is REQUESTABLE but never PRESUMED-GRANTED', () => {
+    // GOOGLE_WORKSPACE_SCOPES is the presumed-granted fallback for any legacy
+    // connection that stored no scope metadata (googleGrantedScopes returns it
+    // whole when `stored` is empty). So a scope that lands in BOTH lists is
+    // reported as granted for connections that never consented to it, and the
+    // capability reads connected:true / missingScopes:[] until a 403 at call
+    // time — far from the cause.
+    //
+    // Asserted as a PROPERTY over the escalating scopes rather than as a second
+    // copy of the literal list above, so a future per-capability scope is
+    // covered the day it is added instead of the day someone remembers to
+    // extend this test.
+    const perCapability = [
+      GOOGLE_CALENDAR_EVENTS_SCOPE,
+      GOOGLE_YOUTUBE_READONLY_SCOPE,
+      GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
+    ];
+    for (const scope of perCapability) {
+      expect(GOOGLE_WORKSPACE_ALLOWED_SCOPES, `${scope} must be requestable`).toContain(scope);
+      expect(GOOGLE_WORKSPACE_SCOPES as readonly string[], `${scope} must NOT be presumed granted`).not.toContain(
+        scope,
+      );
+    }
   });
 
   it('keeps the verifier server-side and sends only its S256 challenge', async () => {
