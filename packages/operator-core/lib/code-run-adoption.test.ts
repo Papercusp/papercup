@@ -84,6 +84,11 @@ describe('P-008 run instrumentation and native-exec routing reads', () => {
       recipeCandidates: 4,
       recipeRevisions: 2,
       aggregateOutputEscapes: 1,
+      // WI-40720 gap 3 — spill resolution. The stub row supplies no spill columns, so these
+      // read 0, which is the honest answer: NOT MEASURED, never "no spills went unread".
+      spills: 0,
+      spillReadAttempts: 0,
+      spillReadSuccesses: 0,
     });
     expect(calls).toEqual([{ query: CODE_RUN_INSTRUMENTATION_SQL, params: [90] }]);
     expect(CODE_RUN_INSTRUMENTATION_SQL).toContain('metadata_json');
@@ -641,5 +646,47 @@ describe('preferred-door norms are DERIVED from one source, not restated per cal
     expect(sqlNormList(PREFERRED_DOOR_NORMS)).toBe(sqlNormList(new Set([...PREFERRED_DOOR_NORMS].reverse())));
     // Single quotes are escaped rather than terminating the literal.
     expect(sqlNormList(new Set(["o'brien"]))).toBe("'o''brien'");
+  });
+});
+
+/** WI-40720 gap 3 — spill RESOLUTION correlation.
+ *
+ *  Stamping a spill records only that bytes left the response. Whether the agent ever went and
+ *  READ them is a different fact, and the more important one: an unread spill is context the
+ *  model silently never saw, which is precisely what the result door exists to avoid. */
+describe('CODE_RUN_INSTRUMENTATION_SQL — spill resolution is measured, and measured honestly', () => {
+  it('matches BOTH capability:read call shapes', () => {
+    // A spill can be addressed by its filesystem path or by its papercusp:// URI. Matching
+    // only one shape silently under-counts reads that really happened — which would show up
+    // as "agents ignore spills", a conclusion about behaviour drawn from a join bug.
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("args_json->>'file_path'");
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("args_json->>'uri'");
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("'capabilityread'");
+  });
+
+  it('keeps ATTEMPT and SUCCESS separate, per the P-020 ruling', () => {
+    // A matched row is an attempt whatever its status; only status='ok' is a success.
+    // Collapsing them makes "spill never opened" indistinguishable from "spill opened and
+    // failed to resolve" — different failures with different fixes.
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain('spill_read_attempts');
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain('spill_read_successes');
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("bool_or(ti.status = 'ok')");
+  });
+
+  it('reads both spill addresses from metadata_json, never the output_ref column', () => {
+    // The rollup is contractually metadata-only (the guard above asserts the SQL never names
+    // output_ref/content/result_text). The URI is therefore duplicated into metadata_json by
+    // the handler rather than read from the column — this pins that choice so a future edit
+    // does not "simplify" it back into a guard breach.
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("metadata_json->>'spillUri'");
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("metadata_json->>'spillPath'");
+    expect(CODE_RUN_INSTRUMENTATION_SQL).not.toMatch(/output_ref/i);
+  });
+
+  it('reports raw counts, not a precomputed ratio', () => {
+    // With zero spills a ratio is 0% or a divide-by-zero, and both read as a verdict about
+    // spill health that no evidence supports. Counts let the evaluator say "not measured".
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain('AS spills');
+    expect(CODE_RUN_INSTRUMENTATION_SQL).not.toMatch(/spill_read_rate|spill_resolution_pct/i);
   });
 });

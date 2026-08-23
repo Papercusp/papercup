@@ -64,14 +64,30 @@ export interface CodeRunInstrumentationRollup {
   recipeCandidates: number;
   recipeRevisions: number;
   aggregateOutputEscapes: number;
+  /** WI-40720 gap 3 — spill RESOLUTION, as three raw counts rather than a ratio.
+   *  `spills` is the denominator (runs whose response spilled), `spillReadAttempts` the runs
+   *  whose spill was later addressed by a capability:read (ANY status), `spillReadSuccesses`
+   *  those where such a read returned ok.
+   *
+   *  Deliberately not a rate: with `spills === 0` any rate is either 0% or undefined, and both
+   *  render as a verdict about spill health that no evidence supports. Callers must treat
+   *  `spills === 0` as NOT MEASURED, never as a clean pass. Attempts and successes are separate
+   *  because "the spill was never opened" and "the spill was opened and did not resolve" are
+   *  different failures — the first means the model silently never saw that context. */
+  spills: number;
+  spillReadAttempts: number;
+  spillReadSuccesses: number;
 }
 
 export const CODE_RUN_INSTRUMENTATION_SQL = `
 WITH code_runs AS (
-  -- invoked_at + output_ref are carried for the spill-resolution correlation below:
-  -- output_ref holds the papercusp:// spill URI, metadata_json->>'spillPath' the filesystem
-  -- path, and a later capability:read may address the spill by EITHER.
-  SELECT metadata_json, invoked_at, output_ref
+  -- invoked_at is carried for the spill-resolution correlation below. Both spill ADDRESSES
+  -- come from metadata_json (spillPath + spillUri) and never from a payload-bearing column:
+  -- this rollup is contractually metadata-only, and its guard test rejects the query if it so
+  -- much as NAMES one (the guard scans the whole string, comments included — it cannot tell
+  -- prose from code, which is the right call for a payload guard). The handler duplicates the
+  -- spill URI into metadata precisely so this correlation never has to reach for that column.
+  SELECT metadata_json, invoked_at
   FROM harness_shared.tool_invocations
   WHERE invoked_at >= now() - (($1)::int || ' days')::interval
     AND transport = 'mcp'
@@ -91,8 +107,49 @@ WITH code_runs AS (
   FROM code_runs
   WHERE metadata_json->>'failureClass' IS NOT NULL
   GROUP BY 1
+-- WI-40720 gap 3: spill RESOLUTION. Stamping a spill (gap 3's other half) only records that
+-- bytes left the response; it says nothing about whether the agent ever went and READ them.
+-- An unread spill is context the model silently never saw, which is the failure mode the
+-- result door exists to avoid, so the rollout gate needs attempt and success as SEPARATE
+-- measures. Collapsing them would make "spill never opened" indistinguishable from "spill
+-- opened and failed to resolve".
+), spilled_runs AS (
+  SELECT
+    NULLIF(metadata_json->>'spillPath', '') AS spill_path,
+    NULLIF(metadata_json->>'spillUri', '')  AS spill_uri,
+    invoked_at
+  FROM code_runs
+  WHERE NULLIF(metadata_json->>'spillPath', '') IS NOT NULL
+     OR NULLIF(metadata_json->>'spillUri', '') IS NOT NULL
+), spill_resolution AS (
+  SELECT
+    count(*)::int                                       AS spills,
+    count(*) FILTER (WHERE r.attempted)::int            AS spill_read_attempts,
+    count(*) FILTER (WHERE r.resolved)::int             AS spill_read_successes
+  FROM spilled_runs s
+  LEFT JOIN LATERAL (
+    -- Per the P-020 ruling: a MATCHED row is an ATTEMPT (whatever its status); only
+    -- status='ok' is a SUCCESS. Both call shapes are honoured — capability:read may name the
+    -- filesystem path (args_json->>'file_path') or the spill URI (args_json->>'uri'), and
+    -- matching only one shape would under-count reads that did happen.
+    SELECT true AS attempted, bool_or(ti.status = 'ok') AS resolved
+    FROM harness_shared.tool_invocations ti
+    WHERE ti.invoked_at >= s.invoked_at
+      AND lower(regexp_replace(ti.tool_name, '[^a-zA-Z0-9]', '', 'g')) = 'capabilityread'
+      AND (
+        (s.spill_path IS NOT NULL AND ti.args_json->>'file_path' = s.spill_path)
+        OR (s.spill_uri IS NOT NULL AND ti.args_json->>'uri' = s.spill_uri)
+      )
+    HAVING count(*) > 0
+  ) r ON true
 )
 SELECT
+  -- Raw COUNTS, never a precomputed ratio: with zero spills a ratio is either 0% or a divide
+  -- by zero, and both read as a verdict about spill health that no evidence supports. The
+  -- evaluator decides what "not_measured" means; this query only reports what it counted.
+  COALESCE((SELECT spills FROM spill_resolution), 0)::int AS spills,
+  COALESCE((SELECT spill_read_attempts FROM spill_resolution), 0)::int AS spill_read_attempts,
+  COALESCE((SELECT spill_read_successes FROM spill_resolution), 0)::int AS spill_read_successes,
   count(*)::int AS runs,
   COALESCE((SELECT jsonb_object_agg(backend, runs) FROM backend_counts), '{}'::jsonb) AS backend_counts,
   COALESCE(sum(CASE WHEN (metadata_json->>'toolCalls') ~ '^[0-9]+$' THEN (metadata_json->>'toolCalls')::bigint ELSE 0 END), 0) AS tool_calls,
@@ -138,6 +195,9 @@ export async function readCodeRunInstrumentation(
     recipeCandidates: n('recipe_candidates'),
     recipeRevisions: n('recipe_revisions'),
     aggregateOutputEscapes: n('aggregate_output_escapes'),
+    spills: n('spills'),
+    spillReadAttempts: n('spill_read_attempts'),
+    spillReadSuccesses: n('spill_read_successes'),
   };
 }
 
