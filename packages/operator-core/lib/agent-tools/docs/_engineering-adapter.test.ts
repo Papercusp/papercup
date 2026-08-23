@@ -10,7 +10,7 @@ const releasePage: DocPage = {
   toc: [],
 };
 
-function releaseSource(): DocSource & { invalidate: ReturnType<typeof vi.fn> } {
+function releaseSource(): DocSource & { invalidate: () => void } {
   return {
     name: 'release-rooted-engineering',
     listPages: vi.fn(async () => [releasePage]),

@@ -59,7 +59,7 @@ function canonicalDoc(
   const slug = slugFromDocId(docId);
   if (!slug) return null;
   const frontmatter = parseFrontmatterBlock(raw, { dates: 'string' });
-  const meta = frontmatter.ok ? frontmatter.data : {};
+  const meta = frontmatter.ok ? (frontmatter.data ?? {}) : {};
   const body = raw.replace(FRONTMATTER_RE, '');
   const title =
     (typeof meta.title === 'string' && meta.title.trim()) || fallback?.title || humanize(slug.split('/').at(-1) ?? 'index');
