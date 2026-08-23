@@ -49,11 +49,11 @@ An app built from N templates must pass the **union of their checks**
 template may `require` another app-scope template as its BASE; every
 composition has exactly ONE ROOT app (the one no other app requires).
 
-The five official whole-app roots are `papercusp-desktop-app`,
-`papercusp-webapp`, `papercusp-agentic-desktop-app`, `papercusp-android-app`,
-and `papercusp-iphone-app`. Start from exactly one of them; aspect templates are
-pulled through its pinned closure or selected deliberately where the GUIDE
-allows composition.
+The six official whole-app roots are `papercusp-desktop-app`,
+`papercusp-webapp`, `papercusp-agentic-desktop-app`, `papercusp-agentic-webapp`,
+`papercusp-android-app`, and `papercusp-iphone-app`. Start from exactly one of
+them; aspect templates are pulled through its pinned closure or selected
+deliberately where the GUIDE allows composition.
 
 ## Running the checks (landed: P-007)
 
