@@ -312,6 +312,7 @@ describe('buildSystemdRunArgv', () => {
   it('runs the deploy as the shared transient unit, self-authorizing the restart', () => {
     const argv = buildSystemdRunArgv('/repo', ['--execute'], '/tmp/x.log', '/usr/bin');
     expect(argv).toContain(`--unit=${DEPLOY_UNIT}`);
+    expect(argv).toContain('--property=CollectMode=inactive-or-failed');
     expect(argv).toContain('--working-directory=/repo');
     expect(argv).toContain('--setenv=PATH=/usr/bin');
     const inner = argv[argv.length - 1]!;

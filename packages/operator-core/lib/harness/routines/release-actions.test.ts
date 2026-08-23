@@ -1206,6 +1206,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(argv).toContain('--user');
     expect(argv).toContain('--scope'); // scope (child stays OURS: stdio/env/pgid) — never --unit
     expect(argv).toContain('--collect');
+    expect(argv).toContain('--property=CollectMode=inactive-or-failed');
     expect(argv).toContain('--property=MemoryMax=16G');
     expect(argv).toContain('--property=MemorySwapMax=0'); // mirror the bg-host swap policy
     // Payload appended verbatim, in order, at the end.

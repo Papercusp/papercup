@@ -449,7 +449,15 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     const [bin, args] = spawnMock.mock.calls[0];
     expect(bin).toBe('systemd-run');
     expect(args).toEqual(
-      expect.arrayContaining(['--user', '--scope', '--collect', '--quiet', 'bash', '-lc']),
+      expect.arrayContaining([
+        '--user',
+        '--scope',
+        '--collect',
+        '--property=CollectMode=inactive-or-failed',
+        '--quiet',
+        'bash',
+        '-lc',
+      ]),
     );
     expect(args.some((a: string) => /^--unit=papercup-headless-hl-/.test(a))).toBe(true);
     // the actual oneliner (with the EI-9748 TERM trap) still travels as the
@@ -480,7 +488,13 @@ describe('buildHeadlessSpawnCommand (EI-9748 Route A — cgroup escape)', () => 
       hasSystemdRun: () => true,
     });
     expect(bin).toBe('systemd-run');
-    expect(args.slice(0, 4)).toEqual(['--user', '--scope', '--collect', '--quiet']);
+    expect(args.slice(0, 5)).toEqual([
+      '--user',
+      '--scope',
+      '--collect',
+      '--property=CollectMode=inactive-or-failed',
+      '--quiet',
+    ]);
     expect(args.some((a) => /^--unit=papercup-headless-my-label-/.test(a))).toBe(true);
     expect(args).toContain('--property=MemoryMax=6442450944');
     expect(args).toContain('--property=MemorySwapMax=0');
@@ -683,7 +697,13 @@ describe('buildConsoleScopedSpawnCommand (WI-37476, EI-9748 Route B — cgroup e
       { platform: 'linux', hasSystemdRun: () => true },
     );
     expect(bin).toBe('systemd-run');
-    expect(args.slice(0, 4)).toEqual(['--user', '--scope', '--collect', '--quiet']);
+    expect(args.slice(0, 5)).toEqual([
+      '--user',
+      '--scope',
+      '--collect',
+      '--property=CollectMode=inactive-or-failed',
+      '--quiet',
+    ]);
     expect(args.some((a) => /^--unit=papercup-console-my-label-/.test(a))).toBe(true);
     expect(args.some((a) => a.startsWith('--slice='))).toBe(true);
     // the wrapped command is preserved verbatim, in order, after the `--` separator

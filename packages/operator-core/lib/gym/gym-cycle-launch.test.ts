@@ -42,6 +42,7 @@ describe('gym-cycle detached launcher', () => {
       '--user',
       '--no-block',
       '--collect',
+      '--property=CollectMode=inactive-or-failed',
       `--unit=${gymCycleUnitForWorkspace('ws-7')}`,
       `--property=RuntimeMaxSec=${GYM_CYCLE_MAX_RUNTIME_SEC}`,
       '--working-directory=/repo',

@@ -627,7 +627,7 @@ elif [ "$(uname -s 2>/dev/null || true)" = "Linux" ] && command -v systemd-run >
   # (containers often ship systemd-run without a usable user bus). A failed probe
   # keeps the cross-platform fallback, but is named loudly and paired with the
   # boot-only provenance/liveness check below.
-  if systemd-run --user --scope --quiet --collect --unit="${VERIFY_SCOPE_BASE}-probe" --slice="$VERIFY_SCOPE_SLICE" -- true >/dev/null 2>&1; then
+  if systemd-run --user --scope --quiet --collect --property=CollectMode=inactive-or-failed --unit="${VERIFY_SCOPE_BASE}-probe" --slice="$VERIFY_SCOPE_SLICE" -- true >/dev/null 2>&1; then
     VERIFY_SCOPE_ENABLED=1
     VERIFY_SCOPE_MODE="sibling"
     log "verifier cgroup isolation enabled: transient user scopes under $VERIFY_SCOPE_SLICE (base=${VERIFY_SCOPE_BASE})"
@@ -736,7 +736,7 @@ start_verify_process() {
   local unit="$1" output="$2"
   shift 2
   if [ "$VERIFY_SCOPE_MODE" = "sibling" ]; then
-    setsid systemd-run --user --scope --quiet --collect --unit="$unit" --slice="$VERIFY_SCOPE_SLICE" -- "$@" >"$output" 2>&1 &
+    setsid systemd-run --user --scope --quiet --collect --property=CollectMode=inactive-or-failed --unit="$unit" --slice="$VERIFY_SCOPE_SLICE" -- "$@" >"$output" 2>&1 &
   else
     setsid "$@" >"$output" 2>&1 &
   fi

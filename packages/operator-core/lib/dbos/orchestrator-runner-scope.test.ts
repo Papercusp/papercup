@@ -158,6 +158,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     // does not change its child-of-us semantics.
     expect(args).toContain('--scope'); // child stays OUR pgid
     expect(args).toContain('--collect');
+    expect(args).toContain('--property=CollectMode=inactive-or-failed');
     /* Flag ON + a landed probe ⇒ the NAMED task-manager scope (`buildTaskScopeArgv`),
        which spells the cap as a BYTE INTEGER. The `6G` shorthand belongs to the
        unnamed WI-1499 builder (`buildIsolatedScopeArgv`), pinned by the flag-OFF and
