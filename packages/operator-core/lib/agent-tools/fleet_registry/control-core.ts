@@ -169,13 +169,13 @@ export async function applyFleetControl(
   } catch {
     paneKind = classifyAgentPane({ role: null, ownerId }).kind;
   }
-  const invokedAs = opts?.skipAuthorization
+  const invokedAs = (opts?.skipAuthorization
     ? 'owner'
     : classifyFleetControlInvoker({
         callerOwnerId: ownerId,
         leaderOwnerId: fleet.leaderOwnerId,
         paneKind,
-      });
+      })) ?? undefined;
   if (!opts?.skipAuthorization && !invokedAs) {
     return {
       ok: false,
