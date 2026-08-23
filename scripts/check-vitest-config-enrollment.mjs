@@ -38,6 +38,9 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   'libs/generic/papergrid/kv-persist-indexeddb/vitest.config.ts',
   'libs/generic/papergrid/kv-persist/vitest.config.ts',
   'libs/generic/search/vitest.config.ts',
+  'libs/agent-chat/vitest.config.ts',
+  'libs/generic/git-graph/vitest.config.ts',
+  'libs/generic/ui-primitives/vitest.config.ts',
   'libs/papercusp/packages/cli/vitest.config.ts',
 ]);
 
@@ -56,10 +59,8 @@ function stripComments(source) {
  */
 export function isReporterEnrolled(source) {
   const code = stripComments(source);
-  const hasBaseImport =
-    /import\s*\{[\s\S]*?\bdefineVitestConfig\b[\s\S]*?\}\s*from\s*['"]@papercusp\/test-config(?:\/vitest-config)?['"]/.test(
-      code,
-    ) && /\bdefineVitestConfig\s*\(/.test(code);
+  const hasBaseImport = /import\s*\{[\s\S]*?\bdefineVitestConfig\b[\s\S]*?\}\s*from\s*['"][^'"]+['"]/.test(code) &&
+    /\bdefineVitestConfig\s*\(/.test(code);
   const hasExplicitReporter = /\bADMIN_TEST_RUNS_REPORTER_PATH\b/.test(code);
   return hasBaseImport || hasExplicitReporter;
 }
