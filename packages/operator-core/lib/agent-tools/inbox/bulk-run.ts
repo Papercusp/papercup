@@ -4,11 +4,14 @@
  *
  * The owner clicks the Inbox pane's command strip; the server creates a run over
  * the exact items the pane was displaying and launches ONE resolver agent
- * (D-002). These three tools are that agent's whole contract:
+ * (D-002). These four tools are that agent's whole contract:
  *
  *   inbox:bulk-run-manifest — what am I working on? (the run + its items, each
  *       with the LIVE `actions` the item currently offers, which is what makes a
  *       recommendation checkable rather than invented)
+ *   inbox:bulk-run-act      — take ONE terminal action while the run row is
+ *       locked as a revocable authority token; dispatch + audit + outcome are
+ *       one serialized operation
  *   inbox:bulk-run-report   — record what I did / what I recommend (bulk, the
  *       house keyed-array contract)
  *   inbox:bulk-run-settle   — I am done; work out from the item rows whether the
@@ -37,8 +40,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
+import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { softText, clampText, LIMITS } from '../limits';
 import {
+  executeBulkRunAction,
   getRun,
   getActiveRun,
   getRunItems,
@@ -48,6 +53,12 @@ import {
   type BulkOutcomeReport,
 } from '../../attention/bulk-run-store';
 import { upsertTriage } from '../../attention/triage-store';
+import {
+  dispatchAttentionTerminalAction,
+  type TerminalActionDependencies,
+  type TerminalAttentionItem,
+} from '../../attention/terminal-action-dispatch';
+import { deliverInboxOwnerReply } from '../coordination/inbox-reply';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -116,21 +127,97 @@ async function liveActionsFor(
     const groups = Array.isArray(r?.groups) ? r.groups : [];
     for (const g of groups) {
       for (const raw of g?.items ?? []) {
-        const it = raw as { id?: string; actions?: { id?: string; label?: string }[] };
+        const it = raw as {
+          id?: string;
+          actions?: { id?: string; label?: string }[];
+          ref?: { kind?: string; options?: unknown };
+        };
         if (it?.id !== itemId) continue;
-        return (it.actions ?? [])
-          .filter((a) => typeof a?.id === 'string')
-          .map((a) => ({
-            id: String(a.id),
-            label: String(a.label ?? a.id),
-            terminal: !isNavigateAction(String(a.id)),
-          }));
+        const out: { id: string; label: string; terminal: boolean }[] = [];
+        for (const action of it.actions ?? []) {
+          if (typeof action?.id !== 'string') continue;
+          if (
+            it.ref?.kind === 'coord-escalation' &&
+            (action.id === 'resolve' || action.id === 'mark-done') &&
+            Array.isArray(it.ref.options)
+          ) {
+            for (const rawOption of it.ref.options) {
+              if (!rawOption || typeof rawOption !== 'object') continue;
+              const option = rawOption as { id?: unknown; label?: unknown };
+              if (typeof option.id !== 'string') continue;
+              out.push({
+                id: option.id,
+                label: typeof option.label === 'string' ? option.label : option.id,
+                terminal: true,
+              });
+            }
+            continue;
+          }
+          out.push({
+            id: action.id,
+            label: String(action.label ?? action.id),
+            terminal: !isNavigateAction(action.id),
+          });
+        }
+        return out;
       }
     }
     return null;
   } catch {
     return null;
   }
+}
+
+function innerFailure(name: string, result: unknown): Error | null {
+  if (!result || typeof result !== 'object') return null;
+  const value = result as Record<string, unknown>;
+  if (value.ok === false || typeof value.error === 'string') {
+    return new Error(`${name}: ${String(value.error ?? 'operation refused')}`);
+  }
+  const failed = Array.isArray(value.results)
+    ? value.results.find(
+        (entry) => entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === false,
+      ) as Record<string, unknown> | undefined
+    : undefined;
+  return failed ? new Error(`${name}: ${String(failed.error ?? failed.detail ?? 'operation refused')}`) : null;
+}
+
+async function callRequired(call: InnerCall, name: string, args: Record<string, unknown>): Promise<void> {
+  const result = await call(name, args);
+  const failure = innerFailure(name, result);
+  if (failure) throw failure;
+}
+
+function terminalDependencies(input: {
+  call: InnerCall;
+  workspaceId?: string;
+}): TerminalActionDependencies {
+  const { call } = input;
+  return {
+    resolveEscalation: ({ msgId, choice }) => callRequired(call, 'coord:resolve', { msg_id: msgId, choice }),
+    acknowledgeMessage: ({ msgId }) => callRequired(call, 'coord:ack', { msg_id: msgId }),
+    setPlanItemStatus: ({ slug, itemId, status }) =>
+      callRequired(call, 'plans:set-status', { slug, itemId, status }),
+    async wakePlanLoop({ reason }) {
+      await callRequired(call, 'pot:wake', { source: 'user', reason });
+    },
+    dismissImprovement: ({ issueId }) =>
+      callRequired(call, 'improvements:triage', {
+        mode: 'triage-one',
+        ideaId: issueId,
+        decision: 'reject',
+        reason: 'Dismissed from the Queue by the owner',
+      }),
+    decideStandingApproval: (args) => callRequired(call, 'operator:standing_approvals_decide', args),
+    triageAttentionItem: (args) => callRequired(call, 'inbox:triage', args),
+    async deliverOwnerReply(args) {
+      const result = await deliverInboxOwnerReply({
+        ...args,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      });
+      return { live: result.live, woken: result.woken };
+    },
+  };
 }
 
 /** Resolve which run the caller means: an explicit id, else the active one. */
@@ -247,18 +334,230 @@ export const bulkRunManifest = defineTool({
   },
 });
 
+export const bulkRunAct = defineTool({
+  name: 'inbox:bulk-run-act',
+  description:
+    'Take ONE terminal action for a BULK RESOLVE run. This is the only verb allowed to create an `auto_resolved` outcome: it locks the run row as a revocable authority token, re-validates that the item still offers the terminal action, dispatches through the exact same shared action map as the Inbox button, writes the REQUIRED attention-triage audit row, records the item outcome, and recomputes counters before releasing the lock. If the owner Stop won first, the action callback is never entered.',
+  guidance: {
+    when:
+      'You have direct evidence for one item and will take a terminal action on the owner\'s behalf. Call once per action; use inbox:bulk-run-report only for recommended/skipped/failed records.',
+    notWhen:
+      'The option only navigates (discuss/answer/open/chat/view-log), the item no longer offers it, or you only want to recommend it for owner review.',
+  },
+  capability: 'coord:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    runId: z.string().min(1).optional().describe('the run; omit for the active one'),
+    itemId: z.string().min(1),
+    actionId: z.string().min(1),
+    rationale: softText(LIMITS.ANNOTATION).describe('why this terminal action is correct; REQUIRED audit note'),
+    draftAnswer: softText(LIMITS.ANNOTATION).optional(),
+    confidence: z.enum(['low', 'high']).optional(),
+    consulted: z.boolean().optional(),
+    consultReply: softText(LIMITS.ANNOTATION).optional(),
+  }),
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
+    const runId = await resolveRunId(args.runId);
+    if (!runId) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no_active_run' }) }],
+      };
+    }
+
+    if (!(await bulkResolveEnabled())) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              refused: 'feature_disabled',
+              flag: FLAGS.INBOX_BULK_RESOLVE,
+              runId,
+              actionDispatched: false,
+              message: 'Bulk resolve is OFF. The terminal action was not entered; stop this run.',
+            }),
+          },
+        ],
+      };
+    }
+
+    const run = await getRun(runId);
+    if (!run) {
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify({ ok: false, error: 'run_not_found', runId }) },
+        ],
+      };
+    }
+    const row = (await getRunItems(runId)).find((item) => item.itemId === args.itemId);
+    if (!row) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: 'item_not_in_run', runId, itemId: args.itemId }),
+          },
+        ],
+      };
+    }
+
+    const rationale = clampText(args.rationale, LIMITS.ANNOTATION)?.trim() ?? '';
+    if (!rationale) {
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify({ ok: false, error: 'rationale_required' }) },
+        ],
+      };
+    }
+
+    const item: TerminalAttentionItem = {
+      id: row.itemId,
+      kind: row.kind ?? 'attention-item',
+      title: row.title ?? row.itemId,
+      harnessSlug: run.harnessSlug,
+      planSlug: typeof row.ref.planSlug === 'string' ? row.ref.planSlug : null,
+      ownerAgentId: row.ownerAgentId,
+      ref: { kind: String(row.ref.kind ?? ''), ...row.ref },
+    };
+    const call = inProcessCall(ctx);
+    let actionDispatched = false;
+
+    try {
+      const result = await executeBulkRunAction({
+        runId,
+        itemId: row.itemId,
+        actionId: args.actionId,
+        rationale,
+        draftAnswer: clampText(args.draftAnswer, LIMITS.ANNOTATION)?.trim() ?? null,
+        confidence: args.confidence ?? null,
+        consulted: args.consulted === true,
+        consultReply: clampText(args.consultReply, LIMITS.ANNOTATION)?.trim() ?? null,
+        workspaceId: run.workspaceId,
+        async execute() {
+          // Re-read INSIDE the run-row authority window. A manifest read is
+          // advisory; this is the last check before the irreversible effect.
+          const actions = await liveActionsFor(row.itemId);
+          const offered = actions?.find((action) => action.id === args.actionId);
+          if (!offered) {
+            throw new Error(
+              `action "${args.actionId}" is not currently offered by ${row.itemId} (offered: ${
+                actions?.map((action) => action.id).join(', ') || 'none'
+              })`,
+            );
+          }
+          if (!offered.terminal) {
+            throw new Error(`action "${args.actionId}" only opens a sub-surface and cannot resolve the item`);
+          }
+          const dispatched = await dispatchAttentionTerminalAction({
+            item,
+            actionId: args.actionId,
+            deps: terminalDependencies({ call, workspaceId: run.workspaceId }),
+          });
+          if (!dispatched.resolved) {
+            throw new Error(`action "${args.actionId}" has no terminal dispatcher for ref kind "${item.ref.kind}"`);
+          }
+          actionDispatched = true;
+          return dispatched;
+        },
+        audit: (tx) =>
+          upsertTriage({
+            itemId: row.itemId,
+            action: 'resolve',
+            note: `Bulk resolve: ${rationale}`,
+            triagedBy: identity.ownerId,
+            workspaceId: run.workspaceId,
+            sql: tx,
+          }),
+      });
+
+      if (result.refused) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                refused: result.refused.reason,
+                phase: result.refused.phase,
+                runId,
+                itemId: row.itemId,
+                actionDispatched: false,
+                message: 'The owner Stop/settle won the authority lock. No terminal action was entered.',
+              }),
+            },
+          ],
+        };
+      }
+
+      try {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        await notifySyncInvalidate('plans.attentionBulkRun');
+        await notifySyncInvalidate('plans.attention');
+      } catch {
+        /* poll fallback */
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              runId,
+              itemId: row.itemId,
+              actionId: args.actionId,
+              actionDispatched: true,
+              outcome: result.item?.outcome ?? 'auto_resolved',
+              counters: result.run
+                ? {
+                    autoResolved: result.run.autoResolved,
+                    recommended: result.run.recommended,
+                    skipped: result.run.skipped,
+                    failed: result.run.failed,
+                  }
+                : null,
+              dispatch: result.actionResult,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: actionDispatched ? 'post_dispatch_persistence_failed' : 'terminal_action_failed',
+              message: error instanceof Error ? error.message : String(error),
+              runId,
+              itemId: row.itemId,
+              actionId: args.actionId,
+              actionDispatched,
+              reconciliationRequired: actionDispatched,
+            }),
+          },
+        ],
+      };
+    }
+  },
+});
+
 const OutcomeItem = z
   .object({
     itemId: z.string().min(1),
-    outcome: z.enum(['auto_resolved', 'recommended', 'skipped', 'failed']),
+    outcome: z.enum(['recommended', 'skipped', 'failed']),
     actionId: z
       .string()
       .min(1)
       .optional()
-      .describe('the option id you dispatched (auto_resolved) or pre-select for the owner (recommended). MUST be one the item offers.'),
+      .describe('the option id to pre-select for the owner (recommended). MUST be one the item offers.'),
     rationale: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('≤2 sentences of WHY — the audit note on an auto_resolved item, and what the owner reads on a recommended one'),
+      .describe('≤2 sentences of WHY — what the owner reads on a recommended item'),
     draftAnswer: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('a drafted free-text reply where the resolution path takes prose, so the owner edits rather than composes'),
@@ -271,22 +570,18 @@ const OutcomeItem = z
     error: softText(LIMITS.ANNOTATION).optional().describe('why it was skipped, or how the dispatch failed — never leave this blank on skipped/failed'),
   })
   .refine((d) => d.outcome === 'skipped' || d.outcome === 'failed' || !!d.actionId, {
-    message: 'actionId is required for auto_resolved and recommended outcomes',
+    message: 'actionId is required for recommended outcomes',
     path: ['actionId'],
   })
   .refine((d) => !(d.outcome === 'skipped' || d.outcome === 'failed') || !!d.error?.trim(), {
     message: 'error (the why) is required when skipping or failing an item',
     path: ['error'],
-  })
-  .refine((d) => d.outcome !== 'auto_resolved' || !!d.rationale?.trim(), {
-    message: 'rationale is required on auto_resolved — it is the audit note for an action taken on the owner\'s behalf',
-    path: ['rationale'],
   });
 
 export const bulkRunReport = defineTool({
   name: 'inbox:bulk-run-report',
   description:
-    'Report per-item outcomes for a BULK RESOLVE run. `auto_resolved` = you took the terminal action (rationale REQUIRED — it is the audit note for something done on the owner\'s behalf, and an attention_triage record is written alongside it); `recommended` = pre-select an option for the owner\'s review list with a ≤2-sentence why; `skipped` / `failed` = record the reason, never a blank. An `actionId` that the item does not actually offer, or that only opens a sub-surface (discuss/answer/open/chat/view-log), is REJECTED for that item alone — the rest still land. Re-reporting the same item overwrites it (that is the intended path when a consulted asker answers late); the run counters are derived from the rows, never incremented, so it cannot double-count.',
+    'Report non-action outcomes for a BULK RESOLVE run: `recommended` = pre-select an option for the owner\'s review list with a ≤2-sentence why; `skipped` / `failed` = record the reason, never a blank. This verb CANNOT claim `auto_resolved`; terminal effects must go through inbox:bulk-run-act so run authority, dispatch, audit, outcome and counters are serialized. An `actionId` that the item does not actually offer is rejected for that item alone — the rest still land. Re-reporting the same item overwrites it; counters are derived from rows, never incremented.',
   guidance: {
     when: 'After deciding each item in a bulk-resolve run. Batch several via `items:[…]` rather than one call per item.',
     notWhen:
@@ -299,7 +594,7 @@ export const bulkRunReport = defineTool({
     .object({
       runId: z.string().min(1).optional().describe('the run; omit for the active one'),
       itemId: z.string().min(1).optional().describe('single-item shorthand'),
-      outcome: z.enum(['auto_resolved', 'recommended', 'skipped', 'failed']).optional(),
+      outcome: z.enum(['recommended', 'skipped', 'failed']).optional(),
       actionId: z.string().min(1).optional(),
       rationale: softText(LIMITS.ANNOTATION).optional(),
       draftAnswer: softText(LIMITS.ANNOTATION).optional(),
@@ -312,8 +607,7 @@ export const bulkRunReport = defineTool({
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.itemId) && Boolean(a.outcome)), {
       message: 'pass `{ itemId, outcome }` (one) or `items:[{ itemId, outcome }]` (many)',
     }),
-  async handler(args, ctx) {
-    const identity = resolveAgentIdentity(ctx);
+  async handler(args) {
     const runId = await resolveRunId(args.runId);
     if (!runId) {
       return {
@@ -376,11 +670,6 @@ export const bulkRunReport = defineTool({
                 `action "${r.actionId}" is not offered by ${r.itemId} (offered: ${actions.map((a) => a.id).join(', ') || 'none'})`,
               );
             }
-            if (!match.terminal && r.outcome === 'auto_resolved') {
-              throw new Error(
-                `action "${r.actionId}" only opens a sub-surface — it resolves nothing, so it cannot be an auto_resolved outcome`,
-              );
-            }
           }
         }
 
@@ -428,23 +717,6 @@ export const bulkRunReport = defineTool({
             },
           ],
         };
-      }
-
-      // Requirement 4: an action taken on the owner's behalf leaves an audit row
-      // in the SAME store the manual path writes to, so `plans.attention` shows
-      // it as auditable "Handled by operator" rather than a silent vanish.
-      for (const a of accepted) {
-        if (a.outcome !== 'auto_resolved') continue;
-        try {
-          await upsertTriage({
-            itemId: a.itemId,
-            action: 'resolve',
-            note: `Bulk resolve: ${a.rationale ?? 'resolved by the bulk-resolve agent'}`,
-            triagedBy: identity.ownerId,
-          });
-        } catch {
-          // Best-effort overlay — the outcome row above is the durable record.
-        }
       }
 
       try {

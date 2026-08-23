@@ -34,7 +34,6 @@
 import type {
   AttentionItem,
   AttentionAction,
-  AttentionActionId,
 } from './plans-api';
 import {
   resolveEscalation,
@@ -63,6 +62,11 @@ import {
   NAVIGATE_ACTION_IDS,
   isNavigateAction,
 } from '@papercusp/operator-core/lib/attention/types';
+import {
+  dispatchAttentionTerminalAction,
+  type TerminalActionResult,
+  type TerminalAttentionItem,
+} from '@papercusp/operator-core/lib/attention/terminal-action-dispatch';
 
 export { NAVIGATE_ACTION_IDS, isNavigateAction };
 
@@ -241,15 +245,7 @@ function refField(item: AttentionItem, key: string): string {
   return String((item.ref as Record<string, unknown>)[key] ?? '');
 }
 
-export interface ResolveResult {
-  /** True when the item's backing record was changed (card → answered). */
-  resolved: boolean;
-  /** Set only when a reply-delivery attempt was made (coord-escalation named-option
-   *  resolve, or replyToAttentionItem): true when the asker was live and woken. */
-  live?: boolean;
-  /** Set alongside `live` — how many live sessions the reply woke. */
-  woken?: number;
-}
+export type ResolveResult = TerminalActionResult;
 
 /**
  * Dispatch a TERMINAL option pick to the right backend (D-007 helpers).
@@ -260,112 +256,44 @@ export async function resolveAttentionAction(
   item: AttentionItem,
   optionId: string,
 ): Promise<ResolveResult> {
-  if (NAVIGATE_ACTION_IDS.has(optionId as AttentionActionId)) return { resolved: false };
-
-  const ref = item.ref as { kind: string };
-
-  if (ref.kind === 'coord-escalation') {
-    // Resolve ONLY a named escalation option id, or the generic resolve
-    // action itself. Any other id (a future navigate action missing from
-    // NAVIGATE_ACTION_IDS, a typo'd adapter id) must NOT fall through to a
-    // generic resolve — that silently closes a real owner gate (the Discuss
-    // incident, EI-13037).
-    const namedOpt = escalationOptions(item).find((o) => o.id === optionId);
-    if (!namedOpt && optionId !== 'resolve' && optionId !== 'mark-done') return { resolved: false };
-    const choice = namedOpt ? namedOpt.id : 'resolved';
-    const res = await resolveEscalation({ msg_id: refField(item, 'msgId'), choice });
-    if (res?.error) throw new Error(res.error);
-    // P-009 E2E finding (owner-inbox-single-pane-2026-07-17): picking a NAMED
-    // option (the AskChoiceCard path P-008 built) resolved the escalation
-    // server-side but NEVER reached the asker — only the free-text Answer
-    // path (replyToAttentionItem, conversation/plan-item only) delivered a
-    // woken, provenance-stamped reply (D-006/D-007). An agent that asked via
-    // <ask>{"options":[...]}</ask> (the P-001 Stop-hook mirror's own
-    // documented wire shape) got its escalation silently closed with no
-    // reply ever reaching it — reproduced live via a probe session whose
-    // turn-provenance ledger never gained a coord-inject:owner entry after
-    // an inbox operator clicked its option. Mirror replyToAttentionItem's
-    // best-effort delivery here too, so a named-option resolve is no longer
-    // a silent close. Never throws — a delivery hiccup must not surface as a
-    // failed resolve; the resolve above already succeeded.
-    const askerId = item.ownerAgentId;
-    const replyText = namedOpt?.label ?? (optionId === 'mark-done' ? 'Resolved' : 'Resolved');
-    if (askerId) {
-      try {
-        const reply = await deliverInboxReply({
-          askerId,
-          text: replyText,
-          summary: `Owner answered your ${item.kind} (${item.id})`,
-          planSlug: item.planSlug ?? undefined,
-        });
-        if (!reply.error) return { resolved: true, live: reply.live, woken: reply.woken };
-      } catch {
-        // best-effort — fall through to the plain resolved result below.
-      }
-    }
-    return { resolved: true };
-  }
-
-  if (ref.kind === 'coord-message' && optionId === 'ack') {
-    const res = await ackCoordMessage({ msg_id: refField(item, 'msgId') });
-    if (res?.error) throw new Error(res.error);
-    return { resolved: true };
-  }
-
-  if (ref.kind === 'plan-item') {
-    const slug = refField(item, 'slug');
-    const itemId = refField(item, 'itemId');
-    if (optionId === 'mark-done' || optionId === 'resolve') {
-      const r = await setItemStatus({ slug, itemId, status: 'done' });
-      if ('error' in r) throw new Error(r.error ?? 'set-status failed');
-      resumeLoop(item.harnessSlug); // Resolve resumes the loop…
-      return { resolved: true };
-    }
-    if (optionId === 'drop') {
-      const r = await setItemStatus({ slug, itemId, status: 'dropped' });
-      if ('error' in r) throw new Error(r.error ?? 'set-status failed');
-      // …Drop deliberately does NOT (won't-do; preserve today's distinction).
-      return { resolved: true };
-    }
-  }
-
-  if (ref.kind === 'improvement' && optionId === 'dismiss') {
-    // D-027 follow-on (1): inline Dismiss → improvements:triage reject (closes the
-    // idea, recall-remembers). Accepting/routing stays the navigate `open` (Triage).
-    const res = await dismissImprovement(refField(item, 'issueId'));
-    if (res?.error) throw new Error(res.error);
-    return { resolved: true };
-  }
-
-  if (ref.kind === 'standing-approval' && (optionId === 'grant' || optionId === 'dismiss')) {
-    // D-027 follow-on (1): inline owner decision on a standing-approval candidate.
-    // Grant ('approve') writes the persistent [STANDING-APPROVE] preference entry;
-    // Dismiss drops the candidate. Both refresh the candidate list so the row leaves.
-    const res = await decideStandingApproval({
-      capability: refField(item, 'capability'),
-      targetHarness: refField(item, 'targetHarness'),
-      decision: optionId === 'grant' ? 'approve' : 'dismiss',
-    });
-    if (res?.error) throw new Error(res.error);
-    return { resolved: true };
-  }
-
-  if (ref.kind === 'operator-report' && (optionId === 'resolve' || optionId === 'mark-done')) {
-    // Resolving an operator report IS the triage state machine (resolve →
-    // handled tier, auditable — Brief 21 D-006); the item id is stable
-    // (`operator-report:<turn-id>`) so the triage row sticks across reads.
-    const res = await triageAttentionItem({
-      itemId: item.id,
-      action: 'resolve',
-      note: 'Resolved from the inbox detail pane',
-    });
-    if (res?.error) throw new Error(res.error);
-    return { resolved: true };
-  }
-
-  // smoke-fail has only navigate actions (view-log / open) — nothing terminal
-  // to resolve here.
-  return { resolved: false };
+  return await dispatchAttentionTerminalAction({
+    item: item as unknown as TerminalAttentionItem,
+    actionId: optionId,
+    deps: {
+      async resolveEscalation({ msgId, choice }) {
+        const result = await resolveEscalation({ msg_id: msgId, choice });
+        if (result?.error) throw new Error(result.error);
+      },
+      async acknowledgeMessage({ msgId }) {
+        const result = await ackCoordMessage({ msg_id: msgId });
+        if (result?.error) throw new Error(result.error);
+      },
+      async setPlanItemStatus(args) {
+        const result = await setItemStatus(args);
+        if ('error' in result) throw new Error(result.error ?? 'set-status failed');
+      },
+      wakePlanLoop({ harnessSlug }) {
+        resumeLoop(harnessSlug);
+      },
+      async dismissImprovement({ issueId }) {
+        const result = await dismissImprovement(issueId);
+        if (result?.error) throw new Error(result.error);
+      },
+      async decideStandingApproval(args) {
+        const result = await decideStandingApproval(args);
+        if (result?.error) throw new Error(result.error);
+      },
+      async triageAttentionItem(args) {
+        const result = await triageAttentionItem(args);
+        if (result?.error) throw new Error(result.error);
+      },
+      async deliverOwnerReply(args) {
+        const result = await deliverInboxReply(args);
+        if (result.error) throw new Error(result.error);
+        return { live: result.live, woken: result.woken };
+      },
+    },
+  });
 }
 
 /**
