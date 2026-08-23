@@ -45,6 +45,7 @@ import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import type { CompanionListSummary } from '@papercusp/facets';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { ELK_LAYERED_LR_OPTIONS, getElk } from '../elk-layout';
 import { Button } from '../../harness/Button';
 import {
   useColumnFilterState,
@@ -240,35 +241,14 @@ interface Positioned {
   height: number;
 }
 
-/** Cached elk instance — the module is ~1MB, so it is imported once per session at most. */
-let elkPromise: Promise<{ layout: (g: unknown) => Promise<unknown> }> | null = null;
-async function getElk() {
-  if (!elkPromise) {
-    elkPromise = import('elkjs/lib/elk.bundled.js').then((m) => {
-      const Ctor = (m.default ?? m) as new () => { layout: (g: unknown) => Promise<unknown> };
-      return new Ctor();
-    });
-  }
-  return elkPromise;
-}
-
 /**
- * ELK options for a left-to-right LAYERED DAG (D-001).
- *
- * `layered` is the Sugiyama family the decision names. NETWORK_SIMPLEX layering plus
- * BRANDES_KOEPF node placement is ELK's standard high-quality combination, and crossing
- * minimisation is what we adopted ELK for over dagre in the first place (D-005).
+ * The elk loader and its layered-LR options moved to `../elk-layout` when the Workflows
+ * topology pane (external-triggers-gmail-slack-2026-08-22 P-024) became elkjs's second
+ * consumer. Sharing the module-scoped promise is what keeps "imported once per session at
+ * most" true ACROSS panes — a private copy here would instantiate the ~1MB bundle a second
+ * time. Behaviour is unchanged: same lazy import, same options.
  */
-const ELK_OPTIONS: Record<string, string> = {
-  'elk.algorithm': 'layered',
-  'elk.direction': 'RIGHT',
-  'elk.layered.layering.strategy': 'NETWORK_SIMPLEX',
-  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-  'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-  'elk.spacing.nodeNode': '24',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '72',
-  'elk.spacing.edgeNode': '16',
-};
+const ELK_OPTIONS = ELK_LAYERED_LR_OPTIONS;
 
 /**
  * The zoom ladder's numeric rungs, ascending — the `dgz` enum minus `fit`, which is not a
