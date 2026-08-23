@@ -36,6 +36,18 @@ import { getOrgPg } from '@papercusp/db-org';
 export const FLAG_OVERRIDES_STATE_KEY = 'operator_flag_overrides';
 
 /**
+ * Reserved row in the existing operator_flag_overrides table for app-wide
+ * runtime overrides. Workspace ids are user slugs (lowercase alphanumeric +
+ * dashes), so the `@` prefix cannot collide with a real workspace.
+ *
+ * EI-1831: flags:set and POST /api/flags/set are global meta-controls, but the
+ * store previously wrote activeWorkspaceId(). A sidecar or hive boot pinned to
+ * another workspace therefore never saw a successful flip. Reusing the table's
+ * existing workspace_id partition avoids a parallel store or schema migration.
+ */
+export const GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID = '@global';
+
+/**
  * PG NOTIFY channel announcing an override write to EVERY listening process
  * (WI-6793). `publishFlagChange` (flag-bus.ts) is an in-process dispatch, so
  * before this channel existed a runtime `flags:set` was invisible to every
@@ -58,7 +70,7 @@ let warnedNotifyFailed = false;
  */
 async function notifyFlagChange(key: FlagKey): Promise<void> {
   try {
-    const payload = JSON.stringify({ workspaceId: activeWorkspaceId(), key });
+    const payload = JSON.stringify({ workspaceId: GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID, key });
     await getOrgPg().sql`SELECT pg_notify(${FLAG_CHANGE_CHANNEL}, ${payload})`;
   } catch (err) {
     if (warnedNotifyFailed || process.env.NODE_ENV === 'test' || process.env.VITEST) return;
@@ -81,19 +93,38 @@ async function notifyFlagChange(key: FlagKey): Promise<void> {
  */
 export function installFlagOverrideStore(): void {
   initFlagOverrideStore({
-    // Partition the override read-cache by workspace: load() reads
-    // `WHERE workspace_id = activeWorkspaceId()`, so without this the first
-    // workspace to load would serve its overrides to every other workspace
-    // for the cache TTL (a cross-workspace flag bleed).
+    // Before the first global write, the resolved map still depends on the
+    // active workspace because its legacy row is the compatibility fallback.
+    // Partitioning the read cache keeps those rows isolated during the cutover.
     cacheKey: () => activeWorkspaceId(),
     async load() {
-      return (await readOperatorState<Partial<Record<FlagKey, boolean>>>(FLAG_OVERRIDES_STATE_KEY)) ?? {};
+      const [workspaceOverrides, globalOverrides] = await Promise.all([
+        readOperatorState<Partial<Record<FlagKey, boolean>>>(FLAG_OVERRIDES_STATE_KEY),
+        readOperatorState<Partial<Record<FlagKey, boolean>>>(
+          FLAG_OVERRIDES_STATE_KEY,
+          GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+        ),
+      ]);
+      // The EXISTENCE of the global row is the cutover marker. Even an empty
+      // `{}` row supersedes every legacy workspace row, so clearing the last
+      // global override cannot resurrect a stale local value. Until the first
+      // global write creates that row, current installs keep their legacy
+      // workspace behavior without an eager migration.
+      return globalOverrides ?? workspaceOverrides ?? {};
     },
     async set(key, enabled) {
-      const current = (await readOperatorState<Partial<Record<FlagKey, boolean>>>(FLAG_OVERRIDES_STATE_KEY)) ?? {};
+      const current =
+        (await readOperatorState<Partial<Record<FlagKey, boolean>>>(
+          FLAG_OVERRIDES_STATE_KEY,
+          GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+        )) ?? {};
       if (enabled === null) delete current[key];
       else current[key] = enabled;
-      await writeOperatorState(FLAG_OVERRIDES_STATE_KEY, current);
+      await writeOperatorState(
+        FLAG_OVERRIDES_STATE_KEY,
+        current,
+        GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+      );
       // WI-6793: announce cross-process AFTER the write lands. Fire-and-forget —
       // the write's success must never hinge on the announce.
       void notifyFlagChange(key);

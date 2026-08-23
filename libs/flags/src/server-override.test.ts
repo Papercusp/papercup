@@ -175,6 +175,35 @@ describe('flag override store', () => {
     expect(await getFlag(KEY, 'u')).toBe(true);
   });
 
+  it('a write invalidates every cached scope when the store has a shared layer (EI-1831)', async () => {
+    let scope = 'ws-a';
+    let shared: Partial<Record<FlagKey, boolean>> = {};
+    const store: FlagOverrideStore = {
+      async load() {
+        return { ...shared };
+      },
+      async set(key, enabled) {
+        shared = { ...shared };
+        if (enabled === null) delete shared[key];
+        else shared[key] = enabled;
+      },
+      cacheKey: () => scope,
+    };
+    initFlagOverrideStore(store);
+
+    // Prime two independent scope caches with the old shared value.
+    scope = 'ws-a';
+    expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]);
+    scope = 'ws-b';
+    expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]);
+
+    // The write originates in A, but B must not keep its old cache entry.
+    scope = 'ws-a';
+    expect(await setFlagOverride(KEY, !FLAG_DEFAULTS[KEY])).toEqual({ ok: true });
+    scope = 'ws-b';
+    expect(await getFlag(KEY, 'u')).toBe(!FLAG_DEFAULTS[KEY]);
+  });
+
   it('getAllFlags overlays stored overrides onto defaults', async () => {
     const { store } = makeFakeStore({ [KEY]: !FLAG_DEFAULTS[KEY] });
     initFlagOverrideStore(store);

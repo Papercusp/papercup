@@ -231,8 +231,12 @@ export async function setFlagOverride(
   if (!overrideStore) return { ok: false, reason: "override-store-not-configured" };
   try {
     await overrideStore.set(key, enabled);
-    // set() writes the active scope's row → bust only that scope's cache.
-    overrideCache.delete(currentCacheKey());
+    // A store write may affect a layer shared by EVERY scope (Papercusp's
+    // operator store has a global override row plus legacy workspace-local
+    // fallback rows). Clear every cached scope so a write in workspace A is
+    // immediately observable from workspace B in this same process. Runtime
+    // flag writes are rare; correctness here is worth the tiny refill cost.
+    overrideCache.clear();
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : "unknown" };

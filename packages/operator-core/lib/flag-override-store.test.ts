@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const readOperatorState = vi.fn();
 const writeOperatorState = vi.fn();
+let activeWorkspace = 'ws-under-test';
 // WI-6793: capture the cross-process announce (pg_notify) the set() path fires.
 const pgNotifyCalls: Array<{ values: unknown[] }> = [];
 
@@ -19,7 +20,7 @@ vi.mock('./operator-state-pg', () => ({
   readOperatorState: (...a: unknown[]) => readOperatorState(...a),
   writeOperatorState: (...a: unknown[]) => writeOperatorState(...a),
 }));
-vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-under-test' }));
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => activeWorkspace }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
@@ -35,12 +36,18 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 import { initFlagOverrideStore, isOverrideStoreConfigured, getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { installFlagOverrideStore, FLAG_OVERRIDES_STATE_KEY, FLAG_CHANGE_CHANNEL } from './flag-override-store';
+import {
+  installFlagOverrideStore,
+  FLAG_OVERRIDES_STATE_KEY,
+  FLAG_CHANGE_CHANNEL,
+  GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+} from './flag-override-store';
 
 describe('installFlagOverrideStore', () => {
   beforeEach(() => {
     readOperatorState.mockReset();
     writeOperatorState.mockReset();
+    activeWorkspace = 'ws-under-test';
     pgNotifyCalls.length = 0;
     initFlagOverrideStore(null); // start from "no store", the buggy state
   });
@@ -59,6 +66,10 @@ describe('installFlagOverrideStore', () => {
     expect(isOverrideStoreConfigured()).toBe(true);
     await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(true);
     expect(readOperatorState).toHaveBeenCalledWith(FLAG_OVERRIDES_STATE_KEY);
+    expect(readOperatorState).toHaveBeenCalledWith(
+      FLAG_OVERRIDES_STATE_KEY,
+      GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+    );
   });
 
   it('WITHOUT the store, a runtime override is silently ignored (the regression, pinned)', async () => {
@@ -75,7 +86,39 @@ describe('installFlagOverrideStore', () => {
     installFlagOverrideStore();
     const { setFlagOverride } = await import('@papercusp/flags/server');
     await setFlagOverride(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, null);
-    expect(writeOperatorState).toHaveBeenCalledWith(FLAG_OVERRIDES_STATE_KEY, { other: true });
+    expect(writeOperatorState).toHaveBeenCalledWith(
+      FLAG_OVERRIDES_STATE_KEY,
+      { other: true },
+      GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+    );
+  });
+
+  it('an existing global row supersedes legacy workspace rows in every workspace (EI-1831)', async () => {
+    readOperatorState.mockImplementation(async (_table: string, workspace?: string) => {
+      if (workspace === GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID) {
+        return { [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: true };
+      }
+      return { [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: false };
+    });
+    installFlagOverrideStore();
+
+    activeWorkspace = 'ws-a';
+    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(true);
+    activeWorkspace = 'ws-b';
+    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(true);
+  });
+
+  it('an empty global row is a cutover marker and does not resurrect legacy values after clear', async () => {
+    readOperatorState.mockImplementation(async (_table: string, workspace?: string) => {
+      if (workspace === GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID) return {};
+      return { [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: true };
+    });
+    installFlagOverrideStore();
+
+    activeWorkspace = 'ws-a';
+    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(false);
+    activeWorkspace = 'ws-b';
+    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(false);
   });
 
   it('is idempotent — installing twice leaves a working store', async () => {
@@ -99,7 +142,10 @@ describe('installFlagOverrideStore', () => {
     await vi.waitFor(() => expect(pgNotifyCalls.length).toBe(1));
     const [channel, payload] = pgNotifyCalls[0].values as [string, string];
     expect(channel).toBe(FLAG_CHANGE_CHANNEL);
-    expect(JSON.parse(payload)).toEqual({ workspaceId: 'ws-under-test', key: FLAGS.CODEX_GATEWAY_OAUTH_PROXY });
+    expect(JSON.parse(payload)).toEqual({
+      workspaceId: GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+      key: FLAGS.CODEX_GATEWAY_OAUTH_PROXY,
+    });
   });
 });
 
