@@ -1,0 +1,298 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+  WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  buildWorkspaceHostBuildManifest,
+} from "./workspace-host-build-manifest";
+import {
+  WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
+  WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+  WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+} from "./workspace-host-bootstrap";
+import {
+  WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  buildWorkspaceHostCleanRoomInstallFixture,
+  evaluateWorkspaceHostImageCompatibility,
+  runWorkspaceHostCleanRoomAcceptance,
+  validateWorkspaceHostImageArtifact,
+  workspaceHostCleanRoomFixtureAttestation,
+  type WorkspaceHostCleanRoomInstallFixture,
+  type WorkspaceHostCleanRoomInstallSpec,
+  type WorkspaceHostImageArtifact,
+} from "./workspace-host-image";
+
+const RELEASE_DIGEST = "a".repeat(64);
+const KEY_DIGEST = "b".repeat(64);
+
+function artifact(
+  version = "2026.8.22-1",
+  overrides: Partial<WorkspaceHostImageArtifact> = {},
+): WorkspaceHostImageArtifact {
+  const buildManifest = buildWorkspaceHostBuildManifest({
+    contractVersion: WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+    distributionProfile: "vm-release",
+    source: {
+      repository: "https://github.com/Papercusp/papercusp.git",
+      revision: "1".repeat(40),
+    },
+    releaseArtifact: {
+      name: `papercusp-server-${version}.tgz`,
+      version,
+      sha256: RELEASE_DIGEST,
+      sizeBytes: 42_000,
+    },
+    baseImage: {
+      reference: "ubuntu-2404-minimal",
+      architecture: "x86_64",
+      sha256: "c".repeat(64),
+    },
+    builder: {
+      strategy: "shared",
+      kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
+      version: "1.14.2",
+      templatePath: "infra/images/workspace-host.pkr.hcl",
+      templateSha256: "d".repeat(64),
+    },
+    materials: [
+      {
+        path: "dist/papercusp-server.tgz",
+        sha256: RELEASE_DIGEST,
+        sizeBytes: 42_000,
+      },
+    ],
+    parameters: [{ name: "distribution_profile", value: "vm-release" }],
+    targets: [
+      { provider: "aws", locations: [] },
+      { provider: "azure", locations: [] },
+      { provider: "gcp", locations: ["us-central1"] },
+    ],
+  });
+  return {
+    contractVersion: WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+    image: { id: "papercusp-workspace-host", version },
+    buildManifest,
+    release: {
+      version,
+      bundleUrl: `https://releases.papercusp.com/server/${version}.tgz`,
+      bundleSha256: RELEASE_DIGEST,
+      signatureUrl: `https://releases.papercusp.com/server/${version}.tgz.minisig`,
+      signingPublicKey:
+        "untrusted comment: Papercusp release key\nRWQpublickey",
+      signingKeySha256: KEY_DIGEST,
+    },
+    lifecycle: { state: "active", publishedAt: "2026-08-22T00:00:00Z" },
+    compatibility: [
+      {
+        provider: "gcp",
+        architecture: "x86_64",
+        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+        bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+        actions: ["install", "upgrade", "rollback"],
+        maximumArtifactAgeDays: 30,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function spec(
+  overrides: Partial<WorkspaceHostCleanRoomInstallSpec> = {},
+): WorkspaceHostCleanRoomInstallSpec {
+  return {
+    fixtureId: "gcp-x86_64-install-1",
+    action: "install",
+    provider: "gcp",
+    architecture: "x86_64",
+    observedAt: "2026-08-23T00:00:00Z",
+    hostId: "clean-room-host-1",
+    migrationId: "schema-1042",
+    minimumNodeMajor: 22,
+    service: { name: "papercusp-workspace", port: 3070 },
+    publicMetadata: { environment: "clean-room" },
+    ...overrides,
+  };
+}
+
+function stdoutFor(
+  fixture: WorkspaceHostCleanRoomInstallFixture,
+  observedAt: string,
+  mutate: (
+    value: ReturnType<typeof workspaceHostCleanRoomFixtureAttestation>,
+  ) => ReturnType<typeof workspaceHostCleanRoomFixtureAttestation> = (value) =>
+    value,
+): string {
+  const attestation = mutate(
+    workspaceHostCleanRoomFixtureAttestation(fixture, observedAt),
+  );
+  return `${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}${Buffer.from(
+    JSON.stringify(attestation),
+    "utf8",
+  ).toString("base64")}\n`;
+}
+
+describe("workspace-host image compatibility", () => {
+  it("joins the immutable build manifest, signed release, and exact matrix row", () => {
+    const candidate = artifact();
+    expect(validateWorkspaceHostImageArtifact(candidate)).toEqual([]);
+    expect(
+      evaluateWorkspaceHostImageCompatibility(candidate, {
+        action: "install",
+        provider: "gcp",
+        architecture: "x86_64",
+        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+        observedAt: "2026-08-23T00:00:00Z",
+      }),
+    ).toMatchObject({ compatible: true, issues: [] });
+
+    const first = buildWorkspaceHostCleanRoomInstallFixture(candidate, spec());
+    const replay = buildWorkspaceHostCleanRoomInstallFixture(candidate, spec());
+    expect(first).toEqual(replay);
+    expect(first.bootstrapScriptSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.bootstrapScript).toContain("RELEASE_VERSION='2026.8.22-1'");
+    expect(first.bootstrapInput.publicMetadata).toMatchObject({
+      imageAcceptance: {
+        manifestIdentity: candidate.buildManifest.manifestIdentity,
+        imageVersion: candidate.image.version,
+      },
+    });
+  });
+
+  it("runs the deterministic fixture through the existing exact bootstrap attestation gate", async () => {
+    const candidate = artifact();
+    const result = await runWorkspaceHostCleanRoomAcceptance(
+      candidate,
+      spec(),
+      {
+        async execute(fixture) {
+          return { stdout: stdoutFor(fixture, spec().observedAt) };
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      passed: true,
+      issues: [],
+      checks: [
+        "artifact-identity",
+        "compatibility-matrix",
+        "deterministic-bootstrap-fixture",
+        "exact-bootstrap-attestation",
+      ],
+    });
+  });
+
+  it("rejects incompatible and stale artifacts before invoking the installer", async () => {
+    let executions = 0;
+    const executor = {
+      async execute() {
+        executions += 1;
+        return { stdout: "" };
+      },
+    };
+    const incompatible = await runWorkspaceHostCleanRoomAcceptance(
+      artifact(),
+      spec({ provider: "aws" }),
+      executor,
+    );
+    const stale = await runWorkspaceHostCleanRoomAcceptance(
+      artifact(),
+      spec({ observedAt: "2026-10-01T00:00:00Z" }),
+      executor,
+    );
+    expect(incompatible.issues.map((issue) => issue.code)).toEqual([
+      "matrix-miss",
+    ]);
+    expect(stale.issues.map((issue) => issue.code)).toContain("stale-artifact");
+    expect(executions).toBe(0);
+  });
+
+  it("allows a deprecated artifact only through an exact, supported rollback edge", () => {
+    const previous = artifact("2026.8.01-1", {
+      lifecycle: {
+        state: "deprecated",
+        publishedAt: "2026-08-01T00:00:00Z",
+        deprecatedAt: "2026-08-22T00:00:00Z",
+        supportEndsAt: "2026-09-30T00:00:00Z",
+        successor: { id: "papercusp-workspace-host", version: "2026.8.22-1" },
+      },
+    });
+    const current = artifact("2026.8.22-1", {
+      lifecycle: {
+        state: "active",
+        publishedAt: "2026-08-22T00:00:00Z",
+        rollbackTarget: previous.image,
+      },
+    });
+    const install = evaluateWorkspaceHostImageCompatibility(previous, {
+      action: "install",
+      provider: "gcp",
+      architecture: "x86_64",
+      ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+      observedAt: "2026-08-23T00:00:00Z",
+    });
+    const rollback = evaluateWorkspaceHostImageCompatibility(previous, {
+      action: "rollback",
+      provider: "gcp",
+      architecture: "x86_64",
+      ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+      observedAt: "2026-08-23T00:00:00Z",
+      currentArtifact: current,
+    });
+    expect(install.issues.map((issue) => issue.code)).toContain(
+      "deprecated-artifact",
+    );
+    expect(rollback).toMatchObject({ compatible: true, issues: [] });
+  });
+
+  it("rejects tampered manifest identity and release bytes as one invalid artifact", () => {
+    const candidate = artifact();
+    const tampered: WorkspaceHostImageArtifact = {
+      ...candidate,
+      buildManifest: {
+        ...candidate.buildManifest,
+        releaseArtifact: {
+          ...candidate.buildManifest.releaseArtifact,
+          sha256: "e".repeat(64),
+        },
+      },
+    };
+    const result = evaluateWorkspaceHostImageCompatibility(tampered, {
+      action: "install",
+      provider: "gcp",
+      architecture: "x86_64",
+      ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+      observedAt: "2026-08-23T00:00:00Z",
+    });
+    expect(result.compatible).toBe(false);
+    expect(
+      result.issues.every((issue) => issue.code === "invalid-artifact"),
+    ).toBe(true);
+    expect(result.issues.map((issue) => issue.message).join("\n")).toMatch(
+      /manifestIdentity|bundleSha256/,
+    );
+  });
+
+  it("fails closed when clean-room attestation drifts from the signed release", async () => {
+    const result = await runWorkspaceHostCleanRoomAcceptance(
+      artifact(),
+      spec(),
+      {
+        async execute(fixture) {
+          return {
+            stdout: stdoutFor(fixture, spec().observedAt, (attestation) => ({
+              ...attestation,
+              release: {
+                ...attestation.release,
+                bundleSha256: "f".repeat(64),
+              },
+            })),
+          };
+        },
+      },
+    );
+    expect(result.passed).toBe(false);
+    expect(result.issues.map((issue) => issue.message)).toContain(
+      "clean-room attestation: release digest mismatch",
+    );
+  });
+});
