@@ -613,11 +613,6 @@ export function isPaletteUiPollRead(input: {
 }
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
-  // Turn-level presence beat (liveness-hardening P-001): every settled dispatch
-  // keeps its owner's presence warm, throttled per owner. Stays SYNCHRONOUS on
-  // the hot path (cheap, throttled) — before the workspace guard, since a beat
-  // needs an identity, not a workspace.
-  maybeBeatPresenceOnDispatch(input.ctx);
   // EI-2112: a pure UI poll-READ from the command-palette bridge (the desktop
   // dock's wake-board refresh tick, spawn_id='palette') is UI refresh, not agent
   // activity — it was 74.5% of the whole tool_invocations table. Drop it from
@@ -736,6 +731,12 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
+  // as a projected dispatch starts, so a long-running handler remains visible
+  // while it is still in flight rather than only after settlement.
+  onDispatchStart: ({ ctx }) => {
+    maybeBeatPresenceOnDispatch(ctx);
+  },
   // Papercusp quota windowing: workers→chunk/perChunk, power-user→session,
   // everyone else→run/perRun (plan P-011, formerly baked in the engine).
   // P-018: a runtime per-(tool,role) override (quota:set_tool) is MERGED over the baked

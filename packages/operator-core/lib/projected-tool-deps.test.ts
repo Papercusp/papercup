@@ -35,12 +35,17 @@ vi.mock('./decision-ledger/emit', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./decision-ledger/emit')>()),
   recordDecisionLedger: vi.fn(),
 }));
+vi.mock('./agent-tools/coordination/dispatch-heartbeat', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/dispatch-heartbeat')>()),
+  maybeBeatPresenceOnDispatch: vi.fn(),
+}));
 
 import { PROJECTED_DEPS, setReactionPostInvoke, jsonbSafeStringify, isPaletteUiPollRead } from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
+import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 import { PASS_THROUGH } from '@papercusp/agent-mcp';
 import type { PostInvokeEvent, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { __resetFailureLoopCircuitBreakerForTests, takePendingFailureLoopHint } from './failure-loop-circuit-breaker';
@@ -55,6 +60,22 @@ afterEach(() => {
   // The reaction port is a module-level singleton — reset between tests so an
   // installed handler does not leak.
   setReactionPostInvoke(null);
+});
+
+describe('PROJECTED_DEPS.onDispatchStart — in-flight liveness wiring', () => {
+  it('beats presence with the dispatch context before handler settlement', () => {
+    const event = {
+      toolName: 'code:run',
+      pluginName: 'agent-mcp',
+      args: { script: 'await longTask()' },
+      ctx: ctx({ runId: 'run-long-task' }),
+    };
+
+    PROJECTED_DEPS.onDispatchStart!(event);
+
+    expect(maybeBeatPresenceOnDispatch).toHaveBeenCalledOnce();
+    expect(maybeBeatPresenceOnDispatch).toHaveBeenCalledWith(event.ctx);
+  });
 });
 
 describe('PROJECTED_DEPS.checkCapabilityEnvelope — enforce/observe wiring (gap #7)', () => {
