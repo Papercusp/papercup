@@ -60,7 +60,7 @@ import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-t
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
-import { agentSpawnScopeMemoryMaxG } from './systemd-scope';
+import { agentSpawnScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
 warmScopeProbe();
 
@@ -1835,6 +1835,10 @@ export interface SpawnHeadlessOpts {
    *  attribution is worse than an honest gap. */
   launchedBy?: string;
   fleetSlug?: string | null;
+  /** Stable coord identity already chosen for this agent session. When known,
+   *  this is the hand-off key bootstrap uses to attach the pre-fork ledger row
+   *  to the native session id. Omit rather than infer it from command text. */
+  coordOwnerId?: string | null;
   /**
    * EI-19311623077693508: injectable seams for the boot-receipt scan. Tests pass
    * fakes so a case can emit the greeting-failure sentinel deterministically
@@ -1994,7 +1998,7 @@ function buildScopedSpawnArgv(
       args: [
         '--user',
         '--scope',
-        '--collect',
+        ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
         '--quiet',
         `--unit=${unitName}`,
         `--slice=${sliceName}`,
@@ -2108,6 +2112,7 @@ export function buildConsoleScopedSpawnCommand(
 export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
   const label = opts.label ?? 'headless-member';
+  const coordOwnerId = opts.coordOwnerId?.trim() || null;
   // Same one-liner shape spawnConsole builds — appearance prelude is harmless
   // with no TTY (the OSC escapes just land in the log). Headless sessions have
   // no desktop window or native .mcp.json watcher, so omit the visible-console
@@ -2185,7 +2190,11 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
         fleetSlug: opts.fleetSlug ?? null,
         logPath,
         memoryMaxBytes,
-        detail: { headless: true, label },
+        detail: {
+          headless: true,
+          label,
+          ...(coordOwnerId ? { coordOwnerId } : {}),
+        },
       },
       child.pid ?? null,
     );

@@ -87,6 +87,10 @@ export interface ConsoleEnvelope {
    * link. See packages/operator-core/lib/windows-desktop-windows.ts.
    */
   sessionId: string;
+  /** Stable coord identity resolved from the resumed adv_sessions row. Null for
+   *  fresh/untracked launches. Headless spawners use this only as task-ledger
+   *  metadata; it never changes the launched agent's identity. */
+  coordOwnerId?: string | null;
 }
 
 export interface BuildEnvelopeOpts {
@@ -429,6 +433,7 @@ export async function buildConsoleEnvelope(
   // user in the live agent CLI via `-r <sessionId>` instead of a
   // plain shell. Default greeting stays unchanged for normal launches.
   let greetingCmd = 'papercup status 2>/dev/null || true';
+  let coordOwnerId: string | null = null;
   if (opts.runCommand) {
     // capability:terminal — run the caller's command verbatim, arbitrary by
     // design (same trust model as capability:bash). buildConsoleOneliner
@@ -474,6 +479,7 @@ export async function buildConsoleEnvelope(
       const rows = await advSessionsByTranscriptHandles({ sessionIds: [opts.resumeSessionId] });
       row = rows[0];
     } catch { /* best-effort — fall back to env-derived backend below */ }
+    coordOwnerId = row?.coordOwnerId?.trim() || null;
     // The session's OWN agent wins; env is only a fallback when the row is gone.
     const backend = agentToBackend(row?.agent) ?? resolveBackend({ promptText: '' });
     // BARE interactive binary for the backend — deliberately NOT resolveAgentBin
@@ -610,6 +616,7 @@ export async function buildConsoleEnvelope(
     greetingCmd,
     needsSuperuserBootstrap,
     sessionId: randomUUID(),
+    coordOwnerId,
   };
 }
 

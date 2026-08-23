@@ -629,6 +629,7 @@ export default defineTool({
           envelope: { ...base, env, greetingCmd: command, cwd: base.cwd },
           label: `${label} (headless)`,
           logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
+          coordOwnerId: ownerId,
         })
       : await spawnConsole({
           envelope: { ...base, env, greetingCmd: command, cwd: base.cwd },

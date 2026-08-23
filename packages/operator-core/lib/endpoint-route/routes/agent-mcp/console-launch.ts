@@ -276,6 +276,7 @@ const post = defineTool({
           // commit a session log into the staging tree (same choice launch-su's
           // headless leg makes, and the same reason).
           logDir: join(papercuspPathForWorkspace(activeWorkspaceId()), 'fleet-logs'),
+          coordOwnerId: envelope.coordOwnerId,
         })
       : await spawnConsole({
           envelope,

@@ -472,6 +472,7 @@ const launchSu = defineTool({
           // The workspace's fleet-logs dir — NON-repo, so git-sync never tries to
           // commit a session log into the staging tree.
           logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
+          coordOwnerId: ownerId,
         });
         // `terminal` already reads "headless (log: <path>)", so the caller is told
         // where to tail without a second field.

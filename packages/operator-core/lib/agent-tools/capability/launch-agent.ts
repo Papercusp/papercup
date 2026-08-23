@@ -926,6 +926,11 @@ export default defineTool({
               logDir: headlessLogDir,
               launchedBy: callerOwnerId ?? undefined,
               fleetSlug,
+              // A successor is explicitly pre-pinned to the source owner; an
+              // in-place resume re-attaches that owner. A fork deliberately gets
+              // no stamp because it mints a distinct identity at boot.
+              coordOwnerId:
+                isSuccessor || (isResume && !fork) ? resumeOwnerId : null,
             })
           : spawnConsole({
               envelope: { ...base, env, greetingCmd: cmd, cwd },

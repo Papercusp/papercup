@@ -128,6 +128,7 @@ export async function reviveConsultResponder(
       logDir: join(papercuspPathForWorkspace(ctx.workspaceId), 'fleet-logs'),
       launchedBy: ctx.launchedBy ?? undefined,
       fleetSlug: null,
+      coordOwnerId: target.ownerId,
     });
     if (spawn.status !== 'ok') {
       return {

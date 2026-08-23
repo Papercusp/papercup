@@ -314,6 +314,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     envelope: { ...base, env, greetingCmd: command, cwd: base.cwd },
     label: `goal · ${input.title.slice(0, 40)} (auto)`,
     logDir,
+    coordOwnerId: ownerId,
   });
   if (spawned.status !== 'ok') {
     await rollback();
