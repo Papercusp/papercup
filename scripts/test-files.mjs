@@ -236,8 +236,12 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
     if (dir === root) break;
     dir = dirname(dir);
   }
-  if (unitFallback) return unitFallback;
+  // A config-less package is the nearest owner even when an ancestor (usually the
+  // repository root) has a fallback Vitest config.  The root config's include globs
+  // are not authoritative for a package that deliberately runs plain `vitest run`
+  // from its own cwd.
   if (packageFallback) return packageFallback;
+  if (unitFallback) return unitFallback;
   throw new Error(
     `no Vitest config owns ${rootRelative}; add a vitest.config.* at the workspace root or run the suite's documented non-Vitest command`,
   );

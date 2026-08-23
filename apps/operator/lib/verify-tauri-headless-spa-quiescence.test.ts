@@ -17,7 +17,9 @@
  * The fix: before the freeze copy, poll the newest mtime under
  * $SHARED_SPA_DIST/assets and require it to be unchanged for a stability
  * window (bounded by a max wait, so a wedged watcher — EI-5202 — can never
- * hang the boot; it warns and freezes anyway on timeout). The frozen snapshot
+ * hang the boot; a missing/empty assets directory is not stable and fails
+ * closed instead of freezing a blank snapshot, while a present bundle that
+ * keeps changing still warns and freezes on timeout). The frozen snapshot
  * also carries the vite-watch heartbeat's builtAtMs, so check-freshness.sh can
  * report "the shared watcher has rebuilt at least once since your freeze" —
  * the sentence the original filing said would have saved the 25 minutes.
@@ -78,15 +80,16 @@ describe('EI-19382195051346372 — verify-tauri-headless waits for SPA dist quie
     expect(src).toMatch(/rebuilt at least once since this snapshot's freeze/);
   });
 
-  it('never applies the quiescence wait when there is no shared assets dir to poll (no-op, not an error)', () => {
-    // The polling LOOP itself is scoped inside `if [ -d "$SHARED_SPA_DIST/assets" ]`
-    // so a not-yet-built operator-vite (the existing "WARNING: no built SPA"
-    // branch) never spins on a directory that doesn't exist. The threshold vars
-    // are declared just above the guard; the actual poll/sleep loop must be
-    // inside it, terminated by its own `done` before the guard's `fi`.
-    const guardIdx = src.indexOf('if [ -d "$SHARED_SPA_DIST/assets" ]; then');
-    expect(guardIdx).toBeGreaterThan(-1);
-    const afterGuard = src.slice(guardIdx, guardIdx + 1600);
-    expect(afterGuard).toMatch(/while :; do[\s\S]*sleep "\$QUIESCE_POLL_SEC"[\s\S]*?\n\s*done\n\s*fi/);
+  it('does not treat a missing or empty assets dir as a quiesced build', () => {
+    // Vite can leave index.html behind while it empties/rebuilds assets/. The
+    // wait must keep polling until at least one asset exists, and must refuse
+    // to copy the incomplete snapshot if that never happens.
+    const quiesceIdx = src.indexOf('QUIESCE_STABLE_SEC');
+    const copyIdx = src.indexOf('cp -a "$SHARED_SPA_DIST/."');
+    const quiesceBlock = src.slice(quiesceIdx, copyIdx);
+    expect(quiesceBlock).toContain('assets_ready=0');
+    expect(quiesceBlock).toContain('[ -n "$newest" ] && assets_ready=1');
+    expect(quiesceBlock).toMatch(/\[ "\$assets_ready" -eq 1 \] && \[ "\$elapsed_stable" -ge "\$QUIESCE_STABLE_SEC" \]/);
+    expect(quiesceBlock).toMatch(/did NOT produce a non-empty assets\/ bundle[\s\S]*refusing to freeze an incomplete snapshot/);
   });
 });
