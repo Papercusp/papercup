@@ -41,10 +41,12 @@ import { vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { createSubstrateSidecarHost } from './substrate-sidecar-host';
-import { startOutboxDrain } from './outbox-drain';
+import { startOutboxDrain, type EpochEncryptCapability } from './outbox-drain';
 import { makeFakeBootedHandle } from './__tests__/fake-booted-handle';
 import type { BootedHarnessHandle, BootHarnessOpts, LocalWriteOp } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
+import type { HiveRekeyBootDeps } from './hive-epoch-boot-deps';
+import { wireOutboxForHarness } from './wire-outbox';
 
 const WS = 'ws_sidecar_rekey';
 const SLUG = 'sidecar-rekey-member';
@@ -216,9 +218,7 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
     expect(wireCalls).toBe(2); // the re-key retried the wiring (the fix)
 
     // And the drained row was appended to the harness's own log (federation send-side).
-    expect(fake.appended.map((a) => [a.table, a.type, a.hbKey])).toEqual([
-      ['features-by-id', 'put', 'F-SIDECAR-1'],
-    ]);
+    expect(fake.appended.map((a) => [a.table, a.type, a.hbKey])).toEqual([['features-by-id', 'put', 'F-SIDECAR-1']]);
 
     await host.closeAll();
     errSpy.mockRestore();
@@ -264,6 +264,100 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
     expect(result.rekeyed).toBe(true);
     expect(fake.handle.rekey).toHaveBeenCalledWith(BINDING);
     expect(wireCalls).toBe(1); // idempotent — the re-key did NOT re-wire
+
+    await host.closeAll();
+  });
+
+  it('refreshes a PRE-Hive relocated drain on sidecar re-key: epoch-1 content encrypts and the owner-only key crosses without a second drain', async () => {
+    const fake = makeFake();
+    const encryptOp = vi.fn(async () => ({
+      epoch: 1,
+      value: { __rekey: 'sidecar-epoch-1-ciphertext' },
+    }));
+    const epochEncrypt: EpochEncryptCapability = { encryptOp };
+    const buildRekeyDeps = vi
+      .fn<() => Promise<HiveRekeyBootDeps | null>>()
+      .mockResolvedValueOnce(null) // boot-time: private harness, no Hive deps
+      .mockResolvedValueOnce({ epochEncrypt } as HiveRekeyBootDeps); // post-rekey Hive
+
+    const wireOutbox = vi.fn(async (h: BootedHarnessHandle) => {
+      await wireOutboxForHarness(h, db.sql, {
+        backfillLocalState: async () => ({ skipped: true, enqueued: 0, dropped: 0 }),
+        buildHiveRekeyBootDeps: buildRekeyDeps,
+        startOutboxDrain: (drainHandle, pg, opts) =>
+          startOutboxDrain(drainHandle, pg, {
+            ...opts,
+            fanout: undefined,
+            listen: undefined,
+            pollMs: 50,
+            _orphanCheckIntervalMs: -1,
+            _backlogAgeStallMs: 0,
+            _backlogSizeStallThreshold: 0,
+          }),
+      });
+    });
+    const host = createSubstrateSidecarHost({
+      bootHarnessImpl: (async () => fake.handle) as (opts: BootHarnessOpts) => Promise<BootedHarnessHandle>,
+      wireOutbox,
+      wirePresence: async () => {},
+    });
+
+    const boot = (await host.methods['substrate:bootHarness']({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      workspaceRoot: '/tmp/sidecar-rekey-lifecycle-test',
+    })) as { storeId: string };
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(1);
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+
+    const result = (await host.methods['substrate:rekey']({
+      storeId: boot.storeId,
+      binding: BINDING,
+    })) as { rekeyed: boolean };
+    expect(result.rekeyed).toBe(true);
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(2);
+    expect(wireOutbox).toHaveBeenCalledTimes(1); // refresh, never restart
+
+    await db.sql`
+      INSERT INTO harness_shared.substrate_outbox
+        (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at)
+      VALUES
+        (${WS}, ${SLUG}, 'pot_epoch_keys', 'put', ${`1:owner-device`},
+         ${db.sql.json({
+           harness_slug: SLUG,
+           epoch: 1,
+           member_device_pubkey: 'owner-device',
+           wrapped_key: 'owner-only-wrapped-key',
+         })}, ${Date.now()}, ${null}),
+        (${WS}, ${SLUG}, 'harness_features_consolidated', 'put', 'F-SIDECAR-E1',
+         ${db.sql.json(featureRow('F-SIDECAR-E1') as unknown as Parameters<typeof db.sql.json>[0])},
+         ${Date.now() + 1}, ${null})`;
+
+    await vi.waitFor(async () => expect(await undrainedCount(db.sql)).toBe(0), {
+      timeout: 5000,
+      interval: 50,
+    });
+
+    expect(encryptOp).toHaveBeenCalledTimes(1);
+    const keyOps = fake.appended.filter((op) => op.table === 'hive-epoch-keys');
+    expect(keyOps).toHaveLength(1);
+    expect(keyOps[0]?.value).toMatchObject({
+      epoch: 1,
+      member_device_pubkey: 'owner-device',
+      wrapped_key: 'owner-only-wrapped-key',
+    });
+    expect(keyOps[0]?.epoch).toBeUndefined(); // wrapped-key infra stays plaintext
+    expect(fake.appended.find((op) => op.table === 'features-by-id' && op.hbKey === 'F-SIDECAR-E1')).toMatchObject({
+      epoch: 1,
+      value: { __rekey: 'sidecar-epoch-1-ciphertext' },
+    });
+    expect(
+      keyOps.some(
+        (op) =>
+          (op.value as { member_device_pubkey?: string } | undefined)?.member_device_pubkey === 'revoked-b-device',
+      ),
+      'the post-boundary key stream must remain owner-only',
+    ).toBe(false);
 
     await host.closeAll();
   });

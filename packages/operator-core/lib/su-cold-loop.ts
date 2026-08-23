@@ -172,6 +172,25 @@ function coldNoteAge(ms: number): string {
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
+const TRANSIENT_EXEC_TOOL_RE = /\b(?:exec_command|write_stdin|unified[\s_-]+exec)\b/i;
+const NUMERIC_EXEC_HANDLE_RE =
+  /\b(?:session|process)(?:\s*[/]\s*(?:session|process))?(?:[\s_-]+(?:id|handle))?\s*(?:is|:|=|#)?\s*\d+\b/i;
+
+/**
+ * A numeric exec/write_stdin handle is process-local, unlike a native agent-session id.
+ * Cold carry deliberately preserves the note verbatim, but must frame this handle before
+ * the note can prompt the successor to call write_stdin on an id from the dead process.
+ */
+function transientExecHandleWarning(note: string): string | null {
+  if (!TRANSIENT_EXEC_TOOL_RE.test(note) || !NUMERIC_EXEC_HANDLE_RE.test(note)) return null;
+  return (
+    '⚠ CARRIED TRANSIENT EXEC HANDLE: this note names a numeric session/process handle for ' +
+    '`exec_command`, `write_stdin`, or unified exec. It is process-local and cannot be assumed ' +
+    'to survive a cold respawn. DO NOT call `write_stdin` with the carried id; use durable ' +
+    'spill/log/work-item evidence or rerun the command with a fresh exec.'
+  );
+}
+
 /**
  * Render the text a COLD wake injects (P-002 producer half): the agent's carry-note
  * framed as its reconstructed working state, plus the STANDING re-checkpoint mandate.
@@ -309,6 +328,7 @@ export function renderColdWakeInjection(
           'Re-implementing finished work is the specific failure this warns about. Recover what you did with ' +
           "sessions:timeline { owner:'self', since:'<the note write-time above>' }."
       : null;
+  const transientExecLine = transientExecHandleWarning(note);
   return [
     `❄️ COLD LOOP WAKE${fireTag} — a context reset was REQUESTED for this session: the host was asked to drop your`,
     'prior transcript and bring you back on the carry-note below. If it took, that note IS your continuity — treat it',
@@ -338,6 +358,7 @@ export function renderColdWakeInjection(
       'trigger a reset — a usage wall, a wedged host — can also stop the respawn completing.)',
     ...(writeAgeLine ? [writeAgeLine] : []),
     ...(staleWorkLine ? [staleWorkLine] : []),
+    ...(transientExecLine ? [transientExecLine] : []),
     ...(fireTag
       ? [
           'If you can see ANY tool calls or turns from AFTER this fire number in what looks like your own transcript, ' +

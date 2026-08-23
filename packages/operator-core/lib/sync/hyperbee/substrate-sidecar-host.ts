@@ -42,24 +42,16 @@ import Corestore from 'corestore';
 import type { HlcClock } from '@papercusp/locks-core';
 import { openOwnLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
-import {
-  bootHarnessSubstrate,
-  type BootedHarnessHandle,
-  type BootHarnessOpts,
-  type LocalWriteOp,
-} from './boot';
+import { bootHarnessSubstrate, type BootedHarnessHandle, type BootHarnessOpts, type LocalWriteOp } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
-import { wireOutboxForHarness } from './wire-outbox';
+import { refreshOutboxEpochEncryptForHarness, wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { listBootHistory, bootHistoryDepth, type ListBootHistoryOpts } from './boot-history';
 import { getReplicationLiveness } from './replication-liveness';
 import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import {
-  openHiveGitDuplexToDevice,
-  type HiveGitDuplexRequest,
-} from '../pot-git/peer-dial-registry';
+import { openHiveGitDuplexToDevice, type HiveGitDuplexRequest } from '../pot-git/peer-dial-registry';
 
 /**
  * Minimal Hypercore surface used by the observability methods. corestore's
@@ -136,11 +128,7 @@ export interface SubstrateSidecarHostDeps {
   /** Override presence wiring for the relocated boot. Default: wirePresenceAnnounceForHarness. */
   wirePresence?: (handle: BootedHarnessHandle) => Promise<void>;
   /** Override the sidecar-local pot-git registry dial (tests). */
-  openHiveGitDuplex?: (
-    topic: Buffer,
-    devicePubkeyBase64: string,
-    request: HiveGitDuplexRequest,
-  ) => Promise<Duplex>;
+  openHiveGitDuplex?: (topic: Buffer, devicePubkeyBase64: string, request: HiveGitDuplexRequest) => Promise<Duplex>;
   /** Directory for the bounded one-shot stream sockets (tests). */
   hiveGitTunnelDir?: string;
   /** Prepared-socket lifetime before fail-closed teardown (tests). */
@@ -236,16 +224,9 @@ interface OneShotUnixTunnel {
  * cannot strand the other. The listener is removed after the first accept and
  * expires if no client arrives within `ttlMs`.
  */
-async function createOneShotUnixTunnel(
-  peer: Duplex,
-  socketDir: string,
-  ttlMs: number,
-): Promise<OneShotUnixTunnel> {
+async function createOneShotUnixTunnel(peer: Duplex, socketDir: string, ttlMs: number): Promise<OneShotUnixTunnel> {
   await mkdir(socketDir, { recursive: true });
-  const socketPath = path.join(
-    socketDir,
-    `pc-hg-${process.pid}-${crypto.randomBytes(8).toString('hex')}.sock`,
-  );
+  const socketPath = path.join(socketDir, `pc-hg-${process.pid}-${crypto.randomBytes(8).toString('hex')}.sock`);
 
   let accepted = false;
   let closed = false;
@@ -304,10 +285,7 @@ async function createOneShotUnixTunnel(
     });
     server.listen(socketPath, () => {
       listening = true;
-      timeout = setTimeout(
-        () => close(new Error('substrate hive-git stream tunnel expired before connect')),
-        ttlMs,
-      );
+      timeout = setTimeout(() => close(new Error('substrate hive-git stream tunnel expired before connect')), ttlMs);
       timeout.unref?.();
       resolve();
     });
@@ -503,9 +481,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     // not inside bootHarnessSubstrate, so the boot function stays PG-free and
     // hermetic for its many merge tests. Lazy — no PG connection until the first
     // seed/persist. OFF ⇒ null ⇒ in-memory cursor only (pre-fix behavior).
-    const mergeCursorStore = (await getFlag(FLAGS.SUBSTRATE_MERGE_CURSOR_PG, 'system').catch(
-      () => true,
-    ))
+    const mergeCursorStore = (await getFlag(FLAGS.SUBSTRATE_MERGE_CURSOR_PG, 'system').catch(() => true))
       ? createPgMergeCursorStore(p.workspaceId, p.harnessSlug)
       : null;
     const handle = await bootHarnessImpl({
@@ -731,6 +707,11 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     const rec = requireRecord(p.storeId);
     if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
     await rec.booted.rekey(p.binding);
+    // WI-40905: the drain may already be marked wired from a PRE-Hive boot,
+    // where its epoch-encrypt dependency was correctly absent. Refresh that
+    // running drain's capability after the registry/topic transition and before
+    // the idempotence guard below no-ops. No second drain is started.
+    await refreshOutboxEpochEncryptForHarness(rec.booted);
     // EI-521 (WI-971, D-034/D-037): a re-key joins the harness's Hive-pubkey
     // federation topic IN PLACE (so it peer_connects), and rekeyHarness is the
     // SOLE production route bringing a JOINED (joinHiveAsView) / from-repo-CREATED
@@ -764,10 +745,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       typeof p.repoKey !== 'string' ||
       !p.repoKey
     ) {
-      throw new RpcMethodError(
-        -32602,
-        'openHiveGitDuplex requires { storeId, devicePubkeyBase64, repoKey }',
-      );
+      throw new RpcMethodError(-32602, 'openHiveGitDuplex requires { storeId, devicePubkeyBase64, repoKey }');
     }
     const rec = requireRecord(p.storeId);
     if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
@@ -781,18 +759,10 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
 
     const request: HiveGitDuplexRequest = {
       repoKey: p.repoKey,
-      ...(typeof p.peerGithubUserId === 'number'
-        ? { peerGithubUserId: p.peerGithubUserId }
-        : {}),
-      ...(typeof p.waitForRegistrationMs === 'number'
-        ? { waitForRegistrationMs: p.waitForRegistrationMs }
-        : {}),
+      ...(typeof p.peerGithubUserId === 'number' ? { peerGithubUserId: p.peerGithubUserId } : {}),
+      ...(typeof p.waitForRegistrationMs === 'number' ? { waitForRegistrationMs: p.waitForRegistrationMs } : {}),
     };
-    const peer = await openHiveGitDuplex(
-      Buffer.from(topicHex, 'hex'),
-      p.devicePubkeyBase64,
-      request,
-    );
+    const peer = await openHiveGitDuplex(Buffer.from(topicHex, 'hex'), p.devicePubkeyBase64, request);
     if (peer.destroyed) {
       const error = (peer as Duplex & { errored?: Error | null }).errored;
       return {

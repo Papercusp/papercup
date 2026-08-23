@@ -104,12 +104,10 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
   });
 
   it('publishes closed→dropped semantics so successful work is not marked discarded', () => {
-    expect(complete.description).toContain('`closed`/`deprecated` mean discard/wontfix');
-    expect(complete.description).toContain('feature/chunk `state:"passed"`');
-    expect(complete.description).toContain('issue `state:"resolved"`');
-    expect(complete.description).toContain('unified `"done"`/`"dropped"` aliases');
-    expect(complete.guidance?.when).toContain('Reserve `state:"dropped"`');
-    expect(complete.guidance?.when).toContain('legacy `closed`/`deprecated` for discard/wontfix');
+    expect(complete.description).toContain('terminal closes use `passed`/`deprecated` (feature/chunk)');
+    expect(complete.description).toContain('`done`/`dropped` aliases are accepted');
+    expect(complete.description).toContain('`closed`/`deprecated` discard work');
+    expect(complete.guidance?.when).toContain('Use `dropped`/`closed`/`deprecated` only for discard/wontfix');
     expect(complete.guidance?.when).toContain('exactly once in checked/notChecked/notApplicable');
     expect(complete.guidance?.when).toContain('residue is non-empty');
   });
@@ -2980,7 +2978,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const text = `${description}\n${when}\n${JSON.stringify(completionSchema)}`;
 
       expect(text).toContain('completion.verification');
-      expect(text).toContain('Top-level evidence');
+      expect(text).toContain('top-level evidence fields are legacy aliases');
       expect(text).toContain('verification.tests');
       expect(text).toContain('verification.typecheck');
       expect(text).toContain('verification.diff');

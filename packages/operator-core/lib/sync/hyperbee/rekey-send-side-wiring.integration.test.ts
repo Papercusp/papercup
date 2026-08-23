@@ -28,6 +28,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { startOutboxDrain } from './outbox-drain';
 import {
+  ensureSendSideWired,
   rekeyHarness,
   _setHandleForTests,
   _resetHandleMapForTests,
@@ -35,6 +36,9 @@ import {
 } from './boot-all';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
+import type { EpochEncryptCapability } from './outbox-drain';
+import type { HiveRekeyBootDeps } from './hive-epoch-boot-deps';
+import { wireOutboxForHarness } from './wire-outbox';
 
 const WS = 'ws_rekey_wire';
 const SLUG = 'rekey-member';
@@ -204,8 +208,105 @@ describe('rekeyHarness — EI-521: the in-place re-key wires the REAL outbox dra
     });
 
     // And the drained row was appended to the harness's own log (federation send-side).
-    expect(appends.map((a) => [a.table, a.type, a.hbKey])).toEqual([
-      ['features-by-id', 'put', 'F-REKEY-1'],
-    ]);
+    expect(appends.map((a) => [a.table, a.type, a.hbKey])).toEqual([['features-by-id', 'put', 'F-REKEY-1']]);
+  });
+
+  it('refreshes a PRE-Hive running drain on in-process re-key: epoch-1 content encrypts and the owner-only key crosses without a second drain', async () => {
+    const { handle, appends } = makeBootedButUnwiredHandle();
+    _setHandleForTests(WS, SLUG, handle);
+
+    const encryptOp = vi.fn(async () => ({
+      epoch: 1,
+      value: { __rekey: 'epoch-1-ciphertext' },
+    }));
+    const epochEncrypt: EpochEncryptCapability = { encryptOp };
+    const buildRekeyDeps = vi
+      .fn<() => Promise<HiveRekeyBootDeps | null>>()
+      .mockResolvedValueOnce(null) // booted + wired before this harness became a Hive
+      .mockResolvedValueOnce({ epochEncrypt } as HiveRekeyBootDeps); // post-promotion re-key
+
+    const wireOutbox = vi.fn(async (h: BootedHarnessHandle) => {
+      await wireOutboxForHarness(h, db.sql, {
+        backfillLocalState: async () => ({ skipped: true, enqueued: 0, dropped: 0 }),
+        buildHiveRekeyBootDeps: buildRekeyDeps,
+        startOutboxDrain: (drainHandle, pg, opts) =>
+          startOutboxDrain(drainHandle, pg, {
+            ...opts,
+            fanout: undefined,
+            listen: undefined,
+            pollMs: 50,
+            _orphanCheckIntervalMs: -1,
+            _backlogAgeStallMs: 0,
+            _backlogSizeStallThreshold: 0,
+          }),
+      });
+    });
+    const wireSendSide = {
+      wireOutbox,
+      wirePresence: async () => {},
+    };
+
+    // Production boot lifecycle: the drain starts PRE-Hive with no capability.
+    await ensureSendSideWired(handle, wireSendSide);
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(1);
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+
+    // Production promotion lifecycle: re-key the existing handle in place. The
+    // new hook refreshes the existing drain before ensureSendSideWired no-ops.
+    const result = await rekeyHarness(WS, SLUG, {
+      resolveSwarmBinding: async (): Promise<SwarmBinding> => ({
+        kind: 'topic',
+        topic_hex: 'b'.repeat(64),
+      }),
+      wireSendSide,
+    });
+    expect(result.rekeyed).toBe(true);
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(2);
+    expect(wireOutbox).toHaveBeenCalledTimes(1); // no duplicate drain/LISTEN
+
+    // Post-boundary source rows: one owner-only wrapped key (plaintext infra)
+    // plus one content row that MUST use the refreshed epoch-1 encryptor.
+    await db.sql`
+      INSERT INTO harness_shared.substrate_outbox
+        (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at)
+      VALUES
+        (${WS}, ${SLUG}, 'pot_epoch_keys', 'put', ${`1:owner-device`},
+         ${db.sql.json({
+           harness_slug: SLUG,
+           epoch: 1,
+           member_device_pubkey: 'owner-device',
+           wrapped_key: 'owner-only-wrapped-key',
+         })}, ${Date.now()}, ${null}),
+        (${WS}, ${SLUG}, 'harness_features_consolidated', 'put', 'F-REKEY-E1',
+         ${db.sql.json(featureRow('F-REKEY-E1') as unknown as Parameters<typeof db.sql.json>[0])},
+         ${Date.now() + 1}, ${null})`;
+
+    await vi.waitFor(async () => expect(await undrainedCount(db.sql)).toBe(0), {
+      timeout: 5000,
+      interval: 50,
+    });
+
+    expect(encryptOp).toHaveBeenCalledTimes(1);
+    const keyOps = appends.filter((op) => op.table === 'hive-epoch-keys');
+    expect(keyOps).toHaveLength(1);
+    expect(keyOps[0]).toMatchObject({
+      epoch: undefined,
+      value: {
+        epoch: 1,
+        member_device_pubkey: 'owner-device',
+        wrapped_key: 'owner-only-wrapped-key',
+      },
+    });
+    expect(appends.find((op) => op.table === 'features-by-id' && op.hbKey === 'F-REKEY-E1')).toMatchObject({
+      epoch: 1,
+      value: { __rekey: 'epoch-1-ciphertext' },
+    });
+    expect(
+      keyOps.some(
+        (op) =>
+          (op.value as { member_device_pubkey?: string } | undefined)?.member_device_pubkey === 'revoked-b-device',
+      ),
+      'the post-boundary key stream must remain owner-only',
+    ).toBe(false);
   });
 });

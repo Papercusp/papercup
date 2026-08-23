@@ -2406,7 +2406,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run builds, tests, checks, or scripts. For fixed-string searches, prefer `rg -F` when available or fall back to `grep -F`; use a shell-safe single-quoted argument because an unmatched backtick fails before either search tool runs. For repository regex searches, prefer ripgrep (`rg`) for text/regex search when it is available; otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.",
+        "when": "Run builds, tests, checks, or scripts. For fixed-string searches, prefer `rg -F` when available or fall back to `grep -F`; use a shell-safe single-quoted argument because an unmatched backtick fails before either search tool runs. For repository regex searches, Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.",
         "notWhen": "Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.",
         "chaining": "run_in_background:true returns bash_id + durable task_id; read with capability:bash_output { task_id }, stop with processes:kill { taskId }. Never push."
       }
@@ -3927,7 +3927,7 @@
       ],
       "guidance": {
         "when": "Need a scoped subsystem document for review, audit, or refactor; use `diff` for changed code only.",
-        "notWhen": "Packing follows retrieval: use lsp:query, gitnexus.query, code:structural, or prefer ripgrep (`rg`) for text/regex search when it is available; otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. first, then pack the measured radius.",
+        "notWhen": "Packing follows retrieval: use lsp:query, gitnexus.query, code:structural, or Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. first, then pack the measured radius.",
         "chaining": "gitnexus.query → code:pack include:<radius>; cite provenance.commit + dirty."
       }
     },
@@ -4075,7 +4075,7 @@
       ],
       "guidance": {
         "when": "The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.",
-        "notWhen": "The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is prefer ripgrep (`rg`) for text/regex search when it is available; otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`..",
+        "notWhen": "The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`..",
         "chaining": "code:structural to find candidate sites by shape → lsp:query op:\"symbol\" on one to confirm it resolves where you think. A structural match set is a SUPERSET of the type-correct one."
       }
     },
@@ -15850,7 +15850,7 @@
       ],
       "guidance": {
         "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
-        "notWhen": "Use text/regex search (prefer ripgrep (`rg`) for text/regex search when it is available; otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
+        "notWhen": "Use text/regex search (Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.) for text and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
         "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
       }
     },
@@ -28389,7 +28389,7 @@
           "POST"
         ]
       },
-      "description": "Complete one or many work-items with structured evidence; the system renders and broadcasts it. For a terminal close, prefer feature/chunk `state:\"passed\"` or `\"deprecated\"`, and issue `state:\"resolved\"` or `\"closed\"`; unified `\"done\"`/`\"dropped\"` aliases are also accepted. `closed`/`deprecated` mean discard/wontfix, not successful work. Pass terminal `state` plus `assumptions` (`\"none\"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.",
+      "description": "Complete one or more work-items with structured evidence; renders and broadcasts it. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`\"none\"` or fact keys) to converge item, plan item, claim, and checkpoint; without `state` it only records. Check `finish.complete`/`stateWarning`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -28412,7 +28412,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After verification, pass `completion`, a family-appropriate terminal state (`passed`/`deprecated` for feature/chunk, `resolved`/`closed` for issue; unified `done`/`dropped` aliases are accepted), and `assumptions` (`\"none\"` or fact keys). Reserve `dropped` and legacy `closed`/`deprecated` for discard/wontfix. For universal-verification claims, put the complete verbatim population partition in `completion.verification.coverage`: every population entry appears exactly once in checked/notChecked/notApplicable, and residue is non-empty (`[\"none\"]` means zero). Put structured evidence in `completion.verification` using only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; do not put descriptive `tests`, `typecheck`, or `diff` keys there — use `testsRun`/`testResult` (or top-level `tests`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.",
+        "when": "After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and `assumptions` (`\"none\"` or fact keys). Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a complete population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`[\"none\"]` means zero). In `completion.verification`, use only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; put descriptive tests/typecheck/diff in top-level aliases instead. Keep `deferred`/`coordNotes` outside verification; cite live-UI artifacts; use `completion.duplicateOf` for duplicates.",
         "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }

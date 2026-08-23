@@ -203,7 +203,10 @@ export const DRAIN_ORPHAN_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 
 /** Thrown inside the drain loop when a pass exceeds `DRAIN_PASS_TIMEOUT_MS`. */
 export class DrainPassTimeoutError extends Error {
-  constructor(readonly scope: string, readonly timeoutMs: number) {
+  constructor(
+    readonly scope: string,
+    readonly timeoutMs: number,
+  ) {
     super(
       `[outbox-drain] PASS TIMEOUT for ${scope}: a drain pass exceeded ${timeoutMs}ms — ` +
         `hung await (keychain unwrap / epoch-key resolution / append) wedging the serialized ` +
@@ -277,7 +280,11 @@ export const ROW_QUARANTINE_THRESHOLD = 3;
  *  `ROW_STAGE_TIMEOUT_MS`. Carries the row id so the caller's consecutive-timeout
  *  counter can attribute the episode to the SAME poison row across passes. */
 export class RowStageTimeoutError extends Error {
-  constructor(readonly rowId: string | number, readonly stage: string, readonly timeoutMs: number) {
+  constructor(
+    readonly rowId: string | number,
+    readonly stage: string,
+    readonly timeoutMs: number,
+  ) {
     super(
       `[outbox-drain] ROW STAGE TIMEOUT for row id=${rowId} at stage '${stage}': exceeded ` +
         `${timeoutMs}ms (WI-3896 poison-row class). Quarantined after ${ROW_QUARANTINE_THRESHOLD} ` +
@@ -298,12 +305,7 @@ export class RowStageTimeoutError extends Error {
  * on. `timeoutMs <= 0` disables the bound (falls back to the pass-level timeout
  * alone, today's pre-WI-3896 behavior).
  */
-async function raceRowStage<T>(
-  rowId: string | number,
-  stage: string,
-  p: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
+async function raceRowStage<T>(rowId: string | number, stage: string, p: Promise<T>, timeoutMs: number): Promise<T> {
   if (timeoutMs <= 0) return p;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -492,7 +494,10 @@ export async function drainOutboxOnce(
   const gcMaxBatches = opts._gcMaxBatches ?? OUTBOX_GC_MAX_BATCHES;
   try {
     for (let i = 0; i < gcMaxBatches; i++) {
-      const gc = await logIfStageStalls(scope, `gc-delete (batch ${i})`, pg`
+      const gc = await logIfStageStalls(
+        scope,
+        `gc-delete (batch ${i})`,
+        pg`
         WITH del AS (
           SELECT id
             FROM harness_shared.substrate_outbox
@@ -504,7 +509,8 @@ export async function drainOutboxOnce(
         )
         DELETE FROM harness_shared.substrate_outbox o
          USING del
-         WHERE o.id = del.id`);
+         WHERE o.id = del.id`,
+      );
       // Fewer than a full batch removed → backlog cleared for now.
       if ((gc.count ?? 0) < gcBatch) break;
     }
@@ -512,7 +518,10 @@ export async function drainOutboxOnce(
     // GC is non-fatal observability; continue to the actual drain.
   }
 
-  const rows = await logIfStageStalls(scope, 'select-undrained-batch', pg<OutboxDbRow[]>`
+  const rows = await logIfStageStalls(
+    scope,
+    'select-undrained-batch',
+    pg<OutboxDbRow[]>`
     SELECT id, table_name, op, key, row, ts,
            -- D-001: read op_hlc RESILIENTLY via to_jsonb so an outbox provisioned
            -- before migration 314 (an older boot snapshot / a hand-rolled test rig)
@@ -536,7 +545,8 @@ export async function drainOutboxOnce(
        -- drain crashing on a missing quarantined_at column.
        AND (to_jsonb(substrate_outbox.*) ->> 'quarantined_at') IS NULL
      ORDER BY id
-     LIMIT ${batch}`);
+     LIMIT ${batch}`,
+  );
 
   const rowTimeoutMs = opts.rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;
   const fanoutTimeoutMs = opts.fanoutTimeoutMs ?? FANOUT_ROW_TIMEOUT_MS;
@@ -580,7 +590,7 @@ export async function drainOutboxOnce(
       if (e instanceof UnknownOutboxTableError) {
         if (!loggedUnknownTables.has(e.tableName)) {
           loggedUnknownTables.add(e.tableName);
-           
+
           console.warn(
             `[outbox-drain] skipping outbox rows for unmapped table '${e.tableName}' ` +
               `(forward-compat: this build has no projection for it; a newer build will ` +
@@ -603,7 +613,7 @@ export async function drainOutboxOnce(
       const guarded = redactContentOpValueForEgress(op.table, op.value);
       if (guarded.redacted) {
         op = { ...op, value: guarded.value };
-         
+
         console.warn(
           `[outbox-drain] egress secrets-guard redacted a secret-bearing '${op.table}' op before federation`,
         );
@@ -618,12 +628,7 @@ export async function drainOutboxOnce(
     // a rejection (the epoch key is not yet on this device) propagates like an
     // append failure (halt + retry) so the op federates once the key arrives — it
     // is never dropped or sent in the clear.
-    if (
-      opts.epochEncrypt &&
-      op.type === 'put' &&
-      op.value !== undefined &&
-      shouldEncryptOpForRekey(op.table)
-    ) {
+    if (opts.epochEncrypt && op.type === 'put' && op.value !== undefined && shouldEncryptOpForRekey(op.table)) {
       const encryptStage = `epoch-encrypt (row id=${r.id} table=${r.table_name})`;
       const enc = await raceRowStage(
         r.id,
@@ -726,11 +731,15 @@ export async function drainOutboxOnce(
     // or a pre-log boot state) must not crash the drain — NULL is an explicitly
     // supported value here (mig 495: 'NULL = undrained or drained pre-migration'),
     // and the recurrence guard treats NULL as unknowable, never as stranded.
-    await logIfStageStalls(scope, `mark-drained (row id=${r.id})`, pg`
+    await logIfStageStalls(
+      scope,
+      `mark-drained (row id=${r.id})`,
+      pg`
       UPDATE harness_shared.substrate_outbox
          SET drained_at = ${now},
              drained_log_key = ${handle.ownLog?.keyHex ?? null}
-       WHERE id = ${r.id}`);
+       WHERE id = ${r.id}`,
+    );
     drained += 1;
   }
 
@@ -747,6 +756,21 @@ export interface StartDrainOptions {
   fanout?: OutboxFanoutFn;
   /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
   epochEncrypt?: EpochEncryptCapability;
+  /**
+   * WI-40905: resolve the re-key encrypt-on-capture capability at the START of
+   * each drain pass instead of snapshotting boot-time state forever. A harness
+   * can boot + start its drain while still private, then become a Hive
+   * home/member via an in-place re-key. In that lifecycle the boot-time
+   * capability is absent, but the SAME drain must begin encrypting after the
+   * re-key without starting a second LISTEN/poll loop.
+   *
+   * When supplied this takes precedence over `epochEncrypt`. The resolver is
+   * synchronous on purpose: the lifecycle hook performs the async dependency
+   * rebuild once, then atomically swaps the capability this getter returns.
+   * One pass snapshots one capability, so a refresh cannot split a batch across
+   * two crypto contexts.
+   */
+  resolveEpochEncrypt?: () => EpochEncryptCapability | undefined;
   /**
    * P-008 (shared-hive-cross-machine-scale-10k): subscribe to the outbox NOTIFY
    * channel through a SHARED connection instead of this drain's own `pg.listen`.
@@ -848,10 +872,7 @@ export interface StartDrainOptions {
    *  `_onStallEpisode` — before WI-6997 only escalation had a seam, which is part of
    *  why the missing resolve leg went unnoticed: no test could observe a recovery
    *  that never called anything. Production omits it. */
-  _onStallRecovery?: (
-    detail: string,
-    kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_backlog_aged',
-  ) => void;
+  _onStallRecovery?: (detail: string, kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_backlog_aged') => void;
 }
 
 export interface OutboxDrainHandle {
@@ -881,7 +902,7 @@ export function startOutboxDrain(
   const pollMs = Number.isFinite(opts.pollMs as number) ? (opts.pollMs as number) : DEFAULT_POLL_MS;
   const batch = opts.batch;
   const fanout = opts.fanout;
-  const epochEncrypt = opts.epochEncrypt;
+  const resolveEpochEncrypt = opts.resolveEpochEncrypt ?? (() => opts.epochEncrypt);
   const wantPayload = `${handle.workspaceId}::${handle.harnessSlug}`;
 
   let stopped = false;
@@ -1173,9 +1194,7 @@ export function startOutboxDrain(
           ? `oldest undrained row is ${Math.round(oldestAgeMs / 60000)}min old (≥ ` +
             `${Math.round(backlogAgeStallMs / 60000)}min threshold)`
           : null,
-        sizeBreached
-          ? `${undrainedCount} undrained rows (≥ ${backlogSizeStallThreshold} threshold)`
-          : null,
+        sizeBreached ? `${undrainedCount} undrained rows (≥ ${backlogSizeStallThreshold} threshold)` : null,
       ]
         .filter((r): r is string => r !== null)
         .join(' AND ');
@@ -1279,6 +1298,11 @@ export function startOutboxDrain(
         const drainOpts: DrainOptions = {};
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
+        // WI-40905: snapshot the CURRENT capability once per pass. The
+        // wire-outbox lifecycle controller refreshes this after a private
+        // harness is promoted/re-keyed into a Hive; the existing drain keeps
+        // running and the next pass encrypts without a duplicate drain loop.
+        const epochEncrypt = resolveEpochEncrypt();
         if (epochEncrypt !== undefined) drainOpts.epochEncrypt = epochEncrypt;
         // WI-3896: thread the per-row bound + this process's standing quarantine
         // set into every pass, so a previously-quarantined row stays skipped and
@@ -1299,10 +1323,7 @@ export function startOutboxDrain(
             drainedThisPass = await Promise.race([
               pass,
               new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                  () => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)),
-                  passTimeoutMs,
-                );
+                timer = setTimeout(() => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)), passTimeoutMs);
                 timer.unref?.();
               }),
             ]);
@@ -1342,11 +1363,7 @@ export function startOutboxDrain(
         }
       } while (runAgain && !stopped);
     } catch (e) {
-
-      console.error(
-        `[outbox-drain] drain failed for ${wantPayload}:`,
-        e instanceof Error ? e.message : String(e),
-      );
+      console.error(`[outbox-drain] drain failed for ${wantPayload}:`, e instanceof Error ? e.message : String(e));
       if (e instanceof DrainPassTimeoutError) {
         // WI-6997: latch it so the next successful pass has an edge to resolve on.
         drainHangEscalated = true;
@@ -1512,19 +1529,21 @@ export function startOutboxDrain(
   // Surface a listen-setup failure without crashing the boot path. The poll-fallback
   // timer below still guarantees drain liveness if the subscription never lands.
   void listenSetup.catch((e: unknown) => {
-    console.error(
-      `[outbox-drain] LISTEN setup failed for ${wantPayload}:`,
-      e instanceof Error ? e.message : String(e),
-    );
+    console.error(`[outbox-drain] LISTEN setup failed for ${wantPayload}:`, e instanceof Error ? e.message : String(e));
   });
 
   // Poll-fallback timer (liveness if a NOTIFY is missed). `.unref()` so it never
   // keeps the process alive on its own.
   pollTimer =
     pollMs > 0
-      ? managedSetInterval('hyperbee-outbox-drain-poll', pollMs, () => {
-          void drainSafely();
-        }, { category: 'lifecycle', instanced: true })
+      ? managedSetInterval(
+          'hyperbee-outbox-drain-poll',
+          pollMs,
+          () => {
+            void drainSafely();
+          },
+          { category: 'lifecycle', instanced: true },
+        )
       : null;
 
   return {

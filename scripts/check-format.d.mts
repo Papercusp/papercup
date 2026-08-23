@@ -20,6 +20,13 @@ export function normalizeScopedPaths(args: any): any;
 export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any[];
 export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: string): any[];
 export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any[];
+/**
+ * Prettier's range check compares the formatter output for the whole file.
+ * That lets an unrelated change outside the requested range (notably the final
+ * newline when the range starts at offset zero) fail an otherwise clean range.
+ * Compare only the requested source span so the scoped check remains scoped.
+ */
+export function rangeFormattingDiffers(source: any, formatted: any, range: any): boolean;
 export function parseFormatCliArgs(args: any): {
     mode: string;
     paths: any;

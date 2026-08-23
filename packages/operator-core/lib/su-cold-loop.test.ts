@@ -220,6 +220,26 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
     expect(renderColdWakeInjection('   padded   ')).toContain('\npadded\n');
   });
 
+  describe('transient exec-handle carry warning (EI-21201371887345177)', () => {
+    it('warns before a numeric exec session handle is handed to the cold successor', () => {
+      const note = '## Next action\nuse write_stdin on unified exec session_id 64399 to read the result';
+      const out = renderColdWakeInjection(note);
+      const warningAt = out.indexOf('CARRIED TRANSIENT EXEC HANDLE');
+      const noteAt = out.indexOf(note);
+
+      expect(warningAt).toBeGreaterThanOrEqual(0);
+      expect(warningAt).toBeLessThan(noteAt);
+      expect(out).toContain('DO NOT call `write_stdin` with the carried id');
+      expect(out).toContain('durable spill/log/work-item evidence');
+      expect(out).toContain('fresh exec');
+    });
+
+    it('does not warn for a stable native session identifier', () => {
+      const note = '## Next action\nresume the stable native session 64399; no transient exec handle is carried';
+      expect(renderColdWakeInjection(note)).not.toContain('CARRIED TRANSIENT EXEC HANDLE');
+    });
+  });
+
   it('tolerates an empty note without throwing (the P-006 guard means this is unreachable in practice, but stays safe)', () => {
     expect(() => renderColdWakeInjection('')).not.toThrow();
     expect(renderColdWakeInjection('')).toContain('loop:checkpoint');

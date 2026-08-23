@@ -13,9 +13,10 @@
  *    releases the LISTEN connection + poll timer exactly once.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { wireOutboxForHarness } from './wire-outbox';
+import { refreshOutboxEpochEncryptForHarness, wireOutboxForHarness } from './wire-outbox';
 import type { BootedHarnessHandle } from './boot';
-import type { OutboxDrainHandle } from './outbox-drain';
+import type { EpochEncryptCapability, OutboxDrainHandle, StartDrainOptions } from './outbox-drain';
+import type { HiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { listManaged } from '@papercusp/scheduled-registry';
 
 /** A fake handle that records registered close-hooks + can run them. */
@@ -69,7 +70,14 @@ describe('wireOutboxForHarness (Stage 5)', () => {
     // backfill ran before start; both with (handle, pg).
     expect(order).toEqual(['backfill', 'start']);
     expect(backfill).toHaveBeenCalledWith(handle, fakePg);
-    expect(start).toHaveBeenCalledWith(handle, fakePg);
+    expect(start).toHaveBeenCalledWith(
+      handle,
+      fakePg,
+      expect.objectContaining({
+        fanout: expect.any(Function),
+        resolveEpochEncrypt: expect.any(Function),
+      }),
+    );
 
     // The stopper is registered as a close-hook (not yet called).
     expect(hookCount()).toBe(1);
@@ -114,6 +122,47 @@ describe('wireOutboxForHarness (Stage 5)', () => {
       startOutboxDrain: () => drain,
     });
     expect(returned).toBe(drain);
+  });
+
+  it('refreshes a private-at-boot drain after Hive re-key without starting a second drain', async () => {
+    const stop = vi.fn(async () => {});
+    const drain: OutboxDrainHandle = { stop };
+    let startOpts: StartDrainOptions | undefined;
+    const start = vi.fn((_handle: BootedHarnessHandle, _pg: import('postgres').Sql, opts?: StartDrainOptions) => {
+      startOpts = opts;
+      return drain;
+    });
+    const epochEncrypt: EpochEncryptCapability = {
+      encryptOp: vi.fn(async () => ({ epoch: 1, value: { __rekey: 'ciphertext' } })),
+    };
+    const activeDeps = { epochEncrypt } as HiveRekeyBootDeps;
+    const buildRekeyDeps = vi
+      .fn<() => Promise<HiveRekeyBootDeps | null>>()
+      // PRE-Hive boot: no potHomeSlug yet, so plaintext baseline is correct.
+      .mockResolvedValueOnce(null)
+      // Promotion/re-key: the Hive registry is now committed and the capability exists.
+      .mockResolvedValueOnce(activeDeps)
+      // A later best-effort miss must not downgrade a known-good encrypted drain.
+      .mockResolvedValueOnce(null);
+
+    const { handle } = makeHandle();
+    await wireOutboxForHarness(handle, fakePg, {
+      backfillLocalState: async () => ({ skipped: true, enqueued: 0, dropped: 0 }),
+      startOutboxDrain: start,
+      buildHiveRekeyBootDeps: buildRekeyDeps,
+    });
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(startOpts?.resolveEpochEncrypt?.()).toBeUndefined();
+
+    expect(await refreshOutboxEpochEncryptForHarness(handle)).toBe(true);
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledTimes(1); // refreshes capability, never the loop
+    expect(startOpts?.resolveEpochEncrypt?.()).toBe(epochEncrypt);
+
+    expect(await refreshOutboxEpochEncryptForHarness(handle)).toBe(true);
+    expect(buildRekeyDeps).toHaveBeenCalledTimes(3);
+    expect(startOpts?.resolveEpochEncrypt?.()).toBe(epochEncrypt);
   });
 
   describe('WI-1942: bounded retry on a BAILED backfill', () => {

@@ -36,15 +36,11 @@ import { existsSync } from 'node:fs';
 import { workspacesRoot } from '../../workspace-registry';
 import type { ProjectEntry } from '../../harness-registry';
 import { join } from 'node:path';
-import {
-  bootHarnessSubstrate,
-  type BootedHarnessHandle,
-  type BootHarnessOpts,
-} from './boot';
+import { bootHarnessSubstrate, type BootedHarnessHandle, type BootHarnessOpts } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
 import type { MergeCursorStore } from './read-merge';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
-import { wireOutboxForHarness } from './wire-outbox';
+import { refreshOutboxEpochEncryptForHarness, wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import { pinRepoKeysForWorkspace } from '../pot-git/pin-repo-keys';
@@ -118,16 +114,8 @@ const bootRegistry = pinModuleState('@papercusp/operator-core.hyperbeeBootAll', 
 // bindings to MUTABLE containers, so the alias and the pinned object are the same
 // object. Do NOT convert any of these to a reassignable `let` — that would silently
 // re-privatise it to this module record and reintroduce the split.
-const {
-  handles,
-  inflight,
-  lastAccess,
-  evicted,
-  deferredActivation,
-  outboxWired,
-  presenceWired,
-  wiringInflight,
-} = bootRegistry;
+const { handles, inflight, lastAccess, evicted, deferredActivation, outboxWired, presenceWired, wiringInflight } =
+  bootRegistry;
 
 function key(workspaceId: string, harnessSlug: string): string {
   return `${workspaceId}::${harnessSlug}`;
@@ -173,9 +161,7 @@ let defaultSkipSendSideWiring = false;
 // branches (flag-gated THERE, mirroring the sidecar host); tests never install
 // it, so `bootHarnessSubstrate` stays PG-free/hermetic by default. A per-call
 // `opts.bootHarness` override (tests, sidecar factory) bypasses it entirely.
-let defaultMergeCursorStoreFactory:
-  | ((workspaceId: string, harnessSlug: string) => MergeCursorStore)
-  | null = null;
+let defaultMergeCursorStoreFactory: ((workspaceId: string, harnessSlug: string) => MergeCursorStore) | null = null;
 
 // ── Routing-decision latch (WI-2105) ─────────────────────────────────────────
 //
@@ -236,8 +222,7 @@ export function setSubstrateBootDefaults(opts: {
 }): void {
   if (opts.bootHarness !== undefined) defaultBootHarness = opts.bootHarness;
   if (opts.skipSendSideWiring !== undefined) defaultSkipSendSideWiring = opts.skipSendSideWiring;
-  if (opts.mergeCursorStoreFactory !== undefined)
-    defaultMergeCursorStoreFactory = opts.mergeCursorStoreFactory;
+  if (opts.mergeCursorStoreFactory !== undefined) defaultMergeCursorStoreFactory = opts.mergeCursorStoreFactory;
   // Either mode (sidecar factory installed OR cleared-to-in-process) IS the
   // routing decision — release any boots waiting on the WI-2105 latch.
   settleSubstrateBootRouting();
@@ -325,10 +310,7 @@ export function deferredActivationCount(): number {
 /** The reboot-on-access trigger — fires a background re-boot for an evicted
  *  engine on its next access. Default calls `bootSingleHarness` fire-and-forget;
  *  overridable in tests so a unit test never triggers a real corestore boot. */
-let rebootOnAccess: (workspaceId: string, harnessSlug: string) => void = (
-  workspaceId,
-  harnessSlug,
-) => {
+let rebootOnAccess: (workspaceId: string, harnessSlug: string) => void = (workspaceId, harnessSlug) => {
   void bootSingleHarness(workspaceId, harnessSlug).catch(() => {
     // best-effort re-boot; a failure leaves the harness unbooted (a later
     // boot-all reconcile / access retries it) — never throws into the caller.
@@ -342,9 +324,7 @@ export function enableSubstrateEvictionTracking(): void {
 }
 
 /** Test seam: override the reboot-on-access trigger. Never call from production. */
-export function _setRebootOnAccessForTests(
-  fn: (workspaceId: string, harnessSlug: string) => void,
-): void {
+export function _setRebootOnAccessForTests(fn: (workspaceId: string, harnessSlug: string) => void): void {
   rebootOnAccess = fn;
 }
 
@@ -390,19 +370,13 @@ export interface SendSideWiringDeps {
 }
 
 /** Default outbox wiring: resolve the org PG, then wire the drain loop. */
-async function defaultWireOutbox(
-  handle: BootedHarnessHandle,
-  onSessionClosed: () => void,
-): Promise<void> {
+async function defaultWireOutbox(handle: BootedHarnessHandle, onSessionClosed: () => void): Promise<void> {
   const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   await wireOutboxForHarness(handle, sql, { onSessionClosed });
 }
 
 /** Default presence wiring: wirePresenceAnnounceForHarness with the session-closed hook. */
-async function defaultWirePresence(
-  handle: BootedHarnessHandle,
-  onSessionClosed: () => void,
-): Promise<void> {
+async function defaultWirePresence(handle: BootedHarnessHandle, onSessionClosed: () => void): Promise<void> {
   await wirePresenceAnnounceForHarness(handle, { onSessionClosed });
 }
 
@@ -425,7 +399,6 @@ function markSendSideUnwired(
   const set = step === 'outbox' ? outboxWired : presenceWired;
   const wasWired = set.delete(k);
   if (wasWired) {
-
     console.error(`[boot-all] un-marking ${step} wiring for ${k} — ${reason}`);
   }
 }
@@ -439,10 +412,7 @@ function markSendSideUnwired(
  *
  * Exported for tests (the retry/idempotence/coalesce contract is the EI-521 fix).
  */
-export async function ensureSendSideWired(
-  handle: BootedHarnessHandle,
-  deps: SendSideWiringDeps = {},
-): Promise<void> {
+export async function ensureSendSideWired(handle: BootedHarnessHandle, deps: SendSideWiringDeps = {}): Promise<void> {
   const k = key(handle.workspaceId, handle.harnessSlug);
   if (outboxWired.has(k) && presenceWired.has(k)) return;
   const existing = wiringInflight.get(k);
@@ -481,10 +451,8 @@ export async function ensureSendSideWired(
         await wireOutbox(handle, () => rewireSoon('outbox'));
         outboxWired.add(k);
       } catch (e) {
-
         console.error(
-          `[boot-all] outbox wiring failed for ${k} (boot still succeeded; ` +
-            `will retry on the next boot pass):`,
+          `[boot-all] outbox wiring failed for ${k} (boot still succeeded; ` + `will retry on the next boot pass):`,
           e instanceof Error ? e.message : String(e),
         );
       }
@@ -498,10 +466,8 @@ export async function ensureSendSideWired(
         await wirePresence(handle, () => rewireSoon('presence'));
         presenceWired.add(k);
       } catch (e) {
-
         console.error(
-          `[boot-all] presence wiring failed for ${k} (boot still succeeded; ` +
-            `will retry on the next boot pass):`,
+          `[boot-all] presence wiring failed for ${k} (boot still succeeded; ` + `will retry on the next boot pass):`,
           e instanceof Error ? e.message : String(e),
         );
       }
@@ -587,7 +553,6 @@ async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]
     else dead.push(p.slug);
   }
   if (dead.length > 0) {
-     
     console.warn(
       `[boot-all] workspace '${workspaceId}': skipping ${dead.length} registry ` +
         `entr${dead.length === 1 ? 'y' : 'ies'} with missing project path ` +
@@ -683,10 +648,7 @@ export interface BootAllResult {
 }
 
 /** Resolve the cached handle for (workspace, harness). */
-export function getBootedHarness(
-  workspaceId: string,
-  harnessSlug: string,
-): BootedHarnessHandle | null {
+export function getBootedHarness(workspaceId: string, harnessSlug: string): BootedHarnessHandle | null {
   const k = key(workspaceId, harnessSlug);
   const handle = handles.get(k) ?? null;
   if (handle) {
@@ -740,9 +702,7 @@ export async function defaultResolveSwarmBinding(
     // the Hive pubkey topic, replacing the per-harness gh/local topic (D-001/D-003).
     // A non-hive or local-only member harness returns null here and falls through
     // to the gh-binding path unchanged.
-    const { resolveHiveSwarmBinding, potHomeSlugForHarness } = await import(
-      '../../hive-federation'
-    );
+    const { resolveHiveSwarmBinding, potHomeSlugForHarness } = await import('../../hive-federation');
     const hiveBinding = await resolveHiveSwarmBinding(workspaceId, harnessSlug);
     if (hiveBinding) return hiveBinding;
 
@@ -835,7 +795,6 @@ export async function bootSingleHarness(
       }),
     ]);
     if (outcome === 'timeout') {
-       
       console.error(
         `[boot-all] substrate routing still undecided after ${SUBSTRATE_ROUTING_WAIT_MS}ms — ` +
           `booting ${k} IN-PROCESS (duplicate-engine risk; check bootSubstrateWithFallback)`,
@@ -899,9 +858,7 @@ export async function bootSingleHarness(
   // incl. papercusp-workspace::papercusp — the P-059 outage). Until timeout
   // CANCELLATION is implemented, make the budget operator-tunable.
   const envBootTimeout = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS);
-  const timeoutMs =
-    opts.timeoutMs ??
-    (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : 30_000);
+  const timeoutMs = opts.timeoutMs ?? (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : 30_000);
   // EI-13317/WI-5481 rig-isolation follow-up: the connected_never_replicated
   // (zombie-socket) DETECTION grace (replication-liveness.ts's
   // DEFAULT_LIVENESS_GRACE_MS) defaults to 180s — structurally larger than
@@ -934,8 +891,7 @@ export async function bootSingleHarness(
   const envGraceMs = Number(process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS);
   const replicationStallGraceMs = opts.replicationStallGraceMs;
   const connectedNeverReplicatedGraceMs =
-    opts.connectedNeverReplicatedGraceMs ??
-    (Number.isFinite(envGraceMs) && envGraceMs > 0 ? envGraceMs : undefined);
+    opts.connectedNeverReplicatedGraceMs ?? (Number.isFinite(envGraceMs) && envGraceMs > 0 ? envGraceMs : undefined);
   // WI-38376: the frozen axis gets its own env knob for the same reason the
   // zombie axis got one above — with the difference that shortening THIS one
   // is safe against the WI-5672/WI-5686 false-positive class. That class came
@@ -949,10 +905,7 @@ export async function bootSingleHarness(
   // rig config. PRODUCTION DEFAULT UNCHANGED (180s) unless explicitly set.
   const envFrozenGraceMs = Number(process.env.PAPERCUSP_REPLICATION_FROZEN_GRACE_MS);
   const frozenGraceMs =
-    opts.frozenGraceMs ??
-    (Number.isFinite(envFrozenGraceMs) && envFrozenGraceMs > 0
-      ? envFrozenGraceMs
-      : undefined);
+    opts.frozenGraceMs ?? (Number.isFinite(envFrozenGraceMs) && envFrozenGraceMs > 0 ? envFrozenGraceMs : undefined);
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
   // WI-1892: keep a reference to the RAW boot promise (not the raced one) so a
   // boot that outlives the timeout can be ADOPTED instead of zombified — see the
@@ -999,10 +952,7 @@ export async function bootSingleHarness(
     return await Promise.race([
       rawBoot,
       new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`boot timeout after ${timeoutMs}ms`)),
-          timeoutMs,
-        ),
+        setTimeout(() => reject(new Error(`boot timeout after ${timeoutMs}ms`)), timeoutMs),
       ),
     ]);
   })();
@@ -1102,7 +1052,6 @@ export async function bootSingleHarness(
             );
             if (!skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
           } else {
-
             console.info(
               `[hyperbee-substrate] (${k}) late boot superseded by a newer boot — closing it to release the corestore`,
             );
@@ -1158,17 +1107,12 @@ async function resolveActivationDeferrals(
   const empty = new Set<string>();
   if (pairs.length === 0) return empty;
   try {
-    const [{ getFlag }, { FLAGS }] = await Promise.all([
-      import('@papercusp/flags/server'),
-      import('@papercusp/flags'),
-    ]);
+    const [{ getFlag }, { FLAGS }] = await Promise.all([import('@papercusp/flags/server'), import('@papercusp/flags')]);
     const on = await getFlag(FLAGS.LAZY_SUBSTRATE_BOOT, 'system').catch(() => false);
     if (!on) return empty;
 
     const { loadHarnessRegistry } = await import('../../harness-registry');
-    const { gatherActivationFacts, createPgActivationFactDeps } = await import(
-      './substrate-active-set-facts'
-    );
+    const { gatherActivationFacts, createPgActivationFactDeps } = await import('./substrate-active-set-facts');
     const { planSubstrateActivation } = await import('./substrate-active-set-policy');
 
     // Registry lookup per WORKSPACE (not per harness) — harness_kind/hive_slug
@@ -1230,9 +1174,7 @@ async function resolveActivationDeferrals(
   }
 }
 
-export async function bootAllHarnessesForActiveWorkspace(
-  opts: BootAllOpts = {},
-): Promise<BootAllResult> {
+export async function bootAllHarnessesForActiveWorkspace(opts: BootAllOpts = {}): Promise<BootAllResult> {
   const workspaceIds = opts.workspaceIds ?? (await readRegistryWorkspaceIds());
   const discover = opts.discoverHarnessSlugs ?? harnessSlugsFromPgRegistry;
   // Collect (workspace, slug) pairs FIRST (don't start the boots), then run them
@@ -1265,7 +1207,7 @@ export async function bootAllHarnessesForActiveWorkspace(
     } catch (e) {
       // LOUD per-workspace failure (audit P-078): the old FS read returned []
       // on any error — a silent zero-boot. Other workspaces still boot.
-       
+
       console.error(
         `[boot-all] harness discovery failed for workspace '${wsId}' — booting NOTHING for it:`,
         e instanceof Error ? e.message : String(e),
@@ -1276,8 +1218,7 @@ export async function bootAllHarnessesForActiveWorkspace(
   }
   const envConcurrency = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY);
   const bootConcurrency =
-    opts.bootConcurrency ??
-    (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
+    opts.bootConcurrency ?? (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
   // P-010 activate-on-demand: leave inactive harnesses DARK and wake them on
   // access / captured write. Empty set (⇒ eager boot) unless LAZY_SUBSTRATE_BOOT
   // is on; see resolveActivationDeferrals.
@@ -1336,9 +1277,7 @@ export async function bootAllHarnessesForActiveWorkspace(
     console.log(
       `[boot-all] activate-on-demand: booting ${toBoot.length}/${pairs.length} harness(es); ` +
         `${deferredResults.length} deferred (wake on access, captured write, or peer frame)` +
-        (uncovered > 0
-          ? `; ${uncovered} federating harness(es) booted because no remote wake could be armed`
-          : ''),
+        (uncovered > 0 ? `; ${uncovered} federating harness(es) booted because no remote wake could be armed` : ''),
     );
   }
   const bootResults = await mapWithConcurrency(toBoot, bootConcurrency, ({ wsId, slug }) =>
@@ -1395,9 +1334,7 @@ export async function bootAllHarnessesForActiveWorkspace(
   // the ACTIVE workspace (the registry helpers' default scope).
   void (async () => {
     try {
-      const { ensureRepoCoordsRevalidatedOnce } = await import(
-        '../../harness/revalidate-repo-coords'
-      );
+      const { ensureRepoCoordsRevalidatedOnce } = await import('../../harness/revalidate-repo-coords');
       ensureRepoCoordsRevalidatedOnce();
     } catch {
       /* best-effort; boot-all never fails on coord revalidation */
@@ -1414,9 +1351,7 @@ export async function bootAllHarnessesForActiveWorkspace(
   // lives in the module, so retry passes of this function no-op.
   void (async () => {
     try {
-      const { ensureGitSyncRoutinesReconciledOnce } = await import(
-        '../../harness/git-sync/git-sync-reconcile'
-      );
+      const { ensureGitSyncRoutinesReconciledOnce } = await import('../../harness/git-sync/git-sync-reconcile');
       ensureGitSyncRoutinesReconciledOnce(workspaceIds);
     } catch {
       /* best-effort; boot-all never fails on git-sync reconcile */
@@ -1489,10 +1424,7 @@ export async function bootAllHarnessesForActiveWorkspace(
 }
 
 /** Tear down a single handle. Idempotent. */
-export async function closeBootedHarness(
-  workspaceId: string,
-  harnessSlug: string,
-): Promise<boolean> {
+export async function closeBootedHarness(workspaceId: string, harnessSlug: string): Promise<boolean> {
   const k = key(workspaceId, harnessSlug);
   const handle = handles.get(k);
   if (!handle) return false;
@@ -1637,6 +1569,13 @@ export async function rekeyHarness(
   // already-wired handle. A REMOTE (sidecar) handle is skipped: its owning sidecar
   // process wires the drain, so re-wiring here would double-append the outbox.
   if (!opts.skipSendSideWiring && !(handle instanceof RemoteBootedHarnessHandle)) {
+    // WI-40905: an already-running drain may have been wired while this
+    // harness was still private, when buildHiveRekeyBootDeps correctly returned
+    // null. Refresh its capability against the now-committed Hive registry
+    // state before the idempotence guard below no-ops. This updates the existing
+    // drain; it never starts a second LISTEN/poll loop. If no controller exists
+    // (boot wiring never ran), ensureSendSideWired performs first-time wiring.
+    await refreshOutboxEpochEncryptForHarness(handle);
     await ensureSendSideWired(handle, opts.wireSendSide);
   }
   return { rekeyed: true };
@@ -1673,13 +1612,10 @@ export interface ReconcileRemoteHandlesResult {
 export async function reconcileRemoteHandlesAfterSidecarRestart(
   bootConcurrency?: number,
 ): Promise<ReconcileRemoteHandlesResult> {
-  const remoteKeys = [...handles.entries()]
-    .filter(([, h]) => h instanceof RemoteBootedHarnessHandle)
-    .map(([k]) => k);
+  const remoteKeys = [...handles.entries()].filter(([, h]) => h instanceof RemoteBootedHarnessHandle).map(([k]) => k);
 
   const envConcurrency = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY);
-  const concurrency =
-    bootConcurrency ?? (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
+  const concurrency = bootConcurrency ?? (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
 
   const failed: Array<{ key: string; error: string }> = [];
   const rebooted: string[] = [];
@@ -1880,10 +1816,7 @@ export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
  * may have grabbed the handle (bumping `lastAccess`) or a peer may have connected
  * (swarm/admitted) — in which case we SKIP, leaving the engine resident.
  */
-export async function evictBootedHarnessEngine(
-  k: string,
-  guard: { now: number; idleMs: number },
-): Promise<boolean> {
+export async function evictBootedHarnessEngine(k: string, guard: { now: number; idleMs: number }): Promise<boolean> {
   const handle = handles.get(k);
   if (!handle) return false;
   // WI-1544 Leg D: NEVER evict a relocated (sidecar) handle — its swarm/admitted
@@ -1935,10 +1868,7 @@ export async function evictBootedHarnessEngine(
  *   - the key was never evicted (paranoid check — a non-evicted unbooted harness
  *     shouldn't receive outbox NOTIFYs during normal operation)
  */
-export function handleOutboxNotifyForEvictedHarness(
-  workspaceId: string,
-  harnessSlug: string,
-): void {
+export function handleOutboxNotifyForEvictedHarness(workspaceId: string, harnessSlug: string): void {
   if (!evictionTrackingEnabled) return;
   const k = key(workspaceId, harnessSlug);
   if (handles.has(k)) return; // currently booted; running drain handles this NOTIFY
@@ -1988,10 +1918,7 @@ export function isHarnessEngineResident(workspaceId: string, harnessSlug: string
  * until a peer returns — that store-and-forward case is P-013's relay tier, not
  * this path (see substrate-wake-gossip's header).
  */
-export function handleRemoteWakeForDarkHarness(
-  workspaceId: string,
-  harnessSlug: string,
-): boolean {
+export function handleRemoteWakeForDarkHarness(workspaceId: string, harnessSlug: string): boolean {
   if (!evictionTrackingEnabled) return false;
   const k = key(workspaceId, harnessSlug);
   if (handles.has(k)) return false; // resident engine is already replicating
@@ -2011,11 +1938,7 @@ export function _resetHandleMapForTests(): void {
 }
 
 /** For tests. Inject a handle directly (skips real boot). */
-export function _setHandleForTests(
-  workspaceId: string,
-  harnessSlug: string,
-  handle: BootedHarnessHandle,
-): void {
+export function _setHandleForTests(workspaceId: string, harnessSlug: string, handle: BootedHarnessHandle): void {
   handles.set(key(workspaceId, harnessSlug), handle);
 }
 

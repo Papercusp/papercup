@@ -16,7 +16,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { drainOutboxOnce, type EpochEncryptCapability } from './outbox-drain';
+import { drainOutboxOnce, startOutboxDrain, type EpochEncryptCapability } from './outbox-drain';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 
 const WS = 'ws_rekey_drain';
@@ -213,14 +213,58 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
       throw new Error('no epoch key for (rekey-drain, epoch 1) on this device — cut off or not yet distributed');
     });
 
-    await expect(drainOutboxOnce(handle, db.sql, { epochEncrypt: { encryptOp } })).rejects.toThrow(
-      /epoch key/,
-    );
+    await expect(drainOutboxOnce(handle, db.sql, { epochEncrypt: { encryptOp } })).rejects.toThrow(/epoch key/);
 
     // Never appended (so never federated), and the row stays undrained for retry.
     expect(appends).toHaveLength(0);
     const [r] = await db.sql<{ drained_at: number | null }[]>`
       SELECT drained_at FROM harness_shared.substrate_outbox WHERE id = ${id}`;
     expect(r?.drained_at).toBeNull();
+  });
+
+  it('a running drain resolves the refreshed capability on its next pass', async () => {
+    const { handle, appends } = makeFakeHandle();
+    let notify: ((payload: string) => void) | undefined;
+    let epochEncrypt: EpochEncryptCapability | undefined;
+    const encryptOp = vi.fn(async () => ({ epoch: 1, value: { __rekey: 'refreshed-ciphertext' } }));
+    const drain = startOutboxDrain(handle, db.sql, {
+      pollMs: 0,
+      resolveEpochEncrypt: () => epochEncrypt,
+      listen: async (_channel, cb) => {
+        notify = cb;
+        return () => {};
+      },
+      _orphanCheckIntervalMs: -1,
+      _backlogAgeStallMs: 0,
+      _backlogSizeStallThreshold: 0,
+    });
+
+    try {
+      // Model the private-at-boot → Hive-after-rekey swap. The loop already
+      // exists; only the resolver's current capability changes.
+      expect(epochEncrypt).toBeUndefined();
+      epochEncrypt = { encryptOp };
+      await seedOutbox(db.sql, {
+        table_name: 'harness_features_consolidated',
+        op: 'put',
+        key: 'F-REFRESH',
+        row: featureRow('F-REFRESH'),
+      });
+      notify?.(`${WS}::${SLUG}`);
+
+      await vi.waitFor(() => expect(appends).toHaveLength(1), {
+        timeout: 5000,
+        interval: 20,
+      });
+      expect(encryptOp).toHaveBeenCalledTimes(1);
+      expect(appends[0]).toMatchObject({
+        table: 'features-by-id',
+        hbKey: 'F-REFRESH',
+        epoch: 1,
+        value: { __rekey: 'refreshed-ciphertext' },
+      });
+    } finally {
+      await drain.stop();
+    }
   });
 });

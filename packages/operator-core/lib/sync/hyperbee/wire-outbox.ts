@@ -39,20 +39,21 @@
 import type postgres from 'postgres';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { BootedHarnessHandle } from './boot';
-import {
-  backfillLocalState as realBackfillLocalState,
-  type BackfillResult,
-} from './backfill-local-state';
+import { backfillLocalState as realBackfillLocalState, type BackfillResult } from './backfill-local-state';
 import {
   startOutboxDrain as realStartOutboxDrain,
   type OutboxDrainHandle,
+  type StartDrainOptions,
+  type EpochEncryptCapability,
 } from './outbox-drain';
 import { fanoutOutboxRow } from './fanout-projection';
 import { hubListen, listenHubEnabled } from '../../pg-listen-hub';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
+import type { HiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { registerPlanClobberNotifier } from './plan-clobber-notify';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 /** WI-1942 default cadence (ms) for retrying a BAILED backfill within this same
  *  process, instead of only on the next full boot. Deliberately a few minutes —
@@ -70,11 +71,12 @@ const PLAN_CLOBBER_IDENTITY: AgentIdentity = {
 };
 
 export interface WireOutboxDeps {
-  backfillLocalState?: (
-    handle: BootedHarnessHandle,
-    pg: postgres.Sql,
-  ) => Promise<BackfillResult>;
-  startOutboxDrain?: (handle: BootedHarnessHandle, pg: postgres.Sql) => OutboxDrainHandle;
+  backfillLocalState?: (handle: BootedHarnessHandle, pg: postgres.Sql) => Promise<BackfillResult>;
+  startOutboxDrain?: (handle: BootedHarnessHandle, pg: postgres.Sql, opts?: StartDrainOptions) => OutboxDrainHandle;
+  /** WI-40905 lifecycle seam: tests model private-at-boot → Hive-after-rekey
+   *  without process-global identity/registry state. Production uses the real
+   *  boot-dependency composer. */
+  buildHiveRekeyBootDeps?: (opts: { workspaceId: string; harnessSlug: string }) => Promise<HiveRekeyBootDeps | null>;
   /** WI-3684 send-side twin: threaded to `startOutboxDrain`'s `onSessionClosed`
    *  (see outbox-drain.ts) — fires once the drain self-stops on a permanently
    *  closed own-log session, so `ensureSendSideWired` (boot-all.ts) can un-mark
@@ -85,6 +87,70 @@ export interface WireOutboxDeps {
    *  Default {@link DEFAULT_BACKFILL_RETRY_MS}. Tests inject a small value +
    *  fake timers to drive it deterministically. */
   backfillRetryMs?: number;
+}
+
+interface EpochEncryptRefreshState {
+  current(): EpochEncryptCapability | undefined;
+  refresh(): Promise<boolean>;
+}
+
+/**
+ * WI-40905: the drain is keyed by the booted handle, so keep its refreshable
+ * encryption state keyed the same way. Pin the WeakMap across duplicate module
+ * evaluation: boot-all's residency registry is already pinned for this exact
+ * same-realm split class, and a second wire-outbox module record must not make a
+ * live drain invisible to the re-key hook that needs to refresh it.
+ */
+const { epochEncryptByHandle } = pinModuleState('@papercusp/operator-core.hyperbeeWireOutbox', () => ({
+  epochEncryptByHandle: new WeakMap<BootedHarnessHandle, EpochEncryptRefreshState>(),
+}));
+
+/**
+ * Refresh the epoch-encrypt capability owned by an already-running outbox
+ * drain. Returns false when this handle has no wire-outbox controller yet (the
+ * caller should continue into normal first-time wiring); true means the
+ * controller existed and the refresh attempt completed.
+ *
+ * Null is NOT allowed to erase a previously-good capability. The boot composer
+ * is deliberately best-effort and returns null on transient resolution faults;
+ * downgrading a live encrypted drain to plaintext because one refresh missed
+ * would violate the read cut. Initial private-harness null still stays absent.
+ */
+export async function refreshOutboxEpochEncryptForHarness(handle: BootedHarnessHandle): Promise<boolean> {
+  const state = epochEncryptByHandle.get(handle);
+  if (!state) return false;
+  await state.refresh();
+  return true;
+}
+
+function createEpochEncryptRefreshState(
+  handle: BootedHarnessHandle,
+  buildDeps: NonNullable<WireOutboxDeps['buildHiveRekeyBootDeps']>,
+): EpochEncryptRefreshState {
+  let current: EpochEncryptCapability | undefined;
+  // Serialize every requested refresh instead of coalescing it away: if a boot
+  // refresh and a re-key refresh race, the later request must observe the later
+  // committed registry state.
+  let refreshTail: Promise<void> = Promise.resolve();
+
+  return {
+    current: () => current,
+    refresh: () => {
+      const run = refreshTail.then(async () => {
+        const next = await buildDeps({
+          workspaceId: handle.workspaceId,
+          harnessSlug: handle.harnessSlug,
+        });
+        if (next) current = next.epochEncrypt;
+        return current !== undefined;
+      });
+      refreshTail = run.then(
+        () => {},
+        () => {},
+      );
+      return run;
+    },
+  };
 }
 
 /**
@@ -114,39 +180,31 @@ export async function wireOutboxForHarness(
   );
 
   const backfill = deps.backfillLocalState ?? realBackfillLocalState;
-  // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): resolve this
-  // hive's re-key boot deps ONCE. Returns null (cheap, flag-first) when the re-key
-  // is off / this is a non-hive harness / no local device — so epochEncrypt stays
-  // undefined and the drain federates plaintext (byte-identical to today). On an
-  // active re-key hive it returns the EpochEncryptCapability the drain encrypts the
-  // selected hive-content ops with. A throw (unexpected crypto/device error on an
-  // active hive) propagates rather than silently falling back to plaintext — fail
-  // safe, never federate post-boundary content in the clear.
-  const rekeyDeps = await buildHiveRekeyBootDeps({
-    workspaceId: handle.workspaceId,
-    harnessSlug: handle.harnessSlug,
-  });
-  // Default drain wires the local subscribe→inject fan-out as a per-row consumer on
-  // the SAME drain (coordination-substrate Phase 2) PLUS the re-key encrypt
-  // capability (undefined ⇒ plaintext). Tests override startOutboxDrain to opt out.
-  const start =
-    deps.startOutboxDrain ??
-    ((h: BootedHarnessHandle, p: postgres.Sql) =>
-      realStartOutboxDrain(h, p, {
-        fanout: fanoutOutboxRow,
-        epochEncrypt: rekeyDeps?.epochEncrypt,
-        onSessionClosed: deps.onSessionClosed,
-        // P-008 (shared-hive-cross-machine-scale-10k): this is the PRODUCTION seam,
-        // so it is the one place that may safely route the drain's LISTEN through
-        // the shared hub — it runs against the real harness-admin database the hub
-        // itself connects to (`getHarnessAdminUrl()`). Without this, `pg.listen`
-        // reserves a dedicated PG backend PER HARNESS on the single global
-        // `substrate_outbox` channel: N harnesses = N connections, each discarding
-        // the other N-1 harnesses' payloads. The hub multiplexes them onto ONE
-        // ref-counted backend. Kill-switch: PAPERCUSP_LISTEN_HUB=0 (also OFF by
-        // default on laptop/workstation hosts) restores the per-harness listener.
-        listen: listenHubEnabled() ? hubListen : undefined,
-      }));
+  // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): the
+  // private-at-boot → Hive-after-rekey lifecycle means boot-time null is NOT a
+  // permanent answer. Own a refreshable controller beside the drain; re-key
+  // hooks update it in place, and startOutboxDrain resolves its current value at
+  // the beginning of every pass. The drain/LISTEN itself is still started once.
+  const rekeyState = createEpochEncryptRefreshState(handle, deps.buildHiveRekeyBootDeps ?? buildHiveRekeyBootDeps);
+  epochEncryptByHandle.set(handle, rekeyState);
+  await rekeyState.refresh();
+
+  const start = deps.startOutboxDrain ?? realStartOutboxDrain;
+  const startOpts: StartDrainOptions = {
+    fanout: fanoutOutboxRow,
+    resolveEpochEncrypt: rekeyState.current,
+    onSessionClosed: deps.onSessionClosed,
+    // P-008 (shared-hive-cross-machine-scale-10k): this is the PRODUCTION seam,
+    // so it is the one place that may safely route the drain's LISTEN through
+    // the shared hub — it runs against the real harness-admin database the hub
+    // itself connects to (`getHarnessAdminUrl()`). Without this, `pg.listen`
+    // reserves a dedicated PG backend PER HARNESS on the single global
+    // `substrate_outbox` channel: N harnesses = N connections, each discarding
+    // the other N-1 harnesses' payloads. The hub multiplexes them onto ONE
+    // ref-counted backend. Kill-switch: PAPERCUSP_LISTEN_HUB=0 (also OFF by
+    // default on laptop/workstation hosts) restores the per-harness listener.
+    listen: listenHubEnabled() ? hubListen : undefined,
+  };
 
   // (1) Best-effort one-time backfill. A failure here must not stop the drain —
   // the backfill catches up rows that PRE-DATE federation; the drain handles
@@ -156,7 +214,6 @@ export async function wireOutboxForHarness(
     try {
       return await backfill(handle, pg);
     } catch (e) {
-
       console.error(
         `[wire-outbox] backfillLocalState failed for ${handle.workspaceId}::${handle.harnessSlug} ` +
           `(continuing — drain still starts):`,
@@ -198,7 +255,7 @@ export async function wireOutboxForHarness(
   }
 
   // (2) Start the drain loop.
-  const drain = start(handle, pg);
+  const drain = start(handle, pg, startOpts);
 
   // (3) Register the stopper as a close-hook so shutdown releases the LISTEN
   // connection + poll timer exactly once (the handle drains its hook set once).
