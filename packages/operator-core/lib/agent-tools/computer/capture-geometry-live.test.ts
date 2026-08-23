@@ -172,7 +172,7 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
     // The trap, proven live: `-resize 1024x768` (no `>`) would return 1024x768 here and
     // cost 1.6x MORE tokens than the 800x600 screen it came from.
     desktop = await provisionSandboxDesktop({ width: 800, height: 600, apps: [] });
-    paintDetail(desktop.display, 30);
+    const probe = paintDetail(desktop.display, 30);
     await wait(4000);
 
     const agent: DesktopTarget = {
@@ -190,6 +190,9 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
     // Same pairing discipline as above: "unchanged" must mean unchanged AND still useful,
     // not an untouched capture of a screen that never painted.
     const verdict = analyzeImageBlankness(buf);
-    expect(verdict.verdict, `800x600 capture is ${verdict.verdict} (${verdict.reason})`).not.toBe('blank');
+    expect(
+      verdict.verdict,
+      `800x600 capture is ${verdict.verdict} (${verdict.reason}). Content-probe stderr: ${probe.errors() || '(none)'}`,
+    ).not.toBe('blank');
   }, 60_000);
 });
