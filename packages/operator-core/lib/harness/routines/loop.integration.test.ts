@@ -462,6 +462,74 @@ describe('loop surface round-trip (real PG)', () => {
     });
   });
 
+  it('EI-21269207450101133: inactive-only repair loses the stale-read race to an explicit arm', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'initial leader-control loop',
+      sql,
+    });
+    expect(await deactivateLoop(OWNER, { sql })).toBe(true);
+
+    let releaseRepair!: () => void;
+    const repairMayWrite = new Promise<void>((resolve) => {
+      releaseRepair = resolve;
+    });
+    let repairReadResolve!: () => void;
+    const repairRead = new Promise<void>((resolve) => {
+      repairReadResolve = resolve;
+    });
+    let interceptedRepairRead = false;
+    const repairSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const queryText = strings.join(' ');
+      const result = sql(strings, ...values);
+      if (!interceptedRepairRead && queryText.includes('harness_shared.routines') && queryText.includes('FOR UPDATE')) {
+        interceptedRepairRead = true;
+        return result.then(async (rows) => {
+          repairReadResolve();
+          await repairMayWrite;
+          return rows;
+        });
+      }
+      return result;
+    }) as unknown as Sql;
+
+    const staleRepairPromise = materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'stale leader-control loop',
+      mode: 'monitor',
+      onlyIfInactive: true,
+      sql: repairSql,
+    });
+    await repairRead;
+
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 1200,
+      kickoff: 'explicit leader loop',
+      goal: 'preserve this explicit leader mission',
+      mode: 'monitor',
+      sql,
+    });
+    releaseRepair();
+
+    const staleRepair = await staleRepairPromise;
+    expect(staleRepair.changed).toBe(false);
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({
+      active: true,
+      intervalSec: 1200,
+      mode: 'monitor',
+      goal: 'preserve this explicit leader mission',
+    });
+  });
+
   it('deactivateLoop stops the loop (idempotent on the active guard)', async () => {
     await materializeLoop({
       workspaceId: WS,

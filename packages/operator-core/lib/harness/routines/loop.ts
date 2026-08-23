@@ -447,6 +447,11 @@ export async function materializeLoop(
   let row: { id: string; name: string; nextFireAt: Date | null; targetRole: string };
   if (existing.length > 0) {
     const canonical = existing[0]!;
+    // `SELECT ... FOR UPDATE` above is not sufficient on its own: callers pass a
+    // pooled postgres.js client, so each tagged query commits independently and
+    // the row lock is released before this UPDATE starts. Repeat the inactive
+    // predicate in the write as a single-statement CAS so an explicit loop:arm
+    // that wins the gap cannot be overwritten by this stale repair.
     const rows = await sql<Array<{ id: string; name: string; next_fire_at: Date | null; target_role: string }>>`
       UPDATE harness_shared.routines
          SET id = ${desiredId},
@@ -465,8 +470,30 @@ export async function materializeLoop(
              target_owner_id = ${input.ownerId},
              updated_at = now()
        WHERE id = ${canonical.id}
+         AND (${input.onlyIfInactive !== true} OR active = FALSE)
       RETURNING id, name, next_fire_at, target_role
     `;
+    if (rows.length === 0 && input.onlyIfInactive) {
+      // The CAS lost to a concurrent explicit arm. Read back the winner so the
+      // caller reports its live configuration and, importantly, does not stamp
+      // or deactivate any shadow row as if the repair had changed the loop.
+      const currentRows = await sql<
+        Array<{ id: string; name: string; next_fire_at: Date | null; target_role: string; reschedule_interval_sec: number | null }>
+      >`
+        SELECT id, name, next_fire_at, target_role, reschedule_interval_sec
+          FROM harness_shared.routines
+         WHERE id = ${canonical.id}
+      `;
+      const current = currentRows[0] ?? canonical;
+      return {
+        id: current.id,
+        name: current.name,
+        nextFireAt: normalizeNextFireAt(current.next_fire_at),
+        targetRole: current.target_role,
+        intervalSec: current.reschedule_interval_sec == null ? null : Number(current.reschedule_interval_sec),
+        changed: false,
+      };
+    }
     await sql`
       UPDATE harness_shared.routines
          SET active = FALSE, updated_at = now(),
