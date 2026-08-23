@@ -495,6 +495,7 @@ describe('buildScopedTsconfig (scopeToFiles)', () => {
       // and the run drowns in phantom errors — the trap that cost the filing agent a round.
       expect(isAbsolute(cfg.compilerOptions.typeRoots[0])).toBe(true);
       expect(isAbsolute(cfg.extends)).toBe(true);
+      expect(cfg.compilerOptions.rootDir).toBe(pkgRoot);
       expect(cfg.files.every((f: string) => isAbsolute(f))).toBe(true);
     } finally {
       s.cleanup();

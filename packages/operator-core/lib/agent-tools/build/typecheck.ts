@@ -560,6 +560,12 @@ export function buildScopedTsconfig(
         compilerOptions: {
           noEmit: true,
           incremental: false,
+          // The throwaway config lives under /tmp. Without an absolute rootDir here,
+          // TypeScript resolves an inherited/implicit rootDir against that temp
+          // directory and rejects every real workspace file with TS6059. Scoped runs
+          // may include imports from anywhere in the workspace, so anchor the synthetic
+          // program at the real workspace root rather than the temp config directory.
+          rootDir: root,
           typeRoots: [typeRoot],
           // Trap 3 above — enumerated, not hardcoded, so this mirrors what tsc would have
           // auto-included. Omitted entirely when the scan finds nothing, so an unreadable
