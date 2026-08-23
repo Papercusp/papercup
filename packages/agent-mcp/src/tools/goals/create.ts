@@ -26,6 +26,7 @@ import {
   goalHolderPolicyProblem,
   goalHolderPolicySchema,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
+import { validatePropertySchemaDeclaration } from '@papercusp/operator-core/lib/typed-properties-db';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 import { applyGoalBlockedBy } from './goal-deps';
@@ -107,6 +108,12 @@ export default defineTool({
           'Omitting this entirely is refused: the goal would inherit the live-holder requirement without anyone having chosen it.',
       ),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    propertySchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "OPTIONAL — typed property DECLARATIONS (P-023): name → { datatype, default?, editable_by: 'owner'|'agent'|'both' }. Each datatype must resolve in datatype_registry; defaults are validated against the datatype's payload_schema. VALUES are written later, only via goals:set-property.",
+      ),
     consulted: stringTolerantBool
       .optional()
       .describe(
@@ -330,6 +337,25 @@ export default defineTool({
       }
     }
 
+    // ── P-023: typed property DECLARATIONS — validated-on-declare, the same
+    // rule the IO schemas carry: an unresolvable datatype ref or an invalid
+    // default is refused HERE, so goals:set-property is never left validating
+    // against a declaration that cannot be checked.
+    if (args.propertySchema) {
+      const propCheck = await validatePropertySchemaDeclaration(
+        ctx.tx as never,
+        workspaceId,
+        args.propertySchema,
+      );
+      if (!propCheck.ok) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: propCheck.issues.map((i) => `propertySchema: ${i}`),
+        };
+      }
+    }
+
     const id = goalId(args.title);
     await insertGoalRow(ctx.tx, {
       id,
@@ -344,6 +370,7 @@ export default defineTool({
       tripwires: args.tripwires ?? null,
       metadata: args.metadata ?? null,
       launchSettings,
+      propertySchema: args.propertySchema ?? null,
     });
 
     // ── Blocked-by edges (goal-dag-shared-substrate-2026-08-18 P-002) ─────

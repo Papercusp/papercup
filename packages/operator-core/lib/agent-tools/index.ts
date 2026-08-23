@@ -330,6 +330,7 @@ import './goals/arm-schedule';
 // reported at wind-down (loop:end / session:end `outputs`).
 import './goals/set-input-schema';
 import './goals/set-output-schema';
+import './goals/set-property';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive knowledge-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './knowledge_packs/list';
@@ -1206,6 +1207,8 @@ import './generators/publish';
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';
 import './plans/get';
+import './plans/get-properties';
+import './plans/set-property';
 // first-class-spec-clauses-and-prior-attempt-briefs P-002 — stable clause
 // identities + immutable revisions, with exact/current/history reads.
 import './plans/get-specs';

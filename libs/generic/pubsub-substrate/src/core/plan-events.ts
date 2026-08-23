@@ -22,7 +22,13 @@ export type PlanEventType =
   | 'status_changed'
   | 'promoted'
   | 'agent_launched'
-  | 'plan_audited';
+  | 'plan_audited'
+  /** A typed property write (goals:set-property / plans:set-property,
+   *  work-on-everything-goal-2026-08-23 P-023). `plan_slug` carries the
+   *  OWNING SUBJECT's key — a plan slug or a goal id — deliberately riding
+   *  this one rail (D-005 §2: no parallel channel); `detail` carries the
+   *  rendered delta line (`worklist: +"docs sweeps" −"perf"`). */
+  | 'property_changed';
 
 export interface ReadPlanEventsOpts {
   since_ts?: string;

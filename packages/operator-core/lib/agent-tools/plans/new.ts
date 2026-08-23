@@ -19,7 +19,9 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
-import { listPlanIndexRows } from './source';
+import { listPlanIndexRows, resolvePlanScope } from './source';
+import { withWorkspace } from '@papercusp/db-org';
+import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
 import { PLAN_STATUSES } from './parser';
 import { summarizeItemParse } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
@@ -94,6 +96,12 @@ export const argsSchema = z
       .optional()
       .describe(
         'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). This is the same canonical field name used by plans:set-content. When provided, plans:new writes valid frontmatter + this content in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/ownerEmail. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item and is silently ignored. plans:new returns itemsParsed + the parsed items so you can confirm they registered. Omit content to get the empty starter template.',
+      ),
+    propertySchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "OPTIONAL — typed property DECLARATIONS (P-023): name → { datatype, default?, editable_by: 'owner'|'agent'|'both' }. Each datatype must resolve in datatype_registry; defaults are validated against the datatype's payload_schema. VALUES are written later, only via plans:set-property.",
       ),
     force: stringTolerantBool
       .optional()
@@ -328,6 +336,33 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
 
+    // ── P-023: typed property DECLARATIONS — validated BEFORE the plan is
+    // created (datatype refs must resolve in datatype_registry; defaults must
+    // satisfy their datatype's payload_schema), so a bad declaration refuses
+    // cleanly instead of half-creating a plan that then cannot be stamped.
+    let propertySchemaDoc: Record<string, unknown> | null = null;
+    if (args.propertySchema) {
+      const declScope = await resolvePlanScope({
+        ...(harnessSlug ? { harnessSlug } : {}),
+        ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      });
+      const propCheck = await withWorkspace(declScope.workspaceId, (tx) =>
+        validatePropertySchemaDeclaration(tx as never, declScope.workspaceId, args.propertySchema),
+      );
+      if (!propCheck.ok) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ error: 'bad_property_schema', slug: args.slug, issues: propCheck.issues }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      propertySchemaDoc = args.propertySchema;
+    }
+
     // Search-first dedup (audit P-049 / EI-134): surface overlapping plans
     // before creating. Index-only read (slug/title columns — no blobs);
     // archived plans count as candidates (a superseded plan on the same
@@ -493,6 +528,23 @@ export default defineTool({
     // (resolvePlanScope collapses a member harness to its pot home). Using the
     // caller's own harnessSlug here would miss on exactly the pot-scoped plans a
     // goal creates, and miss SILENTLY — the UPDATE would match zero rows.
+    // ── P-023: stamp the validated property declarations onto the row.
+    // AWAITED (unlike the best-effort provenance decorations below): the
+    // caller was promised a plan carrying these declarations, so a failed
+    // stamp must surface rather than silently producing a schema-less plan.
+    // Uses `result.scope` — the RESOLVED pair the row was actually written
+    // with — for the same reason stampPlanGoalProvenance does.
+    if (propertySchemaDoc) {
+      await withWorkspace(result.scope.workspaceId, (tx) => tx`
+        UPDATE harness_shared.harness_plans
+           SET property_schema = ${JSON.stringify(propertySchemaDoc)}::text::jsonb,
+               updated_at = now()
+         WHERE workspace_id = ${result.scope.workspaceId}
+           AND harness_slug = ${result.scope.harnessSlug}
+           AND plan_slug = ${value.slug}
+      `);
+    }
+
     void stampPlanGoalProvenance({
       workspaceId: result.scope.workspaceId,
       harnessSlug: result.scope.harnessSlug,

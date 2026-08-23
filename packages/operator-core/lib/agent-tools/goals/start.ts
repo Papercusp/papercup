@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
 import { STANDING_GOAL_KILL_POLARITY, killCriterionProblem } from '../../goals/kill-criterion';
 import { evaluateGoalStartInputs } from '../../goals/goal-io-validation';
@@ -357,6 +358,12 @@ export default defineTool({
       .describe(
         'OPTIONAL — the values this goal is STARTED with, validated against inputSchema (a missing required field refuses the start). Allowed without a schema (carried unvalidated).',
       ),
+    propertySchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "OPTIONAL — typed property DECLARATIONS (P-023): name → { datatype, default?, editable_by: 'owner'|'agent'|'both' }. Each datatype must resolve in datatype_registry; defaults are validated against the datatype's payload_schema. VALUES are written later, only via goals:set-property.",
+      ),
   }),
   async handler(args, ctx) {
     const workspaceId =
@@ -426,6 +433,17 @@ export default defineTool({
     if (!inputsVerdict.ready) {
       return err(`inputs refused (${inputsVerdict.code}): ${inputsVerdict.hint}`);
     }
+    // ── P-023: typed property DECLARATIONS — validated-on-declare (datatype
+    // refs must resolve in datatype_registry; defaults must satisfy their
+    // datatype's payload_schema), same placement as the IO-schema gates above.
+    if (args.propertySchema) {
+      const propCheck = await validatePropertySchemaDeclaration(
+        ctx.tx as never,
+        workspaceId,
+        args.propertySchema,
+      );
+      if (!propCheck.ok) return err(`propertySchema refused: ${propCheck.issues.join('; ')}`);
+    }
 
     let callerOwnerId: string | null = null;
     try {
@@ -459,6 +477,7 @@ export default defineTool({
         inputSchema: args.inputSchema ?? null,
         inputs: inputsVerdict.inputs,
         outputSchema: args.outputSchema ?? null,
+        propertySchema: args.propertySchema ?? null,
       });
     } catch (e) {
       return err(`Could not open the goal: ${(e as Error)?.message ?? e}`);

@@ -85,6 +85,44 @@ const issuesOf = (error: z.ZodError): string[] =>
  * doors. `expectedVersion: 0` means "the property has no explicit value yet"
  * (its declaration's default, if any, is the effective prior value).
  */
+/** Clip one value for a delta line — short JSON, never a paragraph. */
+const shortValue = (v: unknown): string => {
+  if (v === undefined) return '∅';
+  let s: string;
+  try {
+    s = JSON.stringify(v) ?? 'undefined';
+  } catch {
+    s = String(v);
+  }
+  return s.length > 48 ? `${s.slice(0, 45)}…` : s;
+};
+
+/**
+ * Render ONE property write as the human-readable delta line the owning
+ * agent's orient/wake fold shows (`worklist: +"docs sweeps" −"perf"`).
+ *
+ * Pure — rides the plan-events envelope's `detail` field, which the orient
+ * fold already passes through verbatim, so no render code exists downstream.
+ * Arrays of scalars diff element-wise (+added −removed, insertion order);
+ * everything else renders `prior → next` with values clipped to one line.
+ */
+export function renderPropertyDelta(property: string, prior: unknown, next: unknown): string {
+  const scalarArray = (v: unknown): v is Array<string | number | boolean | null> =>
+    Array.isArray(v) && v.every((x) => x === null || ['string', 'number', 'boolean'].includes(typeof x));
+  if (scalarArray(next) && (prior === undefined || prior === null || scalarArray(prior))) {
+    const before = new Set((scalarArray(prior) ? prior : []).map(shortValue));
+    const after = new Set(next.map(shortValue));
+    const added = [...after].filter((x) => !before.has(x));
+    const removed = [...before].filter((x) => !after.has(x));
+    if (added.length > 0 || removed.length > 0) {
+      const parts = [...added.map((a) => `+${a}`), ...removed.map((r) => `−${r}`)];
+      return `${property}: ${parts.join(' ')}`;
+    }
+    return `${property}: unchanged`;
+  }
+  return `${property}: ${shortValue(prior)} → ${shortValue(next)}`;
+}
+
 export function prepareTypedPropertyMutation(
   args: PrepareTypedPropertyMutationArgs,
 ): TypedPropertyMutationResult {

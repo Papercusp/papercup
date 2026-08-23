@@ -189,6 +189,18 @@ export interface GoalRowInput {
   inputSchema?: Record<string, unknown> | null;
   inputs?: Record<string, unknown> | null;
   outputSchema?: Record<string, unknown> | null;
+  /**
+   * Typed property DECLARATIONS: name → { datatype, default?, editable_by }
+   * (work-on-everything-goal-2026-08-23 P-023, migration 923).
+   *
+   * Pass-through like the IO schemas above: validated by the CALLER against
+   * operator-core's typed-properties seam (zod shape + datatype_registry
+   * refs) before it reaches this row. Omitted/null ⇒ the column default
+   * (`{}`): no properties declared. VALUES are never written here — they land
+   * only through goals:set-property (CAS + provenance, migration 923's
+   * column comment is the contract).
+   */
+  propertySchema?: Record<string, unknown> | null;
 }
 
 /**
@@ -207,7 +219,7 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
     INSERT INTO harness_shared.goals
       (id, install_slug, workspace_id, title, body, parent_id, budget_cents, budget_window_sec,
        status, standing, kill_criterion, tripwires, metadata, launch_settings,
-       input_schema, inputs, output_schema)
+       input_schema, inputs, output_schema, property_schema)
     VALUES
       (${row.id}, ${row.installSlug}, ${row.workspaceId}, ${row.title}, ${row.body ?? null},
        ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.budgetWindowSec ?? null},
@@ -219,7 +231,8 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
        ${row.launchSettings && Object.keys(row.launchSettings).length ? JSON.stringify(row.launchSettings) : null}::jsonb,
        ${row.inputSchema && Object.keys(row.inputSchema).length ? JSON.stringify(row.inputSchema) : null}::jsonb,
        ${row.inputs && Object.keys(row.inputs).length ? JSON.stringify(row.inputs) : null}::jsonb,
-       ${row.outputSchema && Object.keys(row.outputSchema).length ? JSON.stringify(row.outputSchema) : null}::jsonb)
+       ${row.outputSchema && Object.keys(row.outputSchema).length ? JSON.stringify(row.outputSchema) : null}::jsonb,
+       ${JSON.stringify(row.propertySchema ?? {})}::jsonb)
   `;
 }
 
