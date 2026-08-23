@@ -274,6 +274,12 @@ describe('applyResultDoor', () => {
       { content: [{ type: 'text' as const, text: 'prelude'.repeat(1_000) }] },
       { toolName: 'code:run', workspaceId: 'ws-1', ownerId: 'su-owner', aggregateScope },
     );
+    // One aggregate cohort admits exactly two per-result door slots. Fill both
+    // before the evidence-bearing third result proves the overflow route.
+    applyResultDoor(
+      { content: [{ type: 'text' as const, text: 'second prelude'.repeat(1_000) }] },
+      { toolName: 'code:run', workspaceId: 'ws-1', ownerId: 'su-owner', aggregateScope },
+    );
     const evidence = {
       workItems: [{ id: 'WI-1', state: 'done' }],
       events: [{ event: 'gate:ready', status: 'fired' }],
