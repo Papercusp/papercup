@@ -63,14 +63,17 @@ const COORD_EVENT_LOG_DDL = `
 // test/_work-items-schema.ts (D-014 fixture-completeness debt).
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  activeWorkspace: 'default',
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('../../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../../workspace-registry')>('../../workspace-registry');
-  return { ...actual, activeWorkspaceId: () => 'default' };
+  return { ...actual, activeWorkspaceId: () => h.activeWorkspace };
 });
 // resolveProject: a known slug resolves; 'nope' is unknown (exercises the
 // unknown-harness promote guard).
@@ -123,8 +126,12 @@ const CTX = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: 'default'
  *  (create/claim/set_state/release/tag/promote) hand back `{ data: { ok, results,
  *  counts } }` via _bulk bulkContent; non-bulk verbs (e.g. work_items:expand) still
  *  return the legacy `{ content:[{text}] }`. Accept either. */
-async function call(tool: { handler: (a: never, c: never) => Promise<unknown> }, args: Record<string, unknown>) {
-  const res = (await tool.handler(args as never, CTX)) as {
+async function call(
+  tool: { handler: (a: never, c: never) => Promise<unknown> },
+  args: Record<string, unknown>,
+  context: unknown = CTX,
+) {
+  const res = (await tool.handler(args as never, context as never)) as {
     data?: Record<string, unknown>;
     content?: { text: string }[];
   };
@@ -138,8 +145,8 @@ async function call(tool: { handler: (a: never, c: never) => Promise<unknown> },
  * it returns the keyed-array envelope { ok, results:[{ ok, id, feature?, workItem? |
  * error }], counts }. Every promote below is single-item, so unwrap the n=1 result.
  */
-async function promoteOne(args: Record<string, unknown>) {
-  const env = await call(promoteTool, args);
+async function promoteOne(args: Record<string, unknown>, context: unknown = CTX) {
+  const env = await call(promoteTool, args, context);
   return (env.results as Record<string, unknown>[])[0]!;
 }
 
@@ -150,13 +157,16 @@ async function promoteOne(args: Record<string, unknown>) {
  * result — each self-describes its id and carries the same workItem/topic payload the
  * pre-bulk single shape did. (This also RETIRED work_items:create_batch + work_items:batch.)
  */
-const firstResult = async (tool: { handler: (a: never, c: never) => Promise<unknown> }, args: Record<string, unknown>) =>
-  ((await call(tool, args)).results as Record<string, unknown>[])[0]!;
-const createOne = (args: Record<string, unknown>) => firstResult(createTool, args);
-const claimOne = (args: Record<string, unknown>) => firstResult(claimTool, args);
-const setStateOne = (args: Record<string, unknown>) => firstResult(setStateTool, args);
-const releaseOne = (args: Record<string, unknown>) => firstResult(releaseTool, args);
-const tagOne = (args: Record<string, unknown>) => firstResult(tagTool, args);
+const firstResult = async (
+  tool: { handler: (a: never, c: never) => Promise<unknown> },
+  args: Record<string, unknown>,
+  context: unknown = CTX,
+) => ((await call(tool, args, context)).results as Record<string, unknown>[])[0]!;
+const createOne = (args: Record<string, unknown>, context: unknown = CTX) => firstResult(createTool, args, context);
+const claimOne = (args: Record<string, unknown>, context: unknown = CTX) => firstResult(claimTool, args, context);
+const setStateOne = (args: Record<string, unknown>, context: unknown = CTX) => firstResult(setStateTool, args, context);
+const releaseOne = (args: Record<string, unknown>, context: unknown = CTX) => firstResult(releaseTool, args, context);
+const tagOne = (args: Record<string, unknown>, context: unknown = CTX) => firstResult(tagTool, args, context);
 
 /** Invoke work_items:list (which returns the WorkItem array as `{ data }`, P-011). */
 async function listData(args: Record<string, unknown>): Promise<Array<{ id: string; kind: string }>> {
@@ -190,6 +200,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  h.activeWorkspace = 'default';
   // engineer_issues + harness_features_consolidated are VIEWS over work_items
   // (post-374) — truncate the BASE table; the views clear with it. work_item_deps +
   // work_item_blocked are the readiness sidecars HFC_DDL now creates, cleared too.
@@ -545,6 +556,47 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
     expect(missRes.ok).toBe(false);
     expect(missRes.error).toMatch(/work_item 'WI-404' not found/);
+  });
+
+  it('comment: preserves a non-default workspace and harness on both family writers', async () => {
+    h.activeWorkspace = 'workspace-comment-scope';
+    const scopedCtx = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: h.activeWorkspace };
+    const bug = await createOne({ kind: 'bug', title: 'scoped bug', harness: 'papercup' }, scopedCtx);
+    const feature = await createOne({ kind: 'feature', title: 'scoped feature', harness: 'papercup' }, scopedCtx);
+    const bugId = (bug.workItem as Record<string, unknown>).id as string;
+    const featureId = (feature.workItem as Record<string, unknown>).id as string;
+
+    await call(commentTool, { id: bugId, body: 'scoped issue comment' }, scopedCtx);
+    await call(commentTool, { id: featureId, body: 'scoped feature comment' }, scopedCtx);
+
+    const rows = await db.sql<{
+      thread_id: string;
+      thread_workspace: string;
+      thread_harness: string | null;
+      post_workspace: string;
+      post_harness: string | null;
+      body: string;
+    }[]>`
+      SELECT t.thread_id,
+             t.workspace_id AS thread_workspace,
+             t.harness_slug AS thread_harness,
+             p.workspace_id AS post_workspace,
+             p.harness_slug AS post_harness,
+             p.body
+        FROM harness_shared.coord_threads t
+        JOIN harness_shared.coord_thread_posts p
+          ON p.workspace_id = t.workspace_id AND p.thread_id = t.thread_id
+       WHERE t.thread_id = ANY(${[`issue-thread-${bugId}`, `work-item-thread-${featureId}`]})
+       ORDER BY t.thread_id`;
+
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.thread_workspace).toBe(h.activeWorkspace);
+      expect(row.post_workspace).toBe(h.activeWorkspace);
+      expect(row.thread_harness).toBe('papercup');
+      expect(row.post_harness).toBe('papercup');
+    }
+    expect(rows.map((row) => row.body)).toEqual(expect.arrayContaining(['scoped issue comment', 'scoped feature comment']));
   });
 
   it('promote: a bug mints an F-FIX feature; a feature is a no-op', async () => {
