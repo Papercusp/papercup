@@ -414,6 +414,7 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
   });
 
   it('marks a guarded reader child and preserves the selected repo cwd', async () => {
+    silenceConsole();
     const root = fixture({ packages: { 'apps/operator': { dependencies: {} } }, extracted: {} });
     type GuardedCommandOptions = { cwd: string; stdio: 'inherit'; env: NodeJS.ProcessEnv };
     const calls: Array<{ command: string; args: string[]; options: GuardedCommandOptions }> = [];
@@ -436,6 +437,23 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
       options: { cwd: root },
     });
     expect(calls[0].options.env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe('1');
+  });
+
+  it('routes guarded-reader diagnostics to stderr so stdout stays JSON-safe', async () => {
+    const root = fixture({ packages: { 'apps/operator': { dependencies: {} } }, extracted: {} });
+    const stdout = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      runCommandUnderInstallMutex({
+        repoRoot: root,
+        commandArgs: ['node', '-e', 'process.stdout.write(\'{"ok":true}\\n\')'],
+        runCommand: () => ({ status: 0 }),
+      }),
+    ).resolves.toBe(0);
+
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('NPM_INSTALL_SAFE guarding reader: node -e'));
   });
 
   it('keys the mutex by the selected root realpath, including symlink aliases', () => {
