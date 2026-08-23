@@ -11,17 +11,21 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
+  planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
   listPlanRows: vi.fn(async () => [] as unknown[]),
   getPlanRow: vi.fn(async () => null as unknown),
   planItemsForRow: vi.fn(() => [] as unknown[]),
   getAllPlanItemCoverage: vi.fn(async () => new Map()),
-  ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
+  ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string }) => ({
+    harnessSlug: ctx.harnessSlug ?? "papercup",
+  })),
 }));
 
 vi.mock("./source", async (orig) => {
   const actual = await orig<typeof import("./source")>();
   return {
     ...actual,
+    planHarnessesForSlugs: M.planHarnessesForSlugs,
     listPlanRows: M.listPlanRows,
     getPlanRow: M.getPlanRow,
     planItemsForRow: M.planItemsForRow,
@@ -51,10 +55,10 @@ import { _refreshCacheLayerForTests } from "../../cache/instance";
 
 const CACHE_LAYER = "papercusp-cache-layer";
 
-const ctx = (workspaceId: string): never =>
+const ctx = (workspaceId: string, harnessSlug = "papercup"): never =>
   ({
     workspaceId,
-    harnessSlug: "papercup",
+    harnessSlug,
     metadata: vi.fn(),
     log: vi.fn(),
     progress: vi.fn(),
@@ -63,8 +67,9 @@ const ctx = (workspaceId: string): never =>
 const run = async (
   args: Record<string, unknown>,
   workspaceId = "ws-items",
+  harnessSlug = "papercup",
 ): Promise<unknown> => {
-  return tool.handler(args as never, ctx(workspaceId));
+  return tool.handler(args as never, ctx(workspaceId, harnessSlug));
 };
 
 beforeEach(async () => {
@@ -72,6 +77,9 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.listPlanRows.mockClear();
+  M.planHarnessesForSlugs.mockReset();
+  M.planHarnessesForSlugs.mockResolvedValue(new Map());
+  M.ctxToPlanSourceOpts.mockClear();
   M.getAllPlanItemCoverage.mockReset();
   M.getAllPlanItemCoverage.mockResolvedValue(new Map());
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
@@ -87,6 +95,23 @@ afterEach(async () => {
 });
 
 describe("plans:items — cache wiring", () => {
+  it("recovers a missing harness from an exact slug before reading its items", async () => {
+    M.planHarnessesForSlugs.mockResolvedValueOnce(
+      new Map([["alpha", ["recovered-harness"]]]),
+    );
+
+    await run({ slug: "alpha" }, "ws-items", "*");
+
+    expect(M.planHarnessesForSlugs).toHaveBeenCalledWith("ws-items", ["alpha"]);
+    expect(M.ctxToPlanSourceOpts).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: "recovered-harness" }),
+    );
+    expect(M.getPlanRow).toHaveBeenCalledWith(
+      "alpha",
+      expect.objectContaining({ harnessSlug: "recovered-harness" }),
+    );
+  });
+
   it("a repeat cross-plan query HITS (listPlanRows runs once)", async () => {
     await run({ actionable: true });
     await run({ actionable: true });
