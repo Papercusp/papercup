@@ -41,6 +41,17 @@ export interface LeaderReseedOutcome {
     | 'non-1m-no-cap-gap'; // model caps member==leader (non-[1m]); nothing to lift
 }
 
+export interface AutoArmSuppressionOutcome {
+  /** Whether this leadership action explicitly requested a re-arm. */
+  requested: boolean;
+  /** Concrete fleet-leader event keys whose operator-cancel markers were cleared. */
+  eventKeys: string[];
+  /** Number of persisted cancellation markers cleared. */
+  cleared: number;
+  /** Best-effort error; leadership is already committed if this is present. */
+  error?: string;
+}
+
 export interface TakeLeadershipOutcome {
   slug: string;
   /** The new leader (the caller). */
@@ -55,6 +66,8 @@ export interface TakeLeadershipOutcome {
   notified: boolean;
   /** P-009: the compaction-cap re-seed applied to the new leader (null = re-seed skipped/failed). */
   reseed: LeaderReseedOutcome | null;
+  /** Explicit operator-cancel markers cleared before leader watch reconciliation. */
+  autoArmSuppressions: AutoArmSuppressionOutcome;
   /** Durable AUTO + monitor-loop + transition-watch state installed with leadership. */
   control: LeaderControlOutcome;
 }
@@ -132,6 +145,7 @@ export async function takeFleetLeadership(
     harnessSlug?: string | null;
     planSlug?: string | null;
     carry?: 'warm' | 'cold';
+    clearAutoArmSuppressions?: boolean;
   },
 ): Promise<TakeLeadershipOutcome> {
   const slug = fleet.fleetSlug;
@@ -145,6 +159,26 @@ export async function takeFleetLeadership(
   // 2. The caller's presence → this fleet's leader.
   await heartbeatPresence(identity); // guarantee a presence row to label
   await setPresenceFleet(workspaceId, ownerId, slug, 'leader');
+
+  // An explicit events:cancel is sticky across ordinary leader-control repairs.
+  // Re-taking leadership is the deliberate operator action that may opt back in;
+  // clear only this owner's exact fleet-transition keys, before reconciliation.
+  const autoArmSuppressions: AutoArmSuppressionOutcome = {
+    requested: opts?.clearAutoArmSuppressions === true,
+    eventKeys: [],
+    cleared: 0,
+  };
+  if (autoArmSuppressions.requested) {
+    autoArmSuppressions.eventKeys = resolveFleetLeaderTransitionEventKeys({ fleetSlug: slug });
+    try {
+      autoArmSuppressions.cleared = await clearOperatorCancelledAwaits(
+        ownerId,
+        autoArmSuppressions.eventKeys,
+      );
+    } catch (error) {
+      autoArmSuppressions.error = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   // P-009: now that the caller IS the leader, lift a stuck 300k member-cap seed to the leader
   // ceiling (400k on [1m]) — unless the make-leader call passed an explicit contextSize/limit.
@@ -202,6 +236,7 @@ export async function takeFleetLeadership(
     demotedPriorLeader,
     notified,
     reseed,
+    autoArmSuppressions,
     control,
   };
 }

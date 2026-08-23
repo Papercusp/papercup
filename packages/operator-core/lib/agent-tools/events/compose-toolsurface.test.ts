@@ -145,7 +145,7 @@ describe('events:cancel root_id (composed tree)', () => {
   it('root_id → cancelComposedTree({ rootId, subscriberId }); success → ok:true, cancelled:true', async () => {
     vi.mocked(cancelComposedTree).mockResolvedValue(true);
     const out = await callCancel({ root_id: 55 });
-    expect(cancelComposedTree).toHaveBeenCalledWith({ rootId: 55, subscriberId: 'su-compose' });
+    expect(cancelComposedTree).toHaveBeenCalledWith({ rootId: 55, subscriberId: 'su-compose', source: 'operator' });
     expect(out).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, root_id: 55, cancelled: true }] });
     expect(out.results[0].error).toBeUndefined();
   });

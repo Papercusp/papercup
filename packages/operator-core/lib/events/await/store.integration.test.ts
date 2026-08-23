@@ -34,6 +34,8 @@ const {
   cancelInboxWakeAwaits,
   cancelClaimableAwaits,
   cancelAwait,
+  listOperatorCancelledAwaits,
+  clearOperatorCancelledAwaits,
   cancelAwaitsForSubscribersOnKeys,
   cancelAwaitsByIds,
   findAnnouncementsForKey,
@@ -87,6 +89,7 @@ beforeAll(async () => {
       timeout_behavior text NOT NULL DEFAULT 'expire' CHECK (timeout_behavior IN ('expire','wake')),
       expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
       fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
+      cancel_reason text,
       once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
       payload_filter jsonb,
       bound_to jsonb,
@@ -105,6 +108,10 @@ beforeAll(async () => {
     CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent
       ON harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
       WHERE policy = 'wake' AND once = false AND cancelled_at IS NULL AND event_key LIKE 'coord:inbox-wake:%'`);
+  await rootSql.unsafe(`
+    CREATE INDEX event_awaits_operator_cancelled_key
+      ON harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      WHERE cancelled_at IS NOT NULL AND cancel_reason = 'operator'`);
   // FAITHFUL to mig 163 + 175 (urgent/min_sleep_sec) + 387 (source) —
   // event_wake_deliveries is needed by inspectEventKey and insertDeliveries.
   await rootSql.unsafe(`
@@ -453,6 +460,21 @@ describe('await-event store (PG)', () => {
     const a = await registerAwait({ subscriberId: 'owner', eventKey: 'k:mine' });
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'not-owner' })).toBe(false); // cannot cancel a peer's
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner' })).toBe(true); // owner can
+  });
+
+  it('records explicit operator cancellation markers and clears them by exact subscriber/key', async () => {
+    const key = 'fleet:context-critical:alpha';
+    const operatorCancelled = await registerAwait({ subscriberId: 'leader', eventKey: key, once: false });
+    const internalCancelled = await registerAwait({ subscriberId: 'leader', eventKey: 'fleet:drained:alpha', once: false });
+
+    expect(await cancelAwait({ awaitId: operatorCancelled.id, subscriberId: 'leader', source: 'operator' })).toBe(true);
+    expect(await cancelAwait({ awaitId: internalCancelled.id, subscriberId: 'leader' })).toBe(true);
+    expect(await listOperatorCancelledAwaits('leader', [key, 'fleet:drained:alpha'])).toMatchObject([
+      { id: operatorCancelled.id, subscriberId: 'leader', eventKey: key },
+    ]);
+
+    expect(await clearOperatorCancelledAwaits('leader', [key, 'other:key'])).toBe(1);
+    expect(await listOperatorCancelledAwaits('leader', [key])).toEqual([]);
   });
 
   // EI-10541: on a successful claim, the claim path cancels the agent's stale idle-park

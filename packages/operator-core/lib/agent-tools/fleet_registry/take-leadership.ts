@@ -46,6 +46,12 @@ export default defineTool({
       .describe(
         'P-009: pass to signal you are shaping this leader session yourself — it SUPPRESSES the auto-lift of the compaction cap (leaves your current limit as-is).',
       ),
+    clearAutoArmSuppressions: z
+      .boolean()
+      .optional()
+      .describe(
+        'Explicitly re-arm fleet-leader transition watches previously canceled through events:cancel. Defaults to false so an operator cancellation remains sticky; the response reports the exact cleared keys/count.',
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
@@ -59,6 +65,7 @@ export default defineTool({
     const out = await takeFleetLeadership(workspaceId, fleet, identity, ownerId, {
       compactionLimit: args.compactionLimit,
       contextSize: args.contextSize,
+      clearAutoArmSuppressions: args.clearAutoArmSuppressions,
     });
     // Recolor the caller's live window to the fleet's bound scheme — becoming a
     // leader must look like it (parity with fleet:create / fleet:join, which all

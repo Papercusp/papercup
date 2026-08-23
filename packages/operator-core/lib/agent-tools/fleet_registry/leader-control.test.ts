@@ -7,6 +7,7 @@ const readActiveLoopFacts = vi.fn();
 const materializeLoop = vi.fn();
 const buildLoopWakePrompt = vi.fn((_args: unknown) => 'wake prompt');
 const listActiveAwaits = vi.fn();
+const listOperatorCancelledAwaits = vi.fn();
 const cancelAwait = vi.fn();
 const retireLifecycleBoundWatches = vi.fn();
 const registerAwait = vi.fn();
@@ -32,6 +33,7 @@ vi.mock('../../harness/routines/loop', () => ({
 
 vi.mock('../../events/await/store', () => ({
   listActiveAwaits: (...args: unknown[]) => listActiveAwaits(...args),
+  listOperatorCancelledAwaits: (...args: unknown[]) => listOperatorCancelledAwaits(...args),
   cancelAwait: (...args: unknown[]) => cancelAwait(...args),
   retireLifecycleBoundWatches: (...args: unknown[]) => retireLifecycleBoundWatches(...args),
   registerAwait: (...args: unknown[]) => registerAwait(...args),
@@ -110,6 +112,7 @@ beforeEach(() => {
   readActiveLoopFacts.mockResolvedValue(null);
   materializeLoop.mockResolvedValue(undefined);
   listActiveAwaits.mockResolvedValue(activeWatches());
+  listOperatorCancelledAwaits.mockResolvedValue([]);
   captureWakeHandleForOwner.mockResolvedValue({
     handle: { kind: 'psu-socket' },
     note: 'reachable',
@@ -386,5 +389,21 @@ describe('ensureFleetLeaderControl', () => {
     expect(registerAwait.mock.calls.every(([args]) => args.payloadFilter?.not?.agentId?.equals === 'leader-1')).toBe(
       true,
     );
+  });
+
+  it('treats an explicit operator cancellation as sticky during reconciliation', async () => {
+    const suppressedKey = 'fleet:context-critical:alpha';
+    listOperatorCancelledAwaits.mockResolvedValue([
+      { id: 77, subscriberId: 'leader-1', eventKey: suppressedKey, cancelledAt: '2026-08-23T20:00:00.000Z' },
+    ]);
+    listActiveAwaits.mockResolvedValue(activeWatches().filter((row) => row.eventKey !== suppressedKey));
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(out.healthy).toBe(true);
+    expect(out.watches.suppressed).toEqual([suppressedKey]);
+    expect(out.watches.active).toEqual(standardEventKeys().filter((key) => key !== suppressedKey));
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(listOperatorCancelledAwaits).toHaveBeenCalledWith('leader-1', standardEventKeys());
   });
 });

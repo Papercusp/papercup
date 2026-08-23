@@ -15,6 +15,8 @@ const fetchPresenceFleet = vi.fn();
 const sendMessage = vi.fn();
 const ensureFleetLeaderControl = vi.fn();
 const retireFleetLeaderWatches = vi.fn();
+const resolveFleetLeaderTransitionEventKeys = vi.fn();
+const clearOperatorCancelledAwaits = vi.fn();
 
 vi.mock('../../agent-fleets-store', () => ({
   setFleetLeader: (...a: unknown[]) => setFleetLeader(...a),
@@ -31,7 +33,11 @@ vi.mock('../coordination/messages', () => ({
 }));
 vi.mock('./leader-control', () => ({
   ensureFleetLeaderControl: (...a: unknown[]) => ensureFleetLeaderControl(...a),
+  resolveFleetLeaderTransitionEventKeys: (...a: unknown[]) => resolveFleetLeaderTransitionEventKeys(...a),
   retireFleetLeaderWatches: (...a: unknown[]) => retireFleetLeaderWatches(...a),
+}));
+vi.mock('../../events/await/store', () => ({
+  clearOperatorCancelledAwaits: (...a: unknown[]) => clearOperatorCancelledAwaits(...a),
 }));
 
 import { takeFleetLeadership } from './take-leadership-core';
@@ -65,6 +71,12 @@ beforeEach(() => {
     mode: { healthy: true, changed: true },
   });
   retireFleetLeaderWatches.mockResolvedValue(0);
+  resolveFleetLeaderTransitionEventKeys.mockReturnValue([
+    'fleet:member-dead:rocket',
+    'fleet:drained:rocket',
+    'fleet:context-critical:rocket',
+  ]);
+  clearOperatorCancelledAwaits.mockResolvedValue(0);
 });
 
 describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', () => {
@@ -86,8 +98,45 @@ describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', 
       previousLeader: null,
       demotedPriorLeader: null,
       notified: false,
+      autoArmSuppressions: { requested: false, eventKeys: [], cleared: 0 },
       control: { healthy: true },
     });
+  });
+
+  it('clears exact operator-cancel markers only when leadership explicitly requests a re-arm', async () => {
+    clearOperatorCancelledAwaits.mockResolvedValue(2);
+
+    const out = await takeFleetLeadership(WS, fleet(), identity, 'su-bob', {
+      clearAutoArmSuppressions: true,
+    });
+
+    expect(resolveFleetLeaderTransitionEventKeys).toHaveBeenCalledWith({ fleetSlug: SLUG });
+    expect(clearOperatorCancelledAwaits).toHaveBeenCalledWith('su-bob', [
+      'fleet:member-dead:rocket',
+      'fleet:drained:rocket',
+      'fleet:context-critical:rocket',
+    ]);
+    expect(out.autoArmSuppressions).toEqual({
+      requested: true,
+      eventKeys: ['fleet:member-dead:rocket', 'fleet:drained:rocket', 'fleet:context-critical:rocket'],
+      cleared: 2,
+    });
+  });
+
+  it('reports a suppression-clear failure without undoing the committed transfer', async () => {
+    clearOperatorCancelledAwaits.mockRejectedValue(new Error('await store down'));
+
+    const out = await takeFleetLeadership(WS, fleet(), identity, 'su-bob', {
+      clearAutoArmSuppressions: true,
+    });
+
+    expect(out.leader).toBe('su-bob');
+    expect(out.autoArmSuppressions).toMatchObject({
+      requested: true,
+      cleared: 0,
+      error: 'await store down',
+    });
+    expect(ensureFleetLeaderControl).toHaveBeenCalled();
   });
 
   it('re-taking your OWN leadership does not demote or notify yourself', async () => {
