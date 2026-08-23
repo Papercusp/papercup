@@ -340,11 +340,7 @@ live product surface: extend it, test it, fix it. OracleDock is genuinely retire
 it exists nowhere but `_retired/legacy-web-chats/`), the legacy per-slug harness dashboard
 (`_retired/harness-dashboard/` — `/harness/$slug` shell/pages/Real-panels; the
 design-system primitives AND the dock engine in `apps/operator/app/harness/`
-stay LIVE — `/adv`+`/workbench` are built on them), and the chat sidebar's
-human Inbox face (`_retired/inbox-pane/` — `InboxPane.tsx`; retired
-2026-07-26, `hud-consolidation-2026-07-26` D-001 — every ask it surfaced now
-opens as a HUD conversation instead; the data layer, `use-inbox-pending.ts`,
-stays live), and the **work-item mail surface** (`_retired/work-item-mail/` —
+stay LIVE — `/adv`+`/workbench` are built on them), and the **work-item mail surface** (`_retired/work-item-mail/` —
 `messages:send`/`dismiss`/`inbox`/`outbox` + their `cross_harness:` analogs;
 retired 2026-07-26, WI-6097. NOT broken — it lost to `coord:send`, which carried
 ~400× its traffic, and took zero writes in its final 30 days. Durable
