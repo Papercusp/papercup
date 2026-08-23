@@ -20,6 +20,13 @@ function expectFontFloor(selector: string, minimum: number): void {
 }
 
 describe('Automations legibility contract', () => {
+  it('uses a plain flow-canvas surface without the distracting square grid', () => {
+    const canvasRule = rulesFor('.pc-automations__flow-canvas').join('\n');
+    expect(canvasRule).toContain('background: var(--auto-panel)');
+    expect(canvasRule).not.toContain('linear-gradient');
+    expect(canvasRule).not.toContain('background-size');
+  });
+
   it('never renders text below decorative 11px microcopy', () => {
     const sizes = [...CSS.matchAll(/font-size:\s*(\d+)px/g)].map((match) => Number(match[1]));
     expect(sizes.length).toBeGreaterThan(0);

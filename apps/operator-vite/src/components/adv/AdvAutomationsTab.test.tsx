@@ -9,6 +9,7 @@ const H = vi.hoisted(() => ({
   runTool: vi.fn(async () => ({ ok: true })),
   invalidates: [] as string[],
   queries: [] as Array<{ queryName: string; args: unknown }>,
+  emptyData: false,
 }));
 
 function routine(): AutomationRoutine {
@@ -48,6 +49,7 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
     H.queries.push({ queryName, args });
     const invalidate = vi.fn(() => H.invalidates.push(queryName));
+    if (H.emptyData) return { data: [], loading: false, invalidate };
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
     if (queryName === 'plans.list') return { data: [
@@ -78,9 +80,12 @@ beforeEach(() => {
   H.runTool.mockClear();
   H.invalidates.length = 0;
   H.queries.length = 0;
+  H.emptyData = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'PATCH') return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    return new Response(JSON.stringify(external), { status: 200 });
+    return new Response(JSON.stringify(H.emptyData
+      ? { enabled: true, counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 }, sources: [], bindings: [], recentRuns: [] }
+      : external), { status: 200 });
   }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -93,6 +98,8 @@ describe('<AdvAutomationsTab>', () => {
     expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
     expect(screen.getAllByText('Outcome / next').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Trigger flows')).toBeTruthy();
+    const flowToolbar = screen.getByRole('group', { name: 'Filter trigger flows' }).parentElement;
+    expect(flowToolbar?.firstElementChild).toBe(screen.getByLabelText('Search trigger flows').closest('label'));
     const planRow = screen.getByRole('button', { name: /Schedule \+ Slack starts Customer feedback digest/ });
     expect(planRow).toBeTruthy();
     expect(within(planRow).getByText('2 installed triggers')).toBeTruthy();
@@ -112,6 +119,18 @@ describe('<AdvAutomationsTab>', () => {
     expect(within(details).getByText('$0.62 · 1 runs')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
     expect(screen.getAllByText('git-sync').length).toBeGreaterThan(0);
+  });
+
+  it('renders truthful empty states instead of synthesizing automations when every producer is empty', async () => {
+    H.emptyData = true;
+    renderTab();
+    expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Flows/ }).textContent).toContain('0');
+    expect(screen.getByText(/No triggered plans match this view/)).toBeTruthy();
+    expect(screen.queryByText('Customer feedback digest')).toBeNull();
+    expect(screen.queryByText('git-sync')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
+    expect(screen.getByText('No automations match this filter.')).toBeTruthy();
   });
 
   it('fires Run manually through plans:run-now and keeps role spend inside Activity', async () => {
