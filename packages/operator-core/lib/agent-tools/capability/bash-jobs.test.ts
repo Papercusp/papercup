@@ -4,7 +4,7 @@
  * log, wall-clock timeout, abort, and the background job lifecycle
  * (start → incremental read → completion / kill).
  */
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -72,6 +72,24 @@ describe('runForeground', () => {
     expect(r.exitCode).toBe(3);
     expect(r.status).toBe('failed');
     expect(r.output).toContain('oops');
+  });
+
+  it('adds nested cwd ancestor node_modules/.bin entries to PATH', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'cap-bash-local-bin-'));
+    const packageDir = join(repo, 'packages', 'operator-core');
+    const binDir = join(repo, 'node_modules', '.bin');
+    const binName = 'capability-bash-local-bin-test';
+    mkdirSync(packageDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    const binPath = join(binDir, binName);
+    writeFileSync(binPath, '#!/bin/sh\nprintf local-bin-found\n');
+    chmodSync(binPath, 0o755);
+
+    const r = await runForeground({ command: binName, cwd: packageDir, stateDir: repo }, never, 10_000);
+
+    expect(r.status).toBe('completed');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain('local-bin-found');
   });
 
   it("a failing command piped through a truncating filter (tail) reports the PIPELINE exit code, not the filter's (EI-13414)", async () => {

@@ -270,7 +270,7 @@ function spawnShell(
    *  so it cannot safely determine this wrapper's exit status. */
   missingCommandToken?: string,
 ): ChildProcess {
-  const spawnPath = augmentedSpawnPath();
+  const spawnPath = augmentedSpawnPath(cwd);
   const instrumentedCommand = missingCommandToken
     ? instrumentMissingCommandFailures(command, missingCommandToken)
     : command;

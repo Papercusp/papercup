@@ -8,7 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { delimiter, dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 let lastChild: FakeChild;
 let lastCtl: ChildCtl;
@@ -154,6 +155,16 @@ describe('pluginSpawnImpl — PATH augmentation (the `spawn npx ENOENT` fix)', (
   it('augmentedSpawnPath includes the running node bin dir (where npx lives)', () => {
     const dirs = augmentedSpawnPath().split(delimiter);
     expect(dirs).toContain(dirname(process.execPath));
+  });
+
+  it('prepends existing package-local bins for a nested working directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'plugin-spawn-local-bin-'));
+    const localBin = join(root, 'node_modules', '.bin');
+    mkdirSync(localBin, { recursive: true });
+
+    const dirs = augmentedSpawnPath(join(root, 'packages', 'operator-core')).split(delimiter);
+
+    expect(dirs[0]).toBe(localBin);
   });
 
   it('resolveBin absolutizes a real binary found on PATH', () => {

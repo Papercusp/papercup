@@ -10,7 +10,7 @@
  */
 import { spawn as childSpawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { dirname, join, delimiter } from 'node:path';
+import { dirname, join, delimiter, resolve } from 'node:path';
 import type { PluginSpawn } from '@papercusp/plugin-sdk';
 
 /**
@@ -35,10 +35,25 @@ import type { PluginSpawn } from '@papercusp/plugin-sdk';
  * dev-box contributors — as the packaged-runtime fix. It is unset (and this
  * is an inert no-op) outside the sidecar-launched runtime.
  */
-export function augmentedSpawnPath(): string {
+export function augmentedSpawnPath(cwd?: string): string {
   // Prepended, not appended: the bundled runtime must win even when the ambient
   // PATH already carries a (wrong-version) node bin dir (EI-2114).
-  const prepend = [process.env.PAPERCUSP_SIDECAR_BIN ?? ''];
+  // Package-manager shells also prepend `node_modules/.bin` for the working
+  // package and each workspace ancestor.  Preserve that contract for commands
+  // launched through the operator, where the supervisor's PATH has no reason to
+  // contain a checkout-local bin directory (EI-21252259002992350).
+  const localBinDirs: string[] = [];
+  if (cwd) {
+    let current = resolve(cwd);
+    while (true) {
+      const localBin = join(current, 'node_modules', '.bin');
+      if (existsSync(localBin)) localBinDirs.push(localBin);
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  const prepend = [process.env.PAPERCUSP_SIDECAR_BIN ?? '', ...localBinDirs];
   const extra = [
     dirname(process.execPath), // the running node → its sibling npx/npm
     '/home/linuxbrew/.linuxbrew/bin',
@@ -87,7 +102,7 @@ export const pluginSpawnImpl: PluginSpawn = (bin, args, opts) =>
       reject(new Error(`spawn rejected absolute/relative path "${bin}"; use binary basename`));
       return;
     }
-    const spawnPath = augmentedSpawnPath();
+    const spawnPath = augmentedSpawnPath(opts?.cwd);
     const child = childSpawn(resolveBin(bin, spawnPath), [...args], {
       cwd: opts?.cwd,
       env: { ...process.env, ...(opts?.env ?? {}), PATH: spawnPath },
