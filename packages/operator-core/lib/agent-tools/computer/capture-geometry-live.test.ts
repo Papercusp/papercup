@@ -26,7 +26,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureCommand, captureFit, type DesktopTarget } from './desktop-driver';
+import { captureCommand, captureFit, sandboxXEnv, type DesktopTarget } from './desktop-driver';
 import { provisionSandboxDesktop, type SandboxDesktop } from './desktop-provisioner';
 
 const LIVE = process.env.PAPERCUSP_CAPTURE_GEOMETRY_LIVE === '1';
@@ -76,8 +76,13 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * full of `ls -la` output measures 1,690 colours at 1920x1080 and 62,555 after the
  * downscale, which is unambiguous in both.
  */
-function paintDetail(display: string, holdSec: number): void {
-  spawn(
+function paintDetail(display: string, holdSec: number): { errors: () => string } {
+  // `sandboxXEnv` — NOT `{ ...process.env, DISPLAY }`. This operator process runs with the
+  // host's own session in its env (measured here: DISPLAY=:0,
+  // XAUTHORITY=/run/user/1000/gdm/Xauthority), and handing an app a host gdm cookie while
+  // pointing it at a sandbox display is precisely what `stripHostX` exists to prevent. It
+  // is also how the provisioner launches every real app, so this matches production.
+  const child = spawn(
     'xterm',
     [
       '-bg', 'white', '-fg', 'black',
@@ -85,8 +90,20 @@ function paintDetail(display: string, holdSec: number): void {
       '-geometry', '200x60+0+0',
       '-e', `ls -la /usr/bin | head -100; sleep ${holdSec}`,
     ],
-    { env: { ...process.env, DISPLAY: display }, detached: true, stdio: 'ignore' },
-  ).unref();
+    { env: sandboxXEnv(display), stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  // Keep stderr: a content probe that fails SILENTLY turns every assertion downstream into
+  // a mystery ("the downscale broke it?" — no, the app never started). Three runs were
+  // spent on exactly that before this pipe existed.
+  let err = '';
+  child.stderr?.on('data', (d: Buffer) => {
+    err += d.toString();
+  });
+  child.on('error', (e) => {
+    err += String(e);
+  });
+  child.unref();
+  return { errors: () => err.trim() };
 }
 
 describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', () => {
@@ -101,7 +118,7 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
     // A frame slot's real geometry (deployment config default; display-allocator
     // registers exactly this), which is the population D-006 is about.
     desktop = await provisionSandboxDesktop({ width: 1920, height: 1080, apps: [] });
-    paintDetail(desktop.display, 40);
+    const probe = paintDetail(desktop.display, 40);
     await wait(4000); // the window must map AND paint before either capture means anything
 
     const display: DesktopTarget = { display: desktop.display, width: 1920, height: 1080 };
@@ -141,7 +158,7 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
     const beforeVerdict = analyzeImageBlankness(beforeBuf);
     expect(
       beforeVerdict.verdict,
-      `the FULL-SIZE capture is ${beforeVerdict.verdict} (${beforeVerdict.reason}) — the desktop never painted, so this run says nothing about downscaling. Environment problem, not a capture-geometry regression.`,
+      `the FULL-SIZE capture is ${beforeVerdict.verdict} (${beforeVerdict.reason}) — the desktop never painted, so this run says nothing about downscaling. Environment problem, not a capture-geometry regression. Content-probe stderr: ${probe.errors() || '(none)'}`,
     ).not.toBe('blank');
 
     const afterVerdict = analyzeImageBlankness(afterBuf);
