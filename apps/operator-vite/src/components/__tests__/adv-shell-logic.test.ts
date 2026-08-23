@@ -69,7 +69,7 @@ describe('ADV_TABS', () => {
     expect(visibleAdvTabs(true).map((t) => t.id)).toEqual([
       // 'hud' is workspace-level: the session board is a roster of every session
       // in the workspace, not a per-pot view (owner ask 2026-07-25).
-      'overview', 'hud', 'plans', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals',
+      'overview', 'hud', 'plans', 'automations', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals',
     ]);
     // A single pot shows the full strip. Strip order: Overview leads (the
     // default landing surface, Brief 23 / overview-dashboard-2026-06-05
@@ -79,7 +79,7 @@ describe('ADV_TABS', () => {
     expect(ADV_TABS.map((t) => t.id)).toEqual([
       // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
       // HUD takes the first slot right of Overview (owner ask 2026-07-25).
-      'overview', 'hud', 'plans', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'history', 'insights',
+      'overview', 'hud', 'plans', 'automations', 'calendar', 'harnesses', 'health', 'frames', 'git', 'stats', 'testing', 'docs', 'history', 'insights',
       'conversations', 'learning', 'evals', 'settings',
     ]);
   });
@@ -241,20 +241,22 @@ describe('harness route panel → tab mapping contract', () => {
 
 // ─── D-001 More-menu split (hud-first-nav-and-dossier-2026-07-26 P-002) ─────
 describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', () => {
-  it('exactly Overview + HUD + Work + Learning are primary (Work/Learning promoted, owner asks 2026-07-26)', () => {
+  it('keeps Overview + HUD + Automations + Work + Learning primary', () => {
     expect(PRIMARY_ADV_TAB_IDS.has('overview')).toBe(true);
     expect(PRIMARY_ADV_TAB_IDS.has('hud')).toBe(true);
+    expect(PRIMARY_ADV_TAB_IDS.has('automations')).toBe(true);
     // 'harnesses' is the Work tab (label renamed 2026-07-26; the id stays
     // 'harnesses' because it's URL-serialized).
     expect(PRIMARY_ADV_TAB_IDS.has('harnesses')).toBe(true);
     expect(PRIMARY_ADV_TAB_IDS.has('learning')).toBe(true);
-    expect(PRIMARY_ADV_TAB_IDS.size).toBe(4);
+    expect(PRIMARY_ADV_TAB_IDS.size).toBe(5);
   });
 
-  it('Work sits immediately right of HUD on the strip (owner ask 2026-07-26)', () => {
+  it('Automations sits immediately right of HUD, followed by Work', () => {
     const { primary } = splitPrimarySecondary(ADV_TABS);
     const ids = primary.map((t) => t.id);
-    expect(ids.indexOf('harnesses')).toBe(ids.indexOf('hud') + 1);
+    expect(ids.indexOf('automations')).toBe(ids.indexOf('hud') + 1);
+    expect(ids.indexOf('harnesses')).toBe(ids.indexOf('automations') + 1);
     expect(ADV_TABS.find((t) => t.id === 'harnesses')?.label).toBe('Work');
   });
 
@@ -267,7 +269,7 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
 
   it('splits a tab list into primary (strip) and secondary (More menu)', () => {
     const { primary, secondary } = splitPrimarySecondary(ADV_TABS);
-    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud', 'harnesses', 'learning']);
+    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud', 'automations', 'harnesses', 'learning']);
     expect(secondary.map((t) => t.id)).toEqual(
       ADV_TABS.map((t) => t.id).filter((id) => !PRIMARY_ADV_TAB_IDS.has(id)),
     );

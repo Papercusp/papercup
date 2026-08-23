@@ -108,7 +108,7 @@ const PULSE_CSS = `
   .pclsb-pulse { min-height: 100%; padding: 11px; color: var(--fg); background: var(--bg); }
   .pclsb-pulse > header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:3px 2px 11px; border-bottom:1px solid var(--border); color:var(--accent); }
   .pclsb-pulse > header span, .pclsb-pulse > header strong { display:block; }
-  .pclsb-pulse > header span { color:var(--fg-mute); font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+  .pclsb-pulse > header span { color:var(--fg-mute); font-size:9px; text-transform:uppercase; }
   .pclsb-pulse > header strong { margin-top:3px; color:var(--fg); font-size:12px; }
   .pclsb-pulse__shortcuts { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:10px 0; }
   .pclsb-pulse__shortcuts button { display:grid; grid-template-columns:18px minmax(0,1fr) 12px; gap:6px; align-items:center; min-width:0; padding:9px 7px; border:1px solid var(--border); border-radius:8px; color:var(--fg); text-align:left; background:var(--bg-raised); cursor:pointer; }
@@ -120,7 +120,7 @@ const PULSE_CSS = `
   .pclsb-pulse__shortcuts strong { margin-top:3px; font-size:10px; }
   .pclsb-pulse__shortcuts em { margin-top:4px; color:var(--accent); font-size:7px; font-style:normal; }
   .pclsb-pulse section { margin-top:12px; }
-  .pclsb-pulse__section-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:5px; color:var(--fg-mute); font-size:8px; letter-spacing:.04em; text-transform:uppercase; }
+  .pclsb-pulse__section-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:5px; color:var(--fg-mute); font-size:8px; text-transform:uppercase; }
   .pclsb-pulse__section-head span { padding:1px 5px; border-radius:999px; background:color-mix(in srgb,var(--fg),transparent 91%); }
   .pclsb-pulse__attention { display:grid; grid-template-columns:7px minmax(0,1fr) auto; gap:7px; align-items:center; width:100%; margin-top:5px; padding:8px; border:1px solid var(--border); border-radius:7px; color:var(--fg); text-align:left; background:var(--bg-raised); cursor:pointer; }
   .pclsb-pulse__attention:hover { border-color:color-mix(in srgb,var(--accent),transparent 52%); }
