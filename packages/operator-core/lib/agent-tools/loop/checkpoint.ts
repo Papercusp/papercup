@@ -595,12 +595,17 @@ export default defineTool({
         {
           ...(args.expectedHash !== undefined ? { expectedHash: args.expectedHash } : {}),
           transform: (priorNote) => {
+            const priorNarrative = parseCarryNote(priorNote ?? '');
+            const hasOmittedPriorNarrativeField = (['did', 'left', 'insight', 'next'] as const).some(
+              (key) => priorNarrative[key] !== undefined && fields[key] === undefined,
+            );
             captured.merged = mergeCarryRows({
               priorNote,
               baseNote,
               walls: effectiveWalls,
               checks: effectiveChecks,
               hasNoteWrite,
+              narrativeFields: hasStructured && hasOmittedPriorNarrativeField ? fields : undefined,
               mode: rowsMode,
             });
             return captured.merged.note;
@@ -709,6 +714,7 @@ export default defineTool({
         walls: effectiveWalls,
         checks: effectiveChecks,
         hasNoteWrite,
+        narrativeFields: hasStructured ? fields : undefined,
         mode: rowsMode,
       });
 
