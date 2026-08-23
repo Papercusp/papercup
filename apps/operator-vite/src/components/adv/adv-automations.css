@@ -186,11 +186,7 @@
 .pc-automations__flow-canvas {
   position: relative;
   min-height: 620px;
-  background:
-    linear-gradient(color-mix(in srgb, var(--auto-line), transparent 62%) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--auto-line), transparent 62%) 1px, transparent 1px),
-    var(--auto-panel);
-  background-size: 28px 28px;
+  background: var(--auto-panel);
 }
 .pc-automations__flow-canvas > .pc-automations__panelhead { background: color-mix(in srgb, var(--bg-raised, #0d1a27), transparent 4%); }
 .pc-automations__flow-columns {
