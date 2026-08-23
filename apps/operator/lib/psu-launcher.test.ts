@@ -5579,11 +5579,16 @@ describe('startSupervisorBeat (WI-3898 P1: the beat self-reports its own pid/hos
   });
 });
 
-describe('reportSessionResumed (re-activate adv row on resume — best-effort, never rejects)', () => {
+describe('reportSessionResumed (atomic adv-row resume claim — fail closed)', () => {
   it('POSTs the row id to bootstrap-su/session-resumed with the bearer', async () => {
     const calls = [];
-    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
-    await reportSessionResumed('42', { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true, json: async () => ({ ok: true, reactivated: true }) };
+    };
+    await expect(
+      reportSessionResumed('42', { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' }),
+    ).resolves.toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed');
     expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
@@ -5593,15 +5598,46 @@ describe('reportSessionResumed (re-activate adv row on resume — best-effort, n
   it('no adv row id → no request (untracked resumes have no row to re-activate)', async () => {
     const calls = [];
     const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
-    await reportSessionResumed(null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    await expect(
+      reportSessionResumed(null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBe(false);
     expect(calls).toHaveLength(0);
   });
 
-  it('swallows transport failures — a resume must never wait on or fail from the re-activation', async () => {
+  it('false claim or a response without explicit reactivated:true fails closed', async () => {
+    const falseClaim = async () => ({ ok: true, json: async () => ({ ok: true, reactivated: false }) });
+    const noClaimField = async () => ({ ok: true, json: async () => ({ ok: true }) });
+    await expect(
+      reportSessionResumed(42, { fetchImpl: falseClaim, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBe(false);
+    await expect(
+      reportSessionResumed(42, { fetchImpl: noClaimField, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBe(false);
+  });
+
+  it('HTTP/transport failures fail closed — no resume process may spawn', async () => {
+    const httpFailure = async () => ({ ok: false, json: async () => ({ ok: true, reactivated: true }) });
+    await expect(
+      reportSessionResumed(42, { fetchImpl: httpFailure, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBe(false);
     const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
     await expect(
       reportSessionResumed(42, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
+  });
+});
+
+describe('launchResume wiring — claim before setup or spawn', () => {
+  const src = readFileSync(join(__dirname, '..', 'scripts', 'psu-launcher.mjs'), 'utf8');
+  const body = src.slice(src.indexOf('async function launchResume('));
+
+  it('claims the tracked ended row before config repair and runWrapper', () => {
+    const claim = body.indexOf('await reportSessionResumed(session.id)');
+    const configRepair = body.indexOf('await ensureInteractiveConfigViaOperator');
+    const spawn = body.indexOf('runWrapper({');
+    expect(claim).toBeGreaterThan(-1);
+    expect(configRepair).toBeGreaterThan(claim);
+    expect(spawn).toBeGreaterThan(claim);
   });
 });
 

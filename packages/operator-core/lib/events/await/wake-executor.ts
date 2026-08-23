@@ -59,7 +59,7 @@ import {
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
-import { getAdvSession } from '../../adv-sessions';
+import { getAdvSession, reactivateAdvSession } from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
   collectSessionFiles as defaultCollectSessionFiles,
@@ -1287,6 +1287,8 @@ export interface ExecuteWakeDeps {
   isLoopArmed?: (ownerId: string) => Promise<boolean>;
   /** WI-666: injected force-resume seam for hermetic tests. */
   forceResume?: (pid: number) => Promise<boolean>;
+  /** EI-212246: atomic single-winner claim immediately before Channel 2 resume. */
+  claimResume?: (advSessionId: number) => Promise<boolean>;
   /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
@@ -1825,6 +1827,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     deps.isLoopArmed ??
     (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
   const forceResume = deps.forceResume ?? ((pid: number) => defaultForceResume(pid, alive));
+  const claimResume = deps.claimResume ?? reactivateAdvSession;
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
@@ -2149,7 +2152,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // else fall through to the legacy resume below (fail-soft).
     }
 
-    // Channel 2: process gone → resume.
+    // Channel 2: process gone → resume. The manual psu resume path claims the
+    // same ended row before spawning; this atomic predicate makes exactly one
+    // of the two competing resume writers proceed.
+    const claimed = await claimResume(handle.advSessionId).catch(() => false);
+    if (!claimed) {
+      return {
+        kind: 'park',
+        reason: `resume claim for adv session #${handle.advSessionId} was lost or unavailable; parked before Channel 2 spawn`,
+      };
+    }
     const resumeAgent = fresh?.agent ?? handle.agent;
     // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
     // id, exactly as bootstrap-su/psu minted it) and needs the conversation

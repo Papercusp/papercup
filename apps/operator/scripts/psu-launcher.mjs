@@ -5849,7 +5849,7 @@ export async function reportSessionEnded(
 }
 
 /**
- * Best-effort "my session RESUMED" report — the inverse of reportSessionEnded.
+ * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
  * `psu --resume` revives the agent process, but launchResume takes the no-POST
  * path (it reuses the original coord identity + adv row), so the row keeps the
  * ended_at/exit_code from the prior exit and the running agent stays recorded as
@@ -5857,17 +5857,19 @@ export async function reportSessionEnded(
  * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
  * instant it resumes, before it ever touches coord. psu is the live parent of
  * the resumed child (same property the supervisor beat + the end-report ride).
- * Fire-and-forget, bounded, never rejects — a resume must never wait on it.
+ * The endpoint's explicit `reactivated:true` response is the single-winner claim:
+ * a manual resume must not spawn unless it successfully re-activates the ended row.
+ * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
  * Exported with injectables for tests.
  */
 export async function reportSessionResumed(
   advSessionId,
   { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 2_000 } = {},
 ) {
-  if (!advSessionId) return;
+  if (!advSessionId) return false;
   try {
     const tok = token ?? readToken();
-    await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-resumed', {
+    const response = await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-resumed', {
       method: 'POST',
       signal: AbortSignal.timeout(timeoutMs),
       headers: {
@@ -5876,8 +5878,12 @@ export async function reportSessionResumed(
       },
       body: JSON.stringify({ advSessionId: Number(advSessionId) }),
     });
+    if (!response?.ok || typeof response.json !== 'function') return false;
+    const body = await response.json();
+    return body?.reactivated === true;
   } catch {
-    /* best-effort — never surface */
+    /* fail closed — never spawn without the atomic claim */
+    return false;
   }
 }
 
@@ -6873,6 +6879,18 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
       process.exit(2);
     }
   }
+  // The manual resume and an already-queued loop wake can race after the old
+  // process exits. Claim the ended adv row BEFORE any config repair or spawn;
+  // reactivateAdvSession's ended_at predicate makes this a single-winner handoff.
+  // A lost/unknown claim must never launch a second exact-session writer.
+  if (!fork && session.id != null) {
+    const claimed = await reportSessionResumed(session.id);
+    if (!claimed) {
+      console.error(`psu: refusing to resume session #${session.id} — its ended-session resume claim was not acquired; no agent process was spawned.`);
+      process.exitCode = 2;
+      return;
+    }
+  }
   if (addDir.length && session.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
   }
@@ -7006,14 +7024,6 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   // Surface the successfully resolved account route. Unavailable explicit
   // auto/pin choices already threw, so this can never describe a silent fallback.
   if (accountEnv?.notice) console.error(`psu: account — ${accountEnv.notice}`);
-  // Re-activate the tracked adv row that the prior exit stamped `ended` (a no-POST
-  // resume reuses the original identity + row, so without this the running agent
-  // stays recorded-as-dead → invisible to the roster). A FORK deliberately takes a
-  // fresh identity + no adv-row link, so it never reactivates the original.
-  // Fire-and-forget, fail-soft — never delays the resume.
-  if (!fork && session.id != null) {
-    void reportSessionResumed(session.id);
-  }
   // IDENTITY-LEAK FIX (su-resume-inherits-role-mcp-json, 2026-06-30): a resumed SU claude/omp session
   // PATH-DISCOVERS <cwd>/.mcp.json and the resume path adds NO --strict-mcp-config — so a role-scoped
   // .mcp.json a co-located role spawn left in the session's cwd is inherited, giving the SU resume
