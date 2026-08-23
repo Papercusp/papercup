@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
@@ -15,11 +15,15 @@ import {
   Power,
   RefreshCw,
   Search,
+  X,
 } from 'lucide-react';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 import type { PlanInputSchemaInfo } from '@/app/admin/plans/plans-api';
 import { fetchPlanInputs } from '@/app/admin/plans/plans-api';
+import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
+import { Modal } from '@/app/harness/Modal';
+import { Select } from '@/app/harness/Select';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { runScheduleTool } from './ScheduleEditor';
 import {
@@ -41,6 +45,88 @@ import './adv-automations.css';
 
 type View = 'flow' | 'catalog' | 'activity' | 'sources';
 type FlowFilter = 'all' | 'attention' | 'paused';
+type CreateTriggerKind = 'schedule' | 'external';
+type CreatePlanMode = 'existing' | 'new';
+type SchedulePreset = 'every-15-minutes' | 'hourly' | 'daily' | 'weekly';
+
+interface CreatePlanRef {
+  slug: string;
+  harness: string;
+  title: string;
+}
+
+interface PendingArm {
+  kind: CreateTriggerKind;
+  plan: CreatePlanRef;
+  sourceLabel: string;
+  bindingId?: string;
+}
+
+interface CreationResult extends PendingArm {
+  armed: true;
+}
+
+const SCHEDULE_PRESETS: Record<SchedulePreset, { label: string; cron: string }> = {
+  'every-15-minutes': { label: 'Every 15 minutes', cron: '*/15 * * * *' },
+  hourly: { label: 'Hourly', cron: '0 * * * *' },
+  daily: { label: 'Daily at 09:00', cron: '0 9 * * *' },
+  weekly: { label: 'Weekly · Monday at 09:00', cron: '0 9 * * 1' },
+};
+
+function planRefKey(plan: Pick<CreatePlanRef, 'harness' | 'slug'>): string {
+  return `${plan.harness}:${plan.slug}`;
+}
+
+function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+function uniqueDatedPlanSlug(title: string, plans: readonly AutomationPlanRow[]): string {
+  const normalized = title
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 90) || 'automation-plan';
+  const base = normalized.length >= 3 ? normalized : `automation-${normalized}`;
+  const date = new Date().toISOString().slice(0, 10);
+  const existing = new Set(plans.map((plan) => plan.slug));
+  let candidate = `${base}-${date}`;
+  let suffix = 2;
+  while (existing.has(candidate)) {
+    candidate = `${base}-${suffix}-${date}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function inlinePlanContent(outcome: string, triggerLabel: string): string {
+  const delivery = outcome.replace(/\s+/g, ' ').trim();
+  return [
+    '## Now',
+    '',
+    `State: Ready for its ${triggerLabel.toLocaleLowerCase()} trigger.`,
+    `Next: ${delivery}`,
+    '',
+    '## Background',
+    '',
+    `Created in place from Automations for a real ${triggerLabel.toLocaleLowerCase()} trigger.`,
+    '',
+    '## Delivery',
+    '',
+    `- **P-001** \`todo\` ${delivery} importance: normal`,
+    '',
+    '## Decisions',
+    '',
+  ].join('\n');
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 interface RunRow {
   id: number;
@@ -94,6 +180,7 @@ function durationLabel(ms: number | null): string {
 }
 
 export default function AdvAutomationsTab() {
+  const resolvedHarnessSlug = useResolvedHarnessSlug();
   const [view, setView] = useQueryState(
     'autoView',
     parseAsStringEnum<View>(['flow', 'catalog', 'activity', 'sources']).withDefault('flow'),
@@ -112,6 +199,7 @@ export default function AdvAutomationsTab() {
   const [, setCalendarPlan] = useQueryState('calPlan', parseAsString);
   const { confirm, element: confirmElement } = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const catalogQuery = useSyncQuery<AutomationCatalog>({
     queryName: 'automation.catalog',
@@ -338,10 +426,25 @@ export default function AdvAutomationsTab() {
   const attentionCount = items.filter((item) => item.needsAttention).length;
   const runningCount = items.filter((item) => item.running).length;
   const nextAt = nextFutureAutomationAt(items);
+  const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
+  const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
 
   return (
     <section className="pc-automations" aria-label="Automations">
       {confirmElement}
+      {createOpen ? (
+        <CreateAutomationModal
+          plans={plansQuery.data ?? []}
+          sources={external?.sources ?? []}
+          defaultHarness={creationHarness}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(plan) => {
+            refreshAll();
+            void setView('flow');
+            void setSelectedId(`plan:${planRefKey(plan)}`);
+          }}
+        />
+      ) : null}
       <header className="pc-automations__masthead">
         <div>
           <div className="pc-automations__eyebrow">Workspace control plane</div>
@@ -352,7 +455,7 @@ export default function AdvAutomationsTab() {
           <button type="button" className="pc-automations__ghost" onClick={refreshAll} aria-label="Refresh automations">
             <span className="pc-automations__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
-          <button type="button" className="pc-automations__primary" onClick={() => void setAdvTab('plans')}>
+          <button type="button" className="pc-automations__primary" onClick={() => setCreateOpen(true)}>
             <span className="pc-automations__button-inner"><Plus size={14} aria-hidden /> New automation</span>
           </button>
         </div>
@@ -511,6 +614,393 @@ export default function AdvAutomationsTab() {
         <SourcesView sources={sources} />
       )}
     </section>
+  );
+}
+
+async function mutateExternalTrigger(args: Record<string, unknown>): Promise<{
+  ok: boolean;
+  message?: string;
+  bindingId?: string;
+}> {
+  try {
+    const response = await fetch('/api/admin/triggers', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    const body = await response.json().catch(() => ({})) as {
+      ok?: boolean;
+      error?: string;
+      detail?: string;
+      binding?: { id?: unknown };
+    };
+    if (!response.ok || body.ok === false) {
+      return { ok: false, message: body.detail ?? body.error ?? `HTTP ${response.status}` };
+    }
+    return {
+      ok: true,
+      ...(typeof body.binding?.id === 'string' ? { bindingId: body.binding.id } : {}),
+    };
+  } catch (error) {
+    return { ok: false, message: errorMessage(error) };
+  }
+}
+
+function CreateAutomationModal({
+  plans,
+  sources,
+  defaultHarness,
+  onClose,
+  onCreated,
+}: {
+  plans: AutomationPlanRow[];
+  sources: ExternalTriggerAdminSnapshot['sources'];
+  defaultHarness: string | null;
+  onClose: () => void;
+  onCreated: (plan: CreatePlanRef) => void;
+}) {
+  const availablePlans = useMemo(
+    () => plans
+      .filter((plan) => plan.status !== 'shipped' && plan.status !== 'superseded')
+      .sort((a, b) => (a.title ?? a.slug).localeCompare(b.title ?? b.slug)),
+    [plans],
+  );
+  const connectedSources = useMemo(
+    () => sources.filter((source) => source.status === 'connected'),
+    [sources],
+  );
+  const [triggerKind, setTriggerKind] = useState<CreateTriggerKind>('schedule');
+  const [planMode, setPlanMode] = useState<CreatePlanMode>(availablePlans.length > 0 ? 'existing' : 'new');
+  const [selectedPlanKey, setSelectedPlanKey] = useState(availablePlans[0] ? planRefKey(availablePlans[0]) : '');
+  const [schedulePreset, setSchedulePreset] = useState<SchedulePreset>('every-15-minutes');
+  const [tzid, setTzid] = useState(browserTimeZone);
+  const [sourceId, setSourceId] = useState(connectedSources[0]?.id ?? '');
+  const [eventPattern, setEventPattern] = useState(
+    connectedSources[0] ? `ext:${connectedSources[0].kind}:` : '',
+  );
+  const [planName, setPlanName] = useState('');
+  const [outcome, setOutcome] = useState('');
+  const [createdPlan, setCreatedPlan] = useState<CreatePlanRef | null>(null);
+  const [pendingArm, setPendingArm] = useState<PendingArm | null>(null);
+  const [result, setResult] = useState<CreationResult | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedPlanKey && availablePlans[0]) setSelectedPlanKey(planRefKey(availablePlans[0]));
+  }, [availablePlans, selectedPlanKey]);
+  useEffect(() => {
+    if (!sourceId && connectedSources[0]) {
+      setSourceId(connectedSources[0].id);
+      setEventPattern(`ext:${connectedSources[0].kind}:`);
+    }
+  }, [connectedSources, sourceId]);
+
+  const selectedPlan = availablePlans.find((plan) => planRefKey(plan) === selectedPlanKey) ?? null;
+  const selectedSource = connectedSources.find((source) => source.id === sourceId) ?? null;
+  const timeZones = [...new Set([browserTimeZone(), 'America/New_York', 'UTC'])];
+  const newPlanReady = Boolean(createdPlan || (defaultHarness && planName.trim() && outcome.trim()));
+  const planReady = planMode === 'existing' ? Boolean(selectedPlan) : newPlanReady;
+  const triggerReady = triggerKind === 'schedule' || Boolean(selectedSource && eventPattern.trim());
+  const canSubmit = planReady && triggerReady && !pendingArm;
+
+  const finishArmed = (target: PendingArm) => {
+    setPendingArm(null);
+    setError(null);
+    setResult({ ...target, armed: true });
+    onCreated(target.plan);
+  };
+
+  const armTarget = async (target: PendingArm): Promise<boolean> => {
+    setPendingArm(target);
+    setStep(target.kind === 'schedule' ? 'Arming schedule…' : 'Arming external event…');
+    const armed = target.kind === 'schedule'
+      ? await runScheduleTool('plans:arm-schedule', {
+          slug: target.plan.slug,
+          harness: target.plan.harness,
+        })
+      : target.bindingId
+        ? await mutateExternalTrigger({
+            op: 'set-armed',
+            id: target.bindingId,
+            armed: true,
+            confirm: true,
+          })
+        : { ok: false, message: 'The created external binding did not return an id.' };
+    if (!armed.ok) {
+      setError(target.kind === 'schedule'
+        ? `Schedule saved for ${target.plan.title}, but it is not armed. ${armed.message ?? 'Arming failed.'}`
+        : `External binding attached to ${target.plan.title}, but it is not armed. ${armed.message ?? 'Arming failed.'}`);
+      return false;
+    }
+    finishArmed(target);
+    return true;
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    let plan: CreatePlanRef | null = planMode === 'existing' && selectedPlan
+      ? { slug: selectedPlan.slug, harness: selectedPlan.harness, title: selectedPlan.title ?? selectedPlan.slug }
+      : createdPlan;
+    let createdThisAttempt = false;
+    try {
+      if (!plan && planMode === 'new') {
+        if (!defaultHarness) throw new Error('Select an owning pot before creating a plan in place.');
+        const title = planName.trim();
+        const delivery = outcome.trim();
+        if (!title || !delivery) throw new Error('Name the automation and describe the plan outcome.');
+        const slug = uniqueDatedPlanSlug(title, plans);
+        setStep('Creating plan…');
+        const created = await runScheduleTool('plans:new', {
+          slug,
+          title,
+          harness: defaultHarness,
+          status: 'ready',
+          rationale: 'Created in place from the Automations production surface.',
+          content: inlinePlanContent(delivery, triggerKind === 'schedule' ? 'Schedule' : 'External event'),
+        });
+        if (!created.ok) throw new Error(created.message ?? 'Plan creation failed.');
+        plan = { slug, harness: defaultHarness, title };
+        createdThisAttempt = true;
+        setCreatedPlan(plan);
+      }
+      if (!plan) throw new Error('Choose a plan to run.');
+
+      if (triggerKind === 'schedule') {
+        const preset = SCHEDULE_PRESETS[schedulePreset];
+        setStep('Saving schedule…');
+        const scheduled = await runScheduleTool('plans:set-schedule', {
+          slug: plan.slug,
+          harness: plan.harness,
+          schedule: { kind: 'cron', cron: preset.cron, tzid },
+          scheduledAt: null,
+          expiresAt: null,
+          tzid,
+        });
+        if (!scheduled.ok) {
+          throw new Error(`${createdThisAttempt ? `Plan ${plan.title} was created, but ` : ''}the schedule was not saved. ${scheduled.message ?? 'Schedule authoring failed.'}`);
+        }
+        await armTarget({ kind: 'schedule', plan, sourceLabel: `${preset.label} · ${tzid}` });
+      } else {
+        if (!selectedSource) throw new Error('Choose a connected external source.');
+        setStep('Attaching external event…');
+        const attached = await mutateExternalTrigger({
+          op: 'attach-external',
+          sourceId: selectedSource.id,
+          planHarnessSlug: plan.harness,
+          planSlug: plan.slug,
+          eventPattern: eventPattern.trim(),
+          eventFilter: {},
+          maxRuns: null,
+          windowSeconds: 60,
+        });
+        if (!attached.ok || !attached.bindingId) {
+          throw new Error(`${createdThisAttempt ? `Plan ${plan.title} was created, but ` : ''}the external binding was not attached. ${attached.message ?? 'The binding id was missing.'}`);
+        }
+        await armTarget({
+          kind: 'external',
+          plan,
+          bindingId: attached.bindingId,
+          sourceLabel: `${selectedSource.kind} · ${eventPattern.trim()}`,
+        });
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSubmitting(false);
+      setStep(null);
+    }
+  };
+
+  const retryArm = async () => {
+    if (!pendingArm || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await armTarget(pendingArm);
+    } finally {
+      setSubmitting(false);
+      setStep(null);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onOpenChange={(next) => { if (!next && !submitting) onClose(); }}
+      title="Create an automation"
+      description="Choose a real automatic trigger and the plan it will run."
+      srOnlyTitle
+      closeOnEscape={!submitting}
+      closeOnOutsideClick={!submitting}
+      contentClassName="pc-automations-create"
+      contentStyle={{ width: 'min(760px, calc(100vw - 32px))' }}
+    >
+      <form onSubmit={submit}>
+        <header className="pc-automations-create__head">
+          <div>
+            <div className="pc-automations-create__eyebrow">New automation</div>
+            <h2>Create an automation</h2>
+            <p>Choose a real automatic trigger and the plan it will run. Nothing leaves this popup.</p>
+          </div>
+          <button type="button" aria-label="Close create automation dialog" disabled={submitting} onClick={onClose}>
+            <span className="pc-automations-create__close-inner"><X size={18} aria-hidden /></span>
+          </button>
+        </header>
+
+        {result ? (
+          <div className="pc-automations-create__success" role="status">
+            <div className="pc-automations-create__success-icon" aria-hidden>✓</div>
+            <div>
+              <h3>Automation armed</h3>
+              <p><strong>{result.plan.title}</strong> is attached to {result.sourceLabel}.</p>
+              <dl>
+                <div><dt>Plan</dt><dd>{result.plan.harness} · {result.plan.slug}</dd></div>
+                <div><dt>State</dt><dd>Armed</dd></div>
+              </dl>
+              <button type="button" className="pc-automations-create__primary" onClick={onClose}>Done</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="pc-automations-create__body">
+              <section aria-labelledby="create-automation-trigger-label">
+                <div className="pc-automations-create__step">1 · What starts it?</div>
+                <div className="pc-automations-create__section-title" id="create-automation-trigger-label">
+                  <strong>Automatic trigger</strong><span>Manual launch is an action, not a trigger.</span>
+                </div>
+                <div className="pc-automations-create__choice-grid" role="group" aria-label="Automatic trigger">
+                  <button type="button" aria-pressed={triggerKind === 'schedule'} onClick={() => { setTriggerKind('schedule'); setError(null); }}>
+                    <span className="pc-automations-create__choice-inner"><CalendarClock size={18} aria-hidden /><strong>Schedule</strong><span>Recurring cadence at a real time zone.</span><em>Uses the existing plan schedule system</em></span>
+                  </button>
+                  <button type="button" aria-pressed={triggerKind === 'external'} onClick={() => { setTriggerKind('external'); setError(null); }}>
+                    <span className="pc-automations-create__choice-inner"><DatabaseZap size={18} aria-hidden /><strong>External event</strong><span>Use a connected source and audited event pattern.</span><em>Creates an external binding</em></span>
+                  </button>
+                </div>
+
+                {triggerKind === 'schedule' ? (
+                  <div className="pc-automations-create__form-grid">
+                    <label className="pc-automations-create__field">
+                      <span>Frequency</span>
+                      <Select
+                        value={schedulePreset}
+                        onChange={(value) => setSchedulePreset(value as SchedulePreset)}
+                        ariaLabel="Frequency"
+                        triggerClassName="pc-automations-create__select"
+                        options={Object.entries(SCHEDULE_PRESETS).map(([value, preset]) => ({ value, label: preset.label }))}
+                      />
+                    </label>
+                    <label className="pc-automations-create__field">
+                      <span>Time zone</span>
+                      <Select
+                        value={tzid}
+                        onChange={setTzid}
+                        ariaLabel="Time zone"
+                        triggerClassName="pc-automations-create__select"
+                        options={timeZones.map((value) => ({ value, label: value }))}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div className="pc-automations-create__form-grid">
+                    <label className="pc-automations-create__field">
+                      <span>Connected source</span>
+                      <Select
+                        value={sourceId}
+                        onChange={(value) => {
+                          setSourceId(value);
+                          const next = connectedSources.find((source) => source.id === value);
+                          if (next) setEventPattern(`ext:${next.kind}:`);
+                        }}
+                        ariaLabel="Connected source"
+                        disabled={connectedSources.length === 0}
+                        placeholder="No connected sources"
+                        triggerClassName="pc-automations-create__select"
+                        options={connectedSources.map((source) => ({ value: source.id, label: `${source.kind} · ${source.status}` }))}
+                      />
+                    </label>
+                    <label className="pc-automations-create__field">
+                      <span>Event pattern</span>
+                      <input aria-label="Event pattern" value={eventPattern} onChange={(event) => setEventPattern(event.target.value)} required />
+                    </label>
+                    {connectedSources.length === 0 ? <p className="pc-automations-create__empty-source">No connected external source is available. Connect one in Sources, or use a schedule.</p> : null}
+                  </div>
+                )}
+              </section>
+
+              <section aria-labelledby="create-automation-plan-label">
+                <div className="pc-automations-create__step">2 · What runs?</div>
+                <div className="pc-automations-create__plan-mode" role="group" aria-label="Plan choice" id="create-automation-plan-label">
+                  <button type="button" aria-pressed={planMode === 'existing'} disabled={availablePlans.length === 0} onClick={() => { setPlanMode('existing'); setError(null); }}>Use an existing plan</button>
+                  <button type="button" aria-pressed={planMode === 'new'} onClick={() => { setPlanMode('new'); setError(null); }}>Create the plan here</button>
+                </div>
+                {planMode === 'existing' ? (
+                  <label className="pc-automations-create__field is-full">
+                    <span>Plan to run</span>
+                    <Select
+                      value={selectedPlanKey}
+                      onChange={setSelectedPlanKey}
+                      ariaLabel="Plan to run"
+                      disabled={availablePlans.length === 0}
+                      placeholder="No plans available"
+                      triggerClassName="pc-automations-create__select"
+                      options={availablePlans.map((plan) => ({
+                        value: planRefKey(plan),
+                        label: `${plan.title ?? plan.slug} · ${plan.harness}`,
+                      }))}
+                    />
+                  </label>
+                ) : createdPlan ? (
+                  <div className="pc-automations-create__created-plan" role="status">
+                    <strong>Plan created</strong>
+                    <span>{createdPlan.title} · {createdPlan.harness}</span>
+                    <small>Retrying will reuse this plan rather than create a duplicate.</small>
+                  </div>
+                ) : (
+                  <div className="pc-automations-create__new-plan-grid">
+                    <label className="pc-automations-create__field is-full">
+                      <span>Automation name</span>
+                      <input aria-label="Automation name" value={planName} maxLength={160} onChange={(event) => setPlanName(event.target.value)} placeholder="e.g. Summarize support escalations" required />
+                    </label>
+                    <label className="pc-automations-create__field is-full">
+                      <span>What should the plan produce?</span>
+                      <input aria-label="What should the plan produce?" value={outcome} maxLength={500} onChange={(event) => setOutcome(event.target.value)} placeholder="Describe the concrete outcome" required />
+                    </label>
+                    <p className="pc-automations-create__scope-note">
+                      {defaultHarness ? <>The plan will be created in <strong>{defaultHarness}</strong>.</> : <>Select a pot in the workspace before creating a plan here.</>}
+                    </p>
+                  </div>
+                )}
+              </section>
+
+              <div className="pc-automations-create__truth-note">
+                <strong>Creation behavior:</strong> the trigger is authored, attached to the selected plan, and then armed. A partial failure is reported as saved or attached but not armed—never as success.
+              </div>
+              {error ? (
+                <div className="pc-automations-create__error" role="alert">
+                  <div><strong>Couldn’t finish creating the automation</strong><p>{error}</p></div>
+                  {pendingArm ? <button type="button" disabled={submitting} onClick={() => void retryArm()}>Retry arming</button> : null}
+                </div>
+              ) : null}
+            </div>
+
+            <footer className="pc-automations-create__foot">
+              <span aria-live="polite">{step ?? 'The final action explicitly creates and arms the automation.'}</span>
+              <div>
+                <button type="button" disabled={submitting} onClick={onClose}>Cancel</button>
+                <button type="submit" className="pc-automations-create__primary" disabled={submitting || !canSubmit}>
+                  {submitting ? step ?? 'Working…' : 'Create & arm automation'}
+                </button>
+              </div>
+            </footer>
+          </>
+        )}
+      </form>
+    </Modal>
   );
 }
 

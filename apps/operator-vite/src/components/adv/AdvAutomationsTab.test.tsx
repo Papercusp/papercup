@@ -2,11 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import type { ReactNode } from 'react';
 import type { AutomationCatalog, AutomationRoutine } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 
 const H = vi.hoisted(() => ({
-  runTool: vi.fn(async () => ({ ok: true })),
+  runTool: vi.fn<(name: string, args: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>>(
+    async () => ({ ok: true }),
+  ),
   invalidates: [] as string[],
   queries: [] as Array<{ queryName: string; args: unknown }>,
   emptyData: false,
@@ -66,6 +69,31 @@ vi.mock('@papercusp/sync', () => ({
 vi.mock('@/app/admin/plans/plans-api', () => ({
   fetchPlanInputs: vi.fn(async () => ({ ok: true, slug: 'customer-digest', source: 'input-schema', inputSchema: {}, template: null, required: ['topic', 'urgency'], missing: [], values: { topic: 'feedback', urgency: 'high' }, ready: true })),
 }));
+vi.mock('@/app/adv/create/use-create-data', () => ({ useResolvedHarnessSlug: () => 'papercusp' }));
+vi.mock('@/app/harness/Modal', () => ({
+  Modal: ({ open, title, children }: { open: boolean; title: string; children: ReactNode }) => (
+    open ? <div role="dialog" aria-label={title}>{children}</div> : null
+  ),
+}));
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({
+    value,
+    onChange,
+    options,
+    ariaLabel,
+    disabled,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    options: Array<{ value: string; label: ReactNode }>;
+    ariaLabel?: string;
+    disabled?: boolean;
+  }) => (
+    <select aria-label={ariaLabel} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+      {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
+  ),
+}));
 vi.mock('@/app/harness/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: vi.fn(async () => true), element: null }) }));
 vi.mock('./ScheduleEditor', () => ({ runScheduleTool: H.runTool }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -77,12 +105,19 @@ function renderTab() {
 }
 
 beforeEach(() => {
-  H.runTool.mockClear();
+  H.runTool.mockReset();
+  H.runTool.mockResolvedValue({ ok: true });
   H.invalidates.length = 0;
   H.queries.length = 0;
   H.emptyData = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-    if (init?.method === 'PATCH') return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    if (init?.method === 'PATCH') {
+      const request = JSON.parse(String(init.body ?? '{}')) as { op?: string; id?: string };
+      if (request.op === 'attach-external') {
+        return new Response(JSON.stringify({ ok: true, binding: { id: '22222222-2222-4222-8222-222222222222' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, binding: { id: request.id } }), { status: 200 });
+    }
     return new Response(JSON.stringify(H.emptyData
       ? { enabled: true, counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 }, sources: [], bindings: [], recentRuns: [] }
       : external), { status: 200 });
@@ -154,5 +189,75 @@ describe('<AdvAutomationsTab>', () => {
       const fetchMock = vi.mocked(fetch);
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH' && String(init.body).includes('11111111-1111-4111-8111-111111111111'))).toBe(true);
     });
+  });
+
+  it('creates and arms a schedule in place instead of redirecting to Plans', async () => {
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create an automation' });
+    expect(within(dialog).getByRole('button', { name: /Schedule/ }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(dialog).getByRole('button', { name: 'Use an existing plan' }).getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm automation' }));
+    await waitFor(() => {
+      expect(H.runTool).toHaveBeenCalledWith('plans:set-schedule', expect.objectContaining({
+        slug: 'customer-digest',
+        harness: 'papercusp',
+        schedule: expect.objectContaining({ kind: 'cron', cron: '*/15 * * * *' }),
+      }));
+      expect(H.runTool).toHaveBeenCalledWith('plans:arm-schedule', { slug: 'customer-digest', harness: 'papercusp' });
+    });
+    expect(await within(dialog).findByText('Automation armed')).toBeTruthy();
+    expect(within(dialog).getByText('Armed')).toBeTruthy();
+  });
+
+  it('creates a plan inline, attaches an external binding, and explicitly arms it', async () => {
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create an automation' });
+    fireEvent.click(within(dialog).getByRole('button', { name: /External event/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create the plan here' }));
+    fireEvent.change(within(dialog).getByLabelText('Automation name'), { target: { value: 'Summarize support escalations' } });
+    fireEvent.change(within(dialog).getByLabelText('What should the plan produce?'), { target: { value: 'Publish a prioritized escalation brief' } });
+    fireEvent.change(within(dialog).getByLabelText('Event pattern'), { target: { value: 'ext:slack:mention' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm automation' }));
+
+    await waitFor(() => {
+      expect(H.runTool).toHaveBeenCalledWith('plans:new', expect.objectContaining({
+        harness: 'papercusp',
+        title: 'Summarize support escalations',
+        status: 'ready',
+        content: expect.stringContaining('- **P-001** `todo` Publish a prioritized escalation brief importance: normal'),
+      }));
+      const patchBodies = vi.mocked(fetch).mock.calls
+        .filter(([, init]) => init?.method === 'PATCH')
+        .map(([, init]) => JSON.parse(String(init?.body)) as { op: string; eventPattern?: string; armed?: boolean });
+      expect(patchBodies).toEqual(expect.arrayContaining([
+        expect.objectContaining({ op: 'attach-external', eventPattern: 'ext:slack:mention' }),
+        expect.objectContaining({ op: 'set-armed', armed: true }),
+      ]));
+    });
+    expect(await within(dialog).findByText('Automation armed')).toBeTruthy();
+  });
+
+  it('reports a saved-but-unarmed schedule and retries only the arm step', async () => {
+    H.runTool
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, message: 'Set required plan inputs first' })
+      .mockResolvedValueOnce({ ok: true });
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create an automation' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm automation' }));
+
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toContain('Schedule saved for Customer feedback digest, but it is not armed.');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry arming' }));
+    expect(await within(dialog).findByText('Automation armed')).toBeTruthy();
+    expect(H.runTool.mock.calls.map(([name]) => name)).toEqual([
+      'plans:set-schedule',
+      'plans:arm-schedule',
+      'plans:arm-schedule',
+    ]);
   });
 });

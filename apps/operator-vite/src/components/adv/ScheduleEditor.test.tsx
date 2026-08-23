@@ -5,7 +5,15 @@
  * write path depends on; assert it tz-independently (structure + RRULE string).
  */
 import { describe, expect, it } from 'vitest';
-import { buildSchedulePayload, describeForm, deriveInitialForm, parseRrule, type RecurrenceForm, type RawSchedule } from './ScheduleEditor';
+import {
+  buildSchedulePayload,
+  describeForm,
+  deriveInitialForm,
+  parseRrule,
+  parseRunScheduleToolPayload,
+  type RecurrenceForm,
+  type RawSchedule,
+} from './ScheduleEditor';
 
 const BASE: RecurrenceForm = {
   mode: 'recurring',
@@ -132,5 +140,27 @@ describe('deriveInitialForm (D-020 pre-fill)', () => {
       tzid: TZ,
     };
     expect(deriveInitialForm({ initial, seedMode: 'one-shot', tzid: TZ }).mode).toBe('one-shot');
+  });
+});
+
+describe('parseRunScheduleToolPayload', () => {
+  it('rejects a bulk envelope whose request succeeded but whose item was refused', () => {
+    expect(parseRunScheduleToolPayload({
+      ok: true,
+      results: [{ ok: false, slug: 'blocked-plan', error: 'plan_inputs_not_ready', detail: 'Set required inputs first' }],
+      counts: { ok: 0, failed: 1 },
+    })).toEqual({ ok: false, message: 'Set required inputs first' });
+  });
+
+  it('rejects failed counts even when a legacy envelope omits item rows', () => {
+    expect(parseRunScheduleToolPayload({ ok: true, counts: { ok: 0, failed: 2 } }))
+      .toEqual({ ok: false, message: '2 tool items failed' });
+  });
+
+  it('preserves direct errors and accepts a genuinely green bulk result', () => {
+    expect(parseRunScheduleToolPayload({ ok: false, error: 'not_found', detail: 'Plan not found' }))
+      .toEqual({ ok: false, message: 'Plan not found' });
+    expect(parseRunScheduleToolPayload({ ok: true, results: [{ ok: true, slug: 'ready-plan' }], counts: { ok: 1, failed: 0 } }))
+      .toEqual({ ok: true });
   });
 });

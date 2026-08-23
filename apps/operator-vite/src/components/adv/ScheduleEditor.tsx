@@ -200,7 +200,70 @@ export function deriveInitialForm(opts: {
   return fresh;
 }
 
-export async function runScheduleTool(name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> {
+export interface RunScheduleToolResult {
+  ok: boolean;
+  message?: string;
+}
+
+/**
+ * Interpret the JSON text returned by an agent-MCP tool.
+ *
+ * Bulk tools deliberately keep the envelope request successful while reporting
+ * item refusals in `results[]`/`counts.failed`. Treating only `payload.error` as
+ * failure made plans:arm-schedule look green when every requested plan was
+ * refused by the start gate. Keep the shared browser writer honest for every
+ * ScheduleEditor/Automations caller.
+ */
+export function parseRunScheduleToolPayload(payload: unknown): RunScheduleToolResult {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: true };
+  const value = payload as {
+    ok?: boolean;
+    error?: unknown;
+    detail?: unknown;
+    message?: unknown;
+    results?: unknown;
+    counts?: unknown;
+  };
+  const directMessage = typeof value.detail === 'string'
+    ? value.detail
+    : typeof value.message === 'string'
+      ? value.message
+      : typeof value.error === 'string'
+        ? value.error
+        : undefined;
+  if (value.ok === false || value.error != null) {
+    return { ok: false, message: directMessage ?? 'Tool request failed' };
+  }
+
+  const results = Array.isArray(value.results) ? value.results : [];
+  const failures = results.filter((row): row is Record<string, unknown> => (
+    Boolean(row) && typeof row === 'object' && !Array.isArray(row) && (row as { ok?: unknown }).ok === false
+  ));
+  if (failures.length > 0) {
+    const first = failures[0];
+    const firstMessage = typeof first.detail === 'string'
+      ? first.detail
+      : typeof first.message === 'string'
+        ? first.message
+        : typeof first.error === 'string'
+          ? first.error
+          : 'Tool item failed';
+    return {
+      ok: false,
+      message: failures.length === 1 ? firstMessage : `${firstMessage} (${failures.length} items failed)`,
+    };
+  }
+
+  if (value.counts && typeof value.counts === 'object' && !Array.isArray(value.counts)) {
+    const failed = (value.counts as { failed?: unknown }).failed;
+    if (typeof failed === 'number' && failed > 0) {
+      return { ok: false, message: `${failed} tool item${failed === 1 ? '' : 's'} failed` };
+    }
+  }
+  return { ok: true };
+}
+
+export async function runScheduleTool(name: string, args: Record<string, unknown>): Promise<RunScheduleToolResult> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -210,18 +273,19 @@ export async function runScheduleTool(name: string, args: Record<string, unknown
     ok?: boolean;
     error?: string;
     message?: string;
-    result?: { content?: Array<{ text?: string }> };
+    result?: { content?: Array<{ text?: string }>; isError?: boolean };
   };
   if (!res.ok || body.ok === false) return { ok: false, message: body.message ?? body.error ?? `HTTP ${res.status}` };
   const text = body.result?.content?.[0]?.text;
   if (text) {
     try {
-      const payload = JSON.parse(text) as { ok?: boolean; error?: string; detail?: string };
-      if (payload.error) return { ok: false, message: payload.detail ?? payload.error };
+      const parsed = parseRunScheduleToolPayload(JSON.parse(text) as unknown);
+      if (!parsed.ok) return parsed;
     } catch {
       /* non-JSON tool text — treat as success */
     }
   }
+  if (body.result?.isError) return { ok: false, message: body.message ?? text ?? `${name} failed` };
   return { ok: true };
 }
 
