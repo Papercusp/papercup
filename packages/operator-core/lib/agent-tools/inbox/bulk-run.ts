@@ -201,6 +201,14 @@ export const bulkRunManifest = defineTool({
             },
             items,
             remaining: rows.filter((r) => r.outcome === 'pending').length,
+            // WI-41013 — the owner's Stop settles the run row; you are a
+            // separate process and will not otherwise notice. When this is
+            // true the run is NO LONGER YOURS: stop immediately, take no
+            // further terminal action on any item, and do not report. Reports
+            // for a stopped run are refused, and a refusal after you have
+            // already acted means the action happened with nothing recording
+            // it — which is exactly the state to avoid.
+            stopped: !['pending', 'running'].includes(run.phase),
           }),
         },
       ],
@@ -341,6 +349,31 @@ export const bulkRunReport = defineTool({
     if (accepted.length > 0) {
       const res = await reportOutcomes({ runId, outcomes: accepted });
       unknown = res.unknown;
+
+      // WI-41013 — the run was stopped (or settled) between your last read and
+      // this report, so NOTHING was written. Return immediately and loudly:
+      // skipping the triage overlay below matters, because writing an audit row
+      // for an outcome the run never recorded would leave the two stores
+      // disagreeing about what happened. If you had already taken the action,
+      // say so to the owner rather than retrying it outside the run.
+      if (res.refused) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                refused: res.refused.reason,
+                phase: res.refused.phase,
+                runId,
+                wrote: 0,
+                message:
+                  'This run is no longer accepting reports — the owner stopped it, or it has already settled. STOP: take no further action on any item in this run. Nothing from this report was written.',
+              }),
+            },
+          ],
+        };
+      }
 
       // Requirement 4: an action taken on the owner's behalf leaves an audit row
       // in the SAME store the manual path writes to, so `plans.attention` shows

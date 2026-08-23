@@ -113,6 +113,17 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '- Look for cross-item structure: several escalations with one root cause should be resolved',
     '  consistently, not judged independently.',
     '- If you must give up, inbox:bulk-run-settle { failed: true, error } so the owner sees why.',
+    '',
+    'STOPPING (WI-41013) — the owner can stop you mid-run, and you will not be told directly:',
+    '- The manifest carries `stopped`. Re-read the manifest before each BATCH of terminal actions,',
+    '  and the moment `stopped` is true, HALT: take no further terminal action on any item, do not',
+    '  report, and do not re-route the work to an item\'s own verb outside the run. Stopping is the',
+    '  owner withdrawing your authority, not a hint to finish faster.',
+    '- inbox:bulk-run-report answers { ok:false, refused:"run_not_accepting_reports" } if the run',
+    '  stopped before your write landed. NOTHING in that report was recorded. If you had already',
+    '  taken the action, do NOT retry it and do NOT record it elsewhere — say plainly, in your final',
+    '  message, which items you acted on after the stop, so the discrepancy is visible rather than',
+    '  buried. An unrecorded action the owner cannot see is the worst outcome available to you.',
   ].join('\n');
 }
 

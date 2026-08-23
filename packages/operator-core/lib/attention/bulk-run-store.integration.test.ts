@@ -16,7 +16,7 @@
  *     a miscounting resolver cannot park the pane in `review` with nothing to
  *     review, nor mark a run `complete` while items still need the owner.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-bulk-run-test' }));
@@ -28,11 +28,13 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const {
+  BulkRunAlreadyActiveError,
   createRun,
   getRun,
   getRunItems,
   getLatestRun,
   getActiveRun,
+  getRunningRun,
   setRunPhase,
   reportOutcomes,
   getPendingReviewItems,
@@ -78,6 +80,16 @@ describe('attention bulk-run store (real PG)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  // WI-41012 — single-flight makes a workspace hold at most one pending/running
+  // run, so tests can no longer share one. Each gets its own workspace, which
+  // is closer to production anyway: a run left mid-flight by one test is not a
+  // fixture the next test should inherit.
+  let wsSeq = 0;
+  beforeEach(() => {
+    wsSeq += 1;
+    h.ws = `ws-bulk-run-test-${wsSeq}`;
   });
 
   it('creates a run from the snapshot, preserving order and ref shape', async () => {
@@ -268,5 +280,103 @@ describe('attention bulk-run store (real PG)', () => {
     const run = await createRun({ items: seed('j') });
     expect(await getRun(run.runId, 'ws-someone-else')).toBeNull();
     expect(await getRunItems(run.runId, 'ws-someone-else')).toHaveLength(0);
+  });
+
+  // ── WI-41012 / WI-41013 — the two properties the acceptance rubric added
+  // after the fact, and which the shipped code did NOT have. Both are about an
+  // agent acting on the owner's inbox when it should not be acting at all.
+
+  it('refuses a SECOND run while one is pending or running (single-flight)', async () => {
+    const ws = `ws-single-flight-${Date.now()}`;
+    const first = await createRun({ items: seed('sf1'), workspaceId: ws });
+    expect(first.phase).toBe('pending');
+
+    // A second start — a double-click, or two clients — must not create a
+    // second run: each run LAUNCHES A RESOLVER, so two runs is two agents
+    // racing over the same items with terminal authority.
+    await expect(createRun({ items: seed('sf2'), workspaceId: ws })).rejects.toBeInstanceOf(
+      BulkRunAlreadyActiveError,
+    );
+
+    await setRunPhase({ runId: first.runId, phase: 'running', workspaceId: ws });
+    await expect(createRun({ items: seed('sf3'), workspaceId: ws })).rejects.toThrow(
+      /already active/i,
+    );
+
+    // The refusal NAMES the run in flight, so the caller can point at it rather
+    // than telling the owner "something went wrong".
+    const err = await createRun({ items: seed('sf4'), workspaceId: ws }).catch((e) => e);
+    expect(err.code).toBe('run_already_active');
+    expect(err.activeRunId).toBe(first.runId);
+    expect(err.activePhase).toBe('running');
+
+    // Only the first run exists — the refusals created nothing.
+    expect((await getRunningRun(ws))!.runId).toBe(first.runId);
+  });
+
+  it('a run awaiting the OWNER in review does not block a new run', async () => {
+    // `review` means the agent is done and the human has not looked yet.
+    // Blocking on it would strand the whole feature behind a list the owner may
+    // never come back to, so single-flight deliberately excludes it.
+    const ws = `ws-review-unblocks-${Date.now()}`;
+    const first = await createRun({ items: seed('rv1'), workspaceId: ws });
+    await setRunPhase({ runId: first.runId, phase: 'review', workspaceId: ws });
+
+    const second = await createRun({ items: seed('rv2'), workspaceId: ws });
+    expect(second.runId).not.toBe(first.runId);
+    expect(second.phase).toBe('pending');
+  });
+
+  it('refuses the resolver’s report once the run has been stopped, and writes nothing', async () => {
+    const ws = `ws-stop-rail-${Date.now()}`;
+    const run = await createRun({ items: seed('stop'), workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', workspaceId: ws });
+    const [one, two] = await getRunItems(run.runId, ws);
+
+    // Normal in-run report lands.
+    const ok = await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [{ itemId: one!.itemId, outcome: 'auto_resolved', actionId: 'ack', rationale: 'moot' }],
+    });
+    expect(ok.refused).toBeNull();
+    expect(ok.updated).toEqual([one!.itemId]);
+
+    // The owner presses Stop: the route settles the run where it stands.
+    const settled = await settleRunPhase({ runId: run.runId, workspaceId: ws });
+    expect(settled!.phase).toBe('review');
+
+    // The resolver is a separate process and has not noticed. Its next report
+    // must be REFUSED, not silently dropped — it has usually already taken the
+    // action it is reporting, and a silent drop would leave it believing the
+    // record exists.
+    const after = await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [{ itemId: two!.itemId, outcome: 'auto_resolved', actionId: 'ack', rationale: 'late' }],
+    });
+    expect(after.refused).toEqual({ reason: 'run_not_accepting_reports', phase: 'review' });
+    expect(after.updated).toEqual([]);
+    expect(after.unknown).toEqual([two!.itemId]);
+
+    // And nothing moved: the late item is untouched, the early one intact.
+    const rows = await getRunItems(run.runId, ws);
+    expect(rows.find((r) => r.itemId === two!.itemId)!.outcome).toBe('pending');
+    expect(rows.find((r) => r.itemId === one!.itemId)!.outcome).toBe('auto_resolved');
+  });
+
+  it('keeps refusing reports once a run is complete or failed', async () => {
+    const ws = `ws-stop-terminal-${Date.now()}`;
+    const run = await createRun({ items: seed('term'), workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'failed', error: 'gave up', workspaceId: ws });
+    const items = await getRunItems(run.runId, ws);
+
+    const res = await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [{ itemId: items[0]!.itemId, outcome: 'skipped', error: 'too late' }],
+    });
+    expect(res.refused?.reason).toBe('run_not_accepting_reports');
+    expect((await getRunItems(run.runId, ws))[0]!.outcome).toBe('pending');
   });
 });
