@@ -155,6 +155,19 @@ export default defineTool({
       return { isError: true, content: [{ type: 'text', text: 'owner_required: pass the worker owner id (PAPERCUSP_SID).' }] };
     }
 
+    // Native hooks may omit harness_slug because the dispatch context already
+    // carries the concrete harness. Persist that context fallback so an exact
+    // activity:recent harness filter cannot hide otherwise valid owner rows.
+    // Neither the explicit nor contextual '*' sentinel is a real harness.
+    const explicitHarness = args.harness_slug?.trim();
+    const contextualHarness = ctx.harnessSlug?.trim();
+    const harnessSlug =
+      explicitHarness && explicitHarness !== '*'
+        ? explicitHarness
+        : contextualHarness && contextualHarness !== '*'
+          ? contextualHarness
+          : null;
+
     // Normalize the raw cross-CLI report + append it through the PG-backed
     // TelemetryStore seam (@papercusp/activity-bridge). The host-domain `scope`
     // maps to the harness the worker is in; everything else is the worker's
@@ -175,7 +188,7 @@ export default defineTool({
         owner,
         agent: args.agent ?? null,
         sessionId: args.session_id ?? null,
-        scope: args.harness_slug ?? null,
+        scope: harnessSlug,
         kind: args.kind,
         toolName: args.tool_name ?? null,
         phase: args.phase,

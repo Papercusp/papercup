@@ -41,6 +41,13 @@ const { toolCallRowsFor } = await import('../../tool-call-log-store');
 // arg the hook passes. workspaceId pins the row's workspace.
 const WORKER_CTX = { isSuperuser: false, role: 'worker', principal: { workspaceId: 'ws-test', slug: 'agent:worker' } } as never;
 
+const HARNESS_CONTEXT_CTX = {
+  isSuperuser: false,
+  role: 'worker',
+  harnessSlug: 'papercup',
+  principal: { workspaceId: 'ws-test', slug: 'agent:worker' },
+} as never;
+
 // An unscoped superuser request carries the '*' principal sentinel while the
 // request context still identifies the concrete workspace. The writer must
 // persist the latter so concrete readers and the workspace-leading index agree.
@@ -171,6 +178,21 @@ describe('activity:report — write + server-side summary', () => {
        WHERE owner_id = 'su-concrete'
     `;
     expect(rows).toEqual([{ workspace_id: 'ws-concrete' }]);
+  });
+
+  it('uses the concrete request harness when the hook omits harness_slug', async () => {
+    await report(
+      { owner: 'su-context-harness', tool_name: 'Read', tool_input: { file_path: '/context.md' } },
+      HARNESS_CONTEXT_CTX,
+    );
+
+    const rows = await db.sql<Array<{ harness_slug: string | null }>>`
+      SELECT harness_slug
+        FROM harness_shared.agent_activity
+       WHERE owner_id = 'su-context-harness'
+    `;
+    expect(rows).toEqual([{ harness_slug: 'papercup' }]);
+    expect((await recent({ owner: 'su-context-harness', harness: 'papercup' })).count).toBe(1);
   });
 });
 
