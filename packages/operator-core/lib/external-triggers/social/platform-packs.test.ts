@@ -172,6 +172,14 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     ]),
     closed: true,
   },
+  tiktok: {
+    // tiktok-videos-adapter emits the literal, like facebook-posts-adapter.
+    // ONE name, and that is the platform speaking rather than a gap: TikTok
+    // exposes no comment surface at all at this grant tier, so an upload is the
+    // only inbound event that can exist.
+    names: new Set(['post']),
+    closed: true,
+  },
 };
 
 /**
