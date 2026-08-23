@@ -100,6 +100,12 @@ export interface InstallPaths {
    *  heavy `opus:xhigh` default), then execs the psu shim with
    *  `--role=papercup-deep`. Mirrors apps/operator/scripts/psu-sentinel-deep.sh. */
   psuSentinelDeepPath: string;
+  /** ~/.papercusp/bin/rg — ripgrep entry point (WI-41085 / P-017). The dir is appended
+   *  LAST to augmentedSpawnPath's `extra`, so this can only SUPPLY `rg` when the host has
+   *  none; a real ripgrep already on PATH always wins. Generated here rather than
+   *  hand-placed at ~/.local/bin/rg, which was a host file outside git that did not
+   *  reproduce on a fresh machine. */
+  ripgrepPath: string;
   /** ~/Applications/Papercusp Tutorial & Setup.app — macOS-only clickable launcher that opens a
    *  Terminal window running `papercusp tutorial` (windows-macos-tutorial-shortcut-parity
    *  2026-07-04, WI-2197 — macOS/Dock-Applications parity with the Linux .desktop icon). */
