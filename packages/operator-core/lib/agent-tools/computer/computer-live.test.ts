@@ -36,6 +36,28 @@ const liveEnabled =
   process.env.PAPERCUSP_COMPUTER_LIVE === '1' &&
   ['Xvfb', 'xdotool', 'import', 'xdpyinfo', 'openbox'].every(hasBin);
 
+/** Where the X server says the pointer actually is — X's answer, not ours. */
+function mouseLocation(display: string): { x: number; y: number } {
+  const r = spawnSync('xdotool', ['getmouselocation', '--shell'], {
+    env: { ...process.env, DISPLAY: display },
+    timeout: 30_000,
+  });
+  const out = r.stdout.toString();
+  const num = (k: string) => Number.parseInt(new RegExp(`^${k}=(\\d+)$`, 'm').exec(out)?.[1] ?? 'NaN', 10);
+  return { x: num('X'), y: num('Y') };
+}
+
+/** Wall-clock cost of one raw xdotool invocation, SIGKILLed if it runs away. */
+function timeXdotool(display: string, args: string[]): { ms: number; status: number | null } {
+  const t0 = Date.now();
+  const r = spawnSync('xdotool', args, {
+    env: { ...process.env, DISPLAY: display },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
+  return { ms: Date.now() - t0, status: r.status };
+}
+
 describe.skipIf(!liveEnabled)('capability:computer — LIVE desktop drive (real Xvfb)', () => {
   afterAll(async () => {
     await releaseHiveDesktop(HIVE);
@@ -87,4 +109,84 @@ describe.skipIf(!liveEnabled)('capability:computer — LIVE desktop drive (real 
     expect(img3).toBeTruthy();
     expect(Buffer.from(img3!.data, 'base64').subarray(0, 8).toString('hex')).toBe(PNG_MAGIC);
   }, 30_000);
+
+  // ── D-014 / EI-21256574817493619 ────────────────────────────────────────────
+  // THE DEFECT: `xdotool mousemove --sync X Y` takes ~15.2s when the pointer is
+  // ALREADY at (X,Y) and a window manager is running. computer.ts SIGKILLs at
+  // EXEC_TIMEOUT_MS=15_000, so we killed xdotool mid-sync and the CHAINED `click 1`
+  // never ran — clicking the same button twice cost 15s and reported FAILED.
+  // THE FIX: a 1px interior nudge before every synced move, so the sync is never a
+  // no-op. `--sync` is KEPT, because its guarantee (on return the pointer IS at the
+  // target) is what the next action depends on.
+  //
+  // ⚠ THIS TEST CARRIES ITS OWN POSITIVE CONTROL, and that is the point. Asserting
+  // only "the fix is fast" is vacuous: if openbox were not running, or a future
+  // xdotool no longer had the pathology, the subject would be fast for reasons that
+  // have nothing to do with the nudge and the green would mean nothing. So the
+  // control re-runs the EXACT un-nudged argv this fix replaced and REQUIRES it to be
+  // slow. If the control ever goes fast, this test fails loudly and tells you to
+  // re-check whether the defect still exists — which is the honest outcome, not a
+  // silent pass.
+  it('D-014: repeating the same coordinate is fast — and the un-nudged shape it replaced is NOT', async () => {
+    delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
+    delete process.env.PAPERCUSP_AGENT_DISPLAY;
+
+    const d = await ensureHiveDesktop(HIVE);
+    const CTL: [number, number] = [300, 300]; // display-space, for the raw control
+
+    // CONTROL step 1 — prime: pointer is elsewhere, so this synced move is the FAST
+    // case and establishes that a synced move is cheap when it actually has to move.
+    const primed = timeXdotool(d.display, ['mousemove', '--sync', String(CTL[0]), String(CTL[1])]);
+    expect(primed.status).toBe(0);
+    expect(primed.ms).toBeLessThan(5_000);
+
+    // CONTROL step 2 — the pathology: the identical un-nudged argv, now a no-op sync.
+    // This is the exact shape planAction emitted before D-014.
+    const control = timeXdotool(d.display, [
+      'mousemove', '--sync', String(CTL[0]), String(CTL[1]), 'click', '1',
+    ]);
+    expect(control.ms).toBeGreaterThan(5_000); // the environment DOES reproduce the defect
+
+    // SUBJECT — the same coordinate clicked TWICE through the real tool path. Before
+    // D-014 the second call took ~15s and came back isError. `isError` falsy is itself
+    // the proof the click FIRED: the chained `click 1` only runs if the whole xdotool
+    // invocation survived to exit 0 instead of being SIGKILLed mid-`--sync`.
+    const XY: [number, number] = [400, 300];
+    const t1 = Date.now();
+    const first = await runComputerAction(
+      { action: 'left_click', coordinate: XY, observe: 'none' },
+      { harnessSlug: HIVE },
+    );
+    const firstMs = Date.now() - t1;
+    const posAfterFirst = mouseLocation(d.display);
+
+    const t2 = Date.now();
+    const second = await runComputerAction(
+      { action: 'left_click', coordinate: XY, observe: 'none' },
+      { harnessSlug: HIVE },
+    );
+    const secondMs = Date.now() - t2;
+    const posAfterSecond = mouseLocation(d.display);
+
+    expect(first.isError).toBeFalsy();
+    expect(second.isError).toBeFalsy();
+    // WELL under the 15s SIGKILL — not merely under it, or we would be re-asserting
+    // the timeout rather than the fix.
+    expect(firstMs).toBeLessThan(5_000);
+    expect(secondMs).toBeLessThan(5_000);
+
+    // The nudge's OWN hazard, pinned: a 1px pre-move that failed to land back on the
+    // target would leave the pointer one pixel off and silently mis-aim every
+    // subsequent click. `--sync` is what forbids that, so assert X's own answer —
+    // and assert it is UNCHANGED by the repeat, which is the property the nudge must
+    // not have broken.
+    expect(posAfterSecond).toEqual(posAfterFirst);
+    expect(Number.isFinite(posAfterFirst.x)).toBe(true);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[D-014] control(un-nudged, same spot) ${control.ms}ms · primed(moving) ${primed.ms}ms · ` +
+        `subject click#1 ${firstMs}ms click#2 ${secondMs}ms · pointer ${posAfterSecond.x},${posAfterSecond.y}`,
+    );
+  }, 120_000);
 });
