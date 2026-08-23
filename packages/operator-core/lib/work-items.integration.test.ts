@@ -110,6 +110,11 @@ beforeAll(async () => {
     '163-await-event-subscriptions.sql',
     '175-watch-floor-coalesce-cols.sql',
     '541-predicate-watches.sql',
+    // Work-item create/status/settled events all write the durable fire latch.
+    // Without its owning migration every event-emitting test logs a missing-
+    // relation warning, which fail-on-console correctly turns into a red suite
+    // (EI-21222032743884155).
+    '632-event-key-fire-latch.sql',
     '871-lifecycle-bound-watches.sql',
   ]) {
     await db.sql.unsafe(readMigration(migration)).simple();
@@ -1630,6 +1635,74 @@ describe('unified work_items surface (real PG)', () => {
     // Issue-family kinds ignore sourcePlanSlug (no frontier row / no such column) — must not throw.
     const task = await wi.createWorkItem({ kind: 'task', title: 'issue task', harness: 'papercup', createdBy: 'agA', sourcePlanSlug: 'x' });
     expect(task.family).toBe('issue');
+  });
+
+  it('feature-family plan_item unset clears normalized provenance and exact coverage edges atomically', async () => {
+    const feature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'feature plan-link clear',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const planSlug = 'plan-a';
+    const itemId = 'P-004';
+    const planRef = `${planSlug}#${itemId}`;
+    const unrelatedRef = 'other-plan#P-999';
+    const src = wi.workItemObjectRef(feature);
+
+    await wi.mergeWorkItemPayload(feature.id, {
+      plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: 'papercup' },
+      keep: 'yes',
+    }, { harness: 'papercup' });
+    await db.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET source_plan_slug = ${planSlug},
+             source_plan_item_ids = ARRAY[${itemId}]::text[]
+       WHERE workspace_id = 'default'
+         AND harness_slug = 'papercup'
+         AND feature_id = ${feature.id}`;
+    await db.sql`
+      INSERT INTO harness_shared.coord_links
+        (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at)
+      VALUES
+        ('default', ${src.kind}, ${src.ref}, 'plan_item', ${planRef}, 'relates', 'agA', now()),
+        ('default', ${src.kind}, ${src.ref}, 'plan_item', ${planRef}, 'implements', 'agA', now()),
+        ('default', ${src.kind}, ${src.ref}, 'plan_item', ${unrelatedRef}, 'relates', 'agA', now())`;
+
+    const returned = await wi.mergeWorkItemPayload(
+      feature.id,
+      {},
+      { harness: 'papercup', unset: ['plan_item'] },
+    );
+
+    const [row] = await db.sql<{
+      payload: Record<string, unknown> | null;
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+    }[]>`
+      SELECT payload, source_plan_slug, source_plan_item_ids
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = 'default'
+         AND harness_slug = 'papercup'
+         AND feature_id = ${feature.id}`;
+    const edges = await db.sql<{ dst_ref: string; rel: string }[]>`
+      SELECT dst_ref, rel
+        FROM harness_shared.coord_links
+       WHERE workspace_id = 'default'
+         AND src_kind = ${src.kind}
+         AND src_ref = ${src.ref}
+         AND dst_kind = 'plan_item'
+       ORDER BY dst_ref, rel`;
+
+    expect(Object.keys(row?.payload ?? {})).not.toContain('plan_item');
+    expect(row?.payload).toMatchObject({ keep: 'yes' });
+    expect(row).toMatchObject({ source_plan_slug: null, source_plan_item_ids: null });
+    expect(edges).toEqual([{ dst_ref: unrelatedRef, rel: 'relates' }]);
+    expect(returned).toMatchObject({
+      sourcePlanSlug: null,
+      sourcePlanItemIds: null,
+      payload: expect.objectContaining({ keep: 'yes' }),
+    });
   });
 
   it('feature-family requires a harness', async () => {

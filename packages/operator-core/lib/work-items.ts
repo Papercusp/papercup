@@ -4095,18 +4095,82 @@ export async function mergeWorkItemPayload(
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   const unset = [...new Set(opts.unset ?? [])];
+  const clearingPlanItem = unset.includes('plan_item');
   if (wi.family === 'issue') {
     await mergeIssuePayload(id, patchValue, { unset });
   } else {
+    const featureHarness = wi.harness?.trim();
+    if (!featureHarness) {
+      throw new Error(`mergeWorkItemPayload: feature-family work-item ${id} has no harness`);
+    }
     const { sql } = getOrgPg();
     const patch = JSON.stringify(patchValue);
-    await sql`
+    const workspaceId = activeWorkspaceId();
+    const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET payload = (COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb) - ${unset}::text[],
+             -- A promoted feature has the same three admission identities as an
+             -- issue: payload.plan_item, normalized source-plan columns, and a
+             -- coord coverage edge. Keep the row representations atomic with
+             -- the explicit plan_item unset (EI-21215740738650819).
+             source_plan_slug = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_slug END,
+             source_plan_item_ids = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_item_ids END,
              updated_ts = ${Date.now()}
-       WHERE workspace_id = ${activeWorkspaceId()}
-         AND harness_slug = ${wi.harness}
-         AND feature_id = ${id}`;
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${featureHarness}
+         AND feature_id = ${id}
+      RETURNING 1 AS ok`;
+
+    if (clearingPlanItem) {
+      // Snapshot only the row-represented refs under a lock, clear all row
+      // identities, then retract only their relates/implements coverage edges
+      // in the same bounded transaction. A separate hand-authored plan edge is
+      // preserved because its ref is absent from this exact outgoing snapshot.
+      await boundedOrgTxn(async (tx) => {
+        const prior = await tx<{
+          payload_plan_slug: string | null;
+          payload_item_id: string | null;
+          source_plan_slug: string | null;
+          source_plan_item_ids: string[] | null;
+        }[]>`
+          SELECT payload->'plan_item'->>'plan_slug' AS payload_plan_slug,
+                 payload->'plan_item'->>'item_id' AS payload_item_id,
+                 source_plan_slug,
+                 source_plan_item_ids
+            FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id = ${workspaceId}
+             AND harness_slug = ${featureHarness}
+             AND feature_id = ${id}
+           FOR UPDATE`;
+        if (!prior[0]) return;
+
+        const updated = await updatePayload(tx);
+        if (!updated[0]) return;
+
+        const refs = new Set<string>();
+        const before = prior[0];
+        if (before.payload_plan_slug && before.payload_item_id) {
+          refs.add(`${before.payload_plan_slug}#${before.payload_item_id}`);
+        }
+        if (before.source_plan_slug) {
+          for (const itemId of before.source_plan_item_ids ?? []) {
+            if (itemId) refs.add(`${before.source_plan_slug}#${itemId}`);
+          }
+        }
+        if (refs.size > 0) {
+          await tx`
+            DELETE FROM harness_shared.coord_links
+             WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+               AND src_kind = ${FEATURE_KIND}
+               AND src_ref = ${featureRef(featureHarness, id)}
+               AND dst_kind = 'plan_item'
+               AND dst_ref = ANY (${[...refs]})
+               AND rel = ANY (ARRAY['relates', 'implements'])`;
+        }
+      });
+    } else {
+      await updatePayload(sql as OrgSql);
+    }
   }
   return getWorkItem(id, opts.harness);
 }
