@@ -35,6 +35,24 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
     );
   });
 
+  it('disables every explicit git-sidecar override at the verifier boundary', () => {
+    // gitSidecarEnabled() checks these subsystem-specific overrides before the
+    // shared PAPERCUSP_SPAWNER_SIDECAR switch. Leaving one inherited from the
+    // operator host can create a sidecar in the shared slice even when the
+    // verifier pins its global spawner switch off.
+    expect(launchTemplate).toBeTruthy();
+    for (const variable of [
+      'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR=0',
+      'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR=0',
+      'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR=0',
+      'PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR=0',
+      'PAPERCUSP_POT_GIT_SPAWN_SIDECAR=0',
+      'PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR=0',
+    ]) {
+      expect(launchTemplate).toContain(variable);
+    }
+  });
+
   it('pins the private verifier host to loopback instead of inheriting a dev .env bind', () => {
     // EI-21140610191173818: apps/operator/.env.local legitimately configures a
     // remote-capable dev host with PAPERCUSP_BIND_HOST=0.0.0.0. The isolated
