@@ -123,7 +123,13 @@ export interface ResolvedGoalHolder extends GoalHolderRow {
 
 export type GoalHolderLiveness = 'held' | 'unheld' | 'lost' | 'unknown';
 
-/** The answer to "who holds this goal". */
+/**
+ * The answer to "who holds this goal".
+ *
+ * Multiple goal-mode rows are valid: this resolver does not elect an exclusive
+ * winner. Every row remains visible, and a goal is `held` whenever at least one
+ * holder resolves positively alive.
+ */
 export interface GoalHolders {
   goalId: string;
   workspaceId: string;

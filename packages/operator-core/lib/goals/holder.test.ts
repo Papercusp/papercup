@@ -116,6 +116,22 @@ describe('resolveGoalHoldersFromRows — the four verdicts', () => {
     expect(r.live.map((h) => h.ownerId)).toEqual(['a']);
   });
 
+  it('supports concurrent holders: keeps every row and stays held when any holder is alive', () => {
+    const r = resolveGoalHoldersFromRows(
+      G,
+      WS,
+      [row('first-claimant'), row('second-claimant')],
+      verdicts(
+        verdict({ ownerId: 'first-claimant', sessionState: 'live' }),
+        verdict({ ownerId: 'second-claimant', sessionState: 'live' }),
+      ),
+    );
+
+    expect(r.liveness).toBe('held');
+    expect(r.holders.map((h) => h.ownerId)).toEqual(['first-claimant', 'second-claimant']);
+    expect(r.live.map((h) => h.ownerId)).toEqual(['first-claimant', 'second-claimant']);
+  });
+
   /**
    * THE BUG, stated as a test. A row exists — every count-based surface would
    * call this goal staffed — and the session behind it is gone.
