@@ -5,6 +5,7 @@ import { readPlanBySlug } from './agent-tools/plans/source';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems } from './work-items';
+import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
@@ -21,6 +22,10 @@ export type AcceptanceGraderLifecycle = {
   /** D-009 exclusion audit trail (implementers + heavy consult participants +
    * rubric author + shipper) — set whenever discovery ran. */
   excluded?: string[];
+  /** Structured discovery counts, including the known post-exclusion pool. */
+  eligibility?: GraderEligibility;
+  /** Explicit escalation when the measured post-exclusion pool is empty. */
+  escalation?: GraderEscalation;
   /** Why discovery fell through to the fresh launch (state launched/deduped). */
   freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded' | 'discovery_error';
   /** Wake delivery for an assigned grader ({ woke: 0 } = parked; they read the
@@ -124,6 +129,8 @@ type GraderDiscoveryResult = {
   verdict: 'assigned' | 'fresh';
   grader?: { ownerId: string; score: number; liveness: string };
   excluded: string[];
+  eligibility?: GraderEligibility;
+  escalation?: GraderEscalation;
   freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded';
 };
 
@@ -205,6 +212,8 @@ async function prodDiscoverGrader(
         }
       : {}),
     excluded: selection.excluded,
+    eligibility: selection.eligibility,
+    ...(selection.escalation ? { escalation: selection.escalation } : {}),
     ...(selection.freshReason ? { freshReason: selection.freshReason } : {}),
   };
 }
@@ -250,7 +259,12 @@ export async function resolveAcceptanceGrader(
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   let discovery:
-    | { excluded: string[]; freshReason: NonNullable<AcceptanceGraderLifecycle['freshReason']> }
+    | {
+        excluded: string[];
+        eligibility?: GraderEligibility;
+        escalation?: GraderEscalation;
+        freshReason: NonNullable<AcceptanceGraderLifecycle['freshReason']>;
+      }
     | undefined;
   try {
     const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
@@ -277,11 +291,15 @@ export async function resolveAcceptanceGrader(
           label: '',
           grader: selection.grader,
           excluded: selection.excluded,
+          eligibility: selection.eligibility,
+          ...(selection.escalation ? { escalation: selection.escalation } : {}),
           notified,
         };
       }
       discovery = {
         excluded: selection.excluded,
+        eligibility: selection.eligibility,
+        ...(selection.escalation ? { escalation: selection.escalation } : {}),
         freshReason: selection.freshReason ?? 'no_qualified_non_excluded',
       };
     }

@@ -33,7 +33,8 @@ import { FLAGS } from '@papercusp/flags';
 import { resolveEffectiveStatusForItems, type ItemStatus, type PlanItem } from '@papercusp/plan-parser';
 import { systemDistinctId } from './flag-distinct-id';
 import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
-import { createWorkItem, linkWorkItem } from './work-items';
+import { getWorkItem, linkWorkItem } from './work-items';
+import { upsertConditionWorkItem } from './coord/condition-upsert';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
   findConvertedWorkItemByStamp,
@@ -131,6 +132,21 @@ const NO_EDGES = {
 
 function isOpenStatus(status: string | null): boolean {
   return status !== 'done' && status !== 'dropped';
+}
+
+/**
+ * D-046: the migration-741 condition key that makes plan-item promotion single-winner —
+ * at most ONE non-terminal promoted work-item may own a plan lane per
+ * (workspace, harness, plan, item), enforced by `work_items_condition_key_uq`.
+ * Exported so the concurrency regression asserts the exact key promotion writes.
+ */
+export function planPromotionConditionKey(
+  workspaceId: string,
+  harnessSlug: string,
+  planSlug: string,
+  itemId: string,
+): string {
+  return `plan-promotion:${workspaceId}/${harnessSlug}/${planSlug}/${itemId}`;
 }
 
 /** A plan item reduced to exactly what the edge write needs: identity, status, text, blockers. */
@@ -371,24 +387,53 @@ export async function promotePlanItems(opts: {
       item_id: itemId,
       harness_slug: opts.harnessSlug,
     };
-    const wi = await createWorkItem({
-      kind: spec.kind,
-      title: spec.title,
-      summary: textById.get(itemId) ?? undefined,
-      harness: spec.harness,
-      sourcePlanSlug: spec.sourcePlanSlug,
-      payload: {
-        plan_item: stamp,
-        needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(itemId)?.phase),
+    // D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
+    // promoted work-item per (workspace, harness, plan, item), serialized IN POSTGRES —
+    // not by the coverage read above. That read stays as a cheap idempotency
+    // optimization, but it is check-then-act: two CONCURRENT promotePlanItems calls both
+    // pass it and both mint (live: P-036 minted identical open WI-40504/WI-40513 six
+    // seconds apart). `upsertConditionWorkItem` rides migration 741's partial unique
+    // index: exactly one caller CREATES (`created:true`), the race-loser's optimistic row
+    // is dropped by settleConditionClaim, and BOTH callers get the winner's id back. Both
+    // then link + lane-sync the winner — linkWorkItem is ON CONFLICT DO NOTHING, so the
+    // double write is idempotent — and only the creator increments `promoted`, keeping
+    // `skipped = openItems.length - promoted` correct for adopted/race-lost rows.
+    const minted = await upsertConditionWorkItem(
+      planPromotionConditionKey(opts.workspaceId, opts.harnessSlug, opts.planSlug, itemId),
+      {
+        kind: spec.kind,
+        title: spec.title,
+        summary: textById.get(itemId) ?? undefined,
+        harness: spec.harness,
+        workspaceId: opts.workspaceId,
+        sourcePlanSlug: spec.sourcePlanSlug,
+        payload: {
+          plan_item: stamp,
+          needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(itemId)?.phase),
+        },
+        createdBy: opts.createdBy,
+        // NO assignee — placeable, UNCLAIMED; the Queen places it.
       },
-      createdBy: opts.createdBy,
-      // NO assignee — placeable, UNCLAIMED; the Queen places it.
-    });
+    );
+    if (!minted.id) {
+      // The winner settled/vanished between the claim settlement and the holder read — a
+      // narrow re-race. Never link against a null id; the next promotion run re-resolves.
+      console.warn(
+        `[plan-promotion] '${opts.planSlug}#${itemId}' condition upsert returned no winner id — skipped this run`,
+      );
+      continue;
+    }
+    // Re-read the WINNER row (created or adopted) so the link + lane sync use the row's
+    // ACTUAL stored harness — createWorkItem can normalize a member harness to its Pot
+    // home slug (see condition-upsert.ts's header), and the pre-D-046 code linked with
+    // the created row's own `wi.harness` for exactly that reason.
+    const wi = (await getWorkItem(minted.id, spec.harness)) ?? (await getWorkItem(minted.id));
+    const winnerHarness = wi?.harness ?? spec.harness;
     await linkWorkItem(
-      wi.id,
+      minted.id,
       { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) },
       IMPLEMENTS_REL,
-      { harness: wi.harness ?? undefined, by: opts.createdBy },
+      { harness: winnerHarness ?? undefined, by: opts.createdBy },
     );
     // EI-14024: if this item's plan-level blockers are still open (or it needs a
     // human decision), gate it the SAME way the periodic lane-sync sweep
@@ -411,8 +456,8 @@ export async function promotePlanItems(opts: {
         // backstop that eventually parks it if this inline gate fails.
       });
     }
-    mintedByPlanItem.set(itemId, wi.id);
-    promoted++;
+    mintedByPlanItem.set(itemId, minted.id);
+    if (minted.created) promoted++;
   }
 
   const edgeCounts = await writePromotedDependencyEdges({

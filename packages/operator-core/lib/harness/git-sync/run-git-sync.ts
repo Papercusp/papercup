@@ -2896,16 +2896,31 @@ async function syncOneRepo(
   if (c.skippedPaths && c.skippedPaths.length > 0) {
     return {
       status: 'skipped-locked',
+      dirtyPathCount: c.dirtyPathCount,
+      committedCount: c.committedCount,
       skippedPaths: c.skippedPaths,
       oversized: c.oversized,
       contentErrors: c.contentErrors,
     };
   }
   if (c.error) {
-    return { status: 'error', message: c.error, oversized: c.oversized, contentErrors: c.contentErrors };
+    return {
+      status: 'error',
+      message: c.error,
+      dirtyPathCount: c.dirtyPathCount,
+      committedCount: c.committedCount,
+      oversized: c.oversized,
+      contentErrors: c.contentErrors,
+    };
   }
   const r = await reconcileAndPushOneRepo(runGit, repoPath, o, c.committedLocal);
-  return { ...r, oversized: c.oversized, contentErrors: c.contentErrors };
+  return {
+    ...r,
+    dirtyPathCount: c.dirtyPathCount,
+    committedCount: c.committedCount,
+    oversized: c.oversized,
+    contentErrors: c.contentErrors,
+  };
 }
 
 /**
@@ -2998,6 +3013,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   if (!repo) {
     return {
       status: 'error',
+      dirtyPathCount: 0,
+      committedCount: 0,
       errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }],
       pushed: [],
       merged: [],
@@ -3017,6 +3034,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
 
   /** One phase's collected results — JSON-serializable so it checkpoints as a step output. */
   interface PhaseCollect {
+    dirtyPathCount: number;
+    committedCount: number;
     conflicts: RepoConflict[];
     errors: RepoError[];
     pushed: string[];
@@ -3034,6 +3053,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     didSomething: boolean;
   }
   const emptyPhase = (): PhaseCollect => ({
+    dirtyPathCount: 0,
+    committedCount: 0,
     conflicts: [],
     errors: [],
     pushed: [],
@@ -3048,6 +3069,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   });
 
   const absorb = (into: PhaseCollect, scope: string, r: RepoSyncResult): void => {
+    into.dirtyPathCount += r.dirtyPathCount ?? 0;
+    into.committedCount += r.committedCount ?? 0;
     if (r.mergeCompleted) into.mergeCompleted.push(scope);
     if (r.oversized.length > 0) {
       into.oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
@@ -3246,10 +3269,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       attribution: attributionMapForRepo(roster, '', repo),
     });
   });
+  const commitMetrics = {
+    dirtyPathCount: commitRes.dirtyPathCount,
+    committedCount: commitRes.committedCount,
+  };
   let repoResult: RepoSyncResult;
   if (commitRes.skippedPaths && commitRes.skippedPaths.length > 0) {
     repoResult = {
       status: 'skipped-locked',
+      ...commitMetrics,
       skippedPaths: commitRes.skippedPaths,
       oversized: commitRes.oversized,
       contentErrors: commitRes.contentErrors,
@@ -3257,6 +3285,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   } else if (commitRes.error) {
     repoResult = {
       status: 'error',
+      ...commitMetrics,
       message: commitRes.error,
       oversized: commitRes.oversized,
       contentErrors: commitRes.contentErrors,
@@ -3270,13 +3299,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     repoResult = commitRes.committedLocal
       ? {
           status: 'synced',
+          ...commitMetrics,
           pushed: false,
           merged: false,
           oversized: commitRes.oversized,
           contentErrors: commitRes.contentErrors,
           skippedPaths: commitRes.skippedPaths,
         }
-      : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
+      : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
     log(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
@@ -3308,6 +3338,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     if (releaseBridge.status === 'error') {
       repoResult = {
         status: 'error',
+        ...commitMetrics,
         message: releaseBridge.message,
         oversized: commitRes.oversized,
         contentErrors: commitRes.contentErrors,
@@ -3321,13 +3352,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       repoResult = commitRes.committedLocal || bridged
         ? {
             status: 'synced',
+            ...commitMetrics,
             pushed: false,
             merged: bridged,
             oversized: commitRes.oversized,
             contentErrors: commitRes.contentErrors,
             skippedPaths: commitRes.skippedPaths,
           }
-        : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
+        : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
     }
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
@@ -3338,6 +3370,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     superHeadSha = pushRes.headSha;
     repoResult = {
       ...pushRes,
+      ...commitMetrics,
       oversized: commitRes.oversized,
       contentErrors: commitRes.contentErrors,
       skippedPaths: commitRes.skippedPaths,
@@ -3356,22 +3389,26 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // reconstruct those phase outputs as an empty census rather than throwing or
   // turning a clean replay into an error.
   const skippedPaths = [...(sub.skippedPaths ?? []), ...(supr.skippedPaths ?? [])];
+  const dirtyPathCount = (sub.dirtyPathCount ?? 0) + (supr.dirtyPathCount ?? 0);
+  const committedCount = (sub.committedCount ?? 0) + (supr.committedCount ?? 0);
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)
-    return { status: 'conflict', conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+    return { status: 'conflict', dirtyPathCount, committedCount, conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
   if (errors.length > 0)
-    return { status: 'error', errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+    return { status: 'error', dirtyPathCount, committedCount, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
   if (skippedPaths.length > 0)
-    return { status: 'skipped-locked', skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+    return { status: 'skipped-locked', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
   // is invisible — so this is the last status that should omit it.
-  if (!didSomething) return { status: 'nothing', skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+  if (!didSomething) return { status: 'nothing', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
     status: 'synced',
+    dirtyPathCount,
+    committedCount,
     headSha: superHeadSha ?? (await headSha(runGit, repo)),
     pushed,
     merged,
