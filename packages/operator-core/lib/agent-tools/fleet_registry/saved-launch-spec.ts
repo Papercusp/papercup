@@ -269,9 +269,13 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     return { ok: false, message: `Legacy launch_argv has invalid context size \`${contextSizeRaw}\`.` };
   }
   const compactionRaw = argFlag(argv, 'compaction-limit');
-  const compactionLimit = compactionRaw == null ? undefined : Number(compactionRaw);
-  if (compactionRaw != null && (!Number.isSafeInteger(compactionLimit) || compactionLimit <= 0)) {
-    return { ok: false, message: `Legacy launch_argv has invalid compaction limit \`${compactionRaw}\`.` };
+  let compactionLimit: number | undefined;
+  if (compactionRaw != null) {
+    const parsedCompactionLimit = Number(compactionRaw);
+    if (!Number.isSafeInteger(parsedCompactionLimit) || parsedCompactionLimit <= 0) {
+      return { ok: false, message: `Legacy launch_argv has invalid compaction limit \`${compactionRaw}\`.` };
+    }
+    compactionLimit = parsedCompactionLimit;
   }
 
   // These flags are not first-class FleetHeadcountConfig fields, but they are

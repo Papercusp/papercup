@@ -36,9 +36,10 @@ describe('readAdvSessionLaunchRecordByOwner', () => {
       launchSpec,
       launchArgv,
     });
-    const template = advSessionRowsMock.mock.calls[0]?.[0] as readonly string[];
-    expect(Array.from(template).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
-    expect(Array.from(template).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
+    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    expect(Array.isArray(template)).toBe(true);
+    expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
+    expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
   });
 });
 
