@@ -241,8 +241,16 @@ describe('WorkflowDetailView — the agent chat is the existing one', () => {
 
 describe('WorkflowDetailView — header', () => {
   it('shows the armed badge and wires the back control', async () => {
-    const { props } = renderView({ binding: binding({ armed: true }), lastFiredLabel: 'last fired 09:30' });
-    await waitFor(() => expect(screen.getByText('Armed')).toBeTruthy());
+    const { container, props } = renderView({
+      binding: binding({ armed: true }),
+      lastFiredLabel: 'last fired 09:30',
+    });
+    // Scoped to the header badge on purpose: "Armed" legitimately appears twice (here and on
+    // the agent panel's arm row), so an unscoped text query is ambiguous rather than wrong.
+    await waitFor(() =>
+      expect(container.querySelector('.pc-workflow-detail__badge')?.textContent).toBe('Armed'),
+    );
+    expect(container.querySelector('.pc-workflow-detail__badge')?.getAttribute('data-armed')).toBe('true');
     expect(screen.getByText('last fired 09:30')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Workflows/ }));
     expect(props.onBack).toHaveBeenCalledTimes(1);
