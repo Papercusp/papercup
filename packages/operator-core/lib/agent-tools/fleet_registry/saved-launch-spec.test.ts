@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { AdvSessionLaunchRecord } from '../../adv-sessions';
 import type { FleetHeadcountTarget } from '../../agent-fleets-store';
 import {
+  LEGACY_FLEET_LAUNCH_SPEC_SOURCE,
   resolveLoadedSavedFleetLaunchSpec,
   resolveSavedFleetLaunchSpec,
+  savedFleetLaunchSpecFromLegacyRecord,
   savedFleetLaunchSpecFromConfig,
 } from './saved-launch-spec';
 
@@ -36,6 +39,45 @@ const base = {
   workspaceId: 'ws-test',
   fleetSlug: 'byoc',
   reusePath: 'fleet:respawn-member -> capability:launch-agent',
+};
+
+const legacyRecord: AdvSessionLaunchRecord = {
+  workspaceId: 'ws-test',
+  launchSpec: {
+    v: 1,
+    agent: 'codex',
+    workspaceId: 'ws-test',
+    harnessSlug: 'papercusp',
+    profile: 'engineer',
+    contextSize: 'trimmed',
+    personaTier: 'fleet',
+    model: 'gpt-5.6-sol:xhigh',
+    planSlug: 'byoc-plan',
+    launchedBy: 'su-leader',
+    autoMode: true,
+    drainMode: false,
+    loopArmed: true,
+    fleet: { slug: 'byoc', role: 'member' },
+  },
+  launchArgv: [
+    'psu',
+    '--no-picker',
+    '--fleet=byoc',
+    '--agent=codex',
+    '--harness=papercusp',
+    '--plan=byoc-plan',
+    '--headless',
+    '--carry=warm',
+    '--account=default',
+    '--model=gpt-5.6-sol:xhigh',
+    '--compaction-limit=400000',
+    '--role=su',
+    '--launch-context=/tmp/byoc.md',
+    '--context-size=trimmed',
+    '--profile=engineer',
+    '--brain',
+    '--add-dir=/tmp/shared',
+  ],
 };
 
 describe('saved fleet launch spec resolver (agent-launch-unification P-043)', () => {
@@ -191,5 +233,106 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
         target: { ...target, config: { ...target.config, model: undefined, effort: 'xhigh' } },
       }),
     ).toMatchObject({ ok: false, found: true, error: 'saved_launch_spec_invalid' });
+  });
+});
+
+describe('legacy adv_sessions fleet launch-spec fallback', () => {
+  it('reconstructs the command-neutral recipe from the durable launch record', () => {
+    const result = savedFleetLaunchSpecFromLegacyRecord(legacyRecord, 'ws-test', 'byoc');
+    expect(result).toMatchObject({
+      ok: true,
+      config: {
+        plan: 'byoc-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        role: 'su',
+        launchContext: '/tmp/byoc.md',
+        contextSize: 'trimmed',
+        compactionLimit: 400000,
+        extraArgs: ['--profile=engineer', '--brain', '--add-dir=/tmp/shared'],
+      },
+      saved: {
+        plan: 'byoc-plan',
+        harness: 'papercusp',
+        member: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh', headless: true },
+      },
+    });
+  });
+
+  it('uses the owner-scoped legacy record only when the canonical target is absent', async () => {
+    const readTarget = vi.fn().mockResolvedValue(null);
+    const readLegacy = vi.fn().mockResolvedValue(legacyRecord);
+    const result = await resolveSavedFleetLaunchSpec({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      memberOwnerId: 'su-legacy-member',
+      requireSaved: true,
+      readTarget,
+      readLegacy,
+      reusePath: base.reusePath,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      found: true,
+      target: 1,
+      provenance: {
+        source: LEGACY_FLEET_LAUNCH_SPEC_SOURCE,
+        workspaceId: 'ws-test',
+        fleetSlug: 'byoc',
+        target: null,
+      },
+    });
+    expect(readLegacy).toHaveBeenCalledWith('su-legacy-member', 'ws-test');
+
+    const canonical = vi.fn().mockResolvedValue(target);
+    const ignoredLegacy = vi.fn().mockResolvedValue(legacyRecord);
+    const canonicalResult = await resolveSavedFleetLaunchSpec({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      memberOwnerId: 'su-legacy-member',
+      requireSaved: true,
+      readTarget: canonical,
+      readLegacy: ignoredLegacy,
+      reusePath: base.reusePath,
+    });
+    expect(canonicalResult).toMatchObject({ ok: true, found: true, target: 16, provenance: { source: 'fleet:headcount-target' } });
+    expect(ignoredLegacy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for workspace/fleet mismatches, malformed records, and missing records', async () => {
+    expect(savedFleetLaunchSpecFromLegacyRecord({ ...legacyRecord, workspaceId: 'other-workspace' }, 'ws-test', 'byoc')).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/workspace/i),
+    });
+    expect(
+      savedFleetLaunchSpecFromLegacyRecord(
+        {
+          ...legacyRecord,
+          launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), fleet: { slug: 'other-fleet', role: 'member' } },
+        },
+        'ws-test',
+        'byoc',
+      ),
+    ).toMatchObject({ ok: false, message: expect.stringMatching(/fleet/i) });
+    expect(savedFleetLaunchSpecFromLegacyRecord({ ...legacyRecord, launchSpec: null }, 'ws-test', 'byoc')).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/missing or malformed/i),
+    });
+
+    const result = await resolveSavedFleetLaunchSpec({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      memberOwnerId: 'su-missing-member',
+      requireSaved: true,
+      readTarget: vi.fn().mockResolvedValue(null),
+      readLegacy: vi.fn().mockResolvedValue(null),
+      reusePath: base.reusePath,
+    });
+    expect(result).toMatchObject({ ok: false, found: false, error: 'saved_launch_spec_missing' });
   });
 });
