@@ -281,6 +281,9 @@ export default defineTool({
     ],
   },
   capability: 'operator:write',
+  // The status branch only reads pipeline state; trigger/force remain writes. Keep the
+  // static effect as `write` so unknown or malformed calls stay behind the dry-run gate.
+  effectForCall: (args) => (args.op === 'status' ? 'read' : 'write'),
   requirePrincipal: false,
   // EI-18761103623054929: the default dispatch-stack tool timeout is 60s (dispatch-stack.ts:
   // `exec.timeoutSec = exec.tool.timeoutSec ?? 60`) — too short for THIS tool specifically.

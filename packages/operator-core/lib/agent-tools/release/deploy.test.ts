@@ -150,6 +150,16 @@ beforeEach(() => {
   launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
 });
 
+describe('release:deploy — orchestration effect classification', () => {
+  it('classifies status as read while keeping trigger and force writes', () => {
+    const classifier = (tool as unknown as { effectForCall?: (args: { op: string }) => string }).effectForCall;
+    expect(classifier).toBeTypeOf('function');
+    expect(classifier!({ op: 'status' })).toBe('read');
+    expect(classifier!({ op: 'trigger' })).toBe('write');
+    expect(classifier!({ op: 'force' })).toBe('write');
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
