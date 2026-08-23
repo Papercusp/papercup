@@ -6,12 +6,12 @@ The Windows 11 QEMU dev VM (:2223 ssh, :5931 SPICE) can be driven for a full fir
 import { Aside } from '@astrojs/starlight/components';
 
 This doc predates WI-5651, which retired the VM as the Windows **build**
-mechanism (`bin/build-windows-on-vm.sh` → `bin/build-windows-cross.sh`,
-cross-compiled on Linux). Nothing here is about building, though — it's about
+mechanism. Builds now use `papercusp-desktop/bin/build-windows-cross.sh`,
+cross-compiled on Linux. Nothing here is about building, though — it's about
 driving an *installed* Windows app inside a VM for a first-run smoke test, and
 that need doesn't go away just because the artifact is no longer built inside
 that same VM: a Windows box (VM or otherwise) is still needed to install and
-run whatever `build-windows-cross.sh` produces. The SSH/SPICE/scheduled-task
+run whatever `papercusp-desktop/bin/build-windows-cross.sh` produces. The SSH/SPICE/scheduled-task
 recipe below should still apply to a cross-built installer, but has not been
 specifically re-verified against one.
 
