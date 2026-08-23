@@ -219,6 +219,14 @@ describe('<InboxPane>', () => {
     expect(chipsRule).toMatch(/flex:\s*0\s+0\s+auto/);
   });
 
+  it('does not visually line-clamp the full body inside an expanded row', () => {
+    const css = readFileSync(join(__dirname, 'inbox-pane.css'), 'utf8');
+    const bodyRule =
+      css.match(/\.op-chat-sidebar \.op-inbox__detail \.ask-choice-question\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(bodyRule).toMatch(/-webkit-line-clamp:\s*unset/);
+    expect(bodyRule).toMatch(/overflow:\s*visible/);
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem('d1'),

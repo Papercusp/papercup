@@ -302,6 +302,14 @@
   overflow: visible;
   padding: 8px 10px 4px;
 }
+/* The chat shell line-clamps compact decision cards to three lines. An Inbox
+   disclosure is the inspection surface, so D-012 requires the complete body. */
+.op-chat-sidebar .op-inbox__detail .ask-choice-question {
+  display: block;
+  -webkit-box-orient: initial;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
 .op-inbox__detail .pc-items__detail-actions {
   width: 100%;
   margin: 0;
