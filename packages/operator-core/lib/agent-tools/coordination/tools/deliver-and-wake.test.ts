@@ -40,7 +40,11 @@ const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
 // the report without PG. Default: a roster of su-bee-1/2/3 (so they aren't treated
 // as federated) and zero active watchers (so a plain send reports them idle).
 const listActiveAwaitsForKey = vi.fn(async (_key: string) => [] as unknown[]);
-const listPresence = vi.fn(async () => [{ ownerId: 'su-bee-1' }, { ownerId: 'su-bee-2' }, { ownerId: 'su-bee-3' }]);
+const listPresence = vi.fn(async () => [
+  { ownerId: 'su-bee-1' },
+  { ownerId: 'su-bee-2' },
+  { ownerId: 'su-bee-3' },
+]);
 // coord:await-inbox composes the registration internals directly — stub them so
 // the unit test needs no PG / no real sweeper.
 const registerAwait = vi.fn(async (input: { eventKey: string; once?: boolean; minSleepSec?: number | null }) => ({
@@ -153,7 +157,8 @@ vi.mock('../presence', async () => ({
   /* DERIVED from the same fixture list rather than a second hand-written one, so
      the single-record getter can never disagree with listPresence() about who
      exists — a divergence the oracle would read as real state. */
-  getPresence: async (ownerId: string) => (await listPresence()).find((r) => r.ownerId === ownerId) ?? null,
+  getPresence: async (ownerId: string) =>
+    (await listPresence()).find((r) => r.ownerId === ownerId) ?? null,
 }));
 vi.mock('../../../events/await/handle', () => ({
   captureWakeHandleForOwner: () => captureWakeHandleForOwner(),
@@ -189,7 +194,8 @@ import awaitInbox from './await-inbox';
 import { COORD_INBOX_WAKE_PREFIX, inboxWakeKey, ownerFromInboxWakeKey } from '../inbox-wake';
 
 const ctx = { uiClientId: 'su-self', isSuperuser: true, workspaceId: 'ws' } as never;
-const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T => tool.args.parse(x) as T;
+const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
+  tool.args.parse(x) as T;
 const out = (res: unknown) => {
   const r = res as { data?: any; content?: Array<{ text: string }> };
   // Bulk tools return { data: envelope }; non-bulk / guard paths return raw { content }.
@@ -223,7 +229,11 @@ describe('coord:send', () => {
     listActiveAwaitsForKey.mockReset();
     listActiveAwaitsForKey.mockResolvedValue([]);
     listPresence.mockReset();
-    listPresence.mockResolvedValue([{ ownerId: 'su-bee-1' }, { ownerId: 'su-bee-2' }, { ownerId: 'su-bee-3' }]);
+    listPresence.mockResolvedValue([
+      { ownerId: 'su-bee-1' },
+      { ownerId: 'su-bee-2' },
+      { ownerId: 'su-bee-3' },
+    ]);
     // EI-5957: default every recipient to `auto` (fire) unless a test opts into
     // `manual` (stage); reset the staging spy between tests.
     resolveWakeMode.mockReset();
@@ -429,13 +439,7 @@ describe('coord:send', () => {
     const res = await coordSend.handler(
       // Backstop declared → optimistic miss is SILENT (no recipient_absent).
       // Without a backstop the code now reports the miss loudly (recipient_absent:true).
-      parse(coordSend, {
-        to: ['su-bee-1'],
-        summary: 'fyi',
-        expects: 'none',
-        wake: 'optimistic',
-        backstop: 'test delivery sweep re-dispatches',
-      }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none', wake: 'optimistic', backstop: 'test delivery sweep re-dispatches' }),
       ctx,
     );
     const { wake } = send1(res);
@@ -507,15 +511,11 @@ describe('coord:send', () => {
   it('EI-5957: a MIXED batch (one auto, one manual) fires the auto wake AND stages+warns the manual one', async () => {
     // su-bee-1 auto (fires), su-bee-2 manual (stages). The auto path is untouched;
     // the staged one is named + warned even though a peer was woken.
-    resolveWakeMode.mockImplementation(async (ownerId: string) => (ownerId === 'su-bee-2' ? 'manual' : 'auto'));
+    resolveWakeMode.mockImplementation(async (ownerId: string) =>
+      ownerId === 'su-bee-2' ? 'manual' : 'auto',
+    );
     const res = await coordSend.handler(
-      parse(coordSend, {
-        to: ['su-bee-1', 'su-bee-2'],
-        summary: 'go',
-        expects: 'action',
-        ...ACTION_BODY,
-        wake: 'required',
-      }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
       ctx,
     );
     // only the auto target's key fired
@@ -578,7 +578,7 @@ describe('coord:await-inbox (D-005 idle annotation over the always-armed watch)'
     startAwaitSweeper.mockClear();
   });
 
-  it("refreshes the STANDING wake watch on the caller's OWN inbox-wake key (via the always-arm upsert)", async () => {
+  it('refreshes the STANDING wake watch on the caller\'s OWN inbox-wake key (via the always-arm upsert)', async () => {
     const res = await awaitInbox.handler(parse(awaitInbox, { note: 'drained' }), ctx);
     expect(startAwaitSweeper).toHaveBeenCalled();
     // D-005: routes through armInboxWake → upsertInboxWakeAwait (the idempotent

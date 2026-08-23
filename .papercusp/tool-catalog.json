@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 799,
+  "count": 800,
   "tools": [
     {
       "name": "ablation:report",
@@ -4363,6 +4363,81 @@
         "when": "Equipping a pot for visual/GUI work — before a cup in that pot uses capability:computer. Pass `apps` to pre-launch the programs the cup will operate (e.g. a browser, a spreadsheet).",
         "notWhen": "For scriptable work (files/CLIs/APIs) no desktop is needed — bees use capability:bash. On a deployed desktop FRAME the per-slot Xvfb is leased by the frame bootstrap (acquireAgentDisplay), not this tool.",
         "chaining": "computer:provision_desktop { pot, apps } → spawn/let a bee in that hive call capability:computer → computer:list_desktops to inspect → computer:release_desktop when done."
+      }
+    },
+    {
+      "name": "computer:record",
+      "http": {
+        "path": "/api/agent-tools/computer/record",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record what you do on the sandbox desktop as a trajectory — one frame per action, captured out of band — and export it to webm/GIF for a human to watch. Frames never enter your tool results, so recording costs no tokens per step.",
+      "capabilities": [
+        "capability:computer"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before a GUI sequence someone will need to REVIEW: reproducing a bug you will hand off, evidence for a work-item, or a flow you want a human to check. start → drive the desktop normally → stop → export.",
+        "notWhen": "To SEE the screen yourself — that is capability:computer (screenshot) or computer:observe; a recording is written to disk and is not returned to you. Not for a single click worth no video.",
+        "chaining": "computer:record { op:'start', workItem:'WI-1234' } → capability:computer / computer:click_element as usual → computer:record { op:'stop' } → computer:record { op:'export', format:'webm' }."
       }
     },
     {

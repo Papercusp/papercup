@@ -41,7 +41,8 @@ const { configureCoordLog, resetCoordLog } = await import('../../agent-tools/coo
 const coordSend = (await import('../../agent-tools/coordination/tools/send')).default;
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
-const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T => tool.args.parse(x) as T;
+const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
+  tool.args.parse(x) as T;
 // coord:send is bulk (P-006): the handler returns the canonical { data: envelope }.
 const out = (res: unknown) => (res as { data: any }).data;
 
@@ -95,18 +96,16 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     const hostC = await tb.spawnSocketHost(bystanderC);
 
     // The REAL verb, exactly as the sender's session calls it.
-    const res = out(
-      await coordSend.handler(
-        parse(coordSend, {
-          to: [idleB],
-          summary: `wake-rung ping for ${idleB}`,
-          body: [{ text: 'P-009: directed deliver-and-wake — please read your inbox.' }],
-          expects: 'none',
-          wake: true,
-        }),
-        { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
-      ),
-    );
+    const res = out(await coordSend.handler(
+      parse(coordSend, {
+        to: [idleB],
+        summary: `wake-rung ping for ${idleB}`,
+        body: [{ text: 'P-009: directed deliver-and-wake — please read your inbox.' }],
+        expects: 'none',
+        wake: true,
+      }),
+      { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
+    ));
     // coord:send is bulk (P-006): the single send is n=1 — the per-message
     // fields (msg_id / wake) live on results[0]; the envelope carries ok/counts.
     expect(res.ok).toBe(true);
@@ -137,7 +136,8 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     expect(envelope).toContain(idleB); // the wake is B's own, never a broadcast
     const lines = await log.readLines('messages');
     const mine = lines.filter(
-      (e) => (e as { msg_id?: string }).msg_id === one.msg_id || (e as { msgId?: string }).msgId === one.msg_id,
+      (e) => (e as { msg_id?: string }).msg_id === one.msg_id
+        || (e as { msgId?: string }).msgId === one.msg_id,
     );
     expect(mine).toHaveLength(1);
     expect(JSON.stringify(mine[0])).toContain(`wake-rung ping for ${idleB}`);
@@ -157,18 +157,10 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     const hostB = await tb.spawnSocketHost(idleB);
 
     const send = async (n: number) =>
-      out(
-        await coordSend.handler(
-          parse(coordSend, {
-            to: [idleB],
-            summary: `wake #${n} for ${idleB}`,
-            body: [{ text: `ping ${n}` }],
-            expects: 'none',
-            wake: true,
-          }),
-          { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
-        ),
-      );
+      out(await coordSend.handler(
+        parse(coordSend, { to: [idleB], summary: `wake #${n} for ${idleB}`, body: [{ text: `ping ${n}` }], expects: 'none', wake: true }),
+        { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
+      ));
 
     // First wake → queued, then delivered by the explicit pump. (bulk n=1 → per-message fields on results[0].)
     const r1 = await send(1);
@@ -195,17 +187,15 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     await armInboxWake({ ownerId: idleB, workspaceId: h.ws });
     const hostB = await tb.spawnSocketHost(idleB);
 
-    const res = out(
-      await coordSend.handler(
-        parse(coordSend, {
-          to: [idleB],
-          summary: 'ambient note — no wake',
-          expects: 'none',
-          wake: false,
-        }),
-        { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
-      ),
-    );
+    const res = out(await coordSend.handler(
+      parse(coordSend, {
+        to: [idleB],
+        summary: 'ambient note — no wake',
+        expects: 'none',
+        wake: false,
+      }),
+      { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
+    ));
     expect(res.ok).toBe(true);
 
     await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
