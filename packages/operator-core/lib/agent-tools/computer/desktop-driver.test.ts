@@ -18,6 +18,19 @@ import {
 
 const T: DesktopTarget = { display: ':99', width: 1024, height: 768 };
 
+/**
+ * The coordinate the SYNCED move actually targets.
+ *
+ * Read this instead of a fixed argv index: D-014's nudge prefixes an unsynced
+ * `mousemove` onto every coordinate action, so `args[2]/args[3]` now name the NUDGE.
+ * An index-based assertion would keep passing while asserting about the wrong point.
+ */
+function syncedTarget(args: string[]): [number, number] {
+  const i = args.indexOf('--sync');
+  if (i < 0) throw new Error(`no --sync in argv: ${args.join(' ')}`);
+  return [Number(args[i + 1]), Number(args[i + 2])];
+}
+
 describe('assertSandboxDisplay — never the host :0', () => {
   it('accepts a sandbox display', () => {
     // WI-1318: env-agnostic — assertSandboxDisplay also refuses whatever display
@@ -65,6 +78,58 @@ describe('planAction — canonical action → xdotool argv', () => {
     expect(planAction({ action: 'left_click', coordinate: [10, 20] }, T)).toEqual({
       kind: 'xdotool',
       args: ['mousemove', '9', '20', 'mousemove', '--sync', '10', '20', 'click', '1'],
+    });
+  });
+
+  // D-014 / EI-21256574817493619 — the nudge is what stops `mousemove --sync` from
+  // waiting ~15.2s (and then being SIGKILLed mid-sync, dropping the click) when the
+  // pointer is ALREADY at the target. Every coordinate action must carry it, so this
+  // asserts the PROPERTY across the whole vocabulary rather than one argv.
+  describe('the 1px nudge before every --sync move (D-014)', () => {
+    /** The unsynced nudge triple that must precede the synced move. */
+    const nudgeTriple = (args: string[]): string[] => {
+      const sync = args.indexOf('--sync');
+      // […, 'mousemove', nx, ny, 'mousemove', '--sync', x, y, …]
+      return args.slice(sync - 4, sync - 1);
+    };
+
+    const coordinateActions = [
+      { action: 'mouse_move', coordinate: [300, 250] },
+      { action: 'left_click', coordinate: [300, 250] },
+      { action: 'right_click', coordinate: [300, 250] },
+      { action: 'middle_click', coordinate: [300, 250] },
+      { action: 'double_click', coordinate: [300, 250] },
+      { action: 'triple_click', coordinate: [300, 250] },
+      { action: 'left_click_drag', coordinate: [300, 250] },
+      { action: 'scroll', coordinate: [300, 250], scroll_direction: 'down' },
+    ] as const;
+
+    it.each(coordinateActions.map((a) => [a.action, a] as const))(
+      '%s moves to a DIFFERENT position before the synced move',
+      (_name, input) => {
+        const args = (planAction(input as never, T) as { args: string[] }).args;
+        const sync = args.indexOf('--sync');
+        expect(sync).toBeGreaterThan(0);
+        // The command immediately before the synced move is an UNSYNCED move, and it
+        // targets a different x — so the sync always has a real transition to await.
+        expect(nudgeTriple(args)).toEqual(['mousemove', '299', '250']);
+        expect(args.slice(sync, sync + 3)).toEqual(['--sync', '300', '250']);
+      },
+    );
+
+    it('nudges INTO the screen at x=0, where x-1 would be clamped back onto the target', () => {
+      const args = (planAction({ action: 'left_click', coordinate: [0, 10] }, T) as { args: string[] }).args;
+      expect(args.slice(0, 6)).toEqual(['mousemove', '1', '10', 'mousemove', '--sync', '0']);
+    });
+
+    it('never emits a synced move whose target equals the position just moved to', () => {
+      for (const input of coordinateActions) {
+        const args = (planAction(input as never, T) as { args: string[] }).args;
+        const sync = args.indexOf('--sync');
+        const nudgeX = nudgeTriple(args)[1];
+        const targetX = args[sync + 1];
+        expect(nudgeX).not.toBe(targetX);
+      }
     });
   });
 
@@ -306,8 +371,11 @@ describe('D-006 capture geometry', () => {
       for (const [dx, dy] of [[0, 0], [960, 540], [1919, 1079]] as const) {
         const [cx, cy] = toCaptureCoord(dx, dy, FRAME);
         const plan = planAction({ action: 'mouse_move', coordinate: [cx, cy] }, FRAME) as { args: string[] };
-        expect(Math.abs(Number(plan.args[2]) - dx)).toBeLessThanOrEqual(2);
-        expect(Math.abs(Number(plan.args[3]) - dy)).toBeLessThanOrEqual(2);
+        // Read the SYNCED target, not a fixed index: D-014's nudge prefixes the argv,
+        // and an index-based read would silently assert about the nudge instead.
+        const [sx, sy] = syncedTarget(plan.args);
+        expect(Math.abs(sx - dx)).toBeLessThanOrEqual(2);
+        expect(Math.abs(sy - dy)).toBeLessThanOrEqual(2);
       }
     });
   });
