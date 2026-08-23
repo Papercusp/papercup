@@ -44,8 +44,8 @@ function base64Chars(byteCount: number): number {
  *  do not want to depend on to the last character. */
 const DOOR_MARGIN_CHARS = 256;
 
-/** Below this the byte window is not worth serving; the handler refuses outright
- *  rather than emitting a page the door would truncate (see doorSafePageBytes). */
+/** The normal minimum page size for a caller that asks for a full-sized window.
+ *  Explicitly smaller requests remain valid when the path can fit them. */
 export const MIN_PAGE_BYTES = 512;
 
 /**
@@ -68,11 +68,12 @@ export const MIN_PAGE_BYTES = 512;
  * and `next_cursor` describe the page actually returned, so paging simply takes
  * more steps.
  *
- * May return LESS than MIN_PAGE_BYTES (including 0) for a pathological path. The
- * handler refuses in that case instead of clamping up to a floor: floor-and-serve
- * would re-emit an over-budget response and reintroduce the silent truncation
- * this exists to prevent, so the guarantee stays unconditional and the caller
- * gets a stated reason rather than a corrupt page.
+ * May return LESS than MIN_PAGE_BYTES (including 0) for a pathological path. An
+ * explicitly small caller request may still use that smaller fitted page; the
+ * handler refuses only when no positive page fits, or when a normal-sized
+ * request would be silently reduced below the efficiency floor. Clamping up to
+ * a floor would re-emit an over-budget response and reintroduce the silent
+ * truncation this exists to prevent.
  */
 export function doorSafePageBytes(
   absPath: string,
@@ -290,7 +291,15 @@ export default defineTool({
       // otherwise the page fits for a legacy file but the outer tools:invoke
       // result door projects `data` mid-base64 after adding `reference`.
       const effectiveLimit = doorSafePageBytes(abs, args.byte_limit, reference);
-      if (effectiveLimit < MIN_PAGE_BYTES) {
+      // A caller asking for a deliberately small page (for example, 256 bytes
+      // from a result-door cursor) has already accepted the extra hops. Do not
+      // reject it merely because the absolute scratch path leaves less than the
+      // normal efficiency floor. Keep refusing a normal-sized request whose
+      // fitted page would be sub-floor, and always refuse when no byte fits.
+      const noPositivePageFits = effectiveLimit <= 0;
+      const normalRequestWouldBeSubFloor =
+        args.byte_limit >= MIN_PAGE_BYTES && effectiveLimit < MIN_PAGE_BYTES;
+      if (noPositivePageFits || normalRequestWouldBeSubFloor) {
         return err(
           'path_too_long_for_byte_window',
           `${abs} is too long a path to page by bytes: its envelope leaves room for only ` +

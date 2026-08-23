@@ -195,6 +195,22 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(cursor.args.byte_limit).toBe(byteLength);
   });
 
+  it('honors an explicitly small page when a long path fits below the normal floor', async () => {
+    const deep = join(sandbox, Array.from({ length: 40 }, (_, i) => `segment-${i}-${'x'.repeat(50)}`).join('/'), 'spill.md');
+    expect(doorSafePageBytes(deep, MAX_BYTE_PAGE)).toBeGreaterThan(256);
+    expect(doorSafePageBytes(deep, MAX_BYTE_PAGE)).toBeLessThan(MIN_PAGE_BYTES);
+
+    mkdirSync(dirname(deep), { recursive: true });
+    const original = payload(40_000);
+    writeFileSync(deep, original);
+
+    const { parsed } = await readThroughDoor({ file_path: deep, byte_offset: 0, byte_limit: 256 });
+    expect(parsed).not.toHaveProperty('_projection');
+    expect(parsed.ok).toBe(true);
+    expect(parsed.byte_length).toBe(256);
+    expect(Buffer.from(parsed.data as string, 'base64')).toEqual(original.subarray(0, 256));
+  });
+
   it('pages a file to eof losslessly by following its own cursors', async () => {
     const original = payload(40_000);
     const chunks: Buffer[] = [];
