@@ -72,10 +72,17 @@ export default defineTool({
         .describe('The durable task id returned by capability:bash. Preferred after compaction/carry.'),
     })
     .superRefine((args, refinementCtx) => {
-      if (Boolean(args.bash_id) === Boolean(args.task_id)) {
+      // EI-21240465530065342 (same defect as bash_output): capability:bash
+      // returns BOTH ids, so sending both back is the natural call — and the
+      // worker-local JOBS map makes the durable handle the one that actually
+      // resolves. Only a call with NO handle is a real caller error; two
+      // handles that disagree are adjudicated in the handler against the
+      // ledger, which matters more here than for a read: resolving the wrong
+      // handle would kill the wrong job.
+      if (!args.bash_id && !args.task_id) {
         refinementCtx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Pass exactly one of bash_id or task_id.',
+          message: 'Pass at least one of bash_id or task_id.',
           path: ['bash_id'],
         });
       }
