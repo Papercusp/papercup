@@ -32,6 +32,7 @@ import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import SessionChatModal from '@/app/_components/chat/SessionChatModal';
 import { PLAN_DASHBOARD_PARAM } from '@/app/_components/plans/PlanDashboardHost';
+import { encodeScopedRef } from '@/app/_components/chat/chat-ref-popup-params';
 import WorkItemPopupModal from '@/app/_components/work-items/WorkItemPopupModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
 import { Modal } from '@/app/harness/Modal';
@@ -889,10 +890,24 @@ export default function HudView({
   );
 
   /* Option C (P-007 re-route): a plan card opens the app-pane dashboard
-     takeover, never the full-plan popup. The card `id` IS the slug. */
+     takeover, never the full-plan popup. The card `id` IS the slug.
+
+     HARNESS-QUALIFIED, exactly as PlansPane writes it (`encodeScopedRef` —
+     the `harness::slug` grammar decodeScopedRef expects): PlanDashboard is
+     harness-scoped, and a bare slug decodes to a null harness — the same
+     "Server: not_found" wrong-harness trap the retired popup documented. The
+     row already knows its harness; the board's active harness is the fallback,
+     mirroring what the popup mount used to do. */
+  const openPlanDashboard = useCallback(
+    (slug: string) => {
+      const row = (planList.data?.plans ?? []).find((p) => p.slug === slug);
+      void setDashPlan(encodeScopedRef(row?.harness ?? harnessSlug, slug));
+    },
+    [planList.data, setDashPlan, harnessSlug],
+  );
   const onOpenPlanCard = useCallback(
-    (card: HudEntityCard) => void setDashPlan(card.id),
-    [setDashPlan],
+    (card: HudEntityCard) => openPlanDashboard(card.id),
+    [openPlanDashboard],
   );
   /* Clicking a goal SELECTS it (goal-mode-2026-08-07 P-020): `hudgoal` becomes
      that goal's id, which scopes the other tabs to it and — once P-021 lands —
@@ -971,7 +986,7 @@ export default function HudView({
       // Option C everywhere a click resolves to a PLAN (P-007 re-route): the
       // ask card's plan destination opens the same dashboard takeover the
       // Plans tab and sidebar open — one destination per entity, not per door.
-      else if (target.kind === 'plan') void setDashPlan(target.slug);
+      else if (target.kind === 'plan') openPlanDashboard(target.slug);
       else if (target.kind === 'ask') void setOpenAskId(target.askId);
       /* `start-goal` is the Goals board's own card and never reaches this
          handler — but it is named rather than swept into a trailing `else`,
@@ -979,7 +994,7 @@ export default function HudView({
          it read `target.askId` off a member that has none. A named branch turns
          the NEXT addition into a compile error instead of a runtime undefined. */
     },
-    [setOpenItemId, setDashPlan, setOpenAskId],
+    [setOpenItemId, openPlanDashboard, setOpenAskId],
   );
 
   /* WI-6560 — this MUST stay a stable reference, and it is load-bearing in a way
