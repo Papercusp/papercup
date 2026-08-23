@@ -738,6 +738,7 @@ import './coordination/tools/await-inbox';
 // Operator inbox-triage PASS — re-tier an attention item, audit the why
 // (inbox-tiering-and-message-agent-2026-06-05, D-006).
 import './inbox/triage';
+import './inbox/bulk-run';
 // Lifecycle auto-emission target (coord-lifecycle-automation-2026-06-04)
 import './coordination/tools/emit';
 import './coordination/tools/inbox';
