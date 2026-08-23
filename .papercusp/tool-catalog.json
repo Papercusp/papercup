@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 808,
+  "count": 810,
   "tools": [
     {
       "name": "ablation:report",
@@ -7121,6 +7121,24 @@
       }
     },
     {
+      "name": "cupboard:install-goal",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-goal",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a goal package from the Cupboard as an INACTIVE stub: give a listingId (resolves the mirror repo + ref + rubric requirements from the listing) OR a githubUrl + listingRef directly. Requires `harness` (the install_slug the stub is filed against) unless skipSeed. RESOLVES requires_rubrics FIRST — a required rubric nothing provides refuses the install; one a Cupboard rubric listing provides is offered as a co-install (pass installRequiredRubrics: true). Then clones the mirror, validates <listingRef>/goal.json, drops the dir into ~/.papercusp/goal-packages/<ref>/, and seeds a status:'paused' goal stub — NO agent, NO spend; starting it is a separate deliberate act. NO-CLOBBER on package identity: an existing goal from this package always wins.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a published goal package so this workspace can run its duty — you found a goal listing (cupboard:search kind='goal') and want its shape (duties, rails, IO contract) locally as a stub you start deliberately.",
+        "notWhen": "Creating a goal from scratch (goals:create). Starting a goal (a separate deliberate act — the stub stays paused). Installing a plan template (cupboard:install-plan) or a rubric (cupboard:install-rubric).",
+        "chaining": "cupboard:search { kind:'goal' } → cupboard:install-goal { listingId, harness } → goals:get { id: goalId } to read the stub → start it deliberately when you actually want it pursued. A `required_rubrics_need_co_install` refusal names the rubrics; re-run with installRequiredRubrics: true to pull them in."
+      }
+    },
+    {
       "name": "cupboard:install-plan",
       "http": {
         "path": "/api/agent-tools/cupboard/install-plan",
@@ -7229,6 +7247,24 @@
       }
     },
     {
+      "name": "cupboard:publish-goal",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-goal",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a goal package on the Cupboard. SERIALIZES the source goal first (status / inputs / metadata / tripwire `current` readings stripped; title, duties body, standing flag, kill criterion, tripwire thresholds, budget ceiling + window, launch settings and IO schemas kept), materializes it as a self-describing dir (goal.json + listing.json) under ~/.papercusp/goal-packages/<ref>/, then points a kind='goal' listing at the public mirror repo you pushed that dir to. Pass exportOnly to materialize the dir WITHOUT publishing (the honest order is export → push → publish). Goals are a reviewed kind — the publish lands PENDING until an operator approves it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a goal you run as a reusable package — its duties, rails and IO contract — so other workspaces can install it as an inactive stub and start it deliberately.",
+        "notWhen": "Creating or editing a goal here (goals:create / goals:update). Publishing a plan template (cupboard:publish-plan) or a rubric (cupboard:publish-rubric).",
+        "chaining": "cupboard:publish-goal { goalId, exportOnly: true } → push the returned dir to a public mirror repo → cupboard:publish-goal { goalId, githubUrl } to create the listing. Read `stripped` in the response to confirm the live state came out."
+      }
+    },
+    {
       "name": "cupboard:publish-plan",
       "http": {
         "path": "/api/agent-tools/cupboard/publish-plan",
@@ -7326,7 +7362,7 @@
           "POST"
         ]
       },
-      "description": "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with cupboard:install-plugin / cupboard:install-blueprint (or the kind-specific installers) to install one.",
+      "description": "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with cupboard:install-plugin / cupboard:install-blueprint (or the kind-specific installers) to install one.",
       "capabilities": [
         "harness:read"
       ],
