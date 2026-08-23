@@ -122,6 +122,12 @@ export function resolveFallbackOperatorTargets({ env, home, excludeUrls, }?: {
  * dead pin this process was started with. Exported for tests.
  */
 export function adoptOperatorTarget(t: any): void;
+/** Parse a Retry-After delta-seconds value into a bounded delay for psu's
+ * front-door overload retry. Invalid/missing values use the supplied fallback. */
+export function proxyOverloadRetryDelayMs(value: any, fallbackMs?: number, maxMs?: number): number;
+/** Only the proxy's explicitly retryable admission response is absorbed. A
+ * bare application 429 without Retry-After is returned to the caller unchanged. */
+export function isRetryableMcpProxyOverload(response: any): boolean;
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv: any): {
     picker: boolean;
@@ -180,6 +186,16 @@ export function parseArgs(argv: any): {
 export function normalizeOmpModelSpec(model: any): any;
 /** Compatibility notices are reserved for non-semantic adjustments; WI-37890 now fails loud. */
 export function ompModelCompatibilityNotice(model: any): null;
+/**
+ * TEMPORARY mitigation for EI-21258695702342582.
+ *
+ * OMP 18.0.3's title helper sends `reasoning.enabled=false` even though the
+ * resolved ox-alpha metadata correctly declares reasoning support. OpenRouter
+ * rejects that helper request because reasoning is mandatory. Disable title
+ * generation for this exact model until OMP fixes the helper; unrelated OMP
+ * launches remain byte-identical. Pure + exported for argv regression tests.
+ */
+export function ompTitleMitigationArgs(model: any): string[];
 export function modelArgsFor(agent: any, model: any): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
@@ -1411,6 +1427,10 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
     onFailover?: typeof adoptOperatorTarget | undefined;
     healthProbeTimeoutMs?: number | undefined;
 }): Promise<Response>;
+/** Turn a structured operator/proxy failure into an actionable launcher error.
+ * Keep the stable error code, but retain the server's detail and retry hint so
+ * a final exhausted overload is distinguishable from a programming failure. */
+export function formatApiFailureMessage(json: any, status: any, path: any): string;
 /**
  * P-016 persona-append assertion: with the $HOME AGENTS.md mirrors gone
  * (P-015), the --append-system-prompt file IS the session's whole behavioral
@@ -2472,6 +2492,10 @@ export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Paper
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN: "<no-plan>";
+export const MCP_PROXY_OVERLOAD_MAX_ATTEMPTS: 5;
+export const MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS: 20000;
+export const MCP_PROXY_OVERLOAD_DEFAULT_RETRY_MS: 1000;
+export const MCP_PROXY_OVERLOAD_MAX_RETRY_MS: 5000;
 /** Floor for `--compaction-limit`, mirroring MIN_COMPACTION_LIMIT_TOKENS in
  *  packages/operator-core/lib/agent-config-constants.ts. Duplicated (this launcher
  *  is plain .mjs and imports no TS) and pinned by a parity assertion in
