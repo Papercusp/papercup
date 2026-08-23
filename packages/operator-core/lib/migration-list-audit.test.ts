@@ -12,6 +12,7 @@ import {
   migrationNumber,
   objectsTouchedBySql,
   stripSqlComments,
+  tablesCreatedBySql,
   tablesTouchedBySql,
 } from '../test/_pg-helpers';
 
@@ -68,6 +69,17 @@ describe('tablesTouchedBySql', () => {
     // Fails under a mask that SKIPS `$tag$` bodies instead of recursing into them.
     const sql = `DO $$ BEGIN\n  -- CREATE TABLE harness_shared.not_real (id text);\n  PERFORM 1;\nEND $$;`;
     expect(tablesTouchedBySql(sql)).toEqual(new Set());
+  });
+});
+
+describe('tablesCreatedBySql', () => {
+  it('distinguishes the creating migration from a later ALTER', () => {
+    expect(
+      tablesCreatedBySql(`
+        CREATE TABLE IF NOT EXISTS harness_shared.event_key_fires (event_key text);
+        ALTER TABLE harness_shared.event_key_fires ADD COLUMN fire_count bigint;
+      `),
+    ).toEqual(new Set(['harness_shared.event_key_fires']));
   });
 });
 
@@ -198,6 +210,32 @@ describe('auditMigrationList', () => {
     ]);
   });
 
+  it('catches a runtime-used table when its creating migration is absent from the list', () => {
+    const migrations: [string, string][] = [
+      [
+        '632-event-key-fire-latch.sql',
+        'CREATE TABLE harness_shared.event_key_fires (event_key text);',
+      ],
+      [
+        '700-unrelated.sql',
+        'CREATE TABLE harness_shared.unrelated (id int);',
+      ],
+    ];
+    const audit = auditMigrationList([], migrations, ['harness_shared.event_key_fires']);
+    expect(audit.runtimeMissing).toEqual([
+      { table: 'harness_shared.event_key_fires', migration: '632-event-key-fire-latch.sql' },
+    ]);
+  });
+
+  it('accepts a runtime-used table when its creating migration is declared', () => {
+    const audit = auditMigrationList(
+      ['632-event-key-fire-latch.sql'],
+      [['632-event-key-fire-latch.sql', 'CREATE TABLE harness_shared.event_key_fires (event_key text);']],
+      ['harness_shared.event_key_fires'],
+    );
+    expect(audit.runtimeMissing).toEqual([]);
+  });
+
   it('reports missing files in numeric order', () => {
     const audit = auditMigrationList(['444-agent-facts.sql'], MIGRATIONS);
     const nums = audit.missing.map((m) => migrationNumber(m.file));
@@ -216,6 +254,18 @@ describe('formatStaleMigrationList', () => {
     // the wide one appears as advisory context, clearly not as the fix
     expect(msg).toContain('488-federated-rls-backstop.sql');
     expect(msg).toContain('FYI only');
+  });
+
+  it('names the creating migration for a runtime-used table missing from the list', () => {
+    const audit = auditMigrationList(
+      [],
+      [['632-event-key-fire-latch.sql', 'CREATE TABLE harness_shared.event_key_fires (event_key text);']],
+      ['harness_shared.event_key_fires'],
+    );
+    const msg = formatStaleMigrationList(audit, 'runtime-fixture');
+    expect(msg).toContain('harness_shared.event_key_fires');
+    expect(msg).toContain('632-event-key-fire-latch.sql');
+    expect(msg).toContain('Runtime-used tables');
   });
 });
 

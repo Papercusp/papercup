@@ -156,6 +156,15 @@ export function tablesTouchedBySql(sqlText: string): Set<string> {
   return out;
 }
 
+/** PURE — the schema-qualified tables a migration actually creates. */
+export function tablesCreatedBySql(sqlText: string): Set<string> {
+  const body = stripSqlComments(sqlText);
+  const out = new Set<string>();
+  const re = /\bCREATE\s+TABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)/gi;
+  for (const m of body.matchAll(re)) out.add(m[1].toLowerCase());
+  return out;
+}
+
 /** PURE — functions and triggers a migration creates or replaces. */
 export function objectsTouchedBySql(sqlText: string): Set<string> {
   const body = stripSqlComments(sqlText);
@@ -186,6 +195,8 @@ export interface MigrationListAudit {
   tables: string[];
   /** The functions and triggers the declared list itself builds or replaces. */
   objects: string[];
+  /** Runtime-used tables whose first creating migration is not declared. */
+  runtimeMissing: { table: string; migration: string | null }[];
 }
 
 /**
@@ -195,11 +206,25 @@ export interface MigrationListAudit {
 export function auditMigrationList(
   declared: string[],
   allMigrations: Iterable<readonly [string, string]>,
+  runtimeTables: Iterable<string> = [],
 ): MigrationListAudit {
   const declaredSet = new Set(declared);
-  const byFile = new Map<string, { tables: Set<string>; objects: Set<string> }>();
+  const byFile = new Map<string, { tables: Set<string>; objects: Set<string>; createdTables: Set<string> }>();
   for (const [file, text] of allMigrations) {
-    byFile.set(file, { tables: tablesTouchedBySql(text), objects: objectsTouchedBySql(text) });
+    byFile.set(file, {
+      tables: tablesTouchedBySql(text),
+      objects: objectsTouchedBySql(text),
+      createdTables: tablesCreatedBySql(text),
+    });
+  }
+
+  const creatingMigration = new Map<string, string>();
+  for (const [file, touched] of [...byFile].sort(
+    (a, b) => (migrationNumber(a[0]) ?? 0) - (migrationNumber(b[0]) ?? 0),
+  )) {
+    for (const table of touched.createdTables) {
+      if (!creatingMigration.has(table)) creatingMigration.set(table, file);
+    }
   }
 
   const tables = new Set<string>();
@@ -251,7 +276,20 @@ export function auditMigrationList(
     if (allTouched === allOverlapping) missing.push(entry);
     else wider.push(entry);
   }
-  return { missing, wider, tables: [...tables].sort(), objects: [...objects].sort() };
+  const runtimeMissing = [...new Set([...runtimeTables].map((table) => table.trim().toLowerCase()))]
+    .sort()
+    .flatMap((table) => {
+      const migration = creatingMigration.get(table) ?? null;
+      return migration && declaredSet.has(migration) ? [] : [{ table, migration }];
+    });
+
+  return {
+    missing,
+    wider,
+    tables: [...tables].sort(),
+    objects: [...objects].sort(),
+    runtimeMissing,
+  };
 }
 
 /** PURE — the self-describing failure text. Names the FILE and the TABLE that
@@ -262,13 +300,28 @@ export function formatStaleMigrationList(audit: MigrationListAudit, label: strin
     ``,
     `It builds: ${audit.tables.join(', ')}`,
     ``,
-    `Migrations landed since that touch ONLY those tables and are NOT in the list —`,
-    `add them (in numeric order) to fix this:`,
-    ...audit.missing.map(
-      (m) =>
-        `  + '${m.file}'   (touches ${[...m.tables, ...(m.objects ?? [])].join(', ')})`,
-    ),
   ];
+  if (audit.missing.length) {
+    lines.push(
+      `Migrations landed since that touch ONLY those tables and are NOT in the list —`,
+      `add them (in numeric order) to fix this:`,
+      ...audit.missing.map(
+        (m) =>
+          `  + '${m.file}'   (touches ${[...m.tables, ...(m.objects ?? [])].join(', ')})`,
+      ),
+    );
+  }
+  if (audit.runtimeMissing.length) {
+    lines.push(
+      ``,
+      `Runtime-used tables are missing their creating migration from this list —`,
+      `add the creating migration before exercising the runtime path:`,
+      ...audit.runtimeMissing.map(
+        (m) =>
+          `  ! '${m.table}'   (creating migration ${m.migration ? `'${m.migration}'` : 'not found'})`,
+      ),
+    );
+  }
   if (audit.wider.length) {
     lines.push(
       ``,
@@ -320,13 +373,20 @@ export interface KnownInapplicableMigration {
 export async function applyMigrationsForTest(
   sql: postgres.Sql,
   declared: string[],
-  opts: { label?: string; audit?: boolean; knownInapplicable?: KnownInapplicableMigration[] } = {},
+  opts: {
+    label?: string;
+    audit?: boolean;
+    knownInapplicable?: KnownInapplicableMigration[];
+    /** Schema-qualified tables the runtime path writes or reads. Their first
+     * creating migration must be present in `declared`. */
+    runtimeTables?: Iterable<string>;
+  } = {},
 ): Promise<void> {
   if (opts.audit !== false) {
-    const audit = auditMigrationList(declared, readAllMigrations());
+    const audit = auditMigrationList(declared, readAllMigrations(), opts.runtimeTables);
     const acknowledged = new Set((opts.knownInapplicable ?? []).map((k) => k.file));
     const stillMissing = audit.missing.filter((m) => !acknowledged.has(m.file));
-    if (stillMissing.length) {
+    if (stillMissing.length || audit.runtimeMissing.length) {
       throw new Error(
         formatStaleMigrationList({ ...audit, missing: stillMissing }, opts.label ?? 'applyMigrationsForTest'),
       );
