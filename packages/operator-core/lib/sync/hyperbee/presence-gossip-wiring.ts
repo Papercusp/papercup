@@ -445,7 +445,7 @@ export function invalidatePresenceGossipMemberCache(
   for (const binding of state?.bindings.values() ?? []) {
     if (binding.workspaceId !== workspaceId || binding.potHomeSlug !== potHomeSlug) continue;
     if (binding.members) {
-      binding.members = undefined;
+      delete binding.members;
       cleared += 1;
     }
   }
