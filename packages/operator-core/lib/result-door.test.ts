@@ -848,6 +848,22 @@ describe('applyResultDoor', () => {
       expect(pointer.match(/body_truncated/g)).toHaveLength(1);
     });
 
+    it('camelCase *Truncated markers from build:typecheck TOON output are detected', () => {
+      const text = withMarker(
+        'errorsTruncated: true\nbyFileTruncated: true\n',
+        BUDGET_CHARS * 3,
+      );
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'build:typecheck', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = boundedBody(doored)._projection.next;
+      expect(pointer).toContain('TOOL ITSELF already truncated');
+      expect(pointer).toContain('errorsTruncated');
+      expect(pointer).toContain('byFileTruncated');
+      expect(pointer).toContain('Re-call build:typecheck');
+    });
+
     it('a *_truncated:false field is NOT mistaken for a truncation marker', () => {
       const text = withMarker('{"entries":[{"id":"m1","body_truncated":false}]}\n', BUDGET_CHARS * 3);
       const doored = applyResultDoor(
