@@ -874,6 +874,33 @@ export interface SupervisionEntry {
    * asserts this.
    */
   episodic?: boolean;
+  /**
+   * EI-21232345359778222: this unit's EXIT STATUS reports whether the RUN COMPLETED, not
+   * whether its subject CONDITION is healthy. Supervision may therefore say "the last run
+   * exited 0" about it — and may NEVER say "recovered", which is a claim about the condition.
+   *
+   * The distinction is not pedantic; it is the difference between a true and a false
+   * all-clear. Read at the writer 2026-08-23: `live-federation-gate.sh` exits **0** on
+   * `GATE: FRESH-RED (… still red, already tracked; NOT a green)` (line 563) and on
+   * `GATE: FRESH-DOWNGRADE (… not a green)` — i.e. exit 0 spans GREEN, still-RED and
+   * downgraded alike, because the exit code encodes "did this window have news", never the
+   * verdict. Measured 2026-08-23 04:34 EDT: the unit started, freshness-suppressed an
+   * unchanged tracked red, emitted `GATE: FRESH-RED`, exited 0/inactive — and supervision
+   * broadcast `✅ … recovered` while WI-40905 was still red and no witness had rerun. A
+   * reader acted on that all-clear and had to retract it.
+   *
+   * What supervision deliberately does NOT do here: read the gate's verdict bank
+   * (`$STATE_DIR/verdicts.jsonl`, written by `bank_verdict`). `decideReconcile` is a pure,
+   * domain-agnostic systemd oracle; teaching it one subsystem's verdict format would fork a
+   * second gate-status reader with its own staleness bugs. The fix is to stop RENDERING a
+   * run-level fact as a condition-level claim — the verdict stays the verdict writer's to
+   * report, and the notification now says where to read it.
+   *
+   * INVARIANT: `exitEncodesRunOnly ⇒ episodic`. For a persistent service the exit status IS
+   * the condition (the process is up or it is not), so the flag could only mislead there.
+   * `service-health-unit-coverage.test.ts` asserts this.
+   */
+  exitEncodesRunOnly?: boolean;
 }
 
 /**
@@ -941,7 +968,12 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // ~48 broadcasts/day for this one healthy unit: 24 down-transitions + 24
   // recoveries. Its `.timer` below is NOT episodic — an armed timer is genuinely
   // `active`/`waiting` continuously, so persistent semantics are correct there.
-  { name: 'live-federation-gate', layer: 'systemd-user', unit: 'papercup-live-federation-gate', criticality: 'important', autoRestart: false, episodic: true },
+  //
+  // EI-21232345359778222: `exitEncodesRunOnly: true`. The gate's exit code says whether the
+  // WINDOW had news, not whether the federation is green — it exits 0 on `GATE: FRESH-RED`
+  // ("still red, already tracked; NOT a green") exactly as it does on a real green. So a
+  // down→up transition here means "the last run exited 0", never "recovered".
+  { name: 'live-federation-gate', layer: 'systemd-user', unit: 'papercup-live-federation-gate', criticality: 'important', autoRestart: false, episodic: true, exitEncodesRunOnly: true },
   // WI-5376: the gate's *timer* has been externally stopped twice (Jul 17 + Jul 18) with no
   // systemd-logged stop client and NO supervision watching it — the reconciler above only ever
   // tracked the `.service` (deliberately report-only, per the comment on it), so a stopped timer

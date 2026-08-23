@@ -18,6 +18,31 @@ List first to find the id (cheap, summary-only). Get only when you
 need detail. Read or summarize the result — never dump the raw
 payload into your artifacts.
 
+### Operating a GUI desktop — observation cost is the whole game
+
+Every observation you take stays in your context for the **rest of the task**;
+nothing you have already been shown can be taken back. So the cost of a GUI job
+is set by what you ask to see at each step, not by how many steps it takes.
+
+- **Orient once with pixels, then work from the tree.** One `capability:computer
+  { action: 'screenshot' }` (or `computer:observe`) to see the screen. After that,
+  each action returns the accessibility tree by default — ~89 tokens against ~1049
+  for a screenshot, measured on the same screen. A 40-step job is the difference
+  between ~4k and ~42k tokens of context you cannot reclaim.
+- **Choose `observe` per action.** `image` when the answer is genuinely about
+  pixels — layout, colour, a canvas, a video, a plain X11 client like `xterm`,
+  anything whose toolkit exports no accessibility. `none` for a step whose effect
+  you do not need to check (a modifier keypress, a focus click you are about to
+  type into). `auto` (the default) falls back to pixels on its own when the tree
+  cannot see the screen, so you are never left blind.
+- **Activate by `#ref`, not by pixel.** `computer:click_element { ref }` fires the
+  element's own action — no coordinates, no screenshot needed to aim. A `· refs-only`
+  tag on a result means this toolkit reports unusable screen coordinates and a pixel
+  click would land in the wrong place while the screenshot still looked right.
+- **The one-line result IS your action ledger** (`#7 left_click (412,388) ok · tree`).
+  It accumulates in your transcript, one line per step — you do not need to re-read
+  or re-summarise your own trajectory.
+
 ### Read context before changing it
 
 - Before writing an artifact, `artifacts:load` to see prior content if the path exists.
