@@ -193,6 +193,31 @@ describe('capability:read', () => {
     expect(parse(denied).reason).toBe('forbidden_reference');
   });
 
+  it('resolves one typed evidence class from a shared result-door reference', async () => {
+    const f = join(DIR, 'evidence-reference.json');
+    writeScratchReference({
+      filePath: f,
+      payload: JSON.stringify({
+        content: [{ type: 'text', text: JSON.stringify({ events: [{ status: 'fired' }], fleet: { alive: 2 } }) }],
+      }),
+      workspaceId: 'ws-1',
+      mediaType: 'application/json',
+      evidence: [
+        { evidenceClass: 'event', contentIndex: 0, jsonPointers: ['/events'] },
+        { evidenceClass: 'fleet', contentIndex: 0, jsonPointers: ['/fleet'] },
+      ],
+    });
+    const selected = (await readTool.handler!({
+      file_path: f,
+      evidence_class: 'event',
+    }, { ...baseCtx, workspaceId: 'ws-1' } as never)) as { content: Array<{ text: string }> };
+    expect(parse(selected)).toMatchObject({
+      ok: true,
+      evidence_class: 'event',
+      evidence: [{ contentIndex: 0, jsonPointer: '/events', value: [{ status: 'fired' }] }],
+    });
+  });
+
   it('rejects a non-scratch URI instead of resolving it under the project directory', async () => {
     const r = (await readTool.handler!({ uri: 'papercusp://not-scratch/file', byte_offset: 0, byte_limit: 512 }, ctx)) as {
       content: Array<{ text: string }>;

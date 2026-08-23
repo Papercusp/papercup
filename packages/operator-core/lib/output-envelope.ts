@@ -30,6 +30,24 @@ export interface OutputReferenceContentItem {
   audience?: OutputAudience;
 }
 
+export const OUTPUT_EVIDENCE_CLASSES = [
+  'work-item',
+  'event',
+  'fleet',
+  'capacity',
+  'account',
+  'release',
+] as const;
+export type OutputEvidenceClass = (typeof OUTPUT_EVIDENCE_CLASSES)[number];
+
+/** A directly addressable view into one payload that the result door stored
+ * once. Several evidence references may share a URI; `evidenceClass` selects
+ * the relevant JSON values through capability:read without duplicating bytes. */
+export interface OutputEvidenceReferenceContentItem extends OutputReferenceContentItem {
+  kind: 'evidence-reference';
+  evidenceClass: OutputEvidenceClass;
+}
+
 /**
  * Explicit replay state produced by a managed script. The next invocation may pass `values`
  * back as its bindings, so store/load parity never depends on process-local or session-local
@@ -43,6 +61,7 @@ export interface OutputReplayStateContentItem {
 /** Open extension seam. Extend this interface from a lane-owned module. */
 export interface OutputContentItemMap {
   reference: OutputReferenceContentItem;
+  evidenceReference: OutputEvidenceReferenceContentItem;
   replayState: OutputReplayStateContentItem;
 }
 
@@ -97,7 +116,7 @@ export interface BuildOutputEnvelopeInput {
   metrics?: OutputExecutionMetrics;
 }
 
-type UnaccountedOutputContentKind = Exclude<OutputContentItem['kind'], 'reference' | 'replay-state'>;
+type UnaccountedOutputContentKind = Exclude<OutputContentItem['kind'], 'reference' | 'evidence-reference' | 'replay-state'>;
 const ACCOUNTING_IS_EXHAUSTIVE: [UnaccountedOutputContentKind] extends [never] ? true : never = true;
 
 function assertNever(value: unknown): never {
@@ -116,13 +135,14 @@ export function accountOutputContentItem(item: OutputContentItem): number {
   void ACCOUNTING_IS_EXHAUSTIVE;
   switch (item.kind) {
     case 'reference':
+    case 'evidence-reference':
     case 'replay-state':
       return Buffer.byteLength(JSON.stringify(item), 'utf8');
   }
   return assertNever(item);
 }
 
-function requireReference(item: OutputReferenceContentItem): void {
+function requireReference(item: OutputReferenceContentItem | OutputEvidenceReferenceContentItem): void {
   if (!item.uri.trim()) throw new TypeError('output reference uri must be non-empty');
   if (!Number.isSafeInteger(item.byteCount) || item.byteCount < 0) {
     throw new TypeError('output reference byteCount must be a non-negative safe integer');
@@ -201,6 +221,7 @@ export function buildOutputEnvelope(
   for (const item of content) {
     switch (item.kind) {
       case 'reference':
+      case 'evidence-reference':
         requireReference(item);
         continue;
       case 'replay-state':

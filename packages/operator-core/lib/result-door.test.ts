@@ -268,6 +268,51 @@ describe('applyResultDoor', () => {
     expect(spill).toContain('"type":"image"');
   });
 
+  it('P-029: aggregate evidence is stored once and exposed as typed per-class references', () => {
+    const aggregateScope = beginResultDoorAggregate({ sessionKey: 'su-owner', outputGroupId: 'turn-evidence' });
+    applyResultDoor(
+      { content: [{ type: 'text' as const, text: 'prelude'.repeat(1_000) }] },
+      { toolName: 'code:run', workspaceId: 'ws-1', ownerId: 'su-owner', aggregateScope },
+    );
+    const evidence = {
+      workItems: [{ id: 'WI-1', state: 'done' }],
+      events: [{ event: 'gate:ready', status: 'fired' }],
+      fleet: { slug: 'orch-unify', alive: 3 },
+      capacity: { available: 2 },
+      accounts: [{ id: 'default', status: 'ready' }],
+      release: { gate: 'green' },
+      padding: 'x'.repeat(BUDGET_CHARS),
+    };
+    const result = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(evidence) }] },
+      {
+        toolName: 'code:run',
+        workspaceId: 'ws-1',
+        ownerId: 'su-owner',
+        runId: RUN_ID,
+        aggregateScope,
+      },
+    );
+    const envelope = JSON.parse((result.content[0] as { text: string }).text);
+    expect(envelope.content).toEqual(
+      ['work-item', 'event', 'fleet', 'capacity', 'account', 'release'].map((evidenceClass) =>
+        expect.objectContaining({
+          kind: 'evidence-reference',
+          evidenceClass,
+          uri: expect.stringContaining('/code:run/'),
+        }),
+      ),
+    );
+    expect(new Set(envelope.content.map((item: { uri: string }) => item.uri)).size).toBe(1);
+    const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'code:run', RUN_ID);
+    expect(readdirSync(spillDir)).toHaveLength(1);
+    const parsed = parseScratchReference(readFileSync(join(spillDir, readdirSync(spillDir)[0])))!;
+    expect(parsed.manifest.evidence?.map((entry) => entry.evidenceClass)).toEqual([
+      'work-item', 'event', 'fleet', 'capacity', 'account', 'release',
+    ]);
+    expect(JSON.parse(parsed.payload.toString('utf8')).content[0].text).toBe(JSON.stringify(evidence));
+  });
+
   it('a genuine delta ENVELOPE result (_meta.delta.mode !== "full") is NEVER doored — its text is client-parsed JSON', () => {
     const result = {
       content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }],

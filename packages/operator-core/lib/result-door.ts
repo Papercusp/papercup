@@ -48,7 +48,13 @@ import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
 import { classifyProjectionBody } from './result-projection';
-import { buildOutputEnvelope, type OutputReferenceContentItem } from './output-envelope';
+import {
+  buildOutputEnvelope,
+  OUTPUT_EVIDENCE_CLASSES,
+  type OutputEvidenceClass,
+  type OutputEvidenceReferenceContentItem,
+  type OutputReferenceContentItem,
+} from './output-envelope';
 import { contentMetadata, writeScratchReference, type ScratchReferenceManifest } from './scratch-reference';
 
 /** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
@@ -344,6 +350,51 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
   return { workspaceId, toolName, runId };
 }
 
+const EVIDENCE_KEY_CLASS: Readonly<Record<string, OutputEvidenceClass>> = {
+  workitem: 'work-item', workitems: 'work-item', issue: 'work-item', issues: 'work-item',
+  event: 'event', events: 'event', eventstatus: 'event', eventstatuses: 'event',
+  fleet: 'fleet', fleets: 'fleet',
+  capacity: 'capacity', capacities: 'capacity',
+  account: 'account', accounts: 'account',
+  release: 'release', releases: 'release',
+};
+
+function jsonPointerSegment(value: string): string {
+  return value.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+/** Discover evidence groups in script-authored JSON without coupling the door
+ * to one script schema. Only explicit field names count; values are never
+ * guessed from IDs or prose. */
+export function detectResultEvidence(content: readonly unknown[]): Array<{
+  evidenceClass: OutputEvidenceClass;
+  contentIndex: number;
+  jsonPointers: string[];
+}> {
+  const found = new Map<string, { evidenceClass: OutputEvidenceClass; contentIndex: number; jsonPointers: string[] }>();
+  const visit = (value: unknown, contentIndex: number, pointer: string, depth: number): void => {
+    if (depth > 12 || value === null || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const childPointer = `${pointer}/${jsonPointerSegment(key)}`;
+      const evidenceClass = EVIDENCE_KEY_CLASS[key.toLowerCase().replace(/[^a-z0-9]/g, '')];
+      if (evidenceClass) {
+        const mapKey = `${evidenceClass}:${contentIndex}`;
+        const row = found.get(mapKey) ?? { evidenceClass, contentIndex, jsonPointers: [] };
+        if (!row.jsonPointers.includes(childPointer)) row.jsonPointers.push(childPointer);
+        found.set(mapKey, row);
+      }
+      visit(child, contentIndex, childPointer, depth + 1);
+    }
+  };
+  content.forEach((item, contentIndex) => {
+    const row = item && typeof item === 'object' ? item as Record<string, unknown> : null;
+    if (!row || row.type !== 'text' || typeof row.text !== 'string') return;
+    try { visit(JSON.parse(row.text), contentIndex, '', 0); } catch { /* prose is not typed evidence */ }
+  });
+  return [...found.values()].sort((a, b) =>
+    OUTPUT_EVIDENCE_CLASSES.indexOf(a.evidenceClass) - OUTPUT_EVIDENCE_CLASSES.indexOf(b.evidenceClass));
+}
+
 /**
  * Hard overflow route for aggregate exhaustion and non-text results. The
  * existing text projector cannot safely slice an image/audio/resource block,
@@ -368,6 +419,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   let spillError: string | null = null;
   let spillErrorCode: string | null = null;
   let manifest: ScratchReferenceManifest | null = null;
+  const evidence = detectResultEvidence(input.result.content);
   try {
     const parts = scratchParts(input.opts);
     const basename = `result-door-${Date.now()}-${randomUUID().slice(0, 8)}.json`;
@@ -381,6 +433,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       audience: input.opts.ownerId ? 'owner' : 'workspace',
       mediaType: 'application/json',
       content: contentMetadata(input.result.content),
+      evidence,
     });
   } catch (err) {
     spillError = err instanceof Error ? err.message : String(err);
@@ -405,11 +458,19 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         audience: manifest.audience,
       }
     : null;
+  const evidenceReferences: OutputEvidenceReferenceContentItem[] = reference
+    ? [...new Set(evidence.map((entry) => entry.evidenceClass))].map((evidenceClass) => ({
+        ...reference,
+        kind: 'evidence-reference' as const,
+        evidenceClass,
+        preview: `${evidenceClass} evidence`,
+      }))
+    : [];
   const envelope = reference
     ? buildOutputEnvelope(
         {
           summary: '',
-          content: [reference],
+          content: evidenceReferences.length > 0 ? evidenceReferences : [reference],
           state: 'incomplete',
           incomplete: { reason: input.reason, omittedItems: input.result.content.length },
         },

@@ -19,6 +19,7 @@ import {
   ScratchReferenceError,
   type ScratchReferenceManifest,
 } from '../../scratch-reference';
+import { OUTPUT_EVIDENCE_CLASSES } from '../../output-envelope';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
 /**
@@ -149,6 +150,9 @@ export default defineTool({
       .max(64)
       .optional()
       .describe('For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result.'),
+    evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).optional().describe(
+      'For a stable result-door reference, resolve only the JSON values indexed for this evidence class.',
+    ),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
@@ -196,6 +200,39 @@ export default defineTool({
     } catch (e: unknown) {
       if (e instanceof ScratchReferenceError) return err(e.code, e.message);
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
+    }
+
+    if (args.evidence_class) {
+      if (args.content_indexes || args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined) {
+        return err('mixed_window_modes', 'evidence_class cannot be combined with content, line, or byte windows.');
+      }
+      if (!reference) return err('not_a_reference', 'evidence_class requires a stable scratch reference.');
+      const selectors = (reference.evidence ?? []).filter((entry) => entry.evidenceClass === args.evidence_class);
+      if (selectors.length === 0) return err('evidence_class_not_found', `scratch reference has no ${args.evidence_class} evidence.`);
+      let decoded: unknown;
+      try { decoded = JSON.parse(bytes.toString('utf8')); }
+      catch { return err('evidence_not_selectable', 'scratch reference payload is not JSON.'); }
+      const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
+      const content = row?.content;
+      if (!Array.isArray(content)) return err('evidence_not_selectable', 'scratch reference payload has no MCP content array.');
+      const resolvePointer = (value: unknown, pointer: string): unknown => pointer.split('/').slice(1).reduce<unknown>((cursor, segment) => {
+        if (cursor === null || typeof cursor !== 'object') return undefined;
+        return (cursor as Record<string, unknown>)[segment.replace(/~1/g, '/').replace(/~0/g, '~')];
+      }, value);
+      const evidence = selectors.flatMap((selector) => {
+        const item = content[selector.contentIndex] as { text?: unknown } | undefined;
+        if (!item || typeof item.text !== 'string') return [];
+        let parsed: unknown;
+        try { parsed = JSON.parse(item.text); } catch { return []; }
+        return selector.jsonPointers.map((jsonPointer) => ({
+          contentIndex: selector.contentIndex,
+          jsonPointer,
+          value: resolvePointer(parsed, jsonPointer),
+        }));
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: true, file_path: abs, reference, evidence_class: args.evidence_class, evidence,
+      }) }] };
     }
 
     if (args.content_indexes) {

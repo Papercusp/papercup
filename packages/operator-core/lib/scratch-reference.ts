@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { OutputAudience } from './output-envelope';
+import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
 import { reserveScratchSpace, RETENTION_MS } from './scratch-gc';
 
 export const SCRATCH_REFERENCE_SCHEMA_VERSION = 'papercusp.scratch-reference/v1' as const;
@@ -33,6 +33,13 @@ export interface ScratchReferenceManifest {
   byteCount: number;
   sha256: string;
   content: readonly ScratchReferenceContentMetadata[];
+  evidence?: readonly ScratchReferenceEvidenceSelector[];
+}
+
+export interface ScratchReferenceEvidenceSelector {
+  evidenceClass: OutputEvidenceClass;
+  contentIndex: number;
+  jsonPointers: readonly string[];
 }
 
 export interface ParsedScratchReference {
@@ -117,6 +124,7 @@ export function writeScratchReference(input: {
   audience?: OutputAudience;
   mediaType: string;
   content?: readonly ScratchReferenceContentMetadata[];
+  evidence?: readonly ScratchReferenceEvidenceSelector[];
   nowMs?: number;
 }): ScratchReferenceManifest {
   const payload = Buffer.isBuffer(input.payload) ? input.payload : Buffer.from(input.payload, 'utf8');
@@ -136,6 +144,7 @@ export function writeScratchReference(input: {
     byteCount: payload.length,
     sha256: sha256(payload),
     content: [...(input.content ?? [])],
+    ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
   };
   const header = Buffer.from(`${SCRATCH_REFERENCE_MAGIC}${JSON.stringify(manifest)}\n`, 'utf8');
   reserveScratchSpace({ workspaceId: input.workspaceId, bytes: header.length + payload.length });
