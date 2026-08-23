@@ -7,7 +7,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   installPluginFromCupboardCore,
   InstallPluginError,
@@ -19,6 +20,7 @@ let fixtureRepo: string; // the "remote" repo a fake clone copies from
 let globalDir: string;   // the install target (global-plugins)
 let granted: Array<{ pluginName: string; pluginVersion: string; harnessSlug: string; capabilities: string[] }>;
 let invalidated: number;
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 async function writeManifest(dir: string, m: Record<string, unknown>): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
@@ -170,6 +172,29 @@ status: draft
     });
     expect(invalidated).toBe(1);
     expect(existsSync(join(globalDir, 'email-draft-responder', 'plan.md'))).toBe(true);
+  });
+
+  it.each([
+    ['email-draft-responder', 'gmail'],
+    ['slack-thread-responder', 'slack'],
+    ['meeting-prep-brief', 'gcal'],
+  ] as const)('installs the shipped %s plan template through the real validation path', async (slug, sourceKind) => {
+    fixtureRepo = join(REPO_ROOT, 'libs/papercusp/plugins', slug);
+
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: `https://github.com/papercupai/${slug}` },
+      makeDeps(),
+    );
+
+    expect(res.triggerPack).toMatchObject({
+      targetCount: 1,
+      bindingCount: 1,
+      edgeCount: 0,
+      sourceKinds: [sourceKind],
+      planTargets: [{ path: 'plan.md', slug }],
+      armed: false,
+    });
+    expect(existsSync(join(res.installedTo, 'plan.md'))).toBe(true);
   });
 
   it('refuses an invalid trigger pack before replacing the install target', async () => {
