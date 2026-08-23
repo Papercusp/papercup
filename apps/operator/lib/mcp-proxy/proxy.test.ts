@@ -929,6 +929,19 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
 
+  it('recognizes psu launch/resume REST preflight paths and leaves the repeating heartbeat unreserved', () => {
+    const ordinaryBody = Buffer.from(JSON.stringify({ ownerId: 'su-test' }));
+    expect(isReservedControlPlanePath('/api/adv/sessions/resumable')).toBe(true);
+    expect(isReservedControlPlanePath('/api/adv/sessions/resumable?limit=30')).toBe(true);
+    expect(isReservedControlPlanePath('/api/agent-mcp/console/bootstrap-su/options')).toBe(true);
+    expect(isReservedControlPlanePath('/api/agent-mcp/console/bootstrap-su/')).toBe(true);
+    expect(isReservedControlPlanePath('/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(false);
+    expect(isReservedControlPlaneCall(ordinaryBody, '/api/adv/sessions/resumable')).toBe(true);
+    expect(isReservedControlPlaneCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su/options')).toBe(true);
+    expect(isReservedControlPlaneCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su')).toBe(true);
+    expect(isReservedControlPlaneCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(false);
+  });
+
   it.each([
     ['canonical colon-form', 'scheduler:get_next'],
     ['underscore group/verb form', 'scheduler_get_next'],
@@ -1017,6 +1030,33 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     releaseUpstream();
     expect((await heldOrdinary).status).toBe(200);
     expect((await heldControlPlane).status).toBe(200);
+  });
+
+  it.each([
+    '/api/adv/sessions/resumable',
+    '/api/agent-mcp/console/bootstrap-su/options',
+    '/api/agent-mcp/console/bootstrap-su',
+  ])('admits launcher preflight %s from the reserve while ordinary traffic sheds', async (path) => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 5_000, maxInFlight: 2, controlPlaneReserve: 1, log: () => {},
+    }));
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({ method: 'tools/call', params: { name: 'work_items:list', arguments: {} } });
+    const heldOrdinary = request(port(proxy), ordinaryBody);
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    const heldPreflight = request(port(proxy), '{}', path);
+    await new Promise((r) => setTimeout(r, 40));
+    releaseUpstream();
+    expect((await heldOrdinary).status).toBe(200);
+    expect((await heldPreflight).status).toBe(200);
   });
 
   it('keeps the full reserved pool available when ordinary traffic reaches its ceiling, then enforces the hard ceiling', async () => {
