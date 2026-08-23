@@ -1,5 +1,10 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { resolveDevOperators, resolveReleaseOrigin, DEV_OPERATORS } from './dev-operators';
+import {
+  resolveDevOperators,
+  resolveReleaseOrigin,
+  readStagingBuildIdentity,
+  DEV_OPERATORS,
+} from './dev-operators';
 
 function versionResponse(sha: string): Response {
   return new Response(JSON.stringify({ sidecarSha: sha }), {
@@ -196,5 +201,91 @@ describe('resolveReleaseOrigin (WI-3284: dead release button on packaged install
     delete process.env.PAPERCUSP_HONO_PORT;
     delete process.env.PORT;
     expect(resolveReleaseOrigin()).toBe('http://127.0.0.1:3070');
+  });
+});
+
+describe('WI-40893 / D-052: readStagingBuildIdentity never renders absence as a build', () => {
+  const okJson = (body: unknown): Response =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  it('MEASURED: reports the sha and the sidecar start time, from the staging port', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      okJson({ appVersion: '0.0.0', sidecarSha: 'e23facf5fe', sidecarStartedAtMs: 1787476682602 }),
+    );
+
+    const identity = await readStagingBuildIdentity({ doFetch: fetchMock as unknown as typeof fetch });
+
+    expect(identity).toEqual({
+      status: 'measured',
+      sidecarSha: 'e23facf5fe',
+      sidecarStartedAtMs: 1787476682602,
+      origin: 'http://127.0.0.1:3170',
+    });
+    // Derived from the canonical descriptor, not a hardcoded port.
+    const stagingPort = DEV_OPERATORS.find((d) => d.id === 'staging')?.port;
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://127.0.0.1:${stagingPort}/api/desktop/version`);
+  });
+
+  // THE CASE THIS WHOLE TYPE EXISTS FOR. `/api/desktop/version` emits the literal string
+  // 'unknown' when build info carries no sha, so a bare typeof-string check accepts it as
+  // an identity — which is precisely how unattributable evidence got recorded as attributed.
+  it('SENTINEL: the literal "unknown" sha is not_measured, never a sidecarSha', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      okJson({ appVersion: '0.0.0', sidecarSha: 'unknown', sidecarStartedAtMs: 1787476682602 }),
+    );
+
+    const identity = await readStagingBuildIdentity({ doFetch: fetchMock as unknown as typeof fetch });
+
+    expect(identity.status).toBe('not_measured');
+    expect(identity.sidecarSha).toBeNull();
+    if (identity.status === 'not_measured') expect(identity.reason).toBe('unknown-sentinel');
+    // The string must not survive anywhere on the value — a caller serialising this into
+    // evidence must not be able to find 'unknown' sitting in a sha-shaped field.
+    expect(JSON.stringify(identity)).not.toContain('"sidecarSha":"unknown"');
+  });
+
+  it('UNREACHABLE: a refused connection is not_measured, not a null sha to be misread', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const identity = await readStagingBuildIdentity({ doFetch: fetchMock as unknown as typeof fetch });
+
+    expect(identity.status).toBe('not_measured');
+    if (identity.status === 'not_measured') expect(identity.reason).toBe('unreachable');
+  });
+
+  it('NON-JSON: a 200 with an unparseable body is not_measured, distinctly from unreachable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('<html>not json</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+
+    const identity = await readStagingBuildIdentity({ doFetch: fetchMock as unknown as typeof fetch });
+
+    expect(identity.status).toBe('not_measured');
+    // Reached the server but learned no sha — a DIFFERENT remediation from unreachable,
+    // which is why reason is an enum rather than a boolean.
+    if (identity.status === 'not_measured') expect(identity.reason).toBe('no-sha-in-response');
+  });
+
+  it('an HTTP error status is not_measured, and never reports a stale sha', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('nope', { status: 502 }));
+
+    const identity = await readStagingBuildIdentity({ doFetch: fetchMock as unknown as typeof fetch });
+
+    expect(identity.status).toBe('not_measured');
+    expect(identity.sidecarSha).toBeNull();
+    expect(identity.sidecarStartedAtMs).toBeNull();
+  });
+
+  // Calibration: without this, every assertion above would still pass if the function
+  // simply always returned not_measured — the failure mode a "fails closed" guard invites.
+  it('control: the measured and sentinel paths genuinely differ', async () => {
+    const good = vi.fn().mockResolvedValue(okJson({ sidecarSha: 'abc1234def', sidecarStartedAtMs: 1 }));
+    const bad = vi.fn().mockResolvedValue(okJson({ sidecarSha: 'unknown', sidecarStartedAtMs: 1 }));
+
+    const measured = await readStagingBuildIdentity({ doFetch: good as unknown as typeof fetch });
+    const notMeasured = await readStagingBuildIdentity({ doFetch: bad as unknown as typeof fetch });
+
+    expect(measured.status).not.toBe(notMeasured.status);
+    expect(measured.status).toBe('measured');
   });
 });

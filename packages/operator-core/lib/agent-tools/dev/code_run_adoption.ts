@@ -25,6 +25,7 @@ import {
   type RunQuery,
 } from '../../code-run-adoption';
 import { NUDGE_CONVERSION_SQL } from '../../code-run-nudge-telemetry';
+import { readStagingBuildIdentity, type StagingBuildIdentity } from '../../harness/dev-operators';
 import {
   clientResidueBounds,
   FUNCTIONS_EXEC_CLIENT_RESIDUE_SNAPSHOT,
