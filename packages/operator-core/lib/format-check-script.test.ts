@@ -9,7 +9,14 @@ import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // prettier-ignore
 // @ts-ignore -- plain .mjs formatter script, no declaration file.
-import { buildPrettierCheckArgs, characterRangeForLines, normalizeScopedPaths, parseAddedLineRanges } from '../../../scripts/check-format.mjs';
+import {
+  buildPrettierArgs,
+  buildPrettierCheckArgs,
+  characterRangeForLines,
+  normalizeScopedPaths,
+  parseAddedLineRanges,
+  parseFormatCliArgs,
+} from '../../../scripts/check-format.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 
@@ -21,6 +28,7 @@ describe('scoped repository format check', () => {
 
     expect(packageJson.scripts?.['format:check']).toBe('git diff --check --');
     expect(packageJson.scripts?.['format:check:scoped']).toBe('node scripts/check-format.mjs');
+    expect(packageJson.scripts?.['format:write:scoped']).toBe('node scripts/check-format.mjs --write');
   });
 
   it('checks only added ranges and ignores deletion-only hunks', () => {
@@ -49,5 +57,21 @@ describe('scoped repository format check', () => {
     const args = buildPrettierCheckArgs('/tmp/prettier.cjs', 'package.json', { start: 0, end: 1 });
     expect(args).toContain('--check');
     expect(args).not.toContain('--write');
+  });
+
+  it('builds a range-scoped write invocation without falling back to whole-file formatting', () => {
+    const args = buildPrettierArgs('/tmp/prettier.cjs', 'legacy.ts', { start: 20, end: 40 }, 'write');
+    expect(args).toContain('--write');
+    expect(args).toContain('--range-start');
+    expect(args).toContain('20');
+    expect(args).toContain('--range-end');
+    expect(args).toContain('40');
+  });
+
+  it('parses write mode separately from explicit paths', () => {
+    expect(parseFormatCliArgs(['--write', 'package.json'])).toEqual({
+      mode: 'write',
+      paths: ['package.json'],
+    });
   });
 });

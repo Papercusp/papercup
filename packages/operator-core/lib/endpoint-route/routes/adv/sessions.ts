@@ -20,6 +20,7 @@ import {
   resolveWindowIdForTitleFragment,
 } from '../../../adv-session-windows';
 import {
+  fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   getAdvSessionInWorkspace,
   listAdvSessions,
@@ -1378,12 +1379,25 @@ const ensureCodexHome = defineTool({
         import('../../../role-codex-home'),
         import('../../../superuser-token'),
       ]);
-    const record = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
+    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
+    const sessionRow = persistedRecord ? null : await getAdvSession(advSessionId);
+    const record = persistedRecord ?? fallbackCodexLaunchSpecFromAdvSession(sessionRow, owner);
     // Fail SOFT like persona-refresh: the caller's only sane response to any of
     // these is "launch anyway with what is on disk", and a resume that died
     // because the spec was unreadable would be strictly worse than one that
     // boots degraded. `reason` keeps it diagnosable rather than silent.
-    if (!record) return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'no-launch-spec' }), { status: 200, headers: JSON_HEADERS });
+    if (!record) {
+      const reason =
+        sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner
+          ? 'owner-mismatch'
+          : sessionRow?.agent && sessionRow.agent !== 'codex'
+            ? 'unsupported-agent'
+            : 'no-launch-spec';
+      return new Response(JSON.stringify({ ok: true, repaired: false, reason }), {
+        status: 200,
+        headers: JSON_HEADERS,
+      });
+    }
     if (record.agent !== 'codex') {
       return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'unsupported-agent', agent: record.agent }), { status: 200, headers: JSON_HEADERS });
     }
@@ -1408,10 +1422,19 @@ const ensureCodexHome = defineTool({
       codexGatewayAuto: body.requireGatewayProvider === true,
       trustDir: null, // the home's inherited trust tables already cover the cwd
     });
-    return new Response(JSON.stringify({ ok: true, owner, advSessionId, ...r }), {
-      status: 200,
-      headers: JSON_HEADERS,
-    });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        owner,
+        advSessionId,
+        ...r,
+        ...(persistedRecord ? {} : { recoveredFrom: 'adv-session-row' }),
+      }),
+      {
+        status: 200,
+        headers: JSON_HEADERS,
+      },
+    );
   },
 });
 

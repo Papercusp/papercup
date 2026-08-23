@@ -3,11 +3,55 @@ import { describe, expect, it } from 'vitest';
 import {
   isDeadTerminalLaunch,
   isFailedTerminalLaunch,
+  fallbackCodexLaunchSpecFromAdvSession,
   toIsoTimestamp,
   type AdvSessionRow,
 } from './adv-sessions';
 
 const SOURCE = readFileSync(new URL('./adv-sessions.ts', import.meta.url), 'utf8');
+
+describe('fallbackCodexLaunchSpecFromAdvSession', () => {
+  const row = (over: Partial<AdvSessionRow> = {}): AdvSessionRow =>
+    ({
+      id: 16512,
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: null,
+      planSlug: 'drain-plan',
+      agent: 'codex',
+      coordOwnerId: 'su-current',
+      ...over,
+    }) as AdvSessionRow;
+
+  it('reconstructs a conservative workspace-scoped Codex launch record', () => {
+    expect(fallbackCodexLaunchSpecFromAdvSession(row(), 'su-current')).toEqual({
+      v: 1,
+      agent: 'codex',
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: null,
+      profile: 'engineer',
+      contextSize: null,
+      personaTier: null,
+      model: null,
+      planSlug: 'drain-plan',
+      launchedBy: null,
+      autoMode: false,
+      drainMode: false,
+      loopArmed: false,
+      fleet: null,
+    });
+  });
+
+  it('preserves a recorded concrete harness when one exists', () => {
+    expect(fallbackCodexLaunchSpecFromAdvSession(row({ harnessSlug: 'papercusp' }), 'su-current')?.harnessSlug).toBe(
+      'papercusp',
+    );
+  });
+
+  it('refuses a different owner or non-Codex session', () => {
+    expect(fallbackCodexLaunchSpecFromAdvSession(row(), 'su-other')).toBeNull();
+    expect(fallbackCodexLaunchSpecFromAdvSession(row({ agent: 'claude' }), 'su-current')).toBeNull();
+  });
+});
 
 /**
  * WI-6589 — `first_seen_at` must stay a BIRTH, so nothing may bump it.

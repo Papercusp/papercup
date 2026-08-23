@@ -170,9 +170,13 @@ function prettierCli() {
 }
 
 export function buildPrettierCheckArgs(cli, repoPath, range) {
+  return buildPrettierArgs(cli, repoPath, range, "check");
+}
+
+export function buildPrettierArgs(cli, repoPath, range, mode = "check") {
   return [
     cli,
-    "--check",
+    mode === "write" ? "--write" : "--check",
     "--ignore-unknown",
     "--range-start",
     String(range.start),
@@ -182,8 +186,19 @@ export function buildPrettierCheckArgs(cli, repoPath, range) {
   ];
 }
 
+export function parseFormatCliArgs(args) {
+  const raw = args[0] === "--" ? args.slice(1) : [...args];
+  const write = raw[0] === "--write";
+  return {
+    mode: write ? "write" : "check",
+    paths: normalizeScopedPaths(write ? raw.slice(1) : raw),
+  };
+}
+
 function main() {
-  const paths = normalizeScopedPaths(process.argv.slice(2));
+  const { mode, paths } = parseFormatCliArgs(process.argv.slice(2));
+  const label =
+    mode === "write" ? "format:write:scoped" : "format:check:scoped";
   let checkedRanges = 0;
   let failedRanges = 0;
 
@@ -191,21 +206,25 @@ function main() {
     const source = readFileSync(resolve(REPO_ROOT, repoPath), "utf8");
     const lineRanges = changedLineRanges(repoPath, source);
     if (lineRanges.length === 0) {
-      console.log(`format:check:scoped: no added lines in ${repoPath}`);
+      console.log(`${label}: no added lines in ${repoPath}`);
       continue;
     }
     if (!RANGE_CHECK_EXTENSIONS.has(extname(repoPath))) {
-      console.log(`format:check:scoped: skipped non-code path ${repoPath}`);
+      console.log(`${label}: skipped non-code path ${repoPath}`);
       continue;
     }
 
-    for (const lineRange of lineRanges) {
+    // Writes run bottom-up so formatting a later range cannot shift the byte
+    // offsets of an earlier range that has not been processed yet.
+    const orderedRanges =
+      mode === "write" ? [...lineRanges].reverse() : lineRanges;
+    for (const lineRange of orderedRanges) {
       const range = characterRangeForLines(source, lineRange);
       if (range.end <= range.start) continue;
       checkedRanges += 1;
       const result = spawnSync(
         process.execPath,
-        buildPrettierCheckArgs(prettierCli(), repoPath, range),
+        buildPrettierArgs(prettierCli(), repoPath, range, mode),
         {
           cwd: REPO_ROOT,
           stdio: "inherit",
@@ -217,12 +236,12 @@ function main() {
 
   if (failedRanges > 0) {
     console.error(
-      `format:check:scoped: ${failedRanges}/${checkedRanges} changed range(s) need formatting`,
+      `${label}: ${failedRanges}/${checkedRanges} changed range(s) ${mode === "write" ? "failed to write" : "need formatting"}`,
     );
     process.exitCode = 1;
   } else {
     console.log(
-      `format:check:scoped: ${checkedRanges} changed range(s) checked`,
+      `${label}: ${checkedRanges} changed range(s) ${mode === "write" ? "written" : "checked"}`,
     );
   }
 }

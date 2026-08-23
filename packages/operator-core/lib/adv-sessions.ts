@@ -195,6 +195,40 @@ export interface AdvSessionRow {
   portMetadata?: Record<string, unknown> | null;
 }
 
+/**
+ * Reconstruct the minimum safe SU launch record needed to repair an older
+ * Codex session home when its adv_sessions row predates launch_spec.
+ *
+ * The fallback is deliberately narrower than launch-time reconstruction: the
+ * row is authoritative for backend, owner and workspace, while optional
+ * persona/model/fleet choices are unknown and therefore remain unset. A
+ * missing harness also stays workspace-scoped rather than being guessed from
+ * cwd or the caller's current environment. The repaired MCP config can then
+ * resume safely and require explicit per-call harness scope where necessary.
+ */
+export function fallbackCodexLaunchSpecFromAdvSession(
+  row: AdvSessionRow | null,
+  owner: string,
+): import('./su-persona-render').SuLaunchSpecRecord | null {
+  if (!row || row.agent !== 'codex' || row.coordOwnerId !== owner || !row.workspaceId) return null;
+  return {
+    v: 1,
+    agent: 'codex',
+    workspaceId: row.workspaceId,
+    harnessSlug: row.harnessSlug?.trim() || null,
+    profile: 'engineer',
+    contextSize: null,
+    personaTier: null,
+    model: null,
+    planSlug: row.planSlug,
+    launchedBy: null,
+    autoMode: false,
+    drainMode: false,
+    loopArmed: false,
+    fleet: null,
+  };
+}
+
 export interface RecordOpts {
   planSlug?: string | null;
   agent?: SuAgent | null;

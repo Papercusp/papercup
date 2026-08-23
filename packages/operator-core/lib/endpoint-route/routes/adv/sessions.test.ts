@@ -32,3 +32,16 @@ describe('adv/sessions resumable — hasArchive must read the stamp with the wri
     expect(src).not.toMatch(/readStamp\([^)]*workspaceId/);
   });
 });
+
+describe('adv/sessions ensure-codex-home — legacy rows remain repairable', () => {
+  const src = readFileSync(join(__dirname, 'sessions.ts'), 'utf8');
+
+  it('falls back to the exact ADV session row when launch_spec is absent', () => {
+    expect(src).toContain('await getAdvSession(advSessionId)');
+    expect(src).toContain('fallbackCodexLaunchSpecFromAdvSession(sessionRow, owner)');
+  });
+
+  it('surfaces that the repair used the bounded legacy-row fallback', () => {
+    expect(src).toContain("recoveredFrom: 'adv-session-row'");
+  });
+});

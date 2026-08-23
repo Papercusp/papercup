@@ -166,6 +166,7 @@
     "build:operator": "npm --workspace @papercusp/operator-vite run build",
     "format:check": "git diff --check --",
     "format:check:scoped": "node scripts/check-format.mjs",
+    "format:write:scoped": "node scripts/check-format.mjs --write",
     "test": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs",
     "test:file": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs",
     "test:affected": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/affected-tests.mjs",
