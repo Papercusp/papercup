@@ -98,8 +98,8 @@ import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewNormalExclusionSql,
-  hasStrictOwnerAction,
   readAgentReviewState,
+  readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
@@ -2973,6 +2973,14 @@ export async function setWorkItemState(
       `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
     );
   }
+  if (state === 'needs-human' && !readStructuredOwnerAsk(wi.payload)) {
+    throw new Error(
+      `work_item '${id}' → 'needs-human' rejected — the item carries no structured owner ask. ` +
+        `Record the ask first with work_items:set_blocker { id: '${id}', kind: 'human', ` +
+        `capability: 'credential' | 'physical-device' | 'external-service-action', ref, summary, nextVerb }. ` +
+        `That typed blocker records the question, asker/time, responsible owner capability, and what unblocks the item.`,
+    );
+  }
   if (!opts.skipCompletionGate && isSettledWorkItemState(state) && isTransportOnlyIdentity(opts.by)) {
     throw new Error(
       `completion-integrity: work_item '${id}' → '${state}' rejected — '${opts.by}' is a transport-only ` +
@@ -3721,7 +3729,6 @@ export async function setWorkItemStateWithAliasInfo(
   // blocked auto-gate lease was the state that this call just left.
   const priorWorkItem = await getWorkItem(id, opts.harness);
   let stateToApply = requestedState;
-  let needsHumanRoute: 'strict-owner-action' | 'leader-triage' | null = null;
   if (requestedLower === 'needs-human') {
     const current = priorWorkItem;
     if (current?.family === 'issue') {
@@ -3738,12 +3745,8 @@ export async function setWorkItemStateWithAliasInfo(
               : "requested state 'needs-human' was ignored because this item is already in agent review.",
         };
       }
-      if (hasStrictOwnerAction(current.payload)) {
-        needsHumanRoute = 'strict-owner-action';
-      } else {
-        stateToApply = 'blocked';
-        needsHumanRoute = 'leader-triage';
-      }
+      // The canonical writer below refuses unless the existing payload carries a
+      // complete structured owner ask. Keep this wrapper free of a second policy.
     }
   }
   let onAliasInfo: { requested: string; resolved: string } | undefined;
@@ -3825,9 +3828,7 @@ export async function setWorkItemStateWithAliasInfo(
   // now fire WITHOUT aliasing, since blocked/needs-human store verbatim post-flip).
   const effectiveAliased = aliased || stateToApply !== requestedState;
   const note =
-    needsHumanRoute === 'leader-triage'
-      ? "requested state 'needs-human' lacked a strict typed owner capability — recorded as 'blocked' for fleet-leader triage instead."
-      : effectiveAliased
+    effectiveAliased
         ? onAliasInfo
           ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
           : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
