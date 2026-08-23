@@ -203,17 +203,19 @@ let readTerminalCounters = () => ({
   failed: 0,
   quarantinedFailed: 0,
   timedOutTasks: 0,
+  undeterminedTasks: 0,
 });
 /** Emit the terminal marker for a run that did NOT reach a clean verdict path. */
 function emitAbortMarker(extra) {
   if (terminalEmitted || terminalSuppressed) return;
   terminalEmitted = true;
   const c = readTerminalCounters();
-  // Same five fields a caller parses on every other path, so one grep classifies
+  // The same marker fields appear on every terminal path, so one grep classifies
   // any log — a reader must not need a second parser for the abnormal case.
   errSync(
     `AFFECTED_TESTS_RESULT status=aborted tasks=${c.tasks} failed=${c.failed} ` +
-      `quarantinedFailed=${c.quarantinedFailed} timedOutTasks=${c.timedOutTasks} ${extra}`,
+      `quarantinedFailed=${c.quarantinedFailed} timedOutTasks=${c.timedOutTasks} ` +
+      `undeterminedTasks=${c.undeterminedTasks} ${extra}`,
   );
 }
 // Written to the run log only — never stdout/stderr. Its job is to make the LOG
@@ -2940,21 +2942,21 @@ if (!tasks.length) {
       "No affected workspaces (and no repo-wide invariant guard matched the changed paths).",
     );
     outSync(
-      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces",
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=no-affected-workspaces",
     );
   } else if (excludedAffected.size === affected.length) {
     outSync(
       `Affected: ${affected.map((w) => w.name).join(", ")} — all selected workspaces were excluded.`,
     );
     outSync(
-      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=all-excluded",
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=all-excluded",
     );
   } else {
     outSync(
       `Affected: ${affected.map((w) => w.name).join(", ")} — but none declare a 'test' script.`,
     );
     outSync(
-      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script",
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=no-test-script",
     );
   }
   terminalEmitted = true;
@@ -2995,7 +2997,7 @@ outSync(
 
 if (dry) {
   outSync(
-    `AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0`,
+    `AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0`,
   );
   terminalEmitted = true;
   process.exit(0);
@@ -3262,6 +3264,10 @@ const taskVerdictGateConfig = {
 
 let failed = 0;
 let quarantinedFailed = 0;
+// A task that never established a trustworthy test verdict is NOT a real failed task, but it
+// must keep the run non-green. Keep this count separate so gate triage does not invent a code
+// failure from process-start starvation while the result marker still exposes the uncertainty.
+let undeterminedTasks = 0;
 // EI-19332556961886184: a non-quarantined failure whose own output ALSO shows a vitest
 // hard-timeout signature ("Test/Hook timed out in Nms.") — tracked separately from
 // `failed` so a triager can see "N failed, M of which show a timeout signature" instead
@@ -3278,11 +3284,13 @@ readTerminalCounters = () => ({
   failed,
   quarantinedFailed,
   timedOutTasks,
+  undeterminedTasks,
 });
 // EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
 // so finding WHICH task failed meant scrolling back through the whole run's
 // interleaved output. Track names as we go and name them in the final summary.
 const failedTaskNames = [];
+const undeterminedTaskNames = [];
 // EI-19395701908500754: the per-FILE break set, accumulated as we go. `failedTaskNames`
 // above names WORKSPACES; nothing named FILES, so triagers mined the gate's prose for
 // them and got fixture paths. A failed task whose files cannot be named goes into
@@ -3460,6 +3468,7 @@ function runCapturedTask(
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
         __durationEstimateMs: taskDurationMs,
+        __capturedBytes: 0,
         __cacheStatus: "hit",
         __cacheReason: cacheDecision.reason,
         __cacheIdentity: cacheIdentity,
@@ -3603,6 +3612,7 @@ function runCapturedTask(
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
         __durationEstimateMs: taskDurationMs,
+        __capturedBytes: capturedBytes,
         __watchdogTimedOut: watchdogTimedOut,
         __watchdogDeadlineMs: watchdog.deadlineMs,
         __watchdogKillReason: watchdog.killReason,
@@ -3808,6 +3818,11 @@ for (const scheduled of initialPool.results) {
         notCheckedExitCode: EXIT_NOT_CHECKED,
         notCheckedIsNonGating: t.notCheckedIsNonGating,
         quarantined: isQuarantined,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        capturedBytes: r.__capturedBytes,
+        elapsedMs: r.__elapsedMs,
+        durationEstimateMs: r.__durationEstimateMs,
       }),
     )
   ) {
@@ -3887,8 +3902,21 @@ for (const scheduled of initialPool.results) {
       notCheckedExitCode: EXIT_NOT_CHECKED,
       notCheckedIsNonGating: t.notCheckedIsNonGating,
       quarantined: isQuarantined,
+      stdout: r.stdout,
+      stderr: r.stderr,
+      capturedBytes: r.__capturedBytes,
+      elapsedMs: r.__elapsedMs,
+      durationEstimateMs: r.__durationEstimateMs,
     });
-    if (exitClass === "not-checked") {
+    if (exitClass === "undetermined") {
+      undeterminedTasks++;
+      const taskName = `${t.ws.name} :: ${t.script}`;
+      undeterminedTaskNames.push(taskName);
+      errSync(
+        `\n  ⚠ ${taskName} UNDETERMINED — the child did not establish a trustworthy test verdict; ` +
+          `not retrying and keeping the affected-tests run non-green.`,
+      );
+    } else if (exitClass === "not-checked") {
       // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported
       // LOUDLY rather than swallowed: the guard really did verify nothing, and a reader who
       // takes this run as coverage of the strand class would be wrong. It just is not the
@@ -4119,12 +4147,25 @@ if (quarantinedFailed) {
 // caller a way to verify the TRUE verdict independent of exit-code plumbing
 // elsewhere. Emit one canonical, greppable, machine-parseable line — mirroring
 // `scripts/test-files.mjs`'s `TEST_FILE_RESULT` line — whose `status` token is
-// derived from the exact same `failed`/`quarantinedFailed` counters that
+// derived from the exact same `failed`/`quarantinedFailed`/`undeterminedTasks` counters that
 // decide the exit code below, so an agent, a gate, or a background-task
 // notifier can grep RUN_LOG_PATH for this line instead of trusting a
 // possibly-misreported exit code alone.
 const resultLine = (status) =>
-  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks}`;
+  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks} undeterminedTasks=${undeterminedTasks}`;
+if (undeterminedTasks) {
+  // A separate marker makes the attribution greppable without forcing triage to infer
+  // "failed=0" means process-start uncertainty. The verdict line still says status=failed
+  // and the process exits 1 below, so uncertainty can never be mistaken for green.
+  errSync(`AFFECTED_TESTS_UNDETERMINED tasks=${undeterminedTasks}`);
+  for (const name of undeterminedTaskNames) errSync(`  - ${name}`);
+}
+if (!failed && undeterminedTasks) {
+  errSync(resultLine("failed"));
+  terminalEmitted = true;
+  errSync(`Full run log: ${RUN_LOG_PATH}`);
+  process.exit(1);
+}
 if (failed) {
   errSync(`\n${failed} non-quarantined task(s) failed:`);
   for (const name of failedTaskNames) errSync(`  - ${name}`);
