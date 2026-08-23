@@ -473,6 +473,45 @@ reap_orphaned_x_socket() {
   log "reclaimed orphaned X socket :$n — no Xvfb process, nothing listening (EI-18816386093046558)"
   return 0
 }
+# ── X LOCK FILES: the third way a display number can be blocked ─────────────
+# Xvfb refuses to start when /tmp/.XNN-lock exists — "Server is already active
+# for display NN" — EVEN with no server running and no socket present. The
+# picker below used to test only (a) a live server and (b) the socket file, so a
+# lock-only display was handed out as "free" and the boot died on it instead of
+# moving to the next number. Because the FATAL is at bind time, the whole verify
+# aborts; the caller sees "Xvfb :90 never came up" and no reason to retry.
+#
+# The state is SELF-INFLICTED, which is why it recurs: a hard-killed Xvfb never
+# removes its own lock, and reap_stale_display_if_abandoned below SIGKILLs Xvfb
+# and unlinks the socket — so every reclaim used to leave a lock behind, and the
+# next run tripped over it. That reaper now clears the lock it orphans, and this
+# pair reclaims the ones already on disk.
+x_lock_owner_alive() {
+  local pid
+  [ -f "/tmp/.X$1-lock" ] || return 1
+  pid="$(tr -dc '0-9' < "/tmp/.X$1-lock" 2>/dev/null)"
+  # An unreadable or empty lock names no owner to protect. Treating that as
+  # "alive" is what makes a display unreclaimable forever.
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+# Reclaims an ORPHANED lock. Every condition must hold: nothing serving the
+# display, no socket file, the recorded owner gone, and past the same age gate
+# the socket reaper uses (which is what protects an Xvfb that has written its
+# lock but not yet bound). Nothing is ever KILLED here, and /tmp is sticky, so
+# this can only unlink this user's own file.
+reap_orphaned_x_lock() {
+  local n="$1" lock="/tmp/.X$1-lock"
+  [ "${VERIFY_TAURI_REAP_ORPHAN_SOCKETS:-1}" = "1" ] || return 1
+  [ -f "$lock" ] || return 1
+  x_socket_has_listener "$n" && return 1
+  [ -S "/tmp/.X11-unix/X$n" ] && return 1
+  x_lock_owner_alive "$n" && return 1
+  find "$lock" -maxdepth 0 -mmin "+$((STALE_DISPLAY_MAX_AGE / 60))" 2>/dev/null | grep -q . || return 1
+  rm -f "$lock" 2>/dev/null || return 1
+  log "reclaimed orphaned X lock :$n — no server, no socket, recorded owner gone"
+  return 0
+}
 reap_stale_display_if_abandoned() {
   local n="$1" xvfb_pid ob_pid age
   xvfb_pid="$(pgrep -f "Xvfb :$n " 2>/dev/null | head -1)"
@@ -488,6 +527,10 @@ reap_stale_display_if_abandoned() {
   [ -n "$ob_pid" ] && kill -9 "$ob_pid" 2>/dev/null
   kill -9 "$xvfb_pid" 2>/dev/null
   rm -f "/tmp/.X11-unix/X$n" 2>/dev/null
+  # Clear the LOCK too. A SIGKILLed Xvfb never removes its own, and leaving it
+  # behind hands the next run a display that looks free and cannot be bound —
+  # the very failure this reaper exists to prevent, one run later.
+  rm -f "/tmp/.X$n-lock" 2>/dev/null
   return 0
 }
 
@@ -509,11 +552,27 @@ reap_stale_display_if_abandoned() {
 # (conservatively — see its own comment); on success we stop skipping and use
 # this display number, instead of walking past it forever.
 STALE_DISPLAY_MAX_AGE="${VERIFY_TAURI_STALE_DISPLAY_MAX_AGE_SEC:-3600}"
+
+# A display is TAKEN if a live server answers there, OR its socket file exists,
+# OR its lock file exists — all three block a bind, and testing fewer than all
+# three is how the picker hands out a number Xvfb will refuse.
+x_display_taken() {
+  DISPLAY=":$1" xdpyinfo >/dev/null 2>&1 && return 0
+  [ -S "/tmp/.X11-unix/X$1" ] && return 0
+  [ -f "/tmp/.X$1-lock" ] && return 0
+  return 1
+}
 DISPLAY_NUM="${VERIFY_TAURI_DISPLAY_NUM:-}"
 if [ -z "$DISPLAY_NUM" ]; then
   DISPLAY_NUM=90
-  while DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || [ -S "/tmp/.X11-unix/X$DISPLAY_NUM" ]; do
-    reap_stale_display_if_abandoned "$DISPLAY_NUM" && break
+  while x_display_taken "$DISPLAY_NUM"; do
+    # Attempt every reclaim, then RE-TEST rather than trusting a reaper's own
+    # success. A reaper that clears one blocker while another remains (a socket
+    # reaped with the lock still present) previously `break`ed straight onto a
+    # display that still could not be bound.
+    reap_stale_display_if_abandoned "$DISPLAY_NUM" || true
+    reap_orphaned_x_lock "$DISPLAY_NUM" || true
+    x_display_taken "$DISPLAY_NUM" || break
     DISPLAY_NUM=$((DISPLAY_NUM + 1))
   done
 fi
