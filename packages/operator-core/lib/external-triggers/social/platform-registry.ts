@@ -656,6 +656,8 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
       'https://developers.facebook.com/docs/instagram-platform/content-publishing',
       'https://developers.facebook.com/docs/instagram-platform/comment-moderation',
       'https://developers.facebook.com/docs/instagram-platform/reference/instagram-media',
+      'https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-media/comments/',
+      'https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-comment/',
       'https://developers.facebook.com/docs/permissions',
       'https://developers.facebook.com/docs/graph-api/overview/rate-limiting',
     ],
@@ -685,13 +687,13 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
       transport: 'poll-cursor',
       replay: 'watermark-rescan',
       backfill:
-        'Re-read each watched media\'s comments from the top and filter client-side against a stored timestamp watermark. D-025 REVERIFIED INDEPENDENTLY FOR INSTAGRAM rather than inherited from Facebook: the IG Media reference documents the /comments edge as one line ("Represents a collection of Instagram Comments on an Instagram Media object") and states NO paging cursors, NO ordering, and NO since/until/after filter — its only documented query parameters are access_token, fields and comment_enabled. An undocumented ordering is not a chronological guarantee, so the adapter filters every item and never early-exits.',
+        'Re-read each watched media\'s comments and filter client-side against a stored timestamp watermark: "Comments cannot be filtered by timestamp" is stated verbatim on the edge reference, so there is no server-side replay of any kind. ⚠ THE EDGE IS CAPPED AND UNPAGEABLE AS DOCUMENTED — see the comments stream, where the consequence is a real loss bound rather than a performance note.',
       streams: {
         comments: {
           transport: 'poll-cursor',
           replay: 'watermark-rescan',
           backfill:
-            'GET /{ig-media-id}/comments — comments hang off MEDIA, and no account-wide comments edge is documented, so this is one call PER WATCHED MEDIA and its cost scales with the watch window rather than with comment volume (the same shape as the Pages comments stream, D-026, reached from Instagram\'s own reference). The comment-moderation page recommends webhooks "to prevent rate limiting", which D-003 declines for lack of public ingress — so the poll cost here is a known, accepted consequence of that decision, not an oversight.',
+            'GET /{ig-media-id}/comments — comments hang off MEDIA and no account-wide comments edge is documented, so this is one call PER WATCHED MEDIA and its cost scales with the watch window rather than with comment volume (the D-026 shape, reached independently from Instagram\'s own reference). THREE EDGE FACTS THAT ONLY THE EDGE PAGE STATES, and that the IG Media reference does NOT — reading only the latter produces a confidently wrong adapter: (1) "Returns a maximum of 50 comments per query", with NO paging cursors documented anywhere on the edge — so the result set is CAPPED and there is no documented way to ask for the next 50; (2) ordering IS guaranteed and is version-dependent — "Requests made using version 3.2+ will have results returned in reverse chronological order" — which is the OPPOSITE of the Pages feed\'s ranked ordering (D-025), so here newest-first is a real guarantee rather than an assumption; (3) the edge "Returns only top-level comments" by default, so `replies` must be requested through field expansion or every nested reply is silently absent — the same trap as Pages\' filter=stream default, by a different mechanism. TOGETHER THEY SET A LOSS BOUND, not a preference: newest-50 with no paging is exactly the right window for an incremental poll PROVIDED fewer than 50 new comments arrive between two polls, and a full 50-item page whose OLDEST item is still newer than the watermark means the window overflowed and older unseen comments are unreachable (D-031). The comment-moderation page\'s advice for this is webhooks — "We strongly recommend using webhooks to prevent rate limiting" — which D-003 declines for lack of public ingress, so the poll cost and this bound are accepted consequences of that decision, recorded rather than discovered later.',
         },
       },
     },
