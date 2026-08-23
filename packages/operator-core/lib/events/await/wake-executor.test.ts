@@ -28,6 +28,7 @@ import { PtyError } from '../../pty-bridge';
 import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
+import { getLoopStatus } from '../../harness/routines/loop';
 
 // A per-session codex home (session-42) with two rollouts; the newer UUID wins.
 const ROLLOUT_UUID = '019ea541-e6ed-71c2-bc67-aa25b5164ec5';
@@ -801,7 +802,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
   }
 
   it('a fire queued while active, delivered after loop:end (active:false), is banner-flagged as SUPERSEDED', async () => {
-    const getLoopStatusFn = vi.fn(async () => loopStatus({ active: false }));
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => loopStatus({ active: false }));
     const d = work({
       payload: { harness: 'papercusp', wakeCount: 12 },
       subscriberId: 'su-loop-1',
@@ -821,7 +822,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
   });
 
   it('no loop routine row at all for this owner (status null) is ALSO treated as ended/superseded', async () => {
-    const getLoopStatusFn = vi.fn(async () => null);
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => null);
     const d = work({ payload: { harness: 'papercusp', wakeCount: 1 }, subscriberId: 'su-loop-1' });
     const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, {
       getLoopCarryNoteWithMetaFn: noWalls,
@@ -831,7 +832,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
   });
 
   it('a fire queued before a RE-ARM (armedAt newer than the delivery\'s createdAt) is banner-flagged as superseded, even though active is still true', async () => {
-    const getLoopStatusFn = vi.fn(async () =>
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () =>
       loopStatus({ active: true, armedAt: new Date(Date.now() - 5_000).toISOString() }),
     );
     const d = work({
@@ -852,7 +853,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
       note: '## Next action\nDo not use this stale prior-lineage candidate.',
       updatedAtMs: Date.now() - 1_000,
     }));
-    const getLoopStatusFn = vi.fn(async () =>
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () =>
       loopStatus({
         active: true,
         harnessSlug: 'current-loop-harness',
@@ -878,7 +879,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
 
   it('a fire queued AFTER the current arm (the normal case) carries NO superseded banner', async () => {
     const armedAtMs = Date.now() - 600_000;
-    const getLoopStatusFn = vi.fn(async () => loopStatus({ active: true, armedAt: new Date(armedAtMs).toISOString() }));
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => loopStatus({ active: true, armedAt: new Date(armedAtMs).toISOString() }));
     const d = work({
       payload: { harness: 'papercusp', wakeCount: 4 },
       subscriberId: 'su-loop-1',
@@ -893,7 +894,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
   });
 
   it('fails soft — a getLoopStatusFn throw degrades only the superseded banner, never the walls/checks rehydration', async () => {
-    const getLoopStatusFn = vi.fn(async () => {
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => {
       throw new Error('pg unreachable');
     });
     const d = work({ payload: { harness: 'papercusp', wakeCount: 1 }, subscriberId: 'su-loop-1' });
@@ -910,7 +911,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
   });
 
   it('a NON-loop wake never calls getLoopStatusFn at all (no marker ⇒ early return, byte-identical)', async () => {
-    const getLoopStatusFn = vi.fn(async () => loopStatus({ active: false }));
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => loopStatus({ active: false }));
     const d = work({ payload: null });
     const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, { getLoopStatusFn });
     expect(out).toBe(FROZEN_TEXT);
