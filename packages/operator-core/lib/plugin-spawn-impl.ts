@@ -103,6 +103,19 @@ export function augmentedSpawnPath(cwd?: string): string {
     // to ~/.bun/bin. Appending it last means it can only ever SUPPLY a command
     // nothing else on PATH provides, never SHADOW one, so adding it cannot change
     // which `omp` (or node, or claude) a spawn already resolves.
+    //
+    // ⚠ That guarantee is about what THIS FUNCTION CONTRIBUTES — it is NOT a claim
+    // that ~/.papercusp/bin is the last element of the returned PATH. The dedup
+    // below is FIRST-WINS, so when the ambient PATH already exports this directory
+    // (precisely what `ensureBinOnPath` writes into the user's shell profile) the
+    // appended copy is dropped and the entry keeps its earlier ambient position,
+    // leaving whatever followed it there last. That is the invariant HOLDING — the
+    // function added nothing and changed no resolution — not breaking. Do not
+    // "fix" it by moving the entry to the tail: that would reorder a PATH the user
+    // configured and make operator children resolve differently from the
+    // interactive shell they are supposed to mirror. A test that asserted
+    // `dirs.at(-1)` against the unpinned host PATH read this backwards and
+    // red-pinned the fleet gate with a same-sha verdict flip (EI-21284542595660609).
     process.env.HOME ? join(process.env.HOME, '.papercusp/bin') : '',
   ];
   const seen = new Set<string>();

@@ -155,13 +155,55 @@ describe('augmentedSpawnPath — ~/.papercusp/bin is reachable from a spawned ch
     expect(augmentedSpawnPath().split(path.delimiter)).toContain(path.join(home, '.papercusp/bin'));
   });
 
-  it('appends it LAST so it can supply a missing command but never shadow a present one', () => {
+  // The contract is about what this FUNCTION contributes, not about the absolute
+  // tail of the result. Asserting `dirs.at(-1)` against the UNPINNED ambient PATH
+  // conflated the two and made this a host-shape flake: dedup is first-wins, so on
+  // a box whose profile already exported ~/.papercusp/bin (exactly what
+  // ensureBinOnPath does) the entry keeps its earlier ambient position and whatever
+  // followed it there — ~/.bun/bin here — is last. That produced a same-sha verdict
+  // flip (99f26791 both passed and failed) and red-pinned the fleet gate.
+  // EI-21284542595660609. Both branches below pin PATH so the host cannot decide.
+  it('appends it LAST when it is not already on PATH, so it can supply but never shadow', () => {
     // ~/.papercusp/bin also holds copies of binaries that resolve elsewhere (omp,
     // claude, bun). Placing it anywhere earlier would silently change which of those
     // a spawn picks up — a much larger blast radius than the one missing command
     // this entry exists to supply.
-    const dirs = augmentedSpawnPath().split(path.delimiter);
-    expect(dirs.at(-1)).toBe(path.join(home, '.papercusp/bin'));
+    const saved = process.env.PATH;
+    try {
+      process.env.PATH = ['/usr/bin', path.join(home, '.bun/bin')].join(path.delimiter);
+      const dirs = augmentedSpawnPath().split(path.delimiter);
+      expect(dirs.at(-1)).toBe(path.join(home, '.papercusp/bin'));
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
+
+  it('CONTROL: when it is ALREADY on PATH, the ambient order is preserved — the function adds nothing', () => {
+    // The complement of the case above, and the one the flake was really reporting.
+    // "Appending it last" is a statement about this function's own contribution:
+    // when the directory is already present, first-wins dedup keeps the user's
+    // position and the function changes no resolution at all. That is the invariant
+    // ("adding it cannot change which omp a spawn resolves") still holding — NOT a
+    // violation of it — so the tail here is legitimately ~/.bun/bin.
+    const shim = path.join(home, '.papercusp/bin');
+    const bun = path.join(home, '.bun/bin');
+    const saved = process.env.PATH;
+    try {
+      process.env.PATH = [shim, bun].join(path.delimiter);
+      const dirs = augmentedSpawnPath().split(path.delimiter);
+      // Deduped to one copy, still ahead of ~/.bun/bin exactly as the ambient PATH
+      // ordered them, and NOT relocated to the tail. Note what is deliberately not
+      // asserted: any absolute index or `at(-1)`. Which directory ends up last here
+      // depends on which of `extra`'s entries happen to exist on the host, so
+      // pinning it is the same over-specification that caused this flake — the
+      // first draft of this very test asserted at(-1) === bun and failed, because
+      // ~/.local/bin trails both.
+      expect(dirs.filter((d) => d === shim)).toHaveLength(1);
+      expect(dirs.indexOf(shim)).toBeLessThan(dirs.indexOf(bun));
+      expect(dirs.at(-1)).not.toBe(shim);
+    } finally {
+      process.env.PATH = saved;
+    }
   });
 
   it('CONTROL: the entry is deduped, not appended twice, when it is already on PATH', () => {
