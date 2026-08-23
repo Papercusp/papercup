@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
-import orchestrateRunTool, { runServerScriptAdapter, serverScriptRunArgsSchema, type ServerScriptRunDeps } from './run';
+import orchestrateRunTool, {
+  runOrchestration,
+  runServerScriptAdapter,
+  serverScriptRunArgsSchema,
+  type ServerScriptRunDeps,
+} from './run';
+import type { SavedRecipeAdapter } from './saved-recipe-adapter';
 
 function codeResult(payload: Record<string, unknown>, media: ToolResult['content'] = []): ToolResult {
   return {
@@ -17,7 +23,7 @@ function envelope(result: ToolResult) {
 }
 
 describe('orchestrate:run server-script adapter', () => {
-  it('registers the server-only public shape', () => {
+  it('registers the unified public shape and returns a typed client-mode rejection', async () => {
     expect(orchestrateRunTool.name).toBe('orchestrate:run');
     expect(
       serverScriptRunArgsSchema.parse({
@@ -26,12 +32,22 @@ describe('orchestrate:run server-script adapter', () => {
         capture: { mode: 'auto' },
       }),
     ).toMatchObject({ script: { source: 'return "ok";' } });
-    expect(() =>
-      serverScriptRunArgsSchema.parse({
-        script: { source: 'return "ok";' },
-        execution: { mode: 'client' },
-      }),
-    ).toThrow();
+    expect(serverScriptRunArgsSchema.parse({ recipe: { id: 'saved' } })).toMatchObject({
+      recipe: { id: 'saved' },
+    });
+
+    const runCode = vi.fn<ServerScriptRunDeps['runCode']>();
+    const result = await runOrchestration(
+      { script: { source: 'return "ok";' }, execution: { mode: 'client' } },
+      {} as UnifiedToolContext,
+      { server: { runCode } },
+    );
+    expect(runCode).not.toHaveBeenCalled();
+    expect(envelope(result)).toMatchObject({
+      state: 'error',
+      error: { code: 'execution_mode_unavailable' },
+      metrics: { phase: 'preflight', executed: false },
+    });
   });
 
   it('delegates to code:run and emits the P-006 envelope without copying its payload', async () => {
@@ -147,5 +163,98 @@ describe('orchestrate:run server-script adapter', () => {
       incomplete: { reason: 'partial_execution' },
       metrics: { childFailureCount: 1 },
     });
+  });
+
+  it('replays an exact saved recipe through the canonical adapter and returns one envelope', async () => {
+    const run = vi.fn().mockResolvedValue({
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'triage-stale',
+        result: {
+          ok: true,
+          summary: { triaged: 4 },
+          dispatchCount: 2,
+          intermediateBytes: 700,
+          writeAttempts: [{ tool: 'work_items:set_state' }],
+        },
+      }],
+      counts: { requested: 1, succeeded: 1, failed: 0 },
+    });
+    const adapter = { run } as unknown as SavedRecipeAdapter;
+
+    const result = await runOrchestration(
+      {
+        recipe: { id: 'triage-stale', revision: 'a'.repeat(64) },
+        execution: { mode: 'auto' },
+        timeoutSec: 20,
+      },
+      {} as UnifiedToolContext,
+      { recipes: adapter },
+    );
+
+    expect(run).toHaveBeenCalledWith({
+      recipe: { id: 'triage-stale', revision: 'a'.repeat(64) },
+      timeoutSec: 20,
+    });
+    expect(envelope(result)).toMatchObject({
+      summary: '{"triaged":4}',
+      state: 'complete',
+      metrics: {
+        backend: 'server',
+        toolCalls: 3,
+        intermediateBytes: 700,
+        recipeReuse: true,
+        recipeId: 'triage-stale',
+        requestedExecutionMode: 'auto',
+        executionMode: 'server',
+        executionModeDeprecated: true,
+        writeAttemptCount: 1,
+      },
+    });
+  });
+
+  it('preserves a saved-recipe preflight failure without executing a fallback', async () => {
+    const run = vi.fn().mockResolvedValue({
+      ok: false,
+      phase: 'preflight',
+      executed: false,
+      error: {
+        code: 'recipe_authority_stale',
+        message: 'inspect/search again before running',
+        path: 'recipe.revision',
+      },
+    });
+    const result = await runOrchestration(
+      { recipe: { id: 'stale', revision: 'b'.repeat(64) } },
+      {} as UnifiedToolContext,
+      { recipes: { run } as unknown as SavedRecipeAdapter },
+    );
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(envelope(result)).toMatchObject({
+      state: 'error',
+      error: { code: 'recipe_authority_stale' },
+      metrics: { phase: 'preflight', executed: false },
+    });
+  });
+
+  it('rejects both and neither source before any backend is selected', async () => {
+    const run = vi.fn();
+    const adapter = { run } as unknown as SavedRecipeAdapter;
+    const both = await runOrchestration(
+      { script: { source: 'return 1;' }, recipe: { id: 'also' } },
+      {} as UnifiedToolContext,
+      { recipes: adapter },
+    );
+    const neither = await runOrchestration(
+      {},
+      {} as UnifiedToolContext,
+      { recipes: adapter },
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(envelope(both)).toMatchObject({ state: 'error', error: { code: 'ambiguous_source' } });
+    expect(envelope(neither)).toMatchObject({ state: 'error', error: { code: 'source_missing' } });
   });
 });
