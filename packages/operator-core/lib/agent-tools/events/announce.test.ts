@@ -92,6 +92,7 @@ vi.mock('../../events/await/store', () => ({
   // factory too — latent, because no test here had walked that branch yet. The
   // coverage guard at the bottom of this file is what surfaced it.
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+  cancelAwait: vi.fn(async () => true),
 }));
 
 import emit from './emit';
