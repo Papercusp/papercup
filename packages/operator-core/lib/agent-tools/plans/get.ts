@@ -375,9 +375,9 @@ export function narrowDecisionPayload<T extends { id: string }>(
 export default defineTool({
   name: "plans:get",
   description:
-    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace; pass a concrete `harness` to disambiguate or constrain the read. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') to disambiguate or constrain the read. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
-    when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+    when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
     notWhen:
       "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
