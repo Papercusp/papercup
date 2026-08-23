@@ -64,6 +64,34 @@ export const GOAL_SATISFYING_STATUSES: ReadonlySet<string> = new Set<GoalStatus>
 export const GOAL_INVALIDATING_STATUSES: ReadonlySet<string> = new Set<GoalStatus>(['killed']);
 
 /**
+ * The PLAN terminal partition — the same D-002 split applied to
+ * `harness_shared.harness_plans.status`, for `blocker_kind='plan'` edges
+ * (work-on-everything-goal-2026-08-23 D-004, P-019).
+ *
+ * A plan dies the same two ways a goal does, meaning opposite things downstream:
+ *
+ *   - `shipped` SATISFIES a dependent — the plan delivered, so the goal it was
+ *     gating is now doable;
+ *   - `superseded` INVALIDATES the dependent's PREMISE — the plan will never
+ *     ship because its substance moved to the superseding plan. Exactly the
+ *     `killed`-goal case: it must NEVER silently unblock, so readers flag the
+ *     dependent `premiseInvalidated` for review (retarget onto the successor,
+ *     or unblock deliberately).
+ *
+ * `draft` / `ready` / `active` are non-terminal ⇒ pending (in neither set).
+ *
+ * Kept here beside the goal partition rather than imported from
+ * `unshipped-plans-audit.ts` on purpose: that module's local
+ * `PLAN_TERMINAL_STATUSES` is a REPORTING set (both statuses lumped together,
+ * "is this plan finished?"), which is precisely the distinction this split
+ * exists to refuse. Reusing it would erase the satisfying/invalidating
+ * difference. The partition invariant is pinned by `goal-deps.test.ts`.
+ */
+export const PLAN_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['shipped', 'superseded']);
+export const PLAN_SATISFYING_STATUSES: ReadonlySet<string> = new Set(['shipped']);
+export const PLAN_INVALIDATING_STATUSES: ReadonlySet<string> = new Set(['superseded']);
+
+/**
  * A TRIPWIRE turns the kill criterion from prose into a readout.
  *
  * A criterion written as a sentence ("kill this if we pass $500 or 30 days

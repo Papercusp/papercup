@@ -32,6 +32,8 @@ import { wouldCreateCycle } from '@papercusp/operator-core/lib/dbos/work-item-de
 import {
   GOAL_INVALIDATING_STATUSES,
   GOAL_SATISFYING_STATUSES,
+  PLAN_INVALIDATING_STATUSES,
+  PLAN_SATISFYING_STATUSES,
   type GoalSqlTag,
 } from './_core';
 
@@ -39,9 +41,16 @@ import {
 export const GOAL_DEP_KIND = 'goal';
 /** The issue-family endpoint kind (bare `WI-NNN` / `EI-NNN` refs — issues:link convention). */
 export const ISSUE_DEP_KIND = 'issue';
+/**
+ * The PLAN endpoint kind (P-019 / D-004). The stored `blocker_ref` is the bare
+ * `<slug>`, or `<harness>/<slug>` when the caller qualified it — the `plan:`
+ * prefix is CALLER SYNTAX only, never part of the stored ref (the kind column
+ * already carries that information).
+ */
+export const PLAN_DEP_KIND = 'plan';
 
 export interface GoalBlockerEndpoint {
-  kind: typeof GOAL_DEP_KIND | typeof ISSUE_DEP_KIND;
+  kind: typeof GOAL_DEP_KIND | typeof ISSUE_DEP_KIND | typeof PLAN_DEP_KIND;
   ref: string;
 }
 
@@ -59,17 +68,29 @@ export function blockerStatusKey(b: GoalBlockerEndpoint): string {
 
 /** Bare issue-family id (work-item / engineer-issue). Goal ids are slug-hex and never match. */
 const ISSUE_REF = /^(?:WI|EI)-\d+$/;
+/**
+ * Explicit plan ref: `plan:<slug>` or `plan:<harness>/<slug>` (P-019 / D-004).
+ *
+ * The prefix is REQUIRED and is not stylistic. Goal ids are `slug-hex6` and plan
+ * slugs are also arbitrary slugs, so a BARE plan slug is indistinguishable from
+ * a goal id by shape — the `else ⇒ goal` fallback below would swallow every one
+ * of them. A prefix keeps this classifier total and deterministic with zero
+ * collision, since goal ids never contain a colon.
+ */
+const PLAN_REF = /^plan:(.+)$/;
 
 /**
- * Classify a caller-supplied `blockedBy` ref by SHAPE (D-006): a bare `WI-NNN` /
- * `EI-NNN` is an issue-family work item; anything else is a goal id. Shape
- * classification is only the FIRST gate — the writer still verifies a
- * goal-classified ref resolves to a goal row in the same workspace and refuses
- * otherwise, so a typo'd ref can never mint a silently-inert edge (the D-017
+ * Classify a caller-supplied `blockedBy` ref by SHAPE (D-006): a `plan:`-prefixed
+ * ref is a plan; a bare `WI-NNN` / `EI-NNN` is an issue-family work item; anything
+ * else is a goal id. Shape classification is only the FIRST gate — the writer still
+ * verifies every classified ref RESOLVES to a real row in the same workspace and
+ * refuses otherwise, so a typo'd ref can never mint a silently-inert edge (the D-017
  * lesson from the issue/feature families).
  */
 export function classifyGoalBlockerRef(ref: string): GoalBlockerEndpoint {
   const trimmed = ref.trim();
+  const plan = PLAN_REF.exec(trimmed);
+  if (plan) return { kind: PLAN_DEP_KIND, ref: plan[1]!.trim() };
   return ISSUE_REF.test(trimmed)
     ? { kind: ISSUE_DEP_KIND, ref: trimmed }
     : { kind: GOAL_DEP_KIND, ref: trimmed };
@@ -95,7 +116,14 @@ export async function readGoalBlockedByEdges(
        AND blocked_kind = ${GOAL_DEP_KIND}`;
   const out = new Map<string, GoalBlockerEndpoint[]>();
   for (const r of rows) {
-    const kind = r.blocker_kind === ISSUE_DEP_KIND ? ISSUE_DEP_KIND : GOAL_DEP_KIND;
+    // Unknown kinds normalize to `goal` (the pre-existing default): a kind this
+    // build does not understand must not silently become a DIFFERENT known kind.
+    const kind: GoalBlockerEndpoint['kind'] =
+      r.blocker_kind === ISSUE_DEP_KIND
+        ? ISSUE_DEP_KIND
+        : r.blocker_kind === PLAN_DEP_KIND
+          ? PLAN_DEP_KIND
+          : GOAL_DEP_KIND;
     const arr = out.get(r.blocked_ref) ?? [];
     if (!arr.some((e) => e.kind === kind && e.ref === r.blocker_ref)) {
       arr.push({ kind, ref: r.blocker_ref });
@@ -182,6 +210,10 @@ export type GoalBlockerVerdict = 'satisfied' | 'pending' | 'invalidating';
  *     absent-never-deadlocks rule as `blockerSatisfied` (frontier-readiness.ts);
  *   - goal blockers: achieved ⇒ satisfied; killed ⇒ INVALIDATING (premise gone
  *     — never silently unblocks); active/paused ⇒ pending;
+ *   - plan blockers (P-019/D-004): shipped ⇒ satisfied; superseded ⇒ INVALIDATING
+ *     (the plan will never ship — its substance moved to the successor, so the
+ *     dependent's premise needs review, exactly like a killed goal);
+ *     draft/ready/active ⇒ pending;
  *   - issue blockers: plain terminal-satisfies (v1, D-006) — any
  *     `ISSUE_TERMINAL_STATUSES` member satisfies; open/anything-else pends.
  */
@@ -193,6 +225,11 @@ export function goalBlockerVerdict(
   if (kind === GOAL_DEP_KIND) {
     if (GOAL_SATISFYING_STATUSES.has(status)) return 'satisfied';
     if (GOAL_INVALIDATING_STATUSES.has(status)) return 'invalidating';
+    return 'pending';
+  }
+  if (kind === PLAN_DEP_KIND) {
+    if (PLAN_SATISFYING_STATUSES.has(status)) return 'satisfied';
+    if (PLAN_INVALIDATING_STATUSES.has(status)) return 'invalidating';
     return 'pending';
   }
   return ISSUE_TERMINAL_STATUSES.has(status) ? 'satisfied' : 'pending';
@@ -234,9 +271,28 @@ export function goalReadiness(
 }
 
 /**
+ * Rank a plan status by how BLOCKING it is — invalidating (2) beats pending (1)
+ * beats satisfied (0). Derived from `goalBlockerVerdict` rather than restated, so
+ * the ordering cannot drift from the policy it ranks.
+ */
+function planStatusSeverity(status: string): number {
+  const verdict = goalBlockerVerdict(PLAN_DEP_KIND, status);
+  return verdict === 'invalidating' ? 2 : verdict === 'pending' ? 1 : 0;
+}
+
+/** Split a plan ref into its optional harness qualifier and slug (D-004). */
+function parsePlanRef(ref: string): { ref: string; harness: string | null; slug: string } {
+  const i = ref.indexOf('/');
+  return i < 0
+    ? { ref, harness: null, slug: ref }
+    : { ref, harness: ref.slice(0, i), slug: ref.slice(i + 1) };
+}
+
+/**
  * Resolve the current statuses of a set of blocker endpoints, batched — goals
  * from `harness_shared.goals` (workspace-scoped), issues from
- * `harness_shared.engineer_issues` (bare issue_id, the issue floor's own key).
+ * `harness_shared.engineer_issues` (bare issue_id, the issue floor's own key),
+ * plans from `harness_shared.harness_plans` (workspace-scoped; P-019/D-004).
  * Absent rows stay absent (status null ⇒ satisfied upstream). Keys are
  * `blockerStatusKey` composites.
  */
@@ -247,6 +303,7 @@ export async function resolveBlockerStatuses(
 ): Promise<Map<string, string>> {
   const goalRefs = blockers.filter((b) => b.kind === GOAL_DEP_KIND).map((b) => b.ref);
   const issueRefs = blockers.filter((b) => b.kind === ISSUE_DEP_KIND).map((b) => b.ref);
+  const planRefs = blockers.filter((b) => b.kind === PLAN_DEP_KIND).map((b) => b.ref);
   const out = new Map<string, string>();
   if (goalRefs.length > 0) {
     const rows = await sql<Array<{ id: string; status: string }>>`
@@ -262,6 +319,29 @@ export async function resolveBlockerStatuses(
        WHERE issue_id = ANY(${issueRefs as string[]}::text[])`;
     for (const r of rows) {
       out.set(blockerStatusKey({ kind: ISSUE_DEP_KIND, ref: r.issue_id }), r.state);
+    }
+  }
+  if (planRefs.length > 0) {
+    const parsed = planRefs.map(parsePlanRef);
+    const slugs = [...new Set(parsed.map((p) => p.slug))];
+    const rows = await sql<Array<{ harness_slug: string; plan_slug: string; status: string }>>`
+      SELECT harness_slug, plan_slug, status FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND plan_slug = ANY(${slugs as string[]}::text[])`;
+    for (const p of parsed) {
+      const matches = rows.filter(
+        (r) => r.plan_slug === p.slug && (p.harness == null || r.harness_slug === p.harness),
+      );
+      if (matches.length === 0) continue; // absent ⇒ refused at write, satisfied at read
+      // D-004: harness_plans' PK is (workspace_id, harness_slug, plan_slug), so a BARE
+      // slug may match several harnesses. Fold to the WORST status rather than picking
+      // one arbitrarily — a blocker must never silently unblock because an unrelated
+      // harness happens to have shipped a plan of the same name. A caller needing
+      // precision qualifies the ref as `plan:<harness>/<slug>`.
+      let worst = matches[0]!.status;
+      for (const m of matches) {
+        if (planStatusSeverity(m.status) > planStatusSeverity(worst)) worst = m.status;
+      }
+      out.set(blockerStatusKey({ kind: PLAN_DEP_KIND, ref: p.ref }), worst);
     }
   }
   return out;
