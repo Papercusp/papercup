@@ -79,6 +79,7 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
     const certificate = checkpointProducerCertificate({
       pipeline: 'papercusp',
+      candidateSha: '4bd9c405',
       ownerId: 'su-1',
       issuedAtMs: 1_500,
       expectedCadenceMs: 5_000,
