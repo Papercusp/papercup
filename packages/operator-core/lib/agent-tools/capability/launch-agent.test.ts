@@ -136,6 +136,14 @@ vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: (ids: string[]) => fetchContextPressureMock(ids),
 }));
 
+const buildCarryBriefMock = vi.hoisted(() => vi.fn());
+const renderCarryBriefTextMock = vi.hoisted(() => vi.fn());
+vi.mock('../../carry-brief', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  buildCarryBrief: (...args: unknown[]) => buildCarryBriefMock(...args),
+  renderCarryBriefText: (...args: unknown[]) => renderCarryBriefTextMock(...args),
+}));
+
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
     ownerId: 'su-caller',
@@ -158,7 +166,7 @@ const verifyFreshLaunchStartedMock = vi.fn(async (_args: unknown) => ({
   // null means "not yet determinable", which is the stub's honest answer.
   agentStarted: null as boolean | null,
   waitedMs: 0,
-  sessions: [],
+  sessions: [] as Array<{ ownerId: string; successfulCalls: number }>,
   note: 'test launch verification stub',
 }));
 const verifyResumeStartedMock = vi.fn(async (_ownerId: unknown, opts?: { expectedSessionId?: string | null }) => ({
@@ -215,10 +223,12 @@ beforeEach(() => {
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
   fetchContextPressureMock.mockResolvedValue(new Map());
+  buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
+  renderCarryBriefTextMock.mockReturnValue('');
   verifyFreshLaunchStartedMock.mockResolvedValue({
     agentStarted: null,
     waitedMs: 0,
-    sessions: [],
+    sessions: [] as Array<{ ownerId: string; successfulCalls: number }>,
     note: 'test launch verification stub',
   });
   verifyResumeStartedMock.mockResolvedValue({
@@ -437,6 +447,52 @@ describe('resume + fork (D-004/D-007)', () => {
     live: false,
     advSessionId: 11,
   };
+
+  it('starts an identity-preserving fresh successor for an ended critical source', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
+    buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
+    renderCarryBriefTextMock.mockReturnValue('checkpoint: finish the successor wiring');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', successfulCalls: 1 }],
+      note: 'successor verified',
+    });
+
+    const res = await launchAgent.handler({
+      successor: { agentId: 'su-a1a71' },
+      brief: 'continue the recovery',
+    }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnedCommand()).toContain('--agent=claude --owner-id=su-a1a71 --harness=papercusp');
+    expect(spawnedCommand()).not.toContain('--resume=');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('continue the recovery');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('checkpoint: finish the successor wiring');
+    expect(buildCarryBriefMock).toHaveBeenCalledWith('su-a1a71', { workspaceId: 'ws-test' });
+    expect(verifyFreshLaunchStartedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expected: 1, expectedOwnerIds: ['su-a1a71'] }),
+    );
+    expect(dataOf(res)?.launch).toMatchObject({
+      mode: 'successor',
+      resumedOwnerId: 'su-a1a71',
+      agentStarted: true,
+    });
+    expect(textOf(res)).toContain("agent's first turn");
+  });
+
+  it('refuses an identity-preserving successor when the source is still live', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+
+    const res = await launchAgent.handler({ successor: { agentId: 'su-a1a71' } }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('source session is still LIVE');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(buildCarryBriefMock).not.toHaveBeenCalled();
+  });
 
   it('EI-11578: a RESUME forces a process-per-window emulator (preferProcessPerWindow) — a resumed dormant session dies under gnome-terminal\'s VTE pty', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);

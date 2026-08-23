@@ -10,7 +10,7 @@
  * (`agent-launch-core.ts`) — the psu-command injectors, the resume/fork resolver,
  * and the launch idempotency guard — so there is no forked spawn path.
  *
- * The modes compose: (ad-hoc | resumed | forked) × (fleet | no-fleet) ×
+ * The modes compose: (ad-hoc | resumed | forked | successor) × (fleet | no-fleet) ×
  * (visible | headless) × 1..N.
  *
  * Two mechanisms are worth knowing, because they are what make a launched agent
@@ -46,6 +46,7 @@ import { fetchContextPressure } from '../coordination/context-pressure';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
+import { capPreservingOperative } from '../../operative-clause';
 import { listFacts } from '../../agent-facts/store';
 import { getModes } from '../../modes/store';
 import { modeInstructionsFactKey } from '../mode/set';
@@ -170,6 +171,23 @@ export default defineTool({
       })
       .optional()
       .describe('Resume an existing session mid-thread — its full context comes back. Pass EITHER agentId (usual) or sessionId (exact pin).'),
+    successor: z
+      .object({
+        agentId: z
+          .string()
+          .max(120)
+          .optional()
+          .describe("The ended predecessor's coord id (e.g. 'su-a1a71' — a prefix is fine)."),
+        sessionId: z
+          .string()
+          .max(200)
+          .optional()
+          .describe('The ended predecessor\'s exact native CLI session uuid.'),
+      })
+      .optional()
+      .describe(
+        'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
+      ),
     fork: z
       .boolean()
       .optional()
@@ -240,7 +258,15 @@ export default defineTool({
     const savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' })
       .__savedLaunchCarry;
     const isResume = !!(args.resume?.agentId || args.resume?.sessionId);
-    if (!isResume && args.fork) {
+    const isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
+    const sourceAction = isResume || isSuccessor;
+    if (args.successor && !isSuccessor) {
+      return err('`successor` needs `agentId` or `sessionId` — pass the ended predecessor reference to recover.');
+    }
+    if (isSuccessor && (isResume || args.fork || args.restoreVisible)) {
+      return err('`successor` is an explicit fresh recovery mode and cannot be combined with `resume`, `fork`, or `restoreVisible`.');
+    }
+    if (!sourceAction && args.fork) {
       return err('`fork: true` needs a source session — pass `resume: { agentId }` (or `sessionId`) to fork from.');
     }
     if (args.restoreVisible && !isResume) {
@@ -252,12 +278,12 @@ export default defineTool({
     if (args.restoreVisible && args.fork) {
       return err('`restoreVisible:true` and `fork:true` conflict: restoration continues the exact transcript in place; fork leaves the source untouched.');
     }
-    if (isResume && args.plan) {
+    if (sourceAction && args.plan) {
       return err('`plan` is for a FRESH launch. A resumed session keeps its own context — put any new direction in `brief`, which becomes its next turn.');
     }
     // P-002: `members` is a FRESH per-member spec array — one session can't be
     // resumed N different ways, so it never rides a resume/fork.
-    if (isResume && args.members?.length) {
+    if (sourceAction && args.members?.length) {
       return err('`members` configures a FRESH per-member multi-launch; a resume/fork is a single session — put any new direction in `brief`.');
     }
     // `count` defaults to the number of member specs when omitted, so `members: [a,b,c]`
@@ -268,13 +294,16 @@ export default defineTool({
         `You passed ${args.members.length} member specs but count is ${count}. Raise count (or omit it — it defaults to the number of member specs) so every spec maps to an agent, or trim members.`,
       );
     }
+    if (isSuccessor && count > 1) {
+      return err('A fresh successor is one identity-preserving session. Use a separate fresh brief for parallel work; do not launch N successors onto one predecessor owner.');
+    }
     if (isResume && count > 1 && !args.fork) {
       return err(
         'A session cannot be resumed more than once (a second CLI on one transcript collides). Use `fork: true` with `count` to branch N agents off it, or launch fresh agents with a `brief`.',
       );
     }
     const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
-    if (!isResume && !args.brief && !args.plan && !anyMemberBrief) {
+    if (!sourceAction && !args.brief && !args.plan && !anyMemberBrief) {
       return err('Give the agent something to do: a `brief` (free-form first turn), a per-member `members[i].brief`, or a `plan` slug — otherwise it launches and sits idle.');
     }
 
@@ -327,22 +356,88 @@ export default defineTool({
       };
     }
 
-    // Resolve the resume/fork target: an agent id (usual) or an exact session uuid.
-    // D-007: a LIVE source must be FORKED, never resumed in place.
+    // Resolve the resume/fork/successor target: an agent id (usual) or an exact
+    // session uuid. D-007 keeps ordinary resume/fork behavior unchanged; the
+    // explicit successor path is the one exception that intentionally starts a
+    // FRESH process while retaining the ended owner's coord identity.
     let resumeSessionId: string | null = null;
     let resumeOwnerId: string | null = null;
+    let resumeAgent: string | null = null;
+    let successorBrief: string | null = null;
     let fork = !!args.fork;
     const notes: string[] = [];
-    if (isResume) {
+    if (sourceAction) {
+      const source = isSuccessor ? args.successor : args.resume;
       const target = await resolveResumeTarget({
-        agentId: args.resume?.agentId ?? null,
-        sessionId: args.resume?.sessionId ?? null,
+        agentId: source?.agentId ?? null,
+        sessionId: source?.sessionId ?? null,
       });
-      if (!target.ok) return err(`Cannot resume: ${target.detail}`);
+      if (!target.ok) return err(`Cannot ${isSuccessor ? 'start successor' : 'resume'}: ${target.detail}`);
       resumeSessionId = target.sessionId;
       resumeOwnerId = target.ownerId;
+      resumeAgent = target.agent;
       let sourceStillLive = target.live;
-      if (args.restoreVisible) {
+      if (isSuccessor) {
+        if (!target.ownerId) {
+          return err(
+            `Cannot start successor for ${target.sessionId}: the ended source has no coord owner id to pre-pin. ` +
+              'Use a fresh context-seeded launch instead; no process was opened.',
+          );
+        }
+        if (sourceStillLive) {
+          return err(
+            `Cannot start successor for ${target.ownerId}: the source session is still LIVE. ` +
+              'A fresh process cannot safely retain an active owner identity; use ordinary resume, which forks live sources.',
+          );
+        }
+        // A successor must run the same backend as its predecessor. An explicit
+        // mismatch would create a new process that can no longer interpret the
+        // predecessor's transcript/carry contract, so refuse before spawning.
+        const sourceAgent = target.agent === 'claude' || target.agent === 'codex' || target.agent === 'omp'
+          ? target.agent
+          : null;
+        if (target.agent && !sourceAgent) {
+          return err(
+            `Cannot start successor for ${target.ownerId}: the ended source recorded unsupported agent ${target.agent}. ` +
+              'No process was opened; launch a fresh agent with an explicit supported backend.',
+          );
+        }
+        if (args.agent && sourceAgent && args.agent !== sourceAgent) {
+          return err(
+            `Cannot start successor for ${target.ownerId}: requested agent ${args.agent} differs from the ended source agent ${sourceAgent}. ` +
+              'Omit agent to inherit the predecessor backend.',
+          );
+        }
+        resumeAgent = sourceAgent;
+        args.agent ??= sourceAgent ?? undefined;
+        args.cwd ??= target.cwd ?? undefined;
+        notes.push(
+          `✓ Fresh successor for ended session ${target.sessionId} (${target.agent ?? 'agent'}) is pre-pinned to the original coord identity ${target.ownerId}; ` +
+            'the predecessor remains untouched and its durable carry/claims are reused.',
+        );
+        try {
+          const { buildCarryBrief, renderCarryBriefText } = await import('../../carry-brief');
+          const carry = await buildCarryBrief(target.ownerId, { workspaceId });
+          const renderedCarry = renderCarryBriefText(carry);
+          const rawBrief = [
+            `Fresh successor recovery for ended session ${target.sessionId}.`,
+            `This is a NEW context retaining predecessor identity ${target.ownerId}; re-orient and verify live state before acting.`,
+            args.brief?.trim() ? `Current recovery direction:\n${args.brief.trim()}` : null,
+            renderedCarry ? `Predecessor carry/recovery brief:\n${renderedCarry}` : 'No carry brief was available; recover durable state with coord:orient { afterCompaction: true } and work_items:get before editing.',
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join('\n\n');
+          successorBrief = capPreservingOperative(rawBrief, 8000, {
+            more: 'coord:orient { afterCompaction: true }',
+            inlineNotice: true,
+          });
+        } catch (e) {
+          return err(
+            `Cannot start successor for ${target.ownerId}: failed to assemble its durable carry/recovery brief ` +
+              `(${(e as Error)?.message ?? e}). No process was opened.`,
+          );
+        }
+      } else if (args.restoreVisible) {
         if (!target.live || !target.ownerId) {
           sourceStillLive = false;
           notes.push(
@@ -392,48 +487,50 @@ export default defineTool({
           }
         }
       }
-      if (sourceStillLive && !fork) {
-        fork = true;
-        notes.push(
-          `⚠ ${target.ownerId ?? 'that session'} is still LIVE — resuming it in place would open a second CLI against one transcript (WI-3882), so it was FORKED instead. The fork has a FRESH identity; the original keeps running untouched.`,
-        );
-      }
-      // P-015: `endedAt` is an END TIME only when the session reported its own exit.
-      // Otherwise a sweeper stamped it on noticing the process was already gone, so
-      // stating it as "ended <ts>" asserts something we do not know (WI-7126).
-      const endedPhrase = describeSessionEndTime(target);
-      notes.push(
-        fork
-          ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${sourceStillLive ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
-          : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
-      );
-
-      // EI-21007744826020808: a live source at the context cliff can technically
-      // fork/resume, accept the kickoff injection, and then die before it can take
-      // the turn. Kickoff delivery is transport evidence, not usable-context
-      // evidence. Reuse the same fresh/staleness-aware pressure oracle the fleet
-      // roster uses; a stale/unknown reading fails open, while a current CRITICAL
-      // reading fails closed before we open a doomed process.
-      if (target.ownerId) {
-        try {
-          const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
-          if (pressure === 'critical') {
-            return err(
-              `Cannot ${fork ? 'fork' : 'resume'} ${target.ownerId}: its current context is CRITICAL ` +
-                '(at or above 90% of its compaction limit). The resumed transcript may boot but cannot ' +
-                'reliably take another turn. Compact/recover that source first, or launch a FRESH agent ' +
-                'with a context-seeded brief.',
-            );
-          }
-          if (pressure === 'high') {
-            notes.push(
-              `⚠ ${target.ownerId} is already at HIGH context pressure (≥80%); the ${fork ? 'fork' : 'resume'} may need to compact before doing useful work.`,
-            );
-          }
-        } catch (e) {
+      if (!isSuccessor) {
+        if (sourceStillLive && !fork) {
+          fork = true;
           notes.push(
-            `resume-context preflight unavailable (${(e as Error)?.message ?? e}) — proceeding without a context verdict`,
+            `⚠ ${target.ownerId ?? 'that session'} is still LIVE — resuming it in place would open a second CLI against one transcript (WI-3882), so it was FORKED instead. The fork has a FRESH identity; the original keeps running untouched.`,
           );
+        }
+        // P-015: `endedAt` is an END TIME only when the session reported its own exit.
+        // Otherwise a sweeper stamped it on noticing the process was already gone, so
+        // stating it as "ended <ts>" asserts something we do not know (WI-7126).
+        const endedPhrase = describeSessionEndTime(target);
+        notes.push(
+          fork
+            ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${sourceStillLive ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
+            : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
+        );
+
+        // EI-21007744826020808: a live source at the context cliff can technically
+        // fork/resume, accept the kickoff injection, and then die before it can take
+        // the turn. Kickoff delivery is transport evidence, not usable-context
+        // evidence. Reuse the same fresh/staleness-aware pressure oracle the fleet
+        // roster uses; a stale/unknown reading fails open, while a current CRITICAL
+        // reading fails closed before we open a doomed process.
+        if (target.ownerId) {
+          try {
+            const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
+            if (pressure === 'critical') {
+              return err(
+                `Cannot ${fork ? 'fork' : 'resume'} ${target.ownerId}: its current context is CRITICAL ` +
+                  '(at or above 90% of its compaction limit). The resumed transcript may boot but cannot ' +
+                  'reliably take another turn. Compact/recover that source first, or launch a FRESH agent ' +
+                  'with a context-seeded brief.',
+              );
+            }
+            if (pressure === 'high') {
+              notes.push(
+                `⚠ ${target.ownerId} is already at HIGH context pressure (≥80%); the ${fork ? 'fork' : 'resume'} may need to compact before doing useful work.`,
+              );
+            }
+          } catch (e) {
+            notes.push(
+              `resume-context preflight unavailable (${(e as Error)?.message ?? e}) — proceeding without a context verdict`,
+            );
+          }
         }
       }
     }
@@ -451,7 +548,7 @@ export default defineTool({
       } catch {
         scheme = null;
       }
-    } else if (isResume) {
+    } else if (sourceAction) {
       if (resumeOwnerId) {
         try {
           const membership = await latestFleetMembership(workspaceId, resumeOwnerId);
@@ -491,7 +588,7 @@ export default defineTool({
       reusePath: string;
     } | null = null;
     if (fleetSlug) {
-      if (isResume) {
+      if (sourceAction) {
         const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
           workspaceId,
           fleetSlug,
@@ -501,7 +598,7 @@ export default defineTool({
             headless: args.headless,
             extraArgs: args.extraArgs,
           },
-          reusePath: 'capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand',
+          reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
         });
         if (!savedLaunchSpec.ok) return err(savedLaunchSpec.message);
         if (savedLaunchSpec.found) {
@@ -612,7 +709,9 @@ export default defineTool({
       // still wins via foldMemberSpec below, which is the intended order —
       // settings are the goal's standing policy, not an override of a choice the
       // caller just made for one member.
-      agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
+      agent: isSuccessor && resumeAgent
+        ? resumeAgent
+        : goalLaunch.effective.agent ?? args.agent ?? 'claude',
       account: goalLaunch.effective.account ?? args.account ?? undefined,
       model: goalLaunch.effective.model ?? args.model ?? undefined,
       effort: goalLaunch.effective.effort ?? undefined,
@@ -624,7 +723,7 @@ export default defineTool({
       extraArgs: args.extraArgs ?? undefined,
     };
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
-      if (isResume) return flatBase;
+      if (sourceAction) return flatBase;
       // D-016 (WI-38048): this used to fold `settings.roles[memberSpecs[i].role]`
       // — i.e. it looked the goal's launch profiles up by psu `--role`. That is
       // the defect, not a feature that was lost here: a launch SLOT is a function
@@ -719,7 +818,8 @@ export default defineTool({
             })
           : buildAgentLaunchCommand({
               mode: 'fresh',
-              agent: folded.agent ?? null,
+              agent: (isSuccessor ? resumeAgent : folded.agent) ?? null,
+              ownerId: isSuccessor ? resumeOwnerId : null,
               plan: args.plan ?? null,
               // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
               // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
@@ -770,9 +870,11 @@ export default defineTool({
 
     const label =
       args.label ??
-      (isResume
-        ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeSessionId ?? 'agent'}`
-        : `agent · ${args.plan ?? (args.brief ?? '').slice(0, 40)}`);
+      (isSuccessor
+        ? `successor · ${args.successor?.agentId ?? resumeSessionId ?? 'agent'}`
+        : isResume
+          ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeSessionId ?? 'agent'}`
+          : `agent · ${args.plan ?? (args.brief ?? '').slice(0, 40)}`);
     const anyHeadless = foldedConfigs.some((f) => !!f.headless);
     const headlessLogDir = anyHeadless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;
 
@@ -787,7 +889,9 @@ export default defineTool({
     const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
     const results = await Promise.all(
       memberCommands.map((cmd, i) => {
-        const memberBrief = (memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined;
+        const memberBrief = isSuccessor
+          ? successorBrief ?? undefined
+          : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined);
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
         return foldedConfigs[i].headless
@@ -912,7 +1016,13 @@ export default defineTool({
       );
       try {
         freshVerdict = await verifyFreshLaunchStarted(
-          { workspaceId, launcherOwnerId: callerOwnerId, since: spawnStartedAt, expected: opened.length },
+          {
+            workspaceId,
+            launcherOwnerId: callerOwnerId,
+            since: spawnStartedAt,
+            expected: opened.length,
+            ...(isSuccessor && resumeOwnerId ? { expectedOwnerIds: [resumeOwnerId] } : {}),
+          },
           {
             probeProcessEvidence: () => opened.flatMap((result) => {
               if (result.status !== 'ok' || result.pid == null || !result.logPath) return [];
@@ -957,7 +1067,8 @@ export default defineTool({
           `  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${cwd}${o.display ? ` [DISPLAY=${o.display}]` : ''}`,
         );
       }
-      if (args.brief || anyMemberBrief) {
+      const hasLaunchBrief = Boolean(isSuccessor ? successorBrief : args.brief || anyMemberBrief);
+      if (hasLaunchBrief) {
         lines.push(
           isResume
             ? '  ↪ the brief is QUEUED as the resumed session\'s next turn (psu\'s managed pty injects it once the agent reaches its prompt). Delivery alone is not proof the turn began; read the verification verdict below.'
@@ -993,7 +1104,7 @@ export default defineTool({
             ...(savedLaunchSpecMeta ?? {}),
           }
         : null,
-      mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
+      mode: isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh',
       resumedOwnerId: resumeOwnerId,
       tasks: results.flatMap((result, i) =>
         result.status === 'ok'
