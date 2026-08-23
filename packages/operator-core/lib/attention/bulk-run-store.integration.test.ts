@@ -36,6 +36,7 @@ const {
   getActiveRun,
   getRunningRun,
   setRunPhase,
+  executeBulkRunAction,
   reportOutcomes,
   getPendingReviewItems,
   markItemAccepted,
@@ -378,5 +379,80 @@ describe('attention bulk-run store (real PG)', () => {
     });
     expect(res.refused?.reason).toBe('run_not_accepting_reports');
     expect((await getRunItems(run.runId, ws))[0]!.outcome).toBe('pending');
+  });
+
+  it('serializes Stop with terminal actions: the winner completes before the loser may proceed', async () => {
+    const ws = `ws-authoritative-stop-${Date.now()}`;
+    const [item] = seed('authority');
+    const run = await createRun({ items: [item!], workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', workspaceId: ws });
+
+    let releaseAction!: () => void;
+    const actionMayFinish = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
+    let markActionStarted!: () => void;
+    const actionStarted = new Promise<void>((resolve) => {
+      markActionStarted = resolve;
+    });
+
+    const action = executeBulkRunAction({
+      runId: run.runId,
+      itemId: item!.itemId,
+      actionId: 'resolve',
+      rationale: 'The owner gate is moot.',
+      workspaceId: ws,
+      execute: async () => {
+        markActionStarted();
+        await actionMayFinish;
+        return { resolved: true };
+      },
+    });
+    await actionStarted;
+
+    // Stop must queue behind the SAME run-row authority lock. Acknowledging it
+    // while this callback is still in flight would recreate WI-41022: the owner
+    // sees "stopped" and then the already-authorized action completes unseen.
+    let stopAcknowledged = false;
+    const stop = settleRunPhase({ runId: run.runId, workspaceId: ws }).then((result) => {
+      stopAcknowledged = true;
+      return result;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(stopAcknowledged).toBe(false);
+
+    releaseAction();
+    const [acted, stopped] = await Promise.all([action, stop]);
+    expect(acted.refused).toBeNull();
+    expect(acted.actionResult).toEqual({ resolved: true });
+    expect(stopped!.phase).toBe('complete');
+    expect((await getRunItems(run.runId, ws))[0]).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'The owner gate is moot.',
+    });
+
+    // The opposite ordering is the revocation guarantee: once Stop commits,
+    // a later actor must be refused before its irreversible callback begins.
+    const [lateItem] = seed('revoked');
+    const lateRun = await createRun({ items: [lateItem!], workspaceId: ws });
+    await setRunPhase({ runId: lateRun.runId, phase: 'running', workspaceId: ws });
+    expect((await settleRunPhase({ runId: lateRun.runId, workspaceId: ws }))!.phase).toBe('review');
+
+    let dispatchedAfterStop = false;
+    const late = await executeBulkRunAction({
+      runId: lateRun.runId,
+      itemId: lateItem!.itemId,
+      actionId: 'resolve',
+      rationale: 'Must never execute.',
+      workspaceId: ws,
+      execute: async () => {
+        dispatchedAfterStop = true;
+        return { resolved: true };
+      },
+    });
+    expect(late.refused).toEqual({ reason: 'run_authority_revoked', phase: 'review' });
+    expect(dispatchedAfterStop).toBe(false);
+    expect((await getRunItems(lateRun.runId, ws))[0]!.outcome).toBe('pending');
   });
 });
