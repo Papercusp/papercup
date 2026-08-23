@@ -115,7 +115,7 @@ describe('plans.attentionBulkRun sync resolver', () => {
     const entry = getRegistryEntryV2('plans.attentionBulkRun');
     expect(entry, 'plans.attentionBulkRun is not registered').toBeTruthy();
 
-    const rows = await entry!.resolve!({}, {} as never);
+    const rows = await entry!.resolve!({} as never);
     // NOT `[]`: an empty set is indistinguishable from a failed read, and the
     // strip must render IDLE on "no run", never on "unknown".
     expect(rows).toEqual([{ run: null, items: [] }]);
@@ -132,7 +132,7 @@ describe('plans.attentionBulkRun sync resolver', () => {
       getRunItems: vi.fn(async () => []),
     }));
     const { getRegistryEntryV2 } = await import('../sync-resolver/index');
-    const rows = await getRegistryEntryV2('plans.attentionBulkRun')!.resolve!({}, {} as never);
+    const rows = await getRegistryEntryV2('plans.attentionBulkRun')!.resolve!({} as never);
     // The inbox itself must stay usable when the bulk substrate is unavailable —
     // every item remains resolvable by hand.
     expect(rows).toEqual([{ run: null, items: [] }]);
@@ -150,10 +150,9 @@ describe('plans.attentionBulkRun sync resolver', () => {
       getRunItems: vi.fn(async () => [{ itemId: 'a' }]),
     }));
     const { getRegistryEntryV2 } = await import('../sync-resolver/index');
-    const rows = (await getRegistryEntryV2('plans.attentionBulkRun')!.resolve!(
-      { runId: 'run-x' },
-      {} as never,
-    )) as Array<{ run: { runId: string }; items: unknown[] }>;
+    const rows = (await getRegistryEntryV2('plans.attentionBulkRun')!.resolve!({
+      runId: 'run-x',
+    } as never)) as Array<{ run: { runId: string }; items: unknown[] }>;
 
     expect(getRun).toHaveBeenCalledWith('run-x');
     // A named run must NOT fall through to "latest" — that would silently show
