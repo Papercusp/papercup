@@ -143,7 +143,21 @@ describe('resolution + enumeration', () => {
   it('enumerates EVERY kind — the whole reason the registry exists', async () => {
     const ws = 'ws-kinds';
     for (const kind of ['xvfb-local', 'frame-slot', 'vm-guest', 'bwrap', 'microvm'] as const) {
-      await registerDesktopSession(base({ workspaceId: ws, kind, scopeRef: `sc-${kind}` }), sql);
+      await registerDesktopSession(
+        base({
+          workspaceId: ws,
+          kind,
+          scopeRef: `sc-${kind}`,
+          // P-005: guest kinds must declare a boot-time display backend
+          // (EI-20504354859682877). Kept as a conditional rather than applied to
+          // every kind, so this fixture keeps exercising the un-decorated path
+          // for the kinds the constraint does not govern.
+          ...(kind === 'vm-guest' || kind === 'microvm'
+            ? { capabilities: { displayBackend: 'vnc' as const } }
+            : {}),
+        }),
+        sql,
+      );
     }
     const listed = await listDesktopSessions({ workspaceId: ws }, sql);
     expect(new Set(listed.map((s) => s.kind))).toEqual(

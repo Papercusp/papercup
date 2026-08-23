@@ -131,14 +131,28 @@ export const PROVISIONING_STUCK_SEC = 30 * 60;
  * them would be indistinguishable from a crash — so a bound viewer holds the
  * governor off.
  *
- * BOUNDED on purpose. `setDesktopViewer` bumps the activity clock, so a genuinely
- * active viewer keeps refreshing this window for free. A binding that stops being
- * refreshed is a viewer that LEFT without clearing its flag — and an unbounded
- * viewer hold would let one stuck flag leak a desktop forever, which is exactly
- * the failure this whole file exists to prevent. Protect the human; do not let a
- * stale boolean impersonate one.
+ * ⚠ WHY THIS IS HOURS AND NOT MINUTES — the sizing is derived from how the
+ * binding actually behaves, and getting it from the name alone gives the wrong
+ * answer. `frame-vnc` binds the viewer when the stream OPENS and clears it back
+ * to `none` on teardown; nothing writes the row in between. So the activity clock
+ * marks the START of a viewing session, not its liveness, and a bound viewer that
+ * has been quiet for 40 minutes is overwhelmingly a person still watching — not a
+ * stale flag. A short bound here would freeze a desktop out from under a live
+ * 31-minute VNC session, which is precisely the "indistinguishable from a crash"
+ * failure this hold exists to prevent. (This was a real defect in the first cut of
+ * this file, caught by a test: the bound was 30 minutes.)
+ *
+ * It is still BOUNDED, because teardown can be skipped — a crashed viewer process
+ * never runs the clear, and an unbounded hold would let one stuck flag leak a
+ * desktop forever. Six hours is longer than any plausible single viewing session
+ * and short enough that a crashed teardown costs one idle desktop for an evening.
+ * Protect the human first; do not let a stale boolean impersonate one indefinitely.
+ *
+ * If a future streaming tier (P-013) heartbeats the row while a viewer is
+ * connected, this can drop back to minutes — the binding would then mean
+ * liveness, which is what a short bound requires.
  */
-export const VIEWER_HOLD_SEC = 30 * 60;
+export const VIEWER_HOLD_SEC = 6 * HOUR;
 
 export interface DesktopVerdict {
   id: string;

@@ -149,25 +149,53 @@ describe('classifyDesktopSession — refusals outrank every clock', () => {
 });
 
 describe('classifyDesktopSession — the viewer hold is real but BOUNDED', () => {
-  it('holds off while a viewer binding is being refreshed', () => {
-    const v = classifyDesktopSession(
-      session({ viewerMode: 'watch', viewerActor: 'human', lastActiveAt: ago(3 * HOUR) }),
-      NOW,
-    );
+  // The guest kind is the sharp case: its freeze threshold (20m) sits INSIDE the
+  // viewer hold, so these two tests genuinely exercise the precedence rather than
+  // passing because nothing was due yet.
+  const watched = (inactiveSec: number) =>
+    session({
+      kind: 'vm-guest',
+      viewerMode: 'watch',
+      viewerActor: 'human',
+      lastActiveAt: ago(inactiveSec),
+    });
+
+  it('does not freeze a desktop out from under someone watching it', () => {
+    // 40 minutes: twice the guest freeze threshold, well inside the viewer hold.
+    // frame-vnc binds the viewer when the stream OPENS and writes nothing until
+    // teardown, so a quiet 40-minute binding is a person still watching — this is
+    // the exact case a short hold got wrong.
+    const v = classifyDesktopSession(watched(40 * MIN), NOW);
     expect(v.action).toBe('keep');
     expect(v.reason).toMatch(/viewer bound/);
   });
 
-  it('stops honouring a viewer binding that has gone stale, so a stuck flag cannot leak a desktop', () => {
+  it('freezes the SAME session once the binding outlives any plausible session', () => {
+    // The bound exists because teardown can be skipped: a crashed viewer never
+    // runs the clear, and an unbounded hold would leak the desktop forever.
+    const v = classifyDesktopSession(watched(VIEWER_HOLD_SEC + MIN), NOW);
+    expect(v.action).toBe('freeze');
+  });
+
+  it('the identical unwatched session freezes immediately (the positive control)', () => {
+    // Without this, both assertions above would pass against a classifier that
+    // simply never freezes a vm-guest.
     const v = classifyDesktopSession(
-      session({
-        viewerMode: 'watch',
-        viewerActor: 'human',
-        lastActiveAt: ago(VIEWER_HOLD_SEC + 3 * HOUR),
-      }),
+      session({ kind: 'vm-guest', lastActiveAt: ago(40 * MIN) }),
       NOW,
     );
     expect(v.action).toBe('freeze');
+  });
+
+  it('the viewer hold outlasts the freeze threshold of every kind', () => {
+    // The invariant behind the sizing: if any kind could freeze before the hold
+    // expires, a bound viewer would be honoured for some kinds and not others —
+    // a difference nobody would predict from reading either constant alone.
+    for (const [kind, p] of Object.entries(DESKTOP_LIFECYCLE_POLICY)) {
+      expect(VIEWER_HOLD_SEC, `${kind} can freeze before the viewer hold expires`).toBeGreaterThan(
+        p.idleAfterSec,
+      );
+    }
   });
 });
 
