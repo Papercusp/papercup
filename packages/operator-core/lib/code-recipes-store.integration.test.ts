@@ -652,5 +652,72 @@ describe('code_recipes store (real PG)', () => {
       const { swept } = await sweepRecipes(db.adminSql, { staleDays: 30, maxRunCount: 1 });
       expect(swept.map((r) => r.id).sort()).toEqual(['alpha-stale', 'beta-stale']);
     });
+
+    // ── targeted retire by id ────────────────────────────────────────────────
+    // The heuristic selects purely by age + run-count, so it cannot express
+    // "retire THIS known-broken recipe": reaching one recent recipe means
+    // widening staleDays until the whole long tail qualifies with it.
+    it('ids retires exactly the named recipes at ANY age/run-count, and nothing else', async () => {
+      const ws = 'ws-cr-sweep-targeted';
+      // Both of these are invisible to the heuristic: hot (12 runs) and recent (1 day).
+      await seedAged(ws, 'broken-hot', { runCount: 12, daysAgo: 1 });
+      await seedAged(ws, 'broken-recent', { runCount: 2, daysAgo: 0 });
+      // A textbook heuristic candidate that was NOT named — targeting must not widen.
+      await seedAged(ws, 'unnamed-stale-oneoff', { runCount: 1, daysAgo: 90 });
+
+      const { swept, skipped, dryRun } = await sweepRecipes(db.adminSql, {
+        ids: ['broken-hot', 'broken-recent'],
+      });
+      expect(dryRun).toBe(false);
+      expect(swept.map((r) => r.id).sort()).toEqual(['broken-hot', 'broken-recent']);
+      expect(skipped).toEqual([]);
+
+      expect((await getRecipe(db.adminSql, 'broken-hot'))?.status).toBe('retired');
+      expect((await getRecipe(db.adminSql, 'broken-recent'))?.status).toBe('retired');
+      // The unnamed stale one-off the HEURISTIC would have taken is untouched:
+      // targeting scopes the sweep, it does not merely re-rank it.
+      expect((await getRecipe(db.adminSql, 'unnamed-stale-oneoff'))?.status).toBe('active');
+    });
+
+    it('ids keeps the safety rails and REPORTS every id it did not retire', async () => {
+      const ws = 'ws-cr-sweep-targeted-rails';
+      await seedAged(ws, 't-merged', { runCount: 1, daysAgo: 5, status: 'merged' });
+      await seedAged(ws, 't-graduated', { runCount: 1, daysAgo: 5 });
+      await db.adminSql`
+        UPDATE harness_shared.code_recipes
+           SET promoted_tool = 'some:verb'
+         WHERE id = 't-graduated'`;
+      await seedAged(ws, 't-ok', { runCount: 1, daysAgo: 5 });
+
+      const { swept, skipped } = await sweepRecipes(db.adminSql, {
+        ids: ['t-merged', 't-graduated', 't-ok', 't-typo-never-existed'],
+      });
+
+      expect(swept.map((r) => r.id)).toEqual(['t-ok']);
+      // A short `swept` list is otherwise indistinguishable from a typo'd id, so
+      // each miss must come back with a reason rather than being dropped.
+      expect((skipped ?? []).map((s) => [s.id, s.reason]).sort()).toEqual([
+        ['t-graduated', 'promoted'],
+        ['t-merged', 'not_active'],
+        ['t-typo-never-existed', 'not_found'],
+      ]);
+      expect((await getRecipe(db.adminSql, 't-merged'))?.status).toBe('merged');
+      expect((await getRecipe(db.adminSql, 't-graduated'))?.status).toBe('active');
+    });
+
+    it('ids + dryRun previews the targets and mutates nothing', async () => {
+      const ws = 'ws-cr-sweep-targeted-dry';
+      await seedAged(ws, 't-dry', { runCount: 30, daysAgo: 0 });
+
+      const preview = await sweepRecipes(db.adminSql, { ids: ['t-dry'], dryRun: true });
+      expect(preview.dryRun).toBe(true);
+      expect(preview.swept.map((r) => r.id)).toEqual(['t-dry']);
+      expect(preview.swept[0].status).toBe('active');
+      expect((await getRecipe(db.adminSql, 't-dry'))?.status).toBe('active');
+
+      const real = await sweepRecipes(db.adminSql, { ids: ['t-dry'], dryRun: false });
+      expect(real.swept.map((r) => r.id)).toEqual(['t-dry']);
+      expect((await getRecipe(db.adminSql, 't-dry'))?.status).toBe('retired');
+    });
   });
 });

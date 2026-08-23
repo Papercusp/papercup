@@ -461,21 +461,62 @@ export interface SweepRecipesResult {
  *
  * A recipe with a NULL last_run_at (saved, never run) is NOT swept here — it has
  * no staleness clock yet; it ages in only once it's been run and then idled.
+ *
+ * `ids` switches to a TARGETED retire of exactly those recipes (bypassing the
+ * staleDays/run_count heuristic, keeping the active + non-promoted rails) and
+ * reports every requested id it did not retire in `skipped`. Without it there is
+ * no way to retire one known-broken recipe: the heuristic selects purely by age
+ * and run-count, so reaching a single recent recipe means widening staleDays
+ * until thousands of unrelated ones qualify (measured on this corpus: the 30-day
+ * default matched 0 while staleDays:1 matched 9,544).
  */
 export async function sweepRecipes(sql: postgres.Sql, input: SweepRecipesInput = {}): Promise<SweepRecipesResult> {
   const staleDays = input.staleDays ?? 30;
   const maxRunCount = input.maxRunCount ?? 1;
   const dryRun = input.dryRun ?? false;
+  const ids = input.ids && input.ids.length > 0 ? [...new Set(input.ids)] : null;
+
+  // TARGETED (`ids`) vs. the staleness HEURISTIC. Explicit ids are the caller's
+  // judgement about specific recipes, so they bypass staleDays/maxRunCount — a
+  // broken recipe is worth retiring at any age or run-count. They do NOT bypass
+  // the safety rails: `status='active'` still excludes an already-retired or
+  // merged row, and `promoted_tool IS NULL` is stated explicitly here because
+  // targeting no longer has the run-count cap incidentally shielding a hot,
+  // graduated recipe.
+  const selector = ids
+    ? sql`status = 'active' AND promoted_tool IS NULL AND id = ANY(${ids}::text[])`
+    : sql`status = 'active'
+         AND run_count <= ${maxRunCount}
+         AND last_run_at IS NOT NULL
+         AND last_run_at < now() - make_interval(days => ${staleDays})`;
+
+  // A targeted sweep must explain a short result: an id that was a typo, already
+  // retired, or promoted is otherwise silently absent from `swept` and reads as
+  // "nothing matched", which is the same shape as a successful no-op.
+  const skippedFor = async (retired: Set<string>): Promise<SweepRecipesSkip[]> => {
+    if (!ids) return [];
+    const present = await sql<{ id: string; status: string; promoted_tool: string | null }[]>`
+      SELECT id, status, promoted_tool FROM harness_shared.code_recipes
+       WHERE id = ANY(${ids}::text[])`;
+    const byId = new Map(present.map((r) => [r.id, r]));
+    return ids
+      .filter((id) => !retired.has(id))
+      .map((id): SweepRecipesSkip => {
+        const row = byId.get(id);
+        if (!row) return { id, reason: 'not_found' };
+        if (row.promoted_tool != null) return { id, reason: 'promoted', status: row.status };
+        return { id, reason: 'not_active', status: row.status };
+      });
+  };
 
   if (dryRun) {
     const rows = await sql<DbRow[]>`
       SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
-       WHERE status = 'active'
-         AND run_count <= ${maxRunCount}
-         AND last_run_at IS NOT NULL
-         AND last_run_at < now() - make_interval(days => ${staleDays})
+       WHERE ${selector}
        ORDER BY last_run_at ASC NULLS LAST, run_count ASC, id`;
-    return { swept: rows.map(mapRow), dryRun: true };
+    const swept = rows.map(mapRow);
+    const skipped = await skippedFor(new Set(rows.map((r) => r.id)));
+    return { swept, dryRun: true, ...(ids ? { skipped } : {}) };
   }
 
   // Real run: retire the candidates and RETURN the retired rows (single
@@ -483,12 +524,11 @@ export async function sweepRecipes(sql: postgres.Sql, input: SweepRecipesInput =
   const rows = await sql<DbRow[]>`
     UPDATE harness_shared.code_recipes
        SET status = 'retired', updated_at = now()
-     WHERE status = 'active'
-       AND run_count <= ${maxRunCount}
-       AND last_run_at IS NOT NULL
-       AND last_run_at < now() - make_interval(days => ${staleDays})
+     WHERE ${selector}
     RETURNING ${SELECT_COLS(sql)}`;
-  return { swept: rows.map(mapRow), dryRun: false };
+  const swept = rows.map(mapRow);
+  const skipped = await skippedFor(new Set(rows.map((r) => r.id)));
+  return { swept, dryRun: false, ...(ids ? { skipped } : {}) };
 }
 
 /** Fetch one recipe by id (global). Null when absent. */

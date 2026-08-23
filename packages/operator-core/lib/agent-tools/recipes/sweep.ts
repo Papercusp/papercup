@@ -27,7 +27,8 @@ export default defineTool({
     'Retire the stale long-tail of never-reused one-off code:run RECIPES (active, last run older than ' +
     'staleDays AND run_count <= maxRunCount). NEVER retires a hot, recently-run, promoted, or merged ' +
     'recipe. dryRun (DEFAULT TRUE) previews the candidates without changing anything — pass ' +
-    'dryRun:false to actually retire. Reversible (a status flip).',
+    'dryRun:false to actually retire. Reversible (a status flip). `ids` instead retires exactly those ' +
+    'recipes at any age/run-count (still active + non-promoted only), reporting misses in `skipped`.',
   guidance: {
     when:
       'Periodic hygiene (a Mug idle-turn task) to clear the long tail of one-off recipes that were ' +
@@ -35,8 +36,9 @@ export default defineTool({
       'review the candidates, then dryRun:false to retire them.',
     notWhen:
       'To merge near-duplicates (recipes:merge) or to find promote candidates (recipes:candidates). ' +
-      'Don\'t lower staleDays/raise maxRunCount aggressively — that risks retiring recipes still ' +
-      'finding their audience; the conservative defaults (30 days, <=1 run) target only true one-offs.',
+      'Don\'t lower staleDays/raise maxRunCount to reach ONE specific recipe — that is what `ids` is ' +
+      'for; widening the heuristic retires the whole long tail with it (on this corpus the 30-day ' +
+      'default matches 0 while staleDays:1 matches thousands).',
     chaining:
       'recipes:sweep { dryRun: true } (review the would-retire list) → recipes:sweep { dryRun: false } ' +
       '(commit). recipes:get { id } to inspect any candidate before committing.',
@@ -70,13 +72,25 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Preview only — return the candidates without retiring them. DEFAULTS TO TRUE; pass false to commit.'),
+    ids: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        'TARGETED retire of exactly these recipe ids, instead of the staleDays/maxRunCount heuristic ' +
+          '(which cannot reach one specific recipe without sweeping the whole long tail with it). Still ' +
+          'retires only ACTIVE, non-promoted recipes; every requested id not retired comes back in `skipped` ' +
+          'with a reason (not_found / promoted / not_active). dryRun still defaults to TRUE.',
+      ),
   }),
   async handler(args, ctx) {
     // Preview-first: default to dryRun unless the caller explicitly commits.
     const dryRun = args.dryRun ?? true;
-    const { swept } = await sweepRecipes(getOrgPg().sql, {
+    const { swept, skipped } = await sweepRecipes(getOrgPg().sql, {
       staleDays: args.staleDays,
       maxRunCount: args.maxRunCount,
+      ids: args.ids,
       dryRun,
     });
 
@@ -94,6 +108,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             dryRun,
+            ...(args.ids ? { targeted: true } : {}),
             count: swept.length,
             recipes: swept.map((r) => ({
               id: r.id,
@@ -103,6 +118,9 @@ export default defineTool({
               lastRunAt: r.lastRunAt,
               status: r.status,
             })),
+            // A targeted sweep reports the ids it did NOT retire: a short `recipes`
+            // list is otherwise indistinguishable from a typo'd or already-retired id.
+            ...(skipped && skipped.length > 0 ? { skipped } : {}),
           }),
         },
       ],
