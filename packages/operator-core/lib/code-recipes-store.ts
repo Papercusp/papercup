@@ -23,12 +23,17 @@
  */
 import type postgres from 'postgres';
 import type { NormalizedExecutionTrace } from './orchestration-trace';
+import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from './recipe-contract';
 
 export interface CodeRecipeRow {
   id: string;
   title: string;
   description: string;
   script: string;
+  /** Versioned runtime-input contract for this exact script revision; null = legacy foreground recipe. */
+  bindingSchema: RecipeBindingSchemaV1 | null;
+  /** Declarative requirements only — authorization is always recomputed for the current caller. */
+  capabilityManifest: CapabilityManifestV1 | null;
   /** The pot that authored the recipe (P-002 pot-scope-all-learnings); null = pre-pot legacy or context-less system author. */
   potSlug: string | null;
   authorRole: string | null;
@@ -57,7 +62,7 @@ export interface CodeRecipeRow {
  * was pure waste on BOTH legs — Postgres→node and, for the sync read, node→client.
  * Fetch a body by id with {@link getRecipe}, which still returns the full row.
  */
-export type CodeRecipeListRow = Omit<CodeRecipeRow, 'script'>;
+export type CodeRecipeListRow = Omit<CodeRecipeRow, 'script' | 'bindingSchema' | 'capabilityManifest'>;
 
 export interface UpsertCodeRecipeInput {
   /** Stable kebab slug derived from the title (the PRIMARY KEY). */
@@ -65,6 +70,10 @@ export interface UpsertCodeRecipeInput {
   title: string;
   description: string;
   script: string;
+  /** Omit/null for a legacy recipe. A non-null schema requires capabilityManifest. */
+  bindingSchema?: RecipeBindingSchemaV1 | null;
+  /** Omit/null for a legacy recipe. The contract is replaced, never inherited across script revisions. */
+  capabilityManifest?: CapabilityManifestV1 | null;
   authorRole?: string | null;
   toolsUsed?: string[];
   /** title+description embedding (768-dim). null when the embedder was unavailable. */
@@ -111,6 +120,8 @@ type DbRow = {
   title: string;
   description: string;
   script: string;
+  binding_schema: RecipeBindingSchemaV1 | null;
+  capability_manifest: CapabilityManifestV1 | null;
   pot_slug: string | null;
   author_role: string | null;
   tools_used: string[] | null;
@@ -133,7 +144,7 @@ const asInt = (v: number | string): number => (typeof v === 'number' ? v : parse
 
 /** Map every column EXCEPT `script` — shared by {@link mapRow} and the list reads,
  *  so the two shapes can never drift apart. */
-function mapListRow(r: Omit<DbRow, 'script'>): CodeRecipeListRow {
+function mapListRow(r: Omit<DbRow, 'script' | 'binding_schema' | 'capability_manifest'>): CodeRecipeListRow {
   return {
     id: r.id,
     title: r.title,
@@ -156,7 +167,12 @@ function mapListRow(r: Omit<DbRow, 'script'>): CodeRecipeListRow {
 }
 
 function mapRow(r: DbRow): CodeRecipeRow {
-  return { ...mapListRow(r), script: r.script };
+  return {
+    ...mapListRow(r),
+    script: r.script,
+    bindingSchema: r.binding_schema,
+    capabilityManifest: r.capability_manifest,
+  };
 }
 
 /** SELECT-list shared by every read so `has_embedding` is computed uniformly
@@ -170,7 +186,7 @@ const LIST_SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
 `;
 
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  script, ${LIST_SELECT_COLS(sql)}
+  script, binding_schema, capability_manifest, ${LIST_SELECT_COLS(sql)}
 `;
 
 /**
@@ -182,15 +198,21 @@ const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
  * computed embedding.
  */
 export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInput): Promise<CodeRecipeRow> {
+  if (input.bindingSchema != null && input.capabilityManifest == null) {
+    throw new Error('upsertRecipe: bindingSchema requires capabilityManifest');
+  }
   // pgvector wants the textual `[1,2,3]` form; null leaves/keeps it unset.
   const embeddingLiteral = input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
+  const bindingSchemaJson = input.bindingSchema == null ? null : JSON.stringify(input.bindingSchema);
+  const capabilityManifestJson = input.capabilityManifest == null ? null : JSON.stringify(input.capabilityManifest);
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.code_recipes
-      (id, title, description, script, pot_slug, author_role,
+      (id, title, description, script, binding_schema, capability_manifest, pot_slug, author_role,
        tools_used, tags, embedding, created_by, updated_at)
     VALUES (
       ${input.id}, ${input.title},
-      ${input.description}, ${input.script}, ${input.potSlug}, ${input.authorRole ?? null},
+      ${input.description}, ${input.script}, ${bindingSchemaJson}::jsonb, ${capabilityManifestJson}::jsonb,
+      ${input.potSlug}, ${input.authorRole ?? null},
       ${input.toolsUsed ?? []}, ${input.tags ?? []},
       ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
     )
@@ -198,6 +220,11 @@ export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInp
       title       = EXCLUDED.title,
       description = EXCLUDED.description,
       script      = EXCLUDED.script,
+      -- Both declarations belong to the exact script revision. An updater that
+      -- does not supply them deliberately returns the row to legacy mode rather
+      -- than inheriting stale requirements/bindings from different source.
+      binding_schema = EXCLUDED.binding_schema,
+      capability_manifest = EXCLUDED.capability_manifest,
       -- first-write pot attribution: a later update never steals the recipe from
       -- its authoring pot; a legacy NULL adopts the updater's pot (organic backfill)
       pot_slug    = COALESCE(harness_shared.code_recipes.pot_slug, EXCLUDED.pot_slug),
