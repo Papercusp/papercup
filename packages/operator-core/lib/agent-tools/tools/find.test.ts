@@ -362,6 +362,33 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toBe('producer_health?:object{kind:enum(green-checkpoint)}');
   });
 
+  it('preserves a bounded nested semantic description when structure cannot express the constraint (EI-21211778836360588)', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        producer_health: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', const: 'green-checkpoint' },
+            pipeline: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 64,
+              description:
+                'Sanitized basename of the integration root that emits the event (for example "papercusp" in release:green:papercusp), not the routine name "green-checkpoint".',
+            },
+          },
+          required: ['kind'],
+        },
+      },
+    });
+
+    expect(compact).toContain(
+      'pipeline?:string(1-64) Sanitized basename of the integration root that emits the event (for example "papercusp" in release:green:papercusp), not the routine name "green-checkpoint".',
+    );
+    expect(compact.length).toBeLessThanOrEqual(2_200);
+  });
+
   it('returns valid bounded JSON and marks omitted hits', () => {
     const base = {
       query: 'a verbose discovery query',

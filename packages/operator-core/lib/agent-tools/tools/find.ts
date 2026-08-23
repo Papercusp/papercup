@@ -59,6 +59,7 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
+const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
 
 type JsonSchemaNode = {
   type?: unknown;
@@ -203,9 +204,27 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number): string {
   const names = Object.entries(nested.properties).map(([name, raw]) => {
     const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as JsonSchemaNode : {};
     const shape = schemaShape(child, depth);
-    return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+    const description = nestedDescription(child, depth);
+    return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   });
   return names.length > 0 ? `{${names.join(',')}}` : '';
+}
+
+/**
+ * Keep semantic descriptions for nested fields that cannot be represented by
+ * JSON Schema structure alone (for example, a pipeline must be the sanitized
+ * integration-root basename). Top-level descriptions remain on the tool hit;
+ * nested descriptions are otherwise lost by the compact projection. Bound the
+ * hint so one verbose field cannot consume the discovery result budget.
+ */
+function nestedDescription(node: JsonSchemaNode, depth: number): string {
+  if (depth <= 0 || typeof node.description !== 'string') return '';
+  const description = node.description.replace(/\s+/g, ' ').trim();
+  if (!description) return '';
+  const bounded = description.length <= COMPACT_NESTED_DESCRIPTION_MAX_CHARS
+    ? description
+    : `${description.slice(0, COMPACT_NESTED_DESCRIPTION_MAX_CHARS - 1)}…`;
+  return ` ${bounded}`;
 }
 
 function schemaShape(node: JsonSchemaNode, depth: number): string {
