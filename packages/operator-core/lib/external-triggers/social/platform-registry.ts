@@ -1196,17 +1196,131 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     label: 'TikTok',
     egress: {
       hostPolicy: 'fixed',
-      apiHosts: [],
-      notes: 'Not yet verified — P-022 declares the hosts when it verifies this row. Empty means DENY, not "unconstrained".',
+      // ONE API host for everything this row uses: open.tiktokapis.com serves
+      // /v2/video/list/ and /v2/user/info/ (Display API) and the whole
+      // /v2/post/publish/* family. open-upload.tiktokapis.com is deliberately
+      // ABSENT: it is only ever reached by the FILE_UPLOAD write path, and this
+      // row declares no write verbs, so granting it would be permission for a
+      // call nothing here can make.
+      apiHosts: ['open.tiktokapis.com'],
+      permalinkHosts: ['www.tiktok.com'],
+      notes:
+        'open.tiktokapis.com verified 2026-08-23 against the v2 video-list reference and the Content Posting API reference (both name it as the host). www.tiktok.com appears only inside emitted permalink/embed values and is never fetched.',
     },
     wave: 'C',
-    verifiedAt: null,
-    sources: [],
-    auth: { mode: 'app-review', scopes: [] },
-    read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['post'], idempotency: 'unknown', verifiedAt: null },
-    limits: {},
-    blockedOn: 'owner: TikTok audit — unaudited apps cannot direct-publish, so v1 targets the draft/inbox path',
+    verifiedAt: '2026-08-23',
+    sources: [
+      'https://developers.tiktok.com/doc/tiktok-api-v2-video-list',
+      'https://developers.tiktok.com/doc/display-api-get-started/',
+      'https://developers.tiktok.com/doc/tiktok-api-scopes/',
+      'https://developers.tiktok.com/doc/content-posting-api-get-started/',
+      'https://developers.tiktok.com/doc/content-posting-api-reference-upload-video/',
+      'https://developers.tiktok.com/doc/content-posting-api-reference-get-video-status/',
+      'https://developers.tiktok.com/doc/content-sharing-guidelines/',
+    ],
+    auth: {
+      mode: 'app-review',
+      // Enumerated from the endpoints this adapter ACTUALLY calls (D-034), not
+      // copied from a product page. tiktok-videos-adapter calls exactly one
+      // endpoint, POST /v2/video/list/, whose reference names `video.list`.
+      // `user.info.basic` is here because the Display API prerequisites require
+      // it alongside video.list for the authorization to be granted at all
+      // ("You will need to set scope=user.info.basic,video.list").
+      //
+      // The three write scopes TikTok documents — video.publish, video.upload —
+      // are deliberately NOT requested. This row declares no write verbs, and
+      // TikTok's own guidance is to request the least number of scopes.
+      scopes: ['user.info.basic', 'video.list'],
+      notes:
+        'Display API access requires app registration plus product approval for Login Kit and the Display API ("Approval for both a Login Kit and TikTok API products"). That is ordinary product onboarding and is SEPARATE from the Content Posting API audit, which gates posting visibility only and is irrelevant to this row because no write verb is declared.',
+    },
+    read: {
+      transport: 'poll-cursor',
+      // `watermark-rescan`, NOT `poll-cursor`, and the difference is the whole
+      // correctness argument for this platform.
+      //
+      // TikTok DOES return a `cursor`, which is exactly why the honest class is
+      // the weak one. Verbatim from the v2 video-list reference: "the cursor
+      // value is a UTC Unix timestamp in milli-seconds. You can pass in a
+      // customized timestamp to fetch the user's videos posted BEFORE the
+      // provided timestamp" — and the list is "sorted by create_time in
+      // descending order".
+      //
+      // So the cursor pages BACKWARD IN TIME. It is a paging token for one
+      // descending scan, not a resumable forward position. Handing it your
+      // stored watermark asks for everything you have ALREADY seen and never
+      // the new items — and because `has_more` stays true while it walks into
+      // ancient history, that inversion looks exactly like healthy paging while
+      // emitting nothing new forever. Declaring `poll-cursor` here ("reading IS
+      // the cursored poll: nothing to miss, no window to expire") would assert
+      // precisely the resumability the vendor does not offer.
+      replay: 'watermark-rescan',
+      backfill:
+        'Every pass restarts at the newest page (NO cursor) and walks backward via response.cursor while has_more, emitting items with create_time > the stored watermark and TERMINATING on the first item at or below it. Early termination is licensed here — unlike D-025 Facebook Pages, whose /feed is RANKED — because descending create_time order is documented. The persisted cursor is our OWN watermark (max create_time seen), never TikTok\'s cursor, which is valid only inside a single pass. Cold start bounds the walk by page count rather than paging all history.',
+    },
+    write: {
+      // EMPTY, and this is a POSITIVE verified finding rather than an unwritten
+      // row — the exact mirror of LinkedIn's `read: null` one wave earlier.
+      // TikTok is the registry's first READ-ONLY platform.
+      //
+      // reply/delete: no such capability exists at this grant tier. The scopes
+      // reference is a complete table and lists exactly three video scopes —
+      // video.list, video.publish, video.upload — plus user.info.*; there is no
+      // comment scope and no delete scope anywhere in it, and the Display API
+      // surface is user info + video list + video query only. (That table
+      // returning the video scopes IS the positive control for the absence:
+      // the instrument answered, it just answered "not present".) The Research
+      // API does document a comments query, but that is a separate
+      // vetted-researcher product, not this grant.
+      //
+      // post: TikTok has TWO working write endpoints and NEITHER can honestly
+      // implement this verb.
+      //   1. Direct Post (/v2/post/publish/video/init/) works while unaudited —
+      //      the plan item's premise that it does not is FALSE, verified on two
+      //      pages — but "Unaudited API Clients can only post contents in
+      //      SELF_ONLY viewership". SocialVisibility is
+      //      'direct'|'followers'|'unlisted'|'public' with no self-only member,
+      //      and VISIBILITY_ALIASES maps 'private' to 'followers'. So every
+      //      caller's requested visibility would be silently DOWNGRADED to
+      //      invisible. The codebase throws SocialVisibilityWidened to stop
+      //      accidental WIDENING; this is that hazard's unguarded mirror, and a
+      //      reply nobody can see is worse than a refusal because it reads as
+      //      success.
+      //   2. Draft/inbox (/v2/post/publish/inbox/video/init/) creates no post at
+      //      all. It returns a publish_id and drops media in the creator's
+      //      inbox; it reaches SEND_TO_USER_INBOX and becomes a post only if a
+      //      HUMAN opens the notification and finishes it in TikTok's editor.
+      //      SocialPostOutcome.externalId is "Platform id of the created post"
+      //      and `ref` exists "so the caller can address it later" — a
+      //      publish_id is neither.
+      //
+      // No contract change was needed to say this: socialWriteRefusal already
+      // refuses an undeclared verb with "platform declares [], not 'post'",
+      // which is the accurate report. Adding a `draft` verb for the inbox
+      // handoff was considered and rejected — nothing in the mention/reply
+      // workflow this plan exists to serve would call it.
+      verbs: [],
+      // No write verb is declared, so there is no write to deduplicate. Stated
+      // as 'none' rather than 'unknown' because this is a verified reading of
+      // the posting docs, not an unread fact: neither publish endpoint
+      // documents an idempotency key or a replay-safe retry.
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
+      notes:
+        'READ-ONLY BY VERIFICATION, not by omission. Unaudited direct posting is SELF_ONLY viewership, requires every posting account to be private at the time of posting, and is capped at 5 users per 24h; the draft/inbox path publishes nothing without a human finishing it in the app. Neither is representable as `post`. If the owner ever completes the Content Posting API audit, the SELF_ONLY blocker on Direct Post lifts and `post` becomes declarable — the inbox path never does.',
+    },
+    limits: {
+      // Deliberately NOT a made-up number. The Display API reference and its
+      // get-started page state no rate limit anywhere, and the only published
+      // figures on TikTok's side belong to the Content Posting API endpoints
+      // this row does not call (inbox init 6/min, status fetch 30/min per user
+      // access token). Inventing a requestsPerMinute for /v2/video/list/ would
+      // put a guess where a storm policy reads a fact.
+      notes:
+        'NO rate limit is documented for the Display API (/v2/video/list/) on either its reference or its get-started page — verified 2026-08-23, an absence rather than an unread field. The published TikTok limits (6 req/min inbox init, 30 req/min status fetch, both per user access_token) belong to Content Posting endpoints this read-only row never calls. max_count is the one hard documented bound on this endpoint: default 10, maximum 20.',
+    },
+    policyNotes:
+      'The Content Posting API audit is real owner-side work but it walls only capabilities this row does not declare, so per D-054 it is NOT set as blockedOn — doing so would refuse the whole platform including the read path that does work. Passing the audit lifts SELF_ONLY and the 5-user cap but not the per-creator posting cap (~15 posts/day/creator, shared across all Direct Post clients) or the 24-hour active-creator cap. Note also that /v2/video/list/ returns only the user\'s own PUBLIC videos: TikTok can therefore never serve the mention-triage or comment-digest workflows, because it exposes no comment surface at all.',
   },
 
   'x-twitter': {
