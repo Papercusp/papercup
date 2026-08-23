@@ -166,32 +166,99 @@ export function resolveReleaseOrigin(deps: { host?: string } = {}): string {
   return `http://${host}:3070`;
 }
 
+/**
+ * The sentinel `/api/desktop/version` emits when the build info carries no sha
+ * (`routes/desktop/version.ts`: `sidecarSha: buildInfo.sha ?? 'unknown'`). It is a
+ * STRING, so a bare `typeof === 'string'` check accepts it as though it were an
+ * identity. Anything deriving a BUILD IDENTITY must reject it (D-052).
+ */
+const SIDECAR_SHA_UNKNOWN_SENTINEL = 'unknown';
+
 /** Probe one operator's /api/desktop/version (server-side; no CORS). Never throws. */
 async function probeVersion(
   origin: string,
   doFetch: typeof fetch,
   timeoutMs: number,
-): Promise<{ reachable: boolean; sha: string | null }> {
+): Promise<{ reachable: boolean; sha: string | null; startedAtMs: number | null }> {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await doFetch(`${origin}/api/desktop/version`, { signal: ctrl.signal });
-      if (!res.ok) return { reachable: false, sha: null };
+      if (!res.ok) return { reachable: false, sha: null, startedAtMs: null };
       let sha: string | null = null;
+      let startedAtMs: number | null = null;
       try {
-        const j = (await res.json()) as { sidecarSha?: unknown };
+        const j = (await res.json()) as { sidecarSha?: unknown; sidecarStartedAtMs?: unknown };
         sha = typeof j?.sidecarSha === 'string' ? j.sidecarSha : null;
+        startedAtMs = typeof j?.sidecarStartedAtMs === 'number' && Number.isFinite(j.sidecarStartedAtMs)
+          ? j.sidecarStartedAtMs
+          : null;
       } catch {
         /* non-JSON body — still reachable */
       }
-      return { reachable: true, sha };
+      return { reachable: true, sha, startedAtMs };
     } finally {
       clearTimeout(timer);
     }
   } catch {
-    return { reachable: false, sha: null };
+    return { reachable: false, sha: null, startedAtMs: null };
   }
+}
+
+/**
+ * WI-40893 / D-052 — the live STAGING build identity, as a value that cannot be
+ * mistaken for a measurement it is not.
+ *
+ * WHY THIS EXISTS. P-020 is a staged rollout judged by regression telemetry, and a
+ * measurement you cannot attribute to a build cannot establish a regression. The
+ * P-019 acceptance canary verified :3170 by content but never recorded WHICH staging
+ * build it ran against, so its evidence was unattributable (P-019 clause A.1).
+ *
+ * WHY `status` RATHER THAN A BARE `sidecarSha: string | null`. Three DIFFERENT
+ * failures render as "no usable sha" — unreachable, non-JSON, and the literal
+ * `'unknown'` sentinel — and the third is the dangerous one, because it is a
+ * well-formed string that reads exactly like an identity. D-052: "absence must never
+ * render as a clean identity". So the boundedness is stated ON the value, the same
+ * corrective P-019's other defect (WI-40896's `refsMeasured`) required.
+ *
+ * `sidecarStartedAtMs` travels WITH the sha deliberately: a sha alone cannot tell you
+ * the process actually restarted INTO that code, which is the same distinction
+ * `serving.startedSinceCodeChange` draws for :3070.
+ */
+export type StagingBuildIdentity =
+  | { status: 'measured'; sidecarSha: string; sidecarStartedAtMs: number | null; origin: string }
+  | {
+      status: 'not_measured';
+      /** WHY it could not be measured — branch on this, never on a null sha. */
+      reason: 'unreachable' | 'no-sha-in-response' | 'unknown-sentinel';
+      sidecarSha: null;
+      sidecarStartedAtMs: null;
+      origin: string;
+    };
+
+/**
+ * Read the live staging operator's build identity. Never throws: every failure is a
+ * typed `not_measured`, so a caller cannot accidentally record absence as a build.
+ */
+export async function readStagingBuildIdentity(
+  deps: { doFetch?: typeof fetch; timeoutMs?: number; host?: string } = {},
+): Promise<StagingBuildIdentity> {
+  const doFetch = deps.doFetch ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? 1500;
+  const host = deps.host ?? '127.0.0.1';
+  const staging = DEV_OPERATORS.find((d) => d.id === 'staging');
+  // Derived from the canonical descriptor list rather than a hardcoded 3170, so the
+  // port cannot drift away from dev_wrapper.rs TARGETS behind this reader's back.
+  const origin = `http://${host}:${staging?.port ?? 3170}`;
+
+  const { reachable, sha, startedAtMs } = await probeVersion(origin, doFetch, timeoutMs);
+  if (!reachable) return { status: 'not_measured', reason: 'unreachable', sidecarSha: null, sidecarStartedAtMs: null, origin };
+  if (sha == null) return { status: 'not_measured', reason: 'no-sha-in-response', sidecarSha: null, sidecarStartedAtMs: null, origin };
+  if (sha === SIDECAR_SHA_UNKNOWN_SENTINEL) {
+    return { status: 'not_measured', reason: 'unknown-sentinel', sidecarSha: null, sidecarStartedAtMs: null, origin };
+  }
+  return { status: 'measured', sidecarSha: sha, sidecarStartedAtMs: startedAtMs, origin };
 }
 
 function portOfOrigin(origin: string): number {
