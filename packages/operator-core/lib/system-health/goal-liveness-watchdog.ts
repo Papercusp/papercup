@@ -85,6 +85,7 @@ import {
   type GoalLaunchSettings,
 } from '../goal-launch-settings';
 import { resolveGoalHolderPolicy } from '../goal-launch-settings-shared';
+import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
 import { launchGoalHolderSession } from '../harness/routines/goal-holder-launch-action';
 import { setMode } from '../modes/store';
 import {
@@ -255,6 +256,14 @@ export interface GoalReadinessAlert {
   kind: GoalReadinessAlertKind;
   /** The blockers relevant to the verdict (invalidating ones for premise-invalidated; all for became-ready). */
   blockers: GoalBlockerView[];
+  /**
+   * P-020: set ONLY when this goal opted into `launch_settings.autoStart`, the
+   * watchdog attempted the dispatch, and it did not take (a refusal from the
+   * primitive, or a launch failure). The offer escalation then carries WHY the
+   * automatic path declined, so the human triaging it starts from the reason
+   * instead of rediscovering it.
+   */
+  autoStartFailure?: string;
 }
 
 /** The holder-liveness fold `resolveGoalHoldersFromRows` produces for one goal. */
@@ -332,6 +341,17 @@ export interface GoalLivenessSweepDeps {
    */
   readReadiness: (goals: readonly GoalRowLike[]) => Promise<Map<string, GoalReadiness>>;
   escalateReadiness: (alert: GoalReadinessAlert) => Promise<void>;
+  /**
+   * P-020: the goal-activation primitive, dispatched for a `became-ready` goal
+   * that opted in via `launch_settings.autoStart` (D-006 — every trigger leg
+   * converges on the ONE primitive; this leg never spawns by hand). Bound over
+   * `sql` by the default wiring; injectable for tests.
+   */
+  startGoal: (input: {
+    workspaceId: string;
+    goalId: string;
+    launcherOwnerId: string;
+  }) => Promise<StartGoalByIdResult>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
   graceMs: number;
@@ -517,8 +537,13 @@ async function defaultEscalateReadiness(alert: GoalReadinessAlert): Promise<void
         `or the parent goal's agent decides.`
       : `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) declared ` +
         `prerequisites and they are now ALL satisfied: ${blockerList}. No live holder is on it.\n\n` +
+        (alert.autoStartFailure
+          ? `This goal opted into launch_settings.autoStart (P-020), but the automatic dispatch ` +
+            `did not take it: ${alert.autoStartFailure}. Start it by hand or clear the refusal.\n\n`
+          : '') +
         `This is a surfaced OFFER, not a dispatch (D-003 — readiness at goal level is an ` +
-        `activation gate; goals never enter a claim queue and are never auto-started):\n` +
+        `activation gate; goals never enter a claim queue and are not auto-started unless the ` +
+        `goal itself opted in via launch_settings.autoStart, P-020):\n` +
         `  • Start it: goals:start — or mode:set { mode:'goal', subject:'${alert.goalId}' } for an ` +
         `existing session. If it was filed as a stub (D-004), activation is where the full ` +
         `kickoff contract runs — kill criterion, ceiling, consult, drain fleet — against the ` +
@@ -546,6 +571,7 @@ function sweepDeps(
     escalate: defaultEscalate,
     readReadiness: makeReadReadiness(sql),
     escalateReadiness: defaultEscalateReadiness,
+    startGoal: (input) => startGoalById(sql, input),
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
     graceMs: GOAL_LIVENESS_GRACE_MS,
@@ -564,15 +590,21 @@ function sweepDeps(
 export async function runGoalLivenessSweepOnce(
   sql: Sql,
   overrides: Partial<GoalLivenessSweepDeps> = {},
-): Promise<{ scanned: number; escalated: number; readinessEscalated: number; skipped: boolean }> {
+): Promise<{
+  scanned: number;
+  escalated: number;
+  readinessEscalated: number;
+  autoStarted: number;
+  skipped: boolean;
+}> {
   const deps = sweepDeps(sql, overrides);
   if (!(await deps.flagEnabled())) {
-    return { scanned: 0, escalated: 0, readinessEscalated: 0, skipped: true };
+    return { scanned: 0, escalated: 0, readinessEscalated: 0, autoStarted: 0, skipped: true };
   }
 
   const { goals, holders } = await deps.readGoals();
   if (goals.length === 0) {
-    return { scanned: 0, escalated: 0, readinessEscalated: 0, skipped: false };
+    return { scanned: 0, escalated: 0, readinessEscalated: 0, autoStarted: 0, skipped: false };
   }
 
   // Only resolve holders that actually point at an active goal — the agent_modes
@@ -595,13 +627,39 @@ export async function runGoalLivenessSweepOnce(
     }
   }
 
-  // ── P-005: the readiness leg — report-only, same conservative rules ──────
+  // ── P-005: the readiness leg — report-only by default ────────────────────
+  // ── P-020: unless the goal opted into launch_settings.autoStart ──────────
   let readinessEscalated = 0;
+  let autoStarted = 0;
   const readiness = await deps.readReadiness(goals);
   for (const g of goals) {
     const fold = resolveGoalHoldersFromRows(g.goalId, g.workspaceId, relevant, verdicts);
     const alert = classifyGoalReadiness(g, readiness.get(goalReadinessKey(g)), fold.liveness);
     if (!alert) continue;
+    // P-020: the per-goal opt-in that upgrades the became-ready OFFER into a
+    // dispatch through the one activation primitive (D-006). The primitive owns
+    // every guard under its OWN reads (not-active / already-held / readiness
+    // re-check), so a stale classification here costs a refusal, never a double
+    // start. premise-invalidated NEVER dispatches — a killed blocker needs
+    // review (D-002), and autoStart does not change that.
+    if (alert.kind === 'became-ready' && g.launchSettings?.autoStart === true) {
+      try {
+        const started = await deps.startGoal({
+          workspaceId: g.workspaceId,
+          goalId: g.goalId,
+          launcherOwnerId: `${WATCHDOG_IDENTITY.ownerId}:auto-start`,
+        });
+        if (started.ok) {
+          autoStarted += 1;
+          // Dispatched — the offer is moot; the next sweep sees the goal held.
+          continue;
+        }
+        alert.autoStartFailure = `refused: ${started.reason} — ${started.detail}`;
+      } catch (e) {
+        alert.autoStartFailure = `launch threw: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      // Fall through: the offer escalation now carries WHY auto-start declined.
+    }
     try {
       await deps.escalateReadiness(alert);
       readinessEscalated += 1;
@@ -611,7 +669,7 @@ export async function runGoalLivenessSweepOnce(
       );
     }
   }
-  return { scanned: goals.length, escalated, readinessEscalated, skipped: false };
+  return { scanned: goals.length, escalated, readinessEscalated, autoStarted, skipped: false };
 }
 
 /* ── P-009: opt-in holder recovery ───────────────────────────────────────── */

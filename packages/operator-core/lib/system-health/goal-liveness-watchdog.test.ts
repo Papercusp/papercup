@@ -311,7 +311,7 @@ describe('runGoalLivenessSweepOnce', () => {
         seen.push(a);
       },
     });
-    expect(r).toEqual({ scanned: 1, escalated: 1, readinessEscalated: 0, skipped: false });
+    expect(r).toEqual({ scanned: 1, escalated: 1, readinessEscalated: 0, autoStarted: 0, skipped: false });
     expect(seen[0]?.reason).toBe('abandoned');
   });
 
@@ -327,7 +327,7 @@ describe('runGoalLivenessSweepOnce', () => {
       }),
       escalate: async () => {},
     });
-    expect(r).toEqual({ scanned: 0, escalated: 0, readinessEscalated: 0, skipped: true });
+    expect(r).toEqual({ scanned: 0, escalated: 0, readinessEscalated: 0, autoStarted: 0, skipped: true });
     expect(called).toBe(false); // the kill-switch stops it BEFORE reading the DB
   });
 
@@ -502,6 +502,126 @@ describe('runGoalLivenessSweepOnce — the readiness leg (P-005)', () => {
       },
     });
     expect(r.readinessEscalated).toBe(0);
+  });
+});
+
+// ── work-on-everything-goal-2026-08-23 P-020: the autoStart leg ────────────
+
+describe('runGoalLivenessSweepOnce — the autoStart leg (P-020)', () => {
+  const sql = {} as never;
+  const autoGoal = (over: Partial<GoalRowLike> = {}) =>
+    goal({ updatedAtMs: NOW - 60_000, launchSettings: { autoStart: true }, ...over });
+  const base = (g: GoalRowLike, over: Record<string, unknown> = {}) => ({
+    readGoals: async () => ({ goals: [g], holders: [] }),
+    resolveLiveness: async () => new Map(),
+    escalate: async () => {},
+    readReadiness: async () => new Map([[goalReadinessKey(g), ready([bv()])]]),
+    flagEnabled: async () => true,
+    now: () => NOW,
+    graceMs: GOAL_LIVENESS_GRACE_MS,
+    ...over,
+  });
+
+  it('dispatches a became-ready autoStart goal through the primitive and suppresses the offer', async () => {
+    const g = autoGoal();
+    const startGoal = vi.fn(async () => ({
+      ok: true as const,
+      goalId: g.goalId,
+      ownerId: 'su-auto-held-1',
+      warnings: [],
+      startBlockedOverride: null,
+    }));
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(g),
+      startGoal,
+      escalateReadiness: async () => {
+        throw new Error('the offer must be suppressed after a successful dispatch');
+      },
+    });
+    expect(r.autoStarted).toBe(1);
+    expect(r.readinessEscalated).toBe(0);
+    expect(startGoal).toHaveBeenCalledWith({
+      workspaceId: g.workspaceId,
+      goalId: g.goalId,
+      launcherOwnerId: 'goal-liveness-watchdog:auto-start',
+    });
+  });
+
+  it('a primitive refusal falls through to the offer, carrying WHY the dispatch declined', async () => {
+    const g = autoGoal();
+    const seen: GoalReadinessAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(g),
+      startGoal: vi.fn(async () => ({
+        ok: false as const,
+        reason: 'already-held' as never,
+        detail: 'live holder su-elsewhere',
+      })),
+      escalateReadiness: async (a) => {
+        seen.push(a);
+      },
+    });
+    expect(r.autoStarted).toBe(0);
+    expect(r.readinessEscalated).toBe(1);
+    expect(seen[0]?.autoStartFailure).toBe('refused: already-held — live holder su-elsewhere');
+  });
+
+  it('a thrown launch failure is contained: the offer still surfaces, naming the throw', async () => {
+    const g = autoGoal();
+    const seen: GoalReadinessAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(g),
+      startGoal: vi.fn(async () => {
+        throw new Error('spawn infra down');
+      }),
+      escalateReadiness: async (a) => {
+        seen.push(a);
+      },
+    });
+    expect(r.autoStarted).toBe(0);
+    expect(r.readinessEscalated).toBe(1);
+    expect(seen[0]?.autoStartFailure).toBe('launch threw: spawn infra down');
+  });
+
+  it('without the opt-in the offer stays an offer — no dispatch (D-003 preserved)', async () => {
+    const g = goal({ updatedAtMs: NOW - 60_000 }); // no launchSettings at all
+    const startGoal = vi.fn();
+    const seen: GoalReadinessAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(g),
+      startGoal,
+      escalateReadiness: async (a) => {
+        seen.push(a);
+      },
+    });
+    expect(startGoal).not.toHaveBeenCalled();
+    expect(r.autoStarted).toBe(0);
+    expect(seen[0]?.kind).toBe('became-ready');
+    expect(seen[0]?.autoStartFailure).toBeUndefined();
+  });
+
+  it('premise-invalidated NEVER auto-starts, opt-in or not — a killed blocker needs review (D-002)', async () => {
+    const g = autoGoal();
+    const startGoal = vi.fn();
+    const seen: GoalReadinessAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(sql, {
+      ...base(g, {
+        readReadiness: async () =>
+          new Map([
+            [
+              goalReadinessKey(g),
+              ready([bv({ ref: 'dead-goal-ff00aa', status: 'killed', verdict: 'invalidating' })]),
+            ],
+          ]),
+      }),
+      startGoal,
+      escalateReadiness: async (a) => {
+        seen.push(a);
+      },
+    });
+    expect(startGoal).not.toHaveBeenCalled();
+    expect(r.autoStarted).toBe(0);
+    expect(seen[0]?.kind).toBe('premise-invalidated');
   });
 });
 

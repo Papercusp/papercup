@@ -347,6 +347,23 @@ export const goalLaunchSettingsSchema = z
      * so goals that already exist are covered.
      */
     holder: goalHolderPolicySchema.nullable().optional(),
+    /**
+     * P-020 (work-on-everything-goal-2026-08-23, D-006): opt this goal INTO
+     * automatic activation when its DAG becomes ready.
+     *
+     * Absent / null / false preserves D-003: readiness at goal level is a
+     * surfaced OFFER, never a dispatch. With `autoStart: true`, the
+     * goal-liveness watchdog's readiness leg dispatches the one
+     * goal-activation primitive (`startGoalById`) when the goal BECOMES READY
+     * with no live holder. The primitive still owns every guard (not-active /
+     * already-held / readiness re-check under its own reads), so this flag can
+     * never resurrect a closed goal or double-start a held one — a stale
+     * classification costs a refusal, not a duplicate agent.
+     *
+     * `.nullable()` for the same reason as `holder`: the panel clears a field
+     * by writing `null`, which must mean "unpinned", never a third state.
+     */
+    autoStart: z.boolean().nullable().optional(),
   })
   .strict();
 
