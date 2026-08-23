@@ -21,6 +21,7 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import { parseDatatypeDisplay, type DatatypeDisplaySpec } from './datatype-display';
 
 /** The two-tier datatype model (D-002) + the projection flavor (D-008). */
 export const DATATYPE_TIERS = ['generic-kind', 'first-class', 'projection'] as const;
@@ -132,6 +133,8 @@ export interface DatatypeRow {
   workItemKind: string | null;
   /** JSON-Schema shape the kind's payload is validated against. */
   payloadSchema: Record<string, unknown> | null;
+  /** Declarative editor + compact-rendering contract (P-024); never executable code. */
+  display: DatatypeDisplaySpec | null;
   /** 'papercusp' | 'engine:<name>' — projection tier's single writer is external (D-008). */
   authoritativeWriter: string;
   /** The REQUIRED self-improvement surface (P-010): { improvements, scorecard, gym }. */
@@ -159,6 +162,7 @@ export interface UpsertDatatypeInput {
   tier: DatatypeTier;
   workItemKind?: string | null;
   payloadSchema?: Record<string, unknown> | null;
+  display?: DatatypeDisplaySpec | null;
   authoritativeWriter?: string | null;
   selfImprovement?: Record<string, unknown> | null;
   published?: boolean;
@@ -177,6 +181,7 @@ type DbRow = {
   tier: string;
   work_item_kind: string | null;
   payload_schema: Record<string, unknown> | null;
+  display: Record<string, unknown> | null;
   authoritative_writer: string;
   self_improvement: Record<string, unknown> | null;
   status: string;
@@ -207,6 +212,8 @@ function parseJsonbMaybe(v: unknown): Record<string, unknown> | null {
 }
 
 function mapRow(r: DbRow): DatatypeRow {
+  const rawDisplay = parseJsonbMaybe(r.display);
+  const parsedDisplay = rawDisplay ? parseDatatypeDisplay(rawDisplay) : null;
   return {
     id: r.id,
     workspaceId: r.workspace_id,
@@ -216,6 +223,7 @@ function mapRow(r: DbRow): DatatypeRow {
     tier: (isDatatypeTier(r.tier) ? r.tier : 'generic-kind'),
     workItemKind: r.work_item_kind,
     payloadSchema: parseJsonbMaybe(r.payload_schema),
+    display: parsedDisplay?.ok ? parsedDisplay.value : null,
     authoritativeWriter: r.authoritative_writer,
     selfImprovement: parseJsonbMaybe(r.self_improvement),
     status: r.status,
@@ -232,7 +240,7 @@ function mapRow(r: DbRow): DatatypeRow {
 /** SELECT-list shared by every read (the raw VECTOR is never serialized back — only its presence). */
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
   id, workspace_id, pot_slug, title, description, tier, work_item_kind,
-  payload_schema, authoritative_writer, self_improvement, status, published, review_status, tags,
+  payload_schema, display, authoritative_writer, self_improvement, status, published, review_status, tags,
   (embedding IS NOT NULL) AS has_embedding, created_by, created_at, updated_at
 `;
 
@@ -251,12 +259,13 @@ export async function upsertDatatype(
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.datatype_registry
       (id, workspace_id, pot_slug, title, description, tier, work_item_kind,
-       payload_schema, authoritative_writer, self_improvement, published, tags,
+       payload_schema, display, authoritative_writer, self_improvement, published, tags,
        embedding, created_by, updated_at)
     VALUES (
       ${input.id}, ${input.workspaceId}, ${input.potSlug ?? null}, ${input.title},
       ${input.description}, ${input.tier}, ${input.workItemKind ?? null},
       ${input.payloadSchema ? JSON.stringify(input.payloadSchema) : null}::text::jsonb,
+      ${input.display ? JSON.stringify(input.display) : null}::text::jsonb,
       ${input.authoritativeWriter ?? 'papercusp'},
       ${input.selfImprovement ? JSON.stringify(input.selfImprovement) : null}::text::jsonb,
       ${input.published ?? false}, ${input.tags ?? []},
@@ -269,6 +278,7 @@ export async function upsertDatatype(
       tier                 = EXCLUDED.tier,
       work_item_kind       = EXCLUDED.work_item_kind,
       payload_schema       = EXCLUDED.payload_schema,
+      display              = EXCLUDED.display,
       authoritative_writer = EXCLUDED.authoritative_writer,
       self_improvement     = EXCLUDED.self_improvement,
       published            = EXCLUDED.published,
@@ -625,7 +635,7 @@ export type InstallPublishedResult =
 
 /**
  * D-010 distribution: install an APPROVED published datatype into `targetWorkspaceId` — copies
- * its definition (title/description/tier/work_item_kind/payload_schema/self_improvement/tags) as
+ * its definition (title/description/tier/work_item_kind/payload_schema/display/self_improvement/tags) as
  * a LOCAL datatype there (review_status resets to the insert default 'none', `published` false),
  * so the target uses it like a locally-declared one. Idempotent: a datatype already present under
  * that id in the target is left untouched (`already_present`). Cross-workspace ⇒ needs an
@@ -652,6 +662,7 @@ export async function installPublishedDatatype(
     tier: s.tier,
     workItemKind: s.workItemKind,
     payloadSchema: s.payloadSchema,
+    display: s.display,
     authoritativeWriter: s.authoritativeWriter,
     selfImprovement: s.selfImprovement,
     published: false,

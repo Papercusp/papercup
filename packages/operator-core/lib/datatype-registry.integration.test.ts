@@ -73,6 +73,7 @@ describe('datatype_registry store (real PG)', () => {
       tier: 'generic-kind',
       workItemKind: 'bet',
       payloadSchema: { type: 'object', properties: { market: { type: 'string' }, edge: { type: 'number' } } },
+      display: { widget: 'record', params: { fields: [{ name: 'market', datatype: 'string', required: true }] }, summary: '{{market}}' },
       selfImprovement: { improvements: ['miscalibrated'], scorecard: 'brier', gym: ['no-stale-data'] },
       embedding: fakeEmbedding(),
       tags: ['oddsmith'],
@@ -84,6 +85,7 @@ describe('datatype_registry store (real PG)', () => {
     expect(row.authoritativeWriter).toBe('papercusp');
     expect(row.hasEmbedding).toBe(true);
     expect(row.payloadSchema).toMatchObject({ type: 'object' });
+    expect(row.display).toMatchObject({ widget: 'record', summary: '{{market}}' });
     expect(row.selfImprovement).toMatchObject({ scorecard: 'brier' });
 
     const got = await getDatatype(db.adminSql, ws, 'bet');

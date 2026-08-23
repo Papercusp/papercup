@@ -44,6 +44,10 @@ import {
 import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
 import { isCompilableSchema } from '../../datatype-payload-validation';
 import { scaffoldFirstClassDatatype } from '../../datatype-firstclass-scaffold';
+import {
+  datatypeDisplaySchema,
+  isBuiltinDatatypeId,
+} from '../../datatype-display';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
 export default defineTool({
@@ -102,6 +106,12 @@ export default defineTool({
       .record(z.string(), z.unknown())
       .optional()
       .describe('JSON Schema the kind\'s payload is validated against (generic-kind/first-class)'),
+    display: datatypeDisplaySchema
+      .optional()
+      .describe(
+        'Declarative editor + compact renderer: { widget, params?, summary }. Widget is one of the fixed ' +
+          'operator vocabulary; ref-picker uses the shared kind registry. No executable renderers.',
+      ),
     authoritativeWriter: z
       .string()
       .max(120)
@@ -138,6 +148,13 @@ export default defineTool({
     const id = slugifyDatatype(args.name);
     if (!id) {
       return reply({ ok: false, reason: 'invalid_name', message: `"${args.name}" slugifies to empty — give an alphanumeric name` });
+    }
+    if (isBuiltinDatatypeId(id)) {
+      return reply({
+        ok: false,
+        reason: 'builtin_reserved',
+        message: `"${id}" is a built-in primitive datatype and cannot be re-declared`,
+      });
     }
     const tier = args.tier as (typeof DATATYPE_TIERS)[number];
 
@@ -231,6 +248,8 @@ export default defineTool({
       // generic-kind registers a work_item kind (defaults to the slug); other tiers leave it null
       workItemKind: tier === 'generic-kind' ? (args.workItemKind ?? id) : (args.workItemKind ?? null),
       payloadSchema: args.payloadSchema ?? null,
+      // Omission on an in-place declaration preserves the current display contract.
+      display: args.display ?? exists?.display ?? null,
       authoritativeWriter: args.authoritativeWriter ?? (tier === 'projection' ? null : 'papercusp'),
       // P-010: the validated surface (new), the preserved stored surface (omitted update), or null (projection)
       selfImprovement: siCheck.value,
