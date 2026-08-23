@@ -48,16 +48,6 @@ import { planSlugOfWorkItem, staticTagsOfWorkItem } from './scheduler/claim-spec
 import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import type { BatchResolveItem } from './agent-tools/coordination/escalations';
 
-// WI-4034 DEFECT 2 (single-source the settled predicate): these used to be a
-// SEPARATE, hand-duplicated literal set here that happened to still agree with
-// work-item-blocking.ts's cross-family terminal sets (verified equal at audit
-// time — feature {passed,deprecated}, issue {resolved,closed}). Reusing the
-// seam's own sets means the two can never silently drift apart again.
-const SETTLED_STATES: Record<WorkItemFamily, ReadonlySet<string>> = {
-  feature: TERMINAL_STATUSES,
-  issue: ISSUE_TERMINAL_STATUSES,
-};
-
 /**
  * Errors that are EXPECTED for a best-effort, fire-and-forget notification and
  * so must never warn (vitest-fail-on-console would then flake any rig test):
@@ -380,7 +370,13 @@ export function emitWorkItemStatusEvent(
 }
 
 export function isSettledWorkItem(wi: Pick<WorkItem, 'family' | 'state'>): boolean {
-  return SETTLED_STATES[wi.family]?.has(wi.state) ?? false;
+  // WI-4034: single-source the predicate from the two canonical family sets.
+  // Do not aggregate them into a module-local top-level const: this module's
+  // documented work-items import cycle can expose the hoisted function during
+  // evaluation, and a call in that window hits the const's temporal dead zone
+  // (`Cannot access 'SETTLED_STATES' before initialization`, EI-21222540632840457).
+  // The imported leaf sets are cycle-free and are read only when invoked.
+  return (wi.family === 'feature' ? TERMINAL_STATUSES : ISSUE_TERMINAL_STATUSES).has(wi.state);
 }
 
 /** Reverse of workItemObjectRef: a coord ObjectRef back to (id, harness). */

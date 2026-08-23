@@ -59,8 +59,10 @@ const edgeRel = (srcId: string, dstId: string, rel: string) => ({
 describe('helpers', () => {
   it('isSettledWorkItem matches the per-family terminal sets', () => {
     expect(isSettledWorkItem({ family: 'issue', state: 'resolved' })).toBe(true);
+    expect(isSettledWorkItem({ family: 'issue', state: 'done' })).toBe(true);
     expect(isSettledWorkItem({ family: 'issue', state: 'open' })).toBe(false);
     expect(isSettledWorkItem({ family: 'feature', state: 'passed' })).toBe(true);
+    expect(isSettledWorkItem({ family: 'feature', state: 'dropped' })).toBe(true);
     expect(isSettledWorkItem({ family: 'feature', state: 'validating' })).toBe(false);
   });
 
