@@ -7,7 +7,7 @@ describe('Google Contacts scope probe', () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
 
     const result = await probeGoogleContactsAccess('  contacts-token  ', fetchMock as typeof fetch);
-    const [request, init] = fetchMock.mock.calls[0]!;
+    const [request, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     const url = new URL(String(request));
 
     expect(result).toEqual({ status: 200, endpoint: url.toString() });
