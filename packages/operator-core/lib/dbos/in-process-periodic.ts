@@ -900,7 +900,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
     const { findDueReleaseRequests, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
-    const { releaseWorkItem, commentWorkItem } = await import('../work-items');
+    const { releaseWorkItem, setWorkItemClaimHold, commentWorkItem } = await import('../work-items');
     const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
     const { notifyAttention } = await import('../attention-notify');
@@ -952,7 +952,23 @@ const releaseRequestSweepCheck: PeriodicCheck = {
             `[release-request-sweep] ${row.id}: targeted lock release had ${lockRelease.failures} failure(s); reclaim continues with lease fallback`,
           );
         }
-        const released = await releaseWorkItem(row.id, { harness: row.harness ?? undefined }).catch(() => null);
+        // The due-row read is the holder snapshot that authorized this consequence. Keep
+        // both mutations tied to it: a successor that claims between the scan and release
+        // must not be released, and its lease must not be cleared. When the row is already
+        // unassigned, the resolved request holder still lets us lift the stale lease left
+        // by the reclaimed holder.
+        const reclaimHolder = row.holderNow ?? resolved.holder;
+        const released = await releaseWorkItem(row.id, {
+          harness: row.harness ?? undefined,
+          expectedAssignee: reclaimHolder,
+        }).catch(() => null);
+        if (released) {
+          await setWorkItemClaimHold(row.id, false, {
+            harness: row.harness ?? undefined,
+            leaseOnly: true,
+            expectedLeaseHolder: reclaimHolder,
+          }).catch(() => null);
+        }
         await sendMessage(
           { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
           {

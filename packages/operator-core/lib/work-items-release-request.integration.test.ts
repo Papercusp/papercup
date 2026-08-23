@@ -19,8 +19,18 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+
+const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
+const readMigration = (name: string) =>
+  readFileSync(resolve(SQL_DIR, name), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
+    .join('\n');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWs: 'default' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -62,12 +72,35 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  // releaseWorkItem emits the claim-released event and retires lifecycle-bound awaits.
+  // Keep this fixture on the same event schema those side effects use, so a missing
+  // coordination table cannot obscure the claim-hold regression.
+  for (const migration of [
+    '123-coordination-substrate.sql',
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '387-event-wake-delivery-source.sql',
+    '533-add-event-awaits-payload-filter.sql',
+    '541-predicate-watches.sql',
+    '599-event-announcement-generation.sql',
+    '602-work-item-follow-blockers.sql',
+    '632-event-key-fire-latch.sql',
+    '871-lifecycle-bound-watches.sql',
+  ]) {
+    await db.sql.unsafe(readMigration(migration)).simple();
+  }
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
+  await db.sql`
+    TRUNCATE harness_shared.work_items,
+             harness_shared.work_item_deps,
+             harness_shared.event_awaits,
+             harness_shared.event_wake_deliveries,
+             harness_shared.event_key_fires,
+             harness_shared.predicate_watches`;
   h.activeWs = 'default';
 });
 afterEach(() => {
@@ -278,12 +311,58 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     const resolved = await rr.resolveWorkItemReleaseRequest(id, { harness: H, resolution: 'consequence-reclaim' });
     expect(resolved).toMatchObject({ resolved: true, resolution: 'consequence-reclaim' });
 
-    await workItems.releaseWorkItem(id, { harness: H });
+    await workItems.releaseWorkItem(id, { harness: H, expectedAssignee: 'old-holder' });
+    const cleared = await workItems.setWorkItemClaimHold(id, false, {
+      harness: H,
+      leaseOnly: true,
+      expectedLeaseHolder: 'old-holder',
+    });
+    expect(cleared).toMatchObject({ id, hold: false, applicable: true });
 
     const payload = await readPayload(id);
     expect(payload).not.toHaveProperty('_claimHold');
     expect(payload).not.toHaveProperty('held_open_by');
     expect(payload).not.toHaveProperty('held_open_reason');
+  });
+
+  it('lease-only consequence cleanup is holder-conditional and preserves a durable park', async () => {
+    const id = 'WI-40086-durable-park';
+    await seedIssue(id, {
+      takenBy: 'old-holder',
+      payload: {
+        _claimHold: true,
+        held_open_by: 'old-holder',
+        held_open_reason: 'successor sole-serializer hold',
+        claim_hold_by: 'park-owner',
+        claim_hold_reason: 'deliberate park',
+      },
+    });
+
+    const refused = await workItems.setWorkItemClaimHold(id, false, {
+      harness: H,
+      leaseOnly: true,
+      expectedLeaseHolder: 'different-holder',
+    });
+    expect(refused).toBeNull();
+    expect(await readPayload(id)).toMatchObject({
+      _claimHold: true,
+      held_open_by: 'old-holder',
+      claim_hold_by: 'park-owner',
+    });
+
+    const cleared = await workItems.setWorkItemClaimHold(id, false, {
+      harness: H,
+      leaseOnly: true,
+      expectedLeaseHolder: 'old-holder',
+    });
+    expect(cleared).toMatchObject({ id, hold: false, applicable: true });
+    expect(await readPayload(id)).toMatchObject({
+      _claimHold: true,
+      claim_hold_by: 'park-owner',
+      claim_hold_reason: 'deliberate park',
+    });
+    expect(await readPayload(id)).not.toHaveProperty('held_open_by');
+    expect(await readPayload(id)).not.toHaveProperty('held_open_reason');
   });
 });
 
