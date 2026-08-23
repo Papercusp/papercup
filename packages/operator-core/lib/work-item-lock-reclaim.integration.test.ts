@@ -4,7 +4,8 @@
  * The work-item claim lives in the harness database while its file locks live
  * in papercusp_su. This test drives both real stores to prove the reclaim hook
  * releases only the reclaimed item's declared paths and lets a queued waiter
- * acquire the freed path through grant_cascade.
+ * acquire the freed path through grant_cascade. A second case covers the
+ * goal_ref association used when the reclaimed item declared no paths.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
@@ -205,6 +206,132 @@ describe('work-item reclaim targeted lock cleanup', async () => {
         owner: formerOwner,
         lockId: held.lock_id,
         paths: [unrelatedPath],
+      }),
+    );
+  }, 60_000);
+
+  it.skipIf(!live)('releases goal-associated locks for a pathless item and copies waiter goal_ref on grant', async () => {
+    const side = getTxPool();
+    const coordinationDomain = `${SUITE_PREFIX}-pathless-domain`;
+    const formerOwner = `${SUITE_PREFIX}-pathless-former-owner`;
+    const successor = `${SUITE_PREFIX}-pathless-successor`;
+    const itemId = `${SUITE_PREFIX}-pathless-item`;
+    const unrelatedItemId = `${SUITE_PREFIX}-unrelated-item`;
+    const successorItemId = `${SUITE_PREFIX}-successor-item`;
+    const targetPath = 'src/pathless-reclaimed-target.ts';
+    const unrelatedPath = 'src/pathless-unrelated.ts';
+
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status,
+         taken_by, taken_at, created_ts, updated_ts, payload)
+      VALUES
+        (${WORKSPACE_ID}, ${HARNESS}, ${itemId}, 'feature', ${itemId}, 'todo',
+         ${formerOwner}, now() - interval '30 minutes',
+         ${Date.now() - 1_800_000}, ${Date.now() - 1_800_000},
+         ${sql.json({ summary: 'no declared paths' })})
+    `;
+    await sql`
+      INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at)
+      VALUES (${formerOwner}, now() - interval '30 minutes')
+    `;
+    const [seeded] = await sql<{ payload: unknown }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = ${itemId}
+    `;
+    expect(readWorkItemPaths(seeded.payload)).toEqual([]);
+
+    const targetLock = await inWorkspaceTxn(coordinationDomain, formerOwner, (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain,
+        owner: formerOwner,
+        ownerLabel: 'pathless former owner',
+        paths: [targetPath],
+        intent: 'pathless reclaimed item',
+        goalRef: itemId,
+        ttlSec: 600,
+      }),
+    );
+    const unrelatedLock = await inWorkspaceTxn(coordinationDomain, formerOwner, (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain,
+        owner: formerOwner,
+        ownerLabel: 'pathless former owner',
+        paths: [unrelatedPath],
+        intent: 'unrelated concurrent item',
+        goalRef: unrelatedItemId,
+        ttlSec: 600,
+      }),
+    );
+    expect(targetLock.ok).toBe(true);
+    expect(unrelatedLock.ok).toBe(true);
+    if (!targetLock.ok || !unrelatedLock.ok) throw new Error('failed to seed pathless goal-associated locks');
+
+    const queued = await inWorkspaceTxn(coordinationDomain, successor, (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain,
+        owner: successor,
+        ownerLabel: 'pathless successor',
+        paths: [targetPath],
+        intent: 'take over pathless reclaimed item',
+        goalRef: successorItemId,
+        ttlSec: 600,
+        maxWaitSec: 60,
+      }),
+    );
+    expect(queued.ok).toBe(true);
+    if (!queued.ok || !('ticket_id' in queued)) throw new Error('pathless waiter was unexpectedly self-granted');
+
+    const reclaimed = await reclaimStaleWorkItemClaims(sql, {
+      graceMs: 1_000,
+      parkedGraceMs: 1_000,
+      unknownHolderFallbackMs: 1_000,
+    });
+    expect(reclaimed.released).toEqual([
+      expect.objectContaining({
+        feature_id: itemId,
+        former_taken_by: formerOwner,
+        action: 'freed-todo',
+        reason: 'dead',
+      }),
+    ]);
+
+    const waiterStatus = await readWaiterStatus(side, queued.ticket_id);
+    expect(waiterStatus.status, JSON.stringify({
+      reclaimed,
+      queue: await readQueue(side, { coordinationDomain }),
+    })).toBe('granted');
+
+    const active = await readQueue(side, { coordinationDomain, owner: undefined });
+    expect(active.active_locks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: unrelatedPath,
+        owner: formerOwner,
+        lock_id: unrelatedLock.lock_id,
+        goal_ref: unrelatedItemId,
+      }),
+      expect.objectContaining({
+        path: targetPath,
+        owner: successor,
+        goal_ref: successorItemId,
+        lock_id: waiterStatus.granted_lock_id,
+      }),
+    ]));
+    expect(active.active_locks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: targetPath, owner: formerOwner, goal_ref: itemId }),
+    ]));
+
+    await inWorkspaceTxn(coordinationDomain, successor, (tx) =>
+      tryRelease(tx, {
+        coordinationDomain,
+        owner: successor,
+        lockId: waiterStatus.granted_lock_id!,
+      }),
+    );
+    await inWorkspaceTxn(coordinationDomain, formerOwner, (tx) =>
+      tryRelease(tx, {
+        coordinationDomain,
+        owner: formerOwner,
+        lockId: unrelatedLock.lock_id,
       }),
     );
   }, 60_000);
