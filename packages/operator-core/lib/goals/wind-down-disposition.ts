@@ -43,6 +43,9 @@ export interface ActiveGoalRef {
   /** A disposition already recorded on the row (metadata.disposition) — the gate
    *  passes when one exists, so a re-entrant wind-down never demands it twice. */
   recordedDisposition: string | null;
+  /** The goal's declared output schema (P-021, migration 927) — null when none.
+   *  Carried here so the wind-down outputs gate needs no second query. */
+  outputSchema: Record<string, unknown> | null;
 }
 
 /**
@@ -70,9 +73,15 @@ export async function activeGoalForOwner(opts: {
   ).catch(() => null);
   if (!goalId) return null;
   const rows = await sql<
-    Array<{ id: string; title: string; install_slug: string; disposition: string | null }>
+    Array<{
+      id: string;
+      title: string;
+      install_slug: string;
+      disposition: string | null;
+      output_schema: Record<string, unknown> | null;
+    }>
   >`
-    SELECT id, title, install_slug, metadata->>'disposition' AS disposition
+    SELECT id, title, install_slug, metadata->>'disposition' AS disposition, output_schema
       FROM harness_shared.goals
      WHERE id = ${goalId} AND workspace_id = ${opts.workspaceId} AND status = 'active'
      LIMIT 1`;
@@ -83,6 +92,7 @@ export async function activeGoalForOwner(opts: {
     title: row.title,
     installSlug: row.install_slug,
     recordedDisposition: row.disposition ?? null,
+    outputSchema: row.output_schema ?? null,
   };
 }
 
@@ -162,6 +172,14 @@ export async function applyGoalDisposition(opts: {
   disposition: GoalDisposition;
   dispositionBy: string;
   handoffTo?: string | null;
+  /**
+   * The goal's reported outputs (P-021, migration 927), ALREADY validated by
+   * the caller against the goal's output_schema via
+   * `evaluateGoalWindDownOutputs` — this writer records, it does not judge
+   * (the same caller-validates split as insertGoalRow's IO fields). COALESCE'd
+   * so a re-entrant wind-down passing none never erases an earlier record.
+   */
+  outputs?: Record<string, unknown> | null;
   sql?: GoalSqlTag;
 }): Promise<void> {
   const sql = opts.sql ?? (getOrgPg().sql as unknown as GoalSqlTag);
@@ -172,9 +190,12 @@ export async function applyGoalDisposition(opts: {
   };
   if (opts.disposition === 'handoff' && opts.handoffTo) stamp.handoffTo = opts.handoffTo;
   const nextStatus = opts.disposition === 'handoff' ? null : opts.disposition;
+  const outputs =
+    opts.outputs && Object.keys(opts.outputs).length ? JSON.stringify(opts.outputs) : null;
   await sql`
     UPDATE harness_shared.goals
        SET status = COALESCE(${nextStatus}::text, status),
+           outputs = COALESCE(${outputs}::jsonb, outputs),
            metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(stamp)}::jsonb
      WHERE id = ${opts.goalId} AND workspace_id = ${opts.workspaceId}
   `;
