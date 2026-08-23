@@ -203,6 +203,32 @@ export async function getAuthoredDocContent(
   return typeof rows[0]?.content === 'string' && rows[0].content.length > 0 ? rows[0].content : null;
 }
 
+/**
+ * Canonical authored prose for every populated doc in a harness, keyed by doc id.
+ *
+ * Read surfaces use this bulk form when they need to overlay the filesystem
+ * projection. One query matters here: docs:get/outline/search may all run before
+ * git-sync has projected a newly authored page into the checkout the operator is
+ * serving, so fetching one row at a time would turn a correctness repair into an
+ * N+1 database read on every cold adapter load.
+ */
+export async function listAuthoredDocContents(
+  harnessSlug: string,
+  workspaceId?: string,
+): Promise<Map<string, string>> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const { sql } = getOrgPg();
+  const rows = await sql<{ doc_id: string; content: string | null }[]>`
+    SELECT doc_id, content FROM harness_shared.harness_docs
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       AND content IS NOT NULL AND content <> ''`;
+  const out = new Map<string, string>();
+  for (const row of rows) {
+    if (typeof row.content === 'string' && row.content.length > 0) out.set(row.doc_id, row.content);
+  }
+  return out;
+}
+
 /** All doc records for a harness, keyed by doc_id. */
 export async function listDocRecords(
   harnessSlug: string,
