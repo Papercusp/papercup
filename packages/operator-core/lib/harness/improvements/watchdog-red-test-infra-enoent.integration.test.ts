@@ -121,6 +121,12 @@ beforeAll(async () => {
     { filePath: 'packages/operator-core/lib/zero-duration-env-break.test.ts', status: 'fail', startedAt: at(30), durationMs: 0, tail: 'afterAll is not defined' },
     { filePath: 'packages/operator-core/lib/zero-duration-env-break.test.ts', status: 'fail', startedAt: at(5), durationMs: 0, tail: 'afterAll is not defined' },
 
+    // CONTROL E — failures in one file can carry unrelated tails. The aggregate
+    // must expose the newest tail, not lexical MAX(output_tail).
+    { filePath: 'packages/operator-core/lib/newest-tail.test.ts', status: 'fail', startedAt: at(40), durationMs: 120, tail: 'zzz-oldest failure' },
+    { filePath: 'packages/operator-core/lib/newest-tail.test.ts', status: 'fail', startedAt: at(30), durationMs: 120, tail: 'yyy-middle failure' },
+    { filePath: 'packages/operator-core/lib/newest-tail.test.ts', status: 'fail', startedAt: at(5), durationMs: 120, tail: 'aaa-newest failure' },
+
     // CONTROL D — a file whose ONLY recent runs are poisoned rows (no real
     // history at all in the window). Must never fire either.
     { filePath: 'packages/operator-core/lib/only-poisoned.test.ts', status: 'fail', startedAt: at(20), durationMs: 0, tail: ENOENT_TAIL },
@@ -169,6 +175,12 @@ describe('fetchRedTestRows excludes wiped-tmp-cache infra reds (EI-2077039593868
     const row = (await fetch()).find((r) => r.file_path === 'packages/operator-core/lib/zero-duration-env-break.test.ts');
     expect(row).toBeDefined();
     expect(row?.fails).toBe(3);
+  });
+
+  it('selects the newest failure tail rather than lexical MAX(output_tail)', async () => {
+    const row = (await fetch()).find((r) => r.file_path === 'packages/operator-core/lib/newest-tail.test.ts');
+    expect(row).toBeDefined();
+    expect(row?.sample).toBe('aaa-newest failure');
   });
 
   /**

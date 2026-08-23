@@ -842,6 +842,14 @@ export interface CollectOptions extends LearningSloOptions, EngagementCollectorO
   dispatcherStalenessThresholdHours?: number;
 }
 
+/**
+ * Re-read file-backed red-test evidence immediately before the watchdog files it.
+ * The initial collector read can go stale while the tick plans other signals, so
+ * this seam lets the tick replace a signal with current evidence or suppress it
+ * when the subject is green now.
+ */
+export type RedTestRedetect = (paths: string[], opts: CollectOptions) => Promise<WatchdogSignal[]>;
+
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 /**
@@ -916,6 +924,10 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       if (!prev.sample) prev.sample = r.sample;
       const a = toIsoOrUndefined(prev.latest_fail_at);
       const b = toIsoOrUndefined(r.latest_fail_at);
+      // Canonical and checkpoint rows represent the same test. Keep the tail
+      // belonging to the newest failure across both rows; otherwise a stale
+      // checkpoint tail can be filed as the current cause.
+      if (b && (!a || b > a)) prev.sample = r.sample;
       prev.latest_fail_at = a && b ? (a >= b ? a : b) : (a ?? b ?? null);
       const ea = toIsoOrUndefined(prev.earliest_fail_at);
       const eb = toIsoOrUndefined(r.earliest_fail_at);
@@ -1432,9 +1444,21 @@ export async function doesFileExistOnDisk(filePath: string): Promise<boolean> {
  * exercising the git-commit / disk-exists debounce IO that follows it (those are
  * already covered by `debounceRedTestSignals`'s own unit tests with injected fakes).
  */
-export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Promise<RedTestRow[]> {
+export async function fetchRedTestRows(
+  sql: Sql,
+  opts: CollectOptions = {},
+  paths?: readonly string[],
+): Promise<RedTestRow[]> {
   const windowHours = opts.redTestWindowHours ?? 6;
   const minFails = opts.redTestMinFails ?? 3;
+  const normalizedPaths = paths === undefined
+    ? undefined
+    : [...new Set(paths.map(normalizeRedTestPath).filter((p): p is string => p != null))];
+  const pathFilter = paths === undefined
+    ? sql`TRUE`
+    : normalizedPaths.length === 0
+      ? sql`FALSE`
+      : sql`regexp_replace(file_path, '^.*papercupai-workspace/[^/]+/', '') = ANY(${normalizedPaths})`;
   return sql<RedTestRow[]>`
     WITH recent AS (
       SELECT file_path, framework, status, output_tail, started_at, commit_sha,
@@ -1446,6 +1470,7 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
          -- synthetic fixture rows ('b', 'fail', 'no-such-bin') into test_runs;
          -- a real run always carries a repo-relative path with a separator.
          AND file_path LIKE '%/%'
+         AND ${pathFilter}
          -- EI-18767688096795873: a run whose vitest config resolved OUTSIDE the repo
          -- tree (a throwaway/mutation-testing config synthesized under /tmp, aliasing
          -- in a deliberately-broken module and asserting the suite goes red) is not a
@@ -1481,7 +1506,10 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
     SELECT file_path,
            max(framework) AS framework,
            count(*) FILTER (WHERE status IN ('fail', 'error'))::int AS fails,
-           max(output_tail) FILTER (WHERE status IN ('fail', 'error')) AS sample,
+           -- The tail must follow the newest failure, not lexical MAX(output_tail).
+           -- A failing file can carry unrelated tails across a mid-edit window.
+           (array_agg(output_tail ORDER BY started_at DESC)
+             FILTER (WHERE status IN ('fail', 'error')))[1] AS sample,
            max(started_at) FILTER (WHERE status IN ('fail', 'error')) AS latest_fail_at,
            min(started_at) FILTER (WHERE status IN ('fail', 'error')) AS earliest_fail_at,
            -- (EI-19363804802198172) The COMMIT dimension. 'fail_shas' keeps one entry
@@ -1519,9 +1547,13 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
  * red tests. Acceptable on a one-box install; on a multi-workspace host the
  * cross-host tick lock + key dedup keep it to one filed item regardless.
  */
-export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+export async function collectRedTestSignals(
+  sql: Sql,
+  opts: CollectOptions = {},
+  paths?: readonly string[],
+): Promise<WatchdogSignal[]> {
   const windowHours = opts.redTestWindowHours ?? 6;
-  const rows = await fetchRedTestRows(sql, opts);
+  const rows = await fetchRedTestRows(sql, opts, paths);
   const signals = redTestSignalsFromRows(rows, windowHours);
   // EI-10102: drop signals for files that were being actively git-committed
   // across their own failure window — a mid-refactor artifact, not a real
@@ -3612,6 +3644,8 @@ export interface WatchdogDeps {
    * ran-ticks. Defaults to `processAutoClose` (DEFAULT-OFF flag-gated); tests inject.
    */
   processAutoClose?: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
+  /** Re-detect file-backed red tests immediately before capture; fails open on read errors. */
+  redetectRedTests?: RedTestRedetect;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down.
@@ -4421,6 +4455,7 @@ interface ResolvedTickDeps {
   pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
   processAging: (workspaceId: string, knownOpen: readonly KnownOpenAgingInput[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
   processAutoClose: (workspaceId: string, opts: WatchdogTickOptions) => Promise<AutoCloseOutcome[]>;
+  redetectRedTests?: RedTestRedetect;
   collect?: () => Promise<WatchdogSignal[]>;
   collectors?: WatchdogCollector[];
 }
@@ -4550,9 +4585,35 @@ async function runWatchdogTickBody(
   // the boost) instead of issuing a second identical query.
   const priorDeferredKeys = fileable.length > planCap ? (priorTick?.deferredKeys ?? []) : [];
   const plan = planWatchdogCaptures(fileable, { ...opts, priorDeferredKeys });
+  let plannedForCapture = plan.toCapture;
+  // EI-21219920316907087: the collector can observe a red test, then a peer can
+  // fix it while this tick is planning other signals. Re-read only the planned
+  // red-test paths immediately before filing. A missing current signal means its
+  // latest run no longer meets the red predicate, so suppress this stale capture;
+  // any re-detect failure keeps the original signal (fail open).
+  if (deps.redetectRedTests) {
+    const redTestPaths = [...new Set(
+      plan.toCapture
+        .filter((s) => s.source === 'red-test')
+        .flatMap((s) => s.paths ?? []),
+    )];
+    if (redTestPaths.length > 0) {
+      try {
+        const current = await deps.redetectRedTests(redTestPaths, opts);
+        const currentByKey = new Map(current.map((s) => [watchdogKeyOf(s), s]));
+        plannedForCapture = plan.toCapture.flatMap((s) => {
+          if (s.source !== 'red-test') return [s];
+          const fresh = currentByKey.get(watchdogKeyOf(s));
+          return fresh ? [fresh] : [];
+        });
+      } catch (e) {
+        console.warn(`[improvement-watchdog] red-test re-detect failed (keeping initial evidence): ${e instanceof Error ? e.message : e}`);
+      }
+    }
+  }
   const captured: string[] = [];
   let declinedDuplicates = 0;
-  for (const s of plan.toCapture) {
+  for (const s of plannedForCapture) {
     let res: CaptureImprovementResult;
     try {
       res = await capture({
@@ -4708,6 +4769,13 @@ export async function runWatchdogTick(
       processKnownOpenAging(ws, knownOpen, agingOptionsFromTick(o)));
   const processAutoClose = deps?.processAutoClose
     ?? ((ws: string, _o: WatchdogTickOptions) => runAutoCloseSweep(ws));
+  // The built-in collector path gets a targeted ledger re-read. Injected
+  // collectors/tests must opt into the seam explicitly so unit ticks never
+  // open an unexpected database connection.
+  const redetectRedTests = deps?.redetectRedTests
+    ?? (!deps?.collect && !deps?.collectors
+      ? ((paths: string[], o: CollectOptions) => collectRedTestSignals(getOrgPg().sql, o, paths))
+      : undefined);
 
   const outcome = await withLock(workspaceId, () =>
     runWatchdogTickBody(workspaceId, opts, {
@@ -4718,6 +4786,7 @@ export async function runWatchdogTick(
       pruneTicks,
       processAging,
       processAutoClose,
+      redetectRedTests,
       collect: deps?.collect,
       collectors: deps?.collectors,
     }),

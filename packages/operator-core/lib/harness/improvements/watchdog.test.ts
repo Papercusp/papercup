@@ -1102,6 +1102,24 @@ describe('red-test path normalization — one identity per broken test', () => {
     expect(signals[0].earliestAt).toBe('2026-07-11T19:00:00.000Z');
     expect(signals[0].latestAt).toBe('2026-07-11T20:30:00.000Z');
   });
+
+  it('uses the newest failure tail when canonical/checkpoint rows have different evidence', () => {
+    const signals = redTestSignalsFromRows(
+      [
+        {
+          file_path: 'a.test.ts', framework: 'vitest', fails: 3, sample: 'old failure',
+          latest_fail_at: '2026-07-11T19:00:00Z',
+        },
+        {
+          file_path: 'papercupai-workspace/papercup-checkpoint/a.test.ts', framework: 'vitest', fails: 1,
+          sample: 'new failure', latest_fail_at: '2026-07-11T20:00:00Z',
+        },
+      ],
+      6,
+    );
+    expect(signals[0].body).toContain('new failure');
+    expect(signals[0].body).not.toContain('old failure');
+  });
 });
 
 describe('debounceRedTestSignals (EI-10102): a file being actively edited across its own failure window is a mid-refactor artifact, not a regression', () => {
@@ -1646,6 +1664,38 @@ describe('runWatchdogTick — captures through the shared core', () => {
       // taxonomy can key off it ('operator' when the signal doesn't set one).
       scope: 'operator',
     });
+  });
+
+  it('re-detects planned red tests immediately before capture and suppresses a now-green subject', async () => {
+    const { calls, capture } = captureRecorder();
+    const red = sig({ key: 'a.test.ts', paths: ['a.test.ts'], latestAt: '2026-07-11T20:00:00.000Z' });
+    const redetectRedTests = vi.fn(async () => [] as WatchdogSignal[]);
+    const res = await runTick('ws', {}, {
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      collect: async () => [red],
+      redetectRedTests,
+      capture,
+      recordTick: noopRecord,
+    });
+    expect(redetectRedTests).toHaveBeenCalledWith(['a.test.ts'], expect.anything());
+    expect(calls).toHaveLength(0);
+    expect(res.captured).toEqual([]);
+  });
+
+  it('captures refreshed red-test evidence when the subject is still red', async () => {
+    const { calls, capture } = captureRecorder();
+    const initial = sig({ key: 'a.test.ts', paths: ['a.test.ts'], body: 'stale tail' });
+    const current = sig({ key: 'a.test.ts', paths: ['a.test.ts'], body: 'fresh tail' });
+    await runTick('ws', {}, {
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      collect: async () => [initial],
+      redetectRedTests: async () => [current],
+      capture,
+      recordTick: noopRecord,
+    });
+    expect(calls[0]).toMatchObject({ body: 'fresh tail' });
   });
 
   it('passes a per-signal scope through to the capture (consume-edges P-021)', async () => {
