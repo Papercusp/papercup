@@ -1274,6 +1274,38 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.checksDropped).toBeUndefined();
   });
 
+  it('passes narrative metadata so a next-only merge preserves prior sections and checks', async () => {
+    const prior = mergeCarryRows({
+      priorNote: null,
+      baseNote: [
+        '## Did',
+        'finished the first pass',
+        '',
+        '## Left',
+        'run the focused suite',
+        '',
+        '## Key insight',
+        'the locked prior is authoritative',
+        '',
+        '## Next action',
+        're-read the current note',
+      ].join('\n'),
+      checks: [{ claim: 'gate is green', recheck: 'state:read', verified: 'saw green' }],
+      hasNoteWrite: true,
+    }).note;
+    getLoopCarryNote.mockResolvedValue(prior);
+
+    const b = body(await call({ next: 'run the focused suite now' }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+
+    expect(written).toContain('## Did\nfinished the first pass');
+    expect(written).toContain('## Left\nrun the focused suite');
+    expect(written).toContain('## Key insight\nthe locked prior is authoritative');
+    expect(written).toContain('## Next action\nrun the focused suite now');
+    expect(written).toContain('gate is green');
+    expect(b).toMatchObject({ ok: true, checks: 1, checksDropped: undefined });
+  });
+
   it("CONTROL — retirement is still reachable: rowsMode:'replace' drops the omitted rows and says so", async () => {
     // Guards the OTHER direction: a change that made merge unconditional would make the
     // test above pass while silently removing the only way to retire a stale row.
