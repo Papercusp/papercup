@@ -39,7 +39,7 @@
  * to check the release checkout before dropping something out from under it.
  */
 
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -319,6 +319,57 @@ function isSourceFile(file) {
   return SOURCE_EXTENSIONS.has(sourceFileExtension(file));
 }
 
+function isMissingFileError(error) {
+  return Boolean(error && typeof error === 'object' && error.code === 'ENOENT');
+}
+
+/**
+ * Read a path found by a directory scan after re-stat'ing it.
+ *
+ * A parked migration is an in-flight authoring artifact: reservation and rename
+ * can remove it after readdirSync returned its name. Re-stat narrows the normal
+ * race window, while the read catch closes the final stat/read window. Callers
+ * choose whether ENOENT is tolerable; other errors always remain fatal.
+ *
+ * @param {string} filePath
+ * @param {{ allowMissing?: boolean, readFile?: Function, stat?: Function }} options
+ * @returns {string|null}
+ */
+export function readScannedFile(filePath, { allowMissing = false, readFile = readFileSync, stat = statSync } = {}) {
+  try {
+    stat(filePath);
+  } catch (error) {
+    if (allowMissing && isMissingFileError(error)) return null;
+    throw error;
+  }
+
+  try {
+    return readFile(filePath, 'utf8');
+  } catch (error) {
+    if (allowMissing && isMissingFileError(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Read the names returned by a directory scan, tolerating only explicitly
+ * allowed files that disappear while the scan is in flight.
+ *
+ * @param {string} directory
+ * @param {string[]} files
+ * @param {{ allowMissing?: boolean|((file: string) => boolean), readFile?: Function, stat?: Function }} options
+ * @returns {Array<{file: string, text: string}>}
+ */
+export function readScannedFiles(directory, files, { allowMissing = false, readFile = readFileSync, stat = statSync } = {}) {
+  const loaded = [];
+  for (const file of files) {
+    const tolerateMissing = typeof allowMissing === 'function' ? allowMissing(file) : allowMissing;
+    const text = readScannedFile(join(directory, file), { allowMissing: tolerateMissing, readFile, stat });
+    if (text !== null) loaded.push({ file, text });
+  }
+  return loaded;
+}
+
 function sourceCommentsMasked(text, file) {
   return sourceFileExtension(file) === '.sql' ? stripSqlComments(text) : stripCommentsOnly(text, file);
 }
@@ -342,7 +393,8 @@ function sourceFilesForRepo() {
       }
       const file = relative(resolve(__dirname, '..'), abs).split(sep).join('/');
       if (!entry.isFile() || !isSourceFile(file) || file.startsWith(`${SQL_DIR_REL}/`)) continue;
-      files.push({ file, text: readFileSync(abs, 'utf8') });
+      const text = readScannedFile(abs, { allowMissing: true });
+      if (text !== null) files.push({ file, text });
     }
   }
 
@@ -562,8 +614,7 @@ function main() {
     .sort((a, b) => a.num - b.num);
 
   const offenders = [];
-  for (const { file } of inScope) {
-    const text = readFileSync(join(SQL_DIR, file), 'utf8');
+  for (const { file, text } of readScannedFiles(SQL_DIR, inScope.map(({ file }) => file))) {
     const hits = violationsFor(text);
     if (hits.length === 0) continue;
     if (ACK_MARKER.test(text)) continue;
@@ -574,8 +625,7 @@ function main() {
   const draftFiles = all.filter(isDraftMigrationFile).sort();
   if (draftFiles.length > 0) {
     const sourceFiles = sourceFilesForRepo();
-    for (const file of draftFiles) {
-      const text = readFileSync(join(SQL_DIR, file), 'utf8');
+    for (const { file, text } of readScannedFiles(SQL_DIR, draftFiles, { allowMissing: true })) {
       const dependency = findDraftColumnReferences(text, sourceFiles);
       if (dependency.references.length > 0) draftOffenders.push({ file, ...dependency });
     }

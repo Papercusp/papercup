@@ -34,6 +34,7 @@ import {
   isDraftMigrationFile,
   isEnforcedMigrationFile,
   isMigrationArtifactFile,
+  readScannedFiles,
   SOURCE_ROOTS,
   violationsFor,
 } from '../../../scripts/check-migration-forward-compat.mjs';
@@ -157,6 +158,31 @@ describe('the nudge covers the DRAFT window, which IS the authoring window', () 
 
 describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
   const DRAFT = `${ENFORCE_FROM + 107}-adv-sessions-ended-by-signal.sql.DRAFT`;
+
+  it('skips a parked migration removed between readdir and read, but not an armed migration', () => {
+    const missingAfterStat = () => {
+      const error = new Error('simulated concurrent reservation rename');
+      Object.assign(error, { code: 'ENOENT' });
+      throw error;
+    };
+    const stat = () => undefined;
+
+    expect(
+      readScannedFiles('/repo/libs/papercusp/libs/db/sql', [DRAFT], {
+        allowMissing: isDraftMigrationFile,
+        stat,
+        readFile: missingAfterStat,
+      }),
+    ).toEqual([]);
+
+    expect(() =>
+      readScannedFiles('/repo/libs/papercusp/libs/db/sql', [DRAFT.replace('.DRAFT', '')], {
+        allowMissing: isDraftMigrationFile,
+        stat,
+        readFile: missingAfterStat,
+      }),
+    ).toThrow('simulated concurrent reservation rename');
+  });
 
   it('recognizes armed and parked migration artifacts, but not historical drafts', () => {
     expect(isMigrationArtifactFile(DRAFT)).toBe(true);
