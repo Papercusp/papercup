@@ -30,7 +30,11 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateTriggerPackDeclaration, type PluginTriggerPack } from '@papercusp/plugin-sdk';
+import {
+  validateTriggerPackDeclaration,
+  type PluginOAuthRequirement,
+  type PluginTriggerPack,
+} from '@papercusp/plugin-sdk';
 import {
   getSocialPlatform,
   isSocialWriteVerified,
@@ -53,7 +57,14 @@ const PLUGINS_DIR = process.env.SOCIAL_STARTER_PACKS_DIR
 
 interface Manifest {
   name: string;
-  oauth?: unknown;
+  kind?: string;
+  /**
+   * Typed as the validator's own parameter rather than `unknown`, so the
+   * least-privilege assertion below ("no pack declares an OAuth requirement")
+   * is checked against the real shape instead of an escape hatch that would
+   * also accept a malformed one.
+   */
+  oauth?: PluginOAuthRequirement[];
   capabilities?: unknown[];
   configSchema?: Record<string, unknown>;
   triggerPack?: PluginTriggerPack;
