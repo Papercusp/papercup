@@ -29,7 +29,7 @@ import {
   AGENT_BACKENDS,
   SURFACE_KEYS,
   isValidModelSpec,
-  clampCompactionLimit,
+  clampCompactionLimitForTier,
   type AgentBackend,
   type ModelTier,
   type SurfaceKey,
@@ -168,13 +168,21 @@ export function parseTiers(raw: unknown): ModelTier[] {
     // a non-number drops the FIELD (→ model-derived default at resolution),
     // never the row; a number is clamped so `limit × 1.2 ≤ window − margin`
     // (D-001 — the ceiling IS the model-derived default).
+    const rawWindow = (entry as ModelTier).contextWindow;
+    const contextWindow =
+      typeof rawWindow === 'number' && Number.isFinite(rawWindow) && rawWindow > 0
+        ? Math.floor(rawWindow)
+        : undefined;
     const rawLimit = (entry as ModelTier).compactionLimit;
     const compactionLimit =
-      typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? clampCompactionLimit(rawLimit, spec) : undefined;
+      typeof rawLimit === 'number' && Number.isFinite(rawLimit)
+        ? clampCompactionLimitForTier(rawLimit, { spec, contextWindow })
+        : undefined;
     out.push({
       name,
       spec,
       ...((AGENT_BACKENDS as readonly string[]).includes(backend as string) ? { backend } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
       // The queen-facing one-liner; capped so a pasted essay can't bloat
       // every queen launch prompt.
       ...(when ? { when: when.slice(0, 300) } : {}),

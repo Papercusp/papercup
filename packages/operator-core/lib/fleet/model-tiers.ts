@@ -20,7 +20,7 @@
  * an error — only an unknown tier name rejects, since that's a bad input the
  * caller should fix, not a judgment to silently reinterpret.
  */
-import { DEFAULT_MODEL_TIERS, defaultCompactionLimitForSpec, type ModelTier } from '../agent-config-constants';
+import { DEFAULT_MODEL_TIERS, defaultCompactionLimitForTier, type ModelTier } from '../agent-config-constants';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 
 export interface TierResolution {
@@ -174,7 +174,7 @@ export function resolveTierSpec(opts: {
     tier: tiers[idx].name,
     requestedTier: requested,
     ...(tiers[idx].backend ? { backend: tiers[idx].backend } : {}),
-    compactionLimit: tiers[idx].compactionLimit ?? defaultCompactionLimitForSpec(tiers[idx].spec),
+    compactionLimit: tiers[idx].compactionLimit ?? defaultCompactionLimitForTier(tiers[idx]),
     ...(clamped ? { clamped, note } : {}),
   };
 }

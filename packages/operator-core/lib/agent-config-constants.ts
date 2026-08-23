@@ -71,6 +71,10 @@ export interface ModelTier {
       verbatim into the queen's launch prompt as her live tier menu — this is
       the owner's instruction channel for per-tier judgment. */
   when?: string;
+  /** Backend-catalog context window captured for specs whose launch syntax
+      cannot encode the window (notably provider-qualified OMP selectors).
+      It is a validated snapshot tied to `spec`, not a second model id. */
+  contextWindow?: number;
   /** Soft compaction limit (tokens) for sessions spawned on this tier — the
       context size at which the agent should reach a clean stopping point and
       self-compact (agent-managed-compaction-2026-07-01). Absent = the
@@ -175,6 +179,19 @@ export function modelWindowForSpec(spec?: string | null): number {
   if (spec.includes('[1m]')) return MODEL_WINDOW_1M;
   if (isCodexExtendedWindowSpec(spec)) return MODEL_WINDOW_CODEX_EXTENDED;
   return MODEL_WINDOW_DEFAULT;
+}
+
+/** Resolve the hard window for one tier. Provider-backed tiers may carry the
+ * exact window resolved from their backend catalog; legacy/Claude/Codex rows
+ * continue through the established spec-only policy. */
+export function modelWindowForTier(
+  tier: Pick<ModelTier, 'spec' | 'contextWindow'>,
+): number {
+  const catalogWindow = tier.contextWindow;
+  if (typeof catalogWindow === 'number' && Number.isFinite(catalogWindow) && catalogWindow > 0) {
+    return Math.floor(catalogWindow);
+  }
+  return modelWindowForSpec(tier.spec);
 }
 
 /**
@@ -806,6 +823,14 @@ export function defaultCompactionLimitForSpec(
   return defaultCompactionLimitForWindow(modelWindowForSpec(spec), opts);
 }
 
+/** Backend-aware twin of `defaultCompactionLimitForSpec` for a tier row. */
+export function defaultCompactionLimitForTier(
+  tier: Pick<ModelTier, 'spec' | 'contextWindow'>,
+  opts?: { fleetMember?: boolean },
+): number {
+  return defaultCompactionLimitForWindow(modelWindowForTier(tier), opts);
+}
+
 /**
  * Limits a SUPERSEDED policy once derived for this spec — numbers the SYSTEM
  * chose, not a human. Empty for a spec whose derivation never moved.
@@ -913,5 +938,16 @@ export function clampCompactionLimit(
   const cap = opts?.selfSet
     ? selfSetCeilingForSpec(spec, opts)
     : defaultCompactionLimitForSpec(spec, opts);
+  return Math.min(Math.max(Math.floor(limit), MIN_COMPACTION_LIMIT_TOKENS), cap);
+}
+
+/** Clamp an explicit tier limit against the backend-catalog window when one
+ * was resolved, falling back to the existing spec-only policy otherwise. */
+export function clampCompactionLimitForTier(
+  limit: number,
+  tier: Pick<ModelTier, 'spec' | 'contextWindow'>,
+  opts?: { fleetMember?: boolean },
+): number {
+  const cap = defaultCompactionLimitForTier(tier, opts);
   return Math.min(Math.max(Math.floor(limit), MIN_COMPACTION_LIMIT_TOKENS), cap);
 }

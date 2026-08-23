@@ -10,14 +10,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { readMock, writeMock } = vi.hoisted(() => ({
+const { readMock, writeMock, readOmpCatalogMock } = vi.hoisted(() => ({
   readMock: vi.fn(),
   writeMock: vi.fn(),
+  readOmpCatalogMock: vi.fn(),
 }));
 vi.mock('../../agent-config', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../agent-config')>();
   return { ...real, readAgentConfig: readMock, writeAgentConfig: writeMock };
 });
+vi.mock('../../omp-config', () => ({ readOmpModelCatalog: readOmpCatalogMock }));
 
 const setTool = (await import('./tiers-set')).default;
 const getTool = (await import('./tiers-get')).default;
@@ -27,6 +29,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   readMock.mockResolvedValue({ backend: 'auto', cmd: '', models: {}, tiers: [], tierCeilings: {} });
   writeMock.mockImplementation(async (cfg: { tiers: unknown[] }) => cfg);
+  readOmpCatalogMock.mockResolvedValue({ models: [] });
 });
 
 describe('config:tiers-set', () => {
@@ -60,6 +63,28 @@ describe('config:tiers-set', () => {
     expect(writeMock.mock.calls[0][0].tiers).toEqual([]);
     expect(out.data.stored).toBe(false);
   });
+
+  it('hydrates an OMP tier from the exact backend catalog selector before clamping', async () => {
+    readOmpCatalogMock.mockResolvedValue({
+      models: [{ selector: 'openrouter/stealth/ox-alpha', contextWindow: 1_048_576 }],
+    });
+    const out = (await setTool.handler({
+      tiers: [{
+        name: 'ox-alpha',
+        spec: 'openrouter/stealth/ox-alpha:max',
+        backend: 'omp',
+        compactionLimit: 400_000,
+      }],
+    }, {} as never)) as ToolOut;
+    expect(writeMock.mock.calls[0][0].tiers).toEqual([{
+      name: 'ox-alpha',
+      spec: 'openrouter/stealth/ox-alpha:max',
+      backend: 'omp',
+      contextWindow: 1_048_576,
+      compactionLimit: 400_000,
+    }]);
+    expect(out.data.tiers[0]).toMatchObject({ modelWindow: 1_048_576, effectiveCompactionLimit: 400_000 });
+  });
 });
 
 describe('config:tiers-get', () => {
@@ -81,5 +106,18 @@ describe('config:tiers-get', () => {
     expect(out.data.stored).toBe(true);
     expect(out.data.tiers[0].effectiveCompactionLimit).toBe(90_000);
     expect(out.data.tiers[0].compactionLimitSource).toBe('explicit');
+  });
+
+  it('reports a persisted OMP catalog window instead of the 200k fallback', async () => {
+    readMock.mockResolvedValue({
+      backend: 'auto', cmd: '', models: {},
+      tiers: [{
+        name: 'ox-alpha', spec: 'openrouter/stealth/ox-alpha:max', backend: 'omp',
+        contextWindow: 1_048_576, compactionLimit: 400_000,
+      }],
+      tierCeilings: {},
+    });
+    const out = (await getTool.handler({}, {} as never)) as ToolOut;
+    expect(out.data.tiers[0]).toMatchObject({ modelWindow: 1_048_576, effectiveCompactionLimit: 400_000 });
   });
 });

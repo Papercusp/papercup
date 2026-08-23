@@ -13,11 +13,15 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readAgentConfig, writeAgentConfig, parseTiers } from '../../agent-config';
+import { readOmpModelCatalog } from '../../omp-config';
 import {
   AGENT_BACKENDS,
-  defaultCompactionLimitForSpec,
-  modelWindowForSpec,
+  defaultCompactionLimitForTier,
+  modelWindowForTier,
 } from '../../agent-config-constants';
+
+const withoutEffort = (spec: string): string =>
+  spec.replace(/:(?:minimal|low|medium|high|xhigh|max|ultra)$/i, '');
 
 export default defineTool({
   name: 'config:tiers-set',
@@ -56,14 +60,22 @@ export default defineTool({
       .describe('The FULL replacement menu, ordered weakest → strongest. [] reverts to the committed defaults.'),
   }),
   async handler(args) {
-    const parsed = parseTiers(args.tiers);
+    const needsOmpCatalog = args.tiers.some((tier) => tier.backend === 'omp');
+    const ompModels = needsOmpCatalog ? (await readOmpModelCatalog()).models : [];
+    const hydrated = args.tiers.map((tier) => {
+      if (tier.backend !== 'omp') return tier;
+      const selector = withoutEffort(tier.spec);
+      const contextWindow = ompModels.find((model) => model.selector === selector)?.contextWindow;
+      return contextWindow != null && contextWindow > 0 ? { ...tier, contextWindow } : tier;
+    });
+    const parsed = parseTiers(hydrated);
     const dropped = args.tiers.length - parsed.length;
     const cfg = await readAgentConfig();
     const next = await writeAgentConfig({ ...cfg, tiers: parsed });
     const tiers = (next.tiers ?? []).map((t) => ({
       ...t,
-      modelWindow: modelWindowForSpec(t.spec),
-      effectiveCompactionLimit: t.compactionLimit ?? defaultCompactionLimitForSpec(t.spec),
+      modelWindow: modelWindowForTier(t),
+      effectiveCompactionLimit: t.compactionLimit ?? defaultCompactionLimitForTier(t),
     }));
     return {
       data: {

@@ -19,7 +19,7 @@ import {
   MODEL_EFFORT_LEVELS,
   MIN_COMPACTION_LIMIT_TOKENS,
   SURFACE_KEYS,
-  defaultCompactionLimitForSpec,
+  defaultCompactionLimitForTier,
   isValidModelSpec,
   type AgentBackend,
   type ModelTier,
@@ -37,6 +37,10 @@ export interface TierRow {
       default (context-trimming-tiers D-002). Optional so pre-existing row
       literals stay valid; tierToRow always populates it. */
   compactionLimit?: string;
+  /** Catalog window snapshot and the spec it belongs to. The spec marker keeps
+      an edited model id from inheriting the previous model's window. */
+  contextWindow?: number;
+  contextWindowSpec?: string;
 }
 
 export const tierToRow = (t: ModelTier): TierRow => ({
@@ -45,6 +49,7 @@ export const tierToRow = (t: ModelTier): TierRow => ({
   backend: t.backend ?? '',
   when: t.when ?? '',
   compactionLimit: t.compactionLimit != null ? String(t.compactionLimit) : '',
+  ...(t.contextWindow != null ? { contextWindow: t.contextWindow, contextWindowSpec: t.spec } : {}),
 });
 
 /** Bare cloud model aliases that are recognized without a vendor prefix.
@@ -226,10 +231,17 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
     // '' = model-derived default; a number must sit in [20k, the spec's derived
     // ceiling] — the ceiling keeps limit × 1.2 under the hard window.
     let compactionLimit: number | undefined;
+    const contextWindow =
+      row.contextWindowSpec === spec &&
+      typeof row.contextWindow === 'number' &&
+      Number.isFinite(row.contextWindow) &&
+      row.contextWindow > 0
+        ? Math.floor(row.contextWindow)
+        : undefined;
     const limitText = (row.compactionLimit ?? '').trim();
     if (limitText) {
       const n = Number(limitText);
-      const cap = defaultCompactionLimitForSpec(spec);
+      const cap = defaultCompactionLimitForTier({ spec, contextWindow });
       if (!Number.isFinite(n) || !Number.isInteger(n)) {
         problems.push(`tier "${name}": compaction limit must be a whole number of tokens (or blank for the model default)`);
         tiersValid = false;
@@ -249,6 +261,7 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
       name,
       spec,
       ...(row.backend ? { backend: row.backend } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(row.when.trim() ? { when: row.when.trim() } : {}),
       ...(compactionLimit !== undefined ? { compactionLimit } : {}),
     });

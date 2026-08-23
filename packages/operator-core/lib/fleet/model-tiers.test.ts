@@ -380,6 +380,15 @@ describe('resolveTierSpec compactionLimit', () => {
     expect(wide.ok && wide.compactionLimit).toBe(400_000); // [1m] ⇒ 400k cap (owner directive 2026-07-03)
   });
 
+  it('derives a wide default from a backend-catalog tier window', () => {
+    const tiers = [{
+      name: 'ox-alpha', spec: 'openrouter/stealth/ox-alpha:max', backend: 'omp' as const,
+      contextWindow: 1_048_576,
+    }];
+    const r = resolveTierSpec({ tier: 'ox-alpha', role: 'reviewer', tiers });
+    expect(r.ok && r.compactionLimit).toBe(400_000);
+  });
+
   it('a budget downgrade adopts the downgraded-to tier limit', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ cup: 'haiku' }));
     const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'cup' });

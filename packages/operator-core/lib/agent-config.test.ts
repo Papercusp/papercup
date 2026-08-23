@@ -208,6 +208,22 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
       { name: 'std', spec: 'haiku', compactionLimit: 20_000 },
     ]);
   });
+
+  it('preserves a backend-catalog window and clamps against that real window', () => {
+    expect(parseTiers([{
+      name: 'ox-alpha',
+      spec: 'openrouter/stealth/ox-alpha:max',
+      backend: 'omp',
+      contextWindow: 1_048_576,
+      compactionLimit: 400_000,
+    }])).toEqual([{
+      name: 'ox-alpha',
+      spec: 'openrouter/stealth/ox-alpha:max',
+      backend: 'omp',
+      contextWindow: 1_048_576,
+      compactionLimit: 400_000,
+    }]);
+  });
 });
 
 describe('agentCmdBootWarning (EI-727)', () => {

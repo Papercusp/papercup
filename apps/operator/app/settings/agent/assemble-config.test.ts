@@ -252,4 +252,21 @@ describe('tier compaction limit (context-trimming-tiers D-001/D-002)', () => {
     });
     expect(r.problems.some((p) => p.includes('whole number'))).toBe(true);
   });
+
+  it('round-trips an OMP catalog window and drops it if the spec is edited', () => {
+    const tier: ModelTier = {
+      name: 'ox-alpha', spec: 'openrouter/stealth/ox-alpha:max', backend: 'omp',
+      contextWindow: 1_048_576, compactionLimit: 400_000,
+    };
+    const row = tierToRow(tier);
+    const kept = assembleAgentConfig({ ...baseInput(), tierRows: [row] });
+    expect(kept.problems).toEqual([]);
+    expect(kept.persistable.tiers).toEqual([tier]);
+
+    const edited = assembleAgentConfig({
+      ...baseInput(),
+      tierRows: [{ ...row, spec: 'openrouter/another-model', compactionLimit: '' }],
+    });
+    expect(edited.persistable.tiers[0]).not.toHaveProperty('contextWindow');
+  });
 });

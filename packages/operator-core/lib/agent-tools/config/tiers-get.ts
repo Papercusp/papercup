@@ -13,8 +13,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readAgentConfig } from '../../agent-config';
 import {
   DEFAULT_MODEL_TIERS,
-  defaultCompactionLimitForSpec,
-  modelWindowForSpec,
+  defaultCompactionLimitForTier,
+  modelWindowForTier,
 } from '../../agent-config-constants';
 
 export default defineTool({
@@ -39,8 +39,8 @@ export default defineTool({
     const menu = stored ? cfg.tiers! : [...DEFAULT_MODEL_TIERS];
     const tiers = menu.map((t) => ({
       ...t,
-      modelWindow: modelWindowForSpec(t.spec),
-      effectiveCompactionLimit: t.compactionLimit ?? defaultCompactionLimitForSpec(t.spec),
+      modelWindow: modelWindowForTier(t),
+      effectiveCompactionLimit: t.compactionLimit ?? defaultCompactionLimitForTier(t),
       compactionLimitSource: t.compactionLimit != null ? ('explicit' as const) : ('model-default' as const),
     }));
     return {
