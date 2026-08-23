@@ -2345,7 +2345,7 @@
           "POST"
         ]
       },
-      "description": "Run `bash -c` in the project dir; stream output and spill large output to a log. Use `run_in_background` for long jobs, then `capability:bash_output`. Operator callers may bind redacted integration credentials.",
+      "description": "Run `bash -c` in the project dir; stream and spill large output to a log. Operator callers may bind redacted integration credentials.",
       "capabilities": [
         "capability:bash"
       ],
@@ -2408,7 +2408,7 @@
       "guidance": {
         "when": "Run builds, tests, checks, or scripts. For fixed-string searches, prefer `rg -F` when available or fall back to `grep -F`; use a shell-safe single-quoted argument because an unmatched backtick fails before either search tool runs. For repository regex searches, Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matched lines before piping to a row limit (for example, `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.",
         "notWhen": "Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.",
-        "chaining": "run_in_background:true returns bash_id + durable task_id; read with capability:bash_output { task_id }, stop with processes:kill { taskId }. Never push."
+        "chaining": "run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push."
       }
     },
     {
