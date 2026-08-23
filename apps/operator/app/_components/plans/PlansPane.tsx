@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * PlansPane (owner-plans-single-pane-2026-07-17 P-001/P-002) — the simplified
@@ -25,20 +25,35 @@
  *     roster reads (active entries' currentPlanSlug).
  *
  * State lives in the URL (nuqs) so the pane is deep-linkable and
- * agent-driveable: `?plq` search, `?plf` show-finished, `?pplan` popup plan,
- * `?ppv` popup tab (see PlanPopupModal).
+ * agent-driveable: `?plq` search, `?plf` show-finished, `?plFilters` filter
+ * disclosure, `?pplan` popup plan, `?ppv` popup tab (see PlanPopupModal).
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Archive, ChevronRight, ClipboardList, Search, SlidersHorizontal, X } from 'lucide-react';
-import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { toast } from 'sonner';
-import { useSyncQuery } from '@papercusp/sync';
-import { Tooltip } from '@/app/harness/Tooltip';
-import { useDebouncedValue } from '@/app/harness/picker-kit';
-import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { preloadVditor } from '@/app/_components/MarkdownEditor';
-import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  Archive,
+  ChevronRight,
+  ClipboardList,
+  Search,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
+import {
+  parseAsBoolean,
+  parseAsString,
+  parseAsStringEnum,
+  useQueryState,
+} from "nuqs";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { toast } from "sonner";
+import { useSyncQuery } from "@papercusp/sync";
+import { Tooltip } from "@/app/harness/Tooltip";
+import { useDebouncedValue } from "@/app/harness/picker-kit";
+import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
+import { preloadVditor } from "@/app/_components/MarkdownEditor";
+import {
+  beginInteraction,
+  PERF_INTERACTIONS,
+} from "@/app/_components/perf/perf-marks";
 import {
   bucketOf,
   setPlanArchived,
@@ -46,19 +61,23 @@ import {
   usePlanList,
   type PlanBucket,
   type PlanListRow,
-} from '@/app/admin/plans/plans-api';
+} from "@/app/admin/plans/plans-api";
 import {
   PLAN_TRIGGER_FILTERS,
   type PlanTriggerFilter,
-} from '@/app/admin/plans/plan-filtering';
-import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
-import PlanPopupModal from './PlanPopupModal';
-import './plans-pane.css';
-import { advRosterArgs } from '@/lib/adv-roster-args';
+} from "@/app/admin/plans/plan-filtering";
+import { effectiveTier, useInboxAttention } from "../inbox/use-inbox-pending";
+import { useWorkspaceId } from "@/lib/use-workspace-id";
+import PlanPopupModal from "./PlanPopupModal";
+import "./plans-pane.css";
+import { advRosterArgs } from "@/lib/adv-roster-args";
 
 /** Buckets shown by default — "not started + started", never the finished. */
-const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'running']);
+const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set([
+  "draft",
+  "ready",
+  "running",
+]);
 
 /** An active plan with no real activity for this long reads as "stale" — a
  *  visibility nudge against plan sprawl (owner-plans-single-pane P-008). */
@@ -108,7 +127,10 @@ function BlenderIcon({ size = 16 }: { size?: number }) {
 }
 
 /** True when an active plan hasn't been touched in ≥ STALE_MS. Pure. */
-export function isStale(updated: string | null | undefined, now = Date.now()): boolean {
+export function isStale(
+  updated: string | null | undefined,
+  now = Date.now(),
+): boolean {
   if (!updated) return false;
   const t = Date.parse(updated);
   return Number.isFinite(t) && now - t >= STALE_MS;
@@ -116,11 +138,11 @@ export function isStale(updated: string | null | undefined, now = Date.now()): b
 
 /** Compact relative recency — same local convention as the roster/backup panes. */
 export function agoLabel(iso: string | null | undefined): string {
-  if (!iso) return '—';
+  if (!iso) return "—";
   const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (!Number.isFinite(ms) || ms < 0) return "—";
   const m = Math.floor(ms / 60_000);
-  if (m < 1) return 'now';
+  if (m < 1) return "now";
   if (m < 60) return `${m}m`;
   const h = Math.round(m / 60);
   if (h < 48) return `${h}h`;
@@ -128,16 +150,18 @@ export function agoLabel(iso: string | null | undefined): string {
 }
 
 /** done / total-open+done item progress from the list row's itemCounts. */
-export function progressOf(row: Pick<PlanListRow, 'itemCounts'>): { done: number; total: number } | null {
+export function progressOf(
+  row: Pick<PlanListRow, "itemCounts">,
+): { done: number; total: number } | null {
   const c = row.itemCounts;
   if (!c) return null;
   let done = 0;
   let total = 0;
   for (const [k, v] of Object.entries(c)) {
     const n = v ?? 0;
-    if (k === 'unknown') continue;
+    if (k === "unknown") continue;
     total += n;
-    if (k === 'done') done += n;
+    if (k === "done") done += n;
   }
   return total > 0 ? { done, total } : null;
 }
@@ -164,10 +188,10 @@ export function buildGlanceRows(opts: {
     if (plan.archived || plan.isLegacy) continue;
     const bucket = bucketOf(plan);
     if (!opts.showFinished && !ACTIVE_BUCKETS.has(bucket)) continue;
-    if (opts.triggerFilter === 'triggered' && plan.triggered !== true) continue;
-    if (opts.triggerFilter === 'one-time' && plan.triggered === true) continue;
+    if (opts.triggerFilter === "triggered" && plan.triggered !== true) continue;
+    if (opts.triggerFilter === "one-time" && plan.triggered === true) continue;
     if (q) {
-      const hay = `${plan.title ?? ''} ${plan.slug}`.toLowerCase();
+      const hay = `${plan.title ?? ""} ${plan.slug}`.toLowerCase();
       if (!hay.includes(q)) continue;
     }
     rows.push({
@@ -191,17 +215,22 @@ interface RosterPayloadRow {
 }
 
 export default function PlansPane() {
-  const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
-  const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
+  const [query, setQuery] = useQueryState("plq", parseAsString.withDefault(""));
+  const [showFinished, setShowFinished] = useQueryState(
+    "plf",
+    parseAsBoolean.withDefault(false),
+  );
   const [filtersOpen, setFiltersOpen] = useQueryState(
-    'plFilters',
+    "plFilters",
     parseAsBoolean.withDefault(false),
   );
   const [triggerFilter, setTriggerFilter] = useQueryState(
-    'plTrigger',
-    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
+    "plTrigger",
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault(
+      "all",
+    ),
   );
-  const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
+  const [popupPlan, setPopupPlan] = useQueryState("pplan", parseAsString);
 
   // Warm the Vditor stack shortly after the Plans face mounts, so the first
   // plan popup opens WARM (~430ms) instead of paying the ~600ms cold Lute/WASM
@@ -231,7 +260,7 @@ export default function PlansPane() {
   // `endedLimit`, and an omitted field is a different query key even though the
   // resolver defaults it to the same value. advRosterArgs makes it true.
   const roster = useSyncQuery<RosterPayloadRow>({
-    queryName: 'advRoster.list',
+    queryName: "advRoster.list",
     args: advRosterArgs(workspaceId),
   });
 
@@ -239,7 +268,7 @@ export default function PlansPane() {
     const m = new Map<string, number>();
     for (const i of attentionItems) {
       if (!i.planSlug) continue;
-      if (effectiveTier(i) !== 'decision') continue;
+      if (effectiveTier(i) !== "decision") continue;
       m.set(i.planSlug, (m.get(i.planSlug) ?? 0) + 1);
     }
     return m;
@@ -266,11 +295,21 @@ export default function PlansPane() {
         liveByPlan,
         triggerFilter,
       }),
-    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter],
+    [
+      plans,
+      debouncedQuery,
+      showFinished,
+      needsYouByPlan,
+      liveByPlan,
+      triggerFilter,
+    ],
   );
 
-  const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
-  const activeFilterCount = Number(showFinished) + Number(triggerFilter !== 'all');
+  const popupRow = popupPlan
+    ? ((plans ?? []).find((p) => p.slug === popupPlan) ?? null)
+    : null;
+  const activeFilterCount =
+    Number(showFinished) + Number(triggerFilter !== "all");
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
   // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
@@ -286,21 +325,29 @@ export default function PlansPane() {
   const onArchive = useCallback(
     async (plan: PlanListRow) => {
       const ok = await askConfirm({
-        title: 'Archive this plan?',
+        title: "Archive this plan?",
         body: `“${plan.title ?? plan.slug}” will drop out of your plan lists. You can restore it later — archiving is reversible and never deletes anything.`,
-        confirmLabel: 'Archive',
+        confirmLabel: "Archive",
       });
       if (!ok) return;
       try {
-        const res = await setPlanArchived({ slug: plan.slug, archived: true, harness: plan.harness });
+        const res = await setPlanArchived({
+          slug: plan.slug,
+          archived: true,
+          harness: plan.harness,
+        });
         if ((res as { ok?: boolean }).ok === false) {
-          toast.error(`Could not archive: ${(res as { error?: string }).error ?? 'unknown error'}`);
+          toast.error(
+            `Could not archive: ${(res as { error?: string }).error ?? "unknown error"}`,
+          );
           return;
         }
         toast.success(`Archived “${plan.title ?? plan.slug}”.`);
         planList.refresh();
       } catch (e) {
-        toast.error(`Could not archive: ${e instanceof Error ? e.message : 'unknown error'}`);
+        toast.error(
+          `Could not archive: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
       }
     },
     [askConfirm, planList],
@@ -327,16 +374,26 @@ export default function PlansPane() {
         </span>
         <span className="plans-pane__masthead-copy">
           <strong>Plans</strong>
-          <span>Track active work, decisions, and live progress in one place.</span>
+          <span>
+            Track active work, decisions, and live progress in one place.
+          </span>
         </span>
-        <span className="plans-pane__masthead-count" data-testid="plans-pane-count">
+        <span
+          className="plans-pane__masthead-count"
+          aria-label={`${rows.length} plans shown`}
+          data-testid="plans-pane-count"
+        >
           {rows.length}
         </span>
       </header>
 
       <div className="plans-pane__toolbar">
         <label className="plans-pane__search-shell">
-          <Search size={14} className="plans-pane__search-icon" aria-hidden="true" />
+          <Search
+            size={14}
+            className="plans-pane__search-icon"
+            aria-hidden="true"
+          />
           <input
             type="search"
             className="plans-pane__search"
@@ -359,39 +416,58 @@ export default function PlansPane() {
         </label>
         <button
           type="button"
-          className={`plans-pane__filter-toggle${filtersOpen ? ' is-open' : ''}`}
+          className={`plans-pane__filter-toggle${filtersOpen ? " is-open" : ""}`}
           aria-expanded={filtersOpen}
+          aria-controls="plans-pane-filters"
           onClick={() => void setFiltersOpen(filtersOpen ? null : true)}
           data-testid="plans-pane-filter-toggle"
         >
           <SlidersHorizontal size={13} aria-hidden="true" /> Filters
           {activeFilterCount > 0 ? (
-            <span className="plans-pane__filter-active">{activeFilterCount}</span>
+            <span className="plans-pane__filter-active">
+              {activeFilterCount}
+            </span>
           ) : null}
         </button>
       </div>
 
       {filtersOpen ? (
-        <div className="plans-pane__filters" data-testid="plans-pane-filters">
-          <Tooltip label={showFinished ? 'Hide finished plans' : 'Also show shipped / superseded plans'}>
-          <button
-            type="button"
-            className={`plans-pane__finished-toggle${showFinished ? ' is-on' : ''}`}
-            onClick={() => void setShowFinished(showFinished ? null : true)}
-            aria-pressed={showFinished}
-            data-testid="plans-pane-finished-toggle"
+        <div
+          id="plans-pane-filters"
+          className="plans-pane__filters"
+          data-testid="plans-pane-filters"
+        >
+          <Tooltip
+            label={
+              showFinished
+                ? "Hide finished plans"
+                : "Also show shipped / superseded plans"
+            }
           >
-            Finished
-          </button>
+            <button
+              type="button"
+              className={`plans-pane__finished-toggle${showFinished ? " is-on" : ""}`}
+              onClick={() => void setShowFinished(showFinished ? null : true)}
+              aria-pressed={showFinished}
+              data-testid="plans-pane-finished-toggle"
+            >
+              Finished
+            </button>
           </Tooltip>
-          <div className="plans-pane__trigger-filter" role="group" aria-label="Plan trigger type">
+          <div
+            className="plans-pane__trigger-filter"
+            role="group"
+            aria-label="Plan trigger type"
+          >
             {PLAN_TRIGGER_FILTERS.map((value) => (
               <button
                 key={value}
                 type="button"
-                className={`plans-pane__trigger-chip${triggerFilter === value ? ' is-on' : ''}`}
+                className={`plans-pane__trigger-chip${triggerFilter === value ? " is-on" : ""}`}
                 aria-pressed={triggerFilter === value}
-                onClick={() => void setTriggerFilter(value === 'all' ? null : value)}
+                onClick={() =>
+                  void setTriggerFilter(value === "all" ? null : value)
+                }
               >
                 {value}
               </button>
@@ -404,33 +480,53 @@ export default function PlansPane() {
         <div className="plans-pane__empty">Loading plans…</div>
       ) : rows.length === 0 ? (
         <div className="plans-pane__empty">
-          <ClipboardList size={20} className="plans-pane__empty-icon" aria-hidden="true" />
+          <ClipboardList
+            size={20}
+            className="plans-pane__empty-icon"
+            aria-hidden="true"
+          />
           <span>
-          {debouncedQuery.trim()
-            ? 'No plans match the search.'
-            : !plans || plans.length === 0
-              ? // Feed not yet hydrated (or a genuinely empty workspace) — NEVER
-                // the celebratory "all finished" here. On a cold/slow load
-                // `plans` is briefly empty (sometimes with loading already
-                // false), which used to flash "everything is finished 🎉" over
-                // ~466 real active plans before the list populated (WI-5338).
-                planList.loading
-                ? 'Loading plans…'
-                : 'No plans yet.'
-              : showFinished
-                ? 'No plans yet.'
-                : 'No active plans — everything is finished. 🎉'}
+            {debouncedQuery.trim()
+              ? "No plans match the search."
+              : !plans || plans.length === 0
+                ? // Feed not yet hydrated (or a genuinely empty workspace) — NEVER
+                  // the celebratory "all finished" here. On a cold/slow load
+                  // `plans` is briefly empty (sometimes with loading already
+                  // false), which used to flash "everything is finished 🎉" over
+                  // ~466 real active plans before the list populated (WI-5338).
+                  planList.loading
+                  ? "Loading plans…"
+                  : "No plans yet."
+                : showFinished
+                  ? "No plans yet."
+                  : "No active plans — everything is finished. 🎉"}
           </span>
         </div>
       ) : (
-        <div className="plans-pane__list" ref={listRef} role="list" aria-label="Plans">
-          <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+        <div
+          className="plans-pane__list"
+          ref={listRef}
+          role="list"
+          aria-label="Plans"
+        >
+          <div
+            style={{
+              height: rowVirtualizer.getTotalSize(),
+              position: "relative",
+              width: "100%",
+            }}
+          >
             {rowVirtualizer.getVirtualItems().map((vi) => {
               const { plan, needsYou, liveAgents } = rows[vi.index]!;
               const progress = progressOf(plan);
               const bucket = bucketOf(plan);
               // WI-5365: left-accent priority — needs-you (red) outranks live (green).
-              const accent = needsYou > 0 ? ' plans-pane__row--needs' : liveAgents > 0 ? ' plans-pane__row--live' : '';
+              const accent =
+                needsYou > 0
+                  ? " plans-pane__row--needs"
+                  : liveAgents > 0
+                    ? " plans-pane__row--live"
+                    : "";
               return (
                 <div
                   key={vi.key}
@@ -438,62 +534,72 @@ export default function PlansPane() {
                   data-index={vi.index}
                   ref={rowVirtualizer.measureElement}
                   style={{
-                    position: 'absolute',
+                    position: "absolute",
                     top: 0,
                     left: 0,
-                    width: '100%',
+                    width: "100%",
                     paddingBottom: 4,
                     transform: `translateY(${vi.start}px)`,
                   }}
                 >
-                <button
-                  type="button"
-                  className={`plans-pane__row${accent}`}
-                  onClick={() => {
-                    // Time the real "open a plan" interaction (WI-5547): this
-                    // start mark is consumed when the plan body renders in
-                    // Vditor (PlanEditor.handleParsed → endInteraction).
-                    beginInteraction(PERF_INTERACTIONS.planPopupOpen);
-                    void setPopupPlan(plan.slug);
-                  }}
-                  data-testid={`plans-pane-row-${plan.slug}`}
-                >
-                  <span className="plans-pane__row-icon" aria-hidden="true">
-                    <ClipboardList size={16} />
-                  </span>
-                  <span className="plans-pane__row-main">
-                    <span className="plans-pane__row-head">
-                      <span className={`plans-pane__bucket plans-pane__bucket--${bucket}`}>
-                        {bucket === 'running' ? 'plan' : bucket}
+                  <button
+                    type="button"
+                    className={`plans-pane__row${accent}`}
+                    aria-label={`Open plan ${plan.title ?? plan.slug}`}
+                    onClick={() => {
+                      // Time the real "open a plan" interaction (WI-5547): this
+                      // start mark is consumed when the plan body renders in
+                      // Vditor (PlanEditor.handleParsed → endInteraction).
+                      beginInteraction(PERF_INTERACTIONS.planPopupOpen);
+                      void setPopupPlan(plan.slug);
+                    }}
+                    data-testid={`plans-pane-row-${plan.slug}`}
+                  >
+                    <span className="plans-pane__row-icon" aria-hidden="true">
+                      <ClipboardList size={16} />
+                    </span>
+                    <span className="plans-pane__row-main">
+                      <span className="plans-pane__row-head">
+                        <span
+                          className={`plans-pane__bucket plans-pane__bucket--${bucket}`}
+                        >
+                          {bucket === "running" ? "plan" : bucket}
+                        </span>
+                        <span className="plans-pane__row-harness">
+                          {plan.harness}
+                        </span>
+                        <span className="plans-pane__row-head-spacer" />
+                        <span
+                          className="plans-pane__row-ago"
+                          title={plan.updated ?? undefined}
+                        >
+                          {agoLabel(plan.updated)}
+                        </span>
                       </span>
-                      <span className="plans-pane__row-harness">{plan.harness}</span>
-                      <span className="plans-pane__row-head-spacer" />
-                      <span className="plans-pane__row-ago" title={plan.updated ?? undefined}>
-                        {agoLabel(plan.updated)}
+                      <span className="plans-pane__row-title">
+                        {plan.title ?? plan.slug}
+                      </span>
+                      <span className="plans-pane__row-status">
+                        {needsYou > 0
+                          ? `${needsYou} decision${needsYou === 1 ? "" : "s"} need you`
+                          : liveAgents > 0
+                            ? `${liveAgents} agent${liveAgents === 1 ? "" : "s"} working now`
+                            : progress
+                              ? `${progress.done} of ${progress.total} items done`
+                              : "Open plan details"}
                       </span>
                     </span>
-                    <span className="plans-pane__row-title">{plan.title ?? plan.slug}</span>
-                    <span className="plans-pane__row-status">
-                      {needsYou > 0
-                        ? `${needsYou} decision${needsYou === 1 ? '' : 's'} need you`
-                        : liveAgents > 0
-                          ? `${liveAgents} agent${liveAgents === 1 ? '' : 's'} working now`
-                          : progress
-                            ? `${progress.done} of ${progress.total} items done`
-                            : 'Open plan details'}
-                    </span>
-                  </span>
-                  <span className="plans-pane__row-badges">
-                    {plan.triggered ? (
-                      <span
-                        className="plans-pane__badge plans-pane__badge--trigger"
-                        title={`Triggered plan · ${planTriggerSourceLabel(plan.triggerSources)}`}
-                        data-testid="plans-pane-trigger-badge"
-                      >
-                        {planTriggerSourceLabel(plan.triggerSources)}
-                      </span>
-                    ) : null}
-                    {/* Provenance (WI-39439): marks ONLY plans the Blender/Scout
+                    <span className="plans-pane__row-badges">
+                      {plan.triggered ? (
+                        <span
+                          className="plans-pane__badge plans-pane__badge--trigger"
+                          title={`Triggered plan · ${planTriggerSourceLabel(plan.triggerSources)}`}
+                          data-testid="plans-pane-trigger-badge"
+                        >
+                          {planTriggerSourceLabel(plan.triggerSources)}
+                        </span>
+                      ) : null}
+                      {/* Provenance (WI-39439): marks ONLY plans the Blender/Scout
                         ideation loop routed. Absence means human- or
                         standard-agent-authored — including an su agent's own
                         IDEATE pass (`su-ideate`), which is deliberately NOT
@@ -502,86 +608,95 @@ export default function PlansPane() {
                         derivation filters on it (scout/routed-ledger.ts); do not
                         re-widen this test to "any ledger row" — that was the bug
                         this shipped with, wrong on 75% of the rows it lit. */}
-                    {plan.origin === 'scout' ? (
-                      <span
-                        className="plans-pane__badge plans-pane__badge--blender"
-                        title="Blender-made — routed by the Blender/Scout ideation loop"
-                        data-testid="plans-pane-blender-badge"
-                      >
-                        <BlenderIcon />
-                        {/* The word ships too (owner: "hard to miss"). It is a REAL
+                      {plan.origin === "scout" ? (
+                        <span
+                          className="plans-pane__badge plans-pane__badge--blender"
+                          title="Blender-made — routed by the Blender/Scout ideation loop"
+                          data-testid="plans-pane-blender-badge"
+                        >
+                          <BlenderIcon />
+                          {/* The word ships too (owner: "hard to miss"). It is a REAL
                             label, not sr-only: a lone glyph in a badge strip is
                             exactly what the eye skips, and a blender drawn at 13px
                             is not self-evident on first encounter. */}
-                        Blender
-                      </span>
-                    ) : null}
-                    {needsYou > 0 ? (
-                      <span
-                        className="plans-pane__badge plans-pane__badge--needs"
-                        title={`${needsYou} decision${needsYou === 1 ? '' : 's'} need you`}
-                        data-testid="plans-pane-needs-badge"
-                      >
-                        {needsYou}
-                      </span>
-                    ) : null}
-                    {liveAgents > 0 ? (
-                      <span
-                        className="plans-pane__badge plans-pane__badge--live"
-                        title={`${liveAgents} agent${liveAgents === 1 ? '' : 's'} working now`}
-                        data-testid="plans-pane-live-badge"
-                      >
-                        ●&nbsp;{liveAgents}
-                      </span>
-                    ) : null}
-                    {progress ? (
-                      <span
-                        className="plans-pane__badge plans-pane__badge--progress"
-                        title={`${progress.done} of ${progress.total} items done`}
-                      >
-                        {progress.done}/{progress.total}
-                      </span>
-                    ) : null}
-                    {!showFinished && isStale(plan.updated) ? (
-                      <span
-                        className="plans-pane__badge plans-pane__badge--stale"
-                        title={`No activity since ${plan.updated} — a candidate to archive`}
-                        data-testid="plans-pane-stale-badge"
-                      >
-                        stale
-                      </span>
-                    ) : null}
-                  </span>
-                  <ChevronRight className="plans-pane__row-chevron" size={16} aria-hidden="true" />
-                  {progress ? (
-                    // WI-5365: glanceable done/total as a 2px strip along the
-                    // row's bottom edge (the n/m badge stays the precise read).
-                    <span className="plans-pane__progress-track" aria-hidden="true">
-                      <span
-                        className="plans-pane__progress-fill"
-                        style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
-                      />
+                          Blender
+                        </span>
+                      ) : null}
+                      {needsYou > 0 ? (
+                        <span
+                          className="plans-pane__badge plans-pane__badge--needs"
+                          title={`${needsYou} decision${needsYou === 1 ? "" : "s"} need you`}
+                          data-testid="plans-pane-needs-badge"
+                        >
+                          {needsYou}
+                        </span>
+                      ) : null}
+                      {liveAgents > 0 ? (
+                        <span
+                          className="plans-pane__badge plans-pane__badge--live"
+                          title={`${liveAgents} agent${liveAgents === 1 ? "" : "s"} working now`}
+                          data-testid="plans-pane-live-badge"
+                        >
+                          ●&nbsp;{liveAgents}
+                        </span>
+                      ) : null}
+                      {progress ? (
+                        <span
+                          className="plans-pane__badge plans-pane__badge--progress"
+                          title={`${progress.done} of ${progress.total} items done`}
+                        >
+                          {progress.done}/{progress.total}
+                        </span>
+                      ) : null}
+                      {!showFinished && isStale(plan.updated) ? (
+                        <span
+                          className="plans-pane__badge plans-pane__badge--stale"
+                          title={`No activity since ${plan.updated} — a candidate to archive`}
+                          data-testid="plans-pane-stale-badge"
+                        >
+                          stale
+                        </span>
+                      ) : null}
                     </span>
-                  ) : null}
-                </button>
-                {/* P-008 / EI-15304: one-click archive for a STALE row — the
+                    <ChevronRight
+                      className="plans-pane__row-chevron"
+                      size={16}
+                      aria-hidden="true"
+                    />
+                    {progress ? (
+                      // WI-5365: glanceable done/total as a 2px strip along the
+                      // row's bottom edge (the n/m badge stays the precise read).
+                      <span
+                        className="plans-pane__progress-track"
+                        aria-hidden="true"
+                      >
+                        <span
+                          className="plans-pane__progress-fill"
+                          style={{
+                            width: `${Math.round((progress.done / progress.total) * 100)}%`,
+                          }}
+                        />
+                      </span>
+                    ) : null}
+                  </button>
+                  {/* P-008 / EI-15304: one-click archive for a STALE row — the
                     sprawl sweep. A SIBLING of the row button, never nested
                     (a <button> inside a <button> is invalid HTML — the trap
                     InboxPane already hit). Scoped to stale rows so the
                     ~466-row list stays visually clean. */}
-                {!showFinished && isStale(plan.updated) ? (
-                  <Tooltip label="Archive this stale plan (reversible)">
-                    <button
-                      type="button"
-                      className="plans-pane__archive"
-                      onClick={() => void onArchive(plan)}
-                      aria-label={`Archive ${plan.title ?? plan.slug}`}
-                      data-testid={`plans-pane-archive-${plan.slug}`}
-                    >
-                      <Archive size={12} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                ) : null}
+                  {!showFinished && isStale(plan.updated) ? (
+                    <Tooltip label="Archive this stale plan (reversible)">
+                      <button
+                        type="button"
+                        className="plans-pane__archive"
+                        onClick={() => void onArchive(plan)}
+                        aria-label={`Archive ${plan.title ?? plan.slug}`}
+                        data-testid={`plans-pane-archive-${plan.slug}`}
+                      >
+                        <Archive size={12} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  ) : null}
                 </div>
               );
             })}
@@ -591,7 +706,7 @@ export default function PlansPane() {
 
       <div className="plans-pane__foot">
         <span>{rows.length} shown</span>
-        <span>{showFinished ? 'Active + finished' : 'Active plans'}</span>
+        <span>{showFinished ? "Active + finished" : "Active plans"}</span>
       </div>
 
       {confirmEl}
