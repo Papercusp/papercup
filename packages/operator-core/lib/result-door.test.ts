@@ -196,6 +196,45 @@ describe('applyResultDoor', () => {
     expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
   });
 
+  it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
+    const original = JSON.stringify({
+      ok: true,
+      event_inspection: {
+        event: 'harness:papercusp:wi-40086-qualified-current-tip',
+        current_generation: 17,
+        current_state: 'declared',
+        declarations: [{ generation: 17, state: 'declared', note: 'qualification gate' }],
+        waiters: Array.from({ length: 200 }, (_, i) => ({
+          await_id: i + 1,
+          subscriber_id: `su-${i}`,
+          policy: 'wake',
+          state: 'registered',
+          registered_at: '2026-08-23T00:00:00.000Z',
+          note: 'x'.repeat(320),
+        })),
+        wake_outcomes: [],
+        resync: {
+          required: false,
+          reason: 'in_sync',
+          consumer_generation: 17,
+          authoritative_generation: 17,
+        },
+      },
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'events:status', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      event_inspection?: { current_generation?: number; current_state?: string };
+    };
+
+    expect(body._projection.truncated).toBe(true);
+    expect(body.event_inspection).toMatchObject({ current_generation: 17, current_state: 'declared' });
+  });
+
   it('finds and structurally projects JSON accompanied by advisory prose', () => {
     const original = JSON.stringify({
       rows: Array.from({ length: 300 }, (_, i) => ({ id: i, detail: 'z'.repeat(100) })),
