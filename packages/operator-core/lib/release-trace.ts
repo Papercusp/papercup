@@ -127,10 +127,11 @@ function sameSha(a: string | null | undefined, b: string | null | undefined): bo
 
 function targetIsNotGreenPinned(position: PipelinePosition): boolean {
   // `positions.inMain` answers a different question: origin/main can contain a
-  // newer or force-deployed commit than the last green pin. Legacy callers that
-  // omit the new measurement therefore fail closed too; a trace cannot recommend
-  // deploying a lineage whose green-pin containment was not measured.
-  return position.verdictProvenance.targetIncludedInGreenPin !== true;
+  // newer or force-deployed commit than the last green pin. Only callers that omit
+  // the new field entirely get the legacy fallback; an explicit null from the
+  // resolver means the measurement failed and must fail closed.
+  const measured = position.verdictProvenance.targetIncludedInGreenPin;
+  return measured === undefined ? !position.positions.inMain : measured !== true;
 }
 
 function gateJudgedTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): boolean {
@@ -450,9 +451,11 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   if (position.targetSha && targetIsNotGreenPinned(position)) {
     const measured = position.verdictProvenance.targetIncludedInGreenPin;
     add(
-      measured === false ? 'target-not-green-pinned' : 'green-pin-containment-unmeasured',
+      measured === false || (measured === undefined && !position.positions.inMain)
+        ? 'target-not-green-pinned'
+        : 'green-pin-containment-unmeasured',
       true,
-      measured === false
+      measured === false || (measured === undefined && !position.positions.inMain)
         ? 'The target is in origin/main but is not contained by the recorded green pin; main/deploy presence does not prove gate testing.'
         : 'The target-to-green-pin ancestry could not be measured, so this trace cannot prove the target was gate-tested.',
     );
@@ -679,11 +682,10 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
     actualDeployedSha: deployedSha,
     greenPinSha: testedSha,
   });
-  const parity =
-    targetSha != null &&
-    input.position.verdictProvenance.targetIncludedInGreenPin === true &&
-    input.position.positions.deployed &&
-    pinParity.ok;
+  const measuredTargetInGreenPin = input.position.verdictProvenance.targetIncludedInGreenPin;
+  const targetInGreenPin =
+    measuredTargetInGreenPin === undefined ? input.position.positions.inMain : measuredTargetInGreenPin === true;
+  const parity = targetSha != null && targetInGreenPin && input.position.positions.deployed && pinParity.ok;
   const nextVerb = safeNextVerb(effectiveInput);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 
@@ -717,7 +719,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       testedSha,
       deployedSha,
       state:
-        input.position.verdictProvenance.targetIncludedInGreenPin !== true || !input.position.positions.deployed
+        targetIsNotGreenPinned(input.position) || !input.position.positions.deployed
           ? 'target-not-included'
           : pinParity.state,
     },
