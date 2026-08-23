@@ -5,7 +5,7 @@
  * 2026-06-06), mounted once at the app shell:
  *
  *   - Mod+,        → /settings              (Discord: user settings)
- *   - Mod+I        → /adv?tab=conversations (Discord: inbox)
+ *   - Mod+I        → /adv?opcv=inbox (the canonical Resolution Inbox face)
  *   - Mod+Shift+N  → /adv?create=true       (Discord: create/join server →
  *                                            our create-harness wizard)
  *   - g then i     → /adv?tab=insights      (Linear-style 2-stroke tab jump)
@@ -14,12 +14,10 @@
  * the surface lives in the Quick Panel popup now; quick-panel-saved-prompts
  * P-010.)
  *
- * These are the ROOT fallbacks: AdvShell registers its own handlers for
- * `goto.inbox` / `harness.create` / `goto.insights`
- * (flipping its nuqs state in place), and the shortcut bus runs the
- * most-recently-registered action — so when /adv is mounted its in-place
- * handler wins, and from any other route these navigate there. Renders
- * nothing.
+ * These are the ROOT fallbacks. The Resolution Inbox now lives in the global
+ * Papercup middle pane (`?opcv=inbox`), so its shortcut targets that canonical
+ * face directly instead of the retired Conversations-tab approximation.
+ * Renders nothing.
  */
 import { useRouter } from '../../lib/router-compat/navigation';
 import { useShortcutAction } from '../../lib/hotkeys';
@@ -32,7 +30,7 @@ export default function GlobalAppShortcuts() {
   });
 
   useShortcutAction('goto.inbox', () => {
-    router.push('/adv?tab=conversations');
+    router.push('/adv?opcv=inbox');
   });
 
   useShortcutAction('harness.create', () => {

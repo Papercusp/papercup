@@ -70,10 +70,10 @@ describe('GlobalAppShortcuts', () => {
     expect(push).toHaveBeenCalledWith('/settings');
   });
 
-  it('goto.inbox navigates to /adv?tab=conversations', () => {
+  it('goto.inbox navigates to the canonical Resolution Inbox face', () => {
     render(<GlobalAppShortcuts />);
     handlerFor('goto.inbox')!.run(new KeyboardEvent('keydown'));
-    expect(push).toHaveBeenCalledWith('/adv?tab=conversations');
+    expect(push).toHaveBeenCalledWith('/adv?opcv=inbox');
   });
 
   it('harness.create navigates to /adv?create=true', () => {
