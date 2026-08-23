@@ -77,7 +77,6 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       lastGreenShortSha: green.slice(0, 9),
       lastGreenAgeMs: 1,
       mainFastForwarded: true,
-      targetIncludedInGreenPin: true,
       deployedBehindGreenPin: 0,
       deployOrigin: 'gate-green',
     },
