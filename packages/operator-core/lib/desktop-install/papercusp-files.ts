@@ -847,6 +847,10 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
 export const CC_HOOK_FILES = [
   'pretooluse-locks-acquire.sh',
   'posttooluse-locks-release.sh',
+  // EI-21220966892195714: PostToolUse byte-exact diagnostic for full Write calls.
+  // The incoming-content guard cannot see corruption introduced after dispatch;
+  // this hook compares the requested UTF-8 bytes with the resulting file.
+  'posttooluse-write-byte-integrity-guard.mjs',
   // Claude native edit batches defer the union-lock release until this
   // matcher-less PostToolBatch hook sees the complete batch.
   'posttoolbatch-locks-release.sh',
@@ -2422,6 +2426,19 @@ export function mergeClaudeHookSettings(
       matcher: '*',
       hooks: cmd('posttooluse-activity-report.sh'),
     });
+  // merge_write_byte_integrity_guard — PostToolUse full writes only
+  // (EI-21220966892195714). A full Write carries the complete requested content,
+  // so the hook can compare its UTF-8 bytes with the resulting file. Edit/MultiEdit
+  // are intentionally excluded because their inputs are fragments.
+  if (has('posttooluse-write-byte-integrity-guard.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-write-byte-integrity-guard.mjs'),
+      {
+        matcher: fileOverwriteMatcher,
+        hooks: cmd('posttooluse-write-byte-integrity-guard.mjs'),
+      },
+    );
   // merge_activity_pre_hook — PreToolUse, matcher '*' (EI-8997: a renewal signal
   // at dispatch time too, not just completion — see the script's own header).
   if (has('pretooluse-activity-report.sh'))
