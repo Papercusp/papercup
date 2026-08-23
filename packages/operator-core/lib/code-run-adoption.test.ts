@@ -89,6 +89,11 @@ describe('P-008 run instrumentation and native-exec routing reads', () => {
       spills: 0,
       spillReadAttempts: 0,
       spillReadSuccesses: 0,
+      backendMismatches: 0,
+      preflightFailures: 0,
+      capabilityMisses: 0,
+      recipeRequests: 0,
+      spillFailures: 0,
     });
     expect(calls).toEqual([{ query: CODE_RUN_INSTRUMENTATION_SQL, params: [90] }]);
     expect(CODE_RUN_INSTRUMENTATION_SQL).toContain('metadata_json');
@@ -681,6 +686,28 @@ describe('CODE_RUN_INSTRUMENTATION_SQL — spill resolution is measured, and mea
     expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("metadata_json->>'spillUri'");
     expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("metadata_json->>'spillPath'");
     expect(CODE_RUN_INSTRUMENTATION_SQL).not.toMatch(/output_ref/i);
+  });
+
+  it('counts every P-020 hard rollback trigger, none of which is derivable from the histograms', () => {
+    // Each of these was absent while LOOKING covered by an adjacent aggregate:
+    //  - backendCounts cannot show a MISMATCH: every row reports the backend it RAN on, so a
+    //    request for a different one is invisible there.
+    //  - failureClassCounts does not separate a preflight REFUSAL from an execution failure.
+    //  - recipeReuses counts reuse with no requested denominator to divide by.
+    //  - spill PERSISTENCE failure (bytes truncated then lost entirely) had no count at all.
+    // A trigger that cannot be counted is a trigger that never fires.
+    for (const col of [
+      'backend_mismatches',
+      'preflight_failures',
+      'capability_misses',
+      'recipe_requests',
+      'spill_failures',
+    ]) {
+      expect(CODE_RUN_INSTRUMENTATION_SQL, `missing ${col}`).toContain(col);
+    }
+    // Read from the stamped metadata keys, not re-derived from a histogram.
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("metadata_json->>'backendMismatch'");
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("metadata_json->>'spillFailed'");
   });
 
   it('reports raw counts, not a precomputed ratio', () => {

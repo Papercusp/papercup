@@ -77,6 +77,18 @@ export interface CodeRunInstrumentationRollup {
   spills: number;
   spillReadAttempts: number;
   spillReadSuccesses: number;
+  /** WI-40720 — the remaining P-020 HARD rollback triggers, raw. None is derivable from the
+   *  histograms above: `backendCounts` cannot show a MISMATCH (every row reports the backend it
+   *  ran on, not the one requested), `failureClassCounts` does not separate a preflight refusal
+   *  from an execution failure, and `recipeReuses` has no requested denominator. A trigger that
+   *  cannot be counted is a trigger that never fires. */
+  backendMismatches: number;
+  preflightFailures: number;
+  capabilityMisses: number;
+  recipeRequests: number;
+  /** Spill PERSISTENCE failure — truncated, then the overflow could not be written anywhere, so
+   *  those bytes are gone. Distinct from (and worse than) a spill that was merely never read. */
+  spillFailures: number;
 }
 
 export const CODE_RUN_INSTRUMENTATION_SQL = `
@@ -164,7 +176,21 @@ SELECT
   count(*) FILTER (WHERE metadata_json->>'recipeCacheHit' = 'true')::int AS recipe_cache_hits,
   COALESCE(sum(CASE WHEN (metadata_json->>'recipeCandidateCount') ~ '^[0-9]+$' THEN (metadata_json->>'recipeCandidateCount')::bigint ELSE 0 END), 0) AS recipe_candidates,
   count(*) FILTER (WHERE NULLIF(metadata_json->>'recipeRevision', '') IS NOT NULL)::int AS recipe_revisions,
-  count(*) FILTER (WHERE metadata_json->>'aggregateOutputEscape' = 'true')::int AS aggregate_output_escapes
+  count(*) FILTER (WHERE metadata_json->>'aggregateOutputEscape' = 'true')::int AS aggregate_output_escapes,
+  -- WI-40720: the remaining P-020 HARD rollback triggers and their own denominators, counted
+  -- RAW. backendCounts/failureClassCounts/recipeReuses do not expose these: a backend MISMATCH
+  -- is not readable off a backend histogram (every row says backend='server' — the mismatch is
+  -- against what was REQUESTED), a preflight refusal never reaches the failureClass histogram
+  -- the same way an execution failure does, and recipeReuses counts reuse without a requested
+  -- denominator to divide by. A trigger you cannot count is a trigger that never fires.
+  count(*) FILTER (WHERE metadata_json->>'backendMismatch' = 'true')::int AS backend_mismatches,
+  count(*) FILTER (WHERE metadata_json->>'phase' = 'preflight')::int AS preflight_failures,
+  count(*) FILTER (WHERE metadata_json->>'capabilityMiss' = 'true')::int AS capability_misses,
+  count(*) FILTER (WHERE metadata_json->>'recipeRequested' = 'true')::int AS recipe_requests,
+  -- Spill PERSISTENCE failure: the door truncated the response and then could not write the
+  -- overflow anywhere, so those bytes are gone entirely. Strictly worse than an unread spill,
+  -- and counted separately from it for that reason.
+  count(*) FILTER (WHERE metadata_json->>'spillFailed' = 'true')::int AS spill_failures
 FROM code_runs
 `;
 
@@ -198,6 +224,11 @@ export async function readCodeRunInstrumentation(
     spills: n('spills'),
     spillReadAttempts: n('spill_read_attempts'),
     spillReadSuccesses: n('spill_read_successes'),
+    backendMismatches: n('backend_mismatches'),
+    preflightFailures: n('preflight_failures'),
+    capabilityMisses: n('capability_misses'),
+    recipeRequests: n('recipe_requests'),
+    spillFailures: n('spill_failures'),
   };
 }
 

@@ -385,7 +385,7 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
   it('stamps the SAVED-RECIPE path and tags it source:recipe, not source:script', async () => {
     const { ctx, metadata } = spyCtx();
     const run = vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('recipe exploded'));
-    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as unknown as SavedRecipeAdapter });
     expect(metadata).toHaveBeenCalledTimes(1);
     expect(stamp(metadata)).toMatchObject({ source: 'recipe', executed: false, phase: 'execution' });
   });
@@ -398,7 +398,7 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
     const { ctx, metadata } = spyCtx();
     const run = vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('x'));
     await runOrchestration({ recipe: { id: 'saved' }, execution: { mode: 'auto' } }, ctx, {
-      recipes: { run } as SavedRecipeAdapter,
+      recipes: { run } as unknown as SavedRecipeAdapter,
     });
     expect(stamp(metadata)).toMatchObject({ requestedExecutionMode: 'auto', backendMismatch: false });
   });
@@ -416,7 +416,7 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
   it('omitting execution entirely defaults to server and is not a mismatch', async () => {
     const { ctx, metadata } = spyCtx();
     const run = vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('x'));
-    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as unknown as SavedRecipeAdapter });
     expect(stamp(metadata)).toMatchObject({ requestedExecutionMode: 'server', backendMismatch: false });
   });
 
@@ -427,8 +427,8 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
     const run = vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
       results: [{ ok: true, id: 'saved', result: { summary: 'done' } }],
     } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
-    await runOrchestration({ recipe: { id: 'saved', revision: 3 } }, ctx, {
-      recipes: { run } as SavedRecipeAdapter,
+    await runOrchestration({ recipe: { id: 'saved', revision: '3' } }, ctx, {
+      recipes: { run } as unknown as SavedRecipeAdapter,
     });
     expect(metadata).toHaveBeenCalledTimes(1);
     expect(stamp(metadata)).toMatchObject({
@@ -441,7 +441,7 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
       // can never be true for the public OBJECT selector — so recipeId was silently never
       // stamped, and saved-recipe reuse (a headline rollout metric) read as zero forever.
       recipeId: 'saved',
-      recipeRevision: 3,
+      recipeRevision: '3',
     });
   });
 
@@ -454,7 +454,7 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
     const run = vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
       results: [{ ok: false, phase: 'preflight', error: 'recipe_preflight_rejected', id: 'saved' }],
     } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
-    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as unknown as SavedRecipeAdapter });
     expect(stamp(metadata)).toMatchObject({ source: 'recipe', phase: 'preflight', executed: false });
   });
 
@@ -464,7 +464,7 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
       ok: false,
       error: { code: 'recipe_not_found', message: 'no such recipe' },
     } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
-    await runOrchestration({ recipe: { id: 'missing' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    await runOrchestration({ recipe: { id: 'missing' } }, ctx, { recipes: { run } as unknown as SavedRecipeAdapter });
     expect(metadata).toHaveBeenCalledTimes(1);
     expect(stamp(metadata)).toMatchObject({
       source: 'recipe',
