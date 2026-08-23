@@ -27,6 +27,11 @@ import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 
 /** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
 const DEFAULT_VERIFY_SEC = 90;
+// EI-21266158571232094: the two caller-controlled waits are each bounded at 300s, so the
+// dispatch budget must cover a worst-case cooperative drain + replacement verification (600s)
+// plus launch/serialization headroom. Without an explicit tool budget, the dispatch stack's 60s
+// default (and the flat MCP deadline) aborts a valid respawn while it is still draining/verifying.
+const RESPAWN_TIMEOUT_SEC = 660;
 const VERIFY_POLL_MS = 3_000;
 /** A live unmanaged session needs a bounded cooperative-drain window before it can be replaced. */
 const DEFAULT_DRAIN_VERIFY_SEC = 90;
@@ -232,6 +237,10 @@ export default defineTool({
   // idle backend during a concurrent respawn wave, surfacing as a bare
   // `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
+  // Keep the dispatcher and MCP transport deadline aligned with the bounded waits above. The
+  // tools:invoke wrapper already uses the same 660s outer budget, so direct and nested calls both
+  // remain alive until this finite orchestration has returned.
+  timeoutSec: RESPAWN_TIMEOUT_SEC,
   agentRoles: [...SU_ROLES],
   args: z
     .object({

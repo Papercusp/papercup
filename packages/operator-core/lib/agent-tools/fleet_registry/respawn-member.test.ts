@@ -68,6 +68,12 @@ describe('fleet:respawn-member — ambient workspace transaction safety (EI-2021
   it('opts out because drain/launch/heartbeat verification can await beyond the idle tx timeout', () => {
     expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
+
+  it('declares a dispatch budget for the bounded drain plus replacement verification (EI-21266158571232094)', () => {
+    // drainVerifySec and verifySec each allow up to 300s; the tool budget must not inherit the
+    // dispatch stack's 60s default or tools:invoke will abort a valid long-running respawn.
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(660);
+  });
 });
 
 beforeEach(() => {
