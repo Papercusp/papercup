@@ -91,7 +91,6 @@ const BASELINE: Record<string, number> = {
   'libs/papercusp/packages/orchestrator/src/worker-chunk-loop.recovery.test.ts': 2,
   'libs/papercusp/packages/orchestrator/src/worker-chunk-loop.test.ts': 2,
   'libs/papercusp/packages/orchestrator/src/worker-chunk-loop.ts': 1,
-  'libs/papercusp/plugins/gitnexus-bridge/index.ts': 1,
   'packages/backup/src/hook.ts': 2,
   'packages/operator-core/lib/admin-test-suites.ts': 2,
   'packages/operator-core/lib/cupboard/install-io.ts': 1,
