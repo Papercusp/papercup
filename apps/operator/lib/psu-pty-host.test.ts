@@ -15,6 +15,7 @@ import {
   controlWrites,
   controlWritesForAgent,
   contextClearCommandForAgent,
+  coldResetModeForAgent,
   clearSettleMs,
   resetWritesForAgent,
   submitVerifyQuietMs,
@@ -683,6 +684,19 @@ describe('contextClearCommandForAgent (RESET-CONTEXT clear command)', () => {
   it('Codex starts a fresh conversation with /new', () => {
     expect(contextClearCommandForAgent('codex')).toBe('/new');
     expect(contextClearCommandForAgent(' CODEX ')).toBe('/new');
+  });
+});
+
+describe('coldResetModeForAgent (backend-aware cold reset)', () => {
+  it('routes Codex to a hard recycle because /new cannot cut the long-lived process context', () => {
+    expect(coldResetModeForAgent('codex')).toBe('recycle');
+    expect(coldResetModeForAgent(' CODEX ')).toBe('recycle');
+  });
+
+  it('keeps Claude and OMP on the in-place reset path', () => {
+    expect(coldResetModeForAgent('claude')).toBe('reset');
+    expect(coldResetModeForAgent('omp')).toBe('reset');
+    expect(coldResetModeForAgent('')).toBe('reset');
   });
 });
 

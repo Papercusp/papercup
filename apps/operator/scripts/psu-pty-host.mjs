@@ -2778,6 +2778,17 @@ export function contextClearCommandForAgent(agent) {
   return '/clear';
 }
 
+/** Backend-aware cold-reset delivery. Claude and OMP can clear their context in
+ * place, but Codex's `/new` command only changes the visible TUI state; the
+ * long-lived Codex process still retains the context that the cold boundary is
+ * meant to discard. Route Codex reset envelopes through the existing hard
+ * recycle path so a fresh child process is guaranteed. Pure — exported for
+ * tests. */
+export function coldResetModeForAgent(agent) {
+  const normalized = String(agent || '').trim().toLowerCase();
+  return normalized === 'codex' ? 'recycle' : 'reset';
+}
+
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
  *  Session-env tunable, module default as fallback.
  *  @param {EnvironmentMap} [env]
@@ -4250,10 +4261,16 @@ export function hostThroughPty(o) {
         }
         // RECYCLE (su-cold-auto-mode P-004b): a hard cold reset — kill + respawn
         // the child in THIS host, then open the fresh process on the carry-note.
-        // Handled specially (not a pty write); the gate above already guaranteed a
-        // settled turn (D-006 clean-boundary). reset/turn/raw/osc fall through to
-        // the write plan below.
-        if (msg.mode === 'recycle' || msg.mode === 'carry-respawn') {
+        // Codex RESET-CONTEXT is backend-aware: `/new` does not discard the
+        // long-lived process context, so Codex reset envelopes take this same
+        // hard path. The gate above already guaranteed a settled turn
+        // (D-006 clean-boundary). Other reset/turn/raw/osc messages fall through
+        // to the write plan below.
+        const hardReset =
+          msg.mode === 'recycle' ||
+          msg.mode === 'carry-respawn' ||
+          (msg.mode === 'reset' && coldResetModeForAgent(env.PAPERCUSP_AGENT) === 'recycle');
+        if (hardReset) {
           // EI-18679050054551625 / WI-5872 follow-up: recycleChild() is a
           // multi-second operation by construction (kill the current child,
           // wait for it to die, respawn, wait for the fresh child's own

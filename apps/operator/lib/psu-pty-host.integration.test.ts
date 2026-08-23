@@ -496,7 +496,7 @@ describe('hostThroughPty real round-trip', () => {
   );
 });
 
-describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {
+describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {
   it(
     'replaces the child process, keeps the host (socket/meta) alive, and opens the fresh process on the carry-note',
     async () => {
@@ -549,9 +549,10 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
       const ptyPid1 = JSON.parse(readFileSync(meta, 'utf8')).ptyPid;
       expect(ptyPid1).toBe(pid1);
 
-      // RECYCLE with a carry-note. The host kills the child, fresh-spawns it in the
-      // SAME host (same socket/meta/SID), and opens the fresh process on the carry.
-      await controlInject(sock, 'recycle', 'CARRIED');
+      // A Codex RESET with a carry-note must take the same hard path as RECYCLE.
+      // The host kills the child, fresh-spawns it in the SAME host (same
+      // socket/meta/SID), and opens the fresh process on the carry.
+      await controlInject(sock, 'reset', 'CARRIED');
       await sleep(2500); // kill + respawn + boot + output-quiet(200) + submit CR
 
       const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
