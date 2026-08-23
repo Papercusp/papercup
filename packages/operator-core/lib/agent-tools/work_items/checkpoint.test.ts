@@ -1689,6 +1689,77 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(await lastStored()).toBe(prior);
         });
 
+        /**
+         * EI-21228214077347799 — the SAME cap-eviction loss as EI-20004424625703051
+         * above, reached through the door that guard does not cover.
+         *
+         * The overflow guard is armed as the ELSE of `isPlainReplace`:
+         *
+         *     guard: isPlainReplace && !wantsConfirmShrink ? shrinkGuard
+         *          : additiveChecks && !wantsConfirmShrink ? overflowGuard
+         *          : undefined
+         *
+         * But those two conditions are NOT alternatives — they guard INDEPENDENT axes.
+         * `isPlainReplace` is about the BODY being replaced; `additiveChecks` is about the
+         * check ROWS being unioned. The default `rowsMode:'merge'` WITH a checkpoint body
+         * is both at once: the body replaces (isPlainReplace true) while the rows are
+         * additive (additiveChecks true). The single guard slot is claimed by the shrink
+         * guard, which knows nothing about rows, so the overflow guard never runs and the
+         * transform evicts the carried tail exactly as it did before that fix — returning
+         * `ok: true`.
+         *
+         * Reported live: 4 carried rows evicted, EVERY ONE of them ✓ VERIFIED (a tsc
+         * result, a forward-compat lint result, a live-DB migration check), displaced by
+         * newly-supplied rows of which 2 were ? PREDICTED. So the eviction policy trades
+         * PROVEN evidence for UNPROVEN claims — backwards for the field whose whole
+         * purpose is telling an asserted claim from a verified one. The reporter then hit
+         * `typeEvidenceWarning` on the very check whose verified row had just been
+         * evicted, and had to re-run a ~2min tsc to re-establish something already proven.
+         *
+         * The body here is deliberately LARGE so the shrink guard returns null: this
+         * isolates the guard-slot defect rather than the shrink path's own retry.
+         */
+        it('at the cap, the DEFAULT rowsMode:merge write WITH a body also refuses instead of evicting the carried tail', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+            verified: `measured ${i + 1}`,
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          let writes = 0;
+
+          setWorkItemCheckpointWithPrior.mockImplementation(
+            async (
+              _ref: unknown,
+              _incoming: string | null | undefined,
+              opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
+            ) => {
+              const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+              if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
+              writes += 1;
+              return { stored: prior, priorLength: prior.length };
+            },
+          );
+
+          const r = (await one({
+            id: 'WI-7',
+            // No `append` and no explicit `rowsMode` — the DEFAULT merge path. Long enough
+            // that `newLength < priorLen * 0.5` is false, so the shrink guard passes and
+            // cannot mask the missing overflow guard.
+            checkpoint: `progress refresh ${'x'.repeat(4000)}`,
+            checks: [{ claim: 'MINE-A holds' }, { claim: 'MINE-B holds' }],
+          })) as { ok: boolean; error: string; errorCode: string; checksDropped?: string[] };
+
+          // The additive-rows write is refused before the transform can evict rows.
+          expect(r.ok).toBe(false);
+          expect(r.errorCode).toBe('append_checks_overflow');
+          expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
+          expect(writes).toBe(0);
+          expect(await lastStored()).toBe(prior);
+        });
+
         it('PLAIN (non-append) replace is UNCHANGED — retiring a stale check still works', async () => {
           // The escape hatch: no `append`, so the supplied list still REPLACES. This is
           // what keeps EI-19460631385508515's contract reachable; the fix above must not
