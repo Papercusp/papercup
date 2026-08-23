@@ -37,7 +37,9 @@
  *     P-017 needs no dedup of its own — do NOT build a second one.
  *  2. THE BUDGET IS AN ORDER OF MAGNITUDE SMALLER than turn-start's. See
  *     MID_TURN_BUDGET_CHARS below; the arithmetic is in its comment.
- *  3. THE COST GUARDS below stop a burst of tool calls from each buying an embed.
+ *  3. THE COST GUARDS below stop a burst of tool calls from each buying an embed,
+ *     and the host-wide named-resource admission guard caps all operator workers
+ *     together (EI-21270032782365521).
  *
  * Body: { owner, tool, toolInput, workspace?, harness? } — the hook passes
  * harness/workspace from its launch env so this endpoint does no session-registry
@@ -89,12 +91,14 @@ const MID_TURN_BUDGET_CHARS = (() => {
 })();
 
 /**
- * Cost ceiling: max recalls per session per rolling minute. The epoch ledger
+ * Inner cost ceiling: max recalls per session per rolling minute. The epoch ledger
  * dedups what we SHOW but not what we SPEND — every call is still an embed plus
- * a pgvector query, and this hook is fleet-wide across every psu session. This
- * caps the spend without ever delaying the FIRST call of a burst, which is the
- * one that matters (the acceptance case is "fires early, on the first grep for
- * the symptom" — a time-based floor would have suppressed exactly that).
+ * a pgvector query. This process-local guard caps one session without ever
+ * delaying the FIRST call of a burst, which is the one that matters (the
+ * acceptance case is "fires early, on the first grep for the symptom" — a
+ * time-based floor would have suppressed exactly that). The outer
+ * `withMidTurnMemoryAdmission` semaphore below is what bounds all SO_REUSEPORT
+ * workers together; neither guard is a substitute for the other.
  */
 const MAX_PER_MIN = (() => {
   const raw = Number(process.env.PAPERCUSP_MID_TURN_MAX_PER_MIN);
@@ -104,10 +108,10 @@ const MAX_PER_MIN = (() => {
 const RATE_WINDOW_MS = 60_000;
 
 /**
- * In-process only, and that is correct rather than a storage-policy violation:
- * this is a rate limiter, not durable state. Losing it on an operator restart
- * costs at most a few extra embeds, so it has no business in Postgres — the same
- * class as a cache timer. Keyed by session owner.
+ * In-process only, and that is correct for this INNER per-session limiter.
+ * Losing it on restart costs at most a few extra embeds. Cross-process capacity
+ * is a different invariant and is enforced by the existing named-resource
+ * store immediately around the optional recall build. Keyed by session owner.
  */
 const recentCalls = new Map<string, { at: number[]; lastQuery: string }>();
 
@@ -1033,49 +1037,55 @@ const midTurnContext = defineTool({
         }
       }
 
-      const [
-        { buildMemoryContextBlock },
-        { getSessionUserOrDefault },
-        { resolveClaimedWorkItemIdForOwner },
-      ] = await Promise.all([
-        import('../../../memory/injection'),
-        import('../../../auth'),
-        import('../../../memory/agent-signals'),
-      ]);
-      const [user, currentWorkItemId] = await Promise.all([
-        getSessionUserOrDefault().catch(() => null),
-        resolveClaimedWorkItemIdForOwner({ ownerId: owner, workspaceId }).catch(() => undefined),
-      ]);
-      // ⚠ P-006 / D-046's human-turn tail is DELIBERATELY NOT WIRED HERE either —
-      // this is the mirror of the turn-start call site, and it is held back for the
-      // same measured reason (plan decision D-047). If it is ever wired, compose it
-      // AFTER admitCall: the cost guards above key on the tool-derived query alone,
-      // and a tail that shifts as ingest lands would perturb the
-      // "identical consecutive query ⇒ skip" guard.
-      const block =
-        (await buildMemoryContextBlock({
-          userId: user?.id ?? null,
-          workspaceId,
-          harnessSlugs: harness ? [harness] : [],
-          // P-044: `userText` is the de-diluted prose the cosine leg embeds;
-          // `lexicalText` is the full derived signal, identifiers and all, for
-          // the leg that actually wins on them. When the strip finds no prose to
-          // protect the two are the same string and nothing changes.
-          queryContext: { userText: query, lexicalText: lexicalQuery },
-          // Free-text port; the epoch ledger is port-agnostic (D-006), so this
-          // inherits turn-start's dedup instead of needing one of its own.
-          // P-005 / migration 770: recorded on memory_recall_stats, never
-          // branched on — this endpoint stays client-agnostic (D-001 inv. 6).
-          // No client sent ⇒ NULL ⇒ unattributed, which is the honest reading.
-          session: {
-            sessionId: owner,
-            port: 'mid-turn',
-            currentWorkItemId,
-            ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
-          },
-          budgetChars: MID_TURN_BUDGET_CHARS,
-          heading: 'Possibly relevant (mid-turn)',
-        })) ?? '';
+      const { withMidTurnMemoryAdmission } = await import('../../../memory/mid-turn-admission');
+      const admitted = await withMidTurnMemoryAdmission(async () => {
+        const [
+          { buildMemoryContextBlock },
+          { getSessionUserOrDefault },
+          { resolveClaimedWorkItemIdForOwner },
+        ] = await Promise.all([
+          import('../../../memory/injection'),
+          import('../../../auth'),
+          import('../../../memory/agent-signals'),
+        ]);
+        const [user, currentWorkItemId] = await Promise.all([
+          getSessionUserOrDefault().catch(() => null),
+          resolveClaimedWorkItemIdForOwner({ ownerId: owner, workspaceId }).catch(() => undefined),
+        ]);
+        // ⚠ P-006 / D-046's human-turn tail is DELIBERATELY NOT WIRED HERE either —
+        // this is the mirror of the turn-start call site, and it is held back for the
+        // same measured reason (plan decision D-047). If it is ever wired, compose it
+        // AFTER admitCall: the cost guards above key on the tool-derived query alone,
+        // and a tail that shifts as ingest lands would perturb the
+        // "identical consecutive query ⇒ skip" guard.
+        return (
+          (await buildMemoryContextBlock({
+            userId: user?.id ?? null,
+            workspaceId,
+            harnessSlugs: harness ? [harness] : [],
+            // P-044: `userText` is the de-diluted prose the cosine leg embeds;
+            // `lexicalText` is the full derived signal, identifiers and all, for
+            // the leg that actually wins on them. When the strip finds no prose to
+            // protect the two are the same string and nothing changes.
+            queryContext: { userText: query, lexicalText: lexicalQuery },
+            // Free-text port; the epoch ledger is port-agnostic (D-006), so this
+            // inherits turn-start's dedup instead of needing one of its own.
+            // P-005 / migration 770: recorded on memory_recall_stats, never
+            // branched on — this endpoint stays client-agnostic (D-001 inv. 6).
+            // No client sent ⇒ NULL ⇒ unattributed, which is the honest reading.
+            session: {
+              sessionId: owner,
+              port: 'mid-turn',
+              currentWorkItemId,
+              ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
+            },
+            budgetChars: MID_TURN_BUDGET_CHARS,
+            heading: 'Possibly relevant (mid-turn)',
+          })) ?? ''
+        );
+      });
+      if (!admitted.admitted) return Response.json({ ok: true, text: '' });
+      const block = admitted.value;
 
       // The recall RAN. Separate "returned context" from "found nothing
       // relevant": the second is healthy quiet, and an alarm that cannot tell

@@ -24,10 +24,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const {
   buildMemoryContextBlockMock,
+  withMidTurnMemoryAdmissionMock,
   recordInjectionCoverageMock,
   resolveClaimedWorkItemIdForOwnerMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
+  withMidTurnMemoryAdmissionMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
   resolveClaimedWorkItemIdForOwnerMock: vi.fn(),
 }));
@@ -38,6 +40,9 @@ vi.mock('../../../memory/injection', () => ({
 }));
 vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
+}));
+vi.mock('../../../memory/mid-turn-admission', () => ({
+  withMidTurnMemoryAdmission: withMidTurnMemoryAdmissionMock,
 }));
 vi.mock('../../../memory/agent-signals', () => ({
   resolveClaimedWorkItemIdForOwner: resolveClaimedWorkItemIdForOwnerMock,
@@ -78,6 +83,9 @@ const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<
 
 beforeEach(() => {
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM');
+  withMidTurnMemoryAdmissionMock.mockReset().mockImplementation(
+    async (run: () => Promise<unknown>) => ({ admitted: true, value: await run() }),
+  );
   recordInjectionCoverageMock.mockReset();
   resolveClaimedWorkItemIdForOwnerMock.mockReset().mockResolvedValue(undefined);
 });
@@ -226,6 +234,20 @@ describe('mid-turn-context — the cost properties', () => {
     }
     // Every query is distinct, so only the rolling ceiling can bound this.
     expect(buildMemoryContextBlockMock.mock.calls.length).toBeLessThanOrEqual(12);
+  });
+
+  it('returns empty without starting recall when the host-wide admission is full', async () => {
+    withMidTurnMemoryAdmissionMock.mockResolvedValueOnce({
+      admitted: false,
+      reason: 'at_capacity',
+    });
+    const out = await post({
+      owner: owner(),
+      tool: 'Grep',
+      toolInput: { pattern: 'optional recall under fleet burst' },
+    });
+    expect(out).toEqual({ ok: true, text: '' });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
   });
 
   it('clamps a very long command rather than embedding a pasted heredoc', async () => {

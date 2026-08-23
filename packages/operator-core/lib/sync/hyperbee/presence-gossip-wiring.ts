@@ -421,6 +421,38 @@ export async function registerPresenceGossipTopic(input: {
 }
 
 /**
+ * Drop the cached admitted-device map for one hive's presence bindings.
+ *
+ * `pot_members` is the source of truth for inbound presence admission, but the
+ * hot frame path caches that membership for 30 seconds. The content/member
+ * gate already invalidates its own cache from the `pot_members` projection's
+ * onMemberApplied hook; presence must ride the same change notification. If it
+ * does not, a just-federated attestation leaves the receiver rejecting every
+ * presence frame until the TTL expires — exactly the boot/admission gap that
+ * can make a late-adopted substrate look ready while peer authority is still
+ * one-directional.
+ *
+ * There may be more than one topic binding for a hive during a re-key/rebind,
+ * so match by the stable (workspace, pot-home) identity instead of accepting a
+ * topic key from the projection. Idempotent and safe before gossip is wired.
+ * Returns the number of populated cache entries cleared (diagnostic/tests).
+ */
+export function invalidatePresenceGossipMemberCache(
+  workspaceId: string,
+  potHomeSlug: string,
+): number {
+  let cleared = 0;
+  for (const binding of state?.bindings.values() ?? []) {
+    if (binding.workspaceId !== workspaceId || binding.potHomeSlug !== potHomeSlug) continue;
+    if (binding.members) {
+      binding.members = undefined;
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
+
+/**
  * Broadcast THIS machine's presence row as a signed gossip frame (the writer
  * path — callers gate on FLAGS.PRESENCE_GOSSIP; the topic's registered writer
  * signs). Returns false when the gossip/writer is unavailable (caller treats

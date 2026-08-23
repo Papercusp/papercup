@@ -38,6 +38,7 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 import { invalidateHiveMemberDeviceSet } from '../hive-member-identity-set';
+import { invalidatePresenceGossipMemberCache } from '../presence-gossip-wiring';
 import { recordBootEvent } from '../boot-history';
 import {
   reapplyDrainedMemberContent,
@@ -215,6 +216,11 @@ async function writeToPg(
   // the (ws, hiveHome) cache key. Shared hook: P-004's PendingMembershipContent drain
   // hangs off this same apply point (ee7e9 P-003 review refinement #1).
   invalidateHiveMemberDeviceSet(opts.workspaceId, opts.harnessSlug);
+  // WI-40905: presence-gossip keeps a distinct admitted-device cache over the
+  // same pot_members rows. Invalidate it at the SAME source-of-truth hook so a
+  // just-applied attestation admits the next presence frame immediately instead
+  // of leaving a 30s fail-closed/no-device gap during late boot adoption.
+  invalidatePresenceGossipMemberCache(opts.workspaceId, opts.harnessSlug);
   // WI-259 P-004 (the onMemberApplied DRAIN): this member just federated, so any cross-member
   // content op deferred waiting on one of THIS member's device pubkeys can now apply. Drain those
   // entries and re-run their writeToPg — the membership guard re-checks against the now-fresh set
@@ -343,6 +349,7 @@ async function deleteFromPg(
   // the P-002 guard's cache so a just-left member's NEW content stops applying immediately
   // (not after the 30s TTL). Same (ws, hiveHome) key as the put path above.
   invalidateHiveMemberDeviceSet(opts.workspaceId, opts.harnessSlug);
+  invalidatePresenceGossipMemberCache(opts.workspaceId, opts.harnessSlug);
 }
 
 export function buildHiveMembersProjection(

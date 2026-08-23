@@ -16,9 +16,14 @@ vi.mock('../hive-member-identity-set', async (orig) => ({
   ...(await orig<typeof import('../hive-member-identity-set')>()),
   invalidateHiveMemberDeviceSet: vi.fn(),
 }));
+vi.mock('../presence-gossip-wiring', async (orig) => ({
+  ...(await orig<typeof import('../presence-gossip-wiring')>()),
+  invalidatePresenceGossipMemberCache: vi.fn(),
+}));
 
 import { buildHiveMembersProjection, type HiveMemberRow } from './hive-members';
 import { invalidateHiveMemberDeviceSet } from '../hive-member-identity-set';
+import { invalidatePresenceGossipMemberCache } from '../presence-gossip-wiring';
 
 // A tagged-template stand-in for postgres.Sql — records nothing, resolves empty (the projection's
 // INSERT/DELETE "runs" so control reaches the post-write invalidate call).
@@ -41,12 +46,14 @@ describe('WI-259 P-003 — hive_members apply invalidates the P-002 member-set c
     const proj = buildHiveMembersProjection(OPTS);
     await proj.writeToPg(ROW, { authorPubkey: 'A', origin: 'remote', ts: 1 });
     expect(invalidateHiveMemberDeviceSet).toHaveBeenCalledWith('ws', 'hive-home');
+    expect(invalidatePresenceGossipMemberCache).toHaveBeenCalledWith('ws', 'hive-home');
   });
 
   it('a member leave (deleteFromPg) invalidates the same cache', async () => {
     const proj = buildHiveMembersProjection(OPTS);
     await proj.deleteFromPg('7', 100, undefined);
     expect(invalidateHiveMemberDeviceSet).toHaveBeenCalledWith('ws', 'hive-home');
+    expect(invalidatePresenceGossipMemberCache).toHaveBeenCalledWith('ws', 'hive-home');
   });
 
   it('a cross-Hive op (slug mismatch, dropped before apply) does NOT invalidate — and WARNS', async () => {
@@ -58,6 +65,7 @@ describe('WI-259 P-003 — hive_members apply invalidates the P-002 member-set c
       const proj = buildHiveMembersProjection(OPTS);
       await proj.writeToPg({ ...ROW, pot_home_slug: 'other-hive' }, undefined);
       expect(invalidateHiveMemberDeviceSet).not.toHaveBeenCalled();
+      expect(invalidatePresenceGossipMemberCache).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('DROPPING federated roster rows'),
       );
@@ -70,5 +78,6 @@ describe('WI-259 P-003 — hive_members apply invalidates the P-002 member-set c
     const proj = buildHiveMembersProjection(OPTS);
     await proj.deleteFromPg('0', 100, undefined);
     expect(invalidateHiveMemberDeviceSet).not.toHaveBeenCalled();
+    expect(invalidatePresenceGossipMemberCache).not.toHaveBeenCalled();
   });
 });

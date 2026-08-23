@@ -77,6 +77,7 @@ vi.mock('protomux', () => ({
 const {
   registerPresenceGossipTopic,
   broadcastPresencePut,
+  invalidatePresenceGossipMemberCache,
   __setPresenceGossipWiringDeps,
   __resetPresenceGossipWiring,
 } = await import('../presence-gossip-wiring');
@@ -131,6 +132,10 @@ async function settle(check: () => Promise<boolean>, ms = 2000): Promise<void> {
 describe('presence-gossip wiring (real PG, fake swarm)', () => {
   let db: FreshPgDb;
   let channel: FakeChannel;
+  const admittedDevices = new Map<string, number>([
+    [member.pubB64, 42],
+    [member2.pubB64, 42],
+  ]);
 
   beforeAll(async () => {
     db = await createFreshPgDb('presence_gossip_wiring');
@@ -189,13 +194,14 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     __setPresenceGossipWiringDeps({
       getSwarm: async () => swarm as never,
       sql: db.sql,
-      listHiveMembers: (async () => [
-        {
-          githubUserId: 42,
-          deviceAttestations: [{ device_pubkey: member.pubB64 }, { device_pubkey: member2.pubB64 }],
+      listHiveMembers: (async () =>
+        [...new Set(admittedDevices.values())].map((githubUserId) => ({
+          githubUserId,
+          deviceAttestations: [...admittedDevices]
+            .filter(([, owner]) => owner === githubUserId)
+            .map(([device_pubkey]) => ({ device_pubkey })),
           revokedPubkeys: [],
-        },
-      ]) as never,
+        }))) as never,
       loadRevokedHivePubkeys: (async () => []) as never,
     });
 
@@ -276,6 +282,31 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('a pot_members change invalidation admits the next frame immediately instead of waiting for the 30s TTL', async () => {
+    // The prior test populated the cache while `stranger` was absent. Model the
+    // pot_members projection applying a new attestation, then fire the same
+    // invalidation hook production uses. Without the hook this frame is still
+    // rejected from the stale two-device cache until MEMBER_CACHE_TTL_MS.
+    admittedDevices.set(stranger.pubB64, 666);
+    expect(invalidatePresenceGossipMemberCache(WS, HIVE)).toBe(1);
+
+    channel.inbound!(
+      await buildPresencePutFrame(
+        row({ device_pubkey: stranger.pubB64, github_user_id: 666, machine_label: 'new-member' }),
+        T0 + 25,
+        stranger.sign,
+      ),
+    );
+    await settle(async () =>
+      (
+        await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=666 AND machine_label='new-member'`
+      ).length > 0,
+    );
+    expect(
+      await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=666 AND machine_label='new-member'`,
+    ).toHaveLength(1);
   });
 
   it('H3: a put frame whose github_user_id ≠ the signer device\'s ATTESTED id is dropped (real membership gate, not just fail-closed-on-stranger)', async () => {

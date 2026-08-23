@@ -236,7 +236,14 @@ export function hostGlobalLockDomain(): string {
  * (deploy-deps.ts's `withDrain`, dev/restart.ts, system-health/compute.ts)
  * have been migrated — see {@link resourceLockDomain}.
  */
-export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set(['release-deploy', 'dev-server']);
+export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set([
+  'release-deploy',
+  'dev-server',
+  // EI-21270032782365521: all SO_REUSEPORT operator workers spend from one
+  // optional mid-turn memory budget. A caller-tree domain would recreate the
+  // exact split-brain this set exists to prevent and make locks:list lie.
+  'memory-injection:mid-turn',
+]);
 
 /**
  * WI-5960: the same cross-domain defect as {@link HOST_GLOBAL_RESOURCES}, but for
