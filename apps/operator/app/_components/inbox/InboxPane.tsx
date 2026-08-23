@@ -78,6 +78,7 @@ import InboxBulkStrip from './InboxBulkStrip';
 import InboxBulkRecommendation from './InboxBulkRecommendation';
 import { useBulkRunOps, useInboxBulkRun, type BulkRunItem } from './use-inbox-bulk-run';
 import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 import SessionChatModal from '../chat/SessionChatModal';
 import {
   CHAT_WORK_ITEM_POPUP_PARAM,
@@ -95,6 +96,17 @@ import './inbox-pane.css';
 
 const FILTERS = ['needs', 'alerts', 'all'] as const;
 type InboxFilter = (typeof FILTERS)[number];
+
+/** Row-badge wording for a bulk run's per-item outcomes (P-006). `pending` is
+ *  deliberately absent: an item the resolver has not reached yet gets no badge,
+ *  because a badge reading "pending" on every row is noise that hides the ones
+ *  that actually moved. */
+const BULK_OUTCOME_LABEL: Record<string, string> = {
+  auto_resolved: 'resolved',
+  recommended: 'for review',
+  skipped: 'skipped',
+  failed: 'failed',
+};
 
 const FILTER_LABEL: Record<InboxFilter, string> = {
   needs: 'Needs you',
@@ -456,7 +468,7 @@ export default function InboxPane() {
 
      Declared after `visible` because the strip acts on the pane's CURRENT
      filtered set, which is what `visible` is. */
-  const bulkEnabled = useFlag('INBOX_BULK_RESOLVE');
+  const bulkEnabled = useFlag(FLAGS.INBOX_BULK_RESOLVE);
   const bulk = useInboxBulkRun(bulkEnabled ? bulkRunId : null);
   const { acceptRecommendation } = useBulkRunOps();
   const [acceptingCount, setAcceptingCount] = useState(0);
@@ -475,11 +487,17 @@ export default function InboxPane() {
   );
 
   const acceptOneRecommendation = useCallback(
-    async (item: AttentionItem, rec: BulkRunItem) => {
+    // `draftOverride` is the owner's EDIT of the drafted reply. It replaces the
+    // resolver's text for this accept, so "Edit then Accept" delivers what they
+    // actually wrote — a draft the owner corrected and that was then sent
+    // unedited would be the worst possible outcome of offering the edit at all.
+    async (item: AttentionItem, rec: BulkRunItem, draftOverride?: string | null) => {
       if (!bulk.run) return { ok: false, error: 'no active run' };
       setAcceptingCount((n) => n + 1);
       try {
-        const res = await acceptRecommendation(bulk.run.runId, item, rec);
+        const effective =
+          draftOverride === undefined ? rec : { ...rec, draftAnswer: draftOverride };
+        const res = await acceptRecommendation(bulk.run.runId, item, effective);
         // A resolved row is about to leave the live feed — the same cleanup a
         // hand resolve does, through the same callback.
         if (res.ok) onResolved();
@@ -556,6 +574,24 @@ export default function InboxPane() {
           {counts.needs}
         </span>
       </header>
+      {/* BULK RESOLVE command strip (P-006, direction A): between the masthead
+          and the toolbar — above the filters it acts on, so what it will act on
+          is what is on screen when it is pressed. */}
+      {bulkEnabled ? (
+        <InboxBulkStrip
+          visible={visible}
+          filterSnapshot={bulkFilterSnapshot}
+          run={bulk.run}
+          items={bulk.items}
+          recommendations={bulk.recommendations}
+          unreached={bulk.unreached}
+          isRunning={bulk.isRunning}
+          isReview={bulk.isReview}
+          onRunStarted={(runId) => void setBulkRunId(runId)}
+          onAcceptAll={acceptAllRecommendations}
+          acceptingCount={acceptingCount}
+        />
+      ) : null}
       {/* Search + collapsible kind-facet filter (mimics the Queue's QueueFilterBar). */}
       <div className="op-inbox__toolbar">
         <div className="op-inbox__search">
@@ -683,6 +719,7 @@ export default function InboxPane() {
             const i = visible[vi.index]!;
             const isSel = i.id === sel;
             const tier = effectiveTier(i);
+            const bulkRow = bulkEnabled ? bulk.byItemId.get(i.id) : undefined;
             const meta = [i.ownerLabel ?? i.ownerAgentId, i.planSlug ?? i.harnessSlug]
               .filter(Boolean)
               .join(' · ');
@@ -732,6 +769,19 @@ export default function InboxPane() {
                   <span className="op-inbox__kind">{KIND_LABEL[i.kind] ?? i.kind}</span>
                   {meta ? <span className="op-inbox__meta">{meta}</span> : null}
                   <span className="op-inbox__rowhead-spacer" />
+                  {/* What the bulk run did to THIS row. Shown for every non-
+                      pending outcome, including `skipped` and `failed`: an item
+                      the resolver could not judge must read differently from one
+                      it never looked at. */}
+                  {bulkRow && bulkRow.outcome !== 'pending' ? (
+                    <span
+                      className={`op-inbox__rowstate op-inbox__rowstate--${bulkRow.outcome}`}
+                      data-testid={`inbox-bulk-state-${i.id}`}
+                      title={bulkRow.rationale ?? bulkRow.error ?? undefined}
+                    >
+                      {BULK_OUTCOME_LABEL[bulkRow.outcome]}
+                    </span>
+                  ) : null}
                   {rel ? (
                     <Tooltip label={abs ?? rel}>
                       <span className="op-inbox__date" data-testid={`inbox-date-${i.id}`}>
@@ -761,6 +811,22 @@ export default function InboxPane() {
                 <ChevronRight className="op-inbox__row-chevron" size={16} aria-hidden="true" />
               </div>
               </div>
+              {/* The pre-picked resolution, in the row it belongs to (D-003).
+                  Rendered whenever this row still carries a recommendation —
+                  NOT gated on selection: the review pass is reading several at
+                  once, and making the owner expand each one to see what was
+                  recommended would turn a one-screen review into N clicks. */}
+              {bulkRow?.outcome === 'recommended' && bulk.isReview ? (
+                <InboxBulkRecommendation
+                  item={i}
+                  rec={bulkRow}
+                  busy={acceptingCount > 0}
+                  onAccept={(draftOverride) =>
+                    acceptOneRecommendation(i, bulkRow, draftOverride)
+                  }
+                  onDiscuss={() => void onDiscuss(i)}
+                />
+              ) : null}
               {isSel ? (
                 <div
                   id={`inbox-expanded-${i.id}`}
