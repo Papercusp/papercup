@@ -15,9 +15,11 @@ vi.mock('../work-items-release-request', () => ({
 }));
 
 const releaseWorkItem = vi.fn();
+const setWorkItemClaimHold = vi.fn();
 const commentWorkItem = vi.fn();
 vi.mock('../work-items', () => ({
   releaseWorkItem: (...a: unknown[]) => releaseWorkItem(...a),
+  setWorkItemClaimHold: (...a: unknown[]) => setWorkItemClaimHold(...a),
   commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
 }));
 
@@ -71,6 +73,7 @@ beforeEach(() => {
   sendMessage.mockResolvedValue(undefined);
   notifyAttention.mockResolvedValue(undefined);
   releaseWorkItem.mockResolvedValue({ id: 'WI-1', assignee: null });
+  setWorkItemClaimHold.mockResolvedValue({ id: 'WI-1', hold: false, applicable: true });
   releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
 });
 
@@ -101,7 +104,15 @@ describe('release-request-sweep check', () => {
       paths: ['packages/target.ts'],
       goalRef: 'WI-1',
     });
-    expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', { harness: 'papercup' });
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', {
+      harness: 'papercup',
+      expectedAssignee: 'holder-1',
+    });
+    expect(setWorkItemClaimHold).toHaveBeenCalledWith('WI-1', false, {
+      harness: 'papercup',
+      leaseOnly: true,
+      expectedLeaseHolder: 'holder-1',
+    });
     expect(commentWorkItem).toHaveBeenCalledTimes(1);
     expect(commentWorkItem.mock.calls[0][1]).toContain('EXPIRED');
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -176,7 +187,15 @@ describe('release-request-sweep check', () => {
     await check.tick();
 
     expect(releaseWorkItem).toHaveBeenCalledTimes(1);
-    expect(releaseWorkItem).toHaveBeenCalledWith('WI-A', { harness: 'papercup' });
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-A', {
+      harness: 'papercup',
+      expectedAssignee: 'holder-a',
+    });
+    expect(setWorkItemClaimHold).toHaveBeenCalledWith('WI-A', false, {
+      harness: 'papercup',
+      leaseOnly: true,
+      expectedLeaseHolder: 'holder-a',
+    });
     expect(sendMessage).toHaveBeenCalledTimes(2);
   });
 
