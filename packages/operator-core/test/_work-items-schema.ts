@@ -345,6 +345,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
           NEW.assignee IS NULL
           OR taken_by IS NULL OR btrim(taken_by) = '' OR lower(btrim(taken_by)) = 'unassigned'
           OR taken_by = NEW.assignee
+          OR taken_by = OLD.assignee
         );
       GET DIAGNOSTICS v_updated = ROW_COUNT;
       IF v_updated = 0 THEN
