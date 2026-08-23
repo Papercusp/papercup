@@ -735,7 +735,26 @@ export type SocialPostOutcome = SocialReplyOutcome;
 
 export interface SocialWriteAdapter {
   platform: SocialPlatformId;
-  reply(request: SocialReplyRequest, context: OutboundContext): Promise<SocialReplyOutcome>;
+  /**
+   * Optional for exactly the reason `post` and `delete` are, and it was NOT
+   * optional until LinkedIn (P-021) falsified the assumption behind it.
+   *
+   * Reply is this plan's central verb, so "every social platform can reply" was
+   * a natural thing to bake into the contract. LinkedIn is the counterexample:
+   * its self-serve grant (`w_member_social`, the only open write permission in
+   * LinkedIn's own permissions reference) posts but does not comment — the
+   * Comments API declares a DIFFERENT scope, `w_member_social_feed`, which is
+   * not self-serve. So LinkedIn's registry row declares `verbs: ['post',
+   * 'delete']` and `assertSocialWriteAllowed` refuses 'reply' BEFORE this
+   * lookup, exactly as it does for any other undeclared verb.
+   *
+   * Requiring `reply` here would force such a platform to ship a method that
+   * can only throw, and that throw would surface as an ADAPTER defect at the
+   * call site rather than as the PLATFORM limitation it actually is — the very
+   * confusion the note on `post` below exists to prevent, pointed the other
+   * way. The two conditions stay separately reported.
+   */
+  reply?(request: SocialReplyRequest, context: OutboundContext): Promise<SocialReplyOutcome>;
   /**
    * Optional on purpose. The registry already declares per-platform write verbs
    * (`write.verbs`), and `assertSocialWriteAllowed` refuses a verb a platform
@@ -885,6 +904,12 @@ export async function replyToCanonicalSocialPost(
   if (!adapter) {
     throw new Error(
       `social_reply_adapter_missing:${ref.platform} — the platform's write path is verified but no adapter is registered yet`,
+    );
+  }
+
+  if (typeof adapter.reply !== 'function') {
+    throw new Error(
+      `social_reply_adapter_verb_missing:${ref.platform} — the registry declares this platform can reply, but its adapter does not implement it`,
     );
   }
 

@@ -350,7 +350,31 @@ export interface SocialPlatformRow {
     scopes: string[];
     notes?: string;
   };
-  read: SocialReadSpec & {
+  /**
+   * How this platform is read — or `null` when it CANNOT be read at any grant
+   * tier we hold.
+   *
+   * `null` is a POSITIVE, verified declaration, not an omission or an unknown.
+   * It is spelled `| null` rather than `read?:` for the same reason
+   * `verifiedAt` is: an optional field can be forgotten, whereas a nullable one
+   * still forces every row's author to write something deliberate.
+   *
+   * LinkedIn (P-021) is the first row to need it, and nothing else in this
+   * union could state its situation without lying. Reading a member's own posts
+   * needs `r_member_social` ("restricted ... available to approved users
+   * only"); reading comments needs `r_member_social_feed` ("Restricted ...
+   * granted to select developers only"). Neither appears in LinkedIn's
+   * open-permissions reference, so no content read exists for us at all. The
+   * nearest legal value, `poll-cursor`, means "reading IS the cursored poll:
+   * nothing to miss, no window to expire" — the second-STRONGEST replay class
+   * in SOCIAL_REPLAY_STRENGTH. Declaring that for a platform we cannot read
+   * would have made LinkedIn look exactly like Reddit to every consumer.
+   *
+   * A null here means write-only, and consumers must render it as such: see
+   * `socialAdminFacts`, which maps it to the `not-readable` cursor state rather
+   * than letting a platform that can never sync report `never-synced` forever.
+   */
+  read: (SocialReadSpec & {
     /**
      * Per-stream detail, for a platform whose streams do NOT share one replay
      * guarantee (D-021 measured exactly that on YouTube: its activities stream
@@ -365,7 +389,7 @@ export interface SocialPlatformRow {
      * `platform-registry.test.ts` pins that against SOCIAL_REPLAY_STRENGTH.
      */
     streams?: Record<string, SocialReadSpec>;
-  };
+  }) | null;
   write: {
     verbs: SocialWriteVerb[];
     idempotency: SocialWriteIdempotency;
@@ -1040,21 +1064,86 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     id: 'linkedin',
     label: 'LinkedIn',
     egress: {
-      // Unverified row: an empty FIXED list denies everything, which is the
-      // correct posture for a platform whose facts nobody has read yet (D-005).
-      // P-021 fills this in as part of its just-in-time verification.
       hostPolicy: 'fixed',
-      apiHosts: [],
-      notes: 'Not yet verified — P-021 declares the hosts when it verifies this row. Empty means DENY, not "unconstrained".',
+      // TWO hosts, and the split is not cosmetic: every API call goes to
+      // api.linkedin.com, while the ENTIRE OAuth surface lives on
+      // www.linkedin.com (authorization, accessToken, JWKS, the OIDC discovery
+      // document). Assuming one host for both — the shape most platforms here
+      // have — breaks token exchange, so both are declared.
+      apiHosts: ['api.linkedin.com', 'www.linkedin.com'],
+      // www.linkedin.com is deliberately in BOTH lists: it is genuinely called
+      // (OAuth) and genuinely appears in emitted permalinks. media.licdn-ei.com
+      // shows up only inside a userinfo `picture` value and is never fetched.
+      permalinkHosts: ['www.linkedin.com', 'media.licdn-ei.com'],
+      notes:
+        'api.linkedin.com serves /rest/*, /v2/* and the /mediaUpload/* URL returned by assets?action=registerUpload. www.linkedin.com serves ONLY /oauth/* (authorization, accessToken, openid/jwks, .well-known/openid-configuration) — verified 2026-08-23 against the 3-legged OAuth guide and the OIDC discovery document, not inferred from api.linkedin.com.',
     },
     wave: 'C',
-    verifiedAt: null,
-    sources: [],
-    auth: { mode: 'app-review', scopes: [] },
-    read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['post'], idempotency: 'unknown', verifiedAt: null },
-    limits: {},
-    blockedOn: 'owner: partner review for organization/page access; personal-profile posting may be self-serve (unverified)',
+    verifiedAt: '2026-08-23',
+    sources: [
+      'https://learn.microsoft.com/en-us/linkedin/shared/authentication/getting-access',
+      'https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/share-on-linkedin',
+      'https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/sign-in-with-linkedin-v2',
+      'https://learn.microsoft.com/en-us/linkedin/marketing/integrations/community-management/shares/posts-api',
+      'https://learn.microsoft.com/en-us/linkedin/marketing/integrations/community-management/shares/comments-api',
+      'https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/rate-limits',
+      'https://learn.microsoft.com/en-us/linkedin/shared/authentication/authorization-code-flow',
+    ],
+    auth: {
+      mode: 'self-serve-oauth',
+      // EXACTLY the open-permissions set, enumerated from the endpoints this
+      // adapter actually calls (D-034). `openid`/`profile` are needed because
+      // the author URN is built from userinfo's `sub`; `w_member_social` is the
+      // only open WRITE permission LinkedIn grants. `email` is deliberately NOT
+      // requested — nothing here reads an address, and LinkedIn's own guide
+      // says to request the least number of scopes.
+      scopes: ['openid', 'profile', 'w_member_social'],
+      notes:
+        'Access tokens last 60 days (expires_in 5184000) and PROGRAMMATIC REFRESH IS PARTNER-ONLY ("available for a limited set of partners"). A self-serve integration therefore has no unattended renewal path: re-authorisation is a browser round-trip, silent only while the member is still logged into linkedin.com AND the current token has not yet expired. An unattended LinkedIn connection self-expires every 60 days by design — see blockedOn.',
+    },
+    // WRITE-ONLY. Not an omission — see the field docs on SocialPlatformRow.read.
+    read: null,
+    write: {
+      // 'reply' is ABSENT and that is the single most important fact in this
+      // row. LinkedIn's open-permissions reference lists exactly three
+      // self-serve member scopes — profile, email, w_member_social — and the
+      // Comments API, the endpoint that actually creates a comment, declares
+      // `w_member_social_feed`, which is not among them.
+      //
+      // CONTESTED, and left contested rather than guessed: w_member_social's
+      // own DESCRIPTION (in both the Posts API table and the permissions
+      // reference) reads "Post, comment and like posts on behalf of an
+      // authenticated member" — the scope's prose claims comment while the
+      // commenting endpoint names a different scope. D-030's rule one level up
+      // (the surface that DECLARES a verb wins for that verb) resolves it
+      // toward the endpoint, so reply stays undeclared until a live call
+      // settles it. Declaring it on the strength of the prose would put a
+      // failing write on the owner's real public identity.
+      verbs: ['post', 'delete'],
+      // Asymmetric by verb, so the scalar means the WEAKEST (D-016): CREATE has
+      // no idempotency mechanism of any kind, while DELETE is explicitly
+      // idempotent ("Deletion requests for a previously deleted UGC Post will
+      // return a 204").
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
+      notes:
+        'CREATE HAS NO IDEMPOTENCY KEY AND THE DOCS TELL YOU TO RETRY ANYWAY: the Posts API error table lists 409 CONFLICT as "A write conflict occurred. Retry the request." Following that on a non-idempotent create is a duplicate-public-post generator, so linkedin-write-adapter.ts refuses to auto-retry a create and surfaces the ambiguity instead. DELETE is safe to retry (idempotent, 204 on already-deleted). Two documented create paths exist for the same grant — POST /rest/posts (versioned, current) and POST /v2/ugcPosts (legacy, still what the self-serve Share on LinkedIn page itself documents); the adapter uses /rest/posts and pins the version header.',
+    },
+    limits: {
+      // The only ABSOLUTE figures LinkedIn publishes anywhere, and they are on
+      // the Share on LinkedIn page specifically. Everything else is unpublished:
+      // "Standard rate limits are not published in documentation" — they are
+      // visible only in the Developer Portal Analytics tab, and only for
+      // endpoints already called at least once that day.
+      assumedDailyFloor: 150,
+      windowSeconds: 86_400,
+      notes:
+        'Member 150 requests/day, Application 100,000 requests/day, both resetting at midnight UTC. The member limit is the binding one for a single owner, so it is the floor here. ⚠ ZERO API-SIDE OBSERVABILITY: no response header reports quota or usage, and unlike Threads there is no limits ENDPOINT either, so observedPeakUsagePct can never become non-null and this floor is permanent. The only feedback loop is an email alert at 75% of quota — application-level only, explicitly not real-time ("delay of approximately 1-2 hours"), and therefore useless to the adapter. Throttling surfaces as HTTP 429, which is also returned "in rare cases ... as part of infrastructure protection", so a 429 is not proof the daily cap was reached. SECOND, INDEPENDENT THROTTLE: comment creation carries a "short term 1 minute rate limit" (429 "Comment create throttled: creation rate limit exceeded for member") — LinkedIn must not be modelled as daily-only, even though this adapter does not comment today.',
+    },
+    policyNotes:
+      'The self-serve grant is write-only against the authenticated member\'s OWN profile. Organization/page posting (w_organization_social) and any read of posts or comments (r_member_social, r_member_social_feed) require approval — "Open Permissions are the only permissions that are available to all developers without special approval."',
+    blockedOn:
+      'owner: nothing blocks personal-profile POSTING — that grant is self-serve and this row is verified for it. Two things ARE owner-walled: (1) reading anything (r_member_social / r_member_social_feed are restricted to approved developers), and organization/page access (partner review); (2) a RECURRING 60-day re-authorisation, because programmatic refresh tokens are partner-only — an unattended connection stops working every 60 days until a human completes the browser flow.',
   },
 
   tiktok: {
