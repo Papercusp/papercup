@@ -335,6 +335,7 @@
     "@lydell/node-pty": "^1.2.0-beta.12",
     "@mantine/core": "^9.1.0",
     "@mantine/hooks": "^9.1.0",
+    "@mcp-ui/server": "^6.1.0",
     "@monaco-editor/react": "^4.7.0",
     "@nestjs/common": "^11.1.0",
     "@radix-ui/react-checkbox": "^1.3.3",
@@ -390,7 +391,6 @@
     "@assistant-ui/tap": "0.5.16"
   },
   "devDependencies": {
-    "@typescript/native": "npm:typescript@7.0.2",
     "@astrojs/check": "^0.9.8",
     "@astrojs/node": "^10.0.0",
     "@nx/jest": "22.6.5",
@@ -402,6 +402,7 @@
     "@types/cors": "^2.8.19",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.14",
+    "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "4.1.8",
     "@vitest/ui": "4.1.8",
     "adm-zip": "^0.5.17",
