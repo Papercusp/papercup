@@ -15,8 +15,15 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
-const getClaimSpecRecordM = vi.hoisted(() => vi.fn(async () => ({
-  source: 'default' as const,
+type TestClaimSpecRecord = {
+  source: 'default' | 'cup';
+  spec: { specId: string; revision: number };
+  revision: number | null;
+  updatedBy: string | null;
+  updatedAt: string | null;
+};
+const getClaimSpecRecordM = vi.hoisted(() => vi.fn(async (): Promise<TestClaimSpecRecord> => ({
+  source: 'default',
   spec: { specId: 'default', revision: 0 },
   revision: null,
   updatedBy: null,
