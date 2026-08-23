@@ -29,6 +29,7 @@ import {
   registerAwait,
   findAnnouncementsForKey,
   findNearMissKeys,
+  cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
   probeKeyFireEvidence,
   probePatternMatchScope,
@@ -880,6 +881,46 @@ export default defineTool({
       payloadFilter: effectivePayloadFilter,
       producerHealthCertificate,
     });
+
+    // ── EI-21124063749265204: close the registration-window race for the dynamic
+    // git-sync egress latch. The emitter records the exact-key fire BEFORE claiming
+    // await rows, so a fire that lands after the pre-registration probe can be
+    // observed here. Cancel only through the row-level pending guard: if the event
+    // already claimed this row, leave it alone so its durable wake delivery wins;
+    // if cancellation succeeds, this turn can proceed without parking on a stale
+    // registration that would otherwise time out after the egress already happened.
+    if (gitSyncEgressTarget) {
+      const postRegisterProbe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+        fallback: null,
+        timeoutMs: 1_000,
+        label: 'events-await:gitSyncEgressLatchAfterRegister',
+      });
+      if (postRegisterProbe.value?.exact && postRegisterProbe.value.fires > 0) {
+        let retired = false;
+        try {
+          retired = await cancelAwait({ awaitId: row.id, subscriberId: identity.ownerId });
+        } catch {
+          // Fail-soft: if the reconciliation write is unavailable, keep the
+          // registration response honest and let the normal await path proceed.
+        }
+        if (retired) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  already_fired: true,
+                  event: eventKey,
+                  fired_at: postRegisterProbe.value.lastFiredAt,
+                  advice: `The git-sync egress key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`,
+                }),
+              },
+            ],
+          };
+        }
+      }
+    }
 
     await extendClaimsForThisAwait(effectiveTimeoutSec);
 

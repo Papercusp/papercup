@@ -62,6 +62,11 @@ const RESERVED_INTEGRATION_ENV_NAMES = new Set([
   'WAYLAND_DISPLAY',
 ]);
 
+const MIN_TIMEOUT_MS = 1_000;
+const MIN_TIMEOUT_ERROR =
+  `timeout must be at least ${MIN_TIMEOUT_MS}ms (1 second); timeout is expressed in milliseconds — ` +
+  `for 20 seconds, pass 20000`;
+
 export interface BashTaskProvenance {
   launchedBy: string;
   sessionId: string | null;
@@ -172,11 +177,12 @@ export default defineTool({
     timeout: z
       .number()
       .int()
-      .positive()
+      .min(MIN_TIMEOUT_MS, MIN_TIMEOUT_ERROR)
       .max(MAX_BACKGROUND_TIMEOUT_MS)
       .optional()
       .describe(
-        `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, CLAMPED to ${FOREGROUND_TIMEOUT_CEILING_MS} — ` +
+        `Wall-clock timeout in ms (minimum ${MIN_TIMEOUT_MS}; values below one second are rejected to catch ` +
+          `seconds-vs-milliseconds mistakes — 20 seconds = 20000ms). FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, CLAMPED to ${FOREGROUND_TIMEOUT_CEILING_MS} — ` +
           `below the ~55s MCP transport cap, so a slow command returns an actionable timeout instead of an opaque ` +
           `transport failure. Raising it past the clamp does nothing: run anything longer with run_in_background. ` +
           `BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — ` +

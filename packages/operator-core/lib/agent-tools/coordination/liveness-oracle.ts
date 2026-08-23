@@ -126,6 +126,22 @@ export interface LivenessVerdict {
   selfWake?: SelfWakeSource;
 }
 
+/** Read-time actionability for owner-facing queues. */
+export type ReadActionability = 'actionable' | 'non-actionable' | 'unknown';
+
+/**
+ * PURE: classify whether a read-side owner gate can still be acted on.
+ * Missing liveness is deliberately unknown, never actionable.
+ */
+export function classifyReadActionability(
+  sessionState: SessionState | null | undefined,
+): ReadActionability {
+  if (sessionState == null) return 'unknown';
+  return sessionState === 'live' || sessionState === 'parked' || sessionState === 'recorded'
+    ? 'actionable'
+    : 'non-actionable';
+}
+
 export interface ResolveSessionStatesOpts {
   nowMs?: number;
   /** Fill missing heartbeat/stale/host/pid/source from each subject's own

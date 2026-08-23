@@ -180,6 +180,7 @@ describe('P-012 server-side mixed capability scripts', () => {
     );
 
     const envelope = textEnvelope(result);
+    if (envelope.state !== 'complete') throw new Error(JSON.stringify(envelope));
     expect(envelope).toMatchObject({
       schemaVersion: 'papercusp.output-envelope/v1',
       state: 'complete',

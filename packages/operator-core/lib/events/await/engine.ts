@@ -278,6 +278,17 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
 
+  // EI-13705: record the fire on the UNCONDITIONAL per-key latch BEFORE claiming
+  // await rows. The bridge can start an event between an awaiter's pre-registration
+  // probe and registerAwait; recording first makes the post-registration probe see
+  // the fire and atomically retire a still-pending row instead of leaving it to time
+  // out. Fail-soft — never break the emit when the diagnostic latch is unavailable.
+  try {
+    await recordKeyFire({ eventKey: opts.key, firedBy: opts.source ?? null, payload: opts.payload });
+  } catch (e) {
+    log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+  }
+
   // 1. One-shot fire the awaits on this key (atomic — D-002). EI-8998: the payload is
   // threaded through so a row carrying a payload_filter is only fired when the
   // emitted payload actually satisfies it (rows with no filter are unaffected).
@@ -297,16 +308,6 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     await stampAnnouncementsFired(opts.key, { firedBy: opts.source ?? null, payload: opts.payload });
   } catch (e) {
     log(`announce latch stamp failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
-  }
-
-  // EI-13705: record the fire on the UNCONDITIONAL per-key latch — independent of
-  // whether this key was ever announced, and independent of whether it currently has
-  // any waiter/delivery row (those are fire-once/decaying; this is the durable "did
-  // this key ever genuinely fire" answer). Fail-soft — never break the emit.
-  try {
-    await recordKeyFire({ eventKey: opts.key, firedBy: opts.source ?? null, payload: opts.payload });
-  } catch (e) {
-    log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
   }
 
   // 2. Queue durable wake deliveries + kick the pump off the hot path.

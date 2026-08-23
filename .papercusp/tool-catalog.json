@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 779,
+  "count": 781,
   "tools": [
     {
       "name": "ablation:report",
@@ -16755,6 +16755,80 @@
       "profile": "engineer"
     },
     {
+      "name": "orchestrate:inspect",
+      "http": {
+        "path": "/api/agent-tools/orchestrate/inspect",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Side-effect-free normalization and current-caller preflight for one fresh script or saved recipe. Revalidates bindings, recipe revision/authority, tools, capabilities, topology, lifecycle and timeout without dispatching nested tools.",
+      "capabilities": [
+        "recipes:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Before running an unfamiliar saved recipe or a capability-declaring/bound script.",
+        "notWhen": "You only need recipe discovery; use orchestrate:search.",
+        "chaining": "orchestrate:inspect { script|recipe } → orchestrate:run with the same exact source and bindings"
+      }
+    },
+    {
       "name": "orchestrate:run",
       "http": {
         "path": "/api/agent-tools/orchestrate/run",
@@ -16762,7 +16836,7 @@
           "POST"
         ]
       },
-      "description": "Run a fresh server-side orchestration script through code:run and return one bounded authored-summary envelope. The adapter preserves current-caller authorization, typed signature repair, timeout handling, dry-run previews, media returns, and recipe capture.",
+      "description": "Preferred execution door for exactly one fresh script or saved recipe. Runs on the server under the current caller and returns one bounded authored-summary envelope.",
       "capabilities": [
         "capability:bash"
       ],
@@ -16823,9 +16897,83 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You have a fresh multi-step server orchestration script and need one aggregate-safe output envelope.",
-        "notWhen": "You have a saved recipe id; use recipes:run until the saved-recipe adapter is joined into this facade.",
-        "chaining": "orchestrate:run { script:{ source, title?, description? }, execution?:{ mode:\"server\" }, capture?:{ mode:\"auto\"|\"never\" }, timeoutSec? }"
+        "when": "After orchestrate:search/inspect, run one fresh script or exact saved-recipe continuation.",
+        "notWhen": "You need a single direct tool call or must use a native compatibility door explicitly.",
+        "chaining": "orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }"
+      }
+    },
+    {
+      "name": "orchestrate:search",
+      "http": {
+        "path": "/api/agent-tools/orchestrate/search",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Preferred read-only discovery for reusable orchestration. Delegates to the existing recipe search rail and returns exact runnable recipe continuations.",
+      "capabilities": [
+        "recipes:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Before authoring a new multi-step script; search for a reusable orchestration first.",
+        "notWhen": "You already hold an exact recipe continuation and only need to inspect or run it.",
+        "chaining": "orchestrate:search { query } → orchestrate:inspect { recipe: match.run.recipe } → orchestrate:run { recipe: match.run.recipe }"
       }
     },
     {

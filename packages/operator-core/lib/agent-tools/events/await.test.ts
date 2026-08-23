@@ -22,6 +22,9 @@ vi.mock('../../events/await/handle', () => ({
 }));
 vi.mock('../../events/await/store', () => ({
   registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 99, eventKey: i.eventKey, expiresTs: '2030-01-01', timeoutBehavior: i.timeoutBehavior })),
+  // EI-21124063749265204: the post-registration egress-latch reconciliation
+  // cancels only when this atomic pending-row guard wins the race.
+  cancelAwait: vi.fn(async () => false),
   // EI-14225: the supersede-prior-await-on-registration retirement. Defaults to
   // "nothing to retire" so every pre-existing test above is unaffected; overridden
   // per-test below to exercise the supersede path.
@@ -107,7 +110,7 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
+import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey, probePatternMatchScope } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -1133,6 +1136,64 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
     expect(out.already_fired).toBeUndefined();
     expect(registerAwait).toHaveBeenCalledTimes(1);
     expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a fire that lands after the preflight probe while the new row is still pending', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce({
+        prefix: 'git-sync:egressed',
+        exact: false,
+        distinctKeys: 0,
+        fires: 0,
+        lastFiredAt: null,
+      })
+      .mockResolvedValueOnce({
+        prefix: 'git-sync:egressed',
+        exact: true,
+        distinctKeys: 1,
+        fires: 1,
+        lastFiredAt: '2026-08-23T02:14:00.000Z',
+      });
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+
+    const out = await call({ event: egressKey });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_fired: true,
+      event: egressKey,
+      fired_at: '2026-08-23T02:14:00.000Z',
+    });
+    expect(out.advice).toMatch(/during registration/);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    const registerOrder = vi.mocked(registerAwait).mock.invocationCallOrder[0];
+    const probeOrders = vi.mocked(probeKeyFireEvidence).mock.invocationCallOrder;
+    expect(registerOrder).toBeLessThan(probeOrders[probeOrders.length - 1]);
+  });
+
+  it('leaves a row alone when the event already claimed it before reconciliation', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce({
+        prefix: 'git-sync:egressed',
+        exact: false,
+        distinctKeys: 0,
+        fires: 0,
+        lastFiredAt: null,
+      })
+      .mockResolvedValueOnce({
+        prefix: 'git-sync:egressed',
+        exact: true,
+        distinctKeys: 1,
+        fires: 1,
+        lastFiredAt: '2026-08-23T02:15:00.000Z',
+      });
+
+    const out = await call({ event: egressKey });
+
+    expect(out).toMatchObject({ ok: true, await_id: 99, event: egressKey });
+    expect(out.already_fired).toBeUndefined();
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
   });
 });
 

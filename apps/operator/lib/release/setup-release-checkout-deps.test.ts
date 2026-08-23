@@ -239,7 +239,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     const wrapper = [
       'set -euo pipefail',
       'log() { :; }',
-      'source <(sed -n "/^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      'source <(sed -n "/^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
@@ -283,6 +283,40 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     writeFileSync(join(src, 'marker.txt'), 'AFTER-INSTALL');
 
     expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('BEFORE-INSTALL');
+    expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(statSync(join(src, 'marker.txt')).ino);
+  });
+
+  it('copy mode reuses an unchanged prior isolated snapshot without copying file payloads again', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'large.bin'), Buffer.alloc(1024 * 1024, 7));
+    const dest = join(work, 'dest');
+
+    syncOne(src, dest, 'copy');
+    const sourceInode = statSync(join(src, 'large.bin')).ino;
+    const firstSnapshotInode = statSync(join(dest, 'large.bin')).ino;
+    syncOne(src, dest, 'copy');
+
+    expect(statSync(join(dest, 'large.bin')).ino).toBe(firstSnapshotInode);
+    expect(statSync(join(dest, 'large.bin')).ino).not.toBe(sourceInode);
+    expect(readFileSync(join(dest, '.papercusp-isolated-snapshot'), 'utf8')).toMatch(
+      /^source=[0-9a-f]{64}\nsnapshot=[0-9a-f]{64}\n$/,
+    );
+  });
+
+  it('copy mode rejects a drifted prior snapshot and restores it from integration', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'CANONICAL');
+    const dest = join(work, 'dest');
+
+    syncOne(src, dest, 'copy');
+    const firstSnapshotInode = statSync(join(dest, 'marker.txt')).ino;
+    writeFileSync(join(dest, 'marker.txt'), 'MUTATED-BY-TEST');
+    syncOne(src, dest, 'copy');
+
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('CANONICAL');
+    expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(firstSnapshotInode);
     expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(statSync(join(src, 'marker.txt')).ino);
   });
 

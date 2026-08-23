@@ -1451,6 +1451,11 @@ export function checkpointRunLockDir(
 /** EI-18757156963245979: the run's own PHASE, published beside the run-lock so the LAUNCH
  *  side can tell "healthy run about to deliver a verdict" from "wedged run worth replacing".
  *
+ *  `materializing` (WI-40774) = the candidate is final and setup-release-checkout is
+ *  refreshing the isolated dependency snapshot. pc-heavy closes new admission to slot 0
+ *  while the setup wrapper drains every pre-existing ordinary heavy slot, so a 12+ GiB
+ *  dependency materialization cannot overlap an already-running broad test sweep.
+ *
  *  `isolating` (EI-19328677512071640) = the suite went RED and this process is inside the
  *  load-flake isolation re-run (`attemptFlakeAbsorption` / `attemptWorkerCrashAbsorption`),
  *  re-running each originally-failing file at SINGLE concurrency to decide load-flake vs real
@@ -1486,11 +1491,11 @@ export function checkpointRunLockDir(
  *  is behind. Consumers must therefore treat a missing/older `phaseProtocol` as protocol 1
  *  and fall back to the conservative whole-run behavior. Bump this only when a NEW phase
  *  value is introduced that a reader must be able to depend on. */
-export const PHASE_PROTOCOL = 2;
+export const PHASE_PROTOCOL = 3;
 
 export function writeCheckpointRunPhase(
   lockDir: string,
-  phase: "suite" | "isolating" | "delivering",
+  phase: "materializing" | "suite" | "isolating" | "delivering",
 ): void {
   try {
     writeFileSync(
@@ -6986,19 +6991,31 @@ export async function runGreenCheckpoint(
     refireDepth: opts.totalRefires ?? opts.refireAttempts ?? 0,
     pid: process.pid,
   });
-  // EI-18757156963245979: (re)enter the SUITE phase. This must be written at the top of EVERY
-  // invocation, not just the first, because a stale-red auto-refire RE-ENTERS this function
+  // WI-40774: publish MATERIALIZING before setup starts. The checkpoint run-lock by itself
+  // only throttles jobs admitted after this run appeared; it cannot drain a test:affected
+  // sweep that already holds a pc-heavy slot. realCheckpointDeps.setupTree wraps the copy in
+  // pc-heavy's reciprocal --exclusive-all-slots mode, and this protocol-3 phase clamps new
+  // callers to slot 0 while that wrapper drains the pre-existing holders.
+  writeCheckpointRunPhase(
+    checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+    "materializing",
+  );
+  deps.reportProgress?.("phase:materializing");
+  const setupIdentity = await deps.setupTree(candidate);
+
+  // EI-18757156963245979: (re)enter the SUITE phase after materialization. This must be
+  // written on EVERY invocation because a stale-red auto-refire RE-ENTERS this function
   // recursively in the SAME process — without this reset the marker would still read
   // 'delivering' from the previous iteration and the run would be permanently unreplaceable,
-  // including when it genuinely wedges mid-suite. Age cannot substitute here: `elapsed_sec`
-  // comes from the systemd unit's start and therefore keeps climbing across refires, so a
-  // legitimately-refiring run looks progressively MORE "wedged" the harder it is working.
+  // including when it genuinely wedges mid-suite. Age cannot substitute here:
+  // `elapsed_sec` comes from the systemd unit's start and therefore keeps climbing across
+  // refires, so a legitimately-refiring run looks progressively MORE "wedged" the harder it
+  // is working.
   writeCheckpointRunPhase(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
     "suite",
   );
   deps.reportProgress?.("phase:suite");
-  const setupIdentity = await deps.setupTree(candidate);
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused
   // by main sitting frozen (see CheckpointDeps.ensureMigrationsCurrent doc).
@@ -10954,6 +10971,10 @@ export function realCheckpointDeps(
             const dependencies = await exec(
               "bash",
               [
+                path.join(toolingRoot(), "scripts/pc-heavy.sh"),
+                "--exclusive-all-slots",
+                "--",
+                "bash",
                 path.join(
                   toolingRoot(),
                   "apps/operator/bin/release/setup-release-checkout.sh",
@@ -11354,7 +11375,9 @@ export function realCheckpointDeps(
       // red the gate for the WHOLE fleet while PASSING on the real integration tree
       // (EI-2699). A throwaway, correctness-critical tree must always re-copy from
       // integration; the independent copy is required to prevent a concurrent npm install
-      // from mutating the checkpoint inputs. The DEPLOY keeps `auto` + the
+      // from mutating the checkpoint inputs. setup-release-checkout's isolated-snapshot
+      // marker makes an unchanged force refresh metadata-only; source/snapshot drift
+      // retains the full independent-copy fallback. The DEPLOY keeps `auto` + the
       // verify-before-cutover preflight (mcp-host-availability-resilience-2026-06-22).
       //
       // WI-7069: BOUNDED — this used to be the one unbounded call on the candidate-selection→
@@ -11364,6 +11387,10 @@ export function realCheckpointDeps(
       const setup = await exec(
         "bash",
         [
+          path.join(toolingRoot(), "scripts/pc-heavy.sh"),
+          "--exclusive-all-slots",
+          "--",
+          "bash",
           script,
           "--ref",
           ref,

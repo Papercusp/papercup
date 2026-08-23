@@ -232,46 +232,19 @@ const FIELDS = {
 // changes through work_items:set_state, not here. Zod's default object() SILENTLY
 // STRIPS any unknown key, so `update({ id, state:'resolved' })` parsed clean, ran the
 // handler with every field undefined, and returned ok:true with an UNCHANGED item — a
-// silent no-op the caller reads as success (the exact reported defect). Capture the two
-// footgun keys explicitly so a superRefine can ERROR with a pointer to set_state instead
-// of stripping them. (status/state are `unknown` because ANY provided value is a misuse.)
-const STATE_FOOTGUN_FIELDS = {
-  status: z.unknown().optional(),
-  state: z.unknown().optional(),
-};
-
-function rejectStateFootguns(a: { status?: unknown; state?: unknown }, ctx: z.RefinementCtx): void {
-  if (a.status !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['status'],
-      message:
-        'work_items:update does not change status — use work_items:set_state { id, state } (issue-family: open|resolved|closed; feature-family: passed|failing|deprecated|…).',
-    });
-  }
-  if (a.state !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['state'],
-      message: 'work_items:update does not change lifecycle state — use work_items:set_state { id, state }.',
-    });
-  }
-}
-
+// silent no-op the caller reads as success (the exact reported defect). Keep both lifecycle
+// names out of the declared shape and use strict objects so they are rejected as unknown
+// keys instead of being silently stripped or advertised as supported update fields.
 const itemSpec = z
   .object({
     id: z.string().min(1),
     harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
     ...FIELDS,
-    ...STATE_FOOTGUN_FIELDS,
   })
   // WI-4492: strict so an unknown field name is a LOUD error naming it, never a silent
-  // drop. STATE_FOOTGUN_FIELDS are DECLARED (as z.unknown) so strict lets them through to
-  // the superRefine, which rejects them with a pointer to set_state (better than a generic
-  // "unrecognized key"). Same for the body/summary alias.
+  // drop. Same for the body/summary alias.
   .strict()
   .superRefine((it, ctx) => {
-    rejectStateFootguns(it, ctx);
     rejectBodySummaryConflict(it, ctx);
   });
 
@@ -304,7 +277,6 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single-update shorthand: the work-item id'),
       ...FIELDS,
-      ...STATE_FOOTGUN_FIELDS,
       items: z
         .array(itemSpec)
         .min(1)
@@ -323,7 +295,6 @@ export default defineTool({
           message: 'pass { id, …fields } for one, or items:[{ id, …fields }] for many',
         });
       }
-      rejectStateFootguns(a, ctx);
       rejectBodySummaryConflict(a, ctx);
     }),
   async handler(args, ctx) {

@@ -4,14 +4,14 @@ import { useEffect, type ReactNode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const askConfirm = vi.fn(async () => true);
-const fetchSnapshot = vi.fn();
-const patchAdmin = vi.fn(async () => ({ ok: true }));
-const authorSchedule = vi.fn(async () => ({ ok: true }));
-const armSchedule = vi.fn(async () => ({ ok: true, results: [{ ok: true }] }));
-const disarmSchedule = vi.fn(async () => ({ ok: true, results: [{ ok: true }] }));
-const setInputSchema = vi.fn(async () => ({ ok: true }));
-const clearTemplate = vi.fn(async () => ({ ok: true }));
-const start = vi.fn(async () => ({ slug: 'triage-mail', harnessSlug: 'papercusp', status: null }));
+const fetchSnapshot = vi.fn(async (_args?: unknown) => ({}));
+const patchAdmin = vi.fn(async (_body: Record<string, unknown>) => ({ ok: true }));
+const authorSchedule = vi.fn(async (_slug: string, _args: unknown, _harness?: string | null) => ({ ok: true }));
+const armSchedule = vi.fn(async (_slug: string, _harness?: string | null) => ({ ok: true, results: [{ ok: true }] }));
+const disarmSchedule = vi.fn(async (_slug: string, _harness?: string | null) => ({ ok: true, results: [{ ok: true }] }));
+const setInputSchema = vi.fn(async (_slug: string, _schema: unknown, _harness?: string | null) => ({ ok: true }));
+const clearTemplate = vi.fn(async (_slug: string, _harness?: string | null) => ({ ok: true }));
+const start = vi.fn(async (_slug: string, _harness?: string | null) => ({ slug: 'triage-mail', harnessSlug: 'papercusp', status: null }));
 
 vi.mock('@/app/harness/useConfirmDialog', () => ({
   useConfirmDialog: () => ({ confirm: askConfirm, element: null }),
@@ -22,17 +22,17 @@ vi.mock('@/app/harness/Modal', () => ({
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('../triggers/trigger-admin-api', () => ({
-  fetchTriggerAdminSnapshot: (...args: unknown[]) => fetchSnapshot(...args),
-  patchTriggerAdmin: (...args: unknown[]) => patchAdmin(...args),
+  fetchTriggerAdminSnapshot: (args?: unknown) => fetchSnapshot(args),
+  patchTriggerAdmin: (body: Record<string, unknown>) => patchAdmin(body),
 }));
 vi.mock('./plans-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./plans-api')>()),
-  authorPlanSchedule: (...args: unknown[]) => authorSchedule(...args),
-  armPlanSchedule: (...args: unknown[]) => armSchedule(...args),
-  disarmPlanSchedule: (...args: unknown[]) => disarmSchedule(...args),
-  setPlanInputSchema: (...args: unknown[]) => setInputSchema(...args),
-  clearPlanTemplateTrigger: (...args: unknown[]) => clearTemplate(...args),
-  startPlan: (...args: unknown[]) => start(...args),
+  authorPlanSchedule: (slug: string, args: unknown, harness?: string | null) => authorSchedule(slug, args, harness),
+  armPlanSchedule: (slug: string, harness?: string | null) => armSchedule(slug, harness),
+  disarmPlanSchedule: (slug: string, harness?: string | null) => disarmSchedule(slug, harness),
+  setPlanInputSchema: (slug: string, schema: unknown, harness?: string | null) => setInputSchema(slug, schema, harness),
+  clearPlanTemplateTrigger: (slug: string, harness?: string | null) => clearTemplate(slug, harness),
+  startPlan: (slug: string, harness?: string | null) => start(slug, harness),
 }));
 vi.mock('./PlanInputsPanel', () => ({
   default: ({ onReadinessChange }: { onReadinessChange?: (ready: boolean) => void }) => {

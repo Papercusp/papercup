@@ -19,6 +19,7 @@
 #
 # Usage:
 #   scripts/pc-heavy.sh [--] <command> [args...]
+#   scripts/pc-heavy.sh --exclusive-all-slots [--] <command> [args...]
 #   scripts/pc-heavy.sh npm run test:affected
 #   scripts/pc-heavy.sh -- ./node_modules/.bin/vitest run lib/x.test.ts
 #
@@ -179,16 +180,27 @@ set -uo pipefail
 # (EI-20227475180704442).
 main() {
 
+# `--exclusive-all-slots` is the reciprocal release-materialization admission
+# path (WI-40774): drain every currently-held ordinary heavy slot, hold the whole
+# slot domain for one command, then let queued work resume. It is intentionally a
+# mode on THIS proven flock surface rather than a second semaphore that could drift
+# from the jobs it is meant to drain.
+_exclusive_all_slots=0
+if [ "${1:-}" = "--exclusive-all-slots" ]; then
+  _exclusive_all_slots=1
+  shift
+fi
+
 # Strip an optional leading `--` separating flags from the command.
 if [ "${1:-}" = "--" ]; then shift; fi
 if [ "$#" -eq 0 ]; then
   echo "pc-heavy: no command given" >&2
-  echo "usage: pc-heavy.sh [--] <command> [args...]" >&2
+  echo "usage: pc-heavy.sh [--exclusive-all-slots] [--] <command> [args...]" >&2
   exit 2
 fi
 
 # Already inside a slot (nested pc-heavy, or the caller pre-bypassed): just run.
-if [ "${PC_HEAVY_BYPASS:-}" = "1" ]; then
+if [ "$_exclusive_all_slots" = 0 ] && [ "${PC_HEAVY_BYPASS:-}" = "1" ]; then
   exec "$@"
 fi
 
@@ -209,7 +221,7 @@ fi
 # legitimately export it by hand to reproduce the gate's skip-set — and keying admission off
 # it meant `GREEN_CHECKPOINT=1 npm run test:affected` bypassed this semaphore at nice 0,
 # re-opening the very hole this wrapper closes. Do not "simplify" these back into one var.
-if [ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]; then
+if [ "$_exclusive_all_slots" = 0 ] && [ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]; then
   export PC_HEAVY_BYPASS=1
   exec "$@"
 fi
@@ -398,6 +410,9 @@ _gate_reserve_active() {
 # green-checkpoint publishes `phase.json` beside `owner.json` in the SAME lock dir
 # already globbed above, so this costs one more file read and no new coordination.
 #
+#   materializing -> 1 slot. The checkpoint is copying/refreshing its dependency
+#                       snapshot and its exclusive slot drain needs a closed front
+#                       door while pre-existing heavy jobs finish.
 #   isolating  -> /4  the single-concurrency load-flake re-run. Contention here
 #                     corrupts the CLASSIFIER, not just timing. The whole point.
 #   delivering -> /4  NOT a safe phase despite the name: it re-runs every failing
@@ -429,6 +444,11 @@ _gate_clamp_divisor() {
   [ "$_proto" -ge 2 ] || { echo 4; return; }
   _phase=$(printf '%s' "$_raw" | sed -n 's/.*"phase":"\([a-zA-Z]*\)".*/\1/p' | head -1)
   case "$_phase" in
+    materializing)
+      # Only protocol 3+ defines this phase. An older/unknown writer keeps the
+      # conservative v1 /4 behavior rather than granting semantics it never published.
+      [ "$_proto" -ge 3 ] && echo 999999 || echo 4
+      ;;
     suite) echo 2 ;;
     *)     echo 4 ;;
   esac
@@ -709,6 +729,84 @@ fi
 
 # Can't create the slot dir or flock is missing → fail-open (run unthrottled).
 if ! mkdir -p "$_dir" "$_slot_dir" 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
+  if [ "$_exclusive_all_slots" = 1 ]; then
+    echo "[pc-heavy] FATAL: cannot establish the exclusive materialization barrier in $_dir" >&2
+    exit 75
+  fi
+  export PC_HEAVY_BYPASS=1
+  exec "$@"
+fi
+
+# ── Exclusive materialization barrier (WI-40774) ───────────────────────────
+# A release run-lock only changes admission for jobs that START after the gate is
+# visible. It cannot make an already-running `test:affected` give back the slot it
+# holds, which is how the 12.56 GiB checkpoint copy overlapped a +6.73 GiB sweep and
+# drove memory/I/O PSI critical. The gate side therefore drains the SAME slot files
+# normal jobs already hold and keeps them locked for setup-release-checkout.sh.
+#
+# Slot 0 is acquired first. With a protocol-3 `materializing` phase, ordinary new
+# callers clamp to exactly one slot, so taking slot 0 closes the front door; the
+# remaining files only drain work admitted before the phase. `_ceil` covers every
+# adaptive slot, while persisted slot files cover explicit fixed counts and the
+# deployment transition where an older pc-heavy process is still alive. Kernel
+# flocks release on every exit/signal, and exec inherits the fds, so no cleanup
+# daemon or stale-lock reaper is needed.
+if [ "$_exclusive_all_slots" = 1 ]; then
+  _exclusive_slot_count="$_ceil"
+  if [ "$_slots_fixed" = 1 ]; then
+    case "$_slots_base" in
+      ''|*[!0-9]*) : ;;
+      *) [ "$_slots_base" -gt "$_exclusive_slot_count" ] && _exclusive_slot_count="$_slots_base" ;;
+    esac
+  fi
+  for _slot_file in "$_dir"/slot.*; do
+    [ -e "$_slot_file" ] || continue
+    _slot_suffix="${_slot_file##*.}"
+    case "$_slot_suffix" in ''|*[!0-9]*) continue ;; esac
+    # A corrupted/hostile filename must not turn one gate run into a million-fd loop.
+    [ "$_slot_suffix" -le 4095 ] || continue
+    _candidate_count=$(( _slot_suffix + 1 ))
+    [ "$_candidate_count" -gt "$_exclusive_slot_count" ] && _exclusive_slot_count="$_candidate_count"
+  done
+  [ "$_exclusive_slot_count" -lt 1 ] && _exclusive_slot_count=1
+
+  _exclusive_started=$(date +%s)
+  _exclusive_deadline=$(( _exclusive_started + _timeout ))
+  _exclusive_last_heartbeat="$_exclusive_started"
+  _exclusive_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
+  case "$_exclusive_heartbeat_every" in ''|*[!0-9]*) _exclusive_heartbeat_every=15 ;; esac
+  declare -a _exclusive_fds=()
+  declare -a _exclusive_locked=()
+  _exclusive_held=0
+  echo "[pc-heavy] exclusive materialization barrier waiting to drain $_exclusive_slot_count heavy slot(s)" >&2
+
+  while [ "$_exclusive_held" -lt "$_exclusive_slot_count" ]; do
+    for _i in $(seq 0 $(( _exclusive_slot_count - 1 ))); do
+      [ "${_exclusive_locked[$_i]:-0}" = 1 ] && continue
+      if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
+        if flock -n "$_fd"; then
+          _exclusive_fds+=("$_fd")
+          _exclusive_locked[$_i]=1
+          _exclusive_held=$(( _exclusive_held + 1 ))
+        else
+          eval "exec ${_fd}>&-" 2>/dev/null || true
+        fi
+      fi
+    done
+    [ "$_exclusive_held" -ge "$_exclusive_slot_count" ] && break
+    _exclusive_now=$(date +%s)
+    if [ $(( _exclusive_now - _exclusive_last_heartbeat )) -ge "$_exclusive_heartbeat_every" ]; then
+      echo "[pc-heavy] exclusive materialization barrier still draining ($((_exclusive_now - _exclusive_started))s elapsed, $_exclusive_held/$_exclusive_slot_count slots held)" >&2
+      _exclusive_last_heartbeat="$_exclusive_now"
+    fi
+    if [ "$_exclusive_now" -ge "$_exclusive_deadline" ]; then
+      echo "[pc-heavy] REFUSED materialization after ${_timeout}s: only $_exclusive_held/$_exclusive_slot_count heavy slots drained; refusing to overlap dependency copy with live heavy work" >&2
+      exit 75
+    fi
+    sleep 0.2
+  done
+
+  echo "[pc-heavy] exclusive materialization barrier acquired — all $_exclusive_slot_count heavy slot(s) drained" >&2
   export PC_HEAVY_BYPASS=1
   exec "$@"
 fi

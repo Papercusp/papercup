@@ -1072,7 +1072,7 @@ describe("in-flight candidate publication", () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     await commit("b", "2", "candidate");
-    const { deps } = stubDeps(true);
+    const { deps, calls } = stubDeps(true);
     const order: string[] = [];
     deps.recordInFlightCandidate = async () => {
       await Promise.resolve();
@@ -1711,17 +1711,25 @@ describe("runGreenCheckpoint", () => {
     expect(evidence[0]).toContain("emitter=gate-run");
   });
 
-  it("reports the suite phase to the progress observer before setup and execution", async () => {
+  it("reports materialization before setup, then suite before execution", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
     await commit("a", "2", "c2");
-    const { deps } = stubDeps(true);
-    const progress = vi.fn();
+    const { deps, calls } = stubDeps(true);
+    const progress = vi.fn((phase: string) => calls.push(phase));
     deps.reportProgress = progress;
 
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
+    expect(progress).toHaveBeenCalledWith("phase:materializing");
     expect(progress).toHaveBeenCalledWith("phase:suite");
+    expect(calls.indexOf("phase:materializing")).toBeLessThan(
+      calls.findIndex((call) => call.startsWith("setup:")),
+    );
+    expect(calls.findIndex((call) => call.startsWith("setup:"))).toBeLessThan(
+      calls.indexOf("phase:suite"),
+    );
+    expect(calls.indexOf("phase:suite")).toBeLessThan(calls.indexOf("runGreen"));
   });
 
   /**

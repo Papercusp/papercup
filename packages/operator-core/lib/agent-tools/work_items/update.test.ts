@@ -574,27 +574,53 @@ describe('work_items:update handler (bulk keyed-array)', () => {
 // EI-6060: `status`/`state` are lifecycle fields owned by work_items:set_state. Zod's
 // default object() SILENTLY STRIPPED them, so an update({ id, state:'resolved' }) parsed
 // clean, changed nothing, and returned ok:true — a silent no-op read as success. The args
-// schema now REJECTS them with a pointer to set_state. (Tested at the schema layer because
-// the handler is invoked directly in the tests above, bypassing arg parsing.)
+// schema rejects them as unknown keys; keeping them out of the declared shape also prevents
+// the generated tool schema from advertising lifecycle fields that the runtime rejects.
+// (Tested at the schema layer because the handler is invoked directly in the tests above,
+// bypassing arg parsing.)
 describe('work_items:update args schema — rejects lifecycle-state footguns (EI-6060)', () => {
-  const hasSetStatePointer = (r: ReturnType<typeof tool.args.safeParse>) =>
-    !r.success && r.error.issues.some((i) => /set_state/.test(i.message));
-
   it('rejects an inline `state` field instead of silently stripping it', () => {
     const r = tool.args.safeParse({ id: 'EI-1', state: 'resolved' });
     expect(r.success).toBe(false);
-    expect(hasSetStatePointer(r)).toBe(true);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.code === 'unrecognized_keys' && i.keys.includes('state'))).toBe(true);
+    }
   });
 
   it('rejects an inline `status` field', () => {
     const r = tool.args.safeParse({ id: 'EI-1', status: 'resolved' });
     expect(r.success).toBe(false);
-    expect(hasSetStatePointer(r)).toBe(true);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.code === 'unrecognized_keys' && i.keys.includes('status'))).toBe(true);
+    }
   });
 
   it('rejects a `state`/`status` field inside items:[…]', () => {
-    expect(hasSetStatePointer(tool.args.safeParse({ items: [{ id: 'EI-1', state: 'closed' }] }))).toBe(true);
-    expect(hasSetStatePointer(tool.args.safeParse({ items: [{ id: 'EI-2', status: 'open' }] }))).toBe(true);
+    const state = tool.args.safeParse({ items: [{ id: 'EI-1', state: 'closed' }] });
+    const status = tool.args.safeParse({ items: [{ id: 'EI-2', status: 'open' }] });
+    expect(state.success).toBe(false);
+    expect(status.success).toBe(false);
+    if (!state.success) {
+      expect(state.error.issues.some((i) => i.code === 'unrecognized_keys' && i.keys.includes('state'))).toBe(true);
+    }
+    if (!status.success) {
+      expect(status.error.issues.some((i) => i.code === 'unrecognized_keys' && i.keys.includes('status'))).toBe(true);
+    }
+  });
+
+  it('does not advertise lifecycle fields in the generated tool schema', async () => {
+    const { z } = await import('zod');
+    const schema = z.toJSONSchema(tool.args as never) as {
+      properties?: {
+        state?: unknown;
+        status?: unknown;
+        items?: { items?: { properties?: { state?: unknown; status?: unknown } } };
+      };
+    };
+    expect(schema.properties).not.toHaveProperty('state');
+    expect(schema.properties).not.toHaveProperty('status');
+    expect(schema.properties?.items?.items?.properties).not.toHaveProperty('state');
+    expect(schema.properties?.items?.items?.properties).not.toHaveProperty('status');
   });
 
   it('still ACCEPTS a valid field-only patch (no false positive)', () => {

@@ -265,6 +265,61 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(existsSync(slots)).toBe(true);
   });
 
+  it('exclusive materialization drains a pre-existing holder and blocks new heavy work until its child exits', async () => {
+    const env = { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '10' };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let barrier: ReturnType<typeof spawn> | undefined;
+    let waiter: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
+
+      const barrierStarted = join(dir, 'barrier-started');
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo started > "${barrierStarted}"; sleep 30`],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      await untilStderr(
+        barrier,
+        barrierErr,
+        (t) => t.includes('exclusive materialization barrier waiting'),
+        'the materialization barrier beginning its drain',
+      );
+      expect(existsSync(barrierStarted)).toBe(false);
+
+      killGroup(holder);
+      await untilStderr(
+        barrier,
+        barrierErr,
+        (t) => t.includes('exclusive materialization barrier acquired'),
+        'the materialization barrier acquiring every slot',
+      );
+      await waitFor('the barrier child starting', () => existsSync(barrierStarted));
+      expect(heldSlotCount(dir, 2)).toBe(2);
+
+      const waiterRan = join(dir, 'waiter-ran');
+      waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', `echo ran > "${waiterRan}"`], {
+        env: baseEnv(env), cwd: dir,
+      });
+      const waiterErr = createTextCollector(waiter.stderr);
+      const waiterExit = new Promise<number>((res) => waiter?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(waiter, waiterErr, (t) => t.includes('queued for a heavy slot'), 'new heavy work queueing');
+      expect(existsSync(waiterRan)).toBe(false);
+
+      killGroup(barrier);
+      expect(await waiterExit).toBe(0);
+      expect(readFileSync(waiterRan, 'utf8').trim()).toBe('ran');
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+      if (waiter) killGroup(waiter);
+    }
+  });
+
   it('still throttles an ordinary sweep when GREEN_CHECKPOINT is unset', () => {
     // The other half of the invariant above: the exemption must be keyed to the release
     // gate, not accidentally open to everyone.
@@ -1729,6 +1784,14 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       // 12/2, NOT v1's 12/4 — this is the throughput the item was filed to reclaim.
       expect(slotsLine(r.stderr)).toContain('slots=6 ');
       expect(slotsLine(r.stderr)).toContain('phase=suite');
+    });
+
+    it('closes admission to slot 0 while protocol-3 dependency materialization drains existing work', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'materializing', at: at(), phaseProtocol: 3 });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(slotsLine(r.stderr)).toContain('slots=1 ');
+      expect(slotsLine(r.stderr)).toContain('phase=materializing');
     });
 
     it('clamps HARD (/4) during `isolating` — the single-concurrency window the reserve exists for', () => {

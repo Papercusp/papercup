@@ -35,7 +35,10 @@
 #      node_modules dir would resolve those back to the INTEGRATION tree and defeat
 #      the whole isolation. Hardlinks are the fast default for the live release
 #      tree; `--node-modules-copy copy` gives checkpoint trees independent regular
-#      files so a concurrent install cannot mutate the pinned test inputs.
+#      files so a concurrent install cannot mutate the pinned test inputs. Once an
+#      isolated checkpoint snapshot exists, unchanged dependency trees are refreshed
+#      by hardlinking FROM THAT ISOLATED SNAPSHOT (never from integration) instead of
+#      re-reading and re-writing the full dependency payload every gate run.
 #
 # Why a worktree (not a clone) for the superproject: shares the object store, so
 # checking out the target commit is cheap and history isn't duplicated.
@@ -576,6 +579,26 @@ assert_hardlink_compatible_roots() {
   fi
 }
 
+# A metadata identity for an already-materialized dependency tree. This deliberately
+# avoids reading file CONTENT: the papercusp root node_modules is currently ~13 GiB /
+# 323k files, and reading it merely to decide whether to avoid a copy recreates the
+# page-cache/I/O surge this check exists to prevent. Path, type, mode, owner, size,
+# mtime, inode, and symlink target catch every normal npm reify / patch / test mutation;
+# the source is also measured before AND after materialization so a concurrent rewrite
+# aborts before the atomic swap. The marker itself is excluded because it belongs to the
+# snapshot, not the integration dependency tree.
+node_modules_tree_fingerprint() {
+  local root="$1"
+  [ -d "$root" ] || return 1
+  (
+    cd "$root" || exit 1
+    LC_ALL=C find . -xdev \
+      ! -path './.papercusp-isolated-snapshot' \
+      -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \
+      | sha256sum | awk '{ print $1 }'
+  )
+}
+
 # ATOMIC refresh of ONE node_modules dir (infra-fail-fast — the 2026-06-25 all-pages
 # connection-refused outage). The integration source is copied (hardlinks by default,
 # independent files in `copy` mode) into a SIBLING temp dir FIRST, then swapped into
@@ -600,6 +623,8 @@ assert_hardlink_compatible_roots() {
 sync_one_node_modules() {
   local src="$1" dest="$2"
   local tmp="${dest}.deploy-tmp.$$" old="${dest}.deploy-old.$$"
+  local marker="$dest/.papercusp-isolated-snapshot"
+  local src_before="" src_after="" dest_before="" marked_src="" marked_dest="" tmp_fingerprint=""
   # EI-202238*: package installers atomically rename transient trees such as
   # `sidecar.old.<pid>` while this script's `find` enumeration is in flight.
   # A node_modules path can therefore be real when `find` prints it and gone by
@@ -615,7 +640,48 @@ sync_one_node_modules() {
   mkdir -p "$(dirname "$dest")"
   case "${NODE_MODULES_COPY_MODE:-hardlink}" in
     hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
-    copy) cp -a "$src" "$tmp" ;;        # isolated; later source installs cannot mutate dest
+    copy)
+      # EI-21206772578500745 / WI-40774: `cp -a` of the unchanged 12.56 GiB root
+      # tree charged ~14 GiB to the checkpoint scope and drove memory + I/O PSI
+      # critical when it overlapped a broad test sweep. The prior checkpoint tree
+      # is already an inode-independent snapshot. Reuse it as an immutable seed
+      # only when BOTH sides still match the marker written by the prior successful
+      # swap; hardlinks are then checkpoint->checkpoint, never checkpoint->integration.
+      # Any source OR destination drift falls back to the original full independent
+      # copy, preserving the correctness reason `copy` mode was introduced.
+      src_before="$(node_modules_tree_fingerprint "$src" 2>/dev/null || true)"
+      if [ -d "$dest" ] && [ -f "$marker" ]; then
+        marked_src="$(sed -n 's/^source=//p' "$marker" | head -1)"
+        marked_dest="$(sed -n 's/^snapshot=//p' "$marker" | head -1)"
+        dest_before="$(node_modules_tree_fingerprint "$dest" 2>/dev/null || true)"
+      fi
+      if [ -n "$src_before" ] && [ "$src_before" = "$marked_src" ] \
+        && [ -n "$dest_before" ] && [ "$dest_before" = "$marked_dest" ]; then
+        log "reusing unchanged isolated node_modules snapshot (metadata-only hardlink seed)"
+        cp -al "$dest" "$tmp"
+      else
+        log "isolated node_modules snapshot missing or drifted; performing full independent copy"
+        cp -a "$src" "$tmp"
+      fi
+
+      # Do not publish a mixed snapshot if npm/test tooling rewrote the source
+      # while we were materializing. The old complete destination is still live
+      # here; removing tmp and failing is the safe, retryable outcome.
+      src_after="$(node_modules_tree_fingerprint "$src" 2>/dev/null || true)"
+      if [ -z "$src_before" ] || [ "$src_after" != "$src_before" ]; then
+        rm -rf "$tmp"
+        echo "[setup-release] FATAL: integration node_modules changed during isolated snapshot materialization — preserving the previous checkpoint tree and refusing a mixed dependency snapshot" >&2
+        return 75
+      fi
+      tmp_fingerprint="$(node_modules_tree_fingerprint "$tmp" 2>/dev/null || true)"
+      [ -n "$tmp_fingerprint" ] || {
+        rm -rf "$tmp"
+        echo "[setup-release] FATAL: could not fingerprint isolated node_modules snapshot before swap" >&2
+        return 1
+      }
+      printf 'source=%s\nsnapshot=%s\n' "$src_after" "$tmp_fingerprint" \
+        > "$tmp/.papercusp-isolated-snapshot"
+      ;;
     *) echo "[setup-release] bad --node-modules-copy mode: ${NODE_MODULES_COPY_MODE}" >&2; return 2 ;;
   esac
   if [ -e "$dest" ]; then

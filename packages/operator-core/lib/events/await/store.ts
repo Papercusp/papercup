@@ -482,6 +482,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${sql.array([...subscriberIds])}::text[])
        AND event_key = ANY(${sql.array([...eventKeys])}::text[])
+       AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;

@@ -2030,13 +2030,17 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[0].cmd).toBe("bash");
     expect(
       calls[0].args[0].endsWith(
-        "apps/operator/bin/release/setup-release-checkout.sh",
+        "scripts/pc-heavy.sh",
       ),
     ).toBe(true);
     expect(calls[0].args).toEqual(
       // `force` (not `auto`): the checkpoint tree must always re-copy node_modules — the
       // `auto` heuristic is blind to nested-dep drift and spuriously red the gate (EI-2699).
       expect.arrayContaining([
+        "--exclusive-all-slots",
+        "--",
+        "bash",
+        expect.stringMatching(/apps\/operator\/bin\/release\/setup-release-checkout\.sh$/),
         "--ref",
         "cand123",
         "--integration",

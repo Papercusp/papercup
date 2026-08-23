@@ -37,6 +37,12 @@ type ToolResultish = {
   structuredContent?: Record<string, unknown>;
 };
 type Tool = { handler: (a: unknown, c: unknown) => Promise<ToolResultish> };
+type BashArgsSchema = {
+  safeParse: (value: unknown) => {
+    success: boolean;
+    error?: { issues: Array<{ message: string }> };
+  };
+};
 const bash = bashTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-shape-'));
 
@@ -56,6 +62,22 @@ afterEach(() => {
 });
 
 describe('capability:bash — result shape for a code:run script (EI-20066912585022608)', () => {
+  it('rejects sub-second public timeouts with explicit millisecond guidance', () => {
+    const args = (bashTool as unknown as { args: BashArgsSchema }).args;
+    const tooShort = args.safeParse({ command: 'true', timeout: 20 });
+    const tooShortMessages = tooShort.error?.issues.map((issue) => issue.message).join(' ') ?? '';
+
+    // `timeout: 20` is the reported live shape: a caller means 20 seconds, while
+    // the child runner receives 20ms and expires before it can do useful work.
+    expect(tooShort.success).toBe(false);
+    expect(tooShortMessages).toContain('milliseconds');
+    expect(tooShortMessages).toContain('20 seconds');
+    expect(tooShortMessages).toContain('20000');
+    expect(args.safeParse({ command: 'true', timeout: 999 }).success).toBe(false);
+    expect(args.safeParse({ command: 'true', timeout: 1000 }).success).toBe(true);
+    expect(args.safeParse({ command: 'true', timeout: 20000 }).success).toBe(true);
+  });
+
   it('routes operator database reads away from psql because shell credentials are scrubbed', () => {
     const guidance = (bashTool as unknown as { guidance?: { when?: string; notWhen?: string } }).guidance;
     expect(guidance?.notWhen).toContain('dev:pg_query');

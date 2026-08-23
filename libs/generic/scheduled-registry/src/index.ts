@@ -80,6 +80,13 @@ export interface ManagedTimerOptions {
    *  only in a plan/audit document that goes stale; omit only for a call site the shrink-only
    *  lint BASELINE still grandfathers. */
   classification?: TimerClassification;
+  /**
+   * Permit a real recurring timer to arm under Vitest. Production call sites should omit this:
+   * the default timer backend is inert in Vitest so a background callback cannot outlive the
+   * module mocks in an unrelated test. Tests that deliberately exercise a real interval may
+   * opt in; injected timer backends (the normal deterministic test seam) remain active.
+   */
+  allowInTest?: boolean;
 }
 
 /** The public, listable view of one armed timer. */
@@ -122,6 +129,10 @@ export type SetIntervalImpl = (cb: () => void, ms: number) => TimerHandle;
 export type SetTimeoutImpl = (cb: () => void, ms: number) => TimerHandle;
 export type ClearTimerImpl = (h: TimerHandle) => void;
 
+const defaultSetIntervalImpl: SetIntervalImpl = (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle;
+const defaultClearIntervalImpl: ClearTimerImpl = (h) => clearInterval(h as unknown as ReturnType<typeof setInterval>);
+const defaultSetTimeoutImpl: SetTimeoutImpl = (cb, ms) => setTimeout(cb, ms) as unknown as TimerHandle;
+
 export interface ScheduledRegistryConfig {
   setIntervalImpl?: SetIntervalImpl;
   clearIntervalImpl?: ClearTimerImpl;
@@ -137,9 +148,9 @@ type ResolvedConfig = Required<ScheduledRegistryConfig>;
 
 function defaults(): ResolvedConfig {
   return {
-    setIntervalImpl: (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle,
-    clearIntervalImpl: (h) => clearInterval(h as unknown as ReturnType<typeof setInterval>),
-    setTimeoutImpl: (cb, ms) => setTimeout(cb, ms) as unknown as TimerHandle,
+    setIntervalImpl: defaultSetIntervalImpl,
+    clearIntervalImpl: defaultClearIntervalImpl,
+    setTimeoutImpl: defaultSetTimeoutImpl,
     now: () => Date.now(),
     shouldShed: () => false,
     log: (m) => console.warn(`[scheduled-registry] ${m}`),
@@ -290,6 +301,19 @@ export function managedSetInterval(
   opts: ManagedTimerOptions,
 ): ManagedHandle {
   const instanced = opts.instanced ?? false;
+  // A production module can arm a process-wide interval while a Vitest worker is loading a
+  // test. If that interval fires after the worker has installed a factory mock, its callback
+  // observes a partial module and turns an otherwise passing run into an unhandled rejection.
+  // Keep the real backend inert under Vitest by default. Deterministic injected timer seams
+  // still run, and a test that explicitly exercises a real interval can opt in.
+  if (
+    process.env.VITEST &&
+    !opts.allowInTest &&
+    state.resolved.setIntervalImpl === defaultSetIntervalImpl
+  ) {
+    if (!instanced) stopManaged(name);
+    return { stop: () => undefined };
+  }
   // Singletons key by name (re-arming replaces); instanced timers get a unique key so many
   // coexist under one display name (aggregated in listManaged).
   const key = instanced ? `${name}#${(state.instanceCounter += 1)}` : name;

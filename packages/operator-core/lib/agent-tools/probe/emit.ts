@@ -40,14 +40,6 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('Harness to probe federation for. Defaults to the session harness (ctx.harnessSlug) when omitted.'),
-    expectedHops: z
-      .array(z.enum(PROBE_HOPS))
-      .min(1)
-      .max(PROBE_HOPS.length)
-      .optional()
-      .describe(
-        'Declare which hops this probe is expected to traverse (default: all six) — e.g. [\'captured\',\'drained\'] for a local-only probe with no live peer expected. ⚠ NOT PERSISTED (WI-35901): there is no expected_hops column, so this narrowing scopes THIS RESPONSE\'s hopsExpected echo only. You MUST pass the same list again to probe:get { expectedHops } or its verdict will read a never-expected hop as stalled.',
-      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -116,16 +108,14 @@ export default defineTool({
             harnessSlug: receipt.harnessSlug,
             workspaceId: receipt.workspaceId,
             emittedAt: new Date(receipt.emittedAtMs).toISOString(),
-            hopsExpected: args.expectedHops ?? PROBE_HOPS,
-            // WI-35901: `expectedHops` has no column to live in, so this echo is
-            // the ONLY place it survives. Say so here rather than let a caller
-            // infer from the echo that the probe now remembers its own scope.
-            hopsExpectedPersisted: false,
+            // The full hop set this probe is read against. A probe carries no
+            // per-probe narrowing: there is no expected_hops column and nothing
+            // to write one from (WI-35901 route (b)). Narrowing is a READ-time
+            // concern, applied via probe:get { expectedHops }, which is the only
+            // place it can actually shape a verdict.
+            hopsExpected: PROBE_HOPS,
             hopsCaptured: ['captured'],
-            next:
-              args.expectedHops
-                ? `poll probe:get { probeKey, expectedHops: ${JSON.stringify(args.expectedHops)} } — RE-PASS that list, it was NOT persisted (WI-35901); pipeline stages record later hops via probe:record-hop`
-                : 'poll probe:get { probeKey } for the verdict; pipeline stages record later hops via probe:record-hop',
+            next: 'poll probe:get { probeKey } for the verdict — pass expectedHops:["captured"] to narrow it, since no pipeline stage records later hops yet (WI-3962)',
           }),
         },
       ],

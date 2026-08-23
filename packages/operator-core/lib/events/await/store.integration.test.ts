@@ -36,6 +36,7 @@ const {
   cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
   cancelAwaitsByIds,
+  findAnnouncementsForKey,
   insertDeliveries,
   retireLifecycleBoundWatches,
   retireLifecycleBoundWatchesForOwners,
@@ -480,6 +481,21 @@ describe('await-event store (PG)', () => {
     // empty inputs are a no-op, not a query
     expect(await cancelAwaitsForSubscribersOnKeys([], ['green-checkpoint:red:papercusp'])).toBe(0);
     expect(await cancelAwaitsForSubscribersOnKeys(['sub-a'], [])).toBe(0);
+  });
+
+  it('does not cancel an announced declaration sharing the waiter subscriber and key', async () => {
+    const eventKey = 'gate:announcement-preserved';
+    const announcement = await registerAnnouncement({
+      subscriberId: 'sub-a',
+      eventKey,
+      scopeKind: 'global',
+    });
+    await registerAwait({ subscriberId: 'sub-a', eventKey });
+
+    expect(await cancelAwaitsForSubscribersOnKeys(['sub-a'], [eventKey])).toBe(1);
+    const activeAnnouncements = await findAnnouncementsForKey(eventKey);
+    expect(activeAnnouncements.map((row) => row.id)).toEqual([announcement.id]);
+    expect(activeAnnouncements[0]?.cancelledAt).toBeNull();
   });
 
   it('cancelAwaitsForSubscribersOnKeys never touches an already-fired row (fire wins the race)', async () => {
