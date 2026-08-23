@@ -369,11 +369,14 @@ _calc_slots() {
 # Detection is pure shell — no daemon, no DB, no tool call (this runs before
 # EVERY heavy command). green-checkpoint publishes a per-root run-lock DIRECTORY
 # `<logDir>/.green-checkpoint-run-<hash>.lock/` containing `owner.json` with the
-# run's pid, so liveness is a plain `kill -0`. That is what makes the clamp
-# safe: a crashed gate run's leftover lock is self-evidently dead and IGNORED,
-# so it can never wedge the fleet into permanent 1-slot mode. Same env var the
-# TypeScript side resolves the dir from (release-config.ts), so a test/alternate
-# lineage lines up automatically.
+# run's pid, so liveness is a plain `kill -0`. Per-hive gates publish beneath
+# `<defaultLogDir>/<hive>/`; ordinary agent commands do not carry that hive's
+# `PAPERCUSP_CHECKPOINT_LOG_DIR`, so the default-root reader MUST inspect both
+# the root and its immediate per-hive children. Otherwise the materializing
+# phase cannot close new admission, the exclusive drain races an open front
+# door for 15 minutes, and the hive gate records an infrastructure red. A
+# crashed gate run's leftover lock is self-evidently dead and IGNORED, so this
+# broader discovery can never wedge the fleet into permanent 1-slot mode.
 #
 # Fail-open on EVERY unexpected input: no dir, no lock, unparseable json,
 # non-numeric pid, dead pid, no `kill` → behave exactly as if no gate were
@@ -388,7 +391,9 @@ _gate_reserve_active() {
   local _owner _pid
   # No nullglob: a non-matching glob yields the literal pattern, which the
   # -f test below rejects — that IS the no-gate-running path.
-  for _owner in "$_logdir"/.green-checkpoint-run-*.lock/owner.json; do
+  for _owner in \
+    "$_logdir"/.green-checkpoint-run-*.lock/owner.json \
+    "$_logdir"/*/.green-checkpoint-run-*.lock/owner.json; do
     [ -f "$_owner" ] || continue
     _pid=$(head -c 4096 "$_owner" 2>/dev/null | tr -d ' \n' \
             | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
@@ -752,6 +757,42 @@ fi
 # flocks release on every exit/signal, and exec inherits the fds, so no cleanup
 # daemon or stale-lock reaper is needed.
 if [ "$_exclusive_all_slots" = 1 ]; then
+  # EI-212278 / WI-40916: serialize the EXCLUSIVE writers before either one
+  # touches an ordinary slot. Per-hive checkpoint routines fire on the same
+  # minute boundary; without this outer mutex, two barriers can each acquire a
+  # disjoint subset of slot.0..N and wait forever for the other's subset until
+  # both hit the 900s refusal. Ordinary slot flocks cannot solve that classic
+  # hold-and-wait deadlock themselves. The writer lock is in the SAME runtime
+  # dir, is inherited by the materialization child, and is kernel-released on
+  # every exit/signal just like the slot locks below.
+  _exclusive_writer_path="$_dir/exclusive-materialization.lock"
+  if ! { exec {_exclusive_writer_fd}>"$_exclusive_writer_path"; } 2>/dev/null; then
+    echo "[pc-heavy] FATAL: cannot establish the exclusive materialization writer lock in $_dir" >&2
+    exit 75
+  fi
+  _exclusive_writer_started=$(date +%s)
+  _exclusive_writer_deadline=$(( _exclusive_writer_started + _timeout ))
+  _exclusive_writer_last_heartbeat="$_exclusive_writer_started"
+  _exclusive_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
+  case "$_exclusive_heartbeat_every" in ''|*[!0-9]*) _exclusive_heartbeat_every=15 ;; esac
+  _exclusive_writer_announced=0
+  while ! flock -n "$_exclusive_writer_fd"; do
+    _exclusive_writer_now=$(date +%s)
+    if [ "$_exclusive_writer_announced" = 0 ]; then
+      echo "[pc-heavy] another exclusive materializer owns the writer lock — waiting before touching heavy slots" >&2
+      _exclusive_writer_announced=1
+    elif [ $(( _exclusive_writer_now - _exclusive_writer_last_heartbeat )) -ge "$_exclusive_heartbeat_every" ]; then
+      echo "[pc-heavy] still waiting for the exclusive materialization writer ($((_exclusive_writer_now - _exclusive_writer_started))s elapsed)" >&2
+      _exclusive_writer_last_heartbeat="$_exclusive_writer_now"
+    fi
+    if [ "$_exclusive_writer_now" -ge "$_exclusive_writer_deadline" ]; then
+      echo "[pc-heavy] REFUSED materialization after ${_timeout}s: another exclusive materializer still owns the writer lock; no heavy slots were acquired" >&2
+      exit 75
+    fi
+    sleep 0.2
+  done
+  echo "[pc-heavy] exclusive materialization writer acquired — beginning heavy-slot drain" >&2
+
   _exclusive_slot_count="$_ceil"
   if [ "$_slots_fixed" = 1 ]; then
     case "$_slots_base" in
@@ -770,11 +811,14 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   done
   [ "$_exclusive_slot_count" -lt 1 ] && _exclusive_slot_count=1
 
+  # A queued writer receives a fresh drain budget once it becomes the sole
+  # slot-domain writer. Charging its writer-queue wait against this deadline
+  # would make the second healthy materializer acquire the mutex and then
+  # immediately refuse without ever giving pre-existing ordinary holders time
+  # to finish.
   _exclusive_started=$(date +%s)
   _exclusive_deadline=$(( _exclusive_started + _timeout ))
   _exclusive_last_heartbeat="$_exclusive_started"
-  _exclusive_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
-  case "$_exclusive_heartbeat_every" in ''|*[!0-9]*) _exclusive_heartbeat_every=15 ;; esac
   declare -a _exclusive_fds=()
   declare -a _exclusive_locked=()
   _exclusive_held=0

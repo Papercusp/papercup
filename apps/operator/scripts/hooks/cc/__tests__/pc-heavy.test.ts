@@ -320,6 +320,68 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('serializes concurrent exclusive materializers before either can split the slot domain', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '10',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+    };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let first: ReturnType<typeof spawn> | undefined;
+    let second: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing slot-0 holder');
+
+      const firstRan = join(dir, 'exclusive-first-ran');
+      first = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo first > "${firstRan}"; sleep 1`],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const firstErr = createTextCollector(first.stderr);
+      const firstExit = new Promise<number>((res) => first?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(
+        first,
+        firstErr,
+        (t) => t.includes('exclusive materialization barrier waiting'),
+        'the first writer draining around slot 0',
+      );
+
+      const secondRan = join(dir, 'exclusive-second-ran');
+      second = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo second > "${secondRan}"`],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const secondErr = createTextCollector(second.stderr);
+      const secondExit = new Promise<number>((res) => second?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(
+        second,
+        secondErr,
+        (t) => t.includes('another exclusive materializer owns the writer lock'),
+        'the second writer queueing outside the slot domain',
+      );
+      expect(secondErr.peek()).not.toContain('exclusive materialization barrier waiting to drain');
+      expect(existsSync(firstRan)).toBe(false);
+      expect(existsSync(secondRan)).toBe(false);
+
+      killGroup(holder);
+      expect(await firstExit).toBe(0);
+      expect(readFileSync(firstRan, 'utf8').trim()).toBe('first');
+      expect(await secondExit).toBe(0);
+      expect(readFileSync(secondRan, 'utf8').trim()).toBe('second');
+      expect(secondErr.text()).toContain('exclusive materialization writer acquired');
+    } finally {
+      killGroup(holder);
+      if (first) killGroup(first);
+      if (second) killGroup(second);
+    }
+  });
+
   it('still throttles an ordinary sweep when GREEN_CHECKPOINT is unset', () => {
     // The other half of the invariant above: the exemption must be keyed to the release
     // gate, not accidentally open to everyone.
@@ -1588,8 +1650,8 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
 
   /** Publish a run-lock in the same shape green-checkpoint's checkpointRunLockDir does:
    *  a `.green-checkpoint-run-<hash>.lock/` DIRECTORY holding owner.json with the run pid. */
-  const plantLock = (owner: string | object, name = 'aaa111'): string => {
-    const lock = join(dir, 'checkpoint-logs', `.green-checkpoint-run-${name}.lock`);
+  const plantLock = (owner: string | object, name = 'aaa111', hive?: string): string => {
+    const lock = join(dir, 'checkpoint-logs', ...(hive ? [hive] : []), `.green-checkpoint-run-${name}.lock`);
     mkdirSync(lock, { recursive: true });
     writeFileSync(join(lock, 'owner.json'), typeof owner === 'string' ? owner : JSON.stringify(owner));
     return lock;
@@ -1709,6 +1771,25 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
     plantLock({ pid: deadPid }, 'dead2');
     plantLock(liveOwner(), 'live1');
     expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=3');
+  });
+
+  it('discovers a per-hive materializing gate below the default log root and closes new admission', () => {
+    // Subject-hive checkpoint processes carry
+    // PAPERCUSP_CHECKPOINT_LOG_DIR=<default>/sidestage, but ordinary agent
+    // commands carry only the default root. The reader must bridge that one
+    // directory level or the exclusive materialization barrier keeps racing
+    // newly-admitted heavy work until it times out.
+    const lock = plantLock(liveOwner(), 'sidestage1', 'sidestage');
+    writeFileSync(join(lock, 'phase.json'), JSON.stringify({
+      phase: 'materializing',
+      at: new Date().toISOString(),
+      phaseProtocol: 3,
+    }));
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+    expect(r.status).toBe(0);
+    expect(slotsLine(r.stderr)).toContain('slots=1 ');
+    expect(slotsLine(r.stderr)).toContain('gate=1');
+    expect(slotsLine(r.stderr)).toContain('phase=materializing');
   });
 
   it('clamps an explicit PC_HEAVY_SLOTS too — it is a safety reserve, not load adaptation', () => {
