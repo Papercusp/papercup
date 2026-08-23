@@ -15143,7 +15143,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } (or goal as an alias for next) or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read.",
+      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } (or goal as an alias for next) or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read. Transient PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true } instead of hanging the transport.",
       "capabilities": [
         "routines:write"
       ],
