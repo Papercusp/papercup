@@ -434,6 +434,7 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     // strict field exists to keep out of an "was a turn produced after T" test.
     lastRealTurnAt: new Date(NOW - 300_000).toISOString(),
     turnsStalled: false,
+    parkedForSec: null,
     lifecycleBackoff: null,
     ...overrides,
   });
