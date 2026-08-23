@@ -12,7 +12,10 @@ const M = vi.hoisted(() => ({
     adoptionRate: 0.75,
   })),
   gradeToolUtilization: vi.fn(() => ({ rating: 'healthy', evidence: 'adoption 75%' })),
-  readCodeRunInstrumentation: vi.fn(async (): Promise<CodeRunInstrumentationRollup> => ({
+  // Exposed as a FACTORY, not just as a vi.fn implementation, because vi.clearAllMocks() clears
+  // recorded CALLS but leaves any mockResolvedValue implementation installed. Without a way to
+  // re-install the default, one test's override silently becomes every later test's input.
+  defaultInstrumentation: (): CodeRunInstrumentationRollup => ({
     runs: 2,
     backendCounts: { server: 2 },
     toolCalls: 9,
@@ -39,14 +42,16 @@ const M = vi.hoisted(() => ({
     capabilityMisses: 0,
     recipeRequests: 0,
     spillFailures: 0,
-  })),
-  readStagingBuildIdentity: vi.fn(async (): Promise<StagingBuildIdentity> => ({
+  }),
+  defaultIdentity: (): StagingBuildIdentity => ({
     status: 'not_measured',
     reason: 'unreachable',
     sidecarSha: null,
     sidecarStartedAtMs: null,
     origin: 'http://127.0.0.1:3170',
-  })),
+  }),
+  readCodeRunInstrumentation: vi.fn<() => Promise<CodeRunInstrumentationRollup>>(),
+  readStagingBuildIdentity: vi.fn<() => Promise<StagingBuildIdentity>>(),
   readNativeExecRouting: vi.fn(async () => ({
     nativeExecCalls: 3,
     nativeExecSessions: 2,
@@ -93,6 +98,13 @@ async function run(sinceDays = 7): Promise<Record<string, any>> {
 beforeEach(() => {
   vi.clearAllMocks();
   M.sqlUnsafe.mockResolvedValue([{ nudged_sessions: '8', converted_sessions: '5' }]);
+  // REINSTALL the default implementations every test. vi.clearAllMocks() resets call HISTORY but
+  // NOT implementations, so a mockResolvedValue set by one test would otherwise persist as the
+  // input to every test after it — and the leak is invisible, because the polluted test still
+  // passes whenever the leaked fixture happens to satisfy it. Suite-order-dependent green is
+  // worse than red: it moves when someone adds a test elsewhere.
+  M.readCodeRunInstrumentation.mockResolvedValue(M.defaultInstrumentation());
+  M.readStagingBuildIdentity.mockResolvedValue(M.defaultIdentity());
 });
 
 describe('dev:code_run_adoption P-008 dashboard wiring', () => {

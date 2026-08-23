@@ -306,9 +306,24 @@ describe('rollupAdoption + gradeToolUtilization — the learning-loop signal', (
     const rows: CallRow[] = [];
     for (let i = 0; i < total; i++) {
       const spawnId = `${role}-${i}`;
-      // a same-tool burst = a batchable opportunity (maxSameTool ≥ BATCH_NUDGE_THRESHOLD)
-      for (let k = 0; k < BATCH_NUDGE_THRESHOLD; k++) rows.push({ spawnId, role, day, toolName: 'work_items:get' });
-      if (i < adopted) rows.push({ spawnId, role, day, toolName: 'code:run' });
+      // A same-tool burst = a batchable opportunity. Since P-012 the signal is maxSameToolTurns
+      // (DISTINCT INFERENCE TURNS), not raw call count, so these calls must be spaced FURTHER
+      // APART THAN TURN_GAP_MS or they cluster into one turn and score 1 — which would make this
+      // helper silently stop producing opportunities and quietly zero out every adoption rate
+      // built on it. The spacing is the semantic content of the fixture, not decoration.
+      const base = i * 1_000_000;
+      for (let k = 0; k < BATCH_NUDGE_THRESHOLD; k++) {
+        rows.push({ spawnId, role, day, toolName: 'work_items:get', invokedAt: base + k * (TURN_GAP_MS + 1) });
+      }
+      if (i < adopted) {
+        rows.push({
+          spawnId,
+          role,
+          day,
+          toolName: 'code:run',
+          invokedAt: base + BATCH_NUDGE_THRESHOLD * (TURN_GAP_MS + 1),
+        });
+      }
     }
     return rows;
   }
@@ -350,7 +365,11 @@ describe('rollupAdoption + gradeToolUtilization — the learning-loop signal', (
 describe('summarizeSpawnAdoption — adoptionRate edge', () => {
   it('null adoptionRate when there are zero opportunity spawns', () => {
     const rows: SpawnAdoptionRow[] = [
-      { role: 'r', day: 'd', workCalls: 1, distinctTools: 1, maxSameTool: 1, usedCodeRun: false },
+      // maxSameToolTurns/distinctTurns are 1 to PRESERVE this row's meaning: it must not be a
+      // batchable opportunity, which is what makes adoptionRate null. Setting them at or above
+      // BATCH_NUDGE_THRESHOLD would make this an opportunity spawn and quietly change the case
+      // under test into its opposite.
+      { role: 'r', day: 'd', workCalls: 1, distinctTools: 1, maxSameTool: 1, maxSameToolTurns: 1, distinctTurns: 1, usedCodeRun: false },
     ];
     expect(summarizeSpawnAdoption(rows)[0].adoptionRate).toBeNull();
   });
@@ -560,8 +579,11 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
 describe('spawnRowsFromCalls — excludes poller tools from the work counts (P-006)', () => {
   it('an activity:recent 2×-per-spawn poller is NOT a batchable opportunity', () => {
     const rows = spawnRowsFromCalls([
-      { spawnId: 'p1', role: 'operator', day: '2026-07-03', toolName: 'activity:recent' },
-      { spawnId: 'p1', role: 'operator', day: '2026-07-03', toolName: 'activity:recent' },
+      // Spaced across turns ON PURPOSE: this proves the poller is excluded because of WHAT it is,
+      // not because the two calls happened to land in one turn. Same-timestamp calls would score
+      // 0 turns anyway, so the test would pass without exercising the exclusion at all.
+      { spawnId: 'p1', role: 'operator', day: '2026-07-03', toolName: 'activity:recent', invokedAt: 0 },
+      { spawnId: 'p1', role: 'operator', day: '2026-07-03', toolName: 'activity:recent', invokedAt: TURN_GAP_MS + 1 },
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].maxSameTool).toBe(0);
@@ -571,8 +593,11 @@ describe('spawnRowsFromCalls — excludes poller tools from the work counts (P-0
 
   it('a real same-tool burst on a non-poller tool still counts', () => {
     const rows = spawnRowsFromCalls([
-      { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get' },
-      { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get' },
+      // MUST straddle a turn boundary: isBatchableSpawn keys off maxSameToolTurns, so two calls
+      // at the same instant are ONE turn and this assertion would flip to false. The gap is what
+      // makes this "a real same-tool burst" rather than one parallel fan-out.
+      { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get', invokedAt: 0 },
+      { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get', invokedAt: TURN_GAP_MS + 1 },
     ]);
     expect(isBatchableSpawn(rows[0])).toBe(true);
   });

@@ -1240,11 +1240,17 @@ function projectionMaterializationContext(ctx: UnifiedToolContext, needsFullSour
  * two-level call, where the nested stage reduces the target and the outer
  * stage reduces the wrapper result.
  */
-function forwardToolsInvokeProjection(
+// Generic in the args type so the return PRESERVES what the caller passed in. The two outcomes
+// are "hand back the input untouched" and "hand back a Record built from it", and declaring the
+// first as `unknown` widened away the caller's narrowing — so a caller holding a
+// Record<string, unknown> could not assign the result back to its own variable. `T | Record` is
+// exact: it collapses to Record for a Record caller and stays unknown for an unknown one. This
+// is a type-level change only; every runtime path below is untouched.
+function forwardToolsInvokeProjection<T>(
   toolName: string,
-  dispatchArgs: unknown,
+  dispatchArgs: T,
   projectionSpec: ProjectionSpec | null,
-): { dispatchArgs: unknown; projectionSpec: ProjectionSpec | null } {
+): { dispatchArgs: T | Record<string, unknown>; projectionSpec: ProjectionSpec | null } {
   if (toolName !== 'tools:invoke' || !projectionSpec || !dispatchArgs || typeof dispatchArgs !== 'object') {
     return { dispatchArgs, projectionSpec };
   }
