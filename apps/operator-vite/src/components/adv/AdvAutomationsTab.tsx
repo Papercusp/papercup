@@ -41,9 +41,12 @@ import {
   type AutomationPlanRow,
   type AutomationScheduleRow,
 } from './automations-model';
+import WorkflowsLanding from './WorkflowsLanding';
+import WorkflowDetailView from './WorkflowDetailView';
+import { toLandingWorkflow, type NeedsYouItem } from './workflows-landing-model';
 import './adv-automations.css';
 
-type View = 'flow' | 'catalog' | 'activity' | 'sources';
+type View = 'landing' | 'flow' | 'catalog' | 'activity' | 'sources';
 type FlowFilter = 'all' | 'attention' | 'paused';
 type CreateTriggerKind = 'schedule' | 'external';
 type CreatePlanMode = 'existing' | 'new';
@@ -183,7 +186,7 @@ export default function AdvAutomationsTab() {
   const resolvedHarnessSlug = useResolvedHarnessSlug();
   const [view, setView] = useQueryState(
     'autoView',
-    parseAsStringEnum<View>(['flow', 'catalog', 'activity', 'sources']).withDefault('flow'),
+    parseAsStringEnum<View>(['landing', 'flow', 'catalog', 'activity', 'sources']).withDefault('landing'),
   );
   const [flowFilter, setFlowFilter] = useQueryState(
     'autoFlowFilter',
@@ -194,6 +197,10 @@ export default function AdvAutomationsTab() {
     parseAsStringEnum<AutomationFilter>(['all', 'triggered', 'ai', 'system', 'paused']).withDefault('all'),
   );
   const [selectedId, setSelectedId] = useQueryState('autoId', parseAsString);
+  // The opened workflow's read-only graph + agent chat (D-016/D-018). Distinct from
+  // `autoId`, which is the catalog/flow list selection — opening a workflow is a
+  // different destination, not a different row highlight.
+  const [wfId, setWfId] = useQueryState('wfId', parseAsString);
   const [query, setQuery] = useQueryState('autoQ', parseAsString.withDefault(''));
   const [, setAdvTab] = useQueryState('tab', parseAsString);
   const [, setCalendarPlan] = useQueryState('calPlan', parseAsString);
@@ -270,6 +277,21 @@ export default function AdvAutomationsTab() {
   const inspected = view === 'flow' ? selectedFlow : selected;
   const activity = useMemo(() => buildAutomationActivity(modelInput), [modelInput]);
   const sources = useMemo(() => buildAutomationSources(modelInput), [modelInput]);
+
+  // ── Workflows landing (D-018) ────────────────────────────────────────────
+  // A workflow IS a triggered plan (D-013), so the landing reads `flows`, not the
+  // whole catalog — routines without a trigger are not workflows and stay in Catalog.
+  const landingWorkflows = useMemo(() => flows.map(toLandingWorkflow), [flows]);
+  // ExternalTriggerSourceAdminRow is a structural superset of LandingSourceInput,
+  // so it satisfies the landing directly — no lossy adapter in between.
+  const landingSources = external?.sources ?? [];
+
+  // ── Opened workflow: read-only graph + agent chat (D-016/D-018) ──────────
+  const openedWorkflow = wfId ? items.find((item) => item.id === wfId) ?? null : null;
+  const openedBinding = useMemo(() => {
+    if (!openedWorkflow?.planSlug || !external) return null;
+    return external.bindings.find((binding) => binding.planSlug === openedWorkflow.planSlug) ?? null;
+  }, [external, openedWorkflow?.planSlug]);
 
   const [inputs, setInputs] = useState<PlanInputSchemaInfo | null>(null);
   useEffect(() => {
@@ -428,6 +450,39 @@ export default function AdvAutomationsTab() {
   const nextAt = nextFutureAutomationAt(items);
   const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
   const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
+
+  // Opening a workflow is a DESTINATION, not a row highlight (D-018): the read-only
+  // graph + agent chat replaces the tab body, with its own back affordance. A `wfId`
+  // that resolves to nothing (stale URL) falls through to the landing rather than
+  // rendering an empty shell.
+  if (openedWorkflow) {
+    const armBusyKey = openedBinding ? `binding:${openedBinding.id}` : null;
+    return (
+      <section className="pc-automations" aria-label="Workflow detail">
+        {confirmElement}
+        <WorkflowDetailView
+          workflowLabel={openedWorkflow.label}
+          harnessSlug={openedWorkflow.harness ?? null}
+          binding={openedBinding}
+          // `external === null` means the snapshot has not been read yet — the
+          // component renders "pending" rather than "unwired" off this.
+          bindingLoaded={external !== null}
+          lastFiredLabel={openedWorkflow.lastAt == null ? null : `last fired ${relativeTime(openedWorkflow.lastAt)}`}
+          busy={armBusyKey !== null && busy === armBusyKey
+            ? 'arm'
+            : busy === `run:${openedWorkflow.id}` ? 'test' : null}
+          onBack={() => void setWfId(null)}
+          onToggleArm={() => openedBinding && void setBindingArmed(openedBinding.id, !openedBinding.armed)}
+          onTest={() => openedWorkflow.planSlug && void invoke(
+            `run:${openedWorkflow.id}`,
+            'plans:run-now',
+            { slug: openedWorkflow.planSlug, ...(openedWorkflow.harness ? { harness: openedWorkflow.harness } : {}) },
+            `${openedWorkflow.label} started`,
+          )}
+        />
+      </section>
+    );
+  }
 
   return (
     <section className="pc-automations" aria-label="Automations">
