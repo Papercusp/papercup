@@ -139,7 +139,7 @@ const integrationEnvSchema = z
 export default defineTool({
   name: 'capability:bash',
   description:
-    'Run `bash -c` in the project dir; stream output and spill large output to a log. Use `run_in_background` for long jobs, then `capability:bash_output`. Operator callers may bind redacted integration credentials.',
+    'Run `bash -c` in the project dir; stream and spill large output to a log. Operator callers may bind redacted integration credentials.',
   guidance: {
     when:
       'Run builds, tests, checks, or scripts. For fixed-string searches, prefer `rg -F` when available or fall back to `grep -F`; use a shell-safe single-quoted argument because an unmatched backtick fails before either search tool runs. For repository regex searches, ' +
@@ -147,11 +147,11 @@ export default defineTool({
     notWhen:
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
     chaining:
-      'run_in_background:true returns bash_id + durable task_id; read with capability:bash_output { task_id }, stop with processes:kill { taskId }. Never push.',
+      'run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push.',
     seeAlso: [
-      "capability:bash_output (read a backgrounded run's output)",
+      'capability:bash_output (read a backgrounded run)',
       'capability:bash_kill (kill a backgrounded run)',
-      'capability:git (git actions, gated as git not shell)',
+      'capability:git (git actions, gated as git)',
     ],
   },
   capability: 'capability:bash',
