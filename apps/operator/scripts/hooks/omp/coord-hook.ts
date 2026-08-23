@@ -1642,67 +1642,33 @@ export const SUBST_ENV_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
 /**
  * Atom heads any enabled registry row can claim. A SET (not a regex
  * alternation) so it stays a cheap hash lookup on the hot path, and identical
- * to the shell hook's `_SUBSTITUTION_HEADS`. Adding a registry pair whose verb
- * is missing here enforces it nowhere on the OMP path — the fixture-replay test
- * fails if that happens.
+ * to the shell hook's `_SUBSTITUTION_HEADS`. `npm run gen:tool-routing` derives
+ * both copies from the audited pair fixtures; its check mode fails before CI if
+ * either projection is stale.
  */
 export const SUBSTITUTION_PREFILTER_HEADS = new Set([
-  'sed',
+  // BEGIN GENERATED gen:tool-routing prefilter heads — do not edit by hand
   'cat',
-  'head',
-  'tail',
-  'psql',
-  // P-009 (service family). `systemctl` is ALSO matched by RESOURCE_PREFILTER_RE
-  // below, so it reaches the operator either way today — it is listed here
-  // regardless, because the two pre-filters answer different questions and a
-  // future edit to the resource token list must not silently disable the
-  // substitution rules that depend on this verb.
-  'systemctl',
   'curl',
-  // P-010 (git-read family, `capability:git`). Reads only — the pair's own
-  // pattern decides which `git` atoms it claims; this set only decides which
-  // ones pay the operator round-trip at all.
+  'date',
+  'free',
   'git',
-  // `service.listening-ports` → `dev:listening_ports`. The pair's own
-  // bashPattern (/^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/) decides
-  // which atoms it actually claims — notably only `lsof` calls carrying an
-  // `-i`/`--i` socket selector. This set only decides which heads pay the
-  // round-trip at all, so it lists the bare verbs.
-  'ss',
-  'netstat',
-  'lsof',
-  // P-021 (test family) → `testing:run`. `tests.raw-vitest` claims
-  // `(npx )?vitest run <paths>`, so after runner/env stripping the head is
-  // either `npx` or the bare `vitest`. Its sibling `tests.router-files` claims
-  // `npm run test:file -- <paths>`, whose head is `npm` — deliberately NOT
-  // listed here: `npm` fronts nearly every build/test/lint command in this repo
-  // and the committed negative case `npm run lint` must keep paying nothing.
-  // That one shape is matched as a PHRASE instead, by
-  // SUBSTITUTION_PHRASE_RE below.
-  'npx',
-  'vitest',
-  // P-023 (service-log family) → `logs:read`. `logs.unit-journal` claims
-  // window-query `journalctl` reads; the pair's own pattern excludes the
-  // non-window shapes (`-f` follow, boot selection, `-k`, cursors, maintenance
-  // verbs) and elevated reads, so this head only decides which atoms pay the
-  // round-trip at all.
+  'grep',
+  'head',
   'journalctl',
-  // P-026/P-027 (ambient-context family) → "call nothing": coord:orient already
-  // delivers the answer in the agent's `host` block. Only a COMMAND-POSITION
-  // atom head is tested, so an inline `$(date …)` interpolation inside a larger
-  // command is NOT claimed (its head is the outer verb) — exactly right, since
-  // that shape has no tool form and the pairs deliberately exclude it.
+  'lsof',
+  'netstat',
+  'nproc',
+  'npx',
+  'psql',
+  'sed',
+  'ss',
+  'systemctl',
+  'journalctl',
   'date',
   'uptime',
   'nproc',
   'free',
-  // `code-search.definition-lookup` → `gitnexus.query`. The pair claims only
-  // DEFINITION-shaped recursive greps (an `export function`/`class`/`interface`
-  // pattern under a source dir), which its own bashPattern decides; a plain
-  // `grep foo file.txt` is not claimed. Listed as the bare verb for the same
-  // reason `cat`/`git`/`sed` are: this set only decides which heads pay the
-  // operator round-trip at all, and an atom the registry claims an ENFORCEABLE
-  // equivalence for MUST clear the pre-filter or the rule can never fire.
   'grep',
 ]);
 

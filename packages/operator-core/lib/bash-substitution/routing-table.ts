@@ -17,10 +17,132 @@
  * agent, since CLAUDE.md is spliced into every agent prompt. So the table is
  * generated and CI fails on drift.
  */
-import type { SubstitutionPair } from './types';
+import { atomHead, normalizeAtom } from './atomize';
+import type { BashSubstitutionPair, SampledCommand, SubstitutionPair } from './types';
 
 export const BEGIN_MARKER = '<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->';
 export const END_MARKER = '<!-- END GENERATED gen:tool-routing -->';
+
+/** Generated-region markers in the two zero-import PreToolUse hooks. */
+export const TS_PREFILTER_BEGIN_MARKER =
+  '  // BEGIN GENERATED gen:tool-routing prefilter heads — do not edit by hand';
+export const TS_PREFILTER_END_MARKER = '  // END GENERATED gen:tool-routing prefilter heads';
+export const SHELL_PREFILTER_BEGIN_MARKER =
+  '    # BEGIN GENERATED gen:tool-routing prefilter heads — do not edit by hand';
+export const SHELL_PREFILTER_END_MARKER = '    # END GENERATED gen:tool-routing prefilter heads';
+
+/**
+ * Pairs whose common command head is deliberately routed by the narrower phrase
+ * prefilter instead of the head set. Listing `npm` in the head set would send
+ * every npm invocation through the operator just to reach two narrow shapes.
+ *
+ * This declaration lives beside the generator rather than in either hook, so a
+ * future phrase-routed pair adds one source declaration and the two projections
+ * still follow mechanically.
+ */
+export const PHRASE_PREFILTER_PAIR_IDS = new Set([
+  'tests.router-files',
+  'deps.unsafe-install',
+]);
+
+export interface PrefilterPairFixture {
+  pair: BashSubstitutionPair;
+  fixture: { sample: SampledCommand[] };
+}
+
+/** Test a pair's regex without letting a stateful `g`/`y` flag leak between atoms. */
+function pairMatches(pair: BashSubstitutionPair, atom: string): boolean {
+  pair.bashPattern.lastIndex = 0;
+  return pair.bashPattern.test(atom);
+}
+
+/**
+ * Derive every command head that must clear the cheap substitution prefilter.
+ *
+ * Frozen pair fixtures are the evidence input already required by the registry.
+ * For each matching atom, progressively remove a leading command token while the
+ * SAME pair still matches. That second step is load-bearing: patterns such as
+ * `(?:npx )?vitest` and `(?:npx )?tsc` admit both the wrapper and bare binary,
+ * even when the frozen corpus happened to contain only the wrapped spelling.
+ *
+ * `not-a-substitute` pairs are never actionable and phrase-routed pairs are
+ * handled by {@link PHRASE_PREFILTER_PAIR_IDS}. Every other pair must yield at
+ * least one head; throwing prevents a novel pattern shape from making this
+ * projection silently vacuous.
+ */
+export function deriveSubstitutionPrefilterHeads(entries: PrefilterPairFixture[]): string[] {
+  const heads = new Set<string>();
+
+  for (const { pair, fixture } of entries) {
+    if (pair.expectedVerdict === 'not-a-substitute' || PHRASE_PREFILTER_PAIR_IDS.has(pair.id)) {
+      continue;
+    }
+
+    const pairHeads = new Set<string>();
+    for (const sample of fixture.sample) {
+      let candidate = normalizeAtom(sample.atom);
+      while (candidate) {
+        if (pairMatches(pair, candidate)) {
+          const head = atomHead(candidate);
+          if (head) pairHeads.add(head);
+        }
+        const suffix = candidate.replace(/^\S+\s+/, '');
+        if (suffix === candidate) break;
+        candidate = suffix;
+      }
+    }
+
+    if (pairHeads.size === 0) {
+      throw new Error(
+        `gen-tool-routing: ${pair.id} produced no prefilter head from its frozen fixture. ` +
+          'Add representative evidence or declare it phrase-routed.',
+      );
+    }
+    for (const head of pairHeads) heads.add(head);
+  }
+
+  return [...heads].sort();
+}
+
+/** Render the generated TypeScript `Set` body, markers included. */
+export function renderTsPrefilterHeads(heads: readonly string[]): string {
+  return [
+    TS_PREFILTER_BEGIN_MARKER,
+    ...[...heads].sort().map((head) => `  '${head}',`),
+    TS_PREFILTER_END_MARKER,
+  ].join('\n');
+}
+
+/** Render the generated Python `frozenset` body, markers included. */
+export function renderShellPrefilterHeads(heads: readonly string[]): string {
+  return [
+    SHELL_PREFILTER_BEGIN_MARKER,
+    ...[...heads].sort().map((head) => `    '${head}',`),
+    SHELL_PREFILTER_END_MARKER,
+  ].join('\n');
+}
+
+/**
+ * Replace one generated region, refusing missing/inverted markers instead of
+ * reporting a vacuous green or appending a second block.
+ */
+export function spliceGeneratedRegion(
+  content: string,
+  beginMarker: string,
+  endMarker: string,
+  block: string,
+  label: string,
+): string {
+  const start = content.indexOf(beginMarker);
+  const end = content.indexOf(endMarker);
+  if (start === -1 || end === -1) {
+    throw new Error(`gen-tool-routing: ${label} generated markers not found`);
+  }
+  if (end < start) {
+    throw new Error(`gen-tool-routing: ${label} END marker precedes BEGIN marker`);
+  }
+  return content.slice(0, start) + block + content.slice(end + endMarker.length);
+}
 
 /**
  * A table-cell-safe rendering. Escapes ONLY the pipe — deliberately NOT the
