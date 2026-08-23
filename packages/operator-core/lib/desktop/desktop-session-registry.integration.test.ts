@@ -1,0 +1,308 @@
+/**
+ * desktop-session-registry — REAL-PG behaviour guard
+ * (agent-virtual-desktops-2026-08-23 P-003 / WI-40829; D-004, D-005, D-006).
+ *
+ * WHY REAL PG. The registry's contract is mostly about what Postgres REFUSES and
+ * what a partial index treats as live. A mocked client proves the module emitted
+ * SQL; it cannot prove the database rejected a second live lease, and that
+ * rejection IS the safety property D-005 asks the database to own.
+ *
+ * THE ASSERTION THAT EARNS ITS PLACE MOST is the reconciliation quartet. D-004's
+ * invariant — "a row without a live handle in its owning process is DEAD" — is
+ * easy to implement as an over-eager sweep that also reaps a SIBLING operator
+ * process's live desktops. So the reap tests are paired with two NEGATIVE
+ * controls (different pid, remote host_ref). A one-sided test passes just as
+ * happily against a sweep that reaps everything, which would tear down working
+ * desktops fleet-wide.
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  registerDesktopSession,
+  markDesktopReady,
+  touchDesktopSession,
+  closeDesktopSession,
+  listDesktopSessions,
+  resolveDesktopForScope,
+  reconcileLocalDesktopSessions,
+  DEFAULT_CAPTURE_GEOMETRY,
+  TERMINAL_DESKTOP_STATES,
+  isTerminalDesktopState,
+} from './desktop-session-registry';
+
+const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
+const MIGRATION_900 = join(SQL_DIR, '900-desktop-sessions-registry.sql');
+
+const WS = 'ws-registry-test';
+let db: FreshPgDb | undefined;
+let sql: FreshPgDb['sql'];
+
+// Monotonic, never random. A random display number collides across tests often
+// enough to look like a real uniqueness bug (it did), and a fixture that flakes
+// against the very constraint under test is worse than no fixture at all.
+let seq = 0;
+const nextSeq = () => ++seq;
+
+const base = (over: Partial<Parameters<typeof registerDesktopSession>[0]> = {}) => {
+  const n = nextSeq();
+  return {
+    workspaceId: WS,
+    harnessSlug: 'papercusp',
+    kind: 'xvfb-local' as const,
+    scope: 'pot' as const,
+    scopeRef: `pot-seq-${n}`,
+    display: `:${1000 + n}`,
+    displayGeometry: { width: 1920, height: 1080 },
+    ...over,
+  };
+};
+
+beforeAll(async () => {
+  db = await createFreshPgDb('desktopregistry');
+  sql = db.sql;
+  await applyMigrationForTest(sql, MIGRATION_900);
+}, 180_000);
+
+afterAll(async () => {
+  await db?.cleanup();
+});
+
+describe('registration + the D-006 geometry split', () => {
+  it('registers as provisioning, never ready — a session nothing has proven works is not publishable', async () => {
+    const s = await registerDesktopSession(base({ scopeRef: 'pot-reg' }), sql);
+    expect(s.state).toBe('provisioning');
+    expect(s.releasedAt).toBeNull();
+  });
+
+  it('defaults capture geometry to 1024x768 even when the DISPLAY runs at 1920x1080', async () => {
+    const s = await registerDesktopSession(
+      base({ scopeRef: 'pot-geo', displayGeometry: { width: 1920, height: 1080 } }),
+      sql,
+    );
+    expect(s.displayGeometry).toEqual({ width: 1920, height: 1080, depth: 24 });
+    expect(s.captureGeometry).toEqual({ ...DEFAULT_CAPTURE_GEOMETRY });
+    // The whole point of D-006: the two are INDEPENDENT. A single-geometry
+    // implementation passes an assertion on either one alone.
+    expect(s.captureGeometry).not.toEqual({ width: s.displayGeometry.width, height: s.displayGeometry.height });
+  });
+
+  it('honours a deliberately larger capture geometry (it is a lease parameter, not a constant)', async () => {
+    const s = await registerDesktopSession(
+      base({ scopeRef: 'pot-bigcap', captureGeometry: { width: 1440, height: 900 } }),
+      sql,
+    );
+    expect(s.captureGeometry).toEqual({ width: 1440, height: 900 });
+  });
+
+  it('stamps MEASURED capabilities on ready, not on register', async () => {
+    const s = await registerDesktopSession(base({ scopeRef: 'pot-caps' }), sql);
+    expect(s.capabilities).toEqual({});
+    const ready = await markDesktopReady(s.id, { capabilities: { gl: true, kvm: false } }, sql);
+    expect(ready?.state).toBe('ready');
+    expect(ready?.capabilities).toEqual({ gl: true, kvm: false });
+  });
+
+  it('surfaces the DB uniqueness as a throw rather than silently double-leasing a scope', async () => {
+    await registerDesktopSession(base({ scopeRef: 'pot-uniq', display: ':310' }), sql);
+    await expect(
+      registerDesktopSession(base({ scopeRef: 'pot-uniq', display: ':311' }), sql),
+    ).rejects.toThrow();
+  });
+});
+
+describe('resolution + enumeration', () => {
+  it('resolves the live session for a scope and stops resolving it once closed', async () => {
+    const s = await registerDesktopSession(base({ scopeRef: 'pot-resolve', display: ':320' }), sql);
+    await markDesktopReady(s.id, {}, sql);
+
+    const found = await resolveDesktopForScope({ workspaceId: WS, scope: 'pot', scopeRef: 'pot-resolve' }, sql);
+    expect(found?.id).toBe(s.id);
+
+    await closeDesktopSession(s.id, 'released', sql);
+    const gone = await resolveDesktopForScope({ workspaceId: WS, scope: 'pot', scopeRef: 'pot-resolve' }, sql);
+    expect(gone).toBeUndefined();
+  });
+
+  it('enumerates EVERY kind — the whole reason the registry exists', async () => {
+    const ws = 'ws-kinds';
+    for (const kind of ['xvfb-local', 'frame-slot', 'vm-guest', 'bwrap', 'microvm'] as const) {
+      await registerDesktopSession(base({ workspaceId: ws, kind, scopeRef: `sc-${kind}` }), sql);
+    }
+    const listed = await listDesktopSessions({ workspaceId: ws }, sql);
+    expect(new Set(listed.map((s) => s.kind))).toEqual(
+      new Set(['xvfb-local', 'frame-slot', 'vm-guest', 'bwrap', 'microvm']),
+    );
+  });
+
+  it('excludes terminal rows by default and includes them on request', async () => {
+    const ws = 'ws-terminal-filter';
+    const a = await registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-a' }), sql);
+    await registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-b' }), sql);
+    await closeDesktopSession(a.id, 'released', sql);
+
+    expect(await listDesktopSessions({ workspaceId: ws }, sql)).toHaveLength(1);
+    expect(await listDesktopSessions({ workspaceId: ws, includeTerminal: true }, sql)).toHaveLength(2);
+  });
+
+  it('scopes enumeration per tenant', async () => {
+    await registerDesktopSession(base({ workspaceId: 'ws-t1', scopeRef: 'shared-ref' }), sql);
+    await registerDesktopSession(base({ workspaceId: 'ws-t2', scopeRef: 'shared-ref' }), sql);
+    const t1 = await listDesktopSessions({ workspaceId: 'ws-t1' }, sql);
+    expect(t1).toHaveLength(1);
+    expect(t1[0].workspaceId).toBe('ws-t1');
+  });
+
+  it('D-005: the workspace scope is representable and does not collide with an agent scope', async () => {
+    const ws = 'ws-scopes';
+    await registerDesktopSession(base({ workspaceId: ws, scope: 'workspace', scopeRef: 'byoc' }), sql);
+    await registerDesktopSession(base({ workspaceId: ws, scope: 'agent', scopeRef: 'byoc' }), sql);
+    expect(await listDesktopSessions({ workspaceId: ws, scope: 'workspace' }, sql)).toHaveLength(1);
+    expect(await listDesktopSessions({ workspaceId: ws, scope: 'agent' }, sql)).toHaveLength(1);
+  });
+});
+
+describe('lifecycle', () => {
+  it('close is idempotent — a teardown race must not throw', async () => {
+    const s = await registerDesktopSession(base({ scopeRef: 'pot-idem', display: ':330' }), sql);
+    expect(await closeDesktopSession(s.id, 'released', sql)).toBe(true);
+    expect(await closeDesktopSession(s.id, 'released', sql)).toBe(false);
+  });
+
+  it('does not resurrect a terminal session via markDesktopReady', async () => {
+    const s = await registerDesktopSession(base({ scopeRef: 'pot-zombie', display: ':331' }), sql);
+    await closeDesktopSession(s.id, 'dead', sql);
+    expect(await markDesktopReady(s.id, {}, sql)).toBeUndefined();
+  });
+
+  it('advances last_active_at on touch', async () => {
+    const s = await registerDesktopSession(base({ scopeRef: 'pot-touch', display: ':332' }), sql);
+    await new Promise((r) => setTimeout(r, 15));
+    await touchDesktopSession(s.id, sql);
+    const [row] = await listDesktopSessions({ workspaceId: WS }, sql).then((rows) =>
+      rows.filter((r) => r.id === s.id),
+    );
+    expect(row.lastActiveAt.getTime()).toBeGreaterThan(row.createdAt.getTime());
+  });
+
+  it('releasing a scope frees it for re-lease', async () => {
+    const first = await registerDesktopSession(base({ scopeRef: 'pot-relet2', display: ':333' }), sql);
+    await closeDesktopSession(first.id, 'released', sql);
+    await expect(
+      registerDesktopSession(base({ scopeRef: 'pot-relet2', display: ':334' }), sql),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe('reconciliation (D-004: a row without a live handle is DEAD)', () => {
+  const BOOT = 'boot-current';
+
+  it('reaps a row from a PREVIOUS boot — the machine rebooted, so its X servers are gone', async () => {
+    const ws = 'ws-recon-boot';
+    const s = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-oldboot', ownerBootId: 'boot-previous', ownerPid: 999 }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions({ workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234 }, sql);
+    expect(out.reapedIds).toContain(s.id);
+  });
+
+  it('reaps THIS process’s row when no live handle backs it', async () => {
+    const ws = 'ws-recon-mine';
+    const s = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-mine', ownerBootId: BOOT, ownerPid: 1234 }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions({ workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234 }, sql);
+    expect(out.reapedIds).toContain(s.id);
+  });
+
+  it('KEEPS this process’s row when a live handle IS held', async () => {
+    const ws = 'ws-recon-live';
+    const s = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-live', ownerBootId: BOOT, ownerPid: 1234 }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions(
+      { workspaceId: ws, liveIds: [s.id], bootId: BOOT, pid: 1234 },
+      sql,
+    );
+    expect(out.reapedIds).not.toContain(s.id);
+  });
+
+  // NEGATIVE CONTROL 1. Without this, an over-eager sweep that reaps every local
+  // row passes every assertion above — and tears down a live sibling operator's
+  // desktops in production.
+  it('does NOT reap a SIBLING process’s row on the same boot', async () => {
+    const ws = 'ws-recon-sibling';
+    const s = await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-sibling', ownerBootId: BOOT, ownerPid: 4321 }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions({ workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234 }, sql);
+    expect(out.reapedIds).not.toContain(s.id);
+  });
+
+  // NEGATIVE CONTROL 2. A remote-owned session is its owner's to reconcile.
+  it('does NOT reap a REMOTE (host_ref set) row', async () => {
+    const ws = 'ws-recon-remote';
+    const s = await registerDesktopSession(
+      base({
+        workspaceId: ws,
+        scopeRef: 'sc-remote',
+        kind: 'frame-slot',
+        hostRef: 'frame-7',
+        ownerBootId: 'boot-elsewhere',
+        ownerPid: 5,
+      }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions({ workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234 }, sql);
+    expect(out.reapedIds).not.toContain(s.id);
+  });
+
+  it('reaped rows are terminal and carry a released_at', async () => {
+    const ws = 'ws-recon-stamp';
+    await registerDesktopSession(
+      base({ workspaceId: ws, scopeRef: 'sc-stamp', ownerBootId: 'boot-previous' }),
+      sql,
+    );
+    await reconcileLocalDesktopSessions({ workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234 }, sql);
+    const [row] = await listDesktopSessions({ workspaceId: ws, includeTerminal: true }, sql);
+    expect(row.state).toBe('dead');
+    expect(row.releasedAt).not.toBeNull();
+  });
+});
+
+/**
+ * DRIFT GUARD. `TERMINAL_DESKTOP_STATES` is a hand-written TypeScript copy of a
+ * predicate the SQL owns in three places (the CHECK, and both partial indexes).
+ * This repo has already had a hand-copied terminal-state set go stale and score
+ * ~88% of finished units as failed placements, so the copy gets pinned to its
+ * source rather than trusted.
+ */
+describe('SQL/TS terminal-state drift guard', () => {
+  const migrationSql = readFileSync(MIGRATION_900, 'utf8');
+
+  it('the TS terminal set matches the partial-index predicate in migration 900', () => {
+    const matches = [...migrationSql.matchAll(/state NOT IN \(([^)]*)\)/g)].map((m) =>
+      m[1].split(',').map((s) => s.trim().replace(/'/g, '')).sort(),
+    );
+    expect(matches.length).toBeGreaterThan(0);
+    const expected = [...TERMINAL_DESKTOP_STATES].sort();
+    for (const found of matches) {
+      expect(found, 'a SQL predicate disagrees with TERMINAL_DESKTOP_STATES').toEqual(expected);
+    }
+  });
+
+  it('every state the SQL CHECK allows is classified by isTerminalDesktopState', () => {
+    const check = migrationSql.match(/desktop_sessions_state_ck[\s\S]*?state IN \(([^)]*)\)/);
+    expect(check, 'could not locate the state CHECK constraint').not.toBeNull();
+    const states = check![1].split(',').map((s) => s.trim().replace(/'/g, ''));
+    expect(states.length).toBeGreaterThan(0);
+    const terminal = states.filter((s) => isTerminalDesktopState(s as never));
+    expect(terminal.sort()).toEqual([...TERMINAL_DESKTOP_STATES].sort());
+  });
+});

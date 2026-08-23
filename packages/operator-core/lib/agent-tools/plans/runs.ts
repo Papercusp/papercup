@@ -22,6 +22,10 @@ import { withWorkspace } from '@papercusp/db-org';
 // workspace_id column; RLS is a Phase-2 follow-up — see the migration header).
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import {
+  loadExternalTriggerRunVisibilities,
+  type ExternalTriggerRunVisibility,
+} from '../../external-triggers/admin';
 
 /**
  * A run's lifecycle status (P-016):
@@ -189,6 +193,8 @@ export interface PlanRunRow {
   instancePlanSlug: string | null;
   /** finishedAt − launchedAt (ms); null while running. */
   durationMs: number | null;
+  /** External-event launch provenance, policy trace, and redacted payload. */
+  triggerRun?: ExternalTriggerRunVisibility | null;
 }
 
 /** Raw `plan_runs` row as PG returns it — snake_case, and `BIGSERIAL`
@@ -235,6 +241,7 @@ export function mapPlanRunRow(r: RawPlanRunRow): PlanRunRow {
     runSeq: r.run_seq != null ? Number(r.run_seq) : null,
     instancePlanSlug: r.instance_plan_slug ?? null,
     durationMs: r.finished_at != null ? Number(r.finished_at) - Number(r.launched_at) : null,
+    triggerRun: null,
   };
 }
 
@@ -250,7 +257,13 @@ export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
       WHERE id = ${runId}
     `;
     const r = rows[0];
-    return r ? mapPlanRunRow(r) : null;
+    if (!r) return null;
+    const run = mapPlanRunRow(r);
+    const triggerRuns = await loadExternalTriggerRunVisibilities(tx, activeWorkspaceId(), {
+      planRunRef: String(run.id),
+      limit: 1,
+    });
+    return { ...run, triggerRun: triggerRuns[0] ?? null };
   });
 }
 
@@ -395,6 +408,16 @@ export async function listPlanRuns(
       WHERE r.workspace_id = ${activeWorkspaceId()} AND r.harness_slug = ${harnessSlug} AND r.plan_slug = ${planSlug}
       ORDER BY r.launched_at DESC, r.id DESC
     `;
+    const triggerRuns = await loadExternalTriggerRunVisibilities(tx, activeWorkspaceId(), {
+      planHarnessSlug: harnessSlug,
+      planSlug,
+      limit: Math.max(50, rows.length),
+    });
+    const triggerRunByPlanRun = new Map(
+      triggerRuns
+        .filter((run) => run.planRunRef !== null)
+        .map((run) => [run.planRunRef as string, run] as const),
+    );
     return rows.map((r) => {
       const total = Number(r.wi_total);
       const passed = Number(r.wi_passed);
@@ -405,6 +428,7 @@ export async function listPlanRuns(
         costUsd: Number(r.cost_usd),
         workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
         resultSummary: (r.result_summary as Record<string, unknown> | null) ?? null,
+        triggerRun: triggerRunByPlanRun.get(String(r.id)) ?? null,
       };
     });
   });

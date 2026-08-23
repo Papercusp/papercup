@@ -301,6 +301,28 @@ describe('ChatConversation', () => {
     expect(screen.getByTestId('banner')).toBeTruthy();
   });
 
+  it('renders live cards after transcript rows and before thinking/composer (WI-40828)', () => {
+    renderChat({
+      messages: [{ role: 'assistant', content: 'The message that opened the card' }],
+      busy: true,
+      transcriptTail: <div data-testid="transcript-tail-card">Choose one</div>,
+    });
+
+    const body = screen.getByRole('region', { name: 'Conversation messages' });
+    const card = screen.getByTestId('transcript-tail-card');
+    const rows = document.querySelector('.oracle-virtual-container');
+    const thinking = document.querySelector('.oracle-thinking-row');
+    const form = document.querySelector('form.oracle-form');
+
+    expect(body.contains(card)).toBe(true);
+    expect(rows).toBeTruthy();
+    expect(thinking).toBeTruthy();
+    expect(form).toBeTruthy();
+    expect(rows!.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(thinking!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(form!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   describe('work-ref pills (chat-ref-pills-2026-07-26 P-004)', () => {
     it('renders a WI-/EI-/F-/P- ref in prose as a pill, not literal text', () => {
       renderChat({

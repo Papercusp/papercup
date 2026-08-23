@@ -21,10 +21,12 @@ vi.mock('@papercusp/sync', () => ({
 // RichGrid is a heavy virtualized grid; stub it to a simple list so we can
 // assert the rows RunsPanel feeds it without canvas/virtualization in jsdom.
 vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows, getRowId }: { rows: { outcome: string | null; status: string }[]; getRowId: (r: unknown) => string }) => (
+  RichGrid: ({ rows, getRowId, columns }: { rows: { outcome: string | null; status: string }[]; getRowId: (r: unknown) => string; columns: Array<{ key: string; render: (ctx: { row: unknown }) => ReactElement }> }) => (
     <div data-testid="grid">
       {rows.map((r) => (
-        <div key={getRowId(r)}>{r.outcome ?? r.status}</div>
+        <div key={getRowId(r)}>
+          {columns.map((column) => <span key={column.key}>{column.render({ row: r })}</span>)}
+        </div>
       ))}
     </div>
   ),
@@ -108,5 +110,34 @@ describe('RunsPanel (scheduled-recurring-plans Runs tab)', () => {
     renderPanel(<RunsPanel slug="p" />);
     expect(screen.getByTestId('grid')).toBeTruthy();
     expect(screen.getByText('success')).toBeTruthy();
+  });
+
+  it('shows external-trigger cause, policy disposition, and launched instance progress', () => {
+    syncResult = {
+      data: [{
+        runs: [mkRun({
+          triggerRun: {
+            causeSummary: 'Launch review · Ada',
+            eventPattern: 'ext:gmail:message.created',
+            policyDisposition: 'ran',
+            policyDetail: 'ran',
+            triggeredAt: '2026-08-22T18:00:00.000Z',
+            planRun: {
+              instancePlanSlug: 'reply-plan@run-1',
+              status: 'done',
+              workItems: { total: 3, passed: 3, failed: 0, open: 0 },
+              agents: ['su-1'],
+            },
+          },
+        })],
+        rollup: null,
+      }],
+      loading: false,
+    };
+    renderPanel(<RunsPanel slug="p" />);
+    expect(screen.getByText('Launch review · Ada')).toBeTruthy();
+    expect(screen.getByText('ran')).toBeTruthy();
+    expect(screen.getByText('reply-plan@run-1')).toBeTruthy();
+    expect(screen.getByText('done · 3/3 · 1 agent')).toBeTruthy();
   });
 });

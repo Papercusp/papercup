@@ -24,7 +24,14 @@ const call = (args: Record<string, unknown> = {}) =>
   tool.handler({ runId: 5, ...args } as never, { metadata: meta } as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
-const aRun = { id: 5, planSlug: 'p1', sessionId: 's1', status: 'done', planContentHash: 'h1' };
+const aRun = {
+  id: 5,
+  planSlug: 'p1',
+  sessionId: 's1',
+  status: 'done',
+  planContentHash: 'h1',
+  triggerRun: null,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -46,10 +53,28 @@ describe('plans:run-transcript handler', () => {
     expect(out.isError).toBeUndefined();
     expect(body(out)).toMatchObject({
       runId: 5, planSlug: 'p1', sessionId: 's1', status: 'done', planContentHash: 'h1',
-      turns: [{ seq: 1 }], nextCursor: 10, query: null,
+      triggerRun: null, turns: [{ seq: 1 }], nextCursor: 10, query: null,
     });
     expect(readTx.mock.calls[0]![0]).toBe('s1'); // reads by sessionId
     expect(meta).toHaveBeenCalledWith({ runId: 5, turnCount: 1 });
+  });
+
+  it('projects the external-trigger decision trace without a second UI request', async () => {
+    getRun.mockResolvedValue({
+      ...aRun,
+      triggerRun: {
+        id: 'trigger-run-1',
+        causeSummary: 'Launch review',
+        policyDisposition: 'ran',
+        timeline: [{ stage: 'matched', status: 'done' }],
+      },
+    } as never);
+    const out = await call();
+    expect(body(out).triggerRun).toMatchObject({
+      id: 'trigger-run-1',
+      causeSummary: 'Launch review',
+      policyDisposition: 'ran',
+    });
   });
 
   it('echoes the substring query when provided', async () => {

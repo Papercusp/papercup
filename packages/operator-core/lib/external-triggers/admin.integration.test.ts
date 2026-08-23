@@ -30,6 +30,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.plan_run_turns WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.plan_runs WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
@@ -91,6 +93,77 @@ describe('external-trigger admin shared seam', () => {
       lastRun: { status: 'failed', error: null },
     });
     expect(snapshot.recentRuns[0]).toMatchObject({ bindingId, status: 'failed', attempts: 2 });
+  });
+
+  it('projects a redacted trigger cause, policy trace, linked plan progress, and outcome links', async () => {
+    const planRuns = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.plan_runs
+        (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, note,
+         launched_by, launched_at, status, title, updated_at, run_type, trigger,
+         outcome, finished_at, instance_plan_slug)
+      VALUES (${WS}, ${HARNESS}, ${PLAN}, 'trigger-admin-v1', 'trigger-visibility-session', NULL,
+              'system:plan-run', 1000, 'done', 'Triggered fixture', 5000,
+              'scheduled', 'event', 'success', 5000, 'trigger-admin-fixture@run-1')
+      RETURNING id`;
+    const planRunId = Number(planRuns[0].id);
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET status = 'succeeded',
+             args = ${JSON.stringify({
+               trigger: {
+                 payload: {
+                   subject: 'Launch review',
+                   from: 'Ada <ada@example.com>',
+                   accessToken: 'opaque-secret-token',
+                 },
+               },
+             })}::text::jsonb,
+             outcome = ${JSON.stringify({
+               gmailDraft: {
+                 draftId: 'draft-1',
+                 subject: 'Re: Launch review',
+               },
+             })}::text::jsonb,
+             plan_run_ref = ${String(planRunId)},
+             attempts = 1,
+             error = NULL,
+             started_at = '2026-08-22T18:00:00.000Z'::timestamptz,
+             completed_at = '2026-08-22T18:00:01.000Z'::timestamptz
+       WHERE workspace_id = ${WS} AND binding_id = ${bindingId}`;
+
+    const run = (await loadExternalTriggerAdminSnapshot(sql, WS)).recentRuns[0]!;
+    expect(run).toMatchObject({
+      bindingId,
+      sourceKind: 'gmail',
+      causeSummary: 'Launch review · Ada <ada@example.com>',
+      policyDisposition: 'ran',
+      policyDetail: 'ran',
+      eventFilter: { label: 'support' },
+      stormPolicy: { maxRuns: 2, windowSeconds: 60 },
+      redactedPayload: {
+        subject: 'Launch review',
+        from: 'Ada <ada@example.com>',
+        accessToken: '[redacted]',
+      },
+      planRun: {
+        id: planRunId,
+        instancePlanSlug: 'trigger-admin-fixture@run-1',
+        status: 'done',
+        workItems: { total: 0, passed: 0, failed: 0, open: 0 },
+        durationMs: 4000,
+        costUsd: 0,
+      },
+    });
+    expect(run.timeline?.map((step) => step.stage)).toEqual([
+      'received', 'matched', 'policy', 'launched', 'completed',
+    ]);
+    expect(run.outcomeLinks).toEqual([
+      {
+        kind: 'gmail-draft',
+        label: 'Re: Launch review',
+        href: 'https://mail.google.com/mail/u/0/#drafts/draft-1',
+      },
+    ]);
   });
 
   it('changes only the named workspace binding armed state', async () => {

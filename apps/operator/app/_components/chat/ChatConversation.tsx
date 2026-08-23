@@ -333,6 +333,14 @@ export interface ChatConversationProps {
   /** Optional banner node above the transcript (e.g. silence-check status). */
   banner?: ReactNode;
 
+  /**
+   * Optional live content rendered INSIDE the transcript scroller, after the
+   * persisted message rows and before the thinking/error tail. Pending
+   * interactive cards use this slot: they are chronological conversation
+   * content, not a banner above history and not a footer below the composer.
+   */
+  transcriptTail?: ReactNode;
+
   /** Label for the "is thinking" row. Defaults to emptyState.title. */
   thinkingLabel?: string;
 
@@ -709,6 +717,7 @@ export function ChatConversation(props: ChatConversationProps) {
     busyLabel = '…',
     composerExtra,
     banner,
+    transcriptTail,
     thinkingLabel,
     hideInput,
     bodyClassName,
@@ -725,6 +734,8 @@ export function ChatConversation(props: ChatConversationProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  const transcriptTailRef = useRef<HTMLDivElement | null>(null);
+  const hasTranscriptTail = transcriptTail != null;
 
   // Track the FIRST message identity to detect prepends (older history)
   // vs appends (new turn). On a prepend we preserve scroll position
@@ -887,6 +898,30 @@ export function ChatConversation(props: ChatConversationProps) {
     };
     requestAnimationFrame(step);
   }, []);
+
+  // Pending cards arrive through their own state-channel subscription, so
+  // their mount/queue changes do not necessarily change `messages` or `busy`
+  // (the dependencies that drive the ordinary transcript tail pin below).
+  // Observe this one tail slot directly: while the reader is following the
+  // conversation, a newly-visible or resized card stays in view; while they
+  // are reading scrollback, it never steals their position.
+  useEffect(() => {
+    const node = transcriptTailRef.current;
+    if (!node) return;
+
+    if (followRef.current) pinToBottom();
+    if (typeof ResizeObserver === 'undefined') return;
+
+    let lastHeight = node.getBoundingClientRect().height;
+    const observer = new ResizeObserver((entries) => {
+      const nextHeight = entries[0]?.contentRect.height ?? node.getBoundingClientRect().height;
+      if (Math.abs(nextHeight - lastHeight) < 1) return;
+      lastHeight = nextHeight;
+      if (followRef.current) pinToBottom();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasTranscriptTail, pinToBottom]);
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -1075,6 +1110,11 @@ export function ChatConversation(props: ChatConversationProps) {
             })}
           </div>
         )}
+        {hasTranscriptTail ? (
+          <div ref={transcriptTailRef} className="oracle-transcript-tail">
+            {transcriptTail}
+          </div>
+        ) : null}
         {(busy || peerThinking) && (
           <div className="oracle-thinking-row" aria-live="polite">
             <span>

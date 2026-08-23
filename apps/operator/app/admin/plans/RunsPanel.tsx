@@ -14,6 +14,7 @@ import { parseAsInteger, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import RunDetailPanel from './RunDetailPanel';
+import type { TriggerRunVisibility } from './plans-api';
 
 interface RunRow {
   id: number;
@@ -27,6 +28,8 @@ interface RunRow {
   costUsd: number;
   workItems: { total: number; passed: number; failed: number; open: number };
   resultSummary: Record<string, unknown> | null;
+  instancePlanSlug?: string | null;
+  triggerRun?: TriggerRunVisibility | null;
 }
 interface Rollup {
   total: number;
@@ -65,8 +68,8 @@ function fmtDuration(ms: number | null): string {
   const m = Math.floor(s / 60);
   return `${m}m ${s % 60}s`;
 }
-function fmtWhen(ms: number): string {
-  return new Date(ms).toLocaleString();
+function fmtWhen(value: number | string): string {
+  return new Date(value).toLocaleString();
 }
 
 const runColumns: ColumnDef<RunRow>[] = [
@@ -90,11 +93,56 @@ const runColumns: ColumnDef<RunRow>[] = [
     ),
   },
   {
-    key: 'trigger',
-    header: 'Trigger',
-    width: 1.1,
-    toCopyText: (r) => r.trigger ?? r.runType,
-    render: ({ row }) => <span style={{ color: 'var(--fg-dim, #b9d4e8)' }}>{row.trigger ?? row.runType}</span>,
+    key: 'cause',
+    header: 'Cause',
+    width: 1.9,
+    toCopyText: (r) => r.triggerRun?.causeSummary ?? r.trigger ?? r.runType,
+    render: ({ row }) => (
+      <span
+        aria-label={row.triggerRun ? `${row.triggerRun.causeSummary}; ${row.triggerRun.eventPattern}` : undefined}
+        style={{ color: 'var(--fg-dim, #b9d4e8)' }}
+      >
+        {row.triggerRun?.causeSummary ?? row.trigger ?? row.runType}
+      </span>
+    ),
+  },
+  {
+    key: 'policy',
+    header: 'Policy',
+    width: 1.35,
+    toCopyText: (r) => r.triggerRun?.policyDetail ?? '—',
+    render: ({ row }) => (
+      <span
+        data-trigger-disposition={row.triggerRun?.policyDisposition}
+        style={{ color: row.triggerRun?.policyDisposition === 'failed' ? 'var(--bad, #fb7185)' : row.triggerRun?.policyDisposition === 'dropped' ? 'var(--warn, #fbbf24)' : 'var(--fg-dim, #b9d4e8)' }}
+      >
+        {row.triggerRun?.policyDetail ?? '—'}
+      </span>
+    ),
+  },
+  {
+    key: 'instance',
+    header: 'Plan instance',
+    width: 1.7,
+    toCopyText: (r) => r.triggerRun?.planRun?.instancePlanSlug ?? r.instancePlanSlug ?? '—',
+    render: ({ row }) => {
+      const run = row.triggerRun?.planRun;
+      const slug = run?.instancePlanSlug ?? row.instancePlanSlug;
+      if (!slug) return <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>—</span>;
+      const progress = run?.workItems.total
+        ? `${run.workItems.passed}/${run.workItems.total}`
+        : null;
+      const agents = run?.agents.length ? `${run.agents.length} agent${run.agents.length === 1 ? '' : 's'}` : null;
+      return (
+        <a
+          href={`/admin/plans?plan=${encodeURIComponent(slug)}`}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {slug}
+          {run ? <small style={{ display: 'block', color: 'var(--fg-mute, #7f9bb4)' }}>{[run.status, progress, agents].filter(Boolean).join(' · ')}</small> : null}
+        </a>
+      );
+    },
   },
   {
     key: 'duration',
@@ -121,8 +169,8 @@ const runColumns: ColumnDef<RunRow>[] = [
     key: 'when',
     header: 'When',
     width: 1.7,
-    toCopyText: (r) => fmtWhen(r.launchedAt),
-    render: ({ row }) => <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>{fmtWhen(row.launchedAt)}</span>,
+    toCopyText: (r) => fmtWhen(r.triggerRun?.triggeredAt ?? r.launchedAt),
+    render: ({ row }) => <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>{fmtWhen(row.triggerRun?.triggeredAt ?? row.launchedAt)}</span>,
   },
 ];
 
@@ -194,7 +242,8 @@ export default function RunsPanel({ slug, planTitle, currentContentHash }: Props
         {strip.map((r) => (
           <span
             key={r.id}
-            title={`#${r.runSeq ?? r.id} · ${r.outcome ?? r.status} · ${fmtDuration(r.durationMs)}`}
+            role="img"
+            aria-label={`#${r.runSeq ?? r.id} · ${r.outcome ?? r.status} · ${fmtDuration(r.durationMs)}`}
             style={{ width: 10, height: 10, borderRadius: 2, background: outcomeColor(r.outcome, r.status), display: 'inline-block' }}
           />
         ))}
@@ -253,12 +302,12 @@ export default function RunsPanel({ slug, planTitle, currentContentHash }: Props
       )}
 
       {/* Drill-down — run table */}
-      <div style={{ height: Math.min(620, 32 + runs.length * 28 + 4) }}>
+      <div style={{ height: Math.min(620, 32 + runs.length * 38 + 4) }}>
         <RichGrid<RunRow>
           columns={runColumns}
           rows={runs}
           getRowId={(r) => String(r.id)}
-          rowMinHeight={28}
+          rowMinHeight={38}
           headerHeight={32}
           onRowClick={(r) => void setRun(r.id)}
         />

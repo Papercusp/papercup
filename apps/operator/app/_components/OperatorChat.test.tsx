@@ -5,7 +5,7 @@
  * passive/active empty-state copy, the quick-draft prompt buttons, the optional
  * "Generate ideas" composer button, and the PendingCardsBar gating. We stub
  * ChatConversation to surface the props OperatorChat computes (emptyState,
- * composerExtra, banner, onSubmit) so we can assert its own logic without the
+ * composerExtra, banner, transcriptTail, onSubmit) so we can assert its own logic without the
  * virtualized transcript. Heavy children (cards, logo, Tooltip) are stubbed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -42,7 +42,8 @@ vi.mock('nuqs', () => ({
 // So there is deliberately nothing to stub here: this suite asserts only what
 // OperatorChat still owns, which is the param WRITE.
 // Capture the props OperatorChat hands ChatConversation, and render a tiny
-// controllable surface: the empty-state body, the banner, the composer extra,
+// controllable surface: the empty-state body, the banner, the transcript tail,
+// the composer extra,
 // and an input wired to onInputChange/onSubmit so we can drive submit().
 let lastProps: Record<string, any> = {};
 let lastCardProps: Record<string, any> = {};
@@ -54,6 +55,7 @@ vi.mock('./chat/ChatConversation', () => ({
         <div data-testid="empty-body">{props.emptyState?.body}</div>
         <div data-testid="empty-extra">{props.emptyState?.extra}</div>
         <div data-testid="banner">{props.banner}</div>
+        <div data-testid="transcript-tail">{props.transcriptTail}</div>
         <div data-testid="composer-extra">{props.composerExtra}</div>
         <input
           data-testid="input"
@@ -222,13 +224,15 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     expect(lastProps.footer).toBe(footer);
   });
 
-  it('renders the PendingCardsBar only when both conversationId and workspaceId are set', () => {
+  it('renders PendingCardsBar at the transcript tail only when both ids are set (WI-40828)', () => {
     const { rerender } = render(<OperatorChat {...baseProps({ conversationId: 'c1' })} />);
     expect(screen.queryByTestId('pending-cards')).toBeNull(); // workspaceId missing
 
     rerender(<OperatorChat {...baseProps({ conversationId: 'c1', workspaceId: 'w1' })} />);
     const bar = screen.getByTestId('pending-cards');
     expect(bar.getAttribute('data-conv')).toBe('c1');
+    expect(screen.getByTestId('transcript-tail').contains(bar)).toBe(true);
+    expect(screen.getByTestId('banner').contains(bar)).toBe(false);
   });
 
   it('forwards a persisted card decline to answerChoice (WI-4976)', () => {

@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
-import type { PlanRunTranscriptResult } from './plans-api';
+import type { PlanRunTranscriptResult, TriggerRunVisibility } from './plans-api';
 
 const { api } = vi.hoisted(() => ({
   api: {
@@ -39,9 +39,54 @@ function transcript(over: Partial<PlanRunTranscriptResult> = {}): PlanRunTranscr
     sessionId: 'sess-1',
     status: 'idle',
     planContentHash: 'hashA',
+    triggerRun: null,
     turns: [],
     nextCursor: null,
     query: null,
+    ...over,
+  };
+}
+
+function triggerTrace(over: Partial<TriggerRunVisibility> = {}): TriggerRunVisibility {
+  return {
+    id: 'trigger-run-1',
+    bindingId: 'binding-1',
+    sourceKind: 'gmail',
+    eventPattern: 'ext:gmail:message.created',
+    planHarnessSlug: 'papercusp',
+    planSlug: 'p',
+    status: 'succeeded',
+    attempts: 1,
+    dedupeKey: 'gmail:message-1',
+    triggeredAt: '2026-08-22T18:00:00.000Z',
+    startedAt: '2026-08-22T18:00:01.000Z',
+    completedAt: '2026-08-22T18:00:02.000Z',
+    planRunRef: '7',
+    error: null,
+    causeSummary: 'Launch review · Ada',
+    policyDisposition: 'ran',
+    policyDetail: 'ran',
+    eventFilter: { label: 'support' },
+    stormPolicy: { maxRuns: 2, windowSeconds: 60 },
+    redactedPayload: { subject: 'Launch review', accessToken: '[redacted]' },
+    outcomeLinks: [{ kind: 'gmail-draft', label: 'Re: Launch review', href: 'https://mail.google.com/mail/u/0/#drafts/draft-1' }],
+    timeline: [
+      { stage: 'received', at: '2026-08-22T17:59:59.000Z', status: 'done', detail: 'Provider event normalized and deduplicated' },
+      { stage: 'matched', at: '2026-08-22T18:00:00.000Z', status: 'done', detail: 'Binding matched' },
+      { stage: 'policy', at: '2026-08-22T18:00:00.000Z', status: 'done', detail: 'ran' },
+      { stage: 'launched', at: '2026-08-22T18:00:01.000Z', status: 'done', detail: 'Plan run #7 launched' },
+      { stage: 'completed', at: '2026-08-22T18:00:05.000Z', status: 'done', detail: 'Plan run done' },
+    ],
+    planRun: {
+      id: 7,
+      instancePlanSlug: 'p@run-1',
+      status: 'done',
+      launchedBy: 'system:plan-run',
+      workItems: { total: 2, passed: 2, failed: 0, open: 0 },
+      agents: ['su-1'],
+      durationMs: 4000,
+      costUsd: 0.12,
+    },
     ...over,
   };
 }
@@ -111,6 +156,18 @@ describe('<RunDetailPanel /> transcript', () => {
     api.fetchPlanRunTranscript.mockRejectedValue(new Error('transcript boom'));
     renderPanel();
     await waitFor(() => expect(screen.getByText('transcript boom')).toBeTruthy());
+  });
+
+  it('renders the trigger decision trace, redacted payload, plan progress, and outcome link', async () => {
+    api.fetchPlanRunTranscript.mockResolvedValue(transcript({ triggerRun: triggerTrace() }));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('Trigger decision trace')).toBeTruthy());
+    expect(screen.getByText('Launch review · Ada')).toBeTruthy();
+    expect(screen.getAllByText('ran').length).toBeGreaterThan(0);
+    expect(screen.getByText(/done · 2\/2 items · 1 agent · 4s · \$0\.12/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Re: Launch review' }).getAttribute('href')).toContain('#drafts/draft-1');
+    fireEvent.click(screen.getByText('Redacted event payload'));
+    expect(screen.getByText(/\[redacted\]/)).toBeTruthy();
   });
 });
 

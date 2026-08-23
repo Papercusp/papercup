@@ -768,7 +768,7 @@ export default function PersonalVaultSettingsPage() {
                   style={{
                     marginTop: 12,
                     padding: 12,
-                    border: "1px solid var(--warning-border, var(--border))",
+                    border: "1px solid var(--warn, #fbbf24)",
                     borderRadius: 8,
                   }}
                 >

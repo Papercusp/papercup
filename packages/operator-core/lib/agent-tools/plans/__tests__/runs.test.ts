@@ -57,6 +57,7 @@ describe('mapPlanRunRow', () => {
       runSeq: null,
       instancePlanSlug: null,
       durationMs: null,
+      triggerRun: null,
     });
   });
 

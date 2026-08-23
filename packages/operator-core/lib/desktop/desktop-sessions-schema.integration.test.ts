@@ -36,7 +36,13 @@ import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
-const MIGRATION_900 = join(SQL_DIR, '900-desktop-sessions-registry.sql.DRAFT');
+// Overridable so `scripts/mutation-probe.sh` can point this at a MUTATED COPY
+// outside the tree (its tier-2 path) and prove these guards actually fail on a
+// weakened constraint — without ever mutating the shared checkout, where a
+// git-sync tick would commit the mutant. Defaults to the real armed migration.
+const MIGRATION_900 =
+  process.env.PAPERCUSP_DESKTOP_SESSIONS_MIGRATION ??
+  join(SQL_DIR, '900-desktop-sessions-registry.sql');
 
 const WS = 'ws-desktop-sessions-test';
 

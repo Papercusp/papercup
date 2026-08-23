@@ -97,6 +97,7 @@ export default defineTool({
               sessionId: run.sessionId,
               status: run.status,
               planContentHash: run.planContentHash,
+              triggerRun: run.triggerRun ?? null,
               turns: page.turns,
               nextCursor: page.nextCursor,
               query: args.query ?? null,

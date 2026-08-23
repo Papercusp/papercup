@@ -10,6 +10,7 @@ import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
+import { redactSensitiveValue } from '../sensitive-text';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -99,7 +100,34 @@ export interface ExternalTriggerBindingAdminRow {
   } | null;
 }
 
-export interface ExternalTriggerRunAdminRow {
+export type ExternalTriggerRunDisposition =
+  | 'ran'
+  | 'running'
+  | 'queued'
+  | 'dropped'
+  | 'deduped'
+  | 'coalesced'
+  | 'failed';
+
+export interface ExternalTriggerOutcomeLink {
+  kind: 'gmail-draft' | 'slack-thread';
+  label: string;
+  href: string | null;
+}
+
+export interface ExternalTriggerTimelineStep {
+  stage: 'received' | 'matched' | 'policy' | 'launched' | 'completed';
+  at: string | null;
+  status: 'done' | 'active' | 'pending' | 'failed' | 'dropped';
+  detail: string;
+}
+
+/**
+ * One trigger-run visibility record shared by the global Activity view, the
+ * per-plan Runs tab, and the existing RunDetailPanel. It is a projection of the
+ * canonical trigger/plan-run ledgers — never a parallel activity store.
+ */
+export interface ExternalTriggerRunVisibility {
   id: string;
   bindingId: string;
   sourceKind: string;
@@ -108,11 +136,51 @@ export interface ExternalTriggerRunAdminRow {
   planSlug: string;
   status: string;
   attempts: number;
+  dedupeKey: string;
   triggeredAt: string;
+  startedAt: string | null;
   completedAt: string | null;
   planRunRef: string | null;
   error: string | null;
+  causeSummary: string;
+  policyDisposition: ExternalTriggerRunDisposition;
+  policyDetail: string;
+  eventFilter: Record<string, unknown>;
+  stormPolicy: Record<string, unknown>;
+  redactedPayload: Record<string, unknown>;
+  outcomeLinks: ExternalTriggerOutcomeLink[];
+  timeline: ExternalTriggerTimelineStep[];
+  planRun: {
+    id: number;
+    instancePlanSlug: string | null;
+    status: string;
+    launchedBy: string | null;
+    workItems: { total: number; passed: number; failed: number; open: number };
+    agents: string[];
+    durationMs: number | null;
+    costUsd: number;
+  } | null;
 }
+
+type ExternalTriggerRunAdminBase = Pick<
+  ExternalTriggerRunVisibility,
+  | 'id'
+  | 'bindingId'
+  | 'sourceKind'
+  | 'eventPattern'
+  | 'planHarnessSlug'
+  | 'planSlug'
+  | 'status'
+  | 'attempts'
+  | 'triggeredAt'
+  | 'completedAt'
+  | 'planRunRef'
+  | 'error'
+>;
+
+/** Backward-compatible global snapshot row; new readers receive every field. */
+export type ExternalTriggerRunAdminRow = ExternalTriggerRunAdminBase &
+  Partial<Omit<ExternalTriggerRunVisibility, keyof ExternalTriggerRunAdminBase>>;
 
 export interface ExternalTriggerAdminSnapshot {
   enabled: boolean;
@@ -177,19 +245,39 @@ interface BindingDbRow {
   lastRunError: string | null;
 }
 
-interface RunDbRow {
+interface RunVisibilityDbRow {
   id: string;
   bindingId: string;
   sourceKind: string;
+  sourceConfig: Record<string, unknown>;
   eventPattern: string;
+  eventFilter: Record<string, unknown>;
+  stormPolicy: Record<string, unknown>;
   planHarnessSlug: string;
   planSlug: string;
   status: string;
   attempts: number;
+  dedupeKey: string;
+  args: Record<string, unknown>;
+  outcome: Record<string, unknown>;
   triggeredAt: Date | string;
+  startedAt: Date | string | null;
   completedAt: Date | string | null;
   planRunRef: string | null;
   error: string | null;
+  deliveryPayload: Record<string, unknown> | null;
+  receivedAt: Date | string | null;
+  planRunId: number | string | null;
+  instancePlanSlug: string | null;
+  planRunStatus: string | null;
+  planRunLaunchedBy: string | null;
+  planRunLaunchedAt: number | string | null;
+  planRunFinishedAt: number | string | null;
+  workItemTotal: number | string;
+  workItemPassed: number | string;
+  workItemFailed: number | string;
+  agents: unknown;
+  costUsd: number | string;
 }
 
 interface PlanTriggerDbRow {
@@ -209,9 +297,277 @@ interface RoutineFireDbRow {
   nextFire: Date | string | null;
 }
 
-function iso(value: Date | string | null): string | null {
+function iso(value: Date | string | number | null): string | null {
   if (value === null) return null;
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function object(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function finiteNumber(value: unknown): number | null {
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function short(value: unknown, max = 120): string {
+  const normalized = text(value).replace(/\s+/g, ' ');
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function payloadString(payload: Record<string, unknown>, key: string): string {
+  const direct = short(payload[key]);
+  if (direct) return direct;
+  for (const container of ['message', 'event', 'email', 'data']) {
+    const nested = short(object(payload[container])[key]);
+    if (nested) return nested;
+  }
+  return '';
+}
+
+export function summarizeExternalTriggerCause(
+  sourceKind: string,
+  eventPattern: string,
+  payload: Record<string, unknown>,
+): string {
+  const subject = payloadString(payload, 'subject') || payloadString(payload, 'title');
+  const sender = payloadString(payload, 'from') || payloadString(payload, 'sender');
+  if (subject && sender) return short(`${subject} · ${sender}`);
+  if (subject) return subject;
+  const summary = payloadString(payload, 'summary') || payloadString(payload, 'text');
+  if (summary) return summary;
+  const channel = payloadString(payload, 'channelName') || payloadString(payload, 'channelId');
+  if (channel) return short(`${sourceKind} · ${channel}`);
+  return short(`${sourceKind} · ${eventPattern}`);
+}
+
+export function externalTriggerDisposition(
+  status: string,
+  outcome: Record<string, unknown>,
+  error: string | null,
+): { disposition: ExternalTriggerRunDisposition; detail: string } {
+  const coalesced = finiteNumber(outcome.coalescedCount);
+  if (coalesced && coalesced > 0) {
+    return { disposition: 'coalesced', detail: `coalesced×${Math.floor(coalesced)}` };
+  }
+  const deduped = finiteNumber(outcome.dedupedCount ?? outcome.dedupeCount);
+  if (deduped && deduped > 0) {
+    return { disposition: 'deduped', detail: `deduped×${Math.floor(deduped)}` };
+  }
+  if (status === 'pending') return { disposition: 'queued', detail: 'queued' };
+  if (status === 'running') return { disposition: 'running', detail: 'running' };
+  if (status === 'succeeded') return { disposition: 'ran', detail: 'ran' };
+  if (status === 'failed') {
+    return { disposition: 'failed', detail: error ? `failed · ${short(error, 100)}` : 'failed' };
+  }
+  if (status === 'skipped') {
+    const storm = error?.startsWith('external_trigger_storm_limit:')
+      ? error.slice('external_trigger_storm_limit:'.length)
+      : null;
+    return { disposition: 'dropped', detail: storm ? `dropped · storm limit ${storm}` : 'dropped' };
+  }
+  return { disposition: 'dropped', detail: status === 'cancelled' ? 'dropped · cancelled' : `dropped · ${status}` };
+}
+
+function outcomeLinks(
+  outcome: Record<string, unknown>,
+  sourceConfig: Record<string, unknown>,
+): ExternalTriggerOutcomeLink[] {
+  const result: ExternalTriggerOutcomeLink[] = [];
+  const gmail = object(outcome.gmailDraft);
+  const draftId = text(gmail.draftId);
+  if (draftId) {
+    result.push({
+      kind: 'gmail-draft',
+      label: text(gmail.subject) || `Gmail draft ${draftId}`,
+      href: `https://mail.google.com/mail/u/0/#drafts/${encodeURIComponent(draftId)}`,
+    });
+  }
+  const slack = object(outcome.slackThreadReply);
+  const channelId = text(slack.channelId);
+  const threadId = text(slack.threadId);
+  const teamId = text(sourceConfig.teamId);
+  if (channelId && threadId) {
+    const href = teamId
+      ? `https://app.slack.com/client/${encodeURIComponent(teamId)}/${encodeURIComponent(channelId)}/thread-${encodeURIComponent(channelId)}-${encodeURIComponent(threadId.replace('.', ''))}`
+      : null;
+    result.push({
+      kind: 'slack-thread',
+      label: `Slack thread ${channelId}`,
+      href,
+    });
+  }
+  return result;
+}
+
+function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility {
+  const args = object(row.args);
+  const trigger = object(args.trigger);
+  const rawPayload = row.deliveryPayload ?? object(trigger.payload);
+  const redactedPayload = object(redactSensitiveValue(rawPayload));
+  const outcome = object(row.outcome);
+  const policy = externalTriggerDisposition(row.status, outcome, row.error);
+  const total = Number(row.workItemTotal ?? 0);
+  const passed = Number(row.workItemPassed ?? 0);
+  const failed = Number(row.workItemFailed ?? 0);
+  const planRunId = row.planRunId == null ? null : Number(row.planRunId);
+  const planRunFinishedAt = row.planRunFinishedAt == null ? null : Number(row.planRunFinishedAt);
+  const planRunLaunchedAt = row.planRunLaunchedAt == null ? null : Number(row.planRunLaunchedAt);
+  const planRun = planRunId == null || !Number.isFinite(planRunId)
+    ? null
+    : {
+        id: planRunId,
+        instancePlanSlug: row.instancePlanSlug,
+        status: row.planRunStatus ?? 'unknown',
+        launchedBy: row.planRunLaunchedBy,
+        workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
+        agents: Array.isArray(row.agents)
+          ? row.agents.filter((agent): agent is string => typeof agent === 'string' && agent.length > 0)
+          : [],
+        durationMs:
+          planRunLaunchedAt == null || planRunFinishedAt == null
+            ? null
+            : Math.max(0, planRunFinishedAt - planRunLaunchedAt),
+        costUsd: Number(row.costUsd ?? 0),
+      };
+  const receivedAt = iso(row.receivedAt);
+  const triggeredAt = iso(row.triggeredAt) as string;
+  const startedAt = iso(row.startedAt);
+  const completedAt = iso(row.completedAt);
+  const planCompletedAt = planRunFinishedAt == null ? null : iso(planRunFinishedAt);
+  const timeline: ExternalTriggerTimelineStep[] = [
+    { stage: 'received', at: receivedAt, status: receivedAt ? 'done' : 'pending', detail: receivedAt ? 'Provider event normalized and deduplicated' : 'Provider delivery unavailable' },
+    { stage: 'matched', at: triggeredAt, status: 'done', detail: `${row.eventPattern} matched binding ${row.bindingId}` },
+    { stage: 'policy', at: triggeredAt, status: policy.disposition === 'failed' ? 'failed' : policy.disposition === 'dropped' ? 'dropped' : 'done', detail: policy.detail },
+    { stage: 'launched', at: planRunLaunchedAt == null ? startedAt : iso(planRunLaunchedAt), status: planRun ? 'done' : row.status === 'running' ? 'active' : 'pending', detail: planRun ? `Plan run #${planRun.id} launched` : 'Plan run not launched' },
+    { stage: 'completed', at: planCompletedAt, status: planCompletedAt ? (planRun?.status === 'failed' ? 'failed' : 'done') : planRun?.status === 'running' ? 'active' : 'pending', detail: planCompletedAt ? `Plan run ${planRun?.status ?? 'completed'}` : 'Plan run has not completed' },
+  ];
+  return {
+    id: row.id,
+    bindingId: row.bindingId,
+    sourceKind: row.sourceKind,
+    eventPattern: row.eventPattern,
+    planHarnessSlug: row.planHarnessSlug,
+    planSlug: row.planSlug,
+    status: row.status,
+    attempts: Number(row.attempts),
+    dedupeKey: row.dedupeKey,
+    triggeredAt,
+    startedAt,
+    completedAt,
+    planRunRef: row.planRunRef,
+    error: row.error,
+    causeSummary: summarizeExternalTriggerCause(row.sourceKind, row.eventPattern, redactedPayload),
+    policyDisposition: policy.disposition,
+    policyDetail: policy.detail,
+    eventFilter: object(redactSensitiveValue(row.eventFilter)),
+    stormPolicy: object(row.stormPolicy),
+    redactedPayload,
+    outcomeLinks: outcomeLinks(outcome, row.sourceConfig),
+    timeline,
+    planRun,
+  };
+}
+
+export async function loadExternalTriggerRunVisibilities(
+  sql: Db,
+  workspaceId: string,
+  opts: {
+    planHarnessSlug?: string;
+    planSlug?: string;
+    planRunRef?: string;
+    limit?: number;
+  } = {},
+): Promise<ExternalTriggerRunVisibility[]> {
+  const harnessFilter = opts.planHarnessSlug
+    ? sql`AND b.plan_harness_slug = ${opts.planHarnessSlug}`
+    : sql``;
+  const planFilter = opts.planSlug ? sql`AND b.plan_slug = ${opts.planSlug}` : sql``;
+  const planRunFilter = opts.planRunRef ? sql`AND tr.plan_run_ref = ${opts.planRunRef}` : sql``;
+  const limit = Math.min(5_000, Math.max(1, Math.floor(opts.limit ?? 50)));
+  const rows = await sql<RunVisibilityDbRow[]>`
+    SELECT tr.id::text,
+           tr.binding_id::text AS "bindingId",
+           s.kind AS "sourceKind",
+           s.config AS "sourceConfig",
+           b.event_pattern AS "eventPattern",
+           b.event_filter AS "eventFilter",
+           b.storm_policy AS "stormPolicy",
+           b.plan_harness_slug AS "planHarnessSlug",
+           b.plan_slug AS "planSlug",
+           tr.status,
+           tr.attempts,
+           tr.dedupe_key AS "dedupeKey",
+           tr.args,
+           tr.outcome,
+           tr.triggered_at AS "triggeredAt",
+           tr.started_at AS "startedAt",
+           tr.completed_at AS "completedAt",
+           tr.plan_run_ref AS "planRunRef",
+           tr.error,
+           d.payload AS "deliveryPayload",
+           d.received_at AS "receivedAt",
+           pr.id AS "planRunId",
+           pr.instance_plan_slug AS "instancePlanSlug",
+           pr.status AS "planRunStatus",
+           pr.launched_by AS "planRunLaunchedBy",
+           pr.launched_at AS "planRunLaunchedAt",
+           pr.finished_at AS "planRunFinishedAt",
+           (SELECT count(*)::int
+              FROM harness_shared.harness_features_consolidated w
+             WHERE w.workspace_id = tr.workspace_id
+               AND w.harness_slug = b.plan_harness_slug
+               AND w.payload -> 'plan_run' ->> 'runId' = pr.id::text) AS "workItemTotal",
+           (SELECT count(*)::int
+              FROM harness_shared.harness_features_consolidated w
+             WHERE w.workspace_id = tr.workspace_id
+               AND w.harness_slug = b.plan_harness_slug
+               AND w.payload -> 'plan_run' ->> 'runId' = pr.id::text
+               AND w.status IN ('passed', 'done', 'resolved', 'closed')) AS "workItemPassed",
+           (SELECT count(*)::int
+              FROM harness_shared.harness_features_consolidated w
+             WHERE w.workspace_id = tr.workspace_id
+               AND w.harness_slug = b.plan_harness_slug
+               AND w.payload -> 'plan_run' ->> 'runId' = pr.id::text
+               AND w.status IN ('failed', 'dropped', 'deprecated')) AS "workItemFailed",
+           COALESCE((
+             SELECT jsonb_agg(agent ORDER BY agent)
+               FROM (
+                 SELECT DISTINCT w.taken_by AS agent
+                   FROM harness_shared.harness_features_consolidated w
+                  WHERE w.workspace_id = tr.workspace_id
+                    AND w.harness_slug = b.plan_harness_slug
+                    AND w.payload -> 'plan_run' ->> 'runId' = pr.id::text
+                    AND w.taken_by IS NOT NULL
+               ) assigned_agents
+           ), '[]'::jsonb) AS agents,
+           (SELECT COALESCE(sum(t.cost_usd), 0)
+              FROM harness_shared.plan_run_turns t
+             WHERE t.workspace_id = tr.workspace_id AND t.plan_run_id = pr.id) AS "costUsd"
+      FROM harness_shared.trigger_runs tr
+      JOIN harness_shared.trigger_bindings b
+        ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
+      JOIN harness_shared.trigger_sources s
+        ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+      LEFT JOIN harness_shared.trigger_deliveries d
+        ON d.workspace_id = tr.workspace_id AND d.id = tr.delivery_id
+      LEFT JOIN harness_shared.plan_runs pr
+        ON pr.workspace_id = tr.workspace_id AND pr.id::text = tr.plan_run_ref
+     WHERE tr.workspace_id = ${workspaceId}
+       ${harnessFilter}
+       ${planFilter}
+       ${planRunFilter}
+     ORDER BY tr.triggered_at DESC, tr.id DESC
+     LIMIT ${limit}`;
+  return rows.map(mapRunVisibility);
 }
 
 function required(value: string, field: string): string {
@@ -433,7 +789,7 @@ export async function loadExternalTriggerAdminSnapshot(
   sql: postgres.Sql,
   workspaceId: string,
 ): Promise<ExternalTriggerAdminSnapshot> {
-  const [sourceRows, bindingRows, runRows, failureRows] = await Promise.all([
+  const [sourceRows, bindingRows, recentRuns, failureRows] = await Promise.all([
     sql<SourceDbRow[]>`
       SELECT s.id::text,
              s.kind,
@@ -492,27 +848,7 @@ export async function loadExternalTriggerAdminSnapshot(
        WHERE b.workspace_id = ${workspaceId}
          AND b.detached_at IS NULL
        ORDER BY b.created_at, b.id`,
-    sql<RunDbRow[]>`
-      SELECT tr.id::text,
-             tr.binding_id::text AS "bindingId",
-             s.kind AS "sourceKind",
-             b.event_pattern AS "eventPattern",
-             b.plan_harness_slug AS "planHarnessSlug",
-             b.plan_slug AS "planSlug",
-             tr.status,
-             tr.attempts,
-             tr.triggered_at AS "triggeredAt",
-             tr.completed_at AS "completedAt",
-             tr.plan_run_ref AS "planRunRef",
-             tr.error
-        FROM harness_shared.trigger_runs tr
-        JOIN harness_shared.trigger_bindings b
-          ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
-        JOIN harness_shared.trigger_sources s
-          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
-       WHERE tr.workspace_id = ${workspaceId}
-       ORDER BY tr.triggered_at DESC, tr.id DESC
-       LIMIT 50`,
+    loadExternalTriggerRunVisibilities(sql, workspaceId, { limit: 50 }),
     sql<Array<{ count: number }>>`
       SELECT (
         (SELECT count(*)::int
@@ -561,12 +897,6 @@ export async function loadExternalTriggerAdminSnapshot(
           : null,
     }),
   );
-  const recentRuns = runRows.map((row) => ({
-    ...row,
-    triggeredAt: iso(row.triggeredAt) as string,
-    completedAt: iso(row.completedAt),
-  }));
-
   return {
     enabled: true,
     counts: {

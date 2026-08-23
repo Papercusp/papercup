@@ -35,6 +35,8 @@ import {
   type DesktopTarget,
 } from './desktop-driver';
 import { hiveDesktop } from './desktop-lease';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveDesktopForScope } from '../../desktop/desktop-session-registry';
 import { scrubExecEnv } from '../capability/exec-sandbox';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
@@ -118,7 +120,7 @@ export interface ComputerCtx {
  *      (`acquireAgentDisplay`). BOTH are deliberate capability markers — never raw
  *      `DISPLAY`, which can leak a dev box's own `:0` session.
  */
-function resolveBoundDisplay(ctx: ComputerCtx): DesktopTarget {
+async function resolveBoundDisplay(ctx: ComputerCtx): Promise<DesktopTarget> {
   // 1. The caller's hive lease (operator-process Map). Route the ctx slug through
   //    the fail-loud resolver (workspace-data-isolation-leaks P-004) so the
   //    operator/superuser `'*'` auto-default (and an unset ctx) resolve to "no

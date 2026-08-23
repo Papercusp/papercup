@@ -85,4 +85,25 @@ describe('buildOutputEnvelope', () => {
       ),
     ).toThrow('byteCount');
   });
+
+  it('validates and accounts explicit replay state without hiding it in metrics', () => {
+    const replayState = {
+      kind: 'replay-state' as const,
+      values: { cursor: 2, filters: ['open'], nested: { enabled: true } },
+    };
+    const out = buildOutputEnvelope({ summary: 'continue', content: [replayState] });
+
+    expect(out.content).toEqual([replayState]);
+    expect(out.accounting.contentBytes).toBe(accountOutputContentItem(replayState));
+    expect(out.metrics).toEqual({});
+  });
+
+  it('rejects replay state that cannot be replayed as JSON', () => {
+    expect(() =>
+      buildOutputEnvelope({
+        summary: '',
+        content: [{ kind: 'replay-state', values: { cursor: Number.NaN } }],
+      }),
+    ).toThrow(/finite number/);
+  });
 });

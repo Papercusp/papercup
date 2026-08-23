@@ -31,6 +31,7 @@ import {
   type PlanRunTranscriptResult,
   type PlanRunTranscriptTurn,
   type PlanRunStatus,
+  type TriggerRunVisibility,
 } from './plans-api';
 import { launchErrorLabel } from './AgentsPanel';
 
@@ -219,6 +220,7 @@ export default function RunDetailPanel({ planSlug, planTitle, currentContentHash
       {consoleError ? (
         <div className="pc-run-detail__error">{consoleError}</div>
       ) : null}
+      {meta?.triggerRun ? <TriggerRunTrace trigger={meta.triggerRun} /> : null}
       <div className="pc-run-detail__controls">
         <input
           type="search"
@@ -271,6 +273,91 @@ export default function RunDetailPanel({ planSlug, planTitle, currentContentHash
           </button>
         </div>
       </section>
+    </section>
+  );
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms == null) return 'in progress';
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function TriggerRunTrace({ trigger }: { trigger: TriggerRunVisibility }) {
+  const planRun = trigger.planRun;
+  const planProgress = planRun?.workItems.total
+    ? `${planRun.workItems.passed}/${planRun.workItems.total} items`
+    : 'no items';
+  const agents = planRun?.agents.length
+    ? `${planRun.agents.length} agent${planRun.agents.length === 1 ? '' : 's'}`
+    : 'no assigned agents';
+  return (
+    <section className="pc-trigger-trace" aria-labelledby="pc-trigger-trace-title">
+      <header className="pc-trigger-trace__head">
+        <div>
+          <span className="pc-trigger-trace__kicker">{trigger.sourceKind} · {trigger.eventPattern}</span>
+          <h3 id="pc-trigger-trace-title">Trigger decision trace</h3>
+          <p>{trigger.causeSummary}</p>
+        </div>
+        <span
+          className="pc-trigger-trace__disposition"
+          data-disposition={trigger.policyDisposition}
+        >
+          {trigger.policyDetail}
+        </span>
+      </header>
+
+      <dl className="pc-trigger-trace__facts">
+        <div><dt>Binding</dt><dd>{trigger.bindingId}</dd></div>
+        <div><dt>Filter</dt><dd><code>{JSON.stringify(trigger.eventFilter)}</code></dd></div>
+        <div><dt>Storm policy</dt><dd><code>{JSON.stringify(trigger.stormPolicy)}</code></dd></div>
+        <div><dt>Dedupe key</dt><dd><code>{trigger.dedupeKey}</code></dd></div>
+        {planRun ? (
+          <div>
+            <dt>Launched plan</dt>
+            <dd>
+              {planRun.instancePlanSlug ? (
+                <a href={`/admin/plans?plan=${encodeURIComponent(planRun.instancePlanSlug)}`}>
+                  {planRun.instancePlanSlug}
+                </a>
+              ) : `Run #${planRun.id}`}
+              {' · '}{planRun.status} · {planProgress} · {agents} · {formatDuration(planRun.durationMs)} · {planRun.costUsd > 0 ? `$${planRun.costUsd.toFixed(2)}` : '$0.00'}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+
+      <ol className="pc-trigger-trace__timeline" aria-label="Trigger timeline">
+        {trigger.timeline.map((step) => (
+          <li key={step.stage} data-status={step.status}>
+            <span>{step.stage}</span>
+            <strong>{step.detail}</strong>
+            <time>{step.at ? new Date(step.at).toLocaleString() : 'pending'}</time>
+          </li>
+        ))}
+      </ol>
+
+      <details className="pc-trigger-trace__payload">
+        <summary>Redacted event payload</summary>
+        <pre>{JSON.stringify(trigger.redactedPayload, null, 2)}</pre>
+      </details>
+
+      {trigger.outcomeLinks.length > 0 ? (
+        <nav className="pc-trigger-trace__outcomes" aria-label="Run outcomes">
+          <span>Outcomes</span>
+          {trigger.outcomeLinks.map((link) =>
+            link.href ? (
+              <a key={`${link.kind}:${link.label}`} href={link.href} target="_blank" rel="noreferrer">
+                {link.label}
+              </a>
+            ) : (
+              <span key={`${link.kind}:${link.label}`}>{link.label}</span>
+            ),
+          )}
+        </nav>
+      ) : null}
     </section>
   );
 }

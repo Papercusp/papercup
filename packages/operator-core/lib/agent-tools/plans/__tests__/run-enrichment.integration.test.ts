@@ -33,8 +33,8 @@ vi.mock('../../../workspace-registry', async (importOriginal) => {
 const { listPlanRuns, computePlanRunRollup } = await import('../runs');
 type PlanRunSummary = Awaited<ReturnType<typeof listPlanRuns>>[number];
 
-const HARNESS = 'papercup';
-const TEMPLATE = 'tmpl-runs';
+const HARNESS = 'test-run-enrichment';
+const TEMPLATE = 'test-tmpl-runs';
 
 beforeAll(async () => {
   org = await createOrgTestDb();
@@ -43,8 +43,18 @@ afterAll(async () => {
   await org?.cleanup();
 });
 beforeEach(async () => {
+  await org.adminSql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = 'ws-x'`;
+  await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = 'ws-x'`;
+  await org.adminSql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = 'ws-x'`;
+  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS}`;
   await org.adminSql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${HARNESS}`;
+  await org.adminSql`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
+    VALUES ('ws-x', ${HARNESS}, ${TEMPLATE}, 'Run visibility fixture', 'ready',
+            '# Run visibility fixture', 'run-visibility-v1', '[]'::jsonb)
+    ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING`;
 });
 
 async function seedRun(opts: { outcome: 'success' | 'partial' | 'failed'; launchedAt: number; durationMs: number }): Promise<number> {
@@ -94,6 +104,43 @@ describe('listPlanRuns enrichment (P-022)', () => {
     const runs = await listPlanRuns(TEMPLATE, { harnessSlug: HARNESS });
     expect(runs.map((r) => r.outcome)).toEqual(['failed', 'success']);
   });
+
+  it('folds external-trigger provenance onto the existing plan-run row', async () => {
+    const id = await seedRun({ outcome: 'success', launchedAt: 1_780_000_000_000, durationMs: 5000 });
+    const sources = await org.adminSql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, config)
+      VALUES ('ws-x', 'slack', 'connected', '{"teamId":"T1"}'::jsonb)
+      RETURNING id`;
+    const bindings = await org.adminSql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+         event_filter, action, armed, storm_policy)
+      VALUES ('ws-x', ${sources[0].id}, ${HARNESS}, ${TEMPLATE}, 'ext:slack:mention',
+              '{"channelType":"public_channel"}'::jsonb, '{"type":"launch-plan"}'::jsonb,
+              TRUE, '{"maxRuns":3,"windowSeconds":60}'::jsonb)
+      RETURNING id`;
+    await org.adminSql`
+      INSERT INTO harness_shared.trigger_runs
+        (workspace_id, binding_id, dedupe_key, status, args, outcome, attempts,
+         plan_run_ref, started_at, completed_at)
+      VALUES ('ws-x', ${bindings[0].id}, 'slack:message-1', 'succeeded',
+              ${JSON.stringify({ trigger: { payload: { text: 'Ship the release', channelId: 'C1' } } })}::text::jsonb,
+              ${JSON.stringify({ slackThreadReply: { channelId: 'C1', threadId: '1777.1', messageTs: '1777.2' } })}::text::jsonb,
+              1, ${String(id)}, now(), now())`;
+
+    const run = (await listPlanRuns(TEMPLATE, { harnessSlug: HARNESS }))[0]!;
+    expect(run.triggerRun).toMatchObject({
+      sourceKind: 'slack',
+      eventPattern: 'ext:slack:mention',
+      causeSummary: 'Ship the release',
+      policyDisposition: 'ran',
+      planRun: { id, status: 'done', durationMs: 5000 },
+    });
+    expect(run.triggerRun?.outcomeLinks[0]).toMatchObject({
+      kind: 'slack-thread',
+      href: expect.stringContaining('https://app.slack.com/client/T1/C1/'),
+    });
+  });
 });
 
 describe('computePlanRunRollup (P-023, pure)', () => {
@@ -104,6 +151,7 @@ describe('computePlanRunRollup (P-023, pure)', () => {
       runType: 'scheduled', trigger: 'scheduled', outcome: 'success', finishedAt: 0,
       runSeq: 0, instancePlanSlug: null, durationMs: 100, turnCount: 0,
       workItems: { total: 0, passed: 0, failed: 0, open: 0 }, costUsd: 0,
+      triggerRun: null,
       ...over,
     }) as PlanRunSummary;
 

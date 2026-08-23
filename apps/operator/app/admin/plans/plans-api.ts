@@ -2159,6 +2159,59 @@ export type PlanRunStatus =
   | 'done'
   | 'failed';
 
+export type TriggerRunDisposition =
+  | 'ran'
+  | 'running'
+  | 'queued'
+  | 'dropped'
+  | 'deduped'
+  | 'coalesced'
+  | 'failed';
+
+export interface TriggerRunVisibility {
+  id: string;
+  bindingId: string;
+  sourceKind: string;
+  eventPattern: string;
+  planHarnessSlug: string;
+  planSlug: string;
+  status: string;
+  attempts: number;
+  dedupeKey: string;
+  triggeredAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  planRunRef: string | null;
+  error: string | null;
+  causeSummary: string;
+  policyDisposition: TriggerRunDisposition;
+  policyDetail: string;
+  eventFilter: Record<string, unknown>;
+  stormPolicy: Record<string, unknown>;
+  redactedPayload: Record<string, unknown>;
+  outcomeLinks: Array<{
+    kind: 'gmail-draft' | 'slack-thread';
+    label: string;
+    href: string | null;
+  }>;
+  timeline: Array<{
+    stage: 'received' | 'matched' | 'policy' | 'launched' | 'completed';
+    at: string | null;
+    status: 'done' | 'active' | 'pending' | 'failed' | 'dropped';
+    detail: string;
+  }>;
+  planRun: {
+    id: number;
+    instancePlanSlug: string | null;
+    status: string;
+    launchedBy: string | null;
+    workItems: { total: number; passed: number; failed: number; open: number };
+    agents: string[];
+    durationMs: number | null;
+    costUsd: number;
+  } | null;
+}
+
 export interface PlanRun {
   id: number;
   planSlug: string;
@@ -2172,6 +2225,7 @@ export interface PlanRun {
   updatedAt: number;
   /** Null means no transcript rows were recorded for the run. */
   turnCount: number | null;
+  triggerRun?: TriggerRunVisibility | null;
 }
 
 export function fetchPlanRuns(slug: string) {
@@ -2255,6 +2309,7 @@ export interface PlanRunTranscriptResult {
   sessionId: string;
   status: PlanRunStatus;
   planContentHash: string;
+  triggerRun: TriggerRunVisibility | null;
   turns: PlanRunTranscriptTurn[];
   nextCursor: number | null;
   query: string | null;

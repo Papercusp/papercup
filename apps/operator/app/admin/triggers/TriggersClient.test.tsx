@@ -69,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  (payload.recentRuns as unknown[]).splice(0);
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
@@ -122,6 +123,44 @@ describe("/admin/triggers client", () => {
     expect(await screen.findByText(/credential:\s*configured/)).toBeTruthy();
     expect(screen.queryByText("google-oauth:fixture")).toBeNull();
     expect(screen.getByText("1 binding · 0 armed")).toBeTruthy();
+  });
+
+  it("renders the global trigger-activity feed with cause, policy, plan progress, and outcome", async () => {
+    (payload.recentRuns as unknown[]).push({
+      id: "run-1",
+      bindingId: BINDING_ID,
+      sourceKind: "gmail",
+      eventPattern: "ext:gmail:message.created",
+      planHarnessSlug: "papercusp",
+      planSlug: "triage-mail",
+      status: "succeeded",
+      attempts: 1,
+      triggeredAt: "2026-08-22T18:00:00.000Z",
+      completedAt: "2026-08-22T18:00:01.000Z",
+      planRunRef: "7",
+      error: null,
+      causeSummary: "Launch review · Ada",
+      policyDisposition: "ran",
+      policyDetail: "ran",
+      planRun: {
+        id: 7,
+        instancePlanSlug: "triage-mail@run-1",
+        status: "done",
+        workItems: { total: 2, passed: 2, failed: 0, open: 0 },
+        agents: ["su-1"],
+      },
+      outcomeLinks: [{
+        kind: "gmail-draft",
+        label: "Re: Launch review",
+        href: "https://mail.google.com/mail/u/0/#drafts/draft-1",
+      }],
+    });
+    renderClient("?view=runs");
+    expect(await screen.findByText("Launch review · Ada")).toBeTruthy();
+    expect(screen.getByText("ran")).toBeTruthy();
+    expect(screen.getByText("triage-mail@run-1")).toBeTruthy();
+    expect(screen.getByText("done · 2/2 · 1 agent")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Re: Launch review" }).getAttribute("href")).toContain("drafts/draft-1");
   });
 
   it("renders the flag-off kill-switch without fetching data", () => {

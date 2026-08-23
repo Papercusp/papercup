@@ -19,6 +19,10 @@ const KEY_DIRECTED_SECRET_RE = new RegExp(
   'gi',
 );
 
+const SENSITIVE_VALUE_KEY_RE =
+  /(?:authorization|cookie|password|passphrase|secret|token|private.?key|access.?key|api.?key|client.?secret)/i;
+const SAFE_REFERENCE_KEY_RE = /(?:credential|secret|token|key)ref$/i;
+
 /** Scrub token shapes that identify themselves without any surrounding key. */
 export function redactSelfIdentifyingSecrets(text: string): string {
   return text.replace(SELF_IDENTIFYING_SECRET_RE, '[redacted]');
@@ -38,4 +42,34 @@ export function redactKeyDirectedSecrets(text: string): string {
 /** Defense-in-depth composition for arbitrary diagnostic text. */
 export function redactSensitiveText(text: string): string {
   return redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(text));
+}
+
+/**
+ * Defense-in-depth redaction for JSON-shaped values crossing a UI boundary.
+ *
+ * Key-directed secrets are removed before recursively scrubbing self-identifying
+ * tokens from ordinary strings. Opaque references such as `credentialRef` are
+ * intentionally preserved: they identify server-side storage without carrying
+ * the credential itself. The input is never mutated.
+ */
+export function redactSensitiveValue(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): unknown {
+  if (typeof value === 'string') return redactSensitiveText(value);
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((entry) => redactSensitiveValue(entry, seen));
+  if (typeof value !== 'object') return String(value);
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    result[key] =
+      SENSITIVE_VALUE_KEY_RE.test(key) && !SAFE_REFERENCE_KEY_RE.test(key)
+        ? '[redacted]'
+        : redactSensitiveValue(entry, seen);
+  }
+  seen.delete(value);
+  return result;
 }

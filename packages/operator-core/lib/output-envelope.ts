@@ -30,9 +30,20 @@ export interface OutputReferenceContentItem {
   audience?: OutputAudience;
 }
 
+/**
+ * Explicit replay state produced by a managed script. The next invocation may pass `values`
+ * back as its bindings, so store/load parity never depends on process-local or session-local
+ * memory that disappears across a cold carry.
+ */
+export interface OutputReplayStateContentItem {
+  kind: 'replay-state';
+  values: Readonly<Record<string, unknown>>;
+}
+
 /** Open extension seam. Extend this interface from a lane-owned module. */
 export interface OutputContentItemMap {
   reference: OutputReferenceContentItem;
+  replayState: OutputReplayStateContentItem;
 }
 
 export type OutputContentItem = OutputContentItemMap[keyof OutputContentItemMap];
@@ -86,7 +97,7 @@ export interface BuildOutputEnvelopeInput {
   metrics?: OutputExecutionMetrics;
 }
 
-type UnaccountedOutputContentKind = Exclude<OutputContentItem['kind'], 'reference'>;
+type UnaccountedOutputContentKind = Exclude<OutputContentItem['kind'], 'reference' | 'replay-state'>;
 const ACCOUNTING_IS_EXHAUSTIVE: [UnaccountedOutputContentKind] extends [never] ? true : never = true;
 
 function assertNever(value: unknown): never {
@@ -105,6 +116,7 @@ export function accountOutputContentItem(item: OutputContentItem): number {
   void ACCOUNTING_IS_EXHAUSTIVE;
   switch (item.kind) {
     case 'reference':
+    case 'replay-state':
       return Buffer.byteLength(JSON.stringify(item), 'utf8');
   }
   return assertNever(item);
@@ -118,6 +130,45 @@ function requireReference(item: OutputReferenceContentItem): void {
   if (!/^[0-9a-f]{64}$/i.test(item.sha256)) {
     throw new TypeError('output reference sha256 must be 64 hexadecimal characters');
   }
+}
+
+function requireJsonValue(value: unknown, path: string, seen: Set<object>): void {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError(`${path} must be a finite number`);
+    return;
+  }
+  if (typeof value !== 'object') throw new TypeError(`${path} contains non-JSON ${typeof value}`);
+  if (seen.has(value)) throw new TypeError(`${path} contains a cycle`);
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) {
+        throw new TypeError(`${path}[${index}] is a sparse array slot`);
+      }
+      requireJsonValue(value[index], `${path}[${index}]`, seen);
+    }
+    seen.delete(value);
+    return;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new TypeError(`${path} must be a plain JSON object`);
+  }
+  for (const [key, child] of Object.entries(value)) {
+    requireJsonValue(child, `${path}.${key}`, seen);
+  }
+  if (Object.keys(value).length !== Reflect.ownKeys(value).length) {
+    throw new TypeError(`${path} contains non-enumerable or symbol properties`);
+  }
+  seen.delete(value);
+}
+
+function requireReplayState(item: OutputReplayStateContentItem): void {
+  if (typeof item.values !== 'object' || item.values === null || Array.isArray(item.values)) {
+    throw new TypeError('replay-state values must be a plain JSON object');
+  }
+  requireJsonValue(item.values, 'replay-state.values', new Set());
 }
 
 /** Validate and construct an envelope without inventing summary prose. */
@@ -151,6 +202,9 @@ export function buildOutputEnvelope(
     switch (item.kind) {
       case 'reference':
         requireReference(item);
+        continue;
+      case 'replay-state':
+        requireReplayState(item);
         continue;
     }
     assertNever(item);

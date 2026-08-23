@@ -420,11 +420,11 @@ export function OperatorChat({
               </div>
             ) : null}
             {banner}
-            {conversationId && workspaceId && (
-              <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
-            )}
           </>
         }
+        transcriptTail={conversationId && workspaceId ? (
+          <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
+        ) : null}
         emptyState={{
           title: agentName,
           body: composerDisabled

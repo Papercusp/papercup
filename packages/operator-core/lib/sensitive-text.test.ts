@@ -3,6 +3,7 @@ import {
   redactKeyDirectedSecrets,
   redactSelfIdentifyingSecrets,
   redactSensitiveText,
+  redactSensitiveValue,
 } from './sensitive-text';
 
 describe('sensitive diagnostic text', () => {
@@ -27,5 +28,25 @@ describe('sensitive diagnostic text', () => {
   it('does not redact prose that merely mentions credential concepts', () => {
     const prose = 'The API key is unavailable, so the task remains stopped.';
     expect(redactSensitiveText(prose)).toBe(prose);
+  });
+
+  it('redacts nested secret values while preserving opaque credential references', () => {
+    const input = {
+      credentialRef: 'google-oauth:workspace',
+      accessToken: 'opaque-access-token-value',
+      nested: {
+        authorization: 'Bearer opaque-bearer-value',
+        text: `reply with sk-${'a'.repeat(24)} removed`,
+      },
+    };
+    expect(redactSensitiveValue(input)).toEqual({
+      credentialRef: 'google-oauth:workspace',
+      accessToken: '[redacted]',
+      nested: {
+        authorization: '[redacted]',
+        text: 'reply with [redacted] removed',
+      },
+    });
+    expect(input.accessToken).toBe('opaque-access-token-value');
   });
 });

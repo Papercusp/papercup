@@ -925,6 +925,51 @@ describe('mergeIssuePayload opts.unset REMOVES the key (EI-21215793636294109)', 
     expect(returned).not.toBeNull(); // a successful unset still returns the refreshed issue
   });
 
+  it('clears normalized source-plan provenance and its coverage edge with the payload stamp', async () => {
+    const a = await issues.createIssue({ title: `plan-link-clear-${Date.now()}`, createdBy: 'agA' });
+    const planSlug = 'some-plan';
+    const itemId = 'P-003';
+    const planRef = `${planSlug}#${itemId}`;
+    await issues.mergeIssuePayload(a.id, {
+      plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: 'papercup' },
+      keep: 'yes',
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET source_plan_slug = ${planSlug},
+             source_plan_item_ids = ARRAY[${itemId}]::text[]
+       WHERE workspace_id = ${PINNED_WS} AND feature_id = ${a.id}`;
+    await db.sql`
+      INSERT INTO harness_shared.coord_links
+        (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at)
+      VALUES
+        ('default', 'issue', ${a.id}, 'plan_item', ${planRef}, 'relates', 'agA', now()),
+        ('default', 'issue', ${a.id}, 'plan_item', ${planRef}, 'implements', 'agA', now())`;
+
+    const returned = await issues.mergeIssuePayload(a.id, {}, { unset: ['plan_item'] });
+
+    const rows = await db.sql<{
+      payload: Record<string, unknown> | null;
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+    }[]>`
+      SELECT payload, source_plan_slug, source_plan_item_ids
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${PINNED_WS} AND feature_id = ${a.id}`;
+    const edges = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.coord_links
+       WHERE workspace_id = 'default'
+         AND src_kind = 'issue' AND src_ref = ${a.id}
+         AND dst_kind = 'plan_item' AND dst_ref = ${planRef}
+         AND rel = ANY (ARRAY['relates', 'implements'])`;
+
+    expect(Object.keys(rows[0]?.payload ?? {})).not.toContain('plan_item');
+    expect(rows[0]).toMatchObject({ source_plan_slug: null, source_plan_item_ids: null });
+    expect(edges[0]?.n).toBe(0);
+    expect(returned).toMatchObject({ sourcePlanSlug: null, sourcePlanItemIds: null });
+  });
+
   it('CONTROL: the same removal through the engineer_issues VIEW does not happen — why the fix targets the base table', async () => {
     const a = await issues.createIssue({ title: `unset-view-control-${Date.now()}`, createdBy: 'agA' });
     await issues.mergeIssuePayload(a.id, { plan_item: { plan_slug: 'p', item_id: 'P-001' } });

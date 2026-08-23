@@ -19,8 +19,27 @@ import {
   type ProvisionOptions,
   type SandboxDesktop,
 } from './desktop-provisioner';
+import { activeWorkspaceId } from '../../workspace-registry';
+import {
+  registerDesktopSession,
+  markDesktopReady,
+  closeDesktopSession,
+} from '../../desktop/desktop-session-registry';
 
 type Provisioner = (opts?: ProvisionOptions) => Promise<SandboxDesktop>;
+
+/**
+ * P-003 (D-004): the registry mirror. `leases` above stays the AUTHORITY for
+ * liveness — it holds the actual child process — and this map only remembers which
+ * PG row describes it, so teardown can close the record.
+ *
+ * Every registry write here is BEST-EFFORT and deliberately so. A desktop works
+ * perfectly well without its inventory row; failing a provision because Postgres
+ * hiccupped would trade a working feature for bookkeeping. The degraded outcome is
+ * that `computer:list_desktops` under-reports, which is visible and recoverable —
+ * the reconciler and the next provision both repair it.
+ */
+const sessionIds = new Map<string, string>();
 
 let provisionImpl: Provisioner = realProvision;
 /** Test seam — swap the provisioner so the lifecycle tests need no live X. */
@@ -45,6 +64,7 @@ export async function ensureHiveDesktop(potSlug: string, opts?: ProvisionOptions
   const p = (async () => {
     const desktop = await provisionImpl(opts);
     leases.set(potSlug, desktop);
+    await recordLeaseInRegistry(potSlug, desktop);
     return desktop;
   })().finally(() => inflight.delete(potSlug));
   inflight.set(potSlug, p);
@@ -82,11 +102,55 @@ export function desktopEnvForHive(potSlug: string): Record<string, string> {
   };
 }
 
+/**
+ * Mirror a freshly-provisioned hive lease into the registry (scope='pot' per
+ * D-005, kind='xvfb-local'). Best-effort: see `sessionIds`' comment for why a
+ * failure here must never fail the provision.
+ *
+ * The GL verdict measured by P-002's ladder is stamped as a capability so
+ * downstream consumers read it instead of re-probing the display (D-004:
+ * capabilities are MEASURED, never assumed).
+ */
+async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): Promise<void> {
+  try {
+    const session = await registerDesktopSession({
+      workspaceId: activeWorkspaceId(),
+      harnessSlug: potSlug,
+      kind: 'xvfb-local',
+      scope: 'pot',
+      scopeRef: potSlug,
+      display: desktop.display,
+      displayGeometry: { width: desktop.width, height: desktop.height },
+    });
+    sessionIds.set(potSlug, session.id);
+    await markDesktopReady(
+      session.id,
+      { capabilities: { gl: Boolean((desktop as { gl?: unknown }).gl) } },
+      undefined,
+    );
+  } catch {
+    /* inventory only — a desktop without its row still works; the reconciler repairs it */
+  }
+}
+
+/** Close a hive's registry row, if it has one. Best-effort + idempotent. */
+async function closeLeaseInRegistry(potSlug: string): Promise<void> {
+  const id = sessionIds.get(potSlug);
+  if (!id) return;
+  sessionIds.delete(potSlug);
+  try {
+    await closeDesktopSession(id, 'released');
+  } catch {
+    /* inventory only */
+  }
+}
+
 /** Tear down a hive's desktop (call from pot:dissolve). Idempotent. */
 export async function releaseHiveDesktop(potSlug: string): Promise<void> {
   const d = leases.get(potSlug);
   if (!d) return;
   leases.delete(potSlug);
+  await closeLeaseInRegistry(potSlug);
   await d.release();
 }
 
@@ -98,6 +162,13 @@ export function leasedHiveDesktops(): string[] {
 /** Tear down EVERY leased desktop (operator shutdown). */
 export async function releaseAllHiveDesktops(): Promise<void> {
   const all = [...leases.values()];
+  const slugs = [...leases.keys()];
   leases.clear();
+  await Promise.all(slugs.map((s) => closeLeaseInRegistry(s)));
   await Promise.all(all.map((d) => d.release().catch(() => {})));
+}
+
+/** The registry session id backing a hive's lease (observability / tests). */
+export function hiveDesktopSessionId(potSlug: string): string | undefined {
+  return sessionIds.get(potSlug);
 }

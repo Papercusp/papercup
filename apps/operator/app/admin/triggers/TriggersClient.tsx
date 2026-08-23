@@ -32,9 +32,11 @@ const VIEW_LABELS: Record<View, string> = {
 const RUN_COLUMNS = [
   {
     key: "status",
-    header: "Status",
+    header: "Policy",
     render: (run) => (
-      <span className={`tr-badge run-${run.status}`}>{run.status}</span>
+      <span className={`tr-badge run-${run.policyDisposition ?? run.status}`}>
+        {run.policyDetail ?? run.status}
+      </span>
     ),
   },
   {
@@ -43,14 +45,33 @@ const RUN_COLUMNS = [
     render: (run) => (
       <>
         <code>{run.eventPattern}</code>
-        <small>{run.sourceKind}</small>
+        <small>{run.causeSummary ?? run.sourceKind}</small>
       </>
     ),
   },
   {
     key: "plan",
     header: "Plan",
-    render: (run) => `${run.planHarnessSlug}/${run.planSlug}`,
+    render: (run) => {
+      const instance = run.planRun?.instancePlanSlug;
+      const progress = run.planRun?.workItems.total
+        ? `${run.planRun.workItems.passed}/${run.planRun.workItems.total}`
+        : null;
+      return (
+        <>
+          {instance ? (
+            <a href={`/admin/plans?plan=${encodeURIComponent(instance)}`}>{instance}</a>
+          ) : `${run.planHarnessSlug}/${run.planSlug}`}
+          {run.planRun ? (
+            <small>
+              {[run.planRun.status, progress, run.planRun.agents.length ? `${run.planRun.agents.length} agent${run.planRun.agents.length === 1 ? "" : "s"}` : null]
+                .filter(Boolean)
+                .join(" · ")}
+            </small>
+          ) : null}
+        </>
+      );
+    },
   },
   { key: "attempts", header: "Attempts", render: (run) => run.attempts },
   {
@@ -61,8 +82,11 @@ const RUN_COLUMNS = [
   {
     key: "outcome",
     header: "Outcome",
-    render: (run) =>
-      run.error ?? (run.planRunRef ? `plan run ${run.planRunRef}` : "—"),
+    render: (run) => {
+      const link = run.outcomeLinks?.[0];
+      if (link?.href) return <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>;
+      return run.error ?? link?.label ?? (run.planRunRef ? `plan run ${run.planRunRef}` : "—");
+    },
   },
 ] satisfies TableColumn<ExternalTriggerRunAdminRow>[];
 
