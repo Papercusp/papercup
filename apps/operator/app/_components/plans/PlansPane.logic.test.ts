@@ -7,6 +7,7 @@ import {
   buildGlanceRows,
   progressOf,
   agoLabel,
+  agoLabelMs,
   isStale,
   STALE_MS,
   PLANS_PANE_SORTS,
@@ -200,18 +201,33 @@ describe('progressOf', () => {
   });
 });
 
-describe('isStale', () => {
+describe('isStale (dual-clock — plan-visibility-revamp P-002 / D-003)', () => {
   const now = Date.parse('2026-07-17T00:00:00Z');
-  it('flags an active plan with no activity for ≥14d', () => {
-    expect(isStale('2026-07-01T00:00:00Z', now)).toBe(true); // 16d
-    expect(isStale('2026-07-10T00:00:00Z', now)).toBe(false); // 7d
-    expect(isStale(null, now)).toBe(false);
-    expect(isStale('not-a-date', now)).toBe(false);
+  it('flags an active plan when NEITHER clock moved for ≥14d', () => {
+    expect(isStale({ updated: '2026-07-01T00:00:00Z', now })).toBe(true); // 16d, never worked
+    expect(isStale({ updated: '2026-07-10T00:00:00Z', now })).toBe(false); // 7d
+    expect(isStale({ updated: null, now })).toBe(false);
+    expect(isStale({ updated: 'not-a-date', now })).toBe(false);
+    expect(isStale({ now })).toBe(false); // no clocks at all → never stale
   });
-  it('uses a 14-day threshold', () => {
+  it('recent WORK keeps an unedited plan un-stale (the D-003 false-positive fix)', () => {
+    const oldEdit = '2026-06-01T00:00:00Z'; // 46d before `now`
+    expect(isStale({ updated: oldEdit, lastWorkAtMs: now - 3_600_000, now })).toBe(false);
+    // …and work alone going stale still reads stale when the edit is old too.
+    expect(isStale({ updated: oldEdit, lastWorkAtMs: now - STALE_MS - 1, now })).toBe(true);
+    // work clock with NO edit clock at all
+    expect(isStale({ lastWorkAtMs: now - 3_600_000, now })).toBe(false);
+    expect(isStale({ lastWorkAtMs: now - STALE_MS - 1, now })).toBe(true);
+  });
+  it('a recent EDIT keeps a long-unworked plan un-stale (symmetric)', () => {
+    expect(
+      isStale({ updated: new Date(now - 3_600_000).toISOString(), lastWorkAtMs: now - STALE_MS * 3, now }),
+    ).toBe(false);
+  });
+  it('uses a 14-day threshold over the NEWEST clock', () => {
     expect(STALE_MS).toBe(14 * 24 * 60 * 60 * 1000);
-    expect(isStale(new Date(now - STALE_MS - 1).toISOString(), now)).toBe(true);
-    expect(isStale(new Date(now - STALE_MS + 60_000).toISOString(), now)).toBe(false);
+    expect(isStale({ updated: new Date(now - STALE_MS - 1).toISOString(), now })).toBe(true);
+    expect(isStale({ updated: new Date(now - STALE_MS + 60_000).toISOString(), now })).toBe(false);
   });
 });
 
@@ -224,5 +240,21 @@ describe('agoLabel', () => {
     expect(agoLabel(new Date(now - 3 * 3_600_000).toISOString())).toBe('3h');
     expect(agoLabel(new Date(now - 5 * 86_400_000).toISOString())).toBe('5d');
     expect(agoLabel('not-a-date')).toBe('—');
+  });
+});
+
+describe('agoLabelMs (the planWorkActivity.list epoch-ms form)', () => {
+  const now = Date.parse('2026-07-17T00:00:00Z');
+  it('matches agoLabel buckets over epoch ms', () => {
+    expect(agoLabelMs(now - 30_000, now)).toBe('now');
+    expect(agoLabelMs(now - 5 * 60_000, now)).toBe('5m');
+    expect(agoLabelMs(now - 3 * 3_600_000, now)).toBe('3h');
+    expect(agoLabelMs(now - 5 * 86_400_000, now)).toBe('5d');
+  });
+  it('renders the em-dash for absent / junk values', () => {
+    expect(agoLabelMs(null, now)).toBe('—');
+    expect(agoLabelMs(undefined, now)).toBe('—');
+    expect(agoLabelMs(Number.NaN, now)).toBe('—');
+    expect(agoLabelMs(now + 60_000, now)).toBe('—'); // future = clock skew, not "-1m"
   });
 });

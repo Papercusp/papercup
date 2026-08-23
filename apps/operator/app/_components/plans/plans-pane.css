@@ -110,7 +110,19 @@
 }
 .plans-pane__row-sub { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--fg-mute, #8a8a91); min-width: 0; }
 .plans-pane__row-harness { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plans-pane__row-ago { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+/* Dual recency pair (plan-visibility-revamp-2026-08-23 P-002 / D-003):
+   ✎ last plan-doc edit + ⚒ last work-item activity. The ⚒ time reads "hot"
+   (green icon, full-strength text) under 1h and dims to an em-dash when the
+   plan was never worked — worked-vs-abandoned readable from the row header. */
+.plans-pane__row-t {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px;
+  font-variant-numeric: tabular-nums; font-size: 10px;
+  color: var(--fg-mute, #8a8a91);
+}
+.plans-pane__row-t svg { flex: 0 0 auto; }
+.plans-pane__row-t--hot { color: var(--fg, #e7e7ea); }
+.plans-pane__row-t--hot svg { color: var(--good, #34d399); }
+.plans-pane__row-t--dim { opacity: 0.5; }
 .plans-pane__row-badges { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
 .plans-pane__badge {
   display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px;

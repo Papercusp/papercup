@@ -27,13 +27,14 @@ vi.mock("@tanstack/react-virtual", () => ({
   }),
 }));
 
-const { nuqs, setters, planListData, attentionItems, rosterData, setPlanArchived, confirmAnswer, toastSpies, planListRefresh } =
+const { nuqs, setters, planListData, attentionItems, rosterData, workActivityData, setPlanArchived, confirmAnswer, toastSpies, planListRefresh } =
   vi.hoisted(() => ({
     nuqs: {} as Record<string, unknown>,
     setters: {} as Record<string, ReturnType<typeof vi.fn>>,
     planListData: { value: null as { plans: PlanListRow[] } | null },
     attentionItems: { value: [] as Array<{ planSlug: string | null; tier: string; needsHuman?: boolean; kind?: string }> },
     rosterData: { value: [{ active: [] as Array<{ currentPlanSlug?: string | null }> }] },
+    workActivityData: { value: [] as Array<{ slug: string; lastWorkAtMs: number }> },
     setPlanArchived: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
     confirmAnswer: { value: true },
     toastSpies: { success: vi.fn(), error: vi.fn() },
@@ -58,7 +59,15 @@ vi.mock('nuqs', () => ({
 }));
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({ data: rosterData.value, loading: false, error: null, invalidate: vi.fn() }),
+  // Branched by queryName: the pane now runs TWO sync queries (advRoster.list
+  // + planWorkActivity.list, P-002) — a queryName-blind mock would feed the
+  // roster payload to the work-activity join and silently render no ⚒ times.
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    data: queryName === 'planWorkActivity.list' ? workActivityData.value : rosterData.value,
+    loading: false,
+    error: null,
+    invalidate: vi.fn(),
+  }),
 }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 // The sort picker is the shared Radix Select (design-primitives allowlists ZERO
@@ -141,6 +150,7 @@ afterEach(() => {
   for (const setter of Object.values(setters)) setter.mockClear();
   attentionItems.value = [];
   rosterData.value = [{ active: [] }];
+  workActivityData.value = [];
   confirmAnswer.value = true;
   setPlanArchived.mockClear();
   toastSpies.success.mockClear();
@@ -383,6 +393,60 @@ describe('PlansPane', () => {
     fireEvent.click(screen.getByTestId('plans-pane-archive-p-stale'));
     await waitFor(() => expect(confirmAnswer.value).toBe(false));
     expect(setPlanArchived).not.toHaveBeenCalled();
+  });
+
+  /* ── Dual recency pair (plan-visibility-revamp-2026-08-23 P-002 / D-003) ── */
+
+  it('renders the ✎/⚒ pair: hot work under 1h, dim em-dash when never worked', () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: 'p-worked', title: 'Worked plan', updated: daysAgo(3) }),
+        plan({ slug: 'p-idle', title: 'Idle plan', updated: daysAgo(3) }),
+      ],
+    };
+    workActivityData.value = [{ slug: 'p-worked', lastWorkAtMs: Date.now() - 5 * 60_000 }];
+    render(<PlansPane />);
+
+    const workedT = screen.getByTestId('plans-pane-work-t-p-worked');
+    expect(workedT.textContent).toBe('5m');
+    expect(workedT.className).toContain('plans-pane__row-t--hot');
+
+    const idleT = screen.getByTestId('plans-pane-work-t-p-idle');
+    expect(idleT.textContent).toBe('—');
+    expect(idleT.className).toContain('plans-pane__row-t--dim');
+
+    // The ✎ half still reads the plan-doc clock, beside the ⚒ half.
+    expect(screen.getByTestId('plans-pane-edit-t-p-worked').textContent).toBe('3d');
+  });
+
+  it('work older than 1h renders plain — neither hot nor dim', () => {
+    planListData.value = { plans: [plan({ slug: 'p-warm', updated: daysAgo(3) })] };
+    workActivityData.value = [{ slug: 'p-warm', lastWorkAtMs: Date.now() - 5 * 3_600_000 }];
+    render(<PlansPane />);
+    const t = screen.getByTestId('plans-pane-work-t-p-warm');
+    expect(t.textContent).toBe('5h');
+    expect(t.className).not.toContain('--hot');
+    expect(t.className).not.toContain('--dim');
+  });
+
+  it('recent WORK keeps an unedited plan un-stale — no badge, no archive (D-003)', () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: 'p-worked-old-edit', title: 'Worked, unedited', updated: daysAgo(30) }),
+        plan({ slug: 'p-abandoned', title: 'Abandoned', updated: daysAgo(30) }),
+      ],
+    };
+    workActivityData.value = [
+      { slug: 'p-worked-old-edit', lastWorkAtMs: Date.now() - 3_600_000 },
+    ];
+    render(<PlansPane />);
+    // The worked plan: NOT stale despite the 30d-old edit …
+    expect(screen.queryByTestId('plans-pane-archive-p-worked-old-edit')).toBeNull();
+    // … while the genuinely abandoned sibling still reads stale.
+    expect(screen.getByTestId('plans-pane-archive-p-abandoned')).toBeTruthy();
+    const badges = screen.getAllByTestId('plans-pane-stale-badge');
+    expect(badges).toHaveLength(1);
+    expect(screen.getByTestId('plans-pane-row-p-abandoned').contains(badges[0]!)).toBe(true);
   });
 
   it('surfaces a failed archive as an error toast', async () => {

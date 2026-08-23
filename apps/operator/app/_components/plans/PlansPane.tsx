@@ -46,6 +46,8 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  Hammer,
+  Pencil,
   Search,
   X,
 } from 'lucide-react';
@@ -128,17 +130,35 @@ function BlenderIcon({ size = 16 }: { size?: number }) {
   );
 }
 
-/** True when an active plan hasn't been touched in ≥ STALE_MS. Pure. */
-export function isStale(updated: string | null | undefined, now = Date.now()): boolean {
-  if (!updated) return false;
-  const t = Date.parse(updated);
-  return Number.isFinite(t) && now - t >= STALE_MS;
+/**
+ * True when an active plan moved on NEITHER clock in ≥ STALE_MS — plan doc
+ * unedited AND no work-item activity (plan-visibility-revamp-2026-08-23
+ * P-002 / D-003: "a plan being worked without edits no longer reads stale",
+ * the false-positive the single-clock read produced). Object args on purpose:
+ * the old positional `(updated, now)` form would have silently read a `now`
+ * passed by an un-migrated caller as the WORK clock — with an object every
+ * call site was migrated by the compiler instead.
+ */
+export function isStale(opts: {
+  updated?: string | null;
+  lastWorkAtMs?: number | null;
+  now?: number;
+}): boolean {
+  const now = opts.now ?? Date.now();
+  const edit = opts.updated ? Date.parse(opts.updated) : NaN;
+  const work = opts.lastWorkAtMs ?? NaN;
+  const newest = Math.max(
+    Number.isFinite(edit) ? edit : -Infinity,
+    Number.isFinite(work) ? work : -Infinity,
+  );
+  return Number.isFinite(newest) && now - newest >= STALE_MS;
 }
 
-/** Compact relative recency — same local convention as the roster/backup panes. */
-export function agoLabel(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const ms = Date.now() - Date.parse(iso);
+/** Work-item activity fresher than this renders the ⚒ time "hot" (green). */
+export const WORK_HOT_MS = 60 * 60 * 1000;
+
+/** Shared bucket logic behind both ago-label forms. */
+function agoFromDelta(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—';
   const m = Math.floor(ms / 60_000);
   if (m < 1) return 'now';
@@ -146,6 +166,23 @@ export function agoLabel(iso: string | null | undefined): string {
   const h = Math.round(m / 60);
   if (h < 48) return `${h}h`;
   return `${Math.round(h / 24)}d`;
+}
+
+/** Compact relative recency — same local convention as the roster/backup panes. */
+export function agoLabel(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return agoFromDelta(Date.now() - Date.parse(iso));
+}
+
+/** `agoLabel` over an epoch-ms number (the planWorkActivity.list wire form). */
+export function agoLabelMs(ms: number | null | undefined, now = Date.now()): string {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  return agoFromDelta(now - ms);
+}
+
+/** "2m" → "2m ago", "now" → "just now" — for the hover titles. */
+function agoPhrase(label: string): string {
+  return label === 'now' ? 'just now' : `${label} ago`;
 }
 
 /** done / total-open+done item progress from the list row's itemCounts. */
@@ -277,6 +314,12 @@ interface RosterPayloadRow {
   active?: Array<{ currentPlanSlug?: string | null }>;
 }
 
+/** One planWorkActivity.list wire row (plan-visibility-revamp P-001). */
+interface PlanWorkActivityRow {
+  slug?: string;
+  lastWorkAtMs?: number;
+}
+
 export default function PlansPane() {
   const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
   const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
@@ -343,6 +386,24 @@ export default function PlansPane() {
     }
     return m;
   }, [roster.data]);
+
+  // ⚒ last-work timestamps: the planWorkActivity.list sync feed (P-001 —
+  // slug → max work-item activity in epoch ms, work_items-invalidated).
+  // Joined client-side by slug exactly like needsYouByPlan / liveByPlan.
+  // A plan absent from the map was simply never worked (dim em-dash).
+  const workActivity = useSyncQuery<PlanWorkActivityRow>({
+    queryName: 'planWorkActivity.list',
+    args: { workspaceId },
+  });
+  const lastWorkByPlan = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of workActivity.data ?? []) {
+      if (typeof r?.slug === 'string' && r.slug && typeof r.lastWorkAtMs === 'number') {
+        m.set(r.slug, r.lastWorkAtMs);
+      }
+    }
+    return m;
+  }, [workActivity.data]);
 
   const plans = planList.data?.plans;
   const rows = useMemo(
@@ -570,6 +631,13 @@ export default function PlansPane() {
               const { plan, needsYou, liveAgents } = rows[vi.index]!;
               const progress = progressOf(plan);
               const bucket = bucketOf(plan);
+              // ⚒ last-work clock (P-002/D-003): hot under 1h; absent = never
+              // worked. Stale now means NEITHER clock moved in 14d.
+              const lastWorkAtMs = lastWorkByPlan.get(plan.slug) ?? null;
+              const workHot =
+                lastWorkAtMs != null && Date.now() - lastWorkAtMs < WORK_HOT_MS;
+              const stale =
+                !showFinished && isStale({ updated: plan.updated, lastWorkAtMs });
               // WI-5365: left-accent priority — needs-you (red) outranks live (green).
               const accent =
                 needsYou > 0
@@ -619,11 +687,38 @@ export default function PlansPane() {
                           {plan.harness}
                         </span>
                         <span className="plans-pane__row-head-spacer" />
+                        {/* V1 header pair (RowTimestamps.dc.html): ✎ last plan
+                            edit + ⚒ last work-item activity. Native titles per
+                            the in-row convention (badges do the same). */}
                         <span
-                          className="plans-pane__row-ago"
-                          title={plan.updated ?? undefined}
+                          className="plans-pane__row-t"
+                          title={
+                            plan.updated
+                              ? `✎ Plan edited ${agoPhrase(agoLabel(plan.updated))} — ${new Date(Date.parse(plan.updated)).toLocaleString()}`
+                              : "✎ Plan edit time unknown"
+                          }
+                          data-testid={`plans-pane-edit-t-${plan.slug}`}
                         >
+                          <Pencil size={11} aria-hidden="true" />
                           {agoLabel(plan.updated)}
+                        </span>
+                        <span
+                          className={`plans-pane__row-t${
+                            workHot
+                              ? " plans-pane__row-t--hot"
+                              : lastWorkAtMs == null
+                                ? " plans-pane__row-t--dim"
+                                : ""
+                          }`}
+                          title={
+                            lastWorkAtMs != null
+                              ? `⚒ Last work ${agoPhrase(agoLabelMs(lastWorkAtMs))} — ${new Date(lastWorkAtMs).toLocaleString()}`
+                              : "⚒ No work-item activity yet"
+                          }
+                          data-testid={`plans-pane-work-t-${plan.slug}`}
+                        >
+                          <Hammer size={11} aria-hidden="true" />
+                          {agoLabelMs(lastWorkAtMs)}
                         </span>
                       </span>
                       <span className="plans-pane__row-title">
@@ -698,10 +793,10 @@ export default function PlansPane() {
                           {progress.done}/{progress.total}
                         </span>
                       ) : null}
-                      {!showFinished && isStale(plan.updated) ? (
+                      {stale ? (
                         <span
                           className="plans-pane__badge plans-pane__badge--stale"
-                          title={`No activity since ${plan.updated} — a candidate to archive`}
+                          title="No plan edits or work-item activity in 14 days — a candidate to archive"
                           data-testid="plans-pane-stale-badge"
                         >
                           stale
@@ -734,7 +829,7 @@ export default function PlansPane() {
                     (a <button> inside a <button> is invalid HTML — the trap
                     InboxPane already hit). Scoped to stale rows so the
                     ~466-row list stays visually clean. */}
-                  {!showFinished && isStale(plan.updated) ? (
+                  {stale ? (
                     <Tooltip label="Archive this stale plan (reversible)">
                       <button
                         type="button"
