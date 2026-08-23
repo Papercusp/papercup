@@ -417,12 +417,36 @@ export interface SweepRecipesInput {
   maxRunCount?: number;
   /** Preview only — return the candidates WITHOUT changing anything (default false). */
   dryRun?: boolean;
+  /**
+   * TARGETED retire: exactly these recipe ids, instead of the staleness heuristic.
+   *
+   * The heuristic cannot express "retire THIS broken recipe" — it selects by age
+   * and run-count only, so reaching one specific recipe means widening staleDays
+   * until thousands of unrelated ones qualify. Explicit ids ARE the caller's
+   * judgement, so they bypass staleDays/maxRunCount — but never the safety rails
+   * (see `sweepRecipes`).
+   */
+  ids?: string[];
+}
+
+/** Why a requested id was NOT retired by a targeted (`ids`) sweep. */
+export interface SweepRecipesSkip {
+  id: string;
+  reason: 'not_found' | 'promoted' | 'not_active';
+  /** Present when the row exists — its current status. */
+  status?: string;
 }
 
 export interface SweepRecipesResult {
   /** The swept (or, on a dryRun, would-be-swept) recipes. */
   swept: CodeRecipeRow[];
   dryRun: boolean;
+  /**
+   * Targeted (`ids`) sweeps only: the requested ids that were NOT retired, each
+   * with a reason. A silently-short `swept` list is indistinguishable from a
+   * typo'd id, so a targeted sweep reports its misses rather than dropping them.
+   */
+  skipped?: SweepRecipesSkip[];
 }
 
 /**
