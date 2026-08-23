@@ -90,6 +90,7 @@ import {
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type SessionPortContractSummary } from '../../../session-port/types';
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
+import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -114,6 +115,34 @@ export async function gatePrincipal(headers: Headers): Promise<Response | null> 
       return jsonRes({ status: 'error', error: err.reason }, err.status);
     }
     throw err;
+  }
+}
+
+/**
+ * Join a pre-fork headless task row to the native session identity bootstrap
+ * learned inside the child. This is intentionally best-effort: task-manager
+ * attribution/reaping must heal when it can, but a ledger outage must never
+ * turn an otherwise valid agent launch or carry-respawn into a boot failure.
+ */
+export async function bindKnownAgentSessionTasks(input: {
+  workspaceId: string;
+  coordOwnerId: string;
+  sessionId: string | null;
+  source: 'bootstrap' | 'session-port' | 'respawn';
+}): Promise<string[]> {
+  if (!input.sessionId) return [];
+  try {
+    return await bindLiveAgentSessionTasksToNativeSession({
+      workspaceId: input.workspaceId,
+      coordOwnerId: input.coordOwnerId,
+      sessionId: input.sessionId,
+    });
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+    console.warn(
+      `[bootstrap-su] ${input.source} task/session bind failed for ${input.coordOwnerId.slice(0, 120)}: ${detail}`,
+    );
+    return [];
   }
 }
 
@@ -1994,6 +2023,14 @@ const post = defineTool({
         launchArgv,
       });
     }
+    if (!sessionPortContext) {
+      await bindKnownAgentSessionTasks({
+        workspaceId: workspace,
+        coordOwnerId: sid,
+        sessionId: nativeSessionId,
+        source: 'bootstrap',
+      });
+    }
     const sessionKey = sessionPortContext?.row.id ?? sessionId ?? `t-${randomUUID()}`;
 
     // WI-1343's in-memory setPendingFleet placement used to live here; replaced by the
@@ -2488,6 +2525,12 @@ const post = defineTool({
       if (sessionId == null) {
         return jsonRes({ status: 'error', error: 'could not persist the pending session-port target row' }, 503);
       }
+      await bindKnownAgentSessionTasks({
+        workspaceId: workspace,
+        coordOwnerId: sid,
+        sessionId: nativeSessionId,
+        source: 'session-port',
+      });
       try {
         // Artifact preparation intentionally precedes the target row, so Codex
         // initially uses the port UUID as a collision-free temporary key. Native
@@ -3018,6 +3061,14 @@ const sessionRespawned = defineTool({
         const fallback = await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId);
         reanchored = fallback.reanchored;
         owner = fallback.owner ?? owner;
+      }
+      if (owner) {
+        await bindKnownAgentSessionTasks({
+          workspaceId: activeWorkspaceId(),
+          coordOwnerId: owner,
+          sessionId,
+          source: 'respawn',
+        });
       }
       // Frozen-gauge fix: the successor keeps the coord ownerId, so the
       // in-process context-usage cache still holds the DEAD predecessor's

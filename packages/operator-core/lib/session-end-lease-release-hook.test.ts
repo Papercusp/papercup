@@ -6,10 +6,13 @@ import {
   type SessionEndLeaseReleaseDeps,
   type SessionEndLeaseRow,
 } from './session-end-lease-release-hook';
+import type { TaskRow } from './task-manager/types';
 
 const ENDED: SessionEndLeaseRow = {
   id: 77,
+  workspaceId: 'papercusp-workspace',
   coordOwnerId: 'su-ended',
+  sessionId: 'native-session-ended',
   cwd: '/repo',
   endedAt: new Date('2026-08-22T20:01:13Z'),
   ownerHasOpenSession: false,
@@ -20,6 +23,8 @@ const h = {
   loadProtectedOwners: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['loadProtectedOwners']>>(),
   releaseLocks: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['releaseLocks']>>(),
   releaseWorkItems: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['releaseWorkItems']>>(),
+  listTasks: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['listTasks']>>(),
+  killTask: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['killTask']>>(),
 };
 
 function deps(): SessionEndLeaseReleaseDeps {
@@ -28,6 +33,8 @@ function deps(): SessionEndLeaseReleaseDeps {
     loadProtectedOwners: h.loadProtectedOwners,
     releaseLocks: h.releaseLocks,
     releaseWorkItems: h.releaseWorkItems,
+    listTasks: h.listTasks,
+    killTask: h.killTask,
   };
 }
 
@@ -43,6 +50,8 @@ beforeEach(() => {
     resourcesReleased: 1,
   });
   h.releaseWorkItems.mockResolvedValue({ releasedIds: ['EI-1'], claimsCleared: 1 });
+  h.listTasks.mockResolvedValue([]);
+  h.killTask.mockResolvedValue({ ok: true, taskId: 'unused', action: 'kill' });
 });
 
 describe('runSessionEndLeaseRelease', () => {
@@ -51,6 +60,13 @@ describe('runSessionEndLeaseRelease', () => {
 
     expect(h.releaseLocks).toHaveBeenCalledWith({ ownerId: 'su-ended', primaryCoordinationDomain: '/repo' });
     expect(h.releaseWorkItems).toHaveBeenCalledWith('su-ended');
+    expect(h.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'papercusp-workspace',
+      sessionId: 'native-session-ended',
+      states: ['pending', 'running'],
+      classes: ['agent-session'],
+      limit: 2_000,
+    });
     expect(result).toMatchObject({
       ok: true,
       ownerId: 'su-ended',
@@ -58,6 +74,9 @@ describe('runSessionEndLeaseRelease', () => {
       resourcesReleased: 1,
       releasedWorkItems: ['EI-1'],
       claimsCleared: 1,
+      agentSessionTaskIds: [],
+      reapedTaskIds: [],
+      failedTaskIds: [],
     });
   });
 
@@ -70,6 +89,7 @@ describe('runSessionEndLeaseRelease', () => {
     expect(h.loadProtectedOwners).not.toHaveBeenCalled();
     expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.releaseWorkItems).not.toHaveBeenCalled();
+    expect(h.listTasks).not.toHaveBeenCalled();
   });
 
   it('protects a live owner even when the old adv row is ended', async () => {
@@ -80,6 +100,7 @@ describe('runSessionEndLeaseRelease', () => {
     });
     expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.releaseWorkItems).not.toHaveBeenCalled();
+    expect(h.listTasks).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -91,6 +112,7 @@ describe('runSessionEndLeaseRelease', () => {
     await expect(runSessionEndLeaseRelease(77, deps())).resolves.toMatchObject({ ok: false, reason });
     expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.releaseWorkItems).not.toHaveBeenCalled();
+    expect(h.listTasks).not.toHaveBeenCalled();
   });
 
   it('isolates the two cleanup stores so one failure cannot skip the other', async () => {
@@ -104,6 +126,67 @@ describe('runSessionEndLeaseRelease', () => {
       failedEffects: ['locks'],
       releasedWorkItems: ['EI-1'],
       claimsCleared: 1,
+    });
+  });
+
+  it('reaps every live agent-session task linked to the ended native session', async () => {
+    h.listTasks.mockResolvedValue([
+      { taskId: 'task-a' } as TaskRow,
+      { taskId: 'task-b' } as TaskRow,
+    ]);
+    h.killTask.mockImplementation(async (taskId) => ({ ok: true, taskId, action: 'kill' }));
+
+    const result = await runSessionEndLeaseRelease(77, deps());
+
+    expect(h.killTask).toHaveBeenCalledTimes(2);
+    expect(h.killTask).toHaveBeenNthCalledWith(1, 'task-a', { reapTerminalResidue: true });
+    expect(h.killTask).toHaveBeenNthCalledWith(2, 'task-b', { reapTerminalResidue: true });
+    expect(result).toMatchObject({
+      ok: true,
+      agentSessionTaskIds: ['task-a', 'task-b'],
+      reapedTaskIds: ['task-a', 'task-b'],
+      failedTaskIds: [],
+    });
+  });
+
+  it('accounts for per-task failures without skipping lock or work-item cleanup', async () => {
+    h.listTasks.mockResolvedValue([
+      { taskId: 'task-ok' } as TaskRow,
+      { taskId: 'task-failed' } as TaskRow,
+      { taskId: 'task-threw' } as TaskRow,
+    ]);
+    h.killTask
+      .mockResolvedValueOnce({ ok: true, taskId: 'task-ok', action: 'kill' })
+      .mockResolvedValueOnce({ ok: false, taskId: 'task-failed', action: 'kill', error: 'incomplete' })
+      .mockRejectedValueOnce(new Error('systemd unavailable'));
+
+    const result = await runSessionEndLeaseRelease(77, deps());
+
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+    expect(h.releaseWorkItems).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'partial-failure',
+      failedEffects: ['tasks'],
+      agentSessionTaskIds: ['task-ok', 'task-failed', 'task-threw'],
+      reapedTaskIds: ['task-ok'],
+      failedTaskIds: ['task-failed', 'task-threw'],
+    });
+  });
+
+  it('accounts for a task-ledger read failure independently of both lease stores', async () => {
+    h.listTasks.mockRejectedValueOnce(new Error('task ledger down'));
+
+    const result = await runSessionEndLeaseRelease(77, deps());
+
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+    expect(h.releaseWorkItems).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'partial-failure',
+      failedEffects: ['tasks'],
+      reapedTaskIds: [],
+      failedTaskIds: [],
     });
   });
 });

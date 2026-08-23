@@ -18,6 +18,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 import { fileLockCoordinationDomain, lockDomainForProjectDir } from './agent-tools/locks/coordination-domain';
 import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
+import { killTask } from './task-manager/control';
+import { listTasks } from './task-manager/store';
 
 export const SESSION_END_LEASE_RELEASE_DELAY_MS = 15_000;
 /**
@@ -30,7 +32,9 @@ export const SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES = 3;
 
 export interface SessionEndLeaseRow {
   id: number;
+  workspaceId: string;
   coordOwnerId: string | null;
+  sessionId: string | null;
   cwd: string | null;
   endedAt: Date | null;
   ownerHasOpenSession: boolean;
@@ -41,6 +45,8 @@ export interface SessionEndLeaseReleaseDeps {
   loadProtectedOwners?: () => Promise<ReadonlySet<string>>;
   releaseLocks?: typeof releaseAllOwnedLocks;
   releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
+  listTasks?: typeof listTasks;
+  killTask?: typeof killTask;
 }
 
 interface SessionEndLeaseReleaseScheduleOptions {
@@ -66,7 +72,10 @@ export interface SessionEndLeaseReleaseResult {
   resourcesReleased?: number;
   releasedWorkItems?: string[];
   claimsCleared?: number;
-  failedEffects?: Array<'locks' | 'work-items'>;
+  agentSessionTaskIds?: string[];
+  reapedTaskIds?: string[];
+  failedTaskIds?: string[];
+  failedEffects?: Array<'locks' | 'work-items' | 'tasks'>;
 }
 
 async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndLeaseRow | null> {
@@ -74,13 +83,15 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
   const rows = await sql<
     Array<{
       id: number;
+      workspace_id: string;
       coord_owner_id: string | null;
+      session_id: string | null;
       cwd: string | null;
       ended_at: Date | string | null;
       owner_has_open_session: boolean;
     }>
   >`
-    SELECT s.id, s.coord_owner_id, s.cwd, s.ended_at,
+    SELECT s.id, s.workspace_id, s.coord_owner_id, s.session_id, s.cwd, s.ended_at,
            EXISTS (
              SELECT 1
                FROM harness_shared.adv_sessions newer
@@ -95,7 +106,9 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
   if (!row) return null;
   return {
     id: row.id,
+    workspaceId: row.workspace_id,
     coordOwnerId: row.coord_owner_id,
+    sessionId: row.session_id,
     cwd: row.cwd,
     endedAt: row.ended_at == null ? null : new Date(row.ended_at),
     ownerHasOpenSession: row.owner_has_open_session,
@@ -144,17 +157,44 @@ export async function runSessionEndLeaseRelease(
   const protectedOwners = await (deps.loadProtectedOwners ?? loadProtectedOwners)();
   if (protectedOwners.has(ownerId)) return { ok: false, reason: 'owner-live', ownerId };
 
+  const reapAgentSessionTasks = async () => {
+    const sessionId = row.sessionId?.trim() ?? '';
+    if (!sessionId) {
+      return { taskIds: [] as string[], reapedTaskIds: [] as string[], failedTaskIds: [] as string[] };
+    }
+    const tasks = await (deps.listTasks ?? listTasks)({
+      workspaceId: row.workspaceId,
+      sessionId,
+      states: ['pending', 'running'],
+      classes: ['agent-session'],
+      limit: 2_000,
+    });
+    const outcomes = await Promise.allSettled(
+      tasks.map((task) => (deps.killTask ?? killTask)(task.taskId, { reapTerminalResidue: true })),
+    );
+    const reapedTaskIds: string[] = [];
+    const failedTaskIds: string[] = [];
+    for (let index = 0; index < tasks.length; index += 1) {
+      const outcome = outcomes[index];
+      if (outcome?.status === 'fulfilled' && outcome.value.ok) reapedTaskIds.push(tasks[index].taskId);
+      else failedTaskIds.push(tasks[index].taskId);
+    }
+    return { taskIds: tasks.map((task) => task.taskId), reapedTaskIds, failedTaskIds };
+  };
+
   const primaryCoordinationDomain = row.cwd?.trim()
     ? lockDomainForProjectDir(row.cwd.trim())
     : fileLockCoordinationDomain();
-  const [locks, workItems] = await Promise.allSettled([
+  const [locks, workItems, tasks] = await Promise.allSettled([
     (deps.releaseLocks ?? releaseAllOwnedLocks)({ ownerId, primaryCoordinationDomain }),
     (deps.releaseWorkItems ?? releaseAllWorkItemLeasesForOwner)(ownerId),
+    reapAgentSessionTasks(),
   ]);
 
-  const failedEffects: Array<'locks' | 'work-items'> = [];
+  const failedEffects: Array<'locks' | 'work-items' | 'tasks'> = [];
   if (locks.status === 'rejected') failedEffects.push('locks');
   if (workItems.status === 'rejected') failedEffects.push('work-items');
+  if (tasks.status === 'rejected' || tasks.value.failedTaskIds.length > 0) failedEffects.push('tasks');
 
   return {
     ok: failedEffects.length === 0,
@@ -164,6 +204,9 @@ export async function runSessionEndLeaseRelease(
     resourcesReleased: locks.status === 'fulfilled' ? locks.value.resourcesReleased : 0,
     releasedWorkItems: workItems.status === 'fulfilled' ? workItems.value.releasedIds : [],
     claimsCleared: workItems.status === 'fulfilled' ? workItems.value.claimsCleared : 0,
+    agentSessionTaskIds: tasks.status === 'fulfilled' ? tasks.value.taskIds : [],
+    reapedTaskIds: tasks.status === 'fulfilled' ? tasks.value.reapedTaskIds : [],
+    failedTaskIds: tasks.status === 'fulfilled' ? tasks.value.failedTaskIds : [],
   };
 }
 
@@ -207,12 +250,14 @@ function scheduleSessionEndLeaseReleaseAttempt(
           (result.releasedPaths?.length ?? 0) +
           (result.resourcesReleased ?? 0) +
           (result.releasedWorkItems?.length ?? 0) +
-          (result.claimsCleared ?? 0);
+          (result.claimsCleared ?? 0) +
+          (result.reapedTaskIds?.length ?? 0);
         if (released > 0) {
           console.log(
             `[session-end-lease-release] adv ${advSessionId} / ${result.ownerId}: released ` +
               `${result.releasedPaths?.length ?? 0} file path(s), ${result.resourcesReleased ?? 0} resource lock(s), ` +
-              `${result.releasedWorkItems?.length ?? 0} work-item lease(s), ${result.claimsCleared ?? 0} claim row(s)`,
+              `${result.releasedWorkItems?.length ?? 0} work-item lease(s), ${result.claimsCleared ?? 0} claim row(s), ` +
+              `${result.reapedTaskIds?.length ?? 0} agent-session task(s)`,
           );
         }
       })
