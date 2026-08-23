@@ -216,6 +216,64 @@ describe('capability:bash_output — durable task attachment', () => {
     }
   });
 
+  it('does not downgrade an alive service job when its early cgroup pin is stale', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-scope-stale-pin-'));
+    const output = 'still queued but alive\n';
+    try {
+      mkdirSync(join(stateDir, 'scratch'), { recursive: true });
+      writeFileSync(join(stateDir, 'scratch', 'bash-bash-carry-1.log'), output);
+      const fakeBin = join(stateDir, 'bin');
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeSystemctl = join(fakeBin, 'systemctl');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      chmodSync(fakeSystemctl, 0o755);
+      // Synchronous enrollment records the systemd-run client cgroup before the
+      // payload has moved into its service. The service ActiveState is the
+      // durable liveness proof for this exact running-job shape.
+      const runningRow = taskRow({
+        taskId: 'tskcarry1234',
+        rootTaskId: 'tskcarry1234',
+        pid: 4242,
+        processIdentity: 'linux:boot-test:4242',
+        cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-dev-api.service',
+        scopeUnit: 'pc-tskcarry1234.service',
+      });
+      store.getTask.mockResolvedValue(runningRow);
+      jobs.getJob.mockReturnValue(null);
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+
+      try {
+        const result = await bashOutput.handler({ task_id: 'tskcarry1234' }, ctx('ws-current', stateDir));
+        const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+        expect(result.isError).toBeUndefined();
+        expect(payload).toMatchObject({
+          ok: true,
+          bash_id: 'bash-carry-1',
+          task_id: 'tskcarry1234',
+          status: 'running',
+          running: true,
+          recovered_from_ledger: true,
+          recovered_from_scope: true,
+          liveness_proof: 'systemd_active_state',
+          tracking_lost: true,
+          output_is_tail: true,
+          pid: 4242,
+          output_tail: output,
+          output,
+        });
+        expect(payload.reason).not.toBe('job_liveness_unknown');
+        expect(jobs.startBackground).not.toHaveBeenCalled();
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('hides a cross-workspace task as unknown and does not touch the job registry', async () => {
     store.getTask.mockResolvedValue(taskRow({ workspaceId: 'ws-other' }));
 
