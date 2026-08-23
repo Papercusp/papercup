@@ -48,6 +48,7 @@ import type {
   SocialReconcilePath,
   SocialReconcileResult,
 } from './adapter-contract';
+import { youtubeInstantMs, youtubeRetryDelayMs } from './youtube-common';
 
 /* -------------------------------------------------------------------------- */
 /* Page size                                                                  */
@@ -182,21 +183,6 @@ export function isYouTubeActivitiesCursor(value: unknown): value is YouTubeActiv
   return Array.isArray(candidate.boundaryIds) && candidate.boundaryIds.every((id) => typeof id === 'string');
 }
 
-/**
- * Parse a provider timestamp to epoch ms, or null when it is unusable.
- *
- * Comparison goes through this rather than comparing the ISO strings directly
- * because two spellings of one instant (`...T00:00:00Z` and `...T00:00:00.000Z`)
- * are not string-equal, and the boundary test must be an INSTANT test — a
- * string comparison would let a re-spelled boundary item slip past the filter
- * and be emitted twice.
- */
-export function youtubeInstantMs(iso: string | null | undefined): number | null {
-  if (typeof iso !== 'string') return null;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : null;
-}
-
 /* -------------------------------------------------------------------------- */
 /* Provider shapes                                                            */
 /* -------------------------------------------------------------------------- */
@@ -276,39 +262,6 @@ export class YouTubeCursorRejected extends Error {
     this.name = 'YouTubeCursorRejected';
     this.rejectedValue = rejectedValue;
   }
-}
-
-/**
- * A `403 rateLimitExceeded` / `429`. `retryAfterSeconds` is a DURATION in
- * seconds, not a timestamp — reading it as an epoch would produce a wait of
- * decades, which presents as a hung adapter rather than an error.
- *
- * Note what this is NOT: `403 quotaExceeded` (the daily unit budget is spent) is
- * not a rate limit and must not be retried — the budget does not refill until
- * the quota day rolls over, so backing off and retrying just burns the retry
- * schedule against a wall. That case belongs to the storm-policy layer
- * (P-015 stage 5), and is deliberately left to propagate here.
- */
-export class YouTubeRateLimited extends Error {
-  readonly retryAfterSeconds: number | null;
-
-  constructor(message: string, retryAfterSeconds: number | null) {
-    super(message);
-    this.name = 'YouTubeRateLimited';
-    this.retryAfterSeconds = retryAfterSeconds;
-  }
-}
-
-export const YOUTUBE_MAX_RATE_LIMIT_WAIT_MS = 60_000;
-
-export function youtubeRetryDelayMs(error: unknown, attempt: number, maxAttempts: number): number | null {
-  if (!(error instanceof YouTubeRateLimited)) return null;
-  if (attempt >= maxAttempts) return null;
-  const stated = error.retryAfterSeconds;
-  if (stated !== null && Number.isFinite(stated) && stated >= 0) {
-    return Math.min(Math.ceil(stated * 1000), YOUTUBE_MAX_RATE_LIMIT_WAIT_MS);
-  }
-  return Math.min(1000 * 2 ** attempt, YOUTUBE_MAX_RATE_LIMIT_WAIT_MS);
 }
 
 /* -------------------------------------------------------------------------- */

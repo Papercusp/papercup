@@ -32,20 +32,22 @@ import {
   normalizeYouTubeActivity,
   youtubeActivityDedupeKey,
   youtubeActivityEventName,
-  youtubeInstantMs,
   youtubeQueryFloor,
-  youtubeRetryDelayMs,
   YouTubeActivitiesAdapter,
   YouTubeCursorRejected,
-  YouTubeRateLimited,
   YOUTUBE_ACTIVITIES_PAGE_SIZE_DEFAULT,
-  YOUTUBE_MAX_RATE_LIMIT_WAIT_MS,
   YOUTUBE_MAX_RESULTS_CEILING,
   type YouTubeActivitiesClient,
   type YouTubeActivitiesCursor,
   type YouTubeActivitiesPage,
   type YouTubeRawActivity,
 } from './youtube-activities-adapter';
+import {
+  youtubeInstantMs,
+  youtubeRetryDelayMs,
+  YouTubeRateLimited,
+  YOUTUBE_MAX_RATE_LIMIT_WAIT_MS,
+} from './youtube-common';
 
 type Ctx = SocialReconcileContext;
 
