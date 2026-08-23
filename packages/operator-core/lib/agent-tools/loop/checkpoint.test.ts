@@ -1303,7 +1303,8 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(written).toContain('## Key insight\nthe locked prior is authoritative');
     expect(written).toContain('## Next action\nrun the focused suite now');
     expect(written).toContain('gate is green');
-    expect(b).toMatchObject({ ok: true, checks: 1, checksDropped: undefined });
+    expect(b).toMatchObject({ ok: true, checks: 1 });
+    expect(b.checksDropped).toBeUndefined();
   });
 
   it("CONTROL — retirement is still reachable: rowsMode:'replace' drops the omitted rows and says so", async () => {
