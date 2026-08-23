@@ -38,6 +38,7 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
       state: "open",
       title: "a title",
       severity: "major",
+      origin: "local",
       assignee: "su-1",
       summary: "S".repeat(4_000),
       payload: { big: "P".repeat(4_000) },
@@ -74,7 +75,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
       expect.arrayContaining(["workItem.summary", "workItem.payload"]),
     );
     // Identity survives so the row is still usable + correlatable.
-    expect(w).toMatchObject({ id: "WI-1", kind: "bug", state: "open", severity: "major" });
+    expect(w).toMatchObject({ id: "WI-1", kind: "bug", state: "open", severity: "major", origin: "local" });
   });
 
   it("clips an over-budget checkpoint WITH the loud in-band marker, never a bare ellipsis", () => {

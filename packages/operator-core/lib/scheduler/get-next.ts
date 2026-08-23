@@ -1262,6 +1262,8 @@ export interface IssueClaimableRow {
   kind: string;
   title: string | null;
   status: string;
+  /** Physical authoring provenance; remote rows are refused by local mutation paths. */
+  origin: string | null;
   /** payload.severity for bugs (null when the row carries none). */
   severity: string | null;
   /** source_plan_slug — the plan this item belongs to, if any. */
@@ -1339,6 +1341,7 @@ export async function listIssueClaimableRows(
       COALESCE(item_kind, kind) AS kind,
       title,
       status,
+      origin,
       -- WI-6673: severity on harness_shared.work_items lives at payload._ei.severity
       -- (migration 374 fold), NOT top level. The old top-level accessor matched
       -- 1 of 13,731 open issue-family rows -- so EVERY claimable row came back
@@ -1358,6 +1361,7 @@ export async function listIssueClaimableRows(
     kind: string;
     title: string | null;
     status: string;
+    origin: string | null;
     severity: string | null;
     plan: string | null;
     feature_order: number | string | null;
@@ -1368,6 +1372,7 @@ export async function listIssueClaimableRows(
     kind: r.kind,
     title: r.title,
     status: r.status,
+    origin: r.origin ?? null,
     severity: r.severity,
     plan: r.plan,
     featureOrder: r.feature_order == null ? null : Number(r.feature_order),
@@ -1834,6 +1839,7 @@ export async function readClaimSpecDelta(
         *,
         feature_id                AS delta_id,
         COALESCE(item_kind, kind) AS delta_kind,
+        origin                    AS delta_origin,
         COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS delta_severity,
         source_plan_slug          AS delta_plan,
         -- Positive comparisons on nullable fields (e.g. plan = '<slug>') evaluate to SQL NULL,
@@ -1900,6 +1906,7 @@ export interface ClaimSpecDeltaSqlRow {
   delta_kind: string;
   title: string | null;
   status: string;
+  delta_origin: string | null;
   delta_severity: string | null;
   delta_plan: string | null;
   feature_order: number | string | null;
@@ -1932,6 +1939,7 @@ export function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'adm
     kind: r.delta_kind,
     title: r.title,
     status: r.status,
+    origin: r.delta_origin ?? null,
     severity: r.delta_severity,
     plan: r.delta_plan,
     featureOrder: r.feature_order == null ? null : Number(r.feature_order),

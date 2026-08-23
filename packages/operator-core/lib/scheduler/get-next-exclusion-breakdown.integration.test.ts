@@ -59,15 +59,16 @@ async function seedIssue(
     /** WI-5939: how long ago the row was FILED. Default 0 = the epoch, i.e. far outside any
      *  filing-grace window — so every pre-existing case here is untouched by that floor. */
     createdAgoSec?: number;
+    origin?: string;
   } = {},
 ) {
   const status = opts.status ?? 'open';
   const createdTs = opts.createdAgoSec === undefined ? 0 : Date.now() - opts.createdAgoSec * 1000;
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, origin,
        created_ts, updated_ts, title, payload, last_released_by, last_released_at)
-    VALUES (${H}, ${id}, 'change', ${status}, ${opts.takenBy ?? null}, ${WS}, ${createdTs}, 0, ${'t ' + id},
+    VALUES (${H}, ${id}, 'change', ${status}, ${opts.takenBy ?? null}, ${WS}, ${opts.origin ?? 'local'}, ${createdTs}, 0, ${'t ' + id},
             ${payload ? db.sql.json(payload as postgres.JSONValue) : null}, ${opts.lastReleasedBy ?? null},
             ${
               opts.lastReleasedAgoSec !== undefined
@@ -305,7 +306,7 @@ describe('WI-6673 — listIssueClaimableRows projects severity from payload._ei,
     expect(rows).toHaveLength(1);
     // The assertion that matters: NOT null. A regression here reports a well-formed
     // `severity: null` for a genuine critical — success-shaped, and wrong.
-    expect(rows[0]).toMatchObject({ id: 'WI-SEV-1', severity: 'critical' });
+    expect(rows[0]).toMatchObject({ id: 'WI-SEV-1', severity: 'critical', origin: 'local' });
   });
 
   it('still reads a legacy TOP-LEVEL severity for rows that predate the fold', async () => {
@@ -438,7 +439,7 @@ describe('P-005 — readClaimSpecDelta: which items a proposed spec revision dro
     expect(delta.newlyAdmittedCount).toBe(0);
     expect(delta.newlyExcluded.map((r) => r.id)).toEqual(['WI-D-MAJ']);
     // Attribution: the filter moved it, not the states — the two have different fixes.
-    expect(delta.newlyExcluded[0]).toMatchObject({ cause: 'filter', severity: 'major', status: 'open' });
+    expect(delta.newlyExcluded[0]).toMatchObject({ cause: 'filter', severity: 'major', status: 'open', origin: 'local' });
     expect(delta.truncated).toEqual({ newlyExcluded: false, newlyAdmitted: false });
 
     // AGREEMENT with the single-spec oracle, per side. This is the anti-drift assertion.

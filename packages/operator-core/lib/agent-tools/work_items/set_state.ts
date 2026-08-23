@@ -41,6 +41,32 @@ import {
   renderPlaneClosePreflightWarning,
 } from '../../agent-plane-close-preflight';
 
+/**
+ * Keep the batch-level refusal diagnosis bounded and stable. Per-item errors remain
+ * unchanged for correlation/detail; this summary is the compact signal that survives
+ * the result door when a large batch spills. `other` intentionally includes not-found,
+ * plan-lane, and future refusal text until a new stable category is added here.
+ */
+function addRefusalSummary<T extends { ok: true; results: Array<{ ok: boolean; error?: unknown }>; counts: { ok: number; failed: number } }>(
+  env: T,
+): T {
+  if (env.counts.failed === 0) return env;
+  let remoteAuthored = 0;
+  let other = 0;
+  for (const result of env.results) {
+    if (result.ok) continue;
+    if (typeof result.error === 'string' && result.error.includes('remote-authored')) remoteAuthored += 1;
+    else other += 1;
+  }
+  return {
+    ...env,
+    counts: {
+      ...env.counts,
+      refusals: { 'remote-authored': remoteAuthored, other },
+    },
+  } as T;
+}
+
 // P-114: an AUTONOMOUS agent declares the action's risk/authority so the auto-revert
 // tripwire arms faithfully to the upstream decision (the verb has no inherent item
 // risk). Absent ⇒ fail-safe `critical`. Ignored for human callers.
@@ -323,6 +349,6 @@ export default defineTool({
       },
       { keyOf: (it) => ({ id: it.id }) },
     );
-    return bulkContent(env);
+    return bulkContent(addRefusalSummary(env));
   },
 });

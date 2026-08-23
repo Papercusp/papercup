@@ -108,8 +108,18 @@ describe('work_items:set_state handler (keyed-array)', () => {
         : noAlias(id, state),
     );
     const b = await body({ ids: ['WI-1', 'WI-X'], state: 'done' });
-    expect(b.counts).toEqual({ ok: 1, failed: 1 });
+    expect(b.counts).toEqual({ ok: 1, failed: 1, refusals: { 'remote-authored': 0, other: 1 } });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-X' });
+  });
+
+  it('groups remote-authored and other refusals in bounded counts without changing item errors', async () => {
+    setM
+      .mockRejectedValueOnce(new Error('work_item is remote-authored and cannot be mutated locally'))
+      .mockRejectedValueOnce(new Error('database refusal'));
+    const b = await body({ ids: ['WI-remote', 'WI-other'], state: 'wip' });
+    expect(b.counts).toEqual({ ok: 0, failed: 2, refusals: { 'remote-authored': 1, other: 1 } });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-remote', error: expect.stringContaining('remote-authored') });
+    expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-other', error: 'database refusal' });
   });
 
   it('a thrown engine error (unmappable state) becomes that item\'s {ok:false}', async () => {

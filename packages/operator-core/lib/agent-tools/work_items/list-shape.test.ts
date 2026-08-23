@@ -19,6 +19,7 @@ const row = (i: number) => ({
   title: `Task ${i} — ${"t".repeat(200)}`,
   summary: `dup ${"s".repeat(300)}`,
   state: "todo",
+  origin: "local",
   assignee: null,
   assignedBy: null,
   severity: null,
@@ -41,6 +42,7 @@ describe("shapeWorkItemsList", () => {
     const r = rows[0]!;
     expect(r.id).toBe("WI-1");
     expect(r.plan_ref).toBe("some-plan#P-101");
+    expect(r.origin).toBe("local");
     expect((r.title as string).length).toBeLessThanOrEqual(90);
     // dropped token sinks
     expect(r.summary).toBeUndefined();
