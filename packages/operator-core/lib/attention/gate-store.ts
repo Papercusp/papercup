@@ -154,14 +154,25 @@ export async function listPendingGates(filter: {
   const { sql } = getOrgPg();
   const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200);
   const rows = await sql<PendingGateRow[]>`
-    SELECT id::text AS id, workspace_id, session_id, client, kind, ref_id, owner_id, question, options,
-           source, raw_ref, harness_slug, opened_at::text AS opened_at, closed_at::text AS closed_at,
-           closed_reason, created_at::text AS created_at
-    FROM harness_shared.session_pending_gates
-    WHERE workspace_id = ${filter.workspaceId}
-      ${filter.includeClosed ? sql`` : sql`AND closed_at IS NULL`}
-      ${filter.sessionId ? sql`AND session_id = ${filter.sessionId}` : sql``}
-    ORDER BY opened_at ${filter.order === 'newest' ? sql`DESC` : sql`ASC`}
+    SELECT g.id::text AS id, g.workspace_id, g.session_id, g.client, g.kind, g.ref_id,
+           COALESCE(g.owner_id, latest_owner.coord_owner_id) AS owner_id,
+           g.question, g.options, g.source, g.raw_ref, g.harness_slug,
+           g.opened_at::text AS opened_at, g.closed_at::text AS closed_at,
+           g.closed_reason, g.created_at::text AS created_at
+    FROM harness_shared.session_pending_gates AS g
+    LEFT JOIN LATERAL (
+      SELECT s.coord_owner_id
+        FROM harness_shared.adv_sessions AS s
+       WHERE s.workspace_id = g.workspace_id
+         AND s.session_id = g.session_id
+         AND s.coord_owner_id IS NOT NULL
+       ORDER BY s.started_at DESC, s.id DESC
+       LIMIT 1
+    ) AS latest_owner ON true
+    WHERE g.workspace_id = ${filter.workspaceId}
+      ${filter.includeClosed ? sql`` : sql`AND g.closed_at IS NULL`}
+      ${filter.sessionId ? sql`AND g.session_id = ${filter.sessionId}` : sql``}
+    ORDER BY g.opened_at ${filter.order === 'newest' ? sql`DESC` : sql`ASC`}
     LIMIT ${limit}
   `;
   return rows;

@@ -33,6 +33,14 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../roles';
 import { splitCarryNoteWalls } from '../../../carry-note';
+import {
+  classifyReadActionability,
+  resolveSessionStates,
+  type LivenessSubject,
+  type LivenessVerdict,
+  type ReadActionability,
+} from '../liveness-oracle';
+import type { SessionState } from '../presence-wakeability';
 
 /** A loop carry-note scope is `loop:<harness>:<ownerId>` (carry-note.ts loopScope). */
 function parseLoopScope(scope: string): { harness: string; ownerId: string } | null {
@@ -50,10 +58,6 @@ function hoursSince(ms: number | null, now: number): number | null {
   return Math.max(0, Math.round(((now - ms) / 3_600_000) * 10) / 10);
 }
 
-/** An agent is a live waiter only if it has heartbeated recently. Beyond this it
- *  is presumed dead and its wall is STRANDED — the answer would land on nobody. */
-const LIVE_WITHIN_MS = 10 * 60 * 1000;
-
 export interface WallRow {
   source: 'loop-carry-note' | 'work-item';
   ownerId: string | null;
@@ -63,9 +67,11 @@ export interface WallRow {
   ref?: string;
   sinceIso: string | null;
   waitingHours: number | null;
-  /** waiting = the agent is alive and parked on your answer; stranded = its session
-   *  is gone, so answering alone will NOT resume the work (respawn it too). */
-  status: 'waiting' | 'stranded' | 'unknown';
+  /** waiting = actionable; stale = draining; stranded = ended/suspect; unknown
+   *  = no liveness verdict, so none is counted as owner work. */
+  status: 'waiting' | 'stale' | 'stranded' | 'unknown';
+  actionability?: ReadActionability;
+  livenessState?: SessionState | null;
 }
 
 export interface ListOwnerWallsOpts {
@@ -97,23 +103,30 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   const limit = opts.limit ?? 50;
   const includeStranded = opts.includeStranded ?? true;
 
-  // ── Liveness: who is still actually there to receive an answer ────────────
-  const presence = await sql<Array<{ owner_id: string; last_active_at: Date | null }>>`
-    SELECT owner_id, last_active_at
+  // ── Liveness inputs: the shared oracle decides whether an answer has a live
+  // waiter. Keep the full presence row rather than rebuilding a heartbeat-only
+  // rule here.
+  const presence = await sql<Array<{
+    owner_id: string;
+    workspace_id: string;
+    heartbeat_at: string | null;
+    host: string | null;
+    pid: number | null;
+    source: string | null;
+    agent_role: string | null;
+  }>>`
+    SELECT owner_id, workspace_id, heartbeat_at::text AS heartbeat_at,
+           host, pid, source, agent_role
       FROM harness_shared.coord_presence
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
   `;
-  const liveness = new Map<string, boolean>();
+  const presenceByOwner = new Map<string, (typeof presence)[number]>();
   for (const p of presence) {
-    const lastMs = p.last_active_at ? new Date(p.last_active_at).getTime() : null;
-    liveness.set(p.owner_id, lastMs != null && now - lastMs <= LIVE_WITHIN_MS);
+    const current = presenceByOwner.get(p.owner_id);
+    if (!current || (p.workspace_id === ws && current.workspace_id !== ws)) {
+      presenceByOwner.set(p.owner_id, p);
+    }
   }
-  const statusOf = (ownerId: string | null): WallRow['status'] => {
-    if (!ownerId) return 'unknown';
-    const live = liveness.get(ownerId);
-    if (live === undefined) return 'unknown';
-    return live ? 'waiting' : 'stranded';
-  };
 
   const walls: WallRow[] = [];
 
@@ -141,7 +154,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
         ...(w.recheck ? { recheck: w.recheck } : {}),
         sinceIso: sinceMs != null ? new Date(sinceMs).toISOString() : null,
         waitingHours: hoursSince(sinceMs, now),
-        status: statusOf(parsed.ownerId),
+        status: 'unknown',
       });
     }
   }
@@ -168,8 +181,41 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
       ref: it.feature_id,
       sinceIso: sinceMs != null ? new Date(sinceMs).toISOString() : null,
       waitingHours: hoursSince(sinceMs, now),
-      status: statusOf(it.taken_by),
+      status: 'unknown',
     });
+  }
+
+  const ownerIds = [...new Set(walls.map((w) => w.ownerId).filter((id): id is string => Boolean(id)))];
+  const subjects: LivenessSubject[] = ownerIds.map((ownerId) => {
+    const p = presenceByOwner.get(ownerId);
+    return {
+      ownerId,
+      heartbeatAt: p?.heartbeat_at,
+      host: p?.host,
+      pid: p?.pid,
+      source: p?.source,
+      agentRole: p?.agent_role,
+      claimsHeld: walls.some((w) => w.ownerId === ownerId && w.source === 'work-item'),
+    };
+  });
+  let verdicts = new Map<string, LivenessVerdict>();
+  if (subjects.length > 0) {
+    try {
+      verdicts = await resolveSessionStates(subjects);
+    } catch {
+      // Preserve rows as unknown rather than fabricating an actionable wall
+      // when the liveness store is temporarily unavailable.
+    }
+  }
+  for (const wall of walls) {
+    const verdict = wall.ownerId ? verdicts.get(wall.ownerId) : undefined;
+    const actionability = classifyReadActionability(verdict?.sessionState);
+    wall.actionability = actionability;
+    wall.livenessState = verdict?.sessionState ?? null;
+    if (actionability === 'actionable') wall.status = 'waiting';
+    else if (verdict?.sessionState === 'draining') wall.status = 'stale';
+    else if (actionability === 'non-actionable') wall.status = 'stranded';
+    else wall.status = 'unknown';
   }
 
   const filtered = walls
