@@ -60,10 +60,36 @@ export interface GraderSelection {
   grader?: RoutingCandidate;
   /** The full exclusion set applied — the D-009 independence audit trail. */
   excluded: string[];
+  /**
+   * What the router could measure after applying the independence exclusions.
+   * `eligibleCount` is the known non-excluded actor pool; `qualifiedCount` is
+   * the subset that cleared the semantic floors. Keeping both counts makes an
+   * empty actor pool distinguishable from a populated pool whose context simply
+   * did not qualify.
+   */
+  eligibility: GraderEligibility;
+  /** A structured escalation for a measured empty non-excluded actor pool. */
+  escalation?: GraderEscalation;
   /** Why fresh. 'no_qualified_non_excluded' folds below-floor and all-excluded
    * (D-009 treats them identically); 'all_qualified_dead' is the liveness
    * refinement; 'degraded' = the embedder was unavailable (cannot measure). */
   freshReason?: 'no_qualified_non_excluded' | 'all_qualified_dead' | 'degraded';
+}
+
+export interface GraderEligibility {
+  /** Number of known non-excluded candidates in the router snapshot. */
+  eligibleCount: number;
+  /** Number of known candidates that cleared both routing floors. */
+  qualifiedCount: number;
+  /** False when semantic qualification could not be measured. */
+  measured: boolean;
+  /** Present only when a measured route found no known non-excluded actor. */
+  reason?: 'zero_eligible';
+}
+
+export interface GraderEscalation {
+  /** No known non-excluded actor can perform either vetting or grading. */
+  code: 'zero_eligible';
 }
 
 /** The system-authored grader-discovery query: rubric first (the definition of
@@ -148,15 +174,38 @@ export async function selectAcceptanceGrader(
     excludeOwners: excluded,
   });
 
+  const eligibility: GraderEligibility = {
+    eligibleCount: route.snapshot.candidates.length,
+    qualifiedCount: route.qualified.length,
+    measured: route.snapshot.degraded === undefined,
+    ...(route.snapshot.degraded === undefined && route.snapshot.candidates.length === 0
+      ? { reason: 'zero_eligible' as const }
+      : {}),
+  };
+  const escalation: GraderEscalation | undefined = eligibility.reason
+    ? { code: eligibility.reason }
+    : undefined;
+
   if (route.snapshot.degraded === 'embed-unavailable') {
-    return { verdict: 'fresh', excluded, freshReason: 'degraded' };
+    return { verdict: 'fresh', excluded, eligibility, freshReason: 'degraded' };
   }
   if (route.verdict !== 'routed' || route.qualified.length === 0) {
-    return { verdict: 'fresh', excluded, freshReason: 'no_qualified_non_excluded' };
+    return {
+      verdict: 'fresh',
+      excluded,
+      eligibility,
+      ...(escalation ? { escalation } : {}),
+      freshReason: 'no_qualified_non_excluded',
+    };
   }
   const reachable = route.qualified.find((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
   if (!reachable) {
-    return { verdict: 'fresh', excluded, freshReason: 'all_qualified_dead' };
+    return {
+      verdict: 'fresh',
+      excluded,
+      eligibility,
+      freshReason: 'all_qualified_dead',
+    };
   }
-  return { verdict: 'assigned', grader: reachable, excluded };
+  return { verdict: 'assigned', grader: reachable, excluded, eligibility };
 }
