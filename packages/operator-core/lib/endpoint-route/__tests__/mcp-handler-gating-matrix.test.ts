@@ -33,7 +33,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
-import { MAX_PICK_PATHS } from '../../result-projection';
+import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -978,6 +978,49 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     expect(res.isError).not.toBe(true);
     expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
     expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+  });
+
+  it('applies a registered named view on a real nested target before the shared result door', async () => {
+    const declared = NAMED_VIEWS['work_items:get']!.capsule!;
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'work_items:get',
+        args: { id: 'EI-gating-matrix', view: 'capsule' },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    // `view` is not in work_items:get's closed schema. Reaching a successful
+    // real handler result proves the nested dispatcher stripped it first.
+    expect(res.isError).not.toBe(true);
+    const receipt = res._meta?.namedView as
+      | {
+          view: string;
+          version: number;
+          applied: boolean;
+          fields: string[];
+          budgetChars: number;
+          returnedChars: number;
+        }
+      | undefined;
+    expect(receipt).toMatchObject({
+      view: 'capsule',
+      version: declared.version,
+      applied: true,
+      budgetChars: declared.budgetChars,
+    });
+    expect(receipt?.fields).toEqual(declared.fields);
+    expect(receipt!.returnedChars).toBeLessThanOrEqual(receipt!.budgetChars);
+
+    // The receipt must survive in both channels, and the view must keep the
+    // outer generic door from replacing the capsule with a spill projection.
+    const firstText = res.content[0]?.text ?? '';
+    expect(firstText).toContain(`ⓘ view "capsule" v${declared.version} applied`);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    const [capsuleText] = firstText.split('\nⓘ view ');
+    expect(Object.keys(JSON.parse(capsuleText!) as Record<string, unknown>)).toEqual(['results']);
   });
 
   it('an INVALID nested projection fails CLOSED — the target tool is never dispatched', async () => {
