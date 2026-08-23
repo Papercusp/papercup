@@ -20,7 +20,12 @@
  *    re-arm (P0b/P1a).
  */
 
-import { classifySubprocessResult, parseUsageReset, type TurnError } from '@papercusp/papercusp-shared/agent';
+import {
+  classifySubprocessResult,
+  parseUsageReset,
+  type TurnError,
+  type TurnProvider,
+} from '@papercusp/papercusp-shared/agent';
 import { classifyWedgeText } from '../../search/session-end-reason';
 
 /**
@@ -47,6 +52,37 @@ export interface ResumeTurnExitRaw {
 
 /** Survived (the turn ran to completion) vs died (with the classified failure). */
 export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
+
+/**
+ * A resume can be launched successfully and still point at a session that has already
+ * been reaped (or whose transcript was never archived). The CLI reports that as
+ * `Session "<id>" not found`; retrying the same native id can never recover it.
+ * Keep this narrow so ordinary agent errors remain retryable crashes.
+ */
+const STALE_RESUME_TARGET_RE = /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b/i;
+
+export function isStaleResumeTargetMessage(message: string): boolean {
+  return STALE_RESUME_TARGET_RE.test(message);
+}
+
+export function isStaleResumeTargetError(outcome: ResumeTurnOutcome): boolean {
+  return !outcome.ok && outcome.error.class === 'permanent' && isStaleResumeTargetMessage(outcome.error.message);
+}
+
+/**
+ * Resume-only normalization: a missing native session is a permanent target failure, not
+ * a retryable subprocess crash. The loop turn-outcome handler uses this distinction to
+ * pause the owning loop instead of re-arming an impossible `--resume` forever.
+ */
+function classifyResumeSubprocessResult(
+  input: Parameters<typeof classifySubprocessResult>[0],
+  provider: TurnProvider,
+  now: number,
+): TurnError {
+  const error = classifySubprocessResult(input, provider, now);
+  if (!isStaleResumeTargetMessage(error.message)) return error;
+  return { ...error, class: 'permanent', retryable: false, surfaceToUser: true };
+}
 
 /** Return the latest complete Codex terminal event from a bounded JSONL tail.
  * The first line may be partial because the collector keeps only the last N
@@ -103,7 +139,7 @@ export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Dat
       const terminal = latestCodexTerminalEvent(raw.stdoutTail);
       if (terminal !== 'turn.completed') {
         if (terminal === 'turn.failed') {
-          const error = classifySubprocessResult(
+          const error = classifyResumeSubprocessResult(
             {
               // Codex may report a protocol-level failure even when its wrapper
               // exits zero. Force the failed-exit taxonomy so its JSONL error
@@ -149,7 +185,7 @@ export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Dat
     }
     return { ok: true };
   }
-  const error = classifySubprocessResult(
+  const error = classifyResumeSubprocessResult(
     {
       exitCode: raw.exitCode,
       signal: raw.signal ?? null,

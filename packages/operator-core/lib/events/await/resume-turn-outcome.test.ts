@@ -69,6 +69,18 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     }
   });
 
+  it('classifies a missing native resume session as permanent, not a retryable crash', () => {
+    const out = classifyResumeTurnExit(
+      raw({ exitCode: 1, stderrTail: 'Error: Session "01a02f7b-b7be-7030-ad56-53149607c6cd" not found' }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('permanent');
+      expect(out.error.retryable).toBe(false);
+      expect(out.error.surfaceToUser).toBe(true);
+    }
+  });
+
   it('classifies a prompt-overflow death as context_overflow, not agent_crash', () => {
     const out = classifyResumeTurnExit(raw({ exitCode: 1, stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }));
     expect(out.ok).toBe(false);

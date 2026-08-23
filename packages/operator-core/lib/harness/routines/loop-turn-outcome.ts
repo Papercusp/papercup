@@ -47,6 +47,7 @@ import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './l
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
 import {
   classifyResumeTurnExit,
+  isStaleResumeTargetError,
   type ResumeTurnExitRaw,
   type ResumeTurnOutcome,
 } from '../../events/await/resume-turn-outcome';
@@ -228,37 +229,41 @@ export async function handleLoopResumeTurnExit(
     if (!ref) return { handled: false, routineId }; // loop ended / not a loop routine
 
     const klass = outcome.error.class;
+    const staleResumeTarget = isStaleResumeTargetError(outcome);
     // 1. Feed the EXISTING autoloop circuit (P0b). recordFire keys off activeWorkspaceId(),
     //    so run it under the loop's workspace (the delivery lives in the coord workspace).
     await runWithWorkspace(ref.workspaceId, () =>
       recordFire(
         ref.installSlug,
         ref.name,
-        `resume-turn-death:${klass}`,
+        staleResumeTarget ? `resume-target-stale:${klass}` : `resume-turn-death:${klass}`,
         // WI-669: an infra-shaped death (rate-limit/transport/timeout) must not
         // ratchet the exponential backoff — classify; genuine turn deaths still count.
         classifyFireError(`resume-turn-death:${klass}`),
       ),
     ).catch((e) => log(`recordFire failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
 
-    // 2. A context-window death is terminal for THIS loop instance. Re-arming the same
-    // warm transcript at its normal cadence only repeats the oversized prompt and burns
-    // turns into a known wall. Pause the routine so the operator/overwatch path can arrange
-    // a fresh carry-respawn or a smaller launch; all other classes keep the existing
+    // 2. Context-window deaths and stale resume targets are terminal for THIS loop instance.
+    // Re-arming the same warm transcript or missing native session at the normal cadence only
+    // repeats a known wall. Pause the routine so the operator/overwatch path can arrange a
+    // fresh carry-respawn or corrected launch; all other classes keep the existing
     // retry-after-aware re-arm below. The classifier lives in the shared turn taxonomy, but
-    // use a string comparison here so this protection remains fail-safe while mixed-version
-    // operator processes roll forward to the new class.
+    // use a string comparison for context overflow so this protection remains fail-safe while
+    // mixed-version operator processes roll forward to the new class.
     const contextOverflow = String(klass) === 'context_overflow';
     let delayMs: number | undefined;
     let rearmed = false;
-    if (contextOverflow) {
+    if (contextOverflow || staleResumeTarget) {
       const autoPause = deps.autoPause ?? defaultAutoPauseLoopRoutine;
+      const pauseReason = contextOverflow
+        ? `loop-turn-outcome: context overflow (${outcome.error.message}); paused to prevent repeated oversized warm wakes`
+        : `loop-turn-outcome: stale resume target (${outcome.error.message}); paused to prevent repeated resumes of a missing session`;
       await autoPause(
         sql,
         routineId,
-        `loop-turn-outcome: context overflow (${outcome.error.message}); paused to prevent repeated oversized warm wakes`,
+        pauseReason,
         'loop-turn-outcome',
-      ).catch((e) => log(`context-overflow pause failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
+      ).catch((e) => log(`terminal pause failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
     } else {
       // 429-aware re-arm (P1a) — only while still parked at 'infinity' (the dead turn).
       const intervalMs = (ref.intervalSec ?? 60) * 1000;
@@ -269,7 +274,7 @@ export async function handleLoopResumeTurnExit(
       });
     }
     log(
-      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${contextOverflow ? 'paused for fresh-context recovery' : rearmed ? `re-armed +${Math.round(delayMs! / 1000)}s` : 'not re-armed (already advanced)'}`,
+      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${contextOverflow ? 'paused for fresh-context recovery' : staleResumeTarget ? 'paused for stale resume target' : rearmed ? `re-armed +${Math.round(delayMs! / 1000)}s` : 'not re-armed (already advanced)'}`,
     );
 
     // 3. EI-13818 (c): raise a LOUD, debounced signal the first time this loop is observed
@@ -295,8 +300,8 @@ export async function handleLoopResumeTurnExit(
     // structurally cannot see: the delay computed for THIS fire is long enough that a human
     // needs to know regardless of class. See CHRONIC_BACKOFF_ALERT_FLOOR_MS's own doc for why.
     const chronicBackoff =
-      !contextOverflow && !outcome.error.surfaceToUser && delayMs! >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
-    if (contextOverflow || outcome.error.surfaceToUser || chronicBackoff) {
+      !contextOverflow && !staleResumeTarget && !outcome.error.surfaceToUser && delayMs! >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
+    if (contextOverflow || staleResumeTarget || outcome.error.surfaceToUser || chronicBackoff) {
       try {
         const { claimWatchdogFire } = await import('../../pot/watchdog');
         const claimed = await claimWatchdogFire({
@@ -324,6 +329,9 @@ export async function handleLoopResumeTurnExit(
               (contextOverflow
                 ? ` [context-overflow terminal guard: the loop was paused instead of re-arming the same ` +
                   `oversized warm transcript; recover it with a fresh carry-respawn or corrected launch.]`
+                : staleResumeTarget
+                ? ` [stale-resume-target terminal guard: the loop was paused instead of re-arming a ` +
+                  `missing native session; relaunch or rebind the owner before resuming the loop.]`
                 : chronicBackoff
                 ? ` [chronic-backoff trigger: ${klass} is normally auto-absorbed silently, but the computed ` +
                   `re-arm delay for this fire was ${Math.round(delayMs! / 60_000)}min — well past a normal ` +

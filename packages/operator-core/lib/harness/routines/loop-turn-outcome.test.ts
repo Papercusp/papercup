@@ -250,6 +250,36 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     );
     expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
   });
+
+  it('a missing native resume session pauses the loop and never re-arms the stale target', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({
+        stdoutTail: 'Error: Session "01a02f7b-b7be-7030-ad56-53149607c6cd" not found',
+        stderrTail: '',
+      }),
+      { sql: sql as never, recordFire, autoPause },
+    );
+
+    expect(res).toMatchObject({ handled: true, class: 'permanent' });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-owner',
+      'resume-target-stale:permanent',
+      'error',
+    );
+    expect(autoPause).toHaveBeenCalledWith(
+      sql,
+      'loop_su_owner',
+      expect.stringContaining('stale resume target'),
+      'loop-turn-outcome',
+    );
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+  });
 });
 
 describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () => {
