@@ -21,6 +21,9 @@ describe('capability:bash — repository search scope guidance', () => {
     const guidance = (bashTool as unknown as GuidanceTool).guidance?.when ?? '';
 
     expect(guidance).toContain(RIPGREP_SCOPE_GUIDANCE);
+    expect(guidance).toContain('Probe `rg` in the target shell');
+    expect(guidance).toContain('`command -v rg >/dev/null 2>&1`');
+    expect(guidance).toContain('client-private binaries may not be inherited');
     expect(guidance).toContain('prefer ripgrep (`rg`)');
     expect(guidance).toContain('`grep`/`grep -E`');
     expect(guidance).toContain('fall back to `grep -F`');
