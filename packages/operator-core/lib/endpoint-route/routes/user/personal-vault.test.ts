@@ -190,6 +190,20 @@ describe('Personal Vault owner routes', () => {
             expect.objectContaining({ id: 'gmail', enabled: true, status: 'connected' }),
             expect.objectContaining({ id: 'calendar', enabled: true, status: 'connected' }),
             expect.objectContaining({ id: 'contacts', enabled: true, status: 'connected' }),
+            // D-019 IN ACTION, and the whole reason the YouTube scopes are kept
+            // out of GOOGLE_WORKSPACE_SCOPES: this connection never consented to
+            // them, so the capability must report NOT connected and name what is
+            // missing. Had they been added to the presumed-granted list, this
+            // would read connected — and the owner would discover otherwise via
+            // a 403 at call time.
+            expect.objectContaining({
+              id: 'youtube',
+              connected: false,
+              missingScopes: [
+                'https://www.googleapis.com/auth/youtube.readonly',
+                'https://www.googleapis.com/auth/youtube.force-ssl',
+              ],
+            }),
           ],
         },
         facebook: {
