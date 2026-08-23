@@ -690,7 +690,12 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // 2026-08-20 — P-009's independently gated unattended holder recovery.
     // case: owner-authority, so the parking subset/watermark remain 14.
     // Count 31 → 32.
-    expect(offCount).toBe(33);
+    // 2026-08-23 (social-platform-integrations-2026-08-23 P-006 / D-004(b)) —
+    // papercusp-social-auto-publish, the publish kill-switch for create-shaped
+    // posting to the owner's real public social identity. case:
+    // 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
+    // both stay 14 and no graduation trade is owed. Count 33 → 34.
+    expect(offCount).toBe(34);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

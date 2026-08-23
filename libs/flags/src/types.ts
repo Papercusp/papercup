@@ -32,6 +32,14 @@ export const FLAGS = {
   // reads this flag. DEFAULT OFF in DARK_FLAGS (owner-authority): enabling a
   // future consumer would send outward-facing email without per-message review.
   GMAIL_AUTO_SEND: "papercusp-gmail-auto-send",
+  // social-platform-integrations-2026-08-23 P-006 / D-004(b): the PUBLISH
+  // side-effect of social:post — create-shaped public publishing to the owner's
+  // real social identity. DEFAULT OFF in DARK_FLAGS (owner-authority), the same
+  // category as GMAIL_AUTO_SEND above. The verb itself is live and unflagged:
+  // with this OFF it still parses, runs BOTH D-020 rails, resolves the account
+  // and audience, and returns that echo with `withheld` set — only the outbound
+  // call is withheld. So OFF is a publish kill-switch, not a hidden feature.
+  SOCIAL_AUTO_PUBLISH: "papercusp-social-auto-publish",
   // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
   // + the /res allocation board): hand account pools + local GPUs to the fleets
   // inside the workspace hive tree, each with a share %. Default ON (derived
@@ -2914,6 +2922,14 @@ export const DARK_FLAGS: ReadonlyMap<
       case: "owner-authority",
       reason:
         "external-triggers-gmail-slack-2026-08-22 P-011: automatic Gmail sending is an outward-facing owner-authority action. The shipped gmail:create-draft tool has no send branch and remains live independently; OFF reserves the separate auto-send capability until the owner ratifies its review, recipient, and failure policy.",
+    },
+  ],
+  [
+    FLAGS.SOCIAL_AUTO_PUBLISH,
+    {
+      case: "owner-authority",
+      reason:
+        "social-platform-integrations-2026-08-23 P-006 / D-004(b): create-shaped publishing to the owner's real public social identity. A public post differs from a mail send in KIND, not degree — unbounded in audience, permanently indexable, attributed to the owner, and not correctable by a follow-up; and its inbound corpus is untrusted text authored by strangers at volume with an incentive to manipulate. OFF withholds ONLY the outbound call: social:reply (rail 1, bounded blast radius) is unaffected and unflagged, and social:post itself still runs both rails and returns the resolved account + audience echo, so flipping this ON is one owner decision over a fully-built, fully-tested verb rather than a hand-off of unfinished work.",
     },
   ],
   [

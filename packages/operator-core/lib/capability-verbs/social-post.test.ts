@@ -22,6 +22,7 @@ import {
   formatSocialDestinationRef,
   getSocialWriteAdapter,
   parseSocialDestinationRef,
+  parseSocialPostRef,
   postToCanonicalSocialDestination,
   registerSocialWriteAdapter,
   socialPostIdempotencyKey,
@@ -135,10 +136,39 @@ describe('parseSocialDestinationRef — the first-colon rule (D-006)', () => {
   it('refuses a token with no destination half, rather than defaulting one', () => {
     // The dangerous alternative is treating "reddit:" as "the owner's own
     // timeline" — an omitted destination that silently skips rail 2.
-    expect(() => parseSocialDestinationRef('reddit:')).toThrow(/social_destination_ref_malformed/);
-    expect(() => parseSocialDestinationRef('reddit')).toThrow(/social_destination_ref_malformed/);
-    expect(() => parseSocialDestinationRef('   ')).toThrow(/social_destination_ref_required/);
-    expect(() => parseSocialDestinationRef(':r/rust')).toThrow(/social_destination_ref_malformed/);
+    //
+    // These assert the WHOLE message, not just the error code. An earlier
+    // version matched only /social_destination_ref_malformed/ and passed while
+    // the message actually read "empty undefined", because the shared splitter
+    // was called without its tail-name field. The typechecker caught that; a
+    // looser assertion would have let a garbled refusal ship.
+    // A trailing colon refuses via the SHAPE branch, not an "empty
+    // destination" branch — the token is trimmed before splitting, so the
+    // empty-tail case is unreachable by construction. Asserting the real
+    // message here is what documents that; asserting an invented one is how
+    // the seam ended up calling the splitter without its tail-name field.
+    expect(() => parseSocialDestinationRef('reddit:')).toThrow(
+      /^social_destination_ref_malformed: expected "<platform>:<destination>", got "reddit:"$/,
+    );
+    expect(() => parseSocialDestinationRef('reddit')).toThrow(
+      /^social_destination_ref_malformed: expected "<platform>:<destination>", got "reddit"$/,
+    );
+    expect(() => parseSocialDestinationRef('   ')).toThrow(/^social_destination_ref_required$/);
+    expect(() => parseSocialDestinationRef(':r/rust')).toThrow(
+      /^social_destination_ref_malformed: expected/,
+    );
+  });
+
+  it('keeps the post-ref refusals byte-identical to what P-005 shipped', () => {
+    // The splitter was FACTORED out of parseSocialPostRef; these pin that the
+    // refactor changed no message the reply path already relied on.
+    expect(() => parseSocialPostRef('reddit:')).toThrow(
+      /^social_post_ref_malformed: expected "<platform>:<id>", got "reddit:"$/,
+    );
+    expect(() => parseSocialPostRef('   ')).toThrow(/^social_post_ref_required$/);
+    expect(() => parseSocialPostRef('reddit')).toThrow(
+      /^social_post_ref_malformed: expected "<platform>:<id>", got "reddit"$/,
+    );
   });
 
   it('refuses an unknown platform with the REGISTRY reason, not a vault miss', () => {
