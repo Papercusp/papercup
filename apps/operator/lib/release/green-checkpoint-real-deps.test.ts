@@ -638,7 +638,7 @@ describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () 
         integrationBranch: "staging",
       });
       const joined = await deps.reconcileFrozenRepairIntoStaging?.({
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: "ready-to-promote",
         candidate: frozen,
         base: ready,
@@ -762,7 +762,7 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
 
       const worktreePath = join(root, "repair-worktree");
       await deps.prepareFrozenRepairWorktree?.({
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: "awaiting-fixer",
         candidate: repairHead,
         base,
@@ -1483,7 +1483,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(r.green).toBe(false);
     // BOTH legs ran — the second is the one that used to be skipped as "not run".
     expect(calls.map((c) => c.args.join(" "))).toEqual([
-      "run test:affected",
+      "run test:related",
       "run lint:design-primitives",
       "run lint:no-control-bytes",
     ]);

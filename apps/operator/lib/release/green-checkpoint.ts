@@ -7488,9 +7488,9 @@ export async function runGreenCheckpoint(
       }
       let fired: FrozenRepairDispatchResult | null = null;
       if (hasFrozenRepairDispatchReservation) {
-        // The first-red path must let the CAS create-and-reserve the absent queue in one
-        // database write. Persisting first would let a stale concurrent reader recreate a
-        // queue after another process had already cleared it.
+        // Reserve the durable candidate row before the external fixer launch. The candidate
+        // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
+        // compatibility first-red path atomic for callers that learned about C only here.
         const dispatch = await dispatchFrozenRepair(repairQueue, true);
         if (dispatch.reservationBlocked) {
           repairQueue =

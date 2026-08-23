@@ -47,7 +47,7 @@ export interface FrozenRepairDispatchReservation {
 export interface FrozenCandidateRepairQueue {
   schemaVersion: 1 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
   phase: FrozenCandidateRepairPhase;
-  /** The fixed C selected by the first red verdict. Never moves for this queue entry. */
+  /** The fixed C persisted before its first suite. Never moves for this queue entry. */
   candidate: string;
   /** The green pin observed when C was selected. */
   base: string | null;
@@ -542,8 +542,8 @@ export function markFrozenRepairVerificationRed(
  * content-equivalent repair with different patch context. The exact reverse-apply guard
  * must continue to fail closed, while the queue must also remain live: return it to the
  * queue-authorized fixer path so the specialized release-fixer can align the isolated
- * worktree. Attempts remain bounded by the existing policy, which abandons the frozen
- * queue and admits a fresh current-tip candidate after the final failed alignment. */
+ * worktree. Attempts remain bounded by the existing policy; exhaustion blocks automation
+ * while retaining the same frozen queue head for operator repair. */
 export function markFrozenRepairStagingMismatch(
   queue: FrozenCandidateRepairQueue,
   input: { repairHead: string; nowMs: number },
