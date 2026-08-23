@@ -377,6 +377,27 @@ describe('decodeDeliveryId (EI-19311270129974785)', () => {
  * recognized and short-circuited, never re-run as a fresh, unrelated request.
  */
 describe('makeDeliveryDedup (EI-19311270129974785)', () => {
+  it('keeps an early accepted delivery pending until its pipeline settles, then permits a failed retry', () => {
+    const d = makeDeliveryDedup();
+
+    d.markPending('pending-1');
+    expect(d.state('pending-1')).toBe('pending');
+    expect(d.isDuplicate('pending-1')).toBe(true);
+
+    d.clearPending('pending-1');
+    expect(d.state('pending-1')).toBeNull();
+    expect(d.isDuplicate('pending-1')).toBe(false);
+  });
+
+  it('keeps a completed delivery deduped after the pipeline settles successfully', () => {
+    const d = makeDeliveryDedup();
+
+    d.markPending('complete-1');
+    d.markCompleted('complete-1');
+    expect(d.state('complete-1')).toBe('completed');
+    expect(d.isDuplicate('complete-1')).toBe(true);
+  });
+
   it('a fresh id is not a duplicate; marking it accepted makes the NEXT check a duplicate', () => {
     const d = makeDeliveryDedup();
     expect(d.isDuplicate('35092')).toBe(false);

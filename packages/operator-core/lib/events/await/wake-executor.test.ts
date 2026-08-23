@@ -1121,6 +1121,27 @@ describe('executeWake — the liveness ladder', () => {
     expect(injectPsuHost).toHaveBeenCalledWith('/tmp/x.sock', expect.objectContaining({ mode: 'turn' }));
   });
 
+  it('early accepted ACK with no turn-start proof parks for retry instead of booking clean delivery', async () => {
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'accepted',
+    }));
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock' })) as never,
+        injectPsuHost: undefined,
+        injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'park', reason: expect.stringContaining('accepted') });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
+      '/tmp/x.sock',
+      expect.objectContaining({ mode: 'turn', deliveryId: String(work({ wakeHandle: null }).id) }),
+    );
+  });
+
   it('threads this delivery\'s own id onto the envelope as deliveryId (EI-19311270129974785 — host-side retry dedup)', async () => {
     const injectPsuHost = vi.fn(async () => true);
     await executeWake(
