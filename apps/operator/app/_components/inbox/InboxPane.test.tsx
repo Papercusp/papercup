@@ -347,7 +347,7 @@ describe('<InboxPane>', () => {
     ]);
     const { lastQuery } = renderPane('?opcis=work-item-needs-human%3AWI-42');
     fireEvent.click(screen.getByTestId('stub-open'));
-    await waitFor(() => expect(lastQuery()).toContain('wpop=papercusp%3A%3AWI-42'));
+    await waitFor(() => expect(lastQuery()).toContain('wpop=papercusp::WI-42'));
   });
 
   it('the detail Message owner action focuses the live agent session instead of showing a toast', () => {

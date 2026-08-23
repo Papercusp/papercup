@@ -7,6 +7,7 @@ import {
   aggregateGroupResults,
   canonicalMatch,
   collectionAttributionMarker,
+  discoverTestRoute,
   discoverVitestRoute,
   evaluateMatch,
   formatRouteError,
@@ -47,6 +48,14 @@ describe('test-files router', () => {
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/tooldef'));
     expect(route.config).toBe('vitest.config.ts');
     expect(route.requested).toBe('src/strict-args.test.ts');
+  });
+
+  it('routes supported papercusp-desktop JavaScript tests to Node:test', () => {
+    const route = discoverTestRoute('papercusp-desktop/test/build-windows-identity.test.js');
+    expect(route.runner).toBe('node');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'papercusp-desktop'));
+    expect(route.config).toBeNull();
+    expect(route.requested).toBe('test/build-windows-identity.test.js');
   });
 
   it('resolves a release-trace package-relative path to its unique owning workspace', () => {
@@ -132,6 +141,12 @@ describe('test-files router', () => {
       discoverVitestRoute('packages/operator-core/lib/search/self-session.test.ts'),
     ];
     expect(groupRoutes(routes)).toHaveLength(2);
+  });
+
+  it('keeps Node:test and Vitest routes in separate groups even when config is null', () => {
+    const nodeRoute = discoverTestRoute('papercusp-desktop/test/build-windows-identity.test.js');
+    const vitestRoute = { ...nodeRoute, runner: undefined, cwd: resolve(REPO_ROOT, 'some-vitest-package') };
+    expect(groupRoutes([nodeRoute, vitestRoute])).toHaveLength(2);
   });
 
   it('extracts the distinct files Vitest says it will execute and ignores process warnings', () => {

@@ -687,15 +687,16 @@ describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D
     expect(routerPushSpy).not.toHaveBeenCalled();
   });
 
-  it('a work-item ref with a live attention row opens that Inbox card', () => {
+  it('an explicit work-item ref keeps the popup fast-path when the attention-ref fetch is gated off', () => {
     drillState.ref = 'wi:WI-1';
     inboxState.items = [{ id: 'wi-1', itemRef: 'WI-1', planSlug: null, ownerAgentId: null }];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    expect(nuqsWrites.current.opcv).toBe('inbox');
-    expect(nuqsWrites.current.opci).toBe('all');
-    expect(nuqsWrites.current.opcis).toBe('wi-1');
-    expect(nuqsWrites.current.wpop).toBeUndefined();
+    // `wi:` resolves without the live attention projection, so D-031 keeps
+    // that fetch disabled. Preserve the specific popup rather than paying the
+    // app-wide read just to discover a duplicate Inbox destination.
+    expect(nuqsWrites.current.wpop).toBe('papercusp::WI-1');
+    expect(nuqsWrites.current.opcv).toBeUndefined();
     expect(routerPushSpy).not.toHaveBeenCalled();
   });
 

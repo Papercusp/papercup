@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Run exact Vitest files from the configuration that owns each file.
+ * Run exact Vitest or Node:test files from the runner that owns each file.
  *
  * A root-level `vitest --config path/to/config path/to/test` is subtly wrong for
  * package configs whose include globs are relative to their workspace. This router
@@ -169,6 +169,18 @@ const NON_WORKSPACE_VITEST_ROUTES = [
   },
 ];
 
+// papercusp-desktop is intentionally not a root npm workspace: it is the Tauri/Cargo desktop
+// package, and its JavaScript tests are owned by Node's built-in test runner rather than Vitest.
+// Keep this route explicit, like the templates route above, so a path cannot be silently sent to
+// an arbitrary package's runner just because it happens to end in `.test.js`.
+const NON_WORKSPACE_NODE_ROUTES = [
+  {
+    prefix: 'papercusp-desktop/test/',
+    pathPattern: /\.test\.[cm]?js$/,
+    cwd: 'papercusp-desktop',
+  },
+];
+
 function nonWorkspaceVitestRoute(rootRelative, absolute, root) {
   const normalized = rootRelative.split(sep).join('/');
   const match = NON_WORKSPACE_VITEST_ROUTES.find(
@@ -178,6 +190,17 @@ function nonWorkspaceVitestRoute(rootRelative, absolute, root) {
   const cwd = resolve(root, match.cwd);
   if (!existsSync(resolve(cwd, match.config))) return null;
   return { cwd, config: match.config, absolute, requested: relative(cwd, absolute) };
+}
+
+function nonWorkspaceNodeRoute(rootRelative, absolute, root) {
+  const normalized = rootRelative.split(sep).join('/');
+  const match = NON_WORKSPACE_NODE_ROUTES.find(
+    (candidate) => normalized.startsWith(candidate.prefix) && candidate.pathPattern.test(normalized),
+  );
+  if (!match) return null;
+  const cwd = resolve(root, match.cwd);
+  if (!existsSync(resolve(cwd, 'package.json'))) return null;
+  return { runner: 'node', cwd, config: null, absolute, requested: relative(cwd, absolute) };
 }
 
 export function discoverVitestRoute(file, root = REPO_ROOT) {
@@ -218,11 +241,28 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
   );
 }
 
+/**
+ * Discover the runner for a requested test file. Vitest remains the default route; the explicit
+ * Node:test route covers the desktop package's supported JavaScript test files, which are outside
+ * the root workspace/config walk by design.
+ */
+export function discoverTestRoute(file, root = REPO_ROOT) {
+  root = resolve(root);
+  const absolute = resolveRequestedTestFile(file, root);
+  if (!existsSync(absolute)) throw new Error(`requested test file does not exist: ${relative(root, absolute)}`);
+  const rootRelative = relative(root, absolute);
+  if (rootRelative.startsWith(`..${sep}`) || rootRelative === '..' || isAbsolute(rootRelative)) {
+    throw new Error(`requested test file is outside the repository: ${absolute}`);
+  }
+  return nonWorkspaceNodeRoute(rootRelative, absolute, root) ?? discoverVitestRoute(file, root);
+}
+
 export function groupRoutes(routes) {
   const groups = new Map();
   for (const route of routes) {
-    const key = `${route.cwd}\0${route.config}`;
-    const group = groups.get(key) ?? { cwd: route.cwd, config: route.config, routes: [] };
+    const runner = route.runner ?? 'vitest';
+    const key = `${runner}\0${route.cwd}\0${route.config}`;
+    const group = groups.get(key) ?? { runner, cwd: route.cwd, config: route.config, routes: [] };
     group.routes.push(route);
     groups.set(key, group);
   }
@@ -1303,7 +1343,7 @@ export function main(argv = process.argv.slice(2)) {
 
   let routes;
   try {
-    routes = files.map((file) => discoverVitestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
+    routes = files.map((file) => discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
   } catch (error) {
     console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
     return 2;
@@ -1334,6 +1374,35 @@ export function main(argv = process.argv.slice(2)) {
   const MULTI_FILE_ATTRIBUTION_CAP = 25;
   for (const [groupIndex, group] of groups.entries()) {
     const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
+    if (group.runner === 'node') {
+      const exact = group.routes.map((route) => route.requested);
+      console.log(`ROUTE cwd=${cwdLabel} runner=node:test`);
+      for (const file of exact) console.log(`  requested ${file}`);
+      const result = spawnSync(process.execPath, ['--test', ...exact, ...vitestArgs], {
+        cwd: group.cwd,
+        env: process.env,
+        encoding: 'utf8',
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+      if (result.error) {
+        console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`));
+      }
+      const groupFailed = Boolean(result.error) || result.status !== 0;
+      if (groupFailed) {
+        console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} runner=node:test executed=${result.error ? 0 : exact.length} status=failed`);
+      }
+      groupResults.push({
+        requested: group.routes.length,
+        matched: group.routes.length,
+        executed: result.error ? 0 : exact.length,
+        unmatchedCount: 0,
+        failed: groupFailed,
+        launchError: Boolean(result.error),
+      });
+      continue;
+    }
     // EI-18822211427354845: each group writes its OWN report file when the run spans
     // several groups, so one group's report can never overwrite another's.
     const groupVitestArgs = perGroupVitestArgs(vitestArgs, groupIndex, groups.length);
