@@ -657,3 +657,91 @@ describe('the H2 weighted Plans board (plan-visibility-revamp-2026-08-23 P-006)'
     expect(screen.getByRole('region', { name: 'Done' })).toBeTruthy();
   });
 });
+
+describe('the enriched plan card (plan-visibility-revamp-2026-08-23 P-007)', () => {
+  const NOW_M = Date.parse('2026-08-23T12:00:00.000Z');
+  const OWNER_A = 'su-76a83f22-1111-4ea0-b546-8a692cdc949c';
+  const OWNER_B = 'su-6e294c10-2222-40e0-bd98-f88198fe84b4';
+
+  function metaPlan(over: Partial<HudPlanInput> = {}): HudPlanInput {
+    return {
+      slug: 'rich-plan',
+      title: 'A rich plan',
+      status: 'active',
+      updated: new Date(NOW_M - 2 * 60_000).toISOString(),
+      harnessSlug: 'papercusp',
+      itemCounts: { done: 3, todo: 5, wip: 1 },
+      lastWorkAtMs: NOW_M - 41_000,
+      agents: [
+        { ownerId: OWNER_A, live: true, intent: 'recording D-001' },
+        { ownerId: OWNER_B, live: null },
+      ],
+      ...over,
+    };
+  }
+
+  function renderPlanBoard(rows: HudPlanInput[]) {
+    return render(
+      <HudEntityColumns
+        board={buildPlanBoard(rows, { nowMs: NOW_M })}
+        focusColumn={null}
+        onFocusColumn={() => {}}
+        query=""
+        onQuery={() => {}}
+        loading={false}
+        error={null}
+        emptyLabel="No plans."
+        noun="plans"
+      />,
+    );
+  }
+
+  it('renders the meta row: ✎/⚒ ages, items progress, avatars and the live pill', () => {
+    renderPlanBoard([metaPlan()]);
+    const meta = document.querySelector('.hud__cardmeta');
+    expect(meta).toBeTruthy();
+    expect(meta!.textContent).toContain('✎ 2m');
+    expect(meta!.textContent).toContain('⚒ 41s');
+    expect(meta!.textContent).toContain('3/9 items');
+    // Avatar initials come from the id segment; the pill counts POSITIVE lives.
+    const initials = [...document.querySelectorAll('.hud__av')].map((el) => el.textContent);
+    expect(initials).toEqual(['76', '6e']);
+    expect(document.querySelector('.hud__liven')!.textContent).toBe('1');
+  });
+
+  it('marks fresh ⚒ hot and leaves stale ⚒ quiet, at PlansPane’s shared 1h line', () => {
+    renderPlanBoard([
+      metaPlan({ slug: 'fresh', lastWorkAtMs: NOW_M - 30 * 60_000 }),
+      metaPlan({ slug: 'stale', lastWorkAtMs: NOW_M - 2 * 60 * 60_000 }),
+    ]);
+    expect(document.querySelectorAll('.hud__mt--hot')).toHaveLength(1);
+  });
+
+  it('prefers the who-is-doing-what line over the stored next-action', () => {
+    renderPlanBoard([metaPlan({ nextAction: 'Ship the thing' })]);
+    const why = document.querySelector('.hud__entity-why');
+    expect(why!.textContent).toBe('su-76a83f22: recording D-001');
+    // The next-action survives as the hover title, not a lost fact.
+    expect(why!.getAttribute('title')).toBe('Ship the thing');
+  });
+
+  it('keeps the stored reason line when nobody is on the plan', () => {
+    renderPlanBoard([metaPlan({ agents: null, nextAction: 'Ship the thing' })]);
+    expect(document.querySelector('.hud__entity-why')!.textContent).toBe('Ship the thing');
+  });
+
+  it('draws the progress track from settled-over-total and omits it with no items', () => {
+    renderPlanBoard([metaPlan()]);
+    const fill = document.querySelector<HTMLElement>('.hud__track-fill');
+    expect(fill).toBeTruthy();
+    expect(fill!.style.width).toBe('33%');
+    cleanup();
+    renderPlanBoard([metaPlan({ itemCounts: {}, agents: null })]);
+    expect(document.querySelector('.hud__track')).toBeNull();
+  });
+
+  it('suppresses the header age on plan cards — ✎ already says it in the meta row', () => {
+    renderPlanBoard([metaPlan()]);
+    expect(document.querySelector('.hud__age')).toBeNull();
+  });
+});
