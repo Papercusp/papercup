@@ -541,7 +541,24 @@ export type LaneGateOp =
    *  or the WI-37914 repair of a park whose blocker was cleared without its state
    *  being restored — the two differ only in whether a blocker write is still owed. */
   | { op: 'ungate'; via: 'active-lane-blocker' | 'stale-park-repair' }
+  /** Plan truth says actionable while the work-item still carries a direct or
+   *  legacy needs-human park. Clear only the human portion and recompute state
+   *  from the blockers that remain. */
+  | { op: 'repair-needs-human' }
   | { op: 'noop'; reason: 'terminal' | 'in-flight' | 'already-gated' | 'no-lane-blocker' };
+
+function hasNeedsHumanResidue(wi: Pick<WorkItem, 'state' | 'payload'>): boolean {
+  const payload =
+    wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+      ? (wi.payload as Record<string, unknown>)
+      : {};
+  return (
+    wi.state.trim().toLowerCase() === 'needs-human' ||
+    payload.needsOwnerAction === true ||
+    payload.needsHuman === true ||
+    activeExternalBlockers(wi.payload).some((blocker) => blocker.kind === 'human')
+  );
+}
 
 /**
  * WI-37914: the state an un-parked work-item is restored TO — pure, so the
@@ -597,6 +614,7 @@ export function decideLaneGate(
     (b) => b.kind === PLAN_LANE_BLOCKER_KIND && b.ref === laneRef,
   );
   if (laneStatus === 'actionable') {
+    if (hasNeedsHumanResidue(wi)) return { op: 'repair-needs-human' };
     if (hasLaneBlocker) return { op: 'ungate', via: 'active-lane-blocker' };
     // WI-37914 REPAIR PATH. The un-park used to clear the blocker and stop there,
     // leaving `state:'blocked'` behind — and because the check above keys on an
@@ -681,6 +699,28 @@ async function applyLaneGateToWorkItem(
       );
       await setWorkItemStateWithAliasInfo(wi.id, 'blocked', { harness, by: PLAN_LANE_SYNC_ACTOR });
       return 'gated';
+    }
+    if (decision.op === 'repair-needs-human') {
+      // Clear ONLY active human blockers. Runtime/gate/event blockers remain
+      // intact, so plan truth repairs the false owner park without fabricating
+      // readiness for independently blocked work.
+      let blockers = readExternalBlockers(wi.payload);
+      for (const blocker of blockers.filter((row) => row.status === 'active' && row.kind === 'human')) {
+        blockers = updateExternalBlockerHistory(
+          { externalBlockers: blockers },
+          { kind: 'human', ref: blocker.ref, clear: true },
+          PLAN_LANE_SYNC_ACTOR,
+        ).blockers;
+      }
+      const stillActive = blockers.filter((blocker) => blocker.status === 'active');
+      await mergeWorkItemPayload(
+        wi.id,
+        { externalBlockers: blockers },
+        { harness, unset: ['needsOwnerAction', 'needsHuman'] },
+      );
+      const restored = stillActive.length > 0 ? 'blocked' : wi.family === 'feature' ? 'todo' : 'open';
+      await setWorkItemStateWithAliasInfo(wi.id, restored, { harness, by: PLAN_LANE_SYNC_ACTOR });
+      return stillActive.length > 0 ? 'gated' : 'ungated';
     }
     // Un-gate: clear OUR lane blocker; restore to claimable ONLY when no OTHER
     // active blocker remains (the exact rule work_items:set_blocker uses, so an
@@ -1154,8 +1194,8 @@ export async function reconcileOrphanedPlanItemWorkItems(
   } catch {
     // census is advisory — the heal sweep below must run regardless.
   }
-  // 1. Enumerate candidate plan-items from NON-terminal work-items carrying a
-  //    plan_item stamp, in ONE query over the unified base table
+  // 1. Enumerate candidate plan-items from NON-terminal work-items carrying
+  //    EITHER linkage mechanism, in ONE query over the unified base table
   //    (harness_shared.work_items, mig 374) rather than the harness_features_-
   //    consolidated / engineer_issues VIEWS. The issues view projects
   //    `(payload - '_ei')`, which throws `cannot delete from scalar` when the
@@ -1175,14 +1215,20 @@ export async function reconcileOrphanedPlanItemWorkItems(
   const key = (planSlug: string, itemId: string) => `${planSlug}\0${itemId}`;
 
   const rows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
-    SELECT DISTINCT payload->'plan_item'->>'plan_slug' AS plan_slug,
-                    payload->'plan_item'->>'item_id'  AS item_id,
-                    harness_slug
-      FROM harness_shared.work_items
-     WHERE payload->'plan_item' IS NOT NULL
-       AND NOT (status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
-       AND payload->'plan_item'->>'plan_slug' IS NOT NULL
-       AND payload->'plan_item'->>'item_id' IS NOT NULL
+    SELECT DISTINCT linkage.plan_slug, linkage.item_id, w.harness_slug
+      FROM harness_shared.work_items w
+      CROSS JOIN LATERAL (
+        SELECT w.payload->'plan_item'->>'plan_slug' AS plan_slug,
+               w.payload->'plan_item'->>'item_id'  AS item_id
+         WHERE w.payload->'plan_item' IS NOT NULL
+        UNION
+        SELECT w.source_plan_slug AS plan_slug, source_item_id AS item_id
+          FROM unnest(COALESCE(w.source_plan_item_ids, ARRAY[]::text[])) AS source_item_id
+         WHERE w.source_plan_slug IS NOT NULL
+      ) AS linkage
+     WHERE NOT (w.status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
+       AND linkage.plan_slug IS NOT NULL
+       AND linkage.item_id IS NOT NULL
      LIMIT ${cap}`;
   for (const r of rows) {
     const k = key(r.plan_slug, r.item_id);
