@@ -77,6 +77,7 @@ tool's own args, never inside them — with \`tools:invoke\` that means alongsid
 
     projection: { pick: ["results[].id", "results[].workItem.state"] } // work_items:get object-root envelope
     projection: { pick: ["[].id", "[].title"] }                 // ARRAY-root body (a bare list)
+    projection: { pick: ["items[].item.id", "items[].item.effectiveStatus"] } // plans:items keyed envelope
     projection: { pipe: [{ op: "grep", pattern: "ERROR" }, { op: "tail", n: 20 }] }
 
 Common keyed envelopes keep fields under their emitted roots — copy the shape, not a
@@ -85,8 +86,9 @@ generic field name:
     projection: { pick: ["results[].id", "results[].workItem.state", "results[].workItem.assignee", "results[].checkpoint"] } // work_items:get
 
 Path shape follows the BODY's root: a tool that returns a bare array (work_items:list,
-plans:items, …) is selected with \`[].field\` — a bare \`field\` addresses an object root
-and matches nothing there (the door auto-adjusts the obvious case and tells you).
+…) is selected with \`[].field\` — a bare \`field\` addresses an object root and matches
+nothing there. Keyed envelopes use their emitted array key (for example,
+plans:items uses \`items[].item.id\`); the door auto-adjusts the obvious case and tells you.
 
 A single \`pick\` list accepts at most ${MAX_PICK_PATHS} paths; split larger field selections
 across calls instead of sending an over-sized list.

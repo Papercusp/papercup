@@ -88,6 +88,14 @@ describe('result-door standing-context section', () => {
     expect(text).not.toContain('results[].state');
   });
 
+  it('teaches plans:items as a keyed envelope rather than a bare array', () => {
+    const text = renderResultDoorSection();
+
+    expect(text).toContain('items[].item.id');
+    expect(text).toContain('items[].item.effectiveStatus');
+    expect(text).toContain('plans:items uses `items[].item.id`');
+  });
+
   it('never emits a literal splice marker (psu-prompt-isolation)', () => {
     expect(renderResultDoorSection()).not.toContain('<!-- PAPERCUSP-SU:');
   });
