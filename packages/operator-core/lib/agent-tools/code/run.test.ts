@@ -573,6 +573,42 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(payload.summaryNotice.paths).toContain('summary.lines');
     expect(JSON.stringify(payload).length).toBeLessThan(6_000);
   });
+
+  it('preserves background launch handles inside nested MCP result envelopes', () => {
+    const launched = Array.from({ length: 9 }, (_, index) => ({
+      result: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              bash_id: `bash-${index}`,
+              task_id: `task-${index}`,
+              status: 'running',
+              check: 'test',
+              command: 'npx vitest run',
+              advice: 'poll capability:bash_output after the detached check completes ' + 'x'.repeat(900),
+            }),
+          },
+        ],
+      },
+    }));
+
+    const shaped = shapeCodeRunSummary({
+      summary: { launched, dispatchCount: 9, childFailures: [] },
+    }) as {
+      summary: { launched: Array<{ result: { content: Array<{ text: string }> } }> };
+      summaryNotice?: { truncated: true };
+    };
+
+    expect(shaped.summaryNotice).toMatchObject({ truncated: true });
+    expect(shaped.summary.launched.length).toBeLessThan(launched.length);
+    expect(shaped.summary.launched.length).toBeGreaterThan(0);
+    for (const [index, row] of shaped.summary.launched.entries()) {
+      expect(row.result.content[0]?.text).toContain(`"bash_id":"bash-${index}"`);
+      expect(row.result.content[0]?.text).toContain(`"task_id":"task-${index}"`);
+    }
+  });
 });
 
 describe('code:run → similarRecipes result shaping', () => {
