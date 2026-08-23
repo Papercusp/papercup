@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ClaimSpec, FilterNode } from '../scheduler/claim-spec';
+import type { FilterNode } from '../scheduler/claim-spec';
 
 const mocks = vi.hoisted(() => ({
   resolveFleetClaimSpec: vi.fn(),
@@ -24,14 +24,21 @@ import { readFleetLaneHealth } from './lane-health';
 
 const planFilter: FilterNode = { field: 'plan', op: '=', value: 'p' };
 
-const spec: ClaimSpec = {
+type LaneHealthTestSpec = {
+  specId: string;
+  revision: number;
+  states: string[];
+  view: { filter: FilterNode };
+};
+
+const spec: LaneHealthTestSpec = {
   specId: 'feature-plan',
   revision: 7,
   states: ['open'],
   view: { filter: planFilter },
 };
 
-const resolved = (nextSpec = spec) => ({
+const resolved = (nextSpec: LaneHealthTestSpec = spec) => ({
   fleetSlug: 'fleet-x',
   matchedBy: 'fleet-slug',
   record: {
