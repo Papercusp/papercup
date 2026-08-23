@@ -201,11 +201,22 @@
   color: var(--fg-dim);
   font-size: 12px;
   font-weight: 850;
-  letter-spacing: .08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 .pc-automations__flows { display: grid; gap: 6px; padding: 6px 10px 14px; }
 .pc-automations__flow-row {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: inherit;
+  text-align: left;
+  background: color-mix(in srgb, var(--bg), transparent 72%);
+  cursor: pointer;
+}
+.pc-automations__flow-row-layout {
   position: relative;
   display: grid;
   grid-template-columns: minmax(145px, 1fr) minmax(180px, 1.15fr) minmax(145px, 1fr);
@@ -213,12 +224,6 @@
   align-items: center;
   min-height: 118px;
   padding: 10px 8px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  color: inherit;
-  text-align: left;
-  background: color-mix(in srgb, var(--bg), transparent 72%);
-  cursor: pointer;
 }
 .pc-automations__flow-row:hover,
 .pc-automations__flow-row[data-selected='true'] { border-color: color-mix(in srgb, var(--accent), transparent 65%); background: color-mix(in srgb, var(--accent), transparent 94%); }
@@ -406,5 +411,5 @@
   .pc-automations__flow-toolbar label { min-width: 0; }
   .pc-automations__flow-columns,
   .pc-automations__flow-line { display: none; }
-  .pc-automations__flow-row { grid-template-columns: 1fr; gap: 8px; }
+  .pc-automations__flow-row-layout { grid-template-columns: 1fr; gap: 8px; }
 }

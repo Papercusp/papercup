@@ -590,21 +590,23 @@ function FlowCanvas({
               onClick={() => onSelect(item)}
               aria-label={`${flow.sourceLabel} starts ${item.label}; outcome or next: ${flow.outcomeLabel}`}
             >
-              <span className="pc-automations__flow-line" aria-hidden />
-              <span className="pc-automations__flow-node is-source" data-state={flow.sourceState}>
-                <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.sourceLabel}</strong></span>
-                <span className="pc-automations__flow-node-copy">{flow.sourceDetail}</span>
-                <span className="pc-automations__flow-node-meta">{item.triggers.length} installed trigger{item.triggers.length === 1 ? '' : 's'}</span>
-              </span>
-              <span className="pc-automations__flow-node is-plan" data-state={itemState(item).toLowerCase().replaceAll(' ', '-')}>
-                <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{item.label}</strong></span>
-                <span className="pc-automations__flow-node-copy">{item.description}</span>
-                <span className="pc-automations__flow-node-meta">{flow.planDetail}</span>
-              </span>
-              <span className="pc-automations__flow-node is-outcome" data-state={flow.outcomeState}>
-                <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.outcomeLabel}</strong></span>
-                <span className="pc-automations__flow-node-copy">{flow.outcomeDetail}</span>
-                <span className="pc-automations__flow-node-meta">{item.timingLabel}</span>
+              <span className="pc-automations__flow-row-layout">
+                <span className="pc-automations__flow-line" aria-hidden />
+                <span className="pc-automations__flow-node is-source" data-state={flow.sourceState}>
+                  <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.sourceLabel}</strong></span>
+                  <span className="pc-automations__flow-node-copy">{flow.sourceDetail}</span>
+                  <span className="pc-automations__flow-node-meta">{item.triggers.length} installed trigger{item.triggers.length === 1 ? '' : 's'}</span>
+                </span>
+                <span className="pc-automations__flow-node is-plan" data-state={itemState(item).toLowerCase().replaceAll(' ', '-')}>
+                  <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{item.label}</strong></span>
+                  <span className="pc-automations__flow-node-copy">{item.description}</span>
+                  <span className="pc-automations__flow-node-meta">{flow.planDetail}</span>
+                </span>
+                <span className="pc-automations__flow-node is-outcome" data-state={flow.outcomeState}>
+                  <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.outcomeLabel}</strong></span>
+                  <span className="pc-automations__flow-node-copy">{flow.outcomeDetail}</span>
+                  <span className="pc-automations__flow-node-meta">{item.timingLabel}</span>
+                </span>
               </span>
             </button>
           );
