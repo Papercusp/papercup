@@ -100,6 +100,36 @@ function Probe() {
   );
 }
 
+function AnswerChoiceProbe() {
+  const conversation = useOperatorConversation();
+  const card = conversation.messages.find((message) =>
+    message.tools?.some((tool) => tool.name === "chat:ask_choice"),
+  );
+  const answered = card?.tools?.some(
+    (tool) => tool.name === "chat:ask_choice" && tool.answered,
+  );
+  return (
+    <>
+      <div data-testid="choice-state">{answered ? "answered" : "live"}</div>
+      <div data-testid="choice-messages">
+        {conversation.messages.map((message) => message.content).join("|")}
+      </div>
+      <button
+        type="button"
+        onClick={() =>
+          void conversation.answerChoice({
+            assistantSeq: 42,
+            toolIndex: 0,
+            picks: [{ option_id: "keep", label: "Keep" }],
+          })
+        }
+      >
+        Answer choice
+      </button>
+    </>
+  );
+}
+
 describe("OperatorConversationProvider streamed say projection", () => {
   afterEach(() => {
     cleanup();
@@ -213,6 +243,125 @@ describe("OperatorConversationProvider streamed say projection", () => {
         Number(assistant[0].getAttribute("data-seq")),
       ).toBeGreaterThanOrEqual(100);
     });
+  });
+
+  it("keeps an answered choice card answered when the persisted follow-up rehydrates the same page", async () => {
+    const conversationId = "choice-conversation-42";
+    const unansweredTools = [
+      {
+        name: "chat:ask_choice",
+        input: {
+          question: "Keep this change?",
+          options: [{ option_id: "keep", label: "Keep" }],
+        },
+      },
+    ];
+    const answeredTools = [
+      {
+        ...unansweredTools[0],
+        answered: {
+          picks: [{ option_id: "keep", label: "Keep" }],
+          at: 2000,
+        },
+      },
+    ];
+    SYNC.turnPage = {
+      turns: [
+        {
+          id: "assistant-42",
+          conversationId,
+          seq: 42,
+          role: "assistant",
+          text: "",
+          createdAt: 1000,
+          tools: unansweredTools,
+        },
+      ],
+      hasMoreEarlier: false,
+    };
+    const generationFn: GenerationFn = vi.fn(async () => ({
+      chunks: (async function* () {
+        yield "<say>Follow-up persisted.</say>";
+      })(),
+    }));
+
+    const view = render(
+      <OperatorConversationProvider
+        generationFn={generationFn}
+        target={{ kind: "work-item", conversationId }}
+      >
+        <AnswerChoiceProbe />
+      </OperatorConversationProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("choice-state").textContent).toBe("live"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Answer choice" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("choice-state").textContent).toBe("answered");
+      expect(screen.getByTestId("choice-messages").textContent).toContain(
+        "Follow-up persisted.",
+      );
+    });
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([input]) =>
+          String(input).includes("/turn-answer"),
+        ),
+    ).toBe(true);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([input]) =>
+          String(input).includes(`/conversations/${conversationId}/turns`),
+        ),
+    ).toBe(true);
+
+    SYNC.turnPage = {
+      turns: [
+        {
+          id: "assistant-42",
+          conversationId,
+          seq: 42,
+          role: "assistant",
+          text: "",
+          createdAt: 1000,
+          tools: answeredTools,
+        },
+        {
+          id: "user-43",
+          conversationId,
+          seq: 43,
+          role: "user",
+          text: "Keep",
+          createdAt: 2001,
+        },
+        {
+          id: "assistant-44",
+          conversationId,
+          seq: 44,
+          role: "assistant",
+          text: "Follow-up persisted.",
+          createdAt: 2002,
+        },
+      ],
+      hasMoreEarlier: false,
+    };
+    view.rerender(
+      <OperatorConversationProvider
+        generationFn={generationFn}
+        target={{ kind: "work-item", conversationId }}
+      >
+        <AnswerChoiceProbe />
+      </OperatorConversationProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("choice-state").textContent).toBe("answered"),
+    );
   });
 
   it("removes an uncommitted streamed row when the stream errors", async () => {
