@@ -26,6 +26,7 @@ export const ORIENT_CORE_RESULT_KEYS = [
   'claimableTruncated',
   'inbox',
   'presenceDrift',
+  'recoveredFleetScope',
   'laneClaim',
   'leaderBrief',
   'fleetSummaries',
