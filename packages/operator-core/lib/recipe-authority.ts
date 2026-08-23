@@ -533,13 +533,54 @@ export function recipeAuthorityMatchesLiveRefs(
   );
 }
 
-export function recipeRevision(script: string, updatedAt: string): string {
-  return createHash('sha256').update(updatedAt).update('\0').update(script).digest('hex');
+export interface RecipeRevisionContract {
+  bindingSchema?: unknown | null;
+  capabilityManifest?: unknown | null;
+}
+
+function canonicalContractJson(value: unknown): string {
+  const normalize = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map((item) => normalize(item === undefined ? null : item));
+    if (candidate && typeof candidate === 'object') {
+      return Object.fromEntries(
+        Object.entries(candidate as Record<string, unknown>)
+          .filter(([, item]) => item !== undefined)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, item]) => [key, normalize(item)]),
+      );
+    }
+    return candidate;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+/**
+ * Exact executable-revision hash. Legacy rows retain their historical
+ * updatedAt+script digest; once a versioned contract exists, both declarations
+ * join the material so a binding/requirement change invalidates old proofs even
+ * when the source text is unchanged.
+ */
+export function recipeRevision(
+  script: string,
+  updatedAt: string,
+  contract: RecipeRevisionContract = {},
+): string {
+  const hash = createHash('sha256').update(updatedAt).update('\0').update(script);
+  if (contract.bindingSchema != null || contract.capabilityManifest != null) {
+    hash
+      .update('\0recipe-contract-v1\0')
+      .update(canonicalContractJson(contract.bindingSchema ?? null))
+      .update('\0')
+      .update(canonicalContractJson(contract.capabilityManifest ?? null));
+  }
+  return hash.digest('hex');
 }
 
 export async function buildRecipeAuthorityRecommendation(input: {
   script: string;
   updatedAt: string;
+  bindingSchema?: unknown | null;
+  capabilityManifest?: unknown | null;
   context?: RecipeAuthorityContext;
 }): Promise<RecipeAuthorityRecommendation | null> {
   const descriptor = await deriveRecipeAuthority(input.script);
@@ -548,7 +589,7 @@ export async function buildRecipeAuthorityRecommendation(input: {
   return {
     proof: {
       version: 1,
-      revision: recipeRevision(input.script, input.updatedAt),
+      revision: recipeRevision(input.script, input.updatedAt, input),
       // EI-21163571260786543: the proof's context states what the RECIPE itself is bound
       // to (descriptor.refs) — NEVER an unfiltered echo of the caller's live context.
       // `input.context` only had to be a SUPERSET of the descriptor's refs to pass the
@@ -702,6 +743,8 @@ const AUTHORITY_ERROR_REASONS: Record<string, string> = {
 export async function validateRecipeAuthorityProof(input: {
   script: string;
   updatedAt: string;
+  bindingSchema?: unknown | null;
+  capabilityManifest?: unknown | null;
   proof?: RecipeAuthorityProof | null;
   liveContext?: RecipeAuthorityContext;
 }): Promise<{ ok: true; descriptor: RecipeAuthorityDescriptor } | { ok: false; error: string; reason: string }> {
@@ -724,7 +767,7 @@ export async function validateRecipeAuthorityProof(input: {
     return descriptor.bound ? fail('authority_required') : { ok: true, descriptor };
   }
   if (input.proof.version !== 1) return fail('authority_version_unsupported');
-  if (input.proof.revision !== recipeRevision(input.script, input.updatedAt)) {
+  if (input.proof.revision !== recipeRevision(input.script, input.updatedAt, input)) {
     return fail('authority_stale_revision');
   }
   if (!recipeAuthorityMatches(descriptor, input.proof.context)) {
