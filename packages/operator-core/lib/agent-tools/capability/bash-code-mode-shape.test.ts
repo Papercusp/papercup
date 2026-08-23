@@ -82,10 +82,12 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     const guidance = (bashTool as unknown as { guidance?: { when?: string; notWhen?: string } }).guidance;
     expect(guidance?.notWhen).toContain('dev:pg_query');
     expect(guidance?.notWhen).toContain('strips database credential environment variables');
-    expect(guidance?.when).toContain('fixed-string `rg -F`');
+    expect(guidance?.when).toContain('fixed-string searches');
+    expect(guidance?.when).toContain('`rg -F`');
+    expect(guidance?.when).toContain('`grep -F`');
     expect(guidance?.when).toContain('shell-safe single-quoted argument');
     expect(guidance?.when).toContain('unmatched backtick');
-    expect(guidance?.when).toContain('fails before `rg` runs');
+    expect(guidance?.when).toContain('fails before either search tool runs');
   });
 
   it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {
