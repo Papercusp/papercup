@@ -23,7 +23,7 @@
  * exactly that distinction.
  */
 import { describe, expect, it } from 'vitest';
-import type { ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import codeRunTool from '../code/run';
 import recipesRunTool from '../recipes/run';
 import { orchestrationSourceArgsSchema } from './public-contract';
@@ -135,6 +135,34 @@ describe('WI-41006 — legacy orchestration input-shape parity census', () => {
       if (disposition.kind !== 'legacy-door-only') continue;
       expect(shape[fieldName], `recipes:run lost ${fieldName}`).toBeDefined();
     }
+  });
+
+  // Falsifiability controls. A census that has never failed is a census nobody has
+  // tested; these keep deliberately-wrong inputs in the file permanently rather than
+  // mutating the shared tree to prove the detector works (see CLAUDE.md's mutation
+  // -probe tiers — the module/logic subject keeps its control in-file).
+  describe('controls — the census must actually be able to fail', () => {
+    const control = z.object({ kept: z.string(), extra: z.number() });
+
+    it('detects an argument present on the door but ABSENT from the census', () => {
+      const shape = objectShape(control);
+      const censusMissingOne = { kept: true };
+      expect(Object.keys(shape).sort()).not.toEqual(Object.keys(censusMissingOne).sort());
+    });
+
+    it('detects a census entry that no longer exists on the door', () => {
+      const shape = objectShape(control);
+      const censusWithGhost = { kept: true, extra: true, removedLastYear: true };
+      expect(Object.keys(shape).sort()).not.toEqual(Object.keys(censusWithGhost).sort());
+    });
+
+    it('unifiedPathExists returns false for a path the contract does not have', () => {
+      // Calibration: the same helper must return TRUE for a path it does have, or
+      // the negative result above would pass even with a broken resolver.
+      expect(unifiedPathExists('script.source')).toBe(true);
+      expect(unifiedPathExists('script.definitelyNotAField')).toBe(false);
+      expect(unifiedPathExists('recipe.id')).toBe(true);
+    });
   });
 
   it('fronted scalar bounds match between the legacy door and the unified contract', () => {
