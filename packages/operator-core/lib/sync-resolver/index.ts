@@ -3631,6 +3631,41 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return Array.isArray(r?.groups) ? r.groups : [];
     },
   },
+  // plans.attentionBulkRun — the Inbox BULK RESOLVE run the command strip
+  // renders (inbox-bulk-resolve-2026-08-23, P-005).
+  //
+  // ONE row: the run plus its per-item outcomes. The strip's three states
+  // (idle / running / review) are derived from `phase`, so this single query
+  // drives all of them — and because run state lives in Postgres rather than
+  // component state, reopening the pane resumes into the run's current phase
+  // instead of losing it (Requirement 7).
+  //
+  // No `runId` arg by default: the pane's opening question is "is there a run I
+  // should be showing?", which is the workspace's LATEST run. Passing an
+  // explicit `runId` reads that specific run instead (the `?opcbr=` deep link).
+  //
+  // A null run is a legitimate, common answer (no run has ever been started),
+  // and is returned as an explicit `{ run: null }` row rather than an empty row
+  // set — an empty set is indistinguishable from a read that failed, and the
+  // strip must render its IDLE state on "no run", never on "unknown".
+  'plans.attentionBulkRun': {
+    resolve: async (args) => {
+      const { getRun, getLatestRun, getRunItems } = await import('../attention/bulk-run-store');
+      const runId = typeof (args as { runId?: unknown })?.runId === 'string'
+        ? String((args as { runId: string }).runId)
+        : null;
+      try {
+        const run = runId ? await getRun(runId) : await getLatestRun();
+        if (!run) return [{ run: null, items: [] }];
+        return [{ run, items: await getRunItems(run.runId) }];
+      } catch {
+        // Degrade to idle rather than failing the pane: the inbox itself must
+        // stay usable when the bulk-run substrate is unavailable, and every
+        // item remains resolvable by hand.
+        return [{ run: null, items: [] }];
+      }
+    },
+  },
   // plans.attentionCounts — the AGGREGATE half of the attention feed (WI-5955).
   // The sidebar "needs you" badge and the Plans-face badge are mounted on every
   // app start and used to derive two integers by pulling the whole ~1MB unscoped
