@@ -5,6 +5,37 @@
 /** Top-level transaction-control statements found in a migration file. */
 export function findRawTxControl(sqlText: any): string[];
 /**
+ * Partition migration files by the tx-control rule.
+ *
+ * `entries` is `[{ file, text }]`. Returns offenders (a real failure), the
+ * pre-ENFORCED_FROM grandfathered count, and the frozen-exempt files — reported
+ * separately so an exemption is never silent.
+ */
+export function partitionRawTxControl(entries: any, { enforcedFrom, exemptions }?: {
+    enforcedFrom?: number | undefined;
+    exemptions?: Map<string, string> | undefined;
+}): {
+    offenders: {
+        file: any;
+        hits: string[];
+    }[];
+    grandfathered: number;
+    exempted: {
+        file: any;
+        hits: string[];
+        reason: string | undefined;
+    }[];
+};
+/**
+ * Exemption entries that are NOT in the applied set — a hard error.
+ *
+ * This is what stops the list becoming a bypass. The ONLY justification for an
+ * entry is "this file is frozen because it is already applied"; if it is not
+ * applied, it is still editable and must simply be fixed. Requires a real applied
+ * set, so callers skip it when PG is unreachable rather than inventing a verdict.
+ */
+export function unappliedFrozenExemptions(appliedFilenames: any, exemptions?: Map<string, string>): string[];
+/**
  * Top-level `RENAME CONSTRAINT` statements — the 42704 footgun (WI-4547).
  *
  * `ALTER TABLE IF EXISTS t RENAME CONSTRAINT x TO y` READS as guarded and is NOT:
@@ -206,6 +237,35 @@ export function reservationFilenameMismatches(files: any, reservations: any, { a
  * exact gap. Bump this again only when deliberately re-grandfathering more
  * historical debt — never to silence a genuinely NEW violation. */
 export const ENFORCED_FROM: 494;
+/**
+ * FROZEN offenders: applied files whose tx-control red no sanctioned action can clear.
+ *
+ * THE DEADLOCK THIS RESOLVES (WI-41119). Check #2 below fails any file ≥
+ * ENFORCED_FROM carrying top-level BEGIN/COMMIT, and tells you to remove it. But
+ * once that file is APPLIED, the migration-immutability guard (WI-38352) REFUSES
+ * the edit — correctly, because the runner keys its ledger by filename, so an
+ * edit would silently diverge fresh installs from applied ones (see WHY APPLIED
+ * FILES ARE FROZEN above). A new migration cannot help either: this lint reads
+ * the OLD FILE'S BYTES, which no later migration changes.
+ *
+ * So the two rails contradict each other and the check goes permanently red — and
+ * because lint:migrations is a green-checkpoint GATE check
+ * (apps/operator/lib/release/green-checkpoint.ts), that red-pins the gate
+ * fleet-wide until someone notices why it cannot be fixed.
+ *
+ * WHY THIS IS A LIST AND NOT "exempt every applied file". The gate applies pending
+ * migrations in its own preflight BEFORE judging. So a brand-new offender would
+ * already be APPLIED — and therefore exempt — by the time the lint ran, which
+ * would defang the check exactly when it is supposed to fire. Automatic exemption
+ * is worse than no check. Entry here must be DELIBERATE.
+ *
+ * ADDING AN ENTRY IS NOT A FIX — IT IS AN ADMISSION that a bad migration escaped
+ * to applied state. Fix the escape, not the symptom. This list is SHRINK-ONLY in
+ * intent: it exists for files that are already frozen, never as a bypass for work
+ * you could still correct. A listed file that is NOT actually applied is a HARD
+ * ERROR (see unappliedFrozenExemptions) precisely so it cannot be used that way.
+ */
+export const FROZEN_TXCTL_EXEMPTIONS: Map<string, string>;
 /**
  * Enforcement boundary for the UNIQUE-INDEX SHAPE SWAP check (below).
  *

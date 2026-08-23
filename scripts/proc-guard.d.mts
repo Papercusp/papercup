@@ -51,6 +51,9 @@ export function getOperationalArgv(argv: string[]): string[];
  *
  * The first sequence token is compared by basename, so an installed binary
  * such as `/repo/node_modules/.bin/gitnexus` is equivalent to `gitnexus`.
+ * Interpreter-launched package entrypoints are also recognized when their
+ * token lives under `node_modules/<command>/`, for example
+ * `/repo/node_modules/gitnexus/dist/cli/index.js`.
  * Every following token is compared literally and must be immediately
  * adjacent. The argv[0] basename must also be an interpreter that could
  * execute the command. This prevents prose in a JSON/tool payload or a

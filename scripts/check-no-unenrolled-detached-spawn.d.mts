@@ -20,11 +20,12 @@ export function isUnenrolledDetachedSpawn(relPath: string, source: string): bool
  *
  * @param {string} relPath - Repo-relative path.
  * @param {string} source - The file's full source text.
- * @returns {{ detachedNotFalse: boolean, storedOnProperty: boolean }}
+ * @returns {{ detachedNotFalse: boolean, storedOnProperty: boolean, selfDaemonizing: boolean }}
  */
 export function spawnTriggers(relPath: string, source: string): {
     detachedNotFalse: boolean;
     storedOnProperty: boolean;
+    selfDaemonizing: boolean;
 };
 /**
  * Sites that legitimately spawn a detached process WITHOUT task-manager enrolment.
@@ -40,4 +41,4 @@ export const ALLOWLIST: Map<string, string>;
  * a tracking ref, and `main()` prints this list LOUDLY on every run — including a
  * clean one — so a parked defect cannot go quiet the way the old blind spot did.
  */
-export const KNOWN_DEFECTS: Map<any, any>;
+export const KNOWN_DEFECTS: Map<string, string>;
