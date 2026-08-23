@@ -298,7 +298,7 @@ export class FacebookPostsAdapter implements SocialAdapter {
       cursor = facebookAdvanceWatermark(cursor, at, post.id);
     }
 
-    return { cursor, emitted, ...this.declarePath(hadStoredCursor) };
+    return { cursor, emitted, ...this.declarePath(hadStoredCursor, hadStoredCursor && stored === null) };
   }
 
   /**
@@ -337,19 +337,33 @@ export class FacebookPostsAdapter implements SocialAdapter {
   /**
    * Declare which route closed the gap.
    *
-   * ANY stored cursor produces `backfill` / `no-replay-supported`, including on
-   * a pass that emitted nothing, and including a stored cursor this version
-   * could not parse. This follows the doctrine the Wave A adapters established
-   * and that EI-21256621031947425 corrected them onto: `cold-start` asserts
-   * "first connect for this source", which is a false claim to make about a
-   * cursor that existed and was dropped, and `live-only` asserts the provider
-   * accepted a cursor and had nothing to replay — a statement about SERVER-side
-   * replay that this stream cannot support, since the watermark is never sent
-   * anywhere. Reporting either would tell an operator the provider is covering
-   * gaps when only our own bounded re-read is.
+   * ANY stored cursor produces `backfill`, including on a pass that emitted
+   * nothing. This follows the doctrine the Wave A adapters established and that
+   * EI-21256621031947425 corrected them onto: `cold-start` asserts "first
+   * connect for this source", which is a false claim to make about a cursor that
+   * existed and was dropped, and `live-only` asserts the provider accepted a
+   * cursor and had nothing to replay — a statement about SERVER-side replay that
+   * this stream cannot support, since the watermark is never sent anywhere.
+   * Reporting either would tell an operator the provider is covering gaps when
+   * only our own bounded re-read is.
+   *
+   * The two backfill REASONS are kept distinct, which is the part that is easy
+   * to collapse and costly to get wrong. `no-replay-supported` is this stream's
+   * steady state and fires on every tick, so an alert keyed on it is noise.
+   * `cursor-rejected` means the persisted cursor could not be READ — rare, and
+   * a real loss of state worth waking someone for. Reporting both the same way
+   * makes the serious one undetectable behind the routine one. Per the
+   * conformance kit, `cursor-rejected` names the LOCAL invalid-cursor condition
+   * and does not imply the provider ever saw the cursor.
    */
-  private declarePath(hadStoredCursor: boolean): Pick<SocialReconcileResult, 'path' | 'backfillReason'> {
+  private declarePath(
+    hadStoredCursor: boolean,
+    cursorUnreadable: boolean,
+  ): Pick<SocialReconcileResult, 'path' | 'backfillReason'> {
     if (!hadStoredCursor) return { path: 'cold-start' as SocialReconcilePath };
-    return { path: 'backfill', backfillReason: 'no-replay-supported' as SocialBackfillReason };
+    return {
+      path: 'backfill',
+      backfillReason: (cursorUnreadable ? 'cursor-rejected' : 'no-replay-supported') as SocialBackfillReason,
+    };
   }
 }

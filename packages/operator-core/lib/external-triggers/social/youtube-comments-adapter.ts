@@ -385,37 +385,46 @@ export class YouTubeCommentsAdapter implements SocialAdapter {
     const emitted = await this.emitAll(comments, stored, ctx);
     const cursor = this.nextCursor(comments, stored);
 
-    return { cursor, emitted, ...this.declarePath(hadStoredCursor) };
+    return { cursor, emitted, ...this.declarePath(hadStoredCursor, hadStoredCursor && stored === null) };
   }
 
   /**
    * Declare which route closed the gap.
    *
-   * ANY stored cursor produces `backfill` / `no-replay-supported`, INCLUDING on
-   * a pass that emitted nothing, and including a stored cursor this adapter
-   * version could not read. This follows the doctrine the Mastodon adapter
-   * established: `live-only` asserts "the cursor was accepted and the provider
-   * had nothing to replay", which is a claim about server-side replay that this
-   * stream cannot support. Reporting it would tell an operator the provider is
-   * covering gaps when only our own bounded re-read is — the false comfort D-005
-   * exists to prevent.
+   * ANY stored cursor produces `backfill`, INCLUDING on a pass that emitted
+   * nothing. This follows the doctrine the Mastodon adapter established:
+   * `live-only` asserts "the cursor was accepted and the provider had nothing to
+   * replay", which is a claim about server-side replay that this stream cannot
+   * support. Reporting it would tell an operator the provider is covering gaps
+   * when only our own bounded re-read is — the false comfort D-005 exists to
+   * prevent.
    *
-   * An unreadable cursor is deliberately NOT reported as `cursor-rejected`
-   * either: the watermark is never sent anywhere, so no provider ever rejected
-   * it, and that reason would send a reader hunting for an API error that was
-   * never produced. `no-replay-supported` is the structural truth in both cases.
-   * What differs is only how much the client-side filter can suppress, which
-   * shows up honestly as a larger `emitted` and is collapsed downstream by the
-   * dedupe key.
+   * ⚠ CORRECTED 2026-08-23 (P-016). This method previously returned
+   * `no-replay-supported` for an UNREADABLE stored cursor too, and the comment
+   * here argued for that: the watermark is never sent anywhere, so no provider
+   * ever rejected it, and naming it `cursor-rejected` would send a reader
+   * hunting for an API error that was never produced.
    *
-   * The cost is that `path` stops discriminating "routine tick" from "we lost
-   * the cursor" ON THIS STREAM — the same cost Mastodon pays, and the same
-   * mitigation applies: an alert keyed on `backfillReason` stays meaningful,
-   * where one keyed on `path === 'backfill'` would fire forever here.
+   * That argument was wrong about what the field MEANS, and the conformance kit
+   * settled it in the other direction while P-015 was closing. `cursor-rejected`
+   * denotes the LOCAL invalid-cursor condition — the kit's own words are that an
+   * adapter must "identify the local invalid-cursor condition as rejected state,
+   * EVEN WHEN THE PROVIDER ITSELF NEVER SAW THE CURSOR" — and the Reddit adapter
+   * already read it that way. Collapsing the two cases cost the one distinction
+   * that matters operationally: `no-replay-supported` is the steady state and
+   * fires on every single tick, so an alert keyed on it is noise, whereas losing
+   * persisted state is rare and worth waking someone for. Reporting both
+   * identically made the rarer, more serious event undetectable.
    */
-  private declarePath(hadStoredCursor: boolean): Pick<SocialReconcileResult, 'path' | 'backfillReason'> {
+  private declarePath(
+    hadStoredCursor: boolean,
+    cursorUnreadable: boolean,
+  ): Pick<SocialReconcileResult, 'path' | 'backfillReason'> {
     if (!hadStoredCursor) return { path: 'cold-start' as SocialReconcilePath };
-    return { path: 'backfill', backfillReason: 'no-replay-supported' as SocialBackfillReason };
+    return {
+      path: 'backfill',
+      backfillReason: (cursorUnreadable ? 'cursor-rejected' : 'no-replay-supported') as SocialBackfillReason,
+    };
   }
 
   /**
