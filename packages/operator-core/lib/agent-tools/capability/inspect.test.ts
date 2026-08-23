@@ -204,7 +204,18 @@ describe('resolveInspectCommand — verb mapping', () => {
   it('onlyPaths is rejected for tests', () => {
     const r = resolveInspectCommand({ check: 'test', package: 'p', onlyPaths: ['x.test.ts'] }, BASE);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('bad_args');
+    if (!r.ok) {
+      expect(r.reason).toBe('bad_args');
+      expect(r.message).toContain('pass one package-relative file or directory with `path`');
+      expect(r.message).toContain('separate capability:inspect calls');
+    }
+  });
+
+  it('publishes self-correcting guidance for the flattened test/typecheck argument surface', () => {
+    const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+    expect(shape.onlyPaths.description).toMatch(/never pass with check:\\"test\\"/);
+    expect(shape.path.description).toMatch(/one package-relative test file\/dir/);
+    expect(shape.path.description).toMatch(/one capability:inspect call per path/);
   });
 });
 

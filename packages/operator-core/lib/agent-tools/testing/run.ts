@@ -70,6 +70,10 @@ import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
 
+const DETACHED_INSPECT_TEST_HINT =
+  "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
+  'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only).';
+
 type TestFilePathResolution =
   | { ok: true; files: string[] }
   | { ok: false; path: string; matches: string[] };
@@ -517,7 +521,7 @@ export async function runTestFilesCore(opts: {
         timeoutMs,
         hint:
           `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
-          `This suite is too slow to run inline — re-run it detached: capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output.`,
+          DETACHED_INSPECT_TEST_HINT,
         routerOutput: outcome.output.slice(-2000),
       };
     }
@@ -662,7 +666,7 @@ export default defineTool({
           ...result,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-            `This suite is too slow to run inline — re-run it detached: capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output.`,
+            DETACHED_INSPECT_TEST_HINT,
         },
       };
     }

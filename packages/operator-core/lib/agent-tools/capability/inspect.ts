@@ -84,6 +84,10 @@ export type InspectResolution =
   | { ok: true; command: string; cwd: string }
   | { ok: false; reason: string; message: string };
 
+const TEST_PATH_GUIDANCE =
+  '`onlyPaths` is only valid for check:"typecheck". For tests, pass one package-relative file or directory with `path`; ' +
+  'for multiple files, split them into separate capability:inspect calls (or use testing:run).';
+
 const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
 
 /**
@@ -110,7 +114,7 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   }
 
   if (args.check === 'test' && args.onlyPaths && args.onlyPaths.length > 0) {
-    return { ok: false, reason: 'bad_args', message: '`onlyPaths` is only valid for check:"typecheck".' };
+    return { ok: false, reason: 'bad_args', message: TEST_PATH_GUIDANCE };
   }
 
   if (args.check === 'typecheck') {
@@ -413,13 +417,16 @@ export default defineTool({
     path: z
       .string()
       .optional()
-      .describe('test only: a package-relative test file/dir to narrow the run (e.g. "lib/foo.test.ts"). Requires package.'),
+      .describe(
+        'test only: one package-relative test file/dir to narrow the run (e.g. "lib/foo.test.ts"). Requires package. ' +
+          'For multiple files, use testing:run or make one capability:inspect call per path.',
+      ),
     onlyPaths: z
       .array(z.string().min(1).max(300))
       .max(50)
       .optional()
       .describe(
-        'typecheck only (foreground or background): discover the repository baseline gate that covers these package- or repo-relative paths, then scope its verdict via `--files=`. Use this to verify your changed files without treating accepted pre-existing diagnostics elsewhere as your regression. Mixed or uncovered gate scopes are refused rather than guessed.',
+        'typecheck only (foreground or background): never pass with check:"test". Discover the repository baseline gate that covers these package- or repo-relative paths, then scope its verdict via `--files=`. Use this to verify your changed files without treating accepted pre-existing diagnostics elsewhere as your regression. Mixed or uncovered gate scopes are refused rather than guessed.',
       ),
     run_in_background: z
       .boolean()

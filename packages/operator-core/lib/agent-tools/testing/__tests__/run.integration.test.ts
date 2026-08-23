@@ -309,6 +309,8 @@ describe('testing:run (integration)', () => {
       expect(out.ok).toBe(false);
       expect(out.error).toBe('timeout');
       expect(typeof out.runId).toBe('string');
+      expect(out.hint).toContain('one detached call per file');
+      expect(out.hint).toContain('onlyPaths (that field is typecheck-only)');
 
       // Give the SIGTERM → (5s) → SIGKILL fallback (run.ts's own `killGroup` retry)
       // time to land before asserting on the absence of survivors.
