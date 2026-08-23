@@ -153,6 +153,16 @@ export interface PlanRow {
    *  EXCLUSIVE with it (D-002/D-008 Q3). Its `required` array is what the start gate
    *  checks `templateData` against. Null ⇒ the plan declares no inputs. */
   inputSchema: unknown;
+  /** The plan's own JSON Schema for what it PRODUCES (jsonb, mig 908 —
+   *  plans:set-output-schema, P-026/D-017). The symmetric half of `inputSchema`:
+   *  that one says what a run must be GIVEN, this one what a completing run
+   *  PUBLISHES, so a chain edge can carry an upstream plan's product into a
+   *  downstream step's declared inputs (D-015). Unlike `inputSchema` it does NOT
+   *  conflict with a code-registry `template` type — `template` describes
+   *  arguments, not product, so there is no second source to arbitrate.
+   *  Null ⇒ the plan declares no outputs, which is a valid terminal-only plan
+   *  and the default for the entire existing corpus (D-017: outputs are optional). */
+  outputSchema: unknown;
   /** LIST-only cheap presence projection. `inputSchema` is deliberately omitted
    *  from hot index reads, but plans:list still needs to derive whether a manual
    *  trigger exists without detoasting the schema JSON. */
@@ -214,6 +224,11 @@ interface PlanDbRow {
   template: string | null;
   template_data: unknown;
   input_schema: unknown;
+  /** mig 908 (P-026/D-017). OPTIONAL on the DB row on purpose: only the
+   *  single-plan read (getPlanRow) projects it, so every LIST/aggregate path that
+   *  deliberately omits it keeps typechecking and maps to `outputSchema: null` —
+   *  the same shape those paths already use for `input_schema`. */
+  output_schema?: unknown;
   has_input_schema?: boolean;
   has_external_trigger?: boolean;
   supersedes: string[] | null;
@@ -258,6 +273,7 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     template: r.template ?? null,
     templateData: r.template_data ?? null,
     inputSchema: r.input_schema ?? null,
+    outputSchema: r.output_schema ?? null,
     hasInputSchema: r.has_input_schema ?? r.input_schema != null,
     hasExternalTrigger: r.has_external_trigger,
     supersedes: r.supersedes ?? [],
@@ -649,7 +665,7 @@ export async function getPlanRow(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data, input_schema, forced_past
+               template, template_data, input_schema, output_schema, forced_past
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}

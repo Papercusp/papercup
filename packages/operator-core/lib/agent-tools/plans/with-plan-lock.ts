@@ -75,6 +75,14 @@ export interface PlanWriteMeta {
    */
   templateData: unknown;
   inputSchema: unknown;
+  /**
+   * The plan's declared OUTPUT schema as of this write (mig 908, P-026/D-017).
+   * Read inside the lock for the same reason as `inputSchema`: a mutator that
+   * validates a run's published outputs must check them against the schema the
+   * plan declares AT THIS WRITE, not one a concurrent plans:set-output-schema has
+   * since replaced.
+   */
+  outputSchema: unknown;
 }
 
 /**
@@ -101,6 +109,22 @@ export interface TemplateDataPatch {
  * with a body write in the same locked transaction.
  */
 export interface InputSchemaPatch {
+  schema: Record<string, unknown> | null;
+}
+
+/**
+ * A structured `output_schema` write (external-triggers-gmail-slack-2026-08-22
+ * P-026 / D-017, mig 908) — the symmetric sibling of InputSchemaPatch for what a
+ * plan PRODUCES rather than what it is given. `schema` is the ajv-compilable JSON
+ * Schema the caller already checked (`schema === null` clears the column,
+ * un-declaring the plan's outputs). Same rules as the other two patches:
+ * structured-only when the mutator returns `newBody: null` (still bumps `version`
+ * and fires `afterWrite`), or riding along with a body write in one locked
+ * transaction. Unlike InputSchemaPatch it has no `template` exclusion to enforce —
+ * a registry `template` type describes a plan's ARGUMENTS, so it is not a second
+ * source for the plan's product and there is nothing to arbitrate.
+ */
+export interface OutputSchemaPatch {
   schema: Record<string, unknown> | null;
 }
 
@@ -204,6 +228,7 @@ export async function withPlanLock<T>(
     value: T;
     templateData?: TemplateDataPatch;
     inputSchema?: InputSchemaPatch;
+    outputSchema?: OutputSchemaPatch;
   }>,
 ): Promise<WithPlanLockResult<T>> {
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
@@ -261,9 +286,10 @@ export async function withPlanLock<T>(
         content_hash: string;
         template_data: unknown;
         input_schema: unknown;
+        output_schema: unknown;
       }[]
     >`
-      SELECT content, version, content_hash, template_data, input_schema
+      SELECT content, version, content_hash, template_data, input_schema, output_schema
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -276,15 +302,21 @@ export async function withPlanLock<T>(
           contentHash: cur.content_hash,
           templateData: cur.template_data ?? null,
           inputSchema: cur.input_schema ?? null,
+          outputSchema: cur.output_schema ?? null,
         }
       : null;
 
-    const { newBody, value, templateData, inputSchema } = await mutator(cur?.content ?? null, meta);
+    const { newBody, value, templateData, inputSchema, outputSchema } = await mutator(
+      cur?.content ?? null,
+      meta,
+    );
     // A structured template_data write (plans:set-template-data, P-005). Present
     // (even with data:null = clear) ⇒ write the jsonb column.
     const writesTemplateData = templateData !== undefined;
     // The same contract for the declared input schema (plans:set-input-schema, P-003).
     const writesInputSchema = inputSchema !== undefined;
+    // And for the declared OUTPUT schema (plans:set-output-schema, P-026/D-017).
+    const writesOutputSchema = outputSchema !== undefined;
 
     let newVersion = curVersion;
     // The body to record a revision against (afterWrite): the new body for a content
@@ -417,7 +449,10 @@ export async function withPlanLock<T>(
         `;
       }
     }
-    if ((writesTemplateData || writesInputSchema) && (cur || newBody !== null)) {
+    if (
+      (writesTemplateData || writesInputSchema || writesOutputSchema) &&
+      (cur || newBody !== null)
+    ) {
       // template_data write (plans:set-template-data, P-005) — structured-only OR
       // COMBINED with a body write in the same locked transaction (EI-10751's
       // ratifyRubric flips the frontmatter status AND stamps the ratifier atomically).
@@ -433,9 +468,10 @@ export async function withPlanLock<T>(
         newVersion = curVersion + 1;
         writtenBody = cur!.content;
       }
-      // Both structured columns share ONE version bump (computed above): two
-      // statements, not two versions — a caller writing both in one mutator must
-      // not see the row jump two revisions for a single logical write.
+      // All THREE structured columns share ONE version bump (computed above):
+      // separate statements, not separate versions — a caller writing more than one
+      // in a single mutator must not see the row jump a revision per column for one
+      // logical write.
       if (writesTemplateData) {
         const dataJson = templateData!.data === null ? null : JSON.stringify(templateData!.data);
         await tx`
@@ -457,6 +493,19 @@ export async function withPlanLock<T>(
                  version      = ${newVersion},
                  updated_at   = now(),
                  origin       = 'local'
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+             AND plan_slug = ${slug}
+        `;
+      }
+      if (writesOutputSchema) {
+        const schemaJson =
+          outputSchema!.schema === null ? null : JSON.stringify(outputSchema!.schema);
+        await tx`
+          UPDATE harness_shared.harness_plans
+             SET output_schema = ${schemaJson}::text::jsonb,
+                 version       = ${newVersion},
+                 updated_at    = now(),
+                 origin        = 'local'
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
              AND plan_slug = ${slug}
         `;
