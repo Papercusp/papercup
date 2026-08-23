@@ -37,7 +37,9 @@
  */
 
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { gateApiRoute } from '../../../require-flag';
 import {
   createRun,
   markItemAccepted,
@@ -261,6 +263,15 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
 async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   const csrf = requireAllowedOriginOr403(req);
   if (csrf) return csrf;
+
+  // The flag has to cut the WRITE SEAM, not just the strip. InboxPane gates the
+  // UI with useFlag, but a client-only gate leaves this route reachable while the
+  // feature is "off" — and `op:'start'` LAUNCHES A REAL HEADLESS RESOLVER AGENT
+  // that then acts on the owner's inbox. A kill switch that still spawns agents is
+  // not a kill switch. Gating the whole handler (not just `start`) also keeps the
+  // owner ops off, so a run cannot be driven while the feature is disabled.
+  const gated = await gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE);
+  if (gated) return gated;
 
   let body: Record<string, unknown> = {};
   try {
