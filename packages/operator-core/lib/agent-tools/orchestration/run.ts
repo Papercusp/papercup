@@ -252,18 +252,21 @@ function executionEnvelope(
 function stampOrchestrationRow(
   ctx: Pick<UnifiedToolContext, 'metadata'>,
   input: {
+    /** The call's own args. Source, requested mode and recipe identity are all DERIVED from
+     *  this rather than passed per-path: every one of them was, at some point in review, set on
+     *  one path and missing on the others. Deriving them here makes that class impossible. */
+    args: OrchestrationSourceArgs;
     envelope: { state?: string; error?: { code?: string }; incomplete?: { reason?: string } };
     serializedBytes: number;
     durationMs: number;
     phase: 'preflight' | 'execution';
     executed: boolean;
-    source: 'script' | 'recipe';
-    requestedExecutionMode?: string;
     extra?: Record<string, unknown>;
   },
 ): void {
-  const { envelope } = input;
-  const requested = input.requestedExecutionMode ?? 'server';
+  const { envelope, args } = input;
+  const requested = args.execution?.mode ?? 'server';
+  const source: 'script' | 'recipe' = args.script ? 'script' : 'recipe';
   ctx.metadata?.({
     backend: 'server',
     // A requested mode the server did not honour is one of gap 4's HARD rollback triggers
@@ -276,7 +279,20 @@ function stampOrchestrationRow(
     // gate's loudest alarm also its least meaningful one.
     requestedExecutionMode: requested,
     backendMismatch: requested !== 'server' && requested !== 'auto',
-    source: input.source,
+    source,
+    // Everything recipe-shaped is derived together, for every recipe path — success, refusal
+    // and throw alike. Two separate review findings came from stamping these on the success
+    // path only: recipeRequested-on-success-only excluded failed calls from the very
+    // denominator reuse is measured against (so reuse rate IMPROVED as recipes broke), and
+    // selector-on-success-only meant a failing recipe could be counted but not IDENTIFIED —
+    // you would know recipes were failing and not which one. Deriving here ends both.
+    ...(source === 'recipe'
+      ? {
+          recipeRequested: true,
+          ...(args.recipe?.id ? { recipeId: args.recipe.id } : {}),
+          ...(args.recipe?.revision === undefined ? {} : { recipeRevision: args.recipe.revision }),
+        }
+      : {}),
     phase: input.phase,
     executed: input.executed,
     durationMs: Math.max(0, input.durationMs),
@@ -319,8 +335,7 @@ function preflightError(
       durationMs: 0,
       phase: 'preflight',
       executed: false,
-      source: args.script ? 'script' : 'recipe',
-      requestedExecutionMode: args.execution?.mode ?? 'server',
+      args,
       extra: { capabilityMiss: code === 'capability_unavailable' },
     });
   }
@@ -398,8 +413,7 @@ export async function runServerScriptAdapter(
       durationMs: Math.max(0, Date.now() - startedAt),
       phase: 'execution',
       executed: true,
-      source: 'script',
-      requestedExecutionMode: args.execution?.mode ?? 'server',
+      args,
     });
     return {
       content: [{ type: 'text', text: serialized }, ...media],
@@ -426,8 +440,7 @@ export async function runServerScriptAdapter(
       durationMs: Math.max(0, Date.now() - startedAt),
       phase: 'execution',
       executed: false,
-      source: 'script',
-      requestedExecutionMode: args.execution?.mode ?? 'server',
+      args,
     });
     return {
       isError: true,
@@ -540,15 +553,15 @@ function recipeRunEnvelope(
       durationMs,
       phase: built.metrics?.phase === 'preflight' ? 'preflight' : 'execution',
       executed: built.metrics?.executed ?? true,
-      source: 'recipe',
-      requestedExecutionMode: args.execution?.mode ?? 'server',
+      args,
       // Saved-recipe reuse is a headline P-020 rollout metric and this path recorded none of it.
       // recipeId is taken from `metrics`, which already resolved it as args.recipe?.id ?? item.id —
       // an earlier draft re-derived it with `typeof args.recipe === 'string'`, which can NEVER be
       // true because the public selector is an object, so it silently stamped nothing. Reusing the
       // resolved value is both correct and drift-proof.
       extra: {
-        recipeRequested: true,
+        // recipeRequested is NOT set here — the helper derives it from source:'recipe' so every
+        // recipe path (success, refusal, throw) lands in the denominator, not just this one.
         recipeReuse: true,
         ...(metrics.recipeId ? { recipeId: metrics.recipeId } : {}),
         ...(args.recipe?.revision === undefined ? {} : { recipeRevision: args.recipe.revision }),
@@ -594,8 +607,7 @@ export async function runOrchestration(
       durationMs: Math.max(0, Date.now() - startedAt),
       phase: 'execution',
       executed: false,
-      source: 'recipe',
-      requestedExecutionMode: args.execution?.mode ?? 'server',
+      args,
     });
     return { isError: true, content: [{ type: 'text', text: serialized }] } as ToolResult;
   }

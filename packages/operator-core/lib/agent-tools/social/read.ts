@@ -19,7 +19,7 @@ export default defineTool({
     when: 'You need the full text of a post before answering it, or to confirm what a postId actually refers to.',
     notWhen: 'Finding a post you cannot already name — that is social:search, which also mints the postId this takes.',
     chaining:
-      'social:search → postId → social:read → social:reply. Check `replyable.allowed` before drafting: some platforms are readable but not yet writable.',
+      'social:search → postId → social:read → social:reply. A postId is an OPAQUE token: pass whatever minted it verbatim, never assemble one from a platform and an id. Check `replyable.allowed` before drafting — a platform can be readable and still refuse every write. This is also the ONLY source of the `confirmToken` social:delete requires.',
   },
   args: z.object({ postId: z.string().trim().min(1).max(512) }).strict(),
   async handler(args, ctx: PapercuspUnifiedToolContext) {

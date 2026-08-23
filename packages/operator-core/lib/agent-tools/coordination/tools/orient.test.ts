@@ -5,6 +5,8 @@ import {
   orientServedDelta,
   orientRoleFolds,
   assembleOrientOutput,
+  ORIENT_AGGREGATE_TIMEOUT_MS,
+  withOrientAggregateTimeout,
   summarizeLaneClaim,
   ORIENT_MEMORY_NOTE,
   ORIENT_DEEP_WORK_NOTE,
@@ -120,6 +122,32 @@ describe('coord:orient args', () => {
   it('declares a transport budget above the flat MCP deadline for compound bootstrap work', () => {
     expect((orientTool as { timeoutSec?: number }).timeoutSec).toBe(120);
     expect((orientTool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
+
+  it('fences an unresolved aggregate before the dispatcher deadline with an honest unknown fallback', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = {
+      data: {
+        ok: true,
+        status: 'unknown' as const,
+        degraded: true,
+        degradedReason: 'aggregate_timeout' as const,
+      },
+    };
+
+    try {
+      const resultPromise = withOrientAggregateTimeout(() => new Promise<typeof fallback>(() => {}), fallback);
+      expect(ORIENT_AGGREGATE_TIMEOUT_MS).toBeLessThan((orientTool as { timeoutSec: number }).timeoutSec * 1_000);
+
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+
+      await expect(resultPromise).resolves.toEqual(fallback);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('starts bounded post-compaction recovery before composeOrient so the budgets overlap', () => {

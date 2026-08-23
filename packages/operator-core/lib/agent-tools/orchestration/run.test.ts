@@ -388,6 +388,53 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
     await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as unknown as SavedRecipeAdapter });
     expect(metadata).toHaveBeenCalledTimes(1);
     expect(stamp(metadata)).toMatchObject({ source: 'recipe', executed: false, phase: 'execution' });
+    // REGRESSION: recipeRequested must be set on a THROWN recipe too. An earlier draft set it
+    // only on the success path, so failed recipe calls fell out of the denominator that reuse
+    // is measured against — reuse rate would then IMPROVE as recipes broke more often.
+    expect(stamp(metadata).recipeRequested).toBe(true);
+  });
+
+  it('counts a REFUSED recipe in the requested denominator as well', async () => {
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
+      ok: false,
+      error: { code: 'recipe_not_found', message: 'no such recipe' },
+    } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
+    await runOrchestration({ recipe: { id: 'missing' } }, ctx, {
+      recipes: { run } as unknown as SavedRecipeAdapter,
+    });
+    expect(stamp(metadata)).toMatchObject({ source: 'recipe', recipeRequested: true, executed: false });
+  });
+
+  it('carries the recipe SELECTOR on failure paths, not just on success', () => {
+    // REGRESSION: recipeId/recipeRevision were stamped only where the recipe SUCCEEDED, so a
+    // failing recipe could be counted but never IDENTIFIED — the telemetry would say recipes
+    // are failing and be unable to say WHICH, which is the one thing you need to act. Both are
+    // now derived from args for every recipe path.
+    const cases: Array<{ label: string; run: ReturnType<typeof vi.fn> }> = [
+      { label: 'thrown', run: vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('x')) },
+      {
+        label: 'refused',
+        run: vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
+          ok: false,
+          error: { code: 'recipe_not_found', message: 'gone' },
+        } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>),
+      },
+    ];
+    return Promise.all(
+      cases.map(async ({ label, run }) => {
+        const { ctx, metadata } = spyCtx();
+        await runOrchestration({ recipe: { id: 'the-recipe', revision: '7' } }, ctx, {
+          recipes: { run } as unknown as SavedRecipeAdapter,
+        });
+        expect(stamp(metadata), `${label} path lost the selector`).toMatchObject({
+          source: 'recipe',
+          recipeRequested: true,
+          recipeId: 'the-recipe',
+          recipeRevision: '7',
+        });
+      }),
+    );
   });
 
   it('does NOT flag execution mode "auto" as a backend mismatch', async () => {

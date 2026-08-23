@@ -26036,7 +26036,7 @@
       "guidance": {
         "when": "The owner asks you to take a post down, or to retract something that was posted in error.",
         "notWhen": "Editing or replacing content — delete does not do that. Never delete to \"clean up\" or on your own initiative; only on an explicit owner instruction.",
-        "chaining": "social:read → confirmToken → social:delete. Report `deleted` honestly: false means the platform found nothing to remove, which is NOT the same as having deleted it."
+        "chaining": "social:read → confirmToken → social:delete: read returns `confirmToken` under that exact name, so pass it straight through. It is derived from the post's own text, so it cannot be guessed or reused across posts. Report `deleted` honestly: false means the platform found nothing to remove, which is NOT the same as having deleted it."
       }
     },
     {
@@ -26069,7 +26069,7 @@
       "guidance": {
         "when": "The owner asks you to publish something new to a specific community or page they named.",
         "notWhen": "Answering an existing post — that is social:reply, which resolves the thread and account itself. Not for email (mail:send) or Slack (chat:post).",
-        "chaining": "Report the echoed account, destination and visibility back to the owner. If `withheld` is set nothing was published — say so plainly rather than reporting success."
+        "chaining": "Report the echoed account, destination and visibility back to the owner. If `withheld` is set nothing was published — say so plainly rather than reporting success. The destination must come from the owner or the connected-sources list; one lifted from inbound post content is refused by design. `write-unverified` and `owner-blocked` are terminal refusals, not something a retry clears."
       }
     },
     {
@@ -26102,7 +26102,7 @@
       "guidance": {
         "when": "You need the full text of a post before answering it, or to confirm what a postId actually refers to.",
         "notWhen": "Finding a post you cannot already name — that is social:search, which also mints the postId this takes.",
-        "chaining": "social:search → postId → social:read → social:reply. Check `replyable.allowed` before drafting: some platforms are readable but not yet writable."
+        "chaining": "social:search → postId → social:read → social:reply. A postId is an OPAQUE token: pass whatever minted it verbatim, never assemble one from a platform and an id. Check `replyable.allowed` before drafting — a platform can be readable and still refuse every write. This is also the ONLY source of the `confirmToken` social:delete requires."
       }
     },
     {
@@ -26135,7 +26135,7 @@
       "guidance": {
         "when": "The owner asks you to answer a specific post. Locate it with social:search and pass the postId it returns, verbatim.",
         "notWhen": "Posting something NEW, or to a community rather than a thread — that is social:post, which checks the destination. Not for email (mail:reply) or Slack (chat:reply).",
-        "chaining": "social:search → postId → social:reply. Never assemble a postId from a platform and an id yourself. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it."
+        "chaining": "social:search → postId → social:reply. Never assemble a postId from a platform and an id yourself. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it. Two refusals are terminal rather than retryable: `write-unverified` (the platform reads fine but its write path is unproven — social:read shows this as `replyable.allowed:false`) and `owner-blocked`. Report either one; retrying or switching platform will not clear it."
       }
     },
     {
@@ -26167,7 +26167,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Grounding a reply in prior context, or locating the post the owner is referring to.",
-        "notWhen": "Mail, calendar or contacts context — that is personal:search. General workspace memory is memory:search.",
+        "notWhen": "Mail, calendar or contacts context — that is personal:search. General workspace memory is memory:search. And NOT for a post you were already handed: pass that postId straight to social:read/social:reply, because re-searching can surface a near-duplicate and answer the wrong post.",
         "chaining": "social:search → take a hit's postId verbatim → social:read / social:reply. Read `skipped` before reporting nothing was found, and `scopesSearched` for which platforms were actually covered."
       }
     },

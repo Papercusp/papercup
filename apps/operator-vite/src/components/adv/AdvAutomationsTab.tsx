@@ -44,7 +44,7 @@ import {
 import WorkflowsLanding from './WorkflowsLanding';
 import WorkflowDetailView from './WorkflowDetailView';
 import { toLandingWorkflow, type NeedsYouItem } from './workflows-landing-model';
-import './adv-automations.css';
+import './adv-workflows.css';
 
 type View = 'landing' | 'flow' | 'catalog' | 'activity' | 'sources';
 
@@ -494,7 +494,7 @@ export default function AdvAutomationsTab() {
   if (openedWorkflow) {
     const armBusyKey = openedBinding ? `binding:${openedBinding.id}` : null;
     return (
-      <section className="pc-automations" aria-label="Workflow detail">
+      <section className="pc-workflows" aria-label="Workflow detail">
         {confirmElement}
         <WorkflowDetailView
           workflowLabel={openedWorkflow.label}
@@ -521,7 +521,7 @@ export default function AdvAutomationsTab() {
   }
 
   return (
-    <section className="pc-automations" aria-label="Automations">
+    <section className="pc-workflows" aria-label="Automations">
       {confirmElement}
       {createOpen ? (
         <CreateAutomationModal
@@ -537,29 +537,29 @@ export default function AdvAutomationsTab() {
           }}
         />
       ) : null}
-      <header className="pc-automations__masthead">
+      <header className="pc-workflows__tab-masthead">
         <div>
-          <div className="pc-automations__eyebrow">Workspace control plane</div>
+          <div className="pc-workflows__eyebrow">Workspace control plane</div>
           <h1>Automations</h1>
           <p>Everything that can run in the background—what starts it, whether it is running, what it can spend, and how to stop it.</p>
         </div>
-        <div className="pc-automations__mast-actions">
-          <button type="button" className="pc-automations__ghost" onClick={refreshAll} aria-label="Refresh automations">
-            <span className="pc-automations__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
+        <div className="pc-workflows__mast-actions">
+          <button type="button" className="pc-workflows__ghost" onClick={refreshAll} aria-label="Refresh automations">
+            <span className="pc-workflows__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
-          <button type="button" className="pc-automations__primary" onClick={() => setCreateOpen(true)}>
-            <span className="pc-automations__button-inner"><Plus size={14} aria-hidden /> New automation</span>
+          <button type="button" className="pc-workflows__primary" onClick={() => setCreateOpen(true)}>
+            <span className="pc-workflows__button-inner"><Plus size={14} aria-hidden /> New automation</span>
           </button>
         </div>
       </header>
 
-      <div className="pc-automations__viewbar">
+      <div className="pc-workflows__viewbar">
         <nav aria-label="Automation views">
           {VIEW_TABS.map(({ id, label }) => (
             <button key={id} type="button" data-active={view === id} onClick={() => void setView(id)}>
-              <span className="pc-automations__viewtab-inner">
+              <span className="pc-workflows__viewtab-inner">
                 {label}
-                <span className="pc-automations__viewtab-count">{viewCount(id)}</span>
+                <span className="pc-workflows__viewtab-count">{viewCount(id)}</span>
               </span>
             </button>
           ))}
@@ -568,13 +568,13 @@ export default function AdvAutomationsTab() {
       </div>
 
       {externalError ? (
-        <div className="pc-automations__notice" role="status">
+        <div className="pc-workflows__notice" role="status">
           External sources are temporarily unavailable: {externalError}. Routine and schedule data remain live.
         </div>
       ) : null}
 
       {view === 'flow' || view === 'catalog' ? (
-        <div className="pc-automations__metrics" aria-label="Automation summary">
+        <div className="pc-workflows__metrics" aria-label="Automation summary">
           <Metric icon={AlertTriangle} label="Needs attention" value={String(attentionCount)} tone={attentionCount > 0 ? 'warn' : 'good'} />
           <Metric icon={Play} label="Running now" value={String(runningCount)} tone={runningCount > 0 ? 'blue' : 'neutral'} />
           <Metric icon={CalendarClock} label="Next run" value={nextAt == null ? '—' : relativeTime(nextAt)} tone="neutral" />
@@ -609,7 +609,7 @@ export default function AdvAutomationsTab() {
         />
       ) : view === 'flow' ? (
         <>
-          <div className="pc-automations__flow-toolbar">
+          <div className="pc-workflows__flow-toolbar">
             <label>
               <Search size={14} aria-hidden />
               <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search trigger flows" aria-label="Search trigger flows" />
@@ -624,7 +624,7 @@ export default function AdvAutomationsTab() {
               ))}
             </div>
           </div>
-          <div className="pc-automations__workspace pc-automations__flow-workspace">
+          <div className="pc-workflows__workspace pc-workflows__flow-workspace">
             <FlowCanvas
               items={visibleFlows}
               loading={loading}
@@ -663,7 +663,7 @@ export default function AdvAutomationsTab() {
         </>
       ) : view === 'catalog' ? (
         <>
-          <div className="pc-automations__filters">
+          <div className="pc-workflows__filters">
             <div role="group" aria-label="Filter automations">
               {FILTERS.map((candidate) => (
                 <button key={candidate.id} type="button" data-active={filter === candidate.id} onClick={() => void setFilter(candidate.id)}>
@@ -677,15 +677,15 @@ export default function AdvAutomationsTab() {
             </label>
           </div>
 
-          <div className="pc-automations__workspace">
-            <div className="pc-automations__catalog">
-              <div className="pc-automations__panelhead">
+          <div className="pc-workflows__workspace">
+            <div className="pc-workflows__catalog">
+              <div className="pc-workflows__panelhead">
                 <strong>Automation catalog</strong>
                 <span>{visibleItems.length} shown · attention first, then next run</span>
               </div>
-              {loading && items.length === 0 ? <div className="pc-automations__empty">Loading automations…</div> : null}
-              {!loading && visibleItems.length === 0 ? <div className="pc-automations__empty">No automations match this filter.</div> : null}
-              <div className="pc-automations__rows">
+              {loading && items.length === 0 ? <div className="pc-workflows__list-empty">Loading automations…</div> : null}
+              {!loading && visibleItems.length === 0 ? <div className="pc-workflows__list-empty">No automations match this filter.</div> : null}
+              <div className="pc-workflows__rows">
                 {visibleItems.map((item) => (
                   <AutomationRow key={item.id} item={item} selected={selected?.id === item.id} onSelect={() => void setSelectedId(item.id)} />
                 ))}
@@ -957,24 +957,24 @@ function CreateAutomationModal({
       srOnlyTitle
       closeOnEscape={!submitting}
       closeOnOutsideClick={!submitting}
-      contentClassName="pc-automations-create"
+      contentClassName="pc-workflows-create"
       contentStyle={{ width: 'min(760px, calc(100vw - 32px))' }}
     >
       <form onSubmit={submit}>
-        <header className="pc-automations-create__head">
+        <header className="pc-workflows-create__head">
           <div>
-            <div className="pc-automations-create__eyebrow">New automation</div>
+            <div className="pc-workflows-create__eyebrow">New automation</div>
             <h2>Create an automation</h2>
             <p>Choose a real automatic trigger and the plan it will run. Nothing leaves this popup.</p>
           </div>
           <button type="button" aria-label="Close create automation dialog" disabled={submitting} onClick={onClose}>
-            <span className="pc-automations-create__close-inner"><X size={18} aria-hidden /></span>
+            <span className="pc-workflows-create__close-inner"><X size={18} aria-hidden /></span>
           </button>
         </header>
 
         {result ? (
-          <div className="pc-automations-create__success" role="status">
-            <div className="pc-automations-create__success-icon" aria-hidden>✓</div>
+          <div className="pc-workflows-create__success" role="status">
+            <div className="pc-workflows-create__success-icon" aria-hidden>✓</div>
             <div>
               <h3>Automation armed</h3>
               <p><strong>{result.plan.title}</strong> is attached to {result.sourceLabel}.</p>
@@ -982,52 +982,52 @@ function CreateAutomationModal({
                 <div><dt>Plan</dt><dd>{result.plan.harness} · {result.plan.slug}</dd></div>
                 <div><dt>State</dt><dd>Armed</dd></div>
               </dl>
-              <button type="button" className="pc-automations-create__primary" onClick={onClose}>Done</button>
+              <button type="button" className="pc-workflows-create__primary" onClick={onClose}>Done</button>
             </div>
           </div>
         ) : (
           <>
-            <div className="pc-automations-create__body">
+            <div className="pc-workflows-create__body">
               <section aria-labelledby="create-automation-trigger-label">
-                <div className="pc-automations-create__step">1 · What starts it?</div>
-                <div className="pc-automations-create__section-title" id="create-automation-trigger-label">
+                <div className="pc-workflows-create__step">1 · What starts it?</div>
+                <div className="pc-workflows-create__section-title" id="create-automation-trigger-label">
                   <strong>Automatic trigger</strong><span>Manual launch is an action, not a trigger.</span>
                 </div>
-                <div className="pc-automations-create__choice-grid" role="group" aria-label="Automatic trigger">
+                <div className="pc-workflows-create__choice-grid" role="group" aria-label="Automatic trigger">
                   <button type="button" aria-pressed={triggerKind === 'schedule'} onClick={() => { setTriggerKind('schedule'); setError(null); }}>
-                    <span className="pc-automations-create__choice-inner"><CalendarClock size={18} aria-hidden /><strong>Schedule</strong><span>Recurring cadence at a real time zone.</span><em>Uses the existing plan schedule system</em></span>
+                    <span className="pc-workflows-create__choice-inner"><CalendarClock size={18} aria-hidden /><strong>Schedule</strong><span>Recurring cadence at a real time zone.</span><em>Uses the existing plan schedule system</em></span>
                   </button>
                   <button type="button" aria-pressed={triggerKind === 'external'} onClick={() => { setTriggerKind('external'); setError(null); }}>
-                    <span className="pc-automations-create__choice-inner"><DatabaseZap size={18} aria-hidden /><strong>External event</strong><span>Use a connected source and audited event pattern.</span><em>Creates an external binding</em></span>
+                    <span className="pc-workflows-create__choice-inner"><DatabaseZap size={18} aria-hidden /><strong>External event</strong><span>Use a connected source and audited event pattern.</span><em>Creates an external binding</em></span>
                   </button>
                 </div>
 
                 {triggerKind === 'schedule' ? (
-                  <div className="pc-automations-create__form-grid">
-                    <label className="pc-automations-create__field">
+                  <div className="pc-workflows-create__form-grid">
+                    <label className="pc-workflows-create__field">
                       <span>Frequency</span>
                       <Select
                         value={schedulePreset}
                         onChange={(value) => setSchedulePreset(value as SchedulePreset)}
                         ariaLabel="Frequency"
-                        triggerClassName="pc-automations-create__select"
+                        triggerClassName="pc-workflows-create__select"
                         options={Object.entries(SCHEDULE_PRESETS).map(([value, preset]) => ({ value, label: preset.label }))}
                       />
                     </label>
-                    <label className="pc-automations-create__field">
+                    <label className="pc-workflows-create__field">
                       <span>Time zone</span>
                       <Select
                         value={tzid}
                         onChange={setTzid}
                         ariaLabel="Time zone"
-                        triggerClassName="pc-automations-create__select"
+                        triggerClassName="pc-workflows-create__select"
                         options={timeZones.map((value) => ({ value, label: value }))}
                       />
                     </label>
                   </div>
                 ) : (
-                  <div className="pc-automations-create__form-grid">
-                    <label className="pc-automations-create__field">
+                  <div className="pc-workflows-create__form-grid">
+                    <label className="pc-workflows-create__field">
                       <span>Connected source</span>
                       <Select
                         value={sourceId}
@@ -1039,27 +1039,27 @@ function CreateAutomationModal({
                         ariaLabel="Connected source"
                         disabled={connectedSources.length === 0}
                         placeholder="No connected sources"
-                        triggerClassName="pc-automations-create__select"
+                        triggerClassName="pc-workflows-create__select"
                         options={connectedSources.map((source) => ({ value: source.id, label: `${source.kind} · ${source.status}` }))}
                       />
                     </label>
-                    <label className="pc-automations-create__field">
+                    <label className="pc-workflows-create__field">
                       <span>Event pattern</span>
                       <input aria-label="Event pattern" value={eventPattern} onChange={(event) => setEventPattern(event.target.value)} required />
                     </label>
-                    {connectedSources.length === 0 ? <p className="pc-automations-create__empty-source">No connected external source is available. Connect one in Sources, or use a schedule.</p> : null}
+                    {connectedSources.length === 0 ? <p className="pc-workflows-create__empty-source">No connected external source is available. Connect one in Sources, or use a schedule.</p> : null}
                   </div>
                 )}
               </section>
 
               <section aria-labelledby="create-automation-plan-label">
-                <div className="pc-automations-create__step">2 · What runs?</div>
-                <div className="pc-automations-create__plan-mode" role="group" aria-label="Plan choice" id="create-automation-plan-label">
+                <div className="pc-workflows-create__step">2 · What runs?</div>
+                <div className="pc-workflows-create__plan-mode" role="group" aria-label="Plan choice" id="create-automation-plan-label">
                   <button type="button" aria-pressed={planMode === 'existing'} disabled={availablePlans.length === 0} onClick={() => { setPlanMode('existing'); setError(null); }}>Use an existing plan</button>
                   <button type="button" aria-pressed={planMode === 'new'} onClick={() => { setPlanMode('new'); setError(null); }}>Create the plan here</button>
                 </div>
                 {planMode === 'existing' ? (
-                  <label className="pc-automations-create__field is-full">
+                  <label className="pc-workflows-create__field is-full">
                     <span>Plan to run</span>
                     <Select
                       value={selectedPlanKey}
@@ -1067,7 +1067,7 @@ function CreateAutomationModal({
                       ariaLabel="Plan to run"
                       disabled={availablePlans.length === 0}
                       placeholder="No plans available"
-                      triggerClassName="pc-automations-create__select"
+                      triggerClassName="pc-workflows-create__select"
                       options={availablePlans.map((plan) => ({
                         value: planRefKey(plan),
                         label: `${plan.title ?? plan.slug} · ${plan.harness}`,
@@ -1075,44 +1075,44 @@ function CreateAutomationModal({
                     />
                   </label>
                 ) : createdPlan ? (
-                  <div className="pc-automations-create__created-plan" role="status">
+                  <div className="pc-workflows-create__created-plan" role="status">
                     <strong>Plan created</strong>
                     <span>{createdPlan.title} · {createdPlan.harness}</span>
                     <small>Retrying will reuse this plan rather than create a duplicate.</small>
                   </div>
                 ) : (
-                  <div className="pc-automations-create__new-plan-grid">
-                    <label className="pc-automations-create__field is-full">
+                  <div className="pc-workflows-create__new-plan-grid">
+                    <label className="pc-workflows-create__field is-full">
                       <span>Automation name</span>
                       <input aria-label="Automation name" value={planName} maxLength={160} onChange={(event) => setPlanName(event.target.value)} placeholder="e.g. Summarize support escalations" required />
                     </label>
-                    <label className="pc-automations-create__field is-full">
+                    <label className="pc-workflows-create__field is-full">
                       <span>What should the plan produce?</span>
                       <input aria-label="What should the plan produce?" value={outcome} maxLength={500} onChange={(event) => setOutcome(event.target.value)} placeholder="Describe the concrete outcome" required />
                     </label>
-                    <p className="pc-automations-create__scope-note">
+                    <p className="pc-workflows-create__scope-note">
                       {defaultHarness ? <>The plan will be created in <strong>{defaultHarness}</strong>.</> : <>Select a pot in the workspace before creating a plan here.</>}
                     </p>
                   </div>
                 )}
               </section>
 
-              <div className="pc-automations-create__truth-note">
+              <div className="pc-workflows-create__truth-note">
                 <strong>Creation behavior:</strong> the trigger is authored, attached to the selected plan, and then armed. A partial failure is reported as saved or attached but not armed—never as success.
               </div>
               {error ? (
-                <div className="pc-automations-create__error" role="alert">
+                <div className="pc-workflows-create__error" role="alert">
                   <div><strong>Couldn’t finish creating the automation</strong><p>{error}</p></div>
                   {pendingArm ? <button type="button" disabled={submitting} onClick={() => void retryArm()}>Retry arming</button> : null}
                 </div>
               ) : null}
             </div>
 
-            <footer className="pc-automations-create__foot">
+            <footer className="pc-workflows-create__foot">
               <span aria-live="polite">{step ?? 'The final action explicitly creates and arms the automation.'}</span>
               <div>
                 <button type="button" disabled={submitting} onClick={onClose}>Cancel</button>
-                <button type="submit" className="pc-automations-create__primary" disabled={submitting || !canSubmit}>
+                <button type="submit" className="pc-workflows-create__primary" disabled={submitting || !canSubmit}>
                   {submitting ? step ?? 'Working…' : 'Create & arm automation'}
                 </button>
               </div>
@@ -1126,7 +1126,7 @@ function CreateAutomationModal({
 
 function Metric({ icon: Icon, label, value, tone }: { icon: typeof Activity; label: string; value: string; tone: string }) {
   return (
-    <div className="pc-automations__metric" data-tone={tone}>
+    <div className="pc-workflows__metric" data-tone={tone}>
       <span><Icon size={14} aria-hidden /> {label}</span>
       <strong>{value}</strong>
     </div>
@@ -1135,24 +1135,24 @@ function Metric({ icon: Icon, label, value, tone }: { icon: typeof Activity; lab
 
 function AutomationRow({ item, selected, onSelect }: { item: AutomationItem; selected: boolean; onSelect: () => void }) {
   return (
-    <button type="button" className="pc-automations__row" data-selected={selected} data-state={itemState(item).toLowerCase().replaceAll(' ', '-')} onClick={onSelect}>
-      <span className="pc-automations__row-layout">
-        <span className="pc-automations__row-main">
-          <span className="pc-automations__row-title">
+    <button type="button" className="pc-workflows__row" data-selected={selected} data-state={itemState(item).toLowerCase().replaceAll(' ', '-')} onClick={onSelect}>
+      <span className="pc-workflows__row-layout">
+        <span className="pc-workflows__row-main">
+          <span className="pc-workflows__row-title">
             <i aria-hidden /> <strong>{item.label}</strong><em>{kindLabel(item.kind)}</em>
           </span>
-          <span className="pc-automations__row-copy">{item.description}</span>
+          <span className="pc-workflows__row-copy">{item.description}</span>
           {item.triggers.length > 0 ? (
-            <span className="pc-automations__chips">
+            <span className="pc-workflows__row-chips">
               {item.triggers.slice(0, 5).map((trigger) => <span key={trigger.id}>{trigger.provider}</span>)}
             </span>
           ) : null}
         </span>
-        <span className="pc-automations__row-state">
+        <span className="pc-workflows__row-state">
           <strong>{item.timingLabel}</strong>
           <small>{item.running ? 'Live execution observed' : item.lastAt ? `Last ${relativeTime(item.lastAt)}` : itemState(item)}</small>
         </span>
-        <span className="pc-automations__row-spend">
+        <span className="pc-workflows__row-spend">
           <strong>{item.spendLabel}</strong>
           <small>{item.kind === 'triggered-plan' ? 'Verified costs shown per run' : 'No guessed routine attribution'}</small>
         </span>
@@ -1174,51 +1174,51 @@ function FlowCanvas({
   onSelect: (item: AutomationItem) => void;
 }) {
   return (
-    <section className="pc-automations__flow-canvas" aria-label="Trigger flows">
-      <div className="pc-automations__panelhead">
+    <section className="pc-workflows__flow-canvas" aria-label="Trigger flows">
+      <div className="pc-workflows__panelhead">
         <strong>Trigger flows</strong>
         <span>Click a flow to inspect its sources, controls, and linked activity</span>
       </div>
-      <div className="pc-automations__flow-columns" aria-hidden>
+      <div className="pc-workflows__flow-columns" aria-hidden>
         <span>Trigger source</span><span>Plan</span><span>Outcome / next</span>
       </div>
-      <div className="pc-automations__flows">
+      <div className="pc-workflows__flows">
         {items.map((item) => {
           const flow = item.flow;
           if (!flow) return null;
           return (
             <button
               type="button"
-              className="pc-automations__flow-row"
+              className="pc-workflows__flow-row"
               data-selected={selectedId === item.id}
               key={item.id}
               onClick={() => onSelect(item)}
               aria-label={`${flow.sourceLabel} starts ${item.label}; outcome or next: ${flow.outcomeLabel}`}
             >
-              <span className="pc-automations__flow-row-layout">
-                <span className="pc-automations__flow-line" aria-hidden />
-                <span className="pc-automations__flow-node is-source" data-state={flow.sourceState}>
-                  <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.sourceLabel}</strong></span>
-                  <span className="pc-automations__flow-node-copy">{flow.sourceDetail}</span>
-                  <span className="pc-automations__flow-node-meta">{item.triggers.length} installed trigger{item.triggers.length === 1 ? '' : 's'}</span>
+              <span className="pc-workflows__flow-row-layout">
+                <span className="pc-workflows__flow-line" aria-hidden />
+                <span className="pc-workflows__flow-node is-source" data-state={flow.sourceState}>
+                  <span className="pc-workflows__flow-node-title"><i aria-hidden /><strong>{flow.sourceLabel}</strong></span>
+                  <span className="pc-workflows__flow-node-copy">{flow.sourceDetail}</span>
+                  <span className="pc-workflows__flow-node-meta">{item.triggers.length} installed trigger{item.triggers.length === 1 ? '' : 's'}</span>
                 </span>
-                <span className="pc-automations__flow-node is-plan" data-state={itemState(item).toLowerCase().replaceAll(' ', '-')}>
-                  <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{item.label}</strong></span>
-                  <span className="pc-automations__flow-node-copy">{item.description}</span>
-                  <span className="pc-automations__flow-node-meta">{flow.planDetail}</span>
+                <span className="pc-workflows__flow-node is-plan" data-state={itemState(item).toLowerCase().replaceAll(' ', '-')}>
+                  <span className="pc-workflows__flow-node-title"><i aria-hidden /><strong>{item.label}</strong></span>
+                  <span className="pc-workflows__flow-node-copy">{item.description}</span>
+                  <span className="pc-workflows__flow-node-meta">{flow.planDetail}</span>
                 </span>
-                <span className="pc-automations__flow-node is-outcome" data-state={flow.outcomeState}>
-                  <span className="pc-automations__flow-node-title"><i aria-hidden /><strong>{flow.outcomeLabel}</strong></span>
-                  <span className="pc-automations__flow-node-copy">{flow.outcomeDetail}</span>
-                  <span className="pc-automations__flow-node-meta">{item.timingLabel}</span>
+                <span className="pc-workflows__flow-node is-outcome" data-state={flow.outcomeState}>
+                  <span className="pc-workflows__flow-node-title"><i aria-hidden /><strong>{flow.outcomeLabel}</strong></span>
+                  <span className="pc-workflows__flow-node-copy">{flow.outcomeDetail}</span>
+                  <span className="pc-workflows__flow-node-meta">{item.timingLabel}</span>
                 </span>
               </span>
             </button>
           );
         })}
-        {loading && items.length === 0 ? <div className="pc-automations__empty">Loading trigger flows…</div> : null}
+        {loading && items.length === 0 ? <div className="pc-workflows__list-empty">Loading trigger flows…</div> : null}
         {!loading && items.length === 0 ? (
-          <div className="pc-automations__empty">
+          <div className="pc-workflows__list-empty">
             No triggered plans match this view. Non-triggered AI routines and system tasks remain available in Catalog.
           </div>
         ) : null}
@@ -1254,23 +1254,23 @@ function AutomationDetail({
   onEditSchedule: () => void;
   onViewActivity: () => void;
 }) {
-  if (!item) return <aside className="pc-automations__detail"><div className="pc-automations__empty">Select an automation.</div></aside>;
+  if (!item) return <aside className="pc-workflows__detail"><div className="pc-workflows__list-empty">Select an automation.</div></aside>;
   const automatic = item.triggers;
   const runRows = runs?.runs.slice(0, 5) ?? [];
   return (
-    <aside className="pc-automations__detail" aria-label="Automation details">
-      <div className="pc-automations__panelhead"><strong>{variant === 'flow' ? 'Flow inspector' : 'Automation details'}</strong><span>one identity across every view</span></div>
-      <div className="pc-automations__detailbody">
-        <div className="pc-automations__detail-kicker">{kindLabel(item.kind)} · {itemState(item)}</div>
+    <aside className="pc-workflows__detail" aria-label="Automation details">
+      <div className="pc-workflows__panelhead"><strong>{variant === 'flow' ? 'Flow inspector' : 'Automation details'}</strong><span>one identity across every view</span></div>
+      <div className="pc-workflows__detailbody">
+        <div className="pc-workflows__detail-kicker">{kindLabel(item.kind)} · {itemState(item)}</div>
         <h2>{item.label}</h2>
         <p>{item.description}</p>
-        <div className="pc-automations__statechips">
+        <div className="pc-workflows__statechips">
           <span data-tone={item.paused ? 'warn' : 'good'}>{item.paused ? 'Paused' : 'Enabled'}</span>
           <span data-tone={item.running ? 'blue' : 'neutral'}>{item.running ? 'Running' : 'Not running'}</span>
           {item.needsAttention ? <span data-tone="warn">Needs attention</span> : null}
         </div>
 
-        <div className="pc-automations__detailgrid">
+        <div className="pc-workflows__detailgrid">
           <DetailCard label="Next scheduled" value={item.nextAt ? relativeTime(item.nextAt) : 'None'} />
           <DetailCard label="Last activity" value={item.lastAt ? relativeTime(item.lastAt) : 'No run recorded'} />
           <DetailCard label="Plan inputs" value={inputs ? `${inputs.required.length} required · ${inputs.ready ? 'ready' : `${inputs.missing.length} missing`}` : item.planSlug ? 'Checking…' : 'Not a plan'} />
@@ -1278,7 +1278,7 @@ function AutomationDetail({
         </div>
 
         {variant === 'flow' && item.flow ? (
-          <section className="pc-automations__causal-path">
+          <section className="pc-workflows__causal-path">
             <header><strong>Causal path</strong><span>observed state and declared next action</span></header>
             <div><span>Source</span><p><strong>{item.flow.sourceLabel}</strong><small>{item.flow.sourceDetail}</small></p><em data-state={item.flow.sourceState}>{item.flow.sourceState.replaceAll('-', ' ')}</em></div>
             <div><span>Plan</span><p><strong>{item.label}</strong><small>{item.flow.planDetail}</small></p><em>{itemState(item)}</em></div>
@@ -1286,10 +1286,10 @@ function AutomationDetail({
           </section>
         ) : null}
 
-        <section className="pc-automations__trigger-section">
+        <section className="pc-workflows__trigger-section">
           <header><strong>Automatic triggers</strong><span>installed and armed are separate</span></header>
           {item.triggers.map((trigger) => (
-            <div className="pc-automations__trigger" key={trigger.id}>
+            <div className="pc-workflows__trigger" key={trigger.id}>
               <span>{trigger.provider}</span>
               <div><strong>{trigger.label}</strong><small>{trigger.detail}</small></div>
               <button
@@ -1300,29 +1300,29 @@ function AutomationDetail({
                   else if (trigger.bindingId) onToggleBinding(trigger.bindingId, trigger.armed !== true);
                 }}
               >
-                <span className="pc-automations__button-inner">{trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}</span>
+                <span className="pc-workflows__button-inner">{trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}</span>
               </button>
             </div>
           ))}
-          {item.triggers.length === 0 ? <div className="pc-automations__empty">Automatic trigger details are unavailable.</div> : null}
+          {item.triggers.length === 0 ? <div className="pc-workflows__list-empty">Automatic trigger details are unavailable.</div> : null}
         </section>
 
-        <section className="pc-automations__cost">
+        <section className="pc-workflows__cost">
           <header><span>Spend & permission</span><strong>{item.spendLabel}</strong></header>
           <p>{item.kind === 'triggered-plan'
             ? 'Costs come from runs linked to this plan. A schedule never proves a run happened.'
             : 'Routine-level dollars are not inferred from role totals; only the ability to spend is shown.'}</p>
         </section>
 
-        <div className="pc-automations__actions">
-          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-automations__button-inner"><Play size={13} aria-hidden /> Run manually</span></button> : null}
-          {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><span className="pc-automations__button-inner"><CalendarClock size={13} aria-hidden /> Edit schedule</span></button> : null}
-          <button type="button" disabled={busy != null} onClick={onViewActivity}><span className="pc-automations__button-inner"><Activity size={13} aria-hidden /> View activity</span></button>
-          {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</span></button> : null}
-          {automatic.some((trigger) => trigger.armed === true) ? <button type="button" className="is-warn" disabled={busy != null} onClick={onPauseAll}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> Pause automatic triggers</span></button> : null}
+        <div className="pc-workflows__actions">
+          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-workflows__button-inner"><Play size={13} aria-hidden /> Run manually</span></button> : null}
+          {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><span className="pc-workflows__button-inner"><CalendarClock size={13} aria-hidden /> Edit schedule</span></button> : null}
+          <button type="button" disabled={busy != null} onClick={onViewActivity}><span className="pc-workflows__button-inner"><Activity size={13} aria-hidden /> View activity</span></button>
+          {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><span className="pc-workflows__button-inner"><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</span></button> : null}
+          {automatic.some((trigger) => trigger.armed === true) ? <button type="button" className="is-warn" disabled={busy != null} onClick={onPauseAll}><span className="pc-workflows__button-inner"><Power size={13} aria-hidden /> Pause automatic triggers</span></button> : null}
         </div>
 
-        <section className="pc-automations__history">
+        <section className="pc-workflows__history">
           <header><strong>Recent activity</strong>{runs?.rollup ? <span>{Math.round(runs.rollup.successRate * 100)}% success · median {durationLabel(runs.rollup.medianDurationMs)}</span> : null}</header>
           {runRows.map((run) => (
             <div key={run.id}><i data-status={run.outcome ?? run.status} /><span>{run.trigger ?? run.status} · {run.outcome ?? run.status} · {relativeTime(run.launchedAt)}</span><em>{run.costUsd > 0 ? `$${run.costUsd.toFixed(2)}` : '—'}</em></div>
@@ -1348,28 +1348,28 @@ function ActivityView({
   onOpen: (item: AutomationActivityItem) => void;
 }) {
   return (
-    <div className="pc-automations__activity-layout">
-      <div className="pc-automations__widepanel">
-        <div className="pc-automations__panelhead"><strong>Automation activity</strong><span>external runs and routine fires · newest first</span></div>
-        <div className="pc-automations__activity">
+    <div className="pc-workflows__activity-layout">
+      <div className="pc-workflows__widepanel">
+        <div className="pc-workflows__panelhead"><strong>Automation activity</strong><span>external runs and routine fires · newest first</span></div>
+        <div className="pc-workflows__activity">
           {activity.map((item) => (
             <button type="button" key={item.id} onClick={() => onOpen(item)}>
-              <span className="pc-automations__activity-row-layout"><i data-status={item.status} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><em>{item.status}</em><time>{relativeTime(item.at)}</time></span>
+              <span className="pc-workflows__activity-row-layout"><i data-status={item.status} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><em>{item.status}</em><time>{relativeTime(item.at)}</time></span>
             </button>
           ))}
-          {activity.length === 0 ? <div className="pc-automations__empty">No automation activity has been recorded yet.</div> : null}
+          {activity.length === 0 ? <div className="pc-workflows__list-empty">No automation activity has been recorded yet.</div> : null}
         </div>
       </div>
-      <div className="pc-automations__widepanel pc-automations__spend-panel">
-        <div className="pc-automations__panelhead"><strong>Workspace spend · 7 days</strong><span>by agent role · not guessed per routine</span></div>
-        <div className="pc-automations__spend-rows">
+      <div className="pc-workflows__widepanel pc-workflows__spend-panel">
+        <div className="pc-workflows__panelhead"><strong>Workspace spend · 7 days</strong><span>by agent role · not guessed per routine</span></div>
+        <div className="pc-workflows__spend-rows">
           {spend.map((row) => (
             <div key={`${row.role}:${row.modelClass ?? ''}`}>
               <span><strong>{row.role}</strong><small>{row.modelClass ?? 'model class unavailable'} · {row.turns} turns</small></span>
               <span><strong>${row.costUsd.toFixed(2)}</strong><small>{row.outputTokens.toLocaleString()} output tokens</small></span>
             </div>
           ))}
-          {spend.length === 0 ? <div className="pc-automations__empty">No model spend recorded in this window.</div> : null}
+          {spend.length === 0 ? <div className="pc-workflows__list-empty">No model spend recorded in this window.</div> : null}
         </div>
       </div>
     </div>
@@ -1378,12 +1378,12 @@ function ActivityView({
 
 function SourcesView({ sources }: { sources: ReturnType<typeof buildAutomationSources> }) {
   return (
-    <div className="pc-automations__widepanel">
-      <div className="pc-automations__panelhead"><strong>Trigger sources</strong><span>connection health and installed bindings</span></div>
-      <div className="pc-automations__sources">
+    <div className="pc-workflows__widepanel">
+      <div className="pc-workflows__panelhead"><strong>Trigger sources</strong><span>connection health and installed bindings</span></div>
+      <div className="pc-workflows__sources">
         {sources.map((source) => (
           <article key={source.id}>
-            <div className="pc-automations__source-icon">{source.kind === 'schedule' ? <CalendarClock size={18} /> : <DatabaseZap size={18} />}</div>
+            <div className="pc-workflows__source-icon">{source.kind === 'schedule' ? <CalendarClock size={18} /> : <DatabaseZap size={18} />}</div>
             <div><strong>{source.label}</strong><span>{source.detail}</span></div>
             <dl><div><dt>State</dt><dd>{source.status}</dd></div><div><dt>Bindings</dt><dd>{source.armedCount}/{source.bindingCount} armed</dd></div></dl>
           </article>

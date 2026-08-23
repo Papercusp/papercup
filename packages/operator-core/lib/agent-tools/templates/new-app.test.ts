@@ -61,7 +61,10 @@ function baseArgs(over: Partial<NewAppArgs> = {}): NewAppArgs {
  * `<srcDir>/` (GUIDE.md + package.json) to overlay — mirrors both the local (no-clone)
  * and remote (post-clone) shape, since composeNewApp is source-agnostic.
  */
-function baseDeps(over: Partial<NewAppDeps> = {}): NewAppDeps {
+function baseDeps(
+  over: Partial<NewAppDeps> = {},
+  packageJson: Record<string, unknown> = { name: 'webapp' },
+): NewAppDeps {
   return {
     resolveSource: (async () => ({
       listing: { id: LISTING.id, ref: REF, title: LISTING.title },
@@ -72,7 +75,7 @@ function baseDeps(over: Partial<NewAppDeps> = {}): NewAppDeps {
         const dir = join(scratch, 'src');
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, 'GUIDE.md'), '# Build it\n');
-        writeFileSync(join(dir, 'package.json'), '{"name":"webapp"}');
+        writeFileSync(join(dir, 'package.json'), JSON.stringify(packageJson));
         return { srcDir: dir, cleanup: async () => {} };
       },
     })) as NewAppDeps['resolveSource'],
@@ -86,7 +89,7 @@ function baseDeps(over: Partial<NewAppDeps> = {}): NewAppDeps {
 }
 
 /** A mock inner that mimics pot:create (makes the pot home dir) + agent_chats. */
-function mockInner(opts: { failCreateChat?: boolean } = {}) {
+function mockInner(opts: { failCreateChat?: boolean; blueprint?: string } = {}) {
   const calls: Array<{ name: string; args: any }> = [];
   const inner = vi.fn(async (name: string, args: any) => {
     calls.push({ name, args });
@@ -95,7 +98,10 @@ function mockInner(opts: { failCreateChat?: boolean } = {}) {
       // pot:create writes the hive (coding-pot) blueprint.yaml; overlay must
       // preserve it (PROTECTED_REL in overlayTemplateFiles).
       mkdirSync(join(path, '.papercusp'), { recursive: true });
-      writeFileSync(join(path, '.papercusp', 'blueprint.yaml'), 'id: my-app\nextends: hive\n');
+      writeFileSync(
+        join(path, '.papercusp', 'blueprint.yaml'),
+        opts.blueprint ?? 'id: my-app\nextends: hive\n',
+      );
       return { ok: true, slug: args.slug, path };
     }
     if (name === 'agent_chats:create') {
@@ -171,6 +177,56 @@ describe('composeNewApp', () => {
     expect(payload.builder).toEqual({ spawned: false });
     expect(existsSync(join(scratch, 'apps', 'my-app', 'PROTOCOL.md'))).toBe(true);
     expect(calls.map((c) => c.name)).toEqual(['pot:create']);
+  });
+
+  it('pins the pot release gate to the materialized host-independent check instead of a missing build script', async () => {
+    const { inner } = mockInner();
+    const result = await composeNewApp(
+      baseArgs({ kickoffBuilder: false }),
+      inner,
+      baseDeps({}, {
+        name: 'mobile-app',
+        scripts: {
+          'check:gate': 'node checks/run-gate.mjs checks/composition-integrity.test.ts',
+          'check:union': 'node checks/run-gate.mjs checks/',
+        },
+      }),
+    );
+    const payload = parse(result);
+
+    expect(payload.releaseGateTestCommand).toEqual({
+      command: 'npm run check:gate',
+      updated: true,
+    });
+    expect(readFileSync(join(scratch, 'apps', 'my-app', '.papercusp', 'blueprint.yaml'), 'utf8')).toContain(
+      'testCommand: npm run check:gate',
+    );
+  });
+
+  it('preserves an explicit blueprint testCommand over a materialized package default', async () => {
+    const { inner } = mockInner({
+      blueprint: 'id: my-app\nextends: hive\nknobs:\n  testCommand: npm run gate:custom\n',
+    });
+    const result = await composeNewApp(
+      baseArgs({ kickoffBuilder: false }),
+      inner,
+      baseDeps({}, {
+        name: 'mobile-app',
+        scripts: {
+          'check:gate': 'node checks/run-gate.mjs checks/composition-integrity.test.ts',
+          'check:union': 'node checks/run-gate.mjs checks/',
+        },
+      }),
+    );
+    const payload = parse(result);
+
+    expect(payload.releaseGateTestCommand).toEqual({
+      command: 'npm run gate:custom',
+      updated: false,
+    });
+    expect(readFileSync(join(scratch, 'apps', 'my-app', '.papercusp', 'blueprint.yaml'), 'utf8')).toContain(
+      'testCommand: npm run gate:custom',
+    );
   });
 
   it('still succeeds when the builder kickoff fails (best-effort)', async () => {

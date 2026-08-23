@@ -18,7 +18,7 @@ export default defineTool({
   guidance: {
     when: 'Grounding a reply in prior context, or locating the post the owner is referring to.',
     notWhen:
-      'Mail, calendar or contacts context — that is personal:search. General workspace memory is memory:search.',
+      'Mail, calendar or contacts context — that is personal:search. General workspace memory is memory:search. And NOT for a post you were already handed: pass that postId straight to social:read/social:reply, because re-searching can surface a near-duplicate and answer the wrong post.',
     chaining:
       'social:search → take a hit\'s postId verbatim → social:read / social:reply. Read `skipped` before reporting nothing was found, and `scopesSearched` for which platforms were actually covered.',
   },

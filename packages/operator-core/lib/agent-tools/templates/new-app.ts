@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { COORD_ROLES } from '../coordination/roles';
 import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { gitCloneShallow } from '../../cupboard/install-io';
@@ -167,6 +168,92 @@ export async function ensureBuildProtocol(
     );
   }
   return { path: protocolPath, created: true };
+}
+
+const RELEASE_GATE_SCRIPT_PRIORITY = [
+  'check:gate',
+  'check:union',
+  'test:affected',
+  'test',
+  'build',
+] as const;
+
+/**
+ * A newly materialized app is also a gated coding pot. `pot:create` writes that
+ * pot's blueprint before the template overlay lands, so it cannot see the
+ * package scripts the template provides. Without an additive `testCommand`,
+ * subject-hive release routing falls through to `npm run build`; mobile
+ * template roots intentionally expose `check:union` instead and therefore red
+ * forever without running a single template assertion.
+ *
+ * Patch only the missing command and preserve every explicit blueprint choice.
+ * The package's existing verification surface is reused in deterministic
+ * priority order; templates without one keep the established build fallback.
+ */
+export async function ensureReleaseGateTestCommand(
+  rootPath: string,
+): Promise<{ command: string | null; updated: boolean }> {
+  const packagePath = join(rootPath, 'package.json');
+  let packageJson: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(await readFile(packagePath, 'utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('root value is not an object');
+    }
+    packageJson = parsed as Record<string, unknown>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { command: null, updated: false };
+    }
+    throw new MaterializeTemplateError(
+      `materialized template package at ${packagePath} could not be parsed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      422,
+    );
+  }
+
+  const scripts =
+    packageJson.scripts && typeof packageJson.scripts === 'object' && !Array.isArray(packageJson.scripts)
+      ? (packageJson.scripts as Record<string, unknown>)
+      : null;
+  const script = RELEASE_GATE_SCRIPT_PRIORITY.find(
+    (name) => typeof scripts?.[name] === 'string' && (scripts[name] as string).trim().length > 0,
+  );
+  if (!script) return { command: null, updated: false };
+  const command = script === 'test' ? 'npm test' : `npm run ${script}`;
+
+  const blueprintPath = join(rootPath, '.papercusp', 'blueprint.yaml');
+  let blueprint: Record<string, unknown>;
+  try {
+    const parsed = parseYaml(await readFile(blueprintPath, 'utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('root value is not an object');
+    }
+    blueprint = parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new MaterializeTemplateError(
+      `materialized app blueprint at ${blueprintPath} could not be updated: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      422,
+    );
+  }
+
+  const knobs =
+    blueprint.knobs && typeof blueprint.knobs === 'object' && !Array.isArray(blueprint.knobs)
+      ? (blueprint.knobs as Record<string, unknown>)
+      : {};
+  if (typeof knobs.testCommand === 'string' && knobs.testCommand.trim()) {
+    return { command: knobs.testCommand, updated: false };
+  }
+
+  await writeFile(
+    blueprintPath,
+    stringifyYaml({ ...blueprint, knobs: { ...knobs, testCommand: command } }),
+    'utf8',
+  );
+  return { command, updated: true };
 }
 
 /**
@@ -392,11 +479,16 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
   // convenience. Generate the common fallback when the template does not ship
   // one, preserve a valid template-owned protocol, and compensate the durable
   // pot if the verification/generation step fails.
+  let releaseGateTestCommand: { command: string | null; updated: boolean } = {
+    command: null,
+    updated: false,
+  };
   try {
     const protocol = await ensureBuildProtocol(materialized.path, src.listing);
     if (protocol.created && !materialized.filesCopied.includes('PROTOCOL.md')) {
       materialized.filesCopied.push('PROTOCOL.md');
     }
+    releaseGateTestCommand = await ensureReleaseGateTestCommand(materialized.path);
   } catch (e) {
     const compensated = await compensateCreatedHarness(
       e,
@@ -450,6 +542,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
     template: { id: src.listing.id, ref: src.listing.ref, title: src.listing.title },
     guideBranch: src.guideBranch,
     supplyChain,
+    releaseGateTestCommand,
     builder,
   });
 }

@@ -245,8 +245,16 @@ export interface SocialPostView {
    * having read the post. Delete is irreversible and its retry is
    * indistinguishable from its success, so the rail has to be more than a
    * boolean the caller sets — see social-delete.ts.
+   *
+   * ⚠ NAMED to match `social:delete`'s ARG exactly (P-010). It was `deleteToken`
+   * here while the consumer took `confirmToken`, and social:delete's own guidance
+   * told the agent to pass "the confirmToken that social:read returns" — a field
+   * that did not exist under that name. The agent's whole job with this value is
+   * to move it from this result into that arg, so a rename on either side
+   * reintroduces the trap; `social-guidance-routes.test.ts` pins the two names
+   * together.
    */
-  deleteToken: string;
+  confirmToken: string;
 }
 
 function authorOf(payload: Record<string, unknown>, participants: readonly string[]): string {
@@ -269,7 +277,7 @@ function viewFromDocument(doc: CanonicalDocument, row: SocialPlatformRow, postId
     // Computed from the FULL stored text, not the bounded `text` above: the
     // token must be reproducible at delete time from the row, and the delete
     // path bounds it identically rather than trusting what was displayed.
-    deleteToken: socialDeleteToken({ platform: row.id, externalId: doc.externalId }, doc.text),
+    confirmToken: socialDeleteToken({ platform: row.id, externalId: doc.externalId }, doc.text),
   };
 }
 

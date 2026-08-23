@@ -445,8 +445,21 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       const bPending = new PendingEpochContent();
       const bDrainQueue: DrainedEpoch[] = [];
       let bHandle: BootedHarnessHandle | undefined;
-      let bApply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
-      function buildBApply(ownLogKeyHex: string): (op: OpEnvelope) => Promise<boolean> {
+      let bHomeApply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let bMemberApply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      function buildBHomeApply(ownLogKeyHex: string): (op: OpEnvelope) => Promise<boolean> {
+        const keysProj = buildHiveEpochKeysProjection({
+          workspaceId: WORKSPACE_ID,
+          harnessSlug: HIVE_HOME,
+          sql: orgDb.adminSql,
+          onEpochKeyApplied: (h, e) => bDrainQueue.push({ potHomeSlug: h, epoch: e }),
+        });
+        const lookup: ProjectionLookup = (tag) =>
+          tag === keysProj.tableTag ? (keysProj as TableProjection<unknown>) : null;
+        return (op) =>
+          op.table === keysProj.tableTag ? applyOpVia(lookup, op, { ownLogKeyHex }) : Promise.resolve(true);
+      }
+      function buildBMemberApply(ownLogKeyHex: string): (op: OpEnvelope) => Promise<boolean> {
         const provider = createEpochKeyProvider(
           crypto,
           createPgWrappedKeyLoader(WORKSPACE_ID, HIVE_HOME, orgDb.adminSql),
@@ -455,27 +468,18 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         const resolveKey = buildEpochKeyResolver({ crypto, provider, isOwner: async () => false });
         const plansProj = buildHarnessPlansProjection({
           workspaceId: WORKSPACE_ID,
-          harnessSlug: HIVE_HOME,
+          harnessSlug: OWNER_SIBLING_SLUG,
           sql: orgDb.adminSql,
           isFlagOn: async () => false, // authoritative whole-blob upsert path
         });
-        const keysProj = buildHiveEpochKeysProjection({
-          workspaceId: WORKSPACE_ID,
-          harnessSlug: HIVE_HOME,
-          sql: orgDb.adminSql,
-          onEpochKeyApplied: (h, e) => bDrainQueue.push({ potHomeSlug: h, epoch: e }),
-        });
-        const scoped = new Map<string, TableProjection<unknown>>([
-          [plansProj.tableTag, plansProj as TableProjection<unknown>],
-          [keysProj.tableTag, keysProj as TableProjection<unknown>],
-        ]);
-        const lookup: ProjectionLookup = (tag) => scoped.get(tag) ?? null;
+        const lookup: ProjectionLookup = (tag) =>
+          tag === plansProj.tableTag ? (plansProj as TableProjection<unknown>) : null;
         const inner = (op: OpEnvelope) => applyOpVia(lookup, op, { ownLogKeyHex });
         const gate = buildEpochDecryptGate({ crypto, resolveKey, potId: HIVE_HOME, pending: bPending });
-        return gate(inner);
+        return (op) => (op.table === plansProj.tableTag ? gate(inner)(op) : Promise.resolve(true));
       }
       const drainB = () =>
-        drainQueuedEpochContent({ pending: bPending, drainQueue: bDrainQueue, applyImpl: bApply! });
+        drainQueuedEpochContent({ pending: bPending, drainQueue: bDrainQueue, applyImpl: bMemberApply! });
 
       // ── Two real sidecar hosts on a loopback testnet DHT. ──
       const testnet = await createTestnet(3);
@@ -524,13 +528,15 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
           announceIdentityOverride: idB.override,
           loadRevokedOverride: async () => new Set(bPublishedRevoked),
           applyOverride: (op) => {
-            bApply ??= buildBApply(bHandle!.ownLog.keyHex);
-            return bApply(op);
+            bHomeApply ??= buildBHomeApply(bHandle!.ownLog.keyHex);
+            bMemberApply ??= buildBMemberApply(bHandle!.ownLog.keyHex);
+            return op.table === 'plans-by-slug' ? bMemberApply(op) : bHomeApply(op);
           },
         },
       });
       bHandle = bPeer.handle;
-      bApply ??= buildBApply(bHandle.ownLog.keyHex); // eager so drainB() is safe pre-merge
+      bHomeApply ??= buildBHomeApply(bHandle.ownLog.keyHex);
+      bMemberApply ??= buildBMemberApply(bHandle.ownLog.keyHex);
 
       // WI-40905's real topology has TWO harness handles per machine on the
       // same Hive topic (home + member). Keep the siblings' projection paths
@@ -586,10 +592,14 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       await dbOwner.adminSql`
         INSERT INTO harness_shared.harness_plans
           (workspace_id, harness_slug, plan_slug, title, content, status)
-        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, 'plan-epoch0', 'Epoch0 plan', ${EPOCH0_BODY}, 'active')
+        VALUES (${WORKSPACE_ID}, ${OWNER_SIBLING_SLUG}, 'plan-epoch0', 'Epoch0 plan', ${EPOCH0_BODY}, 'active')
       `;
+      const drainedKeys0 = await drainOutboxOnce(owner.handle, dbOwner.adminSql, {
+        epochEncrypt: ownerEpochEncrypt,
+      });
       const drained0 = await drainOutboxOnce(ownerSibling.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
-      expect(drained0, 'owner drained the epoch-0 key rows + the (baseline-plaintext) plan').toBeGreaterThanOrEqual(3);
+      expect(drainedKeys0, 'owner home drained the epoch-0 key rows').toBeGreaterThanOrEqual(2);
+      expect(drained0, 'owner member drained the (baseline-plaintext) plan').toBeGreaterThanOrEqual(1);
 
       // WI-2102: epoch 0 is the pre-re-key BASELINE — `buildEpochEncryptCapability` returns
       // null at `BASELINE_EPOCH`, so the epoch-0 plan federates PLAINTEXT with NO epoch stamp
@@ -612,7 +622,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       // encrypted epoch it remains a member of.
       const epoch0 = await pollUntil(
         async () => {
-          await Promise.all([owner.mergeNow(), bPeer.mergeNow()]);
+          await Promise.all([owner.mergeNow(), ownerSibling.mergeNow(), bPeer.mergeNow(), bSibling.mergeNow()]);
           await drainB();
           const plan = await readPlanOnB(orgDb, 'plan-epoch0');
           const keyB0 = await hasKeyRowOnB(orgDb, 0, idB.devicePubkey);
@@ -714,11 +724,14 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       await dbOwner.adminSql`
         INSERT INTO harness_shared.harness_plans
           (workspace_id, harness_slug, plan_slug, title, content, status)
-        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, 'plan-epoch1', 'Epoch1 plan', ${EPOCH1_BODY}, 'active')
+        VALUES (${WORKSPACE_ID}, ${OWNER_SIBLING_SLUG}, 'plan-epoch1', 'Epoch1 plan', ${EPOCH1_BODY}, 'active')
       `;
+      const drainedBoundary = await drainOutboxOnce(owner.handle, dbOwner.adminSql, {
+        epochEncrypt: ownerEpochEncrypt,
+      });
       const drained1 = await drainOutboxOnce(ownerSibling.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
-      expect(drained1, 'owner drained the epoch advance + epoch-1 key + the encrypted post-boundary plan')
-        .toBeGreaterThanOrEqual(2);
+      expect(drainedBoundary, 'owner home drained the epoch advance + epoch-1 key').toBeGreaterThanOrEqual(1);
+      expect(drained1, 'owner member drained the encrypted post-boundary plan').toBeGreaterThanOrEqual(1);
 
       const wireOps1 = await readOwnLogOps(ownerSibling.handle);
       const planWire1 = wireOps1.find((o) => o.table === 'plans-by-slug' && o.hbKey === 'plan-epoch1');
@@ -731,7 +744,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       // + tried + DEFERRED the post-boundary ciphertext (not merely "not arrived yet").
       const epoch1Reached = await pollUntil(
         async () => {
-          await Promise.all([owner.mergeNow(), bPeer.mergeNow()]);
+          await Promise.all([owner.mergeNow(), ownerSibling.mergeNow(), bPeer.mergeNow(), bSibling.mergeNow()]);
           await drainB();
           return (await hasKeyRowOnB(orgDb, 1, idOwner.devicePubkey)) ? true : undefined;
         },
@@ -741,7 +754,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
 
       // Extra passes: give the epoch-1 ciphertext every chance to (wrongly) decrypt/apply.
       for (let i = 0; i < 8; i++) {
-        await Promise.all([owner.mergeNow(), bPeer.mergeNow()]);
+        await Promise.all([owner.mergeNow(), ownerSibling.mergeNow(), bPeer.mergeNow(), bSibling.mergeNow()]);
         await drainB();
       }
 
@@ -780,7 +793,7 @@ async function readPlanOnB(orgDb: OrgTestDb, planSlug: string) {
     Array<{ plan_slug: string; content: string; status: string | null; origin: string }>
   >`
     SELECT plan_slug, content, status, origin FROM harness_shared.harness_plans
-     WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_HOME} AND plan_slug = ${planSlug}
+     WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${OWNER_SIBLING_SLUG} AND plan_slug = ${planSlug}
   `;
   return rows[0];
 }

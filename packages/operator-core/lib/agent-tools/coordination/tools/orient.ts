@@ -154,6 +154,21 @@ const ORIENT_PANE_CONTEXT_TIMEOUT_MS = 10_000;
  *  work and only runs on the FIRST post-compaction orient (low frequency), but
  *  still an order of magnitude under the 300s wedge this exists to prevent. */
 const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
+/**
+ * EI-21223537749399745: individual fold budgets do not bound the sequential sum of
+ * composeOrient plus the handler-owned enrichment folds. Keep one aggregate fence below
+ * the 120s dispatch budget so a still-running fold returns an honest unknown orientation
+ * instead of becoming a transport timeout with no state at all.
+ */
+export const ORIENT_AGGREGATE_TIMEOUT_MS = 105_000;
+
+export function withOrientAggregateTimeout<T>(work: Promise<T> | (() => Promise<T>), fallback: T): Promise<T> {
+  return withBoundedTimeout(work, {
+    fallback,
+    timeoutMs: ORIENT_AGGREGATE_TIMEOUT_MS,
+    label: 'orient:aggregate',
+  }).then(({ value }) => value);
+}
 
 export interface OrientArgs {
   harness?: string;
@@ -2717,7 +2732,11 @@ export default defineTool({
   // Deleting them to "finish" the uncapping would remove the degradation path
   // and re-open the 2026-07-01 43k-token incident (P-012).
   ignoreSessionPayloadTier: true,
+  // Keep the existing handler body byte-stable; the aggregate fence is the only wrapper change.
+  // prettier-ignore
   async handler(args, ctx) {
+    const aggregate = await withOrientAggregateTimeout(
+      async () => {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
     // attributable coord identity still gets a (fleet-wide) orientation.
     let ownerId: string | undefined;
@@ -3354,5 +3373,16 @@ export default defineTool({
     // behavior-equivalent to the prior raw-JSON text (the re-encode path
     // already routed orient through the same serializer when TOON shrank it).
     return { data: out };
+      },
+      {
+        data: {
+          ok: true,
+          status: 'unknown',
+          degraded: true,
+          degradedReason: 'aggregate_timeout',
+        },
+      },
+    );
+    return aggregate;
   },
 });

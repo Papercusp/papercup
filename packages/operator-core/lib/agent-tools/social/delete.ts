@@ -20,7 +20,13 @@ export default defineTool({
     notWhen:
       'Editing or replacing content — delete does not do that. Never delete to "clean up" or on your own initiative; only on an explicit owner instruction.',
     chaining:
-      'social:read → confirmToken → social:delete. Report `deleted` honestly: false means the platform found nothing to remove, which is NOT the same as having deleted it.',
+      'social:read → confirmToken → social:delete: read returns `confirmToken` under that exact name, so pass it straight through. It is derived from the post\'s own text, so it cannot be guessed or reused across posts. Report `deleted` honestly: false means the platform found nothing to remove, which is NOT the same as having deleted it.',
+    byRole: {
+      'papercup-deep': {
+        notWhen:
+          'You are never user-facing, so you cannot obtain the explicit owner instruction this verb requires. Surface the request through the fast half instead of deleting.',
+      },
+    },
   },
   args: z
     .object({

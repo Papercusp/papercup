@@ -19,7 +19,7 @@ export default defineTool({
     notWhen:
       'Posting something NEW, or to a community rather than a thread — that is social:post, which checks the destination. Not for email (mail:reply) or Slack (chat:reply).',
     chaining:
-      'social:search → postId → social:reply. Never assemble a postId from a platform and an id yourself. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it.',
+      'social:search → postId → social:reply. Never assemble a postId from a platform and an id yourself. Report the echoed label and visibility back to the owner as evidence of where it actually went and who can see it. Two refusals are terminal rather than retryable: `write-unverified` (the platform reads fine but its write path is unproven — social:read shows this as `replyable.allowed:false`) and `owner-blocked`. Report either one; retrying or switching platform will not clear it.',
   },
   args: z
     .object({
