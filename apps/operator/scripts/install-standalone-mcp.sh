@@ -205,6 +205,11 @@ PYEOF
 # scope enforcement to this dir so a plain `claude`/`codex` editing an
 # unrelated git repo never locks it into the shared store.
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+# The dependency mutex is keyed to the checkout itself, not the workspace
+# parent. Keep this explicit so the generated ptool shim protects the same
+# node_modules tree as install:safe, even when the installer was invoked via
+# the papercup -> papercusp compatibility symlink.
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Shared Claude+Codex lock-enforcement hooks. Both clients implement the
 # same hook wire format (PreToolUse/PostToolUse, settings.json,
@@ -1812,7 +1817,12 @@ if [ -f "$PTOOL_LAUNCHER" ]; then
 # ptool <group:verb> --json-file payload.json; ptool --list. Avoid single-quoted
 # inline JSON when text can contain apostrophes (for example loop:checkpoint
 # recheck strings), because the shell splits the payload before ptool runs.
-exec node "${PTOOL_LAUNCHER}" "\$@"
+# ptool imports the MCP SDK from this checkout's node_modules. Enter the same
+# repo-keyed install mutex used by npm-install-safe before loading that graph so
+# an in-flight npm reify cannot expose a half-extracted SDK to the CLI.
+exec node "${REPO_ROOT}/scripts/npm-install-safe.mjs" \
+  --repo-root "${REPO_ROOT}" --exec-under-lock -- \\
+  node "${PTOOL_LAUNCHER}" "\$@"
 WRAPEOF
   chmod 755 "$PTOOL_PATH"
   echo "✓ Installed $PTOOL_PATH (defineTool CLI)"

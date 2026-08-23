@@ -28,7 +28,7 @@
  *      failing npm run with a dep verdict.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -392,6 +392,25 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
       repoRoot: '/managed/sidestage',
       commandArgs: ['bash', 'bin/bundle-host.sh'],
     });
+  });
+
+  it('installs the ptool shim behind the same mutex before loading the MCP SDK', () => {
+    const installer = readFileSync(
+      join(process.cwd(), 'apps/operator/scripts/install-standalone-mcp.sh'),
+      'utf8',
+    );
+    const ptoolStart = installer.indexOf('# 4h. Install the `ptool` command');
+    const ptoolEnd = installer.indexOf('# 5. Verify the endpoint accepts the token.', ptoolStart);
+    const ptoolBlock = installer.slice(ptoolStart, ptoolEnd);
+
+    expect(ptoolStart).toBeGreaterThan(-1);
+    expect(ptoolEnd).toBeGreaterThan(ptoolStart);
+    expect(ptoolBlock).toContain('npm-install-safe.mjs');
+    expect(ptoolBlock).toContain('--repo-root "${REPO_ROOT}" --exec-under-lock --');
+    expect(ptoolBlock).toContain('node "${PTOOL_LAUNCHER}" "\\$@"');
+    expect(ptoolBlock.indexOf('--exec-under-lock')).toBeLessThan(
+      ptoolBlock.indexOf('node "${PTOOL_LAUNCHER}"'),
+    );
   });
 
   it('marks a guarded reader child and preserves the selected repo cwd', async () => {
