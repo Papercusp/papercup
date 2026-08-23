@@ -209,6 +209,35 @@ describe('P-003: trackGateStall ANNOUNCES a torn sweep on the record-only tick',
     await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts']);
     expect(tornSweepEmits()).toEqual([]);
   });
+
+  it('does NOT announce a PROMOTION-PENDING record-only tick, even with a stale re-triage in hand', async () => {
+    // P-006. `record-only` is reached by two roads and only one of them is a torn sweep: a
+    // promotion-pending tick carries the streak because the verdict precedes the promotion
+    // DECISION, not because a sweep tore. Announcing it would attribute a git-sync tear to a run
+    // that never proved one — which is exactly the miscount the announcement exists to expose.
+    // The `!promotionPending` guard in trackGateStall is the only thing separating them.
+    //
+    // The second arm below is the POSITIVE CONTROL, and it is what makes this test falsifiable
+    // rather than merely green: it runs the IDENTICAL fixture with promotionPending dropped and
+    // asserts it DOES announce. Without it, `toEqual([])` would pass just as happily if the
+    // fixture never reached the announcing branch at all — a silent zero reading as a guard.
+    const emitsFor = async (options: { promotionPending?: boolean; green?: boolean; runId: string }) => {
+      calls.length = 0;
+      emitAwaitedEvent.mockClear();
+      seededGh = { consecutiveReds: 4, stallAlerted: false, lastGreenAt: Date.now() };
+      await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts'], null, staleRetriage, null, undefined, options);
+      return { emits: tornSweepEmits(), reds: gateHealth().consecutiveReds };
+    };
+
+    const pending = await emitsFor({ promotionPending: true, green: true, runId: 'run-pending-1' });
+    expect(pending.emits).toEqual([]);
+    // The streak half is untouched by the guard — this tick still carries, for its own reason.
+    expect(pending.reds).toBe(4);
+
+    const notPending = await emitsFor({ green: true, runId: 'run-pending-2' });
+    expect(notPending.emits).toHaveLength(2);
+    expect(notPending.reds).toBe(4);
+  });
 });
 
 /**

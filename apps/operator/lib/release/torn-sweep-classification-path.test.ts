@@ -179,9 +179,12 @@ describe('P-006 falsifiability control: the same fixture still failing at tip ke
       classifyFixture(true, { tipRetest: { ran: false, pass: false } }),
       classifyFixture(true, { failingTests: [] }),
     ]) {
+      // Passed bare, not via asRetriage(): `GateStallRetriage` is deliberately narrower than the
+      // object the writer receives — it declares no `tip` at all, because these two predicates
+      // never read one. The classifier's verdict alone is what they consume.
       expect(v.classification).not.toBe('stale-candidate');
-      expect(isProvenStaleCandidate({ ...v, tip: null })).toBe(false);
-      expect(classifyGateStallStatus('not-green', false, { ...v, tip: null })).toBe('red');
+      expect(isProvenStaleCandidate(v)).toBe(false);
+      expect(classifyGateStallStatus('not-green', false, v)).toBe('red');
       expect(announce(v)).toBeNull();
     }
   });
