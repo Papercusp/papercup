@@ -410,7 +410,10 @@ export async function probeGistWriteCapability(token: string): Promise<GistWrite
  * The attestation gist filename is DETERMINISTIC from the device pubkey
  * (`attestationGistFilename`), so we can find an existing gist by listing the
  * user's gists and matching that filename, then confirming it verifies for
- * `(pubkey, githubUserId)`. If none verifies, we create a fresh one.
+ * `(pubkey, githubUserId)`. If no matching candidate is listed, we create a
+ * fresh one. A matched candidate that fails verification is surfaced and
+ * blocks creation: creating beside an unverified candidate is the duplicate-
+ * gist loop this function is meant to prevent.
  */
 export async function ensureAttestationGist(
   input: CreateAttestationGistInput,
@@ -458,17 +461,18 @@ export async function ensureAttestationGist(
   }>;
   for (const g of gists) {
     if (!g.id || !g.files || !(expectedFilename in g.files)) continue;
-    // Only successful verifications are cached; failures re-verify so
-    // revocation stays prompt. An inconclusive result is not evidence that the
-    // binding is absent.
+    // A candidate with this deterministic filename is evidence that a binding
+    // already exists. Never create beside it when verification fails: doing so
+    // turns a body/signature/identity problem into an unbounded duplicate-gist
+    // loop. Include the reason so the caller can repair the actual binding
+    // failure instead of blindly retrying creation.
     const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId);
     if (v.valid) return g.id;
-    if (v.reason === 'github_api_unavailable') {
-      throw new Error(
-        'ensureAttestationGist: could not verify candidate binding ' + g.id +
-          ' (github_api_unavailable) — refusing to create a duplicate',
-      );
-    }
+    const reason = v.reason ?? 'unknown';
+    throw new Error(
+      'ensureAttestationGist: could not verify candidate binding ' + g.id +
+        ' (' + reason + ') — refusing to create a duplicate',
+    );
   }
 
   const created = await createAttestationGist(input);

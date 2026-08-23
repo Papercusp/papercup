@@ -443,6 +443,50 @@ describe('verifyAttestation', () => {
     vi.unstubAllGlobals();
   });
 
+  it('ensureAttestationGist: refuses to create beside a conclusive-invalid candidate and surfaces its reason', async () => {
+    const { ensureAttestationGist, clearAttestationQuotaGuards } = await import('./attest');
+    clearAttestationQuotaGuards();
+    const { pubkeyBase64, gistResponse } = makeFakeGistResponse({
+      body: { signature_by_device: 'not-a-valid-signature' },
+    });
+    const filename = attestationGistFilename(pubkeyBase64);
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      const method = (init as { method?: string } | undefined)?.method ?? 'GET';
+      if (method === 'POST') {
+        throw new Error('POST must not be reached for an invalid existing candidate');
+      }
+      if (typeof url === 'string' && url.includes('/gists?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: 'g-invalid', files: { [filename]: {} } }],
+        };
+      }
+      return { ok: true, status: 200, json: async () => gistResponse };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      ensureAttestationGist({
+        keychainId: 'unused-on-invalid-verify',
+        pubkeyBase64,
+        deviceLabel: 'test',
+        githubUserId: 12345,
+        githubLogin: 'testuser',
+        token: 'tok',
+      }),
+    ).rejects.toThrow(/could not verify candidate binding g-invalid \(signature_invalid\)/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.some(
+        (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+      ),
+    ).toBe(false);
+
+    clearAttestationQuotaGuards();
+    vi.unstubAllGlobals();
+  });
+
   it('ensureAttestationGist: refuses to list while the GitHub cooldown is active', async () => {
     const { ensureAttestationGist, verifyAttestation, clearAttestationQuotaGuards } =
       await import('./attest');
