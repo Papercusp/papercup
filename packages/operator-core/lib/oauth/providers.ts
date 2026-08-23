@@ -372,6 +372,49 @@ export async function loadGoogleProviderFromDesktopClientFile(
 
 export const FACEBOOK_OAUTH_SCOPES = ['public_profile', 'user_posts', 'user_photos'] as const;
 
+/**
+ * Facebook PAGES scopes — allowed, never DEFAULT (D-019, D-024).
+ *
+ * ⚠ WHY THIS IS A SECOND CONSTANT INSTEAD OF FIVE MORE ENTRIES ABOVE. Until now
+ * `defaultScopes` and `allowedScopes` on the facebook provider were THE SAME
+ * ARRAY — literally the same `FACEBOOK_OAUTH_SCOPES` reference in both slots. So
+ * "just add the Pages scopes to the list" would have silently added them to the
+ * DEFAULT set as well, and the default set is a presumed-granted claim: a
+ * connection created before Pages existed stores no scope metadata, and any
+ * capability check that falls back to the default list would report those five
+ * scopes as granted on it. The Pages read would then present as `connected` and
+ * fail at call time instead of prompting the re-consent it actually needs.
+ *
+ * That is exactly the trap D-019 was written for on the Google provider, arriving
+ * here through a different door — there the two lists were distinct and the
+ * mistake would have been picking the wrong one; here they were the same object,
+ * so there was no wrong one to pick and the only safe move is to SPLIT them.
+ *
+ * Every string below was resolved against the permissions REFERENCE, not the
+ * getting-started tutorial, which names two scopes that do not exist (D-024).
+ */
+export const FACEBOOK_PAGES_OAUTH_SCOPES = [
+  /** "allows your app to access the list of Pages a person manages" — required for the page-token exchange. */
+  'pages_show_list',
+  /** "read content (posts, photos, videos, events) posted by the Page". */
+  'pages_read_engagement',
+  /** "read user generated content on the Page, such as posts, comments, and ratings by users or other Pages". */
+  'pages_read_user_content',
+  /** "create, edit and delete your Page posts". */
+  'pages_manage_posts',
+  /** "create, edit and delete comments posted on the Page". */
+  'pages_manage_engagement',
+] as const;
+
+/**
+ * What a Facebook connection MAY request: the landed personal-vault scopes plus
+ * the Pages scopes, which are granted only by an explicit incremental consent.
+ */
+export const FACEBOOK_ALLOWED_OAUTH_SCOPES = [
+  ...FACEBOOK_OAUTH_SCOPES,
+  ...FACEBOOK_PAGES_OAUTH_SCOPES,
+] as const;
+
 interface FacebookTokenBody {
   access_token?: string;
   expires_in?: number;
@@ -411,8 +454,11 @@ export function makeFacebookProvider(config: OAuthProviderConfig): OAuthProvider
   return {
     id: 'facebook',
     config,
+    // D-019: the DEFAULT set stays exactly what the landed personal-vault
+    // connection already had. The Pages scopes are ALLOWED — requestable by an
+    // explicit incremental consent — and never presumed granted.
     defaultScopes: FACEBOOK_OAUTH_SCOPES,
-    allowedScopes: FACEBOOK_OAUTH_SCOPES,
+    allowedScopes: FACEBOOK_ALLOWED_OAUTH_SCOPES,
     buildAuthorizeUrl(scopes, state) {
       const url = new URL(config.authorizeUrl);
       url.searchParams.set('client_id', config.clientId);

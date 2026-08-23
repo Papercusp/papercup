@@ -281,6 +281,29 @@ export type SocialReplyTarget =
        * `operationNotSupported` 400 the insert would otherwise return.
        */
       canReply?: boolean;
+    }
+  | {
+      platform: 'facebook-pages';
+      /**
+       * The object the reply attaches to. Facebook's `/comments` edge is
+       * "common to multiple Graph API nodes" and a Comment node carries its own
+       * `/comments` edge for replies, so this is a POST id when replying to a
+       * post and a COMMENT id when replying to a comment. One field rather than
+       * two on purpose: the API makes no distinction, and a `postId`/`commentId`
+       * pair would invite a caller to supply both and leave the adapter guessing
+       * which the reply was meant for.
+       */
+      objectId: string;
+      /** Only for the permalink; a reply works without it. */
+      pageId?: string;
+      /**
+       * `can_comment` — "indicates whether it is possible to reply to that
+       * comment". A definite `false` is refused locally. An ABSENT value still
+       * attempts, matching the YouTube `canReply` posture: treating a missing
+       * optional field as a refusal turns a gap in the response into a dropped
+       * reply.
+       */
+      canComment?: boolean;
     };
 
 export interface SocialReplyCoordinates {

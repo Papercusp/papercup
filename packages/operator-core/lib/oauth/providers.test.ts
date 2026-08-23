@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CLAUDE_OAUTH_DEFAULTS,
+  FACEBOOK_ALLOWED_OAUTH_SCOPES,
   FACEBOOK_OAUTH_SCOPES,
+  FACEBOOK_PAGES_OAUTH_SCOPES,
   GOOGLE_CALENDAR_EVENTS_SCOPE,
   GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT,
   GOOGLE_CONTACTS_READONLY_SCOPE,
@@ -246,8 +248,36 @@ describe('Meta / Facebook OAuth provider', () => {
       );
       await expect(loadAndRegisterProvidersFromDisk(dir, null)).resolves.toEqual(['facebook']);
       const provider = getProvider('facebook');
-      expect(provider?.allowedScopes).toEqual(FACEBOOK_OAUTH_SCOPES);
+      expect(provider?.allowedScopes).toEqual(FACEBOOK_ALLOWED_OAUTH_SCOPES);
       expect(provider?.config.clientSecret).toBe(config.clientSecret);
+
+      // ── D-019 invariant, not a re-baseline ─────────────────────────────────
+      // The DEFAULT set is a presumed-granted claim: a connection stored before
+      // a scope existed carries no scope metadata, so anything falling back to
+      // this list reports those scopes as granted on a legacy connection. The
+      // Pages scopes must therefore be ALLOWED and never DEFAULT.
+      //
+      // This is pinned as a RELATIONSHIP rather than as two literal lists on
+      // purpose. Before P-016 both slots held the SAME array object, so the
+      // natural way to add a scope — appending to that array — would have added
+      // it to both at once, and a literal-list assertion updated in the same
+      // motion would have sailed straight through.
+      for (const scope of FACEBOOK_PAGES_OAUTH_SCOPES) {
+        expect(provider?.allowedScopes).toContain(scope);
+        expect(provider?.defaultScopes).not.toContain(scope);
+      }
+      expect(provider?.defaultScopes).toEqual(FACEBOOK_OAUTH_SCOPES);
+
+      // D-024: two strings that Meta's OWN getting-started and posts pages name
+      // must never appear, because they are not real permissions and would fail
+      // only at the owner-walled authorize call.
+      for (const notReal of ['pages_manage_read_engagement', 'pages_read_user_engagement']) {
+        expect(provider?.allowedScopes).not.toContain(notReal);
+        expect(provider?.defaultScopes).not.toContain(notReal);
+      }
+
+      // D-003 declines webhooks for v1, so this grant is unjustifiable privilege.
+      expect(provider?.allowedScopes).not.toContain('pages_manage_metadata');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
