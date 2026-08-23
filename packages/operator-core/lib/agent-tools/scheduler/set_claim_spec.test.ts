@@ -92,6 +92,32 @@ describe('published claim-spec guidance — WI-37997 severity ordering', () => {
   });
 });
 
+describe('published claim-spec args — EI-21170624598321316', () => {
+  const baseSpec = {
+    specVersion: '1.0',
+    specId: 'schema-test',
+    view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+
+  it('advertises revision as required instead of deferring the failure to the handler', () => {
+    const missingRevision = setClaimSpecTool.args.safeParse({
+      fleet: 'fleet-a',
+      spec: baseSpec,
+    });
+    expect(missingRevision.success).toBe(false);
+    if (!missingRevision.success) {
+      expect(missingRevision.error.issues.some((issue) => issue.path.join('.') === 'spec.revision')).toBe(true);
+    }
+
+    const complete = setClaimSpecTool.args.safeParse({
+      fleet: 'fleet-a',
+      spec: { ...baseSpec, revision: 1 },
+    });
+    expect(complete.success).toBe(true);
+  });
+});
+
 describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
   it('WARNS for coding-FACTORY push-pipeline roles (spec is genuinely inert)', () => {
     for (const role of [

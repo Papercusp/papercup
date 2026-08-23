@@ -19,7 +19,12 @@ import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 export { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
-import { positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
+import {
+  claimSpecSchema,
+  positiveIdCohortIds,
+  validateClaimSpec,
+  type ClaimSpec,
+} from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
 
 /**
@@ -385,8 +390,7 @@ export default defineTool({
         .describe(
           'WI-5212 pool-collapse override: a dynamic spec is REFUSED at write time when it matches 0 rows of a nonempty claimable pool, or a revision craters the match count vs the stored spec (the two fleet-starvation shapes, EI-13306). Pass true ONLY after reading the refusal’s reported counts and confirming the narrowing is intended (e.g. a pre-staged lane whose items are not promoted yet).',
         ),
-      spec: z
-        .record(z.string(), z.unknown())
+      spec: claimSpecSchema
         .optional()
         .describe(
           'the claim spec: { specVersion, specId, revision, view:{ filter }, rank:{ mode, terms }, limits?, states? } — validated by validateClaimSpec. ' +
