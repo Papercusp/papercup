@@ -11,9 +11,11 @@
  *   - apply + record (sha256 of the RAW file contents) in one transaction
  *   - already-recorded files are skipped (DDL never re-executed)
  *   - fail-loud default: a broken migration throws, stays unrecorded, and the
+ *     error names the file/offending statement/reused-PGDATA remedy while the
  *     runner's ROLLBACK leaves the connection usable
  *   - continueOnError=true: bad file → failed[], later files still apply, the
- *     bad file stays pending and is retried next run
+ *     same diagnostic is logged, and the bad file stays pending/retries next run
+ *   - failures without a PostgreSQL query position retain an actionable fallback
  *   - psql metacommand lines are stripped from execution but hashed raw
  *   - the default skip set (per-harness-template + MANUAL_ONLY) and its override
  *   - SQL escaping of recorded filenames
@@ -145,14 +147,36 @@ describe('migration runner — failure paths + recording contract (synthetic sql
   it('fail-loud default: a broken migration throws, stays unrecorded, and the connection survives', async () => {
     const dir = await makeSqlDir({
       '001-good.sql': 'CREATE TABLE mrb3_first (id int);\n',
-      // 42P01 — the runner has NO skip-on-42P01 tolerance anymore; it must throw.
-      '002-bad.sql': 'ALTER TABLE mrb3_missing ADD COLUMN x int;\n',
+      // Semicolons inside the dollar-quoted body must NOT confuse statement
+      // selection: the diagnostic excerpt should name the ALTER, not this DO.
+      '002-bad.sql': [
+        'DO $$ BEGIN PERFORM 1; PERFORM 2; END $$;',
+        // 42601 reliably carries a PostgreSQL query position, so this leg proves
+        // the position-to-statement mapping (semantic errors are allowed to omit it).
+        'ALTER TABLE mrb3_missing ADD COLUMN broken ???;',
+        'SELECT 3;',
+        '',
+      ].join('\n'),
       '003-later.sql': 'CREATE TABLE mrb3_third (id int);\n',
     });
 
-    await expect(applyPendingMigrations({ client: sql, sqlDir: dir })).rejects.toThrow(
-      /mrb3_missing/,
+    let thrown: Error | undefined;
+    try {
+      await applyPendingMigrations({ client: sql, sqlDir: dir, dataDirWasReused: true });
+    } catch (error) {
+      thrown = error instanceof Error ? error : new Error(String(error));
+    }
+    expect(thrown?.name).toBe('MigrationError');
+    expect(thrown?.message).toContain('Migration 002-bad.sql FAILED');
+    expect(thrown?.message).toContain('syntax error at or near "???"');
+    expect(thrown?.message).toContain(`Migration file: ${join(dir, '002-bad.sql')}`);
+    expect(thrown?.message).toMatch(
+      /Offending statement near migration character \d+: ALTER TABLE mrb3_missing ADD COLUMN broken \?\?\?;/,
     );
+    expect(thrown?.message).not.toContain('PERFORM 1');
+    expect(thrown?.message).toContain('reused an existing Postgres data directory');
+    expect(thrown?.message).toContain('operator cannot start until this migration applies');
+    expect(thrown?.cause).toMatchObject({ code: '42601', position: expect.any(String) });
 
     // Earlier file in the SAME run was applied + recorded; the bad file and the
     // later file (loop halted at the throw) were not.
@@ -173,12 +197,24 @@ describe('migration runner — failure paths + recording contract (synthetic sql
       '003-later.sql': 'CREATE TABLE mrb4_third (id int);\n',
     });
 
-    const first = await applyPendingMigrations({ client: sql, sqlDir: dir, continueOnError: true });
+    const logs: string[] = [];
+    const first = await applyPendingMigrations({
+      client: sql,
+      sqlDir: dir,
+      dataDirWasReused: true,
+      continueOnError: true,
+      log: (line) => logs.push(line),
+    });
     expect(first.appliedCount).toBe(2);
     expect(first.totalKnown).toBe(3);
-    expect(first.failed).toEqual([
-      { file: '002-bad.sql', error: expect.stringContaining('mrb4_missing') },
-    ]);
+    expect(first.failed).toHaveLength(1);
+    expect(first.failed[0].file).toBe('002-bad.sql');
+    expect(first.failed[0].error).toContain('Migration 002-bad.sql FAILED');
+    expect(first.failed[0].error).toContain('mrb4_missing');
+    expect(first.failed[0].error).toContain('reused an existing Postgres data directory');
+    expect(first.failed[0].error).toContain('remains pending and will retry on the next boot');
+    expect(first.failed[0].error).not.toContain('operator cannot start');
+    expect(logs.some((line) => line.includes(first.failed[0].error))).toBe(true);
     // Boot continued PAST the bad file (the whole point of continueOnError).
     await expect(tableExists('mrb4_third')).resolves.toBe(true);
     expect((await recorded()).map((r) => r.filename)).toEqual(['001-good.sql', '003-later.sql']);
@@ -193,6 +229,35 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     const rows = await recorded();
     expect(rows.map((r) => r.filename)).toEqual(['001-good.sql', '002-bad.sql', '003-later.sql']);
     expect(rows.find((r) => r.filename === '002-bad.sql')?.sha256).toBe(sha256(fixed));
+  });
+
+  it('failure without a query position still names the file, fresh-data context, and remedy', async () => {
+    const dir = await makeSqlDir({
+      '001-guarded.sql': 'CREATE TABLE mrb4b_guarded (id int);\n',
+    });
+
+    let thrown: Error | undefined;
+    try {
+      await applyPendingMigrations({
+        client: sql,
+        sqlDir: dir,
+        dataDirWasReused: false,
+        beforeApply: () => {
+          throw new Error('synthetic pre-apply guard failure');
+        },
+      });
+    } catch (error) {
+      thrown = error instanceof Error ? error : new Error(String(error));
+    }
+
+    expect(thrown?.name).toBe('MigrationError');
+    expect(thrown?.message).toContain('Migration 001-guarded.sql FAILED');
+    expect(thrown?.message).toContain(`Migration file: ${join(dir, '001-guarded.sql')}`);
+    expect(thrown?.message).toContain('underlying error did not report a usable query position');
+    expect(thrown?.message).toContain('created a fresh Postgres data directory');
+    expect(thrown?.message).toContain('operator cannot start until this migration applies');
+    expect(thrown?.message).not.toContain('Offending statement');
+    expect(thrown?.cause).toMatchObject({ message: 'synthetic pre-apply guard failure' });
   });
 
   it('strips psql metacommand lines from execution but hashes the RAW contents', async () => {
