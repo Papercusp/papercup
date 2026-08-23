@@ -945,6 +945,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         const lockRelease = await releaseReclaimedWorkItemLocks({
           ownerId: row.holderNow ?? resolved.holder,
           paths: row.paths,
+          goalRef: row.id,
         });
         if (lockRelease.failures > 0) {
           console.warn(
