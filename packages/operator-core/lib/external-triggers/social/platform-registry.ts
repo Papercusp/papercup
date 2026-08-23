@@ -198,6 +198,45 @@ export interface SocialRateBudget {
    * bucket that verb draws on over `quotaUnitsPerDay`/`requestsPerMinute`.
    */
   buckets?: Record<string, SocialQuotaBucket>;
+  /**
+   * Set when the platform's allowance is NOT A CONSTANT (D-028).
+   *
+   * WHY THIS IS A TYPED FIELD RATHER THAN PROSE IN `notes`. Every platform
+   * before Facebook had a fixed budget — a requests-per-minute number, or
+   * YouTube's three fixed unit buckets — so a consumer could derive a cap by
+   * reading a number. Facebook's Pages allowance is "4800 * Number of Engaged
+   * Users" over a rolling 24 hours: it MOVES with engagement, and is smallest
+   * exactly when a Page is quiet. A cap derived from any compiled-in number is
+   * therefore wrong in one direction or the other.
+   *
+   * Putting that in `notes` would leave the storm-policy layer free to keep
+   * reading `quotaUnitsPerDay` (absent here) or `requestsPerMinute` (also
+   * absent) and silently fall back to a default — the failure being guarded
+   * against. A present `dynamicQuota` is a machine-readable instruction to
+   * derive the cap from `usageHeader` instead, and `retryExtendsBlock` makes the
+   * most dangerous fact enforceable rather than merely documented.
+   */
+  dynamicQuota?: {
+    /** The vendor's own formula, verbatim where they state one. */
+    formula: string;
+    /** What the allowance scales with, in the vendor's words. */
+    driver: string;
+    /** Response header reporting ACTUAL consumption, as percentages. */
+    usageHeader: string;
+    /** The `type` value identifying this platform's rows within that header. */
+    usageType?: string;
+    /** Provider error codes meaning "throttled". */
+    throttleCodes?: number[];
+    /**
+     * True when RETRYING A THROTTLE MAKES IT WORSE — the vendor states that
+     * continuing to call increases the time before calls succeed again. A
+     * consumer seeing this must park for the stated duration and schedule NO
+     * retry; a generic exponential-backoff wrapper would deepen every throttle
+     * it touched, which presents as the platform being flaky rather than as our
+     * own retry loop being the cause.
+     */
+    retryExtendsBlock?: boolean;
+  };
   /** Anything the numbers alone do not convey. */
   notes?: string;
 }
@@ -495,12 +534,93 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     id: 'facebook-pages',
     label: 'Facebook Pages',
     wave: 'B',
-    verifiedAt: null,
-    sources: [],
-    auth: { mode: 'app-review', scopes: [] },
-    read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
-    limits: {},
+    verifiedAt: '2026-08-23',
+    sources: [
+      'https://developers.facebook.com/docs/pages-api/getting-started',
+      'https://developers.facebook.com/docs/pages-api/posts',
+      'https://developers.facebook.com/docs/permissions',
+      'https://developers.facebook.com/docs/graph-api/results',
+      'https://developers.facebook.com/docs/graph-api/reference/page/',
+      'https://developers.facebook.com/docs/graph-api/reference/page/feed/',
+      'https://developers.facebook.com/docs/graph-api/reference/v23.0/object/comments',
+      'https://developers.facebook.com/docs/graph-api/overview/rate-limiting',
+    ],
+    auth: {
+      mode: 'app-review',
+      // D-024: resolved against the PERMISSIONS REFERENCE, not the getting-started
+      // page. Meta's own tutorials name two strings that do not exist —
+      // `pages_manage_read_engagement` and `pages_read_user_engagement` — and a
+      // bad scope fails only at the authorize call, which sits behind the
+      // owner-walled app review, so it would have looked green everywhere an
+      // agent can reach and broken the moment the owner cleared review.
+      scopes: [
+        'pages_show_list',
+        'pages_read_engagement',
+        'pages_read_user_content',
+        'pages_manage_posts',
+        'pages_manage_engagement',
+      ],
+      notes:
+        'Requires a PAGE access token, which is a SECOND credential obtained from GET /{user-id}/accounts with the user token — not the token OAuth returns (D-027). `pages_manage_metadata` is deliberately NOT requested: it grants webhook subscription and Page settings writes, and D-003 declines the webhook path for v1, so requesting it would be unjustifiable privilege at review. Required Page tasks are the UNION of what two vendor pages disagreed about: CREATE_CONTENT (publish), MANAGE, and MODERATE — MODERATE is not optional, since without it comment ids are withheld while the call still succeeds.',
+    },
+    // The scalar is the weakest stream, per D-016. Both streams are equally weak
+    // here, which is itself the finding: NEITHER has a usable cursor.
+    read: {
+      transport: 'poll-cursor',
+      replay: 'watermark-rescan',
+      backfill:
+        'Re-read each stream from the top, page forward on paging.next WITHIN the pass, and filter client-side against a stored created_time watermark.',
+      streams: {
+        posts: {
+          transport: 'poll-cursor',
+          replay: 'watermark-rescan',
+          backfill:
+            'Reads /{page-id}/published_posts ("All published posts by this page") rather than /feed, which mixes Page posts, visitor posts and tagged posts and additionally returns unpublished ones. D-025: the vendor documents NO since/until on this edge and states "Don\'t store cursors. Cursors can quickly become invalid if items are added or deleted", so there is neither a server-side time filter nor a storable cursor. The feed family is further documented as returning "approximately 600 ranked, published posts per year" — RANKED — so the adapter derives no control flow from position and never early-exits at the first below-watermark item; it filters every item individually. Termination is the absence of paging.next ONLY: a page "may be empty but contain a `next` paging link".',
+        },
+        comments: {
+          transport: 'poll-cursor',
+          replay: 'watermark-rescan',
+          backfill:
+            'There is NO page-wide comments edge — the Page node is absent from the list of nodes carrying /comments (D-026) — so this stream is one call PER WATCHED POST and its cost scales with the watch window, not with comment volume. `filter=stream` is sent explicitly because the `toplevel` default returns only top-level comments and silently drops nested replies. The comment fields on this edge carry NO edit timestamp, so an edited comment is not re-delivered (unlike a post, which carries updated_time). An empty result is trustworthy ONLY because the Page credential and the MODERATE task are asserted before the read: with a user token this edge "returns empty data" rather than erroring (D-027).',
+        },
+        visitor_posts: {
+          transport: 'poll-cursor',
+          replay: 'watermark-rescan',
+          backfill:
+            'VERIFIED BUT NOT YET IMPLEMENTED — declared here rather than omitted, so a reader sees a known stream that does not fire instead of assuming coverage. /{page-id}/visitor_posts "Shows all public Posts published by Page visitors on the Page": a genuinely different event from a Page-authored post (D-026), which is why it is a separate stream rather than a `from` field on the posts stream. Same replay model as the other two. Scoped out of P-016 to keep the item to two read streams plus write; picking it up needs no new verification.',
+        },
+      },
+    },
+    write: {
+      verbs: ['reply', 'post'],
+      // D-028: the publish reference documents no idempotency key, client token,
+      // request id or dedup parameter of ANY kind, so a retried POST creates a
+      // duplicate public post. Per D-016 this is a per-verb property; both verbs
+      // agree here, so the scalar is honest rather than merely conservative.
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
+      notes:
+        'POST /{page-id}/feed requires the CREATE_CONTENT task, a Page access token, and pages_manage_posts. "Either `link` or `message` must be supplied"; `published` defaults to true; `scheduled_publish_time` "Must be date between 10 minutes and 75 days from the time of the API request". The response is `{"id":"post-id"}`. The one compensation for having no idempotency is read-after-write: "This endpoint supports read-after-write and can immediately return any fields returned by read operations", so D-008\'s server-minted, round-trip-verified post ref costs ONE call rather than a create-then-GET pair.',
+    },
+    limits: {
+      // D-028: NOT a constant. "Calls within 24 hours = 4800 * Number of Engaged
+      // Users", over a rolling 24h window, where the multiplier is the users who
+      // engaged with the Page in that window. The budget therefore MOVES with
+      // engagement and is smallest exactly when a Page is quiet, so any
+      // compiled-in cap is wrong in one direction or the other. A consumer must
+      // read X-Business-Use-Case-Usage instead.
+      budgetHeaders: ['X-Business-Use-Case-Usage'],
+      dynamicQuota: {
+        formula: 'Calls within 24 hours = 4800 * Number of Engaged Users',
+        driver: 'the number of Users who engaged with the Page per 24 hours, over a rolling 24-hour window',
+        usageHeader: 'X-Business-Use-Case-Usage',
+        usageType: 'pages',
+        throttleCodes: [80001, 32],
+        retryExtendsBlock: true,
+      },
+      notes:
+        'The TOKEN TYPE selects the regime: "requests made with application or user access tokens are subject to Platform Rate Limits, while requests made with system user or page access tokens are subject to Business Use Case Rate Limits", and BUC wins when both could apply. So the D-027 credential mix-up does not merely return empty comments — it silently relocates the caller into a different, per-HOUR budget with a different error code, which is why BOTH 80001 (page/system-user token) and 32 (user token) are handled. ⚠ A THROTTLE MUST NOT BE RETRIED: "Continuing to make calls will continue to increase your call count, which will increase the time before calls will be successful again." Park for the header\'s `estimated_time_to_regain_access` (minutes); no fixed fallback duration is documented, so none may be invented.',
+    },
     blockedOn: 'owner: Meta app review (identity, legal and business verification; multi-week lead time)',
   },
 
