@@ -520,6 +520,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // taken_at / last_progress_at) off work_items via fleet_assignment — a claim/progress
     // flip refreshes the bee-run list (hybrid-bee-scheduler P-001).
     'scheduler.running',
+    // planWorkActivity.list (plan-visibility-revamp-2026-08-23 P-001 / D-003) —
+    // the PlansPane ⚒ last-work timestamps + HUD plan cards. Its aggregate is
+    // max(GREATEST(updated_ts, last_progress_at)) per source_plan_slug, so any
+    // work-item write can move it. Full-bust: workspace-keyed, not row-keyed.
+    'planWorkActivity.list',
     // rubrics.* / scorecards.* (rubrics-tab-scorecard-ui-2026-07-09 P-002): a
     // scorecard IS an engineer_issues row (compat view over work_items — THIS base
     // table is the invalidation producer), so a newly filed grading refreshes the
