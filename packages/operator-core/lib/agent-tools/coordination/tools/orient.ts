@@ -75,6 +75,26 @@ import {
   recordOrientDisclosures,
 } from '../../../agent-orient-disclosures';
 import type { ClaimableHarnessScope } from '../../work_items/claimable';
+import type { ControlAnchor } from '../control-anchor';
+
+type ControlAnchorFleetRoute = Extract<ControlAnchor['state']['route'], { kind: 'fleet' }>;
+type ControlAnchorRouteState = Pick<ControlAnchor['state'], 'route'>;
+
+export interface RecoveredFleetScope {
+  fleetSlug: ControlAnchorFleetRoute['fleet'];
+  fleetRole: ControlAnchorFleetRoute['role'];
+}
+
+/** Extract the fleet route from the post-compaction control anchor without widening
+ * the recovery seam to an untyped object. A self/mug route (or missing anchor) leaves
+ * the presence-derived scope authoritative for this call. */
+export function extractRecoveredFleetScope(
+  control: { state: ControlAnchorRouteState } | null | undefined,
+): RecoveredFleetScope | null {
+  const route = control?.state?.route;
+  if (route?.kind !== 'fleet' || !route.fleet) return null;
+  return { fleetSlug: route.fleet, fleetRole: route.role };
+}
 
 /**
  * WI-38349 — the pid anchor for locating a session's REAL `CLAUDE_CONFIG_DIR`.
@@ -567,6 +587,10 @@ export interface OrientResult {
    *  this field makes the disagreement LOUD instead of silently omitting the brief.
    *  Absent on the agreeing path. */
   presenceDrift?: { fleet: string; note: string };
+  /** EI-21239843876346650: present when post-compaction control recovery supplied a
+   *  fleet route that overrode the presence-derived self scope for this call. The
+   *  marker makes the widened `fleet:assignments` read explicit and auditable. */
+  recoveredFleetScope?: { fleet: string; role: string | null; note: string };
   /** Monitor-mode fleet DELTA (fleet-deltas-leader-primitives P-004): what changed
    *  in the fleet since this caller's last monitor orient, diffed server-side
    *  against the (owner, 'fleet:monitor') read cursor — the caller carries nothing.
@@ -829,6 +853,10 @@ export async function composeOrient(
   } | null>,
   /** EI-203907: handler-owned, memoized all-led-fleet summary read. */
   fleetSummariesFold?: OrientFleetSummariesFold,
+  /** EI-21239843876346650: post-compaction control-anchor fleet route. The handler
+   *  starts recovery before composeOrient and injects this promise so the first
+   *  assignments read cannot use a stale self-only scope. */
+  recoveredFleetScopeFold?: () => Promise<RecoveredFleetScope | null>,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // EI-18748795522559631: memory recall is independent of the roster, backlog,
@@ -912,6 +940,34 @@ export async function composeOrient(
       /* best-effort — never break orientation over a drift cross-check */
     }
   }
+  // EI-21239843876346650: a post-compaction successor can recover a durable fleet
+  // route after the live presence projection was resolved. That route is authoritative
+  // for THIS call's roster scope: the old self-only read made a live peer look absent
+  // and enabled a destructive false reclaim. Keep this await before the first
+  // fleet:assignments call, and disclose the widened scope in the core result.
+  let recoveredFleetMembership: RecoveredFleetScope | null = null;
+  let recoveredFleetScope: OrientResult['recoveredFleetScope'];
+  if (args.afterCompaction === true && recoveredFleetScopeFold) {
+    try {
+      const recovered = await recoveredFleetScopeFold();
+      if (recovered) {
+        recoveredFleetMembership = recovered;
+        effectiveFleetMembership = recovered;
+        recoveredFleetScope = {
+          fleet: recovered.fleetSlug,
+          role: recovered.fleetRole,
+          note:
+            `RECOVERED FLEET SCOPE: the post-compaction control anchor named fleet ` +
+            `'${recovered.fleetSlug}' (role '${recovered.fleetRole ?? 'unknown'}'). ` +
+            `Used fleet-scoped assignments for THIS call because the presence-derived ` +
+            `self scope may be stale; corroborate with fleet:assignments { fleet } / ` +
+            `fleet:status before acting on peer liveness.`,
+        };
+      }
+    } catch {
+      /* best-effort — preserve the presence-derived scope on recovery failure */
+    }
+  }
   // WI-3818: unconditional in BOTH modes (monitor's one fleet-related read) — a
   // hang here used to block the whole orient call. Degrades to a minimal
   // empty-roster shape (never throws) so downstream folds — already
@@ -919,7 +975,11 @@ export async function composeOrient(
   // empty-but-well-shaped roster instead of hanging past the deadline.
   const meResult = await withBoundedTimeout(
     call('fleet:assignments', {
-      ...(ownerId ? { agent: ownerId } : {}),
+      ...(recoveredFleetMembership
+        ? { fleet: recoveredFleetMembership.fleetSlug }
+        : ownerId
+          ? { agent: ownerId }
+          : {}),
       ...(args.harness ? { harness: args.harness } : {}),
     }),
     {
@@ -1233,6 +1293,7 @@ export async function composeOrient(
     ...(ownerPresent !== undefined ? { ownerPresent } : {}),
     // EI-18731216945970087: loud, never silent — see the presenceDriftCheck doc above.
     ...(presenceDrift !== undefined ? { presenceDrift } : {}),
+    ...(recoveredFleetScope !== undefined ? { recoveredFleetScope } : {}),
   };
 
   // ── leaderBrief fold (fleet-reliability-verification-2026-07-10 P-007): a MONITOR
@@ -2976,6 +3037,13 @@ export default defineTool({
             }
           })()
         : undefined;
+    // EI-21239843876346650: composeOrient must consume the recovered fleet route
+    // before its first assignments read, while the full recovery payload remains
+    // folded after composition as before. Reuse the already-bounded promise so this
+    // adds no second recovery build or independent timeout.
+    const recoveredFleetScopePromise = compactionRecoveryPromise
+      ? compactionRecoveryPromise.then((recovery) => extractRecoveredFleetScope(recovery?.control)).catch(() => null)
+      : undefined;
     const orientInnerCall = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
@@ -3074,6 +3142,7 @@ export default defineTool({
         }
       },
       fleetSummariesFold,
+      recoveredFleetScopePromise ? () => recoveredFleetScopePromise : undefined,
     );
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets

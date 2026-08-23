@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   composeOrient,
+  extractRecoveredFleetScope,
   orientServedDelta,
   orientRoleFolds,
   assembleOrientOutput,
@@ -162,6 +163,20 @@ describe('coord:orient args', () => {
     expect(recoveryAwait).toBeGreaterThan(composeStart);
   });
 
+  it('derives the recovered fleet scope before composeOrient and awaits it before assignments', () => {
+    const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
+    const recoveredScopePromiseStart = source.indexOf('const recoveredFleetScopePromise =');
+    const composeCallStart = source.indexOf('const result = await composeOrient(');
+    const composeDefinitionStart = source.indexOf('export async function composeOrient(');
+    const recoveredScopeAwait = source.indexOf('const recovered = await recoveredFleetScopeFold();', composeDefinitionStart);
+    const assignmentsRead = source.indexOf("call('fleet:assignments',", composeDefinitionStart);
+
+    expect(recoveredScopePromiseStart).toBeGreaterThanOrEqual(0);
+    expect(composeCallStart).toBeGreaterThan(recoveredScopePromiseStart);
+    expect(recoveredScopeAwait).toBeGreaterThanOrEqual(0);
+    expect(assignmentsRead).toBeGreaterThan(recoveredScopeAwait);
+  });
+
   it('does not retain the ambient workspace transaction across coordination folds', () => {
     expect((orientTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
@@ -227,6 +242,63 @@ describe('coord:orient args', () => {
         ).toBe(true);
       }
     }
+  });
+});
+
+describe('EI-21239843876346650 recovered fleet scope', () => {
+  it('extracts only a fleet route from the typed control anchor', () => {
+    expect(
+      extractRecoveredFleetScope({
+        state: { route: { kind: 'fleet', fleet: 'orch-unify', role: 'leader' } },
+      }),
+    ).toEqual({ fleetSlug: 'orch-unify', fleetRole: 'leader' });
+    expect(
+      extractRecoveredFleetScope({
+        state: { route: { kind: 'self' } },
+      }),
+    ).toBeNull();
+    expect(extractRecoveredFleetScope(null)).toBeNull();
+  });
+
+  it('waits for the recovered route, reads the fleet, and discloses the widened scope', async () => {
+    let resolveScope!: (scope: { fleetSlug: string; fleetRole: string | null }) => void;
+    const scopePromise = new Promise<{ fleetSlug: string; fleetRole: string | null }>((resolve) => {
+      resolveScope = resolve;
+    });
+    const { call, calls } = fakeCall({ ...CORE });
+    const pending = composeOrient(
+      { afterCompaction: true },
+      call,
+      'member',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { fleetSlug: null, fleetRole: null },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => scopePromise,
+    );
+
+    await Promise.resolve();
+    expect(calls.some((entry) => entry.name === 'fleet:assignments')).toBe(false);
+
+    resolveScope({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+    const result = await pending;
+    const assignments = calls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignments?.args).toMatchObject({ fleet: 'orch-unify' });
+    expect(assignments?.args).not.toHaveProperty('agent');
+    expect(result.recoveredFleetScope).toMatchObject({
+      fleet: 'orch-unify',
+      role: 'member',
+      note: expect.stringContaining('RECOVERED FLEET SCOPE'),
+    });
   });
 });
 
