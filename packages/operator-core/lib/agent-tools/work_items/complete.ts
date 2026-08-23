@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { HARVESTED_COORD_NOTES_RULE } from '../../harness/improvements/observation-title-guidance';
@@ -68,8 +68,13 @@ import {
   type CompletionCoverage,
   type CompletionRecord,
   type CompletionVerificationEvidence,
-  type CompletionTreeStamp,
 } from '../../coord-lifecycle/records';
+import { completionTreeStamp, completionTreeStampForEvidence } from './completion-freshness';
+export { completionTreeStamp, completionTreeStampForEvidence };
+export type {
+  CompletionTreeStampProbe,
+  CompletionTreeStampForEvidenceProbe,
+} from './completion-freshness';
 import { isBackedLiveDroveUiClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
 import {
   liveDriveAcceptanceGap,
@@ -1057,169 +1062,6 @@ export function prescribedRecurrenceGuardCoverageGap(
   const explicitWaiver = parts.some((part) => EXPLICIT_GUARD_WAIVER_RE.test(part));
   if (pointsToGuard || pointsToAddedTest || explicitWaiver) return undefined;
   return { prescriptions };
-}
-
-/** Injected reads for {@link completionTreeStamp}, so it is unit-testable with no real tree. */
-export interface CompletionTreeStampProbe {
-  repoRoot?: string | null;
-  /** Returns file contents, or undefined when the path does not exist / cannot be read. */
-  readFile?: (absPath: string) => string | undefined;
-}
-
-const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
-
-/**
- * EI-18682004530991057 (proposal 3): stamp the completion with the commit its
- * verification was observed against.
- *
- * WHY THE SERVER READS IT INSTEAD OF ASKING THE CALLER. `testResult: "172 passed"`
- * names no particular code. Every agent here edits ONE shared working tree, so an
- * unstamped result cannot be told apart from one describing an older revision or a
- * tree a peer was mid-edit in. Measured live 2026-08-12 on the sibling item
- * EI-20275701671571753: an agent measured a prompt-weight breach of 1604 against a
- * DIRTY tree holding a half-finished peer edit and filed it as a fleet-blocking gate
- * red. Neither the pre-edit (1336) nor post-edit (1478) state can produce 1604 — the
- * number described a transient that was never committed and never existed for anyone
- * else. A stamped measurement is self-evidently anchored (or self-evidently not).
- *
- * And it is stamped rather than requested because a caller-supplied sha is a
- * testimonial about the very claim under review, filled in last, from memory —
- * exactly how `filesChanged` came to carry 8 fabricated paths out of 12
- * (EI-20093150500083378). Observed beats attested.
- *
- * ⚠ SPAWN-FREE BY CONSTRUCTION — do not "simplify" this to `git rev-parse HEAD`.
- * EI-18808838427010743 (open, CRITICAL) measures every `git` spawn from the bg-host
- * as ~165ms of BLOCKED EVENT LOOP, because fork() from a multi-GB-RSS parent costs
- * ~40ms/GB in page-table copying — and that host's per-ref `git` loops already kill
- * peer sockets mid-transfer. work_items:complete is a fleet-wide hot path; adding a
- * fork to it would feed a known critical defect to save two file reads. This resolves
- * HEAD by reading the refs directly: at most `.git/HEAD` + one ref file, or
- * `packed-refs` when the loose ref has been packed away.
- *
- * FAIL-OPEN and SILENT, like every sibling check in this file (EI-24 record-and-warn):
- * returns undefined on no repo root, an unreadable/absent `.git`, a ref that does not
- * resolve, or anything not shaped like a sha. Absence records "not observed" — it must
- * never be read as "clean".
- *
- * PURE via the injected probe — unit-tested without touching a real tree.
- */
-export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): CompletionTreeStamp | undefined {
-  // `in` rather than `??`, for the same reason as unresolvedPathsInCompletion above:
-  // an EXPLICIT `repoRoot: null` means "do not guess", which differs from omitting it.
-  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
-  if (!repoRoot) return undefined;
-
-  const readFile =
-    probe.readFile ??
-    ((abs: string) => {
-      try {
-        return readFileSync(abs, 'utf8');
-      } catch {
-        return undefined;
-      }
-    });
-
-  try {
-    // Keep the owning checkout alongside the SHA. A SHA is only meaningful inside
-    // its repository's object database; this disambiguates a nested repo/submodule
-    // from the operator checkout without spawning git or relying on a caller claim.
-    const repositoryRoot = nodePath.resolve(repoRoot);
-    // `.git` is a DIRECTORY in the main checkout, but a FILE holding `gitdir: <path>`
-    // in a worktree or submodule. This repo has both, so follow the indirection once
-    // rather than silently returning nothing in a worktree.
-    let gitDir = nodePath.join(repositoryRoot, '.git');
-    const dotGit = readFile(gitDir);
-    if (dotGit !== undefined) {
-      const pointed = /^gitdir:\s*(.+)$/m.exec(dotGit.trim())?.[1]?.trim();
-      if (!pointed) return undefined; // a readable `.git` FILE that is not a gitdir pointer
-      gitDir = nodePath.isAbsolute(pointed) ? pointed : nodePath.resolve(repositoryRoot, pointed);
-    }
-
-    const head = readFile(nodePath.join(gitDir, 'HEAD'))?.trim();
-    if (!head) return undefined;
-
-    // Detached HEAD: the sha sits in the file itself.
-    if (SHA_RE.test(head)) return { repositoryRoot, headSha: head };
-
-    const ref = /^ref:\s*(.+)$/.exec(head)?.[1]?.trim();
-    if (!ref) return undefined;
-
-    // Loose ref first; then packed-refs, where a ref lives once it has been packed.
-    const loose = readFile(nodePath.join(gitDir, ref))?.trim();
-    if (loose && SHA_RE.test(loose)) return { repositoryRoot, headSha: loose };
-
-    const packed = readFile(nodePath.join(gitDir, 'packed-refs'));
-    if (!packed) return undefined;
-    for (const line of packed.split('\n')) {
-      if (!line || line.startsWith('#') || line.startsWith('^')) continue;
-      const [sha, name] = line.trim().split(/\s+/, 2);
-      // Exact ref match only — a suffix/`includes` match would happily bind
-      // `refs/heads/staging` to `refs/remotes/origin/staging` and stamp the WRONG commit.
-      if (name === ref && sha && SHA_RE.test(sha)) return { repositoryRoot, headSha: sha };
-    }
-    return undefined;
-  } catch {
-    return undefined; // never let evidence-stamping fail a close
-  }
-}
-
-export interface CompletionTreeStampForEvidenceProbe {
-  /** Injectable path probe so repository selection stays pure in unit tests. */
-  exists?: (abs: string) => boolean;
-  /** Forwarded to completionTreeStamp after the owning repository is selected. */
-  readFile?: (abs: string) => string | undefined;
-}
-
-/**
- * Select the ONE registered checkout that owns this completion's declared files, then
- * stamp that checkout's HEAD. A completion coordinated through the Papercusp operator can
- * describe work in SideStage (or any other registered Hive); blindly stamping the server
- * checkout anchors valid evidence to an unrelated commit that cannot resolve in the repo
- * whose code was actually verified.
- *
- * Stable ties and an unresolvable declaration preserve the first/root checkout, matching
- * completionRepoRootsFromRegistry's backwards-compatible ordering. This remains spawn-free:
- * ownership uses bounded existsSync probes and HEAD resolution still reads git refs directly.
- */
-export function completionTreeStampForEvidence(
-  evidence: CompletionVerificationEvidence,
-  repoRoots: string[],
-  probe: CompletionTreeStampForEvidenceProbe = {},
-): CompletionTreeStamp | undefined {
-  const roots = [
-    ...new Set(
-      repoRoots
-        .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
-        .map((root) => nodePath.resolve(root)),
-    ),
-  ];
-  if (roots.length === 0) return undefined;
-
-  const exists = probe.exists ?? ((abs: string) => existsSync(abs));
-  const declared = (evidence.filesChanged ?? []).slice(0, MAX_PATHS_PROBED);
-  let selectedRoot = roots[0]!;
-  let selectedMatches = -1;
-
-  for (const repoRoot of roots) {
-    let matches = 0;
-    for (const raw of declared) {
-      const declaredPath = raw.trim();
-      if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
-      try {
-        const abs = nodePath.resolve(repoRoot, declaredPath);
-        if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
-        if (exists(abs)) matches += 1;
-      } catch {
-        // An unreadable candidate is not evidence that another checkout owns the file.
-      }
-    }
-    if (matches > selectedMatches) {
-      selectedRoot = repoRoot;
-      selectedMatches = matches;
-    }
-  }
-
-  return completionTreeStamp({ repoRoot: selectedRoot, readFile: probe.readFile });
 }
 
 /**

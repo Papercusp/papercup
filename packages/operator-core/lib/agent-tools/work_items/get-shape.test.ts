@@ -214,6 +214,26 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect((open.results[0].workItem as Record<string, unknown>).completionAuthority).toBeUndefined();
   });
 
+  it('preserves terminal completion freshness in normal and exact-read fallback shapes', () => {
+    const completionFreshness = {
+      verdict: 'stale',
+      storedTreeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) },
+      currentTreeStamp: { repositoryRoot: '/repo', headSha: 'b'.repeat(40) },
+      reason: 're-verify',
+    };
+    const normal = shapeWorkItemsGet(
+      envelope([row({ completionFreshness })]),
+      'trimmed',
+    ) as Envelope;
+    expect(normal.results[0].completionFreshness).toEqual(completionFreshness);
+
+    const compact = shapeWorkItemsGet(
+      envelope([row({ checkpoint: 'C'.repeat(40_000), completionFreshness })]),
+      'trimmed',
+    ) as Envelope;
+    expect(compact.results[0].completionFreshness).toEqual(completionFreshness);
+  });
+
   it("caps lifecycle events but NEVER drops the coverage/flags that qualify them", () => {
     const events = Array.from({ length: 30 }, (_, i) => ({ at: `t${i}`, kind: "blocked" }));
     const out = shapeWorkItemsGet(

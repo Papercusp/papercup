@@ -52,6 +52,11 @@ vi.mock('../../work-item-prior-work', async (importOriginal) => ({
   getClaimTimePriorWorkHint: (...a: unknown[]) => getClaimTimePriorWorkHint(...a),
 }));
 
+const completionFreshnessForEvidence = vi.fn();
+vi.mock('./completion-freshness', () => ({
+  completionFreshnessForEvidence: (...a: unknown[]) => completionFreshnessForEvidence(...a),
+}));
+
 import get from './get';
 import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks } from '../../carry-note';
 
@@ -83,9 +88,37 @@ beforeEach(() => {
   getPresence.mockResolvedValue(null);
   getClaimTimePriorWorkHint.mockReset();
   getClaimTimePriorWorkHint.mockResolvedValue(null);
+  completionFreshnessForEvidence.mockReset().mockReturnValue(undefined);
 });
 
 describe('work_items:get — checkpoint field', () => {
+  it('surfaces the terminal completion freshness verdict from the read-side detector', async () => {
+    const evidence = {
+      treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) },
+    };
+    const completionFreshness = {
+      verdict: 'stale',
+      storedTreeStamp: evidence.treeStamp,
+      currentTreeStamp: { repositoryRoot: '/repo', headSha: 'b'.repeat(40) },
+      reason: 'peer advanced HEAD',
+    };
+    getWorkItem.mockResolvedValue({
+      id: 'WI-completion-freshness',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'terminal item',
+      state: 'done',
+      terminalCompletionEvidence: evidence,
+    });
+    completionFreshnessForEvidence.mockReturnValue(completionFreshness);
+
+    const r = await one({ id: 'WI-completion-freshness' });
+
+    expect(completionFreshnessForEvidence).toHaveBeenCalledWith(evidence);
+    expect(r.completionFreshness).toEqual(completionFreshness);
+  });
+
   it('surfaces an existing checkpoint + its age, keyed by the resolved work-item harness/id', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
     const updatedAtMs = Date.now() - 5000;

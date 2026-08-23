@@ -35,6 +35,7 @@ import { activeWorkspaceId } from "../../workspace-registry";
 import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../../agent-facts/cited-facts";
 import { shapeWorkItemsGet } from "./get-shape";
 import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks } from '../../carry-note';
+import { completionFreshnessForEvidence } from './completion-freshness';
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -362,6 +363,11 @@ export default defineTool({
           SETTLED_WORK_ITEM_STATES.includes((workItem.state ?? '').toLowerCase()) &&
           workItem.terminalCompletionEvidence != null;
         const priorWorkWarn = completionSupersedesClearedCheckpoint ? null : priorWorkWarning(priorWork);
+        // EI-21259433290500193: a terminal completion's close-time tree stamp can
+        // become stale when a peer advances the shared checkout. Compare against
+        // the current HEAD on the read path; the helper is fail-soft so a local
+        // filesystem/read problem never makes work_items:get fail.
+        const completionFreshness = completionFreshnessForEvidence(workItem.terminalCompletionEvidence);
         // EI-19397599078921465: the unified lifecycle history — "what actually happened to
         // this item". The filing that produced this believed the history did not exist; it
         // did, spread across audit_log + payload.reopenHistory + payload flags with nothing
@@ -461,6 +467,7 @@ export default defineTool({
           // between "never written" and "could not ask". Absent on the ordinary path.
           ...(checkpointReadFailed ? { checkpointReadFailed: true as const } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
+          ...(completionFreshness ? { completionFreshness } : {}),
           ...(checkpointFreshness ? { checkpointFreshness } : {}),
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),

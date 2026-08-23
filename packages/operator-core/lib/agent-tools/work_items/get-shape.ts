@@ -346,6 +346,7 @@ function compactSingleRow(
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+    ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
     ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
@@ -590,6 +591,7 @@ function projectRow(
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
+    ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     // Verdicts ABOUT the checkpoint — small, and each one changes how the
     // checkpoint above should be read. Kept whole.
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
