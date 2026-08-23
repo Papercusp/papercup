@@ -98,64 +98,64 @@ describe('boot pending-retry loop (D-006)', () => {
     };
   }
 
-  it(
-    "a 'pending' peer is NOT admitted on first announce, IS admitted after retry flips to 'verified'",
-    async () => {
-      // Binding starts 'pending', flips to 'verified' on the second call.
-      let callCount = 0;
-      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
-        callCount++;
-        return callCount === 1 ? 'pending' : 'verified';
-      };
+  it("a 'pending' peer is NOT admitted on first announce, IS admitted after retry flips to 'verified'", async () => {
+    // Binding starts 'pending', flips to 'verified' on the second call.
+    // Retry timer captured (as in every sibling case) so admission is asserted
+    // once the retry pass has demonstrably run, rather than once a wall-clock
+    // poll happens to outlast it — the load-sensitive shape of EI-21245999997944088.
+    const retryTimer = capturePendingRetryTimer();
+    let callCount = 0;
+    const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
+      callCount++;
+      return callCount === 1 ? 'pending' : 'verified';
+    };
 
-      const handle = await bootHarnessSubstrate({
-        workspaceRoot: tmpDir('mb-pend-retry-'),
-        workspaceId: 'ws-pend-1',
-        harnessSlug: 'pend-1',
-        mergePollMs: 0,
-        pendingRetryMs: 20, // fast retry for test
-        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
-        verifyBindingOverride,
-      });
-      cleanups.push(() => handle.close());
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-pend-retry-'),
+      workspaceId: 'ws-pend-1',
+      harnessSlug: 'pend-1',
+      mergePollMs: 0,
+      pendingRetryMs: 20, // fast retry for test
+      pendingRetrySetTimeout: retryTimer.setTimeout,
+      pendingRetryClearTimeout: retryTimer.clearTimeout,
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
+      verifyBindingOverride,
+    });
+    cleanups.push(() => handle.close());
 
-      const logCoreKey = 'aa'.repeat(32);
-      const frame = await validAnnounce(logCoreKey);
+    const logCoreKey = 'aa'.repeat(32);
+    const frame = await validAnnounce(logCoreKey);
 
-      // First announce: binding returns 'pending' → NOT admitted.
-      const decision = await handle.onAnnounce(frame);
-      expect(decision).toEqual({ admit: false, reason: 'pending' });
-      expect(handle.admitted.has(logCoreKey)).toBe(false);
+    // First announce: binding returns 'pending' → NOT admitted.
+    const decision = await handle.onAnnounce(frame);
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
 
-      // Verify the announce_pending boot-history event was recorded.
-      const pendingEvents = listBootHistory({
-        workspaceId: 'ws-pend-1',
-        harnessSlug: 'pend-1',
-        kinds: ['announce_pending'],
-        limit: 5,
-      });
-      expect(pendingEvents.length).toBeGreaterThan(0);
+    // Verify the announce_pending boot-history event was recorded.
+    const pendingEvents = listBootHistory({
+      workspaceId: 'ws-pend-1',
+      harnessSlug: 'pend-1',
+      kinds: ['announce_pending'],
+      limit: 5,
+    });
+    expect(pendingEvents.length).toBeGreaterThan(0);
 
-      // The retry timer fires (pendingRetryMs=20ms). Once it runs, the binding
-      // flips to 'verified' and the peer is admitted. Poll with a generous timeout.
-      const admitted = await pollUntil(
-        () => handle.admitted.has(logCoreKey),
-        { timeoutMs: 2000, intervalMs: 30 },
-      );
-      expect(admitted, 'peer should be admitted after pending-retry').toBeTruthy();
-      expect(handle.admitted.has(logCoreKey)).toBe(true);
+    // Drive exactly one retry pass: the binding now answers 'verified'.
+    await retryTimer.run();
+    expect(callCount).toBeGreaterThan(1);
+    expect(handle.admitted.has(logCoreKey), 'peer should be admitted after pending-retry').toBe(
+      true,
+    );
 
-      // Verify the announce_admitted boot-history event was recorded.
-      const admittedEvents = listBootHistory({
-        workspaceId: 'ws-pend-1',
-        harnessSlug: 'pend-1',
-        kinds: ['announce_admitted'],
-        limit: 5,
-      });
-      expect(admittedEvents.length).toBeGreaterThan(0);
-    },
-    5000,
-  );
+    // Verify the announce_admitted boot-history event was recorded.
+    const admittedEvents = listBootHistory({
+      workspaceId: 'ws-pend-1',
+      harnessSlug: 'pend-1',
+      kinds: ['announce_admitted'],
+      limit: 5,
+    });
+    expect(admittedEvents.length).toBeGreaterThan(0);
+  });
 
   it('bounds each pending-retry pass and round-robins across pending peers', async () => {
     const retryTimer = capturePendingRetryTimer();
@@ -260,54 +260,60 @@ describe('boot pending-retry loop (D-006)', () => {
     }
   });
 
-  it(
-    "a 'fail' peer (after initial 'pending') is never admitted",
-    async () => {
-      // Binding starts 'pending', then flips to 'fail' on retry.
-      let callCount = 0;
-      const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
-        callCount++;
-        return callCount === 1 ? 'pending' : 'fail';
-      };
+  it("a 'fail' peer (after initial 'pending') is never admitted", async () => {
+    // Binding starts 'pending', then flips to 'fail' on retry.
+    // The retry timer is CAPTURED (as in every sibling case above) rather than
+    // left real: driving the pass explicitly makes the assertion depend on the
+    // retry having run, not on a wall-clock sleep outlasting it. The previous
+    // form armed a real 20ms timer, slept a real 200ms, and asserted — which
+    // holds on an idle box but not on a loaded one, where the sleep and the
+    // substrate boot dilate together and the case times out (EI-21245999997944088).
+    const retryTimer = capturePendingRetryTimer();
+    let callCount = 0;
+    const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
+      callCount++;
+      return callCount === 1 ? 'pending' : 'fail';
+    };
 
-      const handle = await bootHarnessSubstrate({
-        workspaceRoot: tmpDir('mb-pend-fail-'),
-        workspaceId: 'ws-pend-2',
-        harnessSlug: 'pend-2',
-        mergePollMs: 0,
-        pendingRetryMs: 20,
-        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
-        verifyBindingOverride,
-      });
-      cleanups.push(() => handle.close());
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-pend-fail-'),
+      workspaceId: 'ws-pend-2',
+      harnessSlug: 'pend-2',
+      mergePollMs: 0,
+      pendingRetryMs: 20,
+      pendingRetrySetTimeout: retryTimer.setTimeout,
+      pendingRetryClearTimeout: retryTimer.clearTimeout,
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
+      verifyBindingOverride,
+    });
+    cleanups.push(() => handle.close());
 
-      const logCoreKey = 'bb'.repeat(32);
-      const frame = await validAnnounce(logCoreKey);
+    const logCoreKey = 'bb'.repeat(32);
+    const frame = await validAnnounce(logCoreKey);
 
-      // First announce: 'pending' → not admitted.
-      const decision = await handle.onAnnounce(frame);
-      expect(decision).toEqual({ admit: false, reason: 'pending' });
-      expect(handle.admitted.has(logCoreKey)).toBe(false);
+    // First announce: 'pending' → not admitted.
+    const decision = await handle.onAnnounce(frame);
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
 
-      // Wait for the retry to fire and conclusively fail.
-      await new Promise((r) => setTimeout(r, 200));
+    // Drive exactly one retry pass: the binding now answers 'fail'.
+    await retryTimer.run();
+    expect(callCount).toBeGreaterThan(1);
 
-      // Peer was definitively rejected — announced_rejected should be recorded.
-      const rejectedEvents = listBootHistory({
-        workspaceId: 'ws-pend-2',
-        harnessSlug: 'pend-2',
-        kinds: ['announce_rejected'],
-        limit: 5,
-      });
-      expect(rejectedEvents.length).toBeGreaterThan(0);
+    // Peer was definitively rejected — announced_rejected should be recorded.
+    const rejectedEvents = listBootHistory({
+      workspaceId: 'ws-pend-2',
+      harnessSlug: 'pend-2',
+      kinds: ['announce_rejected'],
+      limit: 5,
+    });
+    expect(rejectedEvents.length).toBeGreaterThan(0);
 
-      // Never admitted.
-      expect(handle.admitted.has(logCoreKey)).toBe(false);
-      // Only own log in admitted set.
-      expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
-    },
-    3000,
-  );
+    // Never admitted.
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
+    // Only own log in admitted set.
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+  });
 
   it(
     'verifyAnnounce: a stale frame (ts 6 min old) passes when nowMs is anchored to arrival time',
