@@ -20,9 +20,11 @@ import type { AgentIdentity } from '../coordination/identity';
 import { shouldDemotePriorLeader } from './_shared';
 import {
   ensureFleetLeaderControl,
+  resolveFleetLeaderTransitionEventKeys,
   retireFleetLeaderWatches,
   type LeaderControlOutcome,
 } from './leader-control';
+import { clearOperatorCancelledAwaits } from '../../events/await/store';
 
 /** P-009: the outcome of the become-a-leader compaction-cap re-seed (below). */
 export interface LeaderReseedOutcome {

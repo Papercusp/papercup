@@ -93,13 +93,18 @@ export default defineTool({
           const cancelled = await cancelAwait({
             awaitId: item.await_id,
             subscriberId: identity.ownerId,
+            source: 'operator',
           });
           out.await_id = item.await_id;
           out.cancelled = cancelled;
           if (!cancelled) out.ok = false;
         }
         if (item.root_id != null) {
-          const cancelled = await cancelComposedTree({ rootId: item.root_id, subscriberId: identity.ownerId });
+          const cancelled = await cancelComposedTree({
+            rootId: item.root_id,
+            subscriberId: identity.ownerId,
+            source: 'operator',
+          });
           out.root_id = item.root_id;
           out.cancelled = cancelled;
           if (!cancelled) out.ok = false;

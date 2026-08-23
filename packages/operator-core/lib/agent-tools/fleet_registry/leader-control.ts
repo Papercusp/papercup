@@ -17,7 +17,13 @@ import {
   type LoopStatus,
   type PriorLoopFacts,
 } from '../../harness/routines/loop';
-import { cancelAwait, listActiveAwaits, registerAwait, retireLifecycleBoundWatches } from '../../events/await/store';
+import {
+  cancelAwait,
+  listActiveAwaits,
+  listOperatorCancelledAwaits,
+  registerAwait,
+  retireLifecycleBoundWatches,
+} from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import {
@@ -209,6 +215,8 @@ export interface LeaderControlOutcome {
     cap: number;
     capped: boolean;
     omitted: string[];
+    /** Concrete profile keys deliberately canceled through events:cancel. */
+    suppressed: string[];
     wakeReachable: boolean;
     handleNote: string | null;
     cancel: { tool: 'events:cancel'; args: { await_ids: number[] } } | null;
@@ -408,6 +416,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     cap: LEADER_PROFILE_AUTO_ARM_CAP,
     capped: false,
     omitted: [] as string[],
+    suppressed: [] as string[],
     wakeReachable: false,
     handleNote: null as string | null,
     cancel: null,
@@ -456,6 +465,26 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     watches.capped = resolution.omitted.length > 0;
     watches.omitted = resolution.omitted.map((target) => target.label);
 
+    // An explicit events:cancel is an operator decision, not a stale row for
+    // reconciliation to repair. Only concrete event keys are suppressible;
+    // predicate watches have no stable profile key to honor here.
+    const suppressedEventKeys = new Set(
+      (
+        await listOperatorCancelledAwaits(
+          input.ownerId,
+          resolution.targets
+            .filter((target): target is Extract<LeaderAutoArmTarget, { kind: 'event' }> => target.kind === 'event')
+            .map((target) => target.eventKey),
+        )
+      ).map((row) => row.eventKey),
+    );
+    watches.suppressed = resolution.targets
+      .filter(
+        (target): target is Extract<LeaderAutoArmTarget, { kind: 'event' }> =>
+          target.kind === 'event' && suppressedEventKeys.has(target.eventKey),
+      )
+      .map((target) => target.label);
+
     const current = await listActiveAwaits(input.ownerId);
     const { handle, note } = await captureWakeHandleForOwner(input.ownerId);
     watches.handleNote = note;
@@ -464,6 +493,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     const cancelledAwaitIds = new Set<number>();
 
     for (const target of resolution.targets) {
+      if (target.kind === 'event' && suppressedEventKeys.has(target.eventKey)) continue;
       let eventKey: string;
       let predicateExists = true;
       if (target.kind === 'event') {
@@ -572,8 +602,9 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
       watches.awaitIds.length > 0
         ? { tool: 'events:cancel', args: { await_ids: [...watches.awaitIds] } }
         : null;
-    watches.healthy = watches.active.length === watches.expected.length && watches.wakeReachable;
-    if (!watches.wakeReachable) {
+    const profileSatisfied = watches.active.length + watches.suppressed.length === watches.expected.length;
+    watches.healthy = profileSatisfied && (watches.suppressed.length > 0 || watches.wakeReachable);
+    if (!watches.wakeReachable && watches.suppressed.length < watches.expected.length) {
       watches.error = 'transition watches are registered but no resumable wake handle is available yet';
       errors.push(`watches: ${watches.error}`);
     }

@@ -95,6 +95,7 @@ function mapAwait(r: any): AwaitRow {
     firedAt: r.fired_at ? new Date(r.fired_at).toISOString() : null,
     firedReason: r.fired_reason ?? null,
     cancelledAt: r.cancelled_at ? new Date(r.cancelled_at).toISOString() : null,
+    cancelReason: r.cancel_reason ?? null,
     once: r.once ?? true,
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     urgency: r.urgency ?? false,
@@ -527,19 +528,91 @@ export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number>
   return rows.length;
 }
 
-/** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's). */
-export async function cancelAwait(input: { awaitId: number; subscriberId: string }): Promise<boolean> {
+export type AwaitCancellationSource = 'operator';
+
+/** A user cancellation marker that suppresses a later auto-arm re-registration. */
+export interface OperatorCancelledAwait {
+  id: number;
+  subscriberId: string;
+  eventKey: string;
+  cancelledAt: string;
+}
+
+/** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's).
+ * `source:'operator'` is reserved for the explicit events:cancel surface;
+ * internal cleanup callers intentionally omit it and do not create a suppression. */
+export async function cancelAwait(input: {
+  awaitId: number;
+  subscriberId: string;
+  source?: AwaitCancellationSource;
+}): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const cancelReason = input.source === 'operator' ? 'operator' : null;
   const rows = await sql`
     UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
+       SET cancelled_at = now(), cancel_reason = ${cancelReason}
      WHERE workspace_id = ${ws} AND id = ${input.awaitId}
        AND subscriber_id = ${input.subscriberId}
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
   return rows.length > 0;
+}
+
+/**
+ * Read explicit operator cancellations for exact subscriber/key pairs. These
+ * rows are historical markers, not active awaits; callers use the result only
+ * to avoid silently re-arming a watch the operator deliberately retracted.
+ */
+export async function listOperatorCancelledAwaits(
+  subscriberId: string,
+  eventKeys: readonly string[],
+): Promise<OperatorCancelledAwait[]> {
+  const keys = [...new Set(eventKeys.map((key) => key.trim()).filter(Boolean))];
+  if (keys.length === 0) return [];
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT id, subscriber_id, event_key, cancelled_at
+      FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND event_key = ANY(${sql.array(keys)}::text[])
+       AND cancelled_at IS NOT NULL
+       AND cancel_reason = 'operator'
+     ORDER BY cancelled_at DESC, id DESC
+  `;
+  return rows.map((row: any) => ({
+    id: Number(row.id),
+    subscriberId: row.subscriber_id,
+    eventKey: row.event_key,
+    cancelledAt: new Date(row.cancelled_at).toISOString(),
+  }));
+}
+
+/** Clear only explicit operator-cancellation markers for exact keys. The
+ * canceled rows remain history; clearing the marker permits leader control to
+ * register a fresh standing await on its next reconciliation. */
+export async function clearOperatorCancelledAwaits(
+  subscriberId: string,
+  eventKeys: readonly string[],
+): Promise<number> {
+  const keys = [...new Set(eventKeys.map((key) => key.trim()).filter(Boolean))];
+  if (keys.length === 0) return 0;
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET cancel_reason = NULL
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND event_key = ANY(${sql.array(keys)}::text[])
+       AND cancelled_at IS NOT NULL
+       AND cancel_reason = 'operator'
+    RETURNING id
+  `;
+  return rows.length;
 }
 
 /** Active awaits for a subscriber (events:status). */
