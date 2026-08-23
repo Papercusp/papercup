@@ -613,6 +613,11 @@ export function isPaletteUiPollRead(input: {
 }
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
+  // Keep the settle-time beat as a fallback for transport failures that happen
+  // before the generic dispatcher can initialize its execution state and invoke
+  // onDispatchStart. The shared throttle makes the normal start + settle pair
+  // cheap while preserving the pre-dispatch liveness path.
+  maybeBeatPresenceOnDispatch(input.ctx);
   // EI-2112: a pure UI poll-READ from the command-palette bridge (the desktop
   // dock's wake-board refresh tick, spawn_id='palette') is UI refresh, not agent
   // activity — it was 74.5% of the whole tool_invocations table. Drop it from
