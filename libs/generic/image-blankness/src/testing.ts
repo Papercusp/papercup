@@ -59,21 +59,41 @@ export function encodePng(
   const colorType = opts.colorType ?? 2;
   const bitDepth = opts.bitDepth ?? 8;
   const channels = CHANNELS_BY_COLOR_TYPE[colorType] ?? 3;
-  const stride = width * channels;
+  const samplesPerRow = width * channels;
   const filter = opts.filter ?? 0;
 
+  // Sub-byte depths (1/2/4) PACK several samples into each byte. `samples` is always one
+  // ENTRY per sample regardless of depth — the caller passes logical values and this packs
+  // them — so a 1-bit grayscale image can be produced here at all. Without packing, the
+  // IHDR would claim 1 bit per pixel while the data carried 8, and every decoder would read
+  // garbage from the second pixel on.
+  const stride = Math.ceil((samplesPerRow * bitDepth) / 8);
+  const packRow = (y: number): Uint8Array => {
+    const row = new Uint8Array(stride);
+    if (bitDepth === 8) {
+      for (let i = 0; i < samplesPerRow; i += 1) row[i] = samples[y * samplesPerRow + i];
+      return row;
+    }
+    const perByte = 8 / bitDepth;
+    const max = (1 << bitDepth) - 1;
+    for (let i = 0; i < samplesPerRow; i += 1) {
+      const value = samples[y * samplesPerRow + i] & max;
+      const shift = 8 - bitDepth * ((i % perByte) + 1);
+      row[Math.floor(i / perByte)] |= value << shift;
+    }
+    return row;
+  };
+
   const raw = Buffer.alloc(height * (stride + 1));
+  let previous = new Uint8Array(stride);
   for (let y = 0; y < height; y += 1) {
+    const row = packRow(y);
     raw[y * (stride + 1)] = filter;
     for (let i = 0; i < stride; i += 1) {
-      const value = samples[y * stride + i];
-      if (filter === 2) {
-        const above = y === 0 ? 0 : samples[(y - 1) * stride + i];
-        raw[y * (stride + 1) + 1 + i] = (value - above) & 0xff;
-      } else {
-        raw[y * (stride + 1) + 1 + i] = value;
-      }
+      // The Up filter is defined over the PACKED bytes, not the logical samples.
+      raw[y * (stride + 1) + 1 + i] = filter === 2 ? (row[i] - previous[i]) & 0xff : row[i];
     }
+    previous = row;
   }
 
   const ihdr = Buffer.alloc(13);

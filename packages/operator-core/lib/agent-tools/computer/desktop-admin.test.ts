@@ -12,6 +12,7 @@ import {
   leasedHiveDesktops,
 } from './desktop-lease';
 import type { ProvisionOptions, SandboxDesktop } from './desktop-provisioner';
+import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
 import provisionTool from './provision-desktop';
 import releaseTool from './release-desktop';
 import listTool from './list-desktops';
@@ -36,6 +37,8 @@ function fakeProvisioner() {
       number: Number(display.slice(1)),
       width: opts?.width ?? 1024,
       height: opts?.height ?? 768,
+      // No live X server here, so no GL was measured — the honest zero value.
+      gl: NO_GL_STRATEGY,
       release: async () => {},
     };
     return d;

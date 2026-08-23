@@ -17,10 +17,20 @@ import {
   __setProvisionerForTests,
   __resetProvisioner,
 } from './desktop-lease';
+import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
 
 /** A fake leased desktop on a sandbox display — no live Xvfb. */
 function fakeLease(display: string, width = 1024, height = 768) {
-  return { display, number: Number(display.slice(1)), width, height, release: async () => {} };
+  // gl: NO_GL_STRATEGY — a fixture with no live X server has measured no GL, and saying so
+  // is the honest value. These tests assert display resolution, not rendering.
+  return {
+    display,
+    number: Number(display.slice(1)),
+    width,
+    height,
+    gl: NO_GL_STRATEGY,
+    release: async () => {},
+  };
 }
 
 /** A minimal valid PNG (magic + padding) so the capture passes the magic check. */

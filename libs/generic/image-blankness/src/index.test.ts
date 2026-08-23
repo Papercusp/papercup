@@ -157,3 +157,79 @@ describe('configureImageBlankness', () => {
     expect(analyzeImageBlankness(uiPng).verdict).toBe('has-content');
   });
 });
+
+/**
+ * Sub-byte GRAYSCALE PNGs (colour type 0, bit depth 1/2/4).
+ *
+ * Why this matters and is not exotic-format housekeeping: ImageMagick's `import ... png:-`
+ * — the command Papercusp's screen-capture path runs — chooses its encoding by CONTENT. A
+ * uniform frame comes back as 1-bit grayscale; the moment anything paints, it becomes 8-bit
+ * truecolour. Measured on a 1024x768 X display (2026-08-23):
+ *
+ *   blank grab   → color_type 0, bit_depth 1,   233 bytes,   1 colour
+ *   painted grab → color_type 2, bit_depth 8, 9,461 bytes, 376 colours
+ *
+ * So the BLANK capture is precisely the one that arrives sub-byte, and this decoder used to
+ * reject it as `undecodable`. Because `undecodable` deliberately resolves AWAY from `blank`,
+ * the guard failed open on exactly the input it exists to catch: a genuinely blank
+ * screenshot was accepted as evidence that a UI had been seen. Both directions are pinned
+ * below — that it now reads blank frames as blank, AND that it does not start calling
+ * detailed bilevel frames blank instead.
+ */
+describe('sub-byte grayscale (what a blank screen capture actually is)', () => {
+  /** One entry per pixel; `encodePng` packs them to the requested bit depth. */
+  const graySamples = (w: number, h: number, at: (x: number, y: number) => number): Uint8Array => {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y += 1) for (let x = 0; x < w; x += 1) out[y * w + x] = at(x, y);
+    return out;
+  };
+
+  it('decodes a 1-bit grayscale frame instead of calling it undecodable', () => {
+    const png = encodePng(128, 64, graySamples(128, 64, () => 0), { colorType: 0, bitDepth: 1 });
+    const report = analyzeImageBlankness(png);
+    expect(report.verdict).not.toBe('undecodable');
+    expect(report.width).toBe(128);
+    expect(report.height).toBe(64);
+  });
+
+  it('judges an all-zero 1-bit frame BLANK — the failure mode this closes', () => {
+    const png = encodePng(128, 64, graySamples(128, 64, () => 0), { colorType: 0, bitDepth: 1 });
+    expect(analyzeImageBlankness(png).verdict).toBe('blank');
+  });
+
+  it('judges a 1-bit frame with real structure as content, NOT a false blank', () => {
+    // The control for the SCALING half of the fix. A 1-bit sample is 0 or 1; unscaled, two
+    // adjacent pixels differ by a luma of 1 — under the edge threshold — so a bilevel frame
+    // FULL of edges would be reported blank. That is a false `blank`, the only verdict
+    // callers act on by rejecting evidence, so it is the expensive direction to be wrong in.
+    const png = encodePng(128, 64, graySamples(128, 64, (x) => x % 2), { colorType: 0, bitDepth: 1 });
+    expect(analyzeImageBlankness(png).verdict).toBe('has-content');
+  });
+
+  it('scales sub-byte samples to full range so 1-bit white reads as white', () => {
+    const png = encodePng(128, 64, graySamples(128, 64, () => 1), { colorType: 0, bitDepth: 1 });
+    const decoded = decodePng(png);
+    expect(decoded).not.toBeNull();
+    // Unscaled this would be 1 — indistinguishable from black. Scaled, it is 255.
+    expect(decoded?.rgb[0]).toBe(255);
+  });
+
+  it('handles 2-bit and 4-bit grayscale too, at both ends of the range', () => {
+    for (const [bitDepth, max] of [
+      [2, 3],
+      [4, 15],
+    ] as const) {
+      const dark = encodePng(64, 64, graySamples(64, 64, () => 0), { colorType: 0, bitDepth });
+      const light = encodePng(64, 64, graySamples(64, 64, () => max), { colorType: 0, bitDepth });
+      expect(decodePng(dark)?.rgb[0], `depth ${bitDepth} min`).toBe(0);
+      expect(decodePng(light)?.rgb[0], `depth ${bitDepth} max`).toBe(255);
+      expect(analyzeImageBlankness(dark).verdict, `depth ${bitDepth} uniform`).toBe('blank');
+    }
+  });
+
+  it('still refuses bit depths the PNG spec does not allow for a colour type', () => {
+    // Truecolour has no legal 1-bit form. Widening grayscale must not have widened this.
+    const bogus = encodePng(64, 64, new Uint8Array(64 * 64 * 3), { colorType: 2, bitDepth: 1 });
+    expect(decodePng(bogus)).toBeNull();
+  });
+});

@@ -112,6 +112,39 @@ function readSample(line: Uint8Array, i: number, bitDepth: number): number {
 }
 
 /**
+ * Bit depths each colour type may legally use (PNG spec §11.2.2, table 11.1). Encoded as a
+ * table rather than an inline condition because getting it wrong is silent in BOTH
+ * directions: too strict and a legal PNG reports `undecodable`, too loose and a malformed
+ * header walks off the end of a scanline.
+ */
+const ALLOWED_BIT_DEPTHS: Readonly<Record<number, readonly number[]>> = Object.freeze({
+  0: [1, 2, 4, 8, 16], // grayscale
+  2: [8, 16], // truecolour
+  3: [1, 2, 4, 8], // palette
+  4: [8, 16], // grayscale + alpha
+  6: [8, 16], // truecolour + alpha
+});
+
+/**
+ * Scale a raw sample to the 0-255 range its colour value is judged in.
+ *
+ * REQUIRED for sub-byte depths, and the direction of the bug it fixes matters: a 1-bit
+ * grayscale sample is 0 or 1, so WITHOUT this a bilevel image carrying real content has an
+ * adjacent-pixel luma delta of 1 — far under the 8 that counts as an edge — and the whole
+ * frame is judged `blank`. That is a FALSE BLANK, the one verdict callers act on by
+ * rejecting evidence, so it is the most expensive direction to be wrong in.
+ *
+ * A no-op at depth 8 (already 0-255) and at 16 (readSample returns the high byte).
+ * Palette INDICES are deliberately not passed through here — they address PLTE entries and
+ * are not intensities.
+ */
+function scaleSample(value: number, bitDepth: number): number {
+  if (bitDepth >= 8) return value;
+  const max = (1 << bitDepth) - 1;
+  return Math.round((value * 255) / max);
+}
+
+/**
  * Decode a PNG to packed RGB, or return null when the file is not a PNG this reader
  * understands (interlaced, truncated, corrupt, or an unsupported depth/colour-type).
  */
@@ -154,8 +187,14 @@ export function decodePng(bytes: Uint8Array): DecodedPng | null {
 
   const channels = CHANNELS_BY_COLOR_TYPE[colorType];
   if (!channels) return null;
-  const subByteOk = colorType === 3 && (bitDepth === 1 || bitDepth === 2 || bitDepth === 4);
-  if (!subByteOk && bitDepth !== 8 && bitDepth !== 16) return null;
+  // Grayscale (type 0) at depths 1/2/4 is legal and is EXACTLY what a blank screen capture
+  // looks like: ImageMagick's `import ... png:-` picks its encoding by content, emitting
+  // 1-bit grayscale for a uniform frame and 8-bit truecolour once anything paints (measured
+  // 2026-08-23: a blank 1024x768 grab is 233 bytes, color_type 0 / bit_depth 1). Restricting
+  // sub-byte depths to palette images therefore made this decoder blind to precisely the
+  // input the blankness guard exists to judge — it answered `undecodable`, which by design
+  // resolves AWAY from `blank`, so the guard failed open on a genuinely blank capture.
+  if (!ALLOWED_BIT_DEPTHS[colorType]?.includes(bitDepth)) return null;
   if (colorType === 3 && !palette) return null;
 
   // Guard against a hostile/absurd header claiming a multi-gigapixel image.
@@ -190,19 +229,19 @@ export function decodePng(bytes: Uint8Array): DecodedPng | null {
         g = palette[p + 1];
         b = palette[p + 2];
       } else if (colorType === 0) {
-        r = g = b = readSample(line, x, bitDepth);
+        r = g = b = scaleSample(readSample(line, x, bitDepth), bitDepth);
       } else if (colorType === 4) {
-        r = g = b = readSample(line, x * 2, bitDepth);
-        alpha = readSample(line, x * 2 + 1, bitDepth);
+        r = g = b = scaleSample(readSample(line, x * 2, bitDepth), bitDepth);
+        alpha = scaleSample(readSample(line, x * 2 + 1, bitDepth), bitDepth);
       } else if (colorType === 2) {
-        r = readSample(line, x * 3, bitDepth);
-        g = readSample(line, x * 3 + 1, bitDepth);
-        b = readSample(line, x * 3 + 2, bitDepth);
+        r = scaleSample(readSample(line, x * 3, bitDepth), bitDepth);
+        g = scaleSample(readSample(line, x * 3 + 1, bitDepth), bitDepth);
+        b = scaleSample(readSample(line, x * 3 + 2, bitDepth), bitDepth);
       } else {
-        r = readSample(line, x * 4, bitDepth);
-        g = readSample(line, x * 4 + 1, bitDepth);
-        b = readSample(line, x * 4 + 2, bitDepth);
-        alpha = readSample(line, x * 4 + 3, bitDepth);
+        r = scaleSample(readSample(line, x * 4, bitDepth), bitDepth);
+        g = scaleSample(readSample(line, x * 4 + 1, bitDepth), bitDepth);
+        b = scaleSample(readSample(line, x * 4 + 2, bitDepth), bitDepth);
+        alpha = scaleSample(readSample(line, x * 4 + 3, bitDepth), bitDepth);
       }
       // Composite over black: a fully transparent capture is a blank capture.
       const o = (y * width + x) * 3;

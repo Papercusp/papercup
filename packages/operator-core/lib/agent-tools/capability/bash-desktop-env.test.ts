@@ -30,6 +30,7 @@ import {
   __setProvisionerForTests,
   __resetProvisioner,
 } from '../computer/desktop-lease';
+import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
 
 type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }> };
 const bash = bashTool as unknown as Tool;
@@ -54,6 +55,8 @@ function fakeLease(display: string) {
     number: Number(display.slice(1)),
     width: 1024,
     height: 768,
+    // No live X server here, so no GL was measured — the honest zero value.
+    gl: NO_GL_STRATEGY,
     release: async () => {},
   }));
 }

@@ -20,6 +20,7 @@
  * without a live frame.
  */
 import type { BlueprintEnvironment } from '@papercusp/orchestrator/blueprint';
+import { buildGlSelectScript, GL_APT_PACKAGES, GL_STRATEGY_ENV_PATH } from '../desktop/gl-strategy';
 import {
   buildDesktopCaptureScript,
   DESKTOP_CAPTURE_DIR,
@@ -202,12 +203,23 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     add('desktop', `Xvfb desktops (${desktop.displays} displays — D-001 one per agent slot)`, [
       // socat bridges x11vnc's localhost port to the SSH stdio (the VNC leg —
       // `-inetd` can't run over an SSH pipe; see frame-vnc.ts vncRemoteCommand).
-      'apt-get install -y --no-install-recommends xvfb openbox x11vnc xdotool ffmpeg x11-utils socat',
+      // GL_APT_PACKAGES is what makes the displays paint at all: a bare Xvfb with no mesa
+      // DRI driver gives GTK/WebKitGTK no usable context, so those apps render nothing and
+      // every capture below comes back blank regardless of the DOM
+      // (agent-insights/headless-desktop-testing-needs-gl). Frames are GPU-less, so the
+      // software rasterizer in libgl1-mesa-dri IS the working path here, not a fallback.
+      `apt-get install -y --no-install-recommends xvfb openbox x11vnc xdotool ffmpeg x11-utils socat ${GL_APT_PACKAGES.join(' ')}`,
       `mkdir -p /var/log/papercusp-desktop ${shq(DESKTOP_CAPTURE_DIR)}`,
       ...displayNumbers.flatMap((d) => [
         `( Xvfb :${d} -screen 0 ${shq(desktop.geometry)} -nolisten tcp >/var/log/papercusp-desktop/xvfb-${d}.log 2>&1 & )`,
         `( sleep 1; DISPLAY=:${d} openbox >/var/log/papercusp-desktop/openbox-${d}.log 2>&1 & )`,
       ]),
+      // Measure GL on the FIRST display once the servers are up and record it for the
+      // agent loop to source. One probe, not one per display: the pool is homogeneous
+      // (same host, same geometry, same Xvfb invocation), so probing each would pay N
+      // glxinfo runs to re-derive one answer.
+      'sleep 2',
+      buildGlSelectScript(`:${DESKTOP_DISPLAY_BASE}`),
       // The capture loop (P-005): latest-frame JPEG per ACTIVE display, written
       // atomically for the operator's viewer-driven SSH pull (D-003).
       `cat > ${shq(DESKTOP_CAPTURE_SCRIPT_PATH)} <<'PAPERCUSP_CAPTURE_EOF'`,
@@ -412,6 +424,13 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
         ? [
             `export PAPERCUSP_DESKTOP_DISPLAY_BASE=${DESKTOP_DISPLAY_BASE}`,
             `export PAPERCUSP_DESKTOP_DISPLAYS=${desktop.displays}`,
+            // Carry the MEASURED GL strategy into the loop's env, so an agent launching a
+            // GTK/WebKitGTK app on its leased display inherits the same wrapper + env the
+            // bootstrap proved works. Sourced (not re-derived) because the probe already
+            // ran above and re-probing per spawn would pay a glxinfo run on every launch.
+            // `[ -f ]`-guarded: a frame whose desktop section was skipped has no file, and
+            // sourcing a missing path under `set -u` would abort the whole loop start.
+            `[ -f ${shq(GL_STRATEGY_ENV_PATH)} ] && . ${shq(GL_STRATEGY_ENV_PATH)}`,
           ]
         : []),
       // P-008: the frame reads its per-install instance config from env (no config.json file).

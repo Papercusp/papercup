@@ -14,6 +14,7 @@ import {
   __resetProvisioner,
 } from './desktop-lease';
 import type { SandboxDesktop } from './desktop-provisioner';
+import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
 
 function fakeDesktop(n: number): SandboxDesktop & { released: () => number } {
   let releases = 0;
@@ -22,6 +23,8 @@ function fakeDesktop(n: number): SandboxDesktop & { released: () => number } {
     number: n,
     width: 1024,
     height: 768,
+    // No live X server here, so no GL was measured — the honest zero value.
+    gl: NO_GL_STRATEGY,
     release: async () => {
       releases += 1;
     },
