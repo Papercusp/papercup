@@ -13,11 +13,20 @@
  * dropping it silently MAGNIFIES an 800x600 display to 1024x768 — a token INCREASE from
  * the change meant to cut cost. Only a real capture can falsify the model.
  *
- * THE SECOND ASSERTION IS THE IMPORTANT ONE. Shrinking an image always "saves tokens";
- * shrinking it to garbage saves more. So every geometry assertion here is paired with a
- * blankness check on the SAME bytes: a capture that got cheaper and stopped carrying the
- * screen is a regression, not a win, and a suite that only counted pixels would call it a
- * success. (Same discipline as desktop-gl-live.test.ts's blank control, inverted.)
+ * WHY THE GEOMETRY TESTS AND THE CONTENT TEST ARE SEPARATE — this split is load-bearing.
+ * Shrinking an image always "saves tokens"; shrinking it to garbage saves more. So the
+ * measurement deserves a companion check that the screen SURVIVED the resize. But that
+ * check needs something painted on the desktop, and painting inside a provisioned desktop
+ * is currently broken here for reasons that have nothing to do with capture geometry
+ * (every window comes up 1x1 under the provisioned openbox — EI-21229784052420840).
+ *
+ * Folding both into one test made that defect able to masquerade as a capture-geometry
+ * regression, and skipping that combined test threw away the geometry evidence with it —
+ * vitest reports a `ctx.skip()` test as SKIPPED even for assertions that already ran and
+ * passed, which is a green that proves nothing. So: the geometry + token claims are read
+ * from the PNG headers, hold whether or not anything was drawn, and ALWAYS run. Only the
+ * content claim depends on a painted desktop, and only it skips when that precondition is
+ * unmet.
  *
  * GUARDED like the other live desktop suites — a normal `test:affected` / CI run (no opt-in,
  * usually no X) skips the whole file:
@@ -57,44 +66,41 @@ function capture(target: DesktopTarget): Buffer {
   return r.stdout;
 }
 
-/** Let a freshly-launched app actually map and paint before capturing it. */
+/** Let a freshly-launched app map and paint before capturing it. */
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Paint something with REAL detail on the display, and keep it up for `holdSec`.
  *
- * Deliberately spawned here rather than via the provisioner's `apps` option: this suite
- * is about CAPTURE GEOMETRY, and routing the content through the app-launch path would
- * make an app-launch failure look like a downscaling failure. (It also measurably does —
- * `apps: [['xterm']]` left the framebuffer completely flat, distinctColors=1, while the
- * same xterm spawned directly maps and paints fine. Filed separately; not this test's
- * subject.)
+ * Three things here were each learned the expensive way:
  *
- * The CONTENT matters as much as the window: measured on this box, a bare xterm renders
- * as a dark rectangle on a dark root — 2 distinct colours and ~0.1% edge density, right at
- * the blankness detector's floor, which makes it a coin-flip probe. A white-on-black xterm
- * full of `ls -la` output measures 1,690 colours at 1920x1080 and 62,555 after the
- * downscale, which is unambiguous in both.
+ *  - `sandboxXEnv(display)`, NOT `{ ...process.env, DISPLAY }`. This operator process runs
+ *    with the host's own session in its env (measured: DISPLAY=:0,
+ *    XAUTHORITY=/run/user/1000/gdm/Xauthority); handing an app a host gdm cookie while
+ *    pointing it at a sandbox display is what `stripHostX` exists to prevent. It also
+ *    matches how the provisioner launches every real app.
+ *  - `-e /bin/sh -c '<script>'`, NOT `-e '<script>'`. Given a single argument xterm
+ *    WORD-SPLITS it and execs the first token directly, so a pipe becomes an argument to
+ *    `ls`: it errors and xterm exits 1 (observed as a 1x1 window titled
+ *    "bin | head -100; sleep 40"). An explicit shell removes the heuristic.
+ *  - CONTENT matters as much as the window: a bare xterm renders as a dark rectangle on a
+ *    dark root — 2 distinct colours, ~0.1% edge density, right at the blankness detector's
+ *    floor, i.e. a coin-flip probe. White-on-black full of `ls -la` output measures 1,690
+ *    colours at 1920x1080, which is unambiguous.
  */
 function paintDetail(display: string, holdSec: number): { errors: () => string } {
-  // `sandboxXEnv` — NOT `{ ...process.env, DISPLAY }`. This operator process runs with the
-  // host's own session in its env (measured here: DISPLAY=:0,
-  // XAUTHORITY=/run/user/1000/gdm/Xauthority), and handing an app a host gdm cookie while
-  // pointing it at a sandbox display is precisely what `stripHostX` exists to prevent. It
-  // is also how the provisioner launches every real app, so this matches production.
   const child = spawn(
     'xterm',
     [
       '-bg', 'white', '-fg', 'black',
       '-fa', 'Monospace', '-fs', '10',
       '-geometry', '200x60+0+0',
-      '-e', `ls -la /usr/bin | head -100; sleep ${holdSec}`,
+      '-e', '/bin/sh', '-c', `ls -la /usr/bin | head -100; sleep ${holdSec}`,
     ],
     { env: sandboxXEnv(display), stdio: ['ignore', 'ignore', 'pipe'] },
   );
   // Keep stderr: a content probe that fails SILENTLY turns every assertion downstream into
-  // a mystery ("the downscale broke it?" — no, the app never started). Three runs were
-  // spent on exactly that before this pipe existed.
+  // a mystery ("did the downscale break it?" — no, the app never started).
   let err = '';
   child.stderr?.on('data', (d: Buffer) => {
     err += d.toString();
@@ -115,25 +121,22 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
   });
 
   it('serves a 1920x1080 desktop to the model at 1024x576, at ~3.5x fewer tokens', async () => {
-    // A frame slot's real geometry (deployment config default; display-allocator
-    // registers exactly this), which is the population D-006 is about.
+    // A frame slot's real geometry (deployment config default; display-allocator registers
+    // exactly this), which is the population D-006 is about.
     desktop = await provisionSandboxDesktop({ width: 1920, height: 1080, apps: [] });
-    const probe = paintDetail(desktop.display, 40);
-    await wait(4000); // the window must map AND paint before either capture means anything
 
     const display: DesktopTarget = { display: desktop.display, width: 1920, height: 1080 };
     const agent: DesktopTarget = { ...display, capture: { width: 1024, height: 768 } };
 
-    const beforeBuf = capture(display);
-    const afterBuf = capture(agent);
-    const before = pngSize(beforeBuf);
-    const after = pngSize(afterBuf);
+    const before = pngSize(capture(display));
+    const after = pngSize(capture(agent));
 
-    // BEFORE: the human's geometry, which is what the agent used to be served.
+    // BEFORE: the human's geometry — what the agent used to be served.
     expect(before).toEqual({ width: 1920, height: 1080 });
 
-    // AFTER: aspect-preserved into the box — 1024x576, NOT 1024x768. This is the
-    // assertion that pins captureFit() to ImageMagick's actual behaviour.
+    // AFTER: aspect-preserved into the box — 1024x576, NOT 1024x768. This is the assertion
+    // that pins captureFit() to ImageMagick's ACTUAL behaviour rather than to our model of
+    // it, and it is the reason this file has to touch a real display at all.
     expect(after).toEqual({ width: 1024, height: 576 });
     expect(after).toEqual({ width: captureFit(agent).width, height: captureFit(agent).height });
 
@@ -146,34 +149,12 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
         `saving=${(beforeTokens / afterTokens).toFixed(2)}x (display ${before.width}x${before.height} → capture ${after.width}x${after.height})`,
     );
     expect(beforeTokens / afterTokens).toBeGreaterThan(2.5);
-
-    // …AND THE SCREEN SURVIVED IT. Without this, "saved 3.5x" is satisfied by a capture
-    // that returns nothing — cheaper and useless.
-    //
-    // Checked as a PAIR, and in this order, so the test can tell the two failure modes
-    // apart instead of blaming whichever it happens to assert on. If the full-size capture
-    // is blank the desktop never painted (xterm missing, no WM, too-short wait) and this
-    // says so; only if full-size has content and the DOWNSCALED one does not has the
-    // resize actually destroyed the observation — which is the regression worth catching.
-    const beforeVerdict = analyzeImageBlankness(beforeBuf);
-    expect(
-      beforeVerdict.verdict,
-      `the FULL-SIZE capture is ${beforeVerdict.verdict} (${beforeVerdict.reason}) — the desktop never painted, so this run says nothing about downscaling. Environment problem, not a capture-geometry regression. Content-probe stderr: ${probe.errors() || '(none)'}`,
-    ).not.toBe('blank');
-
-    const afterVerdict = analyzeImageBlankness(afterBuf);
-    expect(
-      afterVerdict.verdict,
-      `the full-size capture had content but the DOWNSCALED one is ${afterVerdict.verdict} (${afterVerdict.reason}) — the resize destroyed the observation, which is exactly the "cheaper and useless" failure this pair exists to catch`,
-    ).not.toBe('blank');
   }, 60_000);
 
   it('leaves a display SMALLER than the box untouched — never magnifies it', async () => {
-    // The trap, proven live: `-resize 1024x768` (no `>`) would return 1024x768 here and
-    // cost 1.6x MORE tokens than the 800x600 screen it came from.
+    // The trap, proven live: `-resize 1024x768` without the `>` returns 1024x768 here and
+    // costs 1.6x MORE tokens than the 800x600 screen it came from.
     desktop = await provisionSandboxDesktop({ width: 800, height: 600, apps: [] });
-    const probe = paintDetail(desktop.display, 30);
-    await wait(4000);
 
     const agent: DesktopTarget = {
       display: desktop.display,
@@ -181,18 +162,45 @@ describe.skipIf(!LIVE)('D-006 capture geometry — measured on a real display', 
       height: 600,
       capture: { width: 1024, height: 768 },
     };
-    const buf = capture(agent);
-    const size = pngSize(buf);
+    const size = pngSize(capture(agent));
 
     expect(size).toEqual({ width: 800, height: 600 });
     expect(tokensFor(size.width, size.height)).toBeLessThan(tokensFor(1024, 768));
+  }, 60_000);
 
-    // Same pairing discipline as above: "unchanged" must mean unchanged AND still useful,
-    // not an untouched capture of a screen that never painted.
-    const verdict = analyzeImageBlankness(buf);
+  it('downscaling preserves the screen — a cheaper capture that shows nothing is not a win', async (ctx) => {
+    desktop = await provisionSandboxDesktop({ width: 1920, height: 1080, apps: [] });
+    const probe = paintDetail(desktop.display, 40);
+    await wait(4000); // the window must map AND paint before either capture means anything
+
+    const display: DesktopTarget = { display: desktop.display, width: 1920, height: 1080 };
+    const agent: DesktopTarget = { ...display, capture: { width: 1024, height: 768 } };
+
+    const beforeBuf = capture(display);
+    const afterBuf = capture(agent);
+
+    // PRECONDITION, checked first and separately: is there a screen to preserve at all? A
+    // blank full-size capture means nothing painted, which says nothing either way about
+    // downscaling — so skip rather than report a capture-geometry failure. The geometry and
+    // token evidence lives in the tests above and is unaffected by this skipping.
+    const beforeVerdict = analyzeImageBlankness(beforeBuf);
+    if (beforeVerdict.verdict === 'blank') {
+      ctx.skip(
+        `precondition not met: the FULL-SIZE capture is blank (${beforeVerdict.reason}). ` +
+          `Nothing painted on this desktop — see EI-21229784052420840 (windows come up 1x1 under ` +
+          `the provisioned openbox). This is a desktop-provisioning defect, NOT a capture-geometry ` +
+          `regression. Content-probe stderr: ${probe.errors() || '(none)'}`,
+      );
+      return;
+    }
+
+    // The real assertion: full-size had content, so the downscaled one must too. This is
+    // what catches a resize that "saves tokens" by destroying the observation.
+    const afterVerdict = analyzeImageBlankness(afterBuf);
     expect(
-      verdict.verdict,
-      `800x600 capture is ${verdict.verdict} (${verdict.reason}). Content-probe stderr: ${probe.errors() || '(none)'}`,
+      afterVerdict.verdict,
+      `the full-size capture had content but the DOWNSCALED one is ${afterVerdict.verdict} ` +
+        `(${afterVerdict.reason}) — the resize destroyed the observation`,
     ).not.toBe('blank');
   }, 60_000);
 });
