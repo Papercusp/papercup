@@ -227,6 +227,28 @@ export interface ResolvedAssumption {
    * header for why tightening this into a refusal is deliberately NOT done yet).
    */
   isAssumption: boolean | null;
+  /**
+   * EI-21194879039423312 — the entry OPENED with `fact:` but was not a
+   * well-formed ref ({@link parseAssumptionRef} returned null). Diagnostic only:
+   * a caller who reached for the absolute grammar and mistyped it must be shown
+   * the accepted forms, not told to "assert it first" as if the key were real.
+   */
+  malformed?: true;
+  /**
+   * Same-key facts that exist OUTSIDE what this close searched — found by the
+   * dangling follow-up probe (same workspace partition, local hive), rendered
+   * as absolute refs via {@link factCitationRef}. This is the hint whose absence
+   * turned the Aug-22 refusal into a dead end: the closer cited the DISPLAYED
+   * form of an existing fact, was told to "cite an absolute ref", and had no way
+   * to learn where the fact actually lived.
+   */
+  nearMisses?: string[];
+  /**
+   * The workspace partition the search ran in, stamped on dangling entries so
+   * the refusal names WHERE it looked instead of leaving "does not resolve"
+   * ambiguous between scopes and tenants.
+   */
+  searchedWorkspace?: string;
 }
 
 /**
@@ -356,7 +378,47 @@ export async function resolveAssumptions(
     }));
   }
 
-  return parsed.map((p) => resolveOne(p.declared, p.parsed, rows, selectors));
+  const results = parsed.map((p) => resolveOne(p.declared, p.parsed, rows, selectors));
+
+  // EI-21194879039423312 — a bare "does not resolve" is how the Aug-22 close
+  // dead-ended: the caller cited an EXISTING fact's displayed form, was told to
+  // "cite an absolute ref", and had nothing left to try. Stamp every dangle with
+  // where the search ran, and probe the same partition for same-key rows living
+  // outside the searched identities so the refusal can NAME them. Best-effort:
+  // a probe failure changes no verdict (the main read above already decided).
+  const dangles = results.filter((r) => r.condition === 'dangling');
+  if (dangles.length > 0) {
+    try {
+      const probeSql = inject ?? getOrgPg().sql;
+      const ws = opts.workspaceId ?? activeWorkspaceId();
+      for (const d of dangles) d.searchedWorkspace = ws;
+      const missKeys = Array.from(new Set(dangles.filter((d) => !d.malformed).map((d) => d.key)));
+      if (missKeys.length > 0) {
+        const near = await probeSql<{ id: string | number; scope: FactScope; scope_ref: string | null; key: string }>`
+          SELECT id, scope, scope_ref, key
+            FROM harness_shared.agent_facts
+           WHERE workspace_id = ${ws}
+             AND source_hive IS NULL
+             AND key = ANY(${missKeys}::text[])
+           ORDER BY id DESC`;
+        const refsByKey = new Map<string, string[]>();
+        for (const r of near) {
+          const list = refsByKey.get(r.key) ?? [];
+          if (list.length < 4) {
+            list.push(factCitationRef({ scope: r.scope, scopeRef: r.scope_ref, key: r.key, id: Number(r.id) }));
+          }
+          refsByKey.set(r.key, list);
+        }
+        for (const d of dangles) {
+          const hits = refsByKey.get(d.key);
+          if (hits && hits.length > 0) d.nearMisses = hits;
+        }
+      }
+    } catch {
+      // Hints are best-effort — see the block comment above.
+    }
+  }
+  return results;
 }
 
 function malformedOrDangling(declared: string, parsed: ParsedAssumptionRef | null): ResolvedAssumption {
@@ -371,6 +433,7 @@ function malformedOrDangling(declared: string, parsed: ParsedAssumptionRef | nul
     kind: null,
     confidence: null,
     isAssumption: null,
+    malformed: parsed === null ? (true as const) : undefined,
   };
 }
 
@@ -605,14 +668,45 @@ export function danglingAssumptionsMessage(
   const scopes = selectors
     .map((s) => (s.scope === 'workspace' ? 'workspace' : `${s.scope}:${(s.scopeRef ?? '').trim()}`))
     .join(', ');
-  return (
-    `assumption ${dangling.length === 1 ? 'key' : 'keys'} ${names} ${dangling.length === 1 ? 'does' : 'do'} ` +
-    `not resolve to any fact — searched ${scopes}. A reference nobody can resolve is laundering (D-050/D-079): ` +
-    'assert it first with facts:assert { scope, key, body, kind:"assumption" }, cite an absolute ' +
-    '`fact:<scope>:<ref>:<key>` ref if it lives outside your own scopes, or pass "none" if this close ' +
-    'rests on nothing you recorded. An EXPIRED or RETRACTED key still resolves — only a key that never ' +
-    'existed is refused.'
+  const wsNames = Array.from(
+    new Set(dangling.map((d) => d.searchedWorkspace).filter((w): w is string => Boolean(w))),
   );
+  const searched = wsNames.length > 0 ? ` (workspace partition: ${wsNames.join(', ')})` : '';
+  const parts: string[] = [
+    `assumption ${dangling.length === 1 ? 'key' : 'keys'} ${names} ${dangling.length === 1 ? 'does' : 'do'} ` +
+      `not resolve to any fact — searched ${scopes}${searched}.`,
+    // EI-21194879039423312 — the grammar spelled out, because an unexposed
+    // syntax reads as a REJECTED one: the Aug-22 closer cited the exact
+    // displayed form of an existing fact, got the same refusal, and concluded
+    // their citation SHAPE was the problem.
+    'Accepted citation forms: a BARE facts:assert key ("my-fact-key"); or an ABSOLUTE ref ' +
+      '`fact:<scope>:[<ref>:]<key>[@v<factRowId>]` — workspace scope carries NO ref segment ' +
+      '(`fact:workspace:<key>`), every other scope is `fact:<scope>:<ref>:<key>`, and the optional ' +
+      '`@v<N>` pins fact row id N exactly as facts:list and a stamped ref display it.',
+  ];
+  for (const d of dangling) {
+    if (d.malformed) {
+      parts.push(
+        `"${d.declared}" opens with fact: but is not a well-formed ref — compare it against the ` +
+          'forms above (scopes: workspace, role, owner, harness, work_item).',
+      );
+    } else if (d.nearMisses && d.nearMisses.length > 0) {
+      parts.push(
+        `"${d.declared}": a fact with this key EXISTS at ${d.nearMisses.map((r) => `\`${r}\``).join(', ')} — ` +
+          'outside what this close searched. Cite one of those refs verbatim, or re-assert the fact ' +
+          'into your own scopes with facts:assert.',
+      );
+    } else if (d.searchedWorkspace) {
+      parts.push(`"${d.declared}" has no row at all in workspace ${d.searchedWorkspace} (local hive).`);
+    }
+  }
+  parts.push(
+    'A reference nobody can resolve is laundering (D-050/D-079): assert it first with ' +
+      'facts:assert { scope, key, body, kind:"assumption" }, cite an absolute ref from the accepted ' +
+      'forms above if it lives outside your own scopes, or pass "none" if this close rests on nothing ' +
+      'you recorded. An EXPIRED or RETRACTED key still resolves — only a key that never existed is refused.',
+  );
+  return parts.join(' ');
 }
 
 /**
