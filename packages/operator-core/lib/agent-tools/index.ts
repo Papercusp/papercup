@@ -324,6 +324,12 @@ import './goals/start';
 // startGoalById). Arming is autonomy-gated (schedule-arm category), like plans.
 import './goals/set-schedule';
 import './goals/arm-schedule';
+// work-on-everything-goal-2026-08-23 P-021 — a goal's typed argument list +
+// declared product (input_schema/inputs, output_schema/outputs, migration 927),
+// mirroring plans' 714/908 pair. Values are collected at goals:start and
+// reported at wind-down (loop:end / session:end `outputs`).
+import './goals/set-input-schema';
+import './goals/set-output-schema';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive knowledge-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './knowledge_packs/list';

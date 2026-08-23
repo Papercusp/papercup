@@ -29,6 +29,7 @@ import {
   deliverGoalWindDownReport,
   windDownDispositionGateEnabled,
 } from '../../goals/wind-down-disposition';
+import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
 
 export default defineTool({
@@ -74,6 +75,12 @@ export default defineTool({
       .max(120)
       .optional()
       .describe("With disposition:'handoff' — who continues the goal (owner id / label). The goal stays active."),
+    outputs: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "P-021: the goal's reported outputs, validated against its declared output_schema. With disposition:'achieved' every declared-required output must be filled (refused otherwise); 'killed' accepts partial/absent; 'handoff' records nothing.",
+      ),
     acknowledgeOpenDirectives: z
       .boolean()
       .optional()
@@ -149,6 +156,40 @@ export default defineTool({
         };
       }
     }
+    // ── P-021: the outputs gate — BEFORE deactivateLoop, so a refusal never
+    // strands an already-ended loop (same posture as the acceptance gate
+    // above). 'achieved' with a declared output_schema demands every declared
+    // output filled; 'killed' validates leniently; 'handoff' records nothing.
+    // Canonical-datatype field checks (D-004) are not yet threaded here — the
+    // seam takes `datatypeSchemas`, and plan publication already enforces it;
+    // wiring the registry resolver through the wind-down doors is follow-up.
+    let windDownOutputs: Record<string, unknown> | null = null;
+    if (activeGoal && args.disposition) {
+      const ov = evaluateGoalWindDownOutputs({
+        outputSchema: activeGoal.outputSchema,
+        outputs: args.outputs ?? null,
+        disposition: args.disposition,
+      });
+      if (!ov.ok) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: ov.code,
+                message: ov.hint,
+                missing: ov.missing,
+                issues: ov.errors,
+                goalId: activeGoal.goalId,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      windDownOutputs = ov.outputs;
+    }
     // The routine row names the harness the carry-note is scoped by — read it
     // BEFORE deactivation so the report leg can still find the note.
     const statusBefore =
@@ -166,6 +207,7 @@ export default defineTool({
           disposition: args.disposition,
           dispositionBy: identity.ownerId,
           handoffTo: args.handoffTo ?? null,
+          outputs: windDownOutputs,
         });
         const carryNote = statusBefore
           ? await getLoopCarryNote({ harness: statusBefore.harnessSlug, ownerId }).catch(() => null)
