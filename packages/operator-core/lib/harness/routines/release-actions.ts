@@ -1431,8 +1431,7 @@ export function mergeGateHealthMonotonic(
     : [];
   const previousCandidate =
     typeof previous?.observedCandidate === 'string' ? previous.observedCandidate.trim().toLowerCase() : '';
-  const nextCandidate =
-    typeof next.observedCandidate === 'string' ? next.observedCandidate.trim().toLowerCase() : '';
+  const nextCandidate = typeof next.observedCandidate === 'string' ? next.observedCandidate.trim().toLowerCase() : '';
   const preservesPreviousFailures =
     previousFailingTests.length > 0 &&
     nextFailingTests.length === 0 &&
@@ -2558,9 +2557,7 @@ export interface FrozenRepairDispatchReservationOptions {
   nowMs?: number;
 }
 
-function queueWithoutDispatchReservation(
-  queue: FrozenCandidateRepairQueue,
-): FrozenCandidateRepairQueue {
+function queueWithoutDispatchReservation(queue: FrozenCandidateRepairQueue): FrozenCandidateRepairQueue {
   const { dispatchReservation: _dispatchReservation, ...withoutReservation } = queue;
   return withoutReservation;
 }
@@ -2621,13 +2618,7 @@ export async function reserveFrozenCandidateRepairFixer(
           )
         )
       RETURNING metadata->'repair_queue' AS repair_queue`,
-    [
-      target.workspaceId,
-      target.installSlug,
-      JSON.stringify(reservedQueue),
-      JSON.stringify(expectedQueue),
-      nowMs,
-    ],
+    [target.workspaceId, target.installSlug, JSON.stringify(reservedQueue), JSON.stringify(expectedQueue), nowMs],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
 }

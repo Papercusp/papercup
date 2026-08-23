@@ -193,7 +193,14 @@ describe('toRoutineInfo', () => {
       last_fired_at: null,
       next_fire_at: null,
     });
-    expect(info).toMatchObject({ name: 'release-trigger', active: false, cron: null, lastFiredAtMs: null, nextFireAtMs: null, pause: null });
+    expect(info).toMatchObject({
+      name: 'release-trigger',
+      active: false,
+      cron: null,
+      lastFiredAtMs: null,
+      nextFireAtMs: null,
+      pause: null,
+    });
   });
 });
 
@@ -414,7 +421,11 @@ describe('selectActiveCheckpointRoot', () => {
   });
 
   it('uses the deploy root when the default pipeline is absent and rejects unknown or ambiguous mappings', () => {
-    const base = { projectPaths: ['/srv/a/sidestage', '/srv/b/sidestage'], defaultPipeline: 'papercusp', defaultRoot: '/srv/papercusp' };
+    const base = {
+      projectPaths: ['/srv/a/sidestage', '/srv/b/sidestage'],
+      defaultPipeline: 'papercusp',
+      defaultRoot: '/srv/papercusp',
+    };
     expect(selectActiveCheckpointRoot({ ...base, pipeline: 'papercusp', projectPaths: [] })).toBe('/srv/papercusp');
     expect(selectActiveCheckpointRoot({ ...base, pipeline: 'unknown' })).toBeNull();
     expect(selectActiveCheckpointRoot({ ...base, pipeline: 'sidestage' })).toBeNull();
@@ -440,7 +451,14 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
 
   it('⭐ surfaces a real-red-at-tip verdict — the classification gate_health deliberately drops', () => {
     const got = pickRetriageVerdict(
-      [ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'real-red', tip: 'def456789012', detail: 'reproduce at tip' } } })],
+      [
+        ev({
+          detail: {
+            candidate: 'abc123456789',
+            retriage: { classification: 'real-red', tip: 'def456789012', detail: 'reproduce at tip' },
+          },
+        }),
+      ],
       'abc123456789',
     );
     expect(got).toEqual({
@@ -453,7 +471,14 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
 
   it('surfaces an `unknown` verdict with its skip reason intact', () => {
     const got = pickRetriageVerdict(
-      [ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'unknown', tip: null, detail: 'tip re-run SKIPPED: no failing entry resolved' } } })],
+      [
+        ev({
+          detail: {
+            candidate: 'abc123456789',
+            retriage: { classification: 'unknown', tip: null, detail: 'tip re-run SKIPPED: no failing entry resolved' },
+          },
+        }),
+      ],
       'abc123456789',
     );
     expect(got?.classification).toBe('unknown');
@@ -461,9 +486,16 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
     expect(got?.tip).toBeNull();
   });
 
-  it('⭐ REFUSES to attribute a DIFFERENT candidate\'s re-triage to this verdict — a plausible wrong answer is worse than none', () => {
+  it("⭐ REFUSES to attribute a DIFFERENT candidate's re-triage to this verdict — a plausible wrong answer is worse than none", () => {
     const got = pickRetriageVerdict(
-      [ev({ detail: { candidate: 'ffffffffffff', retriage: { classification: 'stale-candidate', tip: 'aaa', detail: 'passes at tip' } } })],
+      [
+        ev({
+          detail: {
+            candidate: 'ffffffffffff',
+            retriage: { classification: 'stale-candidate', tip: 'aaa', detail: 'passes at tip' },
+          },
+        }),
+      ],
       'abc123456789',
     );
     expect(got).toBeNull();
@@ -472,19 +504,42 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
   it('matches across sha LENGTHS in both directions, so a full-length sha cannot silently downgrade a real verdict to unavailable', () => {
     const full = 'abc123456789def456789012345678901234abcd';
     expect(
-      pickRetriageVerdict([ev({ detail: { candidate: full, retriage: { classification: 'real-red', tip: null, detail: 'x' } } })], 'abc123456789'),
+      pickRetriageVerdict(
+        [ev({ detail: { candidate: full, retriage: { classification: 'real-red', tip: null, detail: 'x' } } })],
+        'abc123456789',
+      ),
     ).not.toBeNull();
     expect(
-      pickRetriageVerdict([ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'real-red', tip: null, detail: 'x' } } })], full),
+      pickRetriageVerdict(
+        [
+          ev({
+            detail: { candidate: 'abc123456789', retriage: { classification: 'real-red', tip: null, detail: 'x' } },
+          }),
+        ],
+        full,
+      ),
     ).not.toBeNull();
   });
 
   it('takes the NEWEST matching green_checkpoint event and ignores other pipeline kinds', () => {
     const got = pickRetriageVerdict(
       [
-        ev({ kind: 'deploy', detail: { candidate: 'abc123456789', retriage: { classification: 'stale-candidate', tip: 'zzz', detail: 'wrong kind' } } }),
-        ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'real-red', tip: 'newest', detail: 'newest' } } }),
-        ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'unknown', tip: 'older', detail: 'older' } } }),
+        ev({
+          kind: 'deploy',
+          detail: {
+            candidate: 'abc123456789',
+            retriage: { classification: 'stale-candidate', tip: 'zzz', detail: 'wrong kind' },
+          },
+        }),
+        ev({
+          detail: {
+            candidate: 'abc123456789',
+            retriage: { classification: 'real-red', tip: 'newest', detail: 'newest' },
+          },
+        }),
+        ev({
+          detail: { candidate: 'abc123456789', retriage: { classification: 'unknown', tip: 'older', detail: 'older' } },
+        }),
       ],
       'abc123456789',
     );
@@ -494,15 +549,27 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
   it('returns null — meaning NOT AVAILABLE, never "no re-triage happened" — for a pre-WI-7290 event, a malformed blob, or no candidate', () => {
     // A verdict recorded before WI-7290 simply has no `retriage` key.
     expect(pickRetriageVerdict([ev({ detail: { candidate: 'abc123456789' } })], 'abc123456789')).toBeNull();
-    expect(pickRetriageVerdict([ev({ detail: { candidate: 'abc123456789', retriage: 'nope' } })], 'abc123456789')).toBeNull();
+    expect(
+      pickRetriageVerdict([ev({ detail: { candidate: 'abc123456789', retriage: 'nope' } })], 'abc123456789'),
+    ).toBeNull();
     // An unrecognised classification is dropped rather than passed through as a string.
     expect(
-      pickRetriageVerdict([ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'bogus' } } })], 'abc123456789'),
+      pickRetriageVerdict(
+        [ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'bogus' } } })],
+        'abc123456789',
+      ),
     ).toBeNull();
     expect(pickRetriageVerdict([], 'abc123456789')).toBeNull();
     // No candidate under report ⇒ nothing could be matched against it.
     expect(
-      pickRetriageVerdict([ev({ detail: { candidate: 'abc123456789', retriage: { classification: 'real-red', tip: null, detail: 'x' } } })], null),
+      pickRetriageVerdict(
+        [
+          ev({
+            detail: { candidate: 'abc123456789', retriage: { classification: 'real-red', tip: null, detail: 'x' } },
+          }),
+        ],
+        null,
+      ),
     ).toBeNull();
   });
 });

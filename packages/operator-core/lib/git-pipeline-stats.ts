@@ -31,11 +31,7 @@ import {
 import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
-import {
-  describeGateRedOwnership,
-  gateFailureSignature,
-  type GateRedOwnership,
-} from './release/gate-red-ownership';
+import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from './release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
@@ -216,7 +212,12 @@ export interface GitPipelineSnapshot {
      * Cleared the moment any real verdict lands (release-actions.ts sets it null on both the reset
      * and red paths), so a non-null value is always about the most recent tick.
      */
-    inconclusive: { status: string; candidate: string | null; detail: string | null; observedAtMs: number | null } | null;
+    inconclusive: {
+      status: string;
+      candidate: string | null;
+      detail: string | null;
+      observedAtMs: number | null;
+    } | null;
     /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
      *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
      *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
@@ -522,10 +523,7 @@ export function currentGateInconclusive(
   // operators at a repair SHA that no longer had a queue, worktree, or fixer.
   // A malformed/non-null queue stays fail-closed; only an authoritatively absent
   // queue disproves these two queue-owned statuses.
-  if (
-    repairQueue == null &&
-    (inc.status === 'repair-in-progress' || inc.status === 'repair-staging-mismatch')
-  ) {
+  if (repairQueue == null && (inc.status === 'repair-in-progress' || inc.status === 'repair-staging-mismatch')) {
     return null;
   }
 
@@ -544,7 +542,12 @@ function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
   return v.filter((x): x is GitSyncSkippedPath => {
     if (!x || typeof x !== 'object') return false;
     const r = x as Record<string, unknown>;
-    return typeof r.scope === 'string' && typeof r.path === 'string' && typeof r.owner === 'string' && typeof r.intent === 'string';
+    return (
+      typeof r.scope === 'string' &&
+      typeof r.path === 'string' &&
+      typeof r.owner === 'string' &&
+      typeof r.intent === 'string'
+    );
   });
 }
 function dateMs(v: unknown): number | null {
@@ -568,18 +571,17 @@ interface RoutineRow {
 export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
   if (!r) return null;
   const rawPause = r.metadata?.pause;
-  const pause = rawPause && typeof rawPause === 'object'
-    ? (() => {
-        const rec = rawPause as Record<string, unknown>;
-        return {
-          reason: typeof rec.reason === 'string' ? rec.reason : null,
-          pausedBy: typeof rec.pausedBy === 'string' ? rec.pausedBy : null,
-          pausedAtMs: typeof rec.pausedAtMs === 'number' && Number.isFinite(rec.pausedAtMs)
-            ? rec.pausedAtMs
-            : null,
-        };
-      })()
-    : null;
+  const pause =
+    rawPause && typeof rawPause === 'object'
+      ? (() => {
+          const rec = rawPause as Record<string, unknown>;
+          return {
+            reason: typeof rec.reason === 'string' ? rec.reason : null,
+            pausedBy: typeof rec.pausedBy === 'string' ? rec.pausedBy : null,
+            pausedAtMs: typeof rec.pausedAtMs === 'number' && Number.isFinite(rec.pausedAtMs) ? rec.pausedAtMs : null,
+          };
+        })()
+      : null;
   return {
     name: r.name,
     active: Boolean(r.active),
@@ -640,10 +642,10 @@ export interface RawGateCounters {
  * a direct answer to "is the routine firing?", so storing the union there
  * turns a healthy ticker with a stale verdict into a false "NOT FIRING".
  */
-export function projectGreenCheckpointFireFreshness(verdict: {
+export function projectGreenCheckpointFireFreshness(verdict: { fireStale: boolean; reason: string | null }): {
   fireStale: boolean;
-  reason: string | null;
-}): { fireStale: boolean; fireStaleReason: string | null } {
+  fireStaleReason: string | null;
+} {
   return {
     fireStale: verdict.fireStale,
     fireStaleReason: verdict.fireStale ? verdict.reason : null,
@@ -773,11 +775,7 @@ export function mapActiveRun(r: {
     // Emitted ONLY on an actual refire, so the common reply shape is unchanged.
     ...(r.refire_observed ? { initialCandidate: r.initial_candidate ?? null, refireObserved: true } : {}),
     startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
-    progressAtMs: Number.isFinite(progressAtMs)
-      ? progressAtMs
-      : Number.isFinite(startedAtMs)
-        ? startedAtMs
-        : null,
+    progressAtMs: Number.isFinite(progressAtMs) ? progressAtMs : Number.isFinite(startedAtMs) ? startedAtMs : null,
     ...(r.current_phase === undefined ? {} : { currentPhase: r.current_phase ?? null }),
     elapsedSec: r.elapsed_sec ?? null,
   };
@@ -867,10 +865,12 @@ export async function gitPipelineSnapshot(
   // The currently-open merge conflict (git-sync-conflict escalation), if any.
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
   try {
-    const escRows = await sql<{
-      escalation: Record<string, unknown>;
-      mtime_ms: unknown;
-    }[]>`
+    const escRows = await sql<
+      {
+        escalation: Record<string, unknown>;
+        mtime_ms: unknown;
+      }[]
+    >`
       SELECT escalation, mtime_ms
         FROM harness_shared.harness_escalations
        WHERE harness_slug = ${slug}
@@ -1068,8 +1068,7 @@ export async function gitPipelineSnapshot(
         });
       }
       if (resolvedActiveRunRoot) {
-        const probe =
-          opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
+        const probe = opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
         activeRun = mapActiveRun(probe(resolvedActiveRunRoot));
       }
     } catch {
@@ -1131,9 +1130,7 @@ export async function gitPipelineSnapshot(
       // the two known values (including absent, i.e. a blob predating the marker) is `null`,
       // so a consumer can tell "recorded not-green" from "not recorded" and degrade honestly.
       recordedVerdict:
-        gateHealth.lastVerdict === 'green' || gateHealth.lastVerdict === 'not-green'
-          ? gateHealth.lastVerdict
-          : null,
+        gateHealth.lastVerdict === 'green' || gateHealth.lastVerdict === 'not-green' ? gateHealth.lastVerdict : null,
       firstRedAtMs: effectiveGate.firstRedAtMs,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
       stalled: effectiveGate.stalled,
