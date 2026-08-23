@@ -40,9 +40,11 @@ import runTool, { discoverKnownHiveCheckoutRoots, normalizeTestFilePaths } from 
  * overrides it with a fake `projectDir` to exercise the wrong-tree path.
  */
 function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
-  return (runTool as unknown as {
-    handler: (a: unknown, c: unknown) => Promise<unknown>;
-  }).handler(args, ctx);
+  return (
+    runTool as unknown as {
+      handler: (a: unknown, c: unknown) => Promise<unknown>;
+    }
+  ).handler(args, ctx);
 }
 
 /** The envelope testing:run returns (success and error shapes together). */
@@ -130,17 +132,19 @@ describe('testing:run (integration)', () => {
     expect(reportDirCall).toBeGreaterThan(guardCall);
   });
 
-  it.skipIf(!SIDESTAGE_HIVE_ROOT)('routes an absolute test path through its external Hive Vitest checkout', async () => {
-    const out = await body(
-      call({ files: [join(SIDESTAGE_HIVE_ROOT as string, 'apps/web/src/auction.test.tsx')] }),
-    );
+  it.skipIf(!SIDESTAGE_HIVE_ROOT)(
+    'routes an absolute test path through its external Hive Vitest checkout',
+    async () => {
+      const out = await body(call({ files: [join(SIDESTAGE_HIVE_ROOT as string, 'apps/web/src/auction.test.tsx')] }));
 
-    expect(out.ok).toBe(true);
-    expect(out.failed).toBe(0);
-    expect(out.files).toBe(1);
-    expect(out.passed).toBeGreaterThan(0);
-    expect(out.root).toBe(SIDESTAGE_HIVE_ROOT);
-  }, 180_000);
+      expect(out.ok).toBe(true);
+      expect(out.failed).toBe(0);
+      expect(out.files).toBe(1);
+      expect(out.passed).toBeGreaterThan(0);
+      expect(out.root).toBe(SIDESTAGE_HIVE_ROOT);
+    },
+    180_000,
+  );
 
   it('runs a real file through the router and returns a distilled green result', async () => {
     const out = await body(call({ files: [GREEN_TARGET] }));
@@ -159,7 +163,9 @@ describe('testing:run (integration)', () => {
     // and it must be the real repo root (has the router script the run just used),
     // never some other resolved tree such as a stale harness clone.
     expect(typeof out.root).toBe('string');
-    const routerScript = await readFile(join(out.root as string, 'scripts', 'test-files.mjs'), 'utf8').catch(() => null);
+    const routerScript = await readFile(join(out.root as string, 'scripts', 'test-files.mjs'), 'utf8').catch(
+      () => null,
+    );
     expect(routerScript).not.toBeNull();
   }, 180_000);
 
@@ -167,7 +173,9 @@ describe('testing:run (integration)', () => {
     const out = await body(call({ files: [GREEN_TARGET] }));
 
     expect(out.ok, JSON.stringify(out)).toBe(true);
-    expect(typeof out.runId).toBe('string');
+    if (typeof out.runId !== 'string') {
+      throw new Error(`testing:run omitted runId: ${JSON.stringify(out)}`);
+    }
 
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ file_path: string; status: string }>>`
@@ -175,9 +183,7 @@ describe('testing:run (integration)', () => {
       FROM harness_shared.test_runs
       WHERE run_group_id = ${out.runId}
     `;
-    expect(rows).toEqual(expect.arrayContaining([
-      { file_path: GREEN_TARGET, status: 'pass' },
-    ]));
+    expect(rows).toEqual(expect.arrayContaining([{ file_path: GREEN_TARGET, status: 'pass' }]));
   }, 180_000);
 
   it('accepts a workspace-relative test path and expands it before routing', async () => {
@@ -197,11 +203,7 @@ describe('testing:run (integration)', () => {
       await writeFile(join(fixture, 'packages', 'one', 'shared.test.ts'), '');
       await writeFile(join(fixture, 'packages', 'two', 'shared.test.ts'), '');
 
-      expect(normalizeTestFilePaths(
-        ['shared.test.ts'],
-        fixture,
-        ['packages/one', 'packages/two'],
-      )).toEqual({
+      expect(normalizeTestFilePaths(['shared.test.ts'], fixture, ['packages/one', 'packages/two'])).toEqual({
         ok: false,
         path: 'shared.test.ts',
         matches: ['packages/one/shared.test.ts', 'packages/two/shared.test.ts'],
@@ -219,7 +221,7 @@ describe('testing:run (integration)', () => {
   // returned `passed:7, failed:0, files:1, failures:[]` — an empty failure list for a
   // red tree. Every prior case here was single-group, where last-writer-wins is
   // indistinguishable from correct, which is exactly why it went unnoticed.
-  it('spans MULTIPLE workspaces without one group\'s report overwriting another', async () => {
+  it("spans MULTIPLE workspaces without one group's report overwriting another", async () => {
     const out = await body(call({ files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET] }));
 
     expect(out.ok).toBe(true);
@@ -290,7 +292,9 @@ describe('testing:run (integration)', () => {
       expect(out.root).toBe(await realpath(fakeRoot));
       expect(out.hint).toContain('scripts/test-files.mjs');
     } finally {
-      await rm(fakeRoot, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+      await rm(fakeRoot, { recursive: true, force: true }).catch(() => {
+        /* best-effort */
+      });
     }
   }, 30_000);
 
@@ -316,54 +320,45 @@ describe('testing:run (integration)', () => {
   // start completes, so this deterministically exercises the timeout branch rather
   // than racing a fast pass. Two green targets (spanning two workspaces) make the
   // run slower still, widening the margin.
-  it(
-    'kills the WHOLE process tree on the foreground timeout — no orphan survives',
-    async () => {
-      const out = await body(call({
+  it('kills the WHOLE process tree on the foreground timeout — no orphan survives', async () => {
+    const out = await body(
+      call({
         files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET],
         timeoutMs: 1000,
-      }));
+      }),
+    );
 
-      expect(out.ok).toBe(false);
-      expect(out.error).toBe('timeout');
-      expect(typeof out.runId).toBe('string');
-      expect(out.hint).toContain('one detached call per file');
-      expect(out.hint).toContain('onlyPaths (that field is typecheck-only)');
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe('timeout');
+    expect(typeof out.runId).toBe('string');
+    expect(out.hint).toContain('one detached call per file');
+    expect(out.hint).toContain('onlyPaths (that field is typecheck-only)');
 
-      // Give the SIGTERM → (5s) → SIGKILL fallback (run.ts's own `killGroup` retry)
-      // time to land before asserting on the absence of survivors.
-      await new Promise((resolve) => setTimeout(resolve, 8000));
+    // Give the SIGTERM → (5s) → SIGKILL fallback (run.ts's own `killGroup` retry)
+    // time to land before asserting on the absence of survivors.
+    await new Promise((resolve) => setTimeout(resolve, 8000));
 
-      const survivors = await pidsTaggedWithRun(out.runId as string);
-      expect(survivors).toEqual([]);
-    },
-    30_000,
-  );
+    const survivors = await pidsTaggedWithRun(out.runId as string);
+    expect(survivors).toEqual([]);
+  }, 30_000);
 
   // EI-20949515346526475: code:run can terminate its worker while an inner testing:run
   // handler is still blocked in the router. The inner handler must honor that caller-owned
   // signal and kill the SAME process group; otherwise the Vitest suite survives after the
   // outer wrapper already returned and a retry starts a duplicate run.
-  it(
-    'kills the whole process tree when the caller aborts an in-flight run',
-    async () => {
-      const controller = new AbortController();
-      const runPromise = body(
-        call(
-          { files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET], timeoutMs: 30_000 },
-          { signal: controller.signal },
-        ),
-      );
-      setTimeout(() => controller.abort(), 500);
+  it('kills the whole process tree when the caller aborts an in-flight run', async () => {
+    const controller = new AbortController();
+    const runPromise = body(
+      call({ files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET], timeoutMs: 30_000 }, { signal: controller.signal }),
+    );
+    setTimeout(() => controller.abort(), 500);
 
-      const out = await runPromise;
-      expect(out.ok).toBe(false);
-      expect(out.error).toBe('aborted');
-      expect(typeof out.runId).toBe('string');
+    const out = await runPromise;
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe('aborted');
+    expect(typeof out.runId).toBe('string');
 
-      const survivors = await pidsTaggedWithRun(out.runId as string);
-      expect(survivors).toEqual([]);
-    },
-    30_000,
-  );
+    const survivors = await pidsTaggedWithRun(out.runId as string);
+    expect(survivors).toEqual([]);
+  }, 30_000);
 });
