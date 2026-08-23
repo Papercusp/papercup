@@ -8,7 +8,9 @@
  */
 import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
-import { defaultSocialStormPolicyForSourceKind } from './social/storm-policy';
+import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor } from './social/storm-policy';
+import { getSocialPlatform, isSocialPlatformVerified } from './social/platform-registry';
+import { socialCursorFreshness, type SocialCursorFreshness } from './social/cursor-freshness';
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
 import { redactSensitiveValue } from '../sensitive-text';
@@ -72,6 +74,52 @@ export interface CreatedExternalTriggerBinding {
   updatedAt: string;
 }
 
+/**
+ * Platform facts a social trigger source carries beyond the generic row (P-027).
+ *
+ * Present only when the source's `kind` resolves to a registry platform — a
+ * social source's kind IS its platform id, so `getSocialPlatform(kind)` is the
+ * whole mapping. Non-social sources (gmail, gcal, slack, …) keep `social: null`
+ * and render exactly as they did before.
+ *
+ * These are all DERIVED at read time from the registry and the persisted cursor.
+ * Nothing here is a second copy of state: recording, say, a platform's rate
+ * budget on the source row would be a value describing code that drifts the
+ * moment the registry is corrected.
+ */
+export interface ExternalTriggerSocialAdminFacts {
+  platformId: string;
+  label: string;
+  wave: 'A' | 'B' | 'C';
+  /** Registry row verified against its cited sources. */
+  verified: boolean;
+  /**
+   * The owner-side wall, when the platform declares one (Meta app review, a
+   * TikTok audit, a paid tier). Surfaced because "not connected" and "cannot be
+   * connected until the owner clears a review" are different problems, and only
+   * one of them is worth an owner's attention today.
+   */
+  blockedOn: string | null;
+  authMode: string;
+  readTransport: string;
+  /** Cursor freshness — four states; see cursor-freshness.ts for why not a nullable date. */
+  cursor: SocialCursorFreshness;
+  /**
+   * The storm cap this platform's rate budget funds, and whether a provider
+   * throttle currently HOLDS all launches. `hold` is not `maxRuns: 0`: a cap of
+   * zero says rationed-to-nothing, a hold says the provider told us to stop.
+   */
+  rateBudget: {
+    maxRuns: number;
+    windowSeconds: number;
+    basis: string;
+    hold: { reason: string; retryForbidden: boolean; untilMs: number | null } | null;
+  };
+  /** Write path verified separately from the row (a row can read before it can write). */
+  writeVerified: boolean;
+  writeVerbs: string[];
+}
+
 export interface ExternalTriggerSourceAdminRow {
   id: string;
   kind: string;
@@ -84,6 +132,8 @@ export interface ExternalTriggerSourceAdminRow {
   bindingCount: number;
   armedBindingCount: number;
   failedDeliveries24h: number;
+  /** Null for every non-social source kind. */
+  social: ExternalTriggerSocialAdminFacts | null;
 }
 
 export interface ExternalTriggerBindingAdminRow {
@@ -825,6 +875,49 @@ export function disabledExternalTriggerAdminSnapshot(): ExternalTriggerAdminSnap
   };
 }
 
+/**
+ * Derive a social source's platform facts, or null for a non-social kind.
+ *
+ * Exported for direct testing: the pane's correctness rests on this returning
+ * null for every kind the registry does not know, so that a gmail or slack
+ * source can never pick up a social platform's rate budget by accident.
+ */
+export function socialAdminFacts(
+  kind: string,
+  cursor: unknown,
+  nowMs: number,
+): ExternalTriggerSocialAdminFacts | null {
+  const row = getSocialPlatform(kind);
+  if (!row) return null;
+  // `read` for the cap: the poll loop is what spends budget continuously, and
+  // it is the spend an owner watching this pane is deciding about.
+  const policy = socialStormPolicyFor(row, 'read');
+  return {
+    platformId: row.id,
+    label: row.label,
+    wave: row.wave,
+    verified: isSocialPlatformVerified(row),
+    blockedOn: row.blockedOn ?? null,
+    authMode: row.auth.mode,
+    readTransport: row.read.transport,
+    cursor: socialCursorFreshness(cursor, nowMs),
+    rateBudget: {
+      maxRuns: policy.maxRuns,
+      windowSeconds: policy.windowSeconds,
+      basis: policy.basis.kind,
+      hold: policy.hold
+        ? {
+            reason: policy.hold.reason,
+            retryForbidden: policy.hold.retryForbidden,
+            untilMs: policy.hold.untilMs,
+          }
+        : null,
+    },
+    writeVerified: typeof row.write.verifiedAt === 'string' && row.write.verifiedAt.length > 0,
+    writeVerbs: [...row.write.verbs],
+  };
+}
+
 /** Read the one workspace-scoped snapshot rendered by /admin/triggers. */
 export async function loadExternalTriggerAdminSnapshot(
   sql: postgres.Sql,
@@ -906,9 +999,11 @@ export async function loadExternalTriggerAdminSnapshot(
       )::int AS count`,
   ]);
 
+  const nowMs = Date.now();
   const sources = sourceRows.map((row) => ({
     ...row,
     lastConnectedAt: iso(row.lastConnectedAt),
+    social: socialAdminFacts(row.kind, row.cursor, nowMs),
   }));
   const bindings = bindingRows.map(
     (row): ExternalTriggerBindingAdminRow => ({
