@@ -15,6 +15,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { htmlToText } from '../../html-to-text';
 import type { GaiaToolSpec, GaiaToolset, ToolHandler } from './agent';
 
 /* -------------------------------------------------------------------------- */
