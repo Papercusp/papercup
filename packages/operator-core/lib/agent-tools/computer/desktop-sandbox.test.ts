@@ -140,8 +140,17 @@ describe('buildDesktopSandboxCommand — D-015 mount plan', () => {
     }
   });
 
-  it('does NOT pass --die-with-parent: a desktop app deliberately outlives its launcher (EI-16635)', () => {
-    expect(build().argv).not.toContain('--die-with-parent');
+  it('BINDS the app to its desktop with --die-with-parent, so teardown cannot orphan the scope', () => {
+    // ⚠ This assertion was originally written INVERTED, on the reasoning that EI-16635
+    // removed this flag for background jobs. That reasoning does not transfer: there, the
+    // launcher is meant to exit first; here, bwrap's parent is the long-lived scope client
+    // that IS the desktop. Live accessibility tests caught it — 6 red on
+    // "the systemd-run client exited but its scope still holds processes" (WI-37509).
+    // Kept as a named assertion so the flag cannot be dropped again by the same argument.
+    const argv = build().argv;
+    expect(argv).toContain('--die-with-parent');
+    // …and it must precede the `--` terminator, or it would be an argument to the APP.
+    expect(argv.indexOf('--die-with-parent')).toBeLessThan(argv.lastIndexOf('--'));
   });
 });
 

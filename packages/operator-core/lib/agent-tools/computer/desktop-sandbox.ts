@@ -220,11 +220,21 @@ export function buildDesktopSandboxCommand(
   // home, and a later change to that choice must not silently un-mask ~/.ssh.
   argv.push(...credentialMaskArgs(home, opts.maskExists));
 
-  // NO `--die-with-parent`. A desktop app is long-lived and deliberately outlives the call
-  // that launched it; EI-16635 is the recorded case of that flag killing exactly this shape
-  // of process. Lifetime is the task ledger's job — the app is enrolled as a child of the
-  // Xvfb task, so `killTask(taskId, { includeSubtree: true })` reaps it.
-  argv.push('--', ...input.cmd);
+  // `--die-with-parent` — and note this is the OPPOSITE of what the capability sandbox does
+  // for a background job, deliberately.
+  //
+  // EI-16635 removed this flag there because a `capability:bash` background job is supposed
+  // to OUTLIVE the call that launched it, so binding it to its launcher killed it 3-6s in.
+  // A desktop app is the other shape: bwrap's parent here is the long-lived systemd-run
+  // scope client that represents the desktop itself, so "die with parent" means "die when
+  // the desktop is torn down" — precisely the lifetime we want.
+  //
+  // MEASURED, not assumed. Without it, `release()` SIGTERMs the scope client, bwrap keeps
+  // holding the app, and managed-spawn reports `the systemd-run client exited but its scope
+  // still holds processes` (WI-37509) — an orphaned scope waiting on the reconciler. That is
+  // a real leak on a box where desktops churn, and it surfaced as 6 red tests in
+  // accessibility-live the first time this module wrapped a provisioned app.
+  argv.push('--die-with-parent', '--', ...input.cmd);
 
   return { binary: 'bwrap', argv, sandboxed: true, reason: 'sandboxed' };
 }
