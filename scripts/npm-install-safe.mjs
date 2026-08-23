@@ -198,7 +198,9 @@ export function runCommandUnderInstallMutex({
   return withFsMutex(
     lockName,
     async () => {
-      console.log(`NPM_INSTALL_SAFE guarding reader: ${commandArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
+      // Reader diagnostics belong on stderr: callers such as ptool expose the
+      // child command's stdout as a machine-readable JSON stream.
+      console.error(`NPM_INSTALL_SAFE guarding reader: ${commandArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
       const result = runCommand(command, args, {
         cwd: repoRoot,
         stdio: 'inherit',
@@ -209,7 +211,7 @@ export function runCommandUnderInstallMutex({
     },
     {
       onWaiting: ({ owner, elapsedMs }) => {
-        console.log(
+        console.error(
           `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
         );
       },
