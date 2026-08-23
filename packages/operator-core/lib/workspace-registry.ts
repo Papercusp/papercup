@@ -98,17 +98,17 @@ export class WorkspaceRegistryUnreadableError extends Error {
  * retries a BOUNDED handful of times with a short backoff rather than once —
  * EI-21148378726402614: two concurrent MCP calls both hit "Unexpected end of
  * JSON input" against this file, and it "self-recovered and [was] valid"
- * seconds later, meaning the transient window sometimes outlasts a single
- * immediate re-read (heavy concurrent-write load on this fleet, another
- * process's OS-level read scheduling, a filesystem this file happens to sit
- * on — the exact producer doesn't matter). A few retries a few ms apart cost
- * nothing on the happy path (they only run once the first read has already
- * failed to parse) and absorb that window; a GENUINELY corrupt registry still
- * exhausts the budget and throws — this is resilience against a transient
- * read, never a license to treat real corruption as empty (WI-6734).
+ * seconds later, meaning the transient window can outlast a short fixed retry
+ * burst (heavy concurrent-write load on this fleet, another process's OS-level
+ * read scheduling, a filesystem this file happens to sit on — the exact
+ * producer doesn't matter). A bounded progressive backoff keeps the first
+ * retries fast while giving a longer transient window up to 635ms to settle.
+ * This costs nothing on the happy path (it only runs once the first read has
+ * already failed to parse); a GENUINELY corrupt registry still exhausts the
+ * budget and throws — this is resilience against a transient read, never a
+ * license to treat real corruption as empty (WI-6734).
  */
-const REGISTRY_READ_RETRIES = 5;
-const REGISTRY_READ_RETRY_DELAY_MS = 4;
+const REGISTRY_READ_RETRY_DELAYS_MS = [5, 10, 20, 40, 80, 160, 320] as const;
 
 /**
  * Bounded synchronous sleep for the read-retry backoff below. Blocks the
@@ -138,8 +138,9 @@ export function readRegistry(): WorkspaceRegistry {
       // the dangerous one, because then we genuinely do not know what it says.
       if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return { workspaces: [] };
       if (firstErr === undefined) firstErr = err;
-      if (attempt >= REGISTRY_READ_RETRIES) throw new WorkspaceRegistryUnreadableError(p, firstErr);
-      sleepSyncMs(REGISTRY_READ_RETRY_DELAY_MS);
+      const delayMs = REGISTRY_READ_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      sleepSyncMs(delayMs);
       continue;
     }
 
@@ -150,8 +151,9 @@ export function readRegistry(): WorkspaceRegistry {
       // against a freshly re-read (not re-parsed-from-cache) file before
       // declaring it corrupt — see the retry-budget rationale above.
       if (firstErr === undefined) firstErr = err;
-      if (attempt >= REGISTRY_READ_RETRIES) throw new WorkspaceRegistryUnreadableError(p, firstErr);
-      sleepSyncMs(REGISTRY_READ_RETRY_DELAY_MS);
+      const delayMs = REGISTRY_READ_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      sleepSyncMs(delayMs);
     }
   }
 }

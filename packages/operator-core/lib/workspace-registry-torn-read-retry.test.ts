@@ -77,17 +77,17 @@ describe('workspace-registry — read retry absorbs a transient torn read (EI-21
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('rides out a handful of transient garbage reads instead of throwing', () => {
+  it('rides out a transient garbage-read window that exceeds the old retry budget', () => {
     const reg = {
       current: 'papercusp-workspace',
       workspaces: [{ id: 'papercusp-workspace', name: 'P', createdAt: 1 }],
     };
     writeRegistry(reg);
 
-    // Fewer garbage reads than the retry budget — readRegistry() must
-    // eventually see the real, valid content and return it rather than
-    // throwing on the first (or second) failed attempt.
-    registryReadRig.garbageReadsRemaining = 3;
+    // The old policy retried only five times (20ms total), so six consecutive
+    // truncated reads exhausted it before the real content could be observed.
+    // The progressive policy must keep going and return the valid registry.
+    registryReadRig.garbageReadsRemaining = 6;
     expect(readRegistry()).toEqual(reg);
     // The rig's counter hit zero — proving the retries actually happened
     // (a single-attempt reader would have thrown well before this).
