@@ -424,6 +424,31 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(txt).toBe('pending_edit:object{file,old_string,new_string?}');
   });
 
+  it('renders typed entry fields for a record-valued object instead of a bare object', () => {
+    const txt = schemaToText({
+      type: 'object',
+      properties: {
+        instrumentSnapshots: {
+          type: 'object',
+          propertyNames: { type: 'string', minLength: 1 },
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              verdict: { type: 'string', enum: ['pass', 'fail', 'unknown'] },
+              measuredAt: { type: 'string', minLength: 1 },
+              window: { type: 'object' },
+              value: {},
+              evidenceRef: { type: 'string', maxLength: 500 },
+            },
+            required: ['verdict', 'measuredAt'],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+    expect(txt).toBe('instrumentSnapshots?:object{*:object{verdict,measuredAt,window?,value?,evidenceRef?}}');
+  });
+
   it('renders a bare object type with no nested braces when it has no properties', () => {
     expect(schemaToText({ properties: { anything: { type: 'object' } } })).toBe('anything?:object');
   });

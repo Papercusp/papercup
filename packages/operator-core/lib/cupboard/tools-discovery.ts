@@ -111,13 +111,40 @@ export type ToolMetaIndex = Map<
  * the fields a caller needs; a deeper nest still falls back to bare `object`).
  * Empty/non-object nested schemas render nothing.
  */
-function nestedObjectFieldsText(p: { type?: unknown; properties?: unknown; required?: unknown }): string {
-  if (p.type !== 'object' || !p.properties || typeof p.properties !== 'object') return '';
-  const nestedRequired = new Set<string>(Array.isArray(p.required) ? (p.required as string[]) : []);
-  const names = Object.keys(p.properties as Record<string, unknown>).map(
+function objectFieldsText(schema: { properties?: unknown; required?: unknown }): string {
+  if (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) return '';
+  const nestedRequired = new Set<string>(Array.isArray(schema.required) ? (schema.required as string[]) : []);
+  const names = Object.keys(schema.properties as Record<string, unknown>).map(
     (n) => `${n}${nestedRequired.has(n) ? '' : '?'}`,
   );
-  return names.length > 0 ? `{${names.join(',')}}` : '';
+  return names.join(',');
+}
+
+function nestedObjectFieldsText(p: {
+  type?: unknown;
+  properties?: unknown;
+  required?: unknown;
+  additionalProperties?: unknown;
+}): string {
+  if (p.type !== 'object') return '';
+  const direct = objectFieldsText(p);
+  if (direct) return `{${direct}}`;
+
+  // z.record() advertises the entry schema under additionalProperties rather
+  // than properties. Keep the map nature visible so callers do not mistake a
+  // record of typed entries for a free-form object.
+  if (
+    p.additionalProperties &&
+    typeof p.additionalProperties === 'object' &&
+    !Array.isArray(p.additionalProperties)
+  ) {
+    const valueSchema = p.additionalProperties as { type?: unknown; properties?: unknown; required?: unknown };
+    if (valueSchema.type === 'object') {
+      const valueFields = objectFieldsText(valueSchema);
+      if (valueFields) return `{*:object{${valueFields}}}`;
+    }
+  }
+  return '';
 }
 
 /**
