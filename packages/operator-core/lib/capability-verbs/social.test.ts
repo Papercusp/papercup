@@ -354,7 +354,17 @@ describe('write gate — read-verified does not imply write-verified', () => {
   });
 
   it('refuses every unverified platform outright', () => {
-    for (const row of listSocialPlatforms().filter((candidate) => candidate.wave !== 'A')) {
+    // Filtered on VERIFICATION, not on wave. Those were the same set until
+    // P-021 verified LinkedIn — a Wave C row whose posting grant turned out to
+    // be self-serve — at which point "wave !== A" started meaning "unverified"
+    // only by coincidence. Keying on the property the assertion is actually
+    // about stops the next verified Wave B/C row from failing a test that never
+    // meant to make a claim about it.
+    const unverified = listSocialPlatforms().filter((candidate) => !candidate.write.verifiedAt);
+    // Anti-vacuity: if every row became verified this would pass while checking
+    // nothing.
+    expect(unverified.length).toBeGreaterThan(0);
+    for (const row of unverified) {
       expect(() => assertSocialWriteAllowed(row.id, 'post')).toThrow(SocialPlatformUnusableError);
     }
   });
