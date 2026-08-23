@@ -1190,6 +1190,7 @@ import './plans/get-input-schema';
 import './plans/set-input-schema';
 import './plans/get-output-schema';
 import './plans/set-output-schema';
+import './plans/publish-outputs';
 import './plans/attention';
 import './plans/search';
 import './plans/lint';
