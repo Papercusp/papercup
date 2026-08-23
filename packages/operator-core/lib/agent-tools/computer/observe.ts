@@ -110,7 +110,7 @@ export async function runClickElement(args: z.infer<typeof clickArgs>, ctx: Comp
   const bus = await resolveBus(target.display, ctx.signal);
   const cmd = actionCommand(target.display, bus, args.ref, args.action);
   const r = await computerExec(cmd.bin, cmd.args, { env: cmd.env, signal: ctx.signal });
-  const parsed = parseWalkerOutput(r.stdout.toString()) as unknown as A11yActionResult | null;
+  const parsed = parseA11yActionOutput(r.stdout.toString());
 
   if (parsed?.ok) {
     return {
