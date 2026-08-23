@@ -205,11 +205,24 @@ function argvBasename(arg) {
   return path.basename(String(arg).replaceAll('\\', '/'));
 }
 
+function isCommandToken(arg, commandName, commandBasenames) {
+  const normalized = String(arg).replaceAll('\\', '/');
+  if (commandBasenames.has(path.posix.basename(normalized))) return true;
+
+  const pathSegments = normalized.split('/');
+  return pathSegments.some(
+    (segment, index) => segment === 'node_modules' && pathSegments[index + 1] === commandName,
+  );
+}
+
 /**
  * Match a literal command sequence at argv-token boundaries.
  *
  * The first sequence token is compared by basename, so an installed binary
  * such as `/repo/node_modules/.bin/gitnexus` is equivalent to `gitnexus`.
+ * Interpreter-launched package entrypoints are also recognized when their
+ * token lives under `node_modules/<command>/`, for example
+ * `/repo/node_modules/gitnexus/dist/cli/index.js`.
  * Every following token is compared literally and must be immediately
  * adjacent. The argv[0] basename must also be an interpreter that could
  * execute the command. This prevents prose in a JSON/tool payload or a
@@ -235,7 +248,7 @@ export function matchesAdjacentArgvSequence(argv, sequence, opts = {}) {
 
   const commandBasenames = new Set(opts.commandBasenames ?? [sequence[0], `${sequence[0]}.js`]);
   for (let start = 0; start <= operationalArgv.length - sequence.length; start += 1) {
-    if (!commandBasenames.has(argvBasename(operationalArgv[start]))) continue;
+    if (!isCommandToken(operationalArgv[start], sequence[0], commandBasenames)) continue;
     if (sequence.slice(1).every((token, offset) => operationalArgv[start + offset + 1] === token)) return true;
   }
   return false;

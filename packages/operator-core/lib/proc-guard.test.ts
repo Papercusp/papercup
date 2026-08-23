@@ -123,6 +123,15 @@ describe('matchesAdjacentArgvSequence', () => {
     ).toBe(true);
   });
 
+  it('matches a node-launched gitnexus package entrypoint by node_modules path', () => {
+    expect(
+      matchesAdjacentArgvSequence(
+        ['node', '/repo/node_modules/gitnexus/dist/cli/index.js', 'analyze', '/repo', '--skip-agents-md'],
+        sequence,
+      ),
+    ).toBe(true);
+  });
+
   it('matches the direct gitnexus executable', () => {
     expect(matchesAdjacentArgvSequence(['/usr/local/bin/gitnexus', 'analyze', '/repo'], sequence)).toBe(true);
   });
@@ -362,6 +371,13 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     fixtureProc(fixtureRoot, 777, 1, ['npx', '--yes', 'gitnexus', 'analyze', '/repo']);
     fixtureProc(fixtureRoot, 778, 1, ['node', '/repo/bin/gitnexus.js', 'analyze', '/repo']);
     fixtureProc(fixtureRoot, 779, 1, ['/usr/local/bin/gitnexus', 'analyze', '/repo']);
+    fixtureProc(fixtureRoot, 780, 1, [
+      'node',
+      '/repo/node_modules/gitnexus/dist/cli/index.js',
+      'analyze',
+      '/repo',
+      '--skip-agents-md',
+    ]);
     fixtureProc(fixtureRoot, 888, 1, [
       'python3',
       '-',
@@ -375,8 +391,8 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
       selfPid: 100,
       argvSequence: sequence,
     });
-    expect(report.matches.map((m) => m.pid)).toEqual([777, 778, 779]);
-    expect(report.fullMatches.map((m) => m.pid).sort((a, b) => a - b)).toEqual([777, 778, 779, 888, 889]);
+    expect(report.matches.map((m) => m.pid)).toEqual([777, 778, 779, 780]);
+    expect(report.fullMatches.map((m) => m.pid).sort((a, b) => a - b)).toEqual([777, 778, 779, 780, 888, 889]);
     expect(report.argvTextOnly.map((m) => m.pid).sort((a, b) => a - b)).toEqual([888, 889]);
   });
 
