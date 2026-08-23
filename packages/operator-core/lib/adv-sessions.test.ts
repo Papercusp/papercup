@@ -1,14 +1,46 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const advSessionRowsMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: advSessionRowsMock }),
+}));
+
 import {
   isDeadTerminalLaunch,
   isFailedTerminalLaunch,
   fallbackCodexLaunchSpecFromAdvSession,
+  readAdvSessionLaunchRecordByOwner,
   toIsoTimestamp,
   type AdvSessionRow,
 } from './adv-sessions';
 
 const SOURCE = readFileSync(new URL('./adv-sessions.ts', import.meta.url), 'utf8');
+
+beforeEach(() => {
+  advSessionRowsMock.mockReset();
+  advSessionRowsMock.mockResolvedValue([]);
+});
+
+describe('readAdvSessionLaunchRecordByOwner', () => {
+  it('maps the newest owner-scoped launch record and keeps the query schema-safe', async () => {
+    const launchSpec = { v: 1, workspaceId: 'ws-test', fleet: { slug: 'byoc' } };
+    const launchArgv = ['psu', '--fleet=byoc'];
+    advSessionRowsMock.mockResolvedValueOnce([
+      { workspace_id: 'ws-test', launch_spec: launchSpec, launch_argv: launchArgv },
+    ]);
+
+    await expect(readAdvSessionLaunchRecordByOwner('su-member', 'ws-test')).resolves.toEqual({
+      workspaceId: 'ws-test',
+      launchSpec,
+      launchArgv,
+    });
+    const template = advSessionRowsMock.mock.calls[0]?.[0] as readonly string[];
+    expect(Array.from(template).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
+    expect(Array.from(template).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
+  });
+});
 
 describe('fallbackCodexLaunchSpecFromAdvSession', () => {
   const row = (over: Partial<AdvSessionRow> = {}): AdvSessionRow =>
