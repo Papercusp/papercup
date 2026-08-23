@@ -789,6 +789,13 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 195_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// `locks:heartbeat_resource` may heartbeat multiple lock ids sequentially and
+// probe the caller plus special coordination domains for each id. Under a
+// serialized package build, each transaction can consume the configured
+// contention window; the ordinary 30s ptool deadline can therefore abandon a
+// still-running heartbeat batch before its per-lock results are returned.
+export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
+
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
@@ -800,6 +807,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
 ]);
 
 /**

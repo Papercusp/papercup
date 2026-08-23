@@ -30,6 +30,7 @@ import {
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   timeoutForTool,
   isLoopPressureShed,
@@ -573,6 +574,23 @@ describe('ptool timeoutForTool — scorecards:emit outlives its 180s tool budget
   it('honours the same override through the deferred tools:invoke transport', () => {
     expect(timeoutForTool('tools:invoke', { name: 'scorecards:emit' }))
       .toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — locks:heartbeat_resource outlives serialized multi-lock renewal (EI-21212666377233442)', () => {
+  it('gives a multi-lock heartbeat more than the flat 30s client deadline', () => {
+    expect(timeoutForTool('locks:heartbeat_resource', {
+      lock_ids: [
+        '11111111-1111-1111-1111-111111111111',
+        '22222222-2222-2222-2222-222222222222',
+      ],
+    })).toBe(PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS);
+    expect(PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the same budget through the deferred tools:invoke transport', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'locks:heartbeat_resource' }))
+      .toBe(PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS);
   });
 });
 
