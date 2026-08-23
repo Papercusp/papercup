@@ -69,7 +69,26 @@ export type SocialCursorState =
   /** No cursor has been persisted yet — cold, never reconciled. */
   | 'never-synced'
   /** A cursor is stored but matches no shape we know. A defect signal. */
-  | 'unrecognized';
+  | 'unrecognized'
+  /**
+   * The PLATFORM has no readable content stream at any grant tier we hold, so
+   * there is no cursor to be fresh or stale (LinkedIn, P-021: `read: null`).
+   *
+   * This is D-050's own rule applied one level up. D-050 exists because reading
+   * `cursor.watermark` directly reported healthy reddit/bluesky/mastodon
+   * sources as "never synced" forever — a warning state that no action could
+   * clear. A write-only platform hits that same wall harder: it will NEVER
+   * reconcile, so `never-synced` would be permanently true, permanently
+   * alarming, and permanently not actionable. The two situations look identical
+   * on the pane and mean opposite things ("nobody has run this yet" vs "this
+   * can never run"), so they get different states.
+   *
+   * This verdict is NOT derivable from a cursor — the cursor is genuinely empty
+   * either way — so `socialCursorFreshness` cannot return it. Only a caller
+   * holding the registry row can, which is why `socialAdminFacts` short-circuits
+   * on `read === null` before classifying.
+   */
+  | 'not-readable';
 
 export interface SocialCursorFreshness {
   state: SocialCursorState;

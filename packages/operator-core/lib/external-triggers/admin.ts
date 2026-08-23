@@ -101,8 +101,13 @@ export interface ExternalTriggerSocialAdminFacts {
    */
   blockedOn: string | null;
   authMode: string;
-  readTransport: string;
-  /** Cursor freshness — four states; see cursor-freshness.ts for why not a nullable date. */
+  /**
+   * Null when the platform cannot be read at any grant tier we hold — a
+   * write-only row (`read: null`). Distinct from an unknown: the registry has
+   * verified that no readable stream exists.
+   */
+  readTransport: string | null;
+  /** Cursor freshness; see cursor-freshness.ts for why not a nullable date. */
   cursor: SocialCursorFreshness;
   /**
    * The storm cap this platform's rate budget funds, and whether a provider
