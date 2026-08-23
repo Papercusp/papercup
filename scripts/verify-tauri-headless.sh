@@ -213,6 +213,33 @@ EOF
   exit 0
 fi
 
+# Validate and remember the assertion argv BEFORE any long-lived verifier
+# resources are created. The command bytes in argv are immutable, but a
+# file-backed argument (for example `bash scripts/verify-count-surfaces-tauri.sh`)
+# is read only when the final command starts. Capture those files now and
+# re-check them immediately before execution so a peer edit during the boot
+# cannot turn this run into a verdict about different assertion code
+# (EI-21166620509752037).
+ASSERTION_MODE=0
+ASSERTION_ARGS=()
+ASSERTION_CWD="$PWD"
+case "${1:-}" in
+  --)
+    [ "$#" -ge 2 ] || {
+      echo "FATAL: no assertion command given. Usage: $0 -- <command...> (or --boot-only)" >&2
+      exit 2
+    }
+    ASSERTION_MODE=1
+    ASSERTION_ARGS=("${@:2}")
+    ;;
+  --boot-only)
+    ;;
+  *)
+    echo "FATAL: expected -- <assertion-command...> or --boot-only" >&2
+    exit 2
+    ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PAPERCUSP_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
@@ -379,6 +406,36 @@ write_run_marker "$$" || {
   echo "FATAL: could not write verifier ownership marker under $WORK" >&2
   exit 1
 }
+
+ASSERTION_INPUT_MANIFEST=""
+ASSERTION_INPUT_COUNT=0
+write_assertion_input_manifest() {
+  [ "$ASSERTION_MODE" -eq 1 ] || return 0
+  command -v sha256sum >/dev/null 2>&1 || {
+    echo "FATAL: sha256sum is required to freeze file-backed assertion inputs" >&2
+    return 1
+  }
+
+  ASSERTION_INPUT_MANIFEST="$WORK/assertion-inputs.sha256"
+  : > "$ASSERTION_INPUT_MANIFEST" || return 1
+  local arg resolved_dir resolved
+  for arg in "${ASSERTION_ARGS[@]}"; do
+    [ -f "$arg" ] || continue
+    resolved_dir="$(cd "$(dirname -- "$arg")" 2>/dev/null && pwd -P)" || return 1
+    resolved="$resolved_dir/$(basename -- "$arg")"
+    [ -f "$resolved" ] || continue
+    sha256sum -- "$resolved" >> "$ASSERTION_INPUT_MANIFEST" || return 1
+    ASSERTION_INPUT_COUNT=$((ASSERTION_INPUT_COUNT + 1))
+  done
+
+  if [ "$ASSERTION_INPUT_COUNT" -gt 0 ]; then
+    log "assertion input snapshot captured before boot: $ASSERTION_INPUT_COUNT file-backed argument(s)"
+  else
+    log "assertion input snapshot: command has no file-backed argv inputs"
+  fi
+}
+
+write_assertion_input_manifest || exit $?
 
 # EI-18805100008031244 (correct-state ask #3, "report contention honestly at
 # boot"): when the port picker retries or a bind loses a race, the caller was
@@ -1106,6 +1163,33 @@ teardown() {
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
   rm -rf "$WORK/spa" 2>/dev/null
   exit "$ec"
+}
+
+verify_assertion_input_integrity() {
+  [ "$ASSERTION_MODE" -eq 1 ] || return 0
+  [ -s "$ASSERTION_INPUT_MANIFEST" ] || return 0
+
+  local check_output
+  if check_output="$(sha256sum -c -- "$ASSERTION_INPUT_MANIFEST" 2>&1)"; then
+    log "assertion input integrity OK: $ASSERTION_INPUT_COUNT file-backed argument(s) unchanged since boot"
+    return 0
+  fi
+
+  {
+    echo
+    echo "  ┌────────────────────────────────────────────────────────────────────────┐"
+    echo "  │  ⛔ ASSERTION INPUT CHANGED DURING VERIFIER BOOT                       │"
+    echo "  │                                                                        │"
+    echo "  │  A file-backed assertion argument changed after its pre-boot snapshot.│"
+    echo "  │  Refusing to execute different assertion bytes against this run's      │"
+    echo "  │  frozen Tauri instance (EI-21166620509752037).                       │"
+    echo "  │                                                                        │"
+    echo "  │  Re-run the verifier after the assertion script is stable.             │"
+    echo "  └────────────────────────────────────────────────────────────────────────┘"
+    [ -n "$check_output" ] && printf '%s\n' "$check_output"
+    echo
+  } >&2
+  return 3
 }
 
 # ── boot Xvfb (isolated, headless — never DISPLAY :0/:1) ────────────────────
@@ -2086,10 +2170,6 @@ EOF
 fi
 
 [ "${1:-}" = "--" ] && shift
-if [ "$#" -eq 0 ]; then
-  echo "FATAL: no assertion command given. Usage: $0 -- <command...> (or --boot-only)" >&2
-  exit 2
-fi
 
 # ── EI-19444780917356384: RUN the freshness guard, don't just advertise it ──
 # The frozen SPA snapshot (EI-10364) is immutable by design, so an edit that
@@ -2161,6 +2241,8 @@ elif [ -f "$VERIFY_TAURI_FRESHNESS_CHECK" ] && ! bash "$VERIFY_TAURI_FRESHNESS_C
   log "    To settle it decisively, re-run with a string unique to your change:"
   log "      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='<your string>' $0 -- <command...>"
 fi
+
+verify_assertion_input_integrity || exit $?
 
 log "running assertion command: $*"
 "$@"
