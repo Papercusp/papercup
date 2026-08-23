@@ -134,6 +134,20 @@ export interface GoalRowInput {
    * opinion — which is all of them except the goal-package start door.
    */
   standing?: boolean;
+  /**
+   * Denominator for `budgetCents` in SECONDS
+   * (work-on-everything-goal-2026-08-23 P-004, migration 914).
+   *
+   * Omitted/null ⇒ the ceiling is per goal LIFETIME, which is what every
+   * pre-P-004 caller means and what the column defaults to. A positive value
+   * makes it spend-per-trailing-window — which a STANDING goal REQUIRES, since
+   * an ongoing duty's lifetime spend crosses any finite ceiling by
+   * construction, turning a lifetime ceiling into a scheduled auto-kill.
+   *
+   * Deliberately independent of `standing`: a window is a property of the
+   * CEILING, not of the goal's polarity (D-001 — no bespoke rails).
+   */
+  budgetWindowSec?: number | null;
 }
 
 /**
@@ -150,11 +164,12 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
   const metadata = { ...(row.metadata ?? {}) };
   await tx`
     INSERT INTO harness_shared.goals
-      (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status,
-       standing, kill_criterion, tripwires, metadata, launch_settings)
+      (id, install_slug, workspace_id, title, body, parent_id, budget_cents, budget_window_sec,
+       status, standing, kill_criterion, tripwires, metadata, launch_settings)
     VALUES
       (${row.id}, ${row.installSlug}, ${row.workspaceId}, ${row.title}, ${row.body ?? null},
-       ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.status ?? 'active'},
+       ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.budgetWindowSec ?? null},
+       ${row.status ?? 'active'},
        ${row.standing ?? false},
        ${row.killCriterion ?? null},
        ${row.tripwires?.length ? JSON.stringify(row.tripwires) : null}::jsonb,

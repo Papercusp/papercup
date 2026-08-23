@@ -93,6 +93,28 @@ import { setMode } from '../../modes/store';
  * here. The stale-status problem belongs to whatever re-delivers a brief later,
  * which is a different surface.
  */
+/**
+ * Render a budget window as a duration a reader parses at a glance.
+ *
+ * Exact multiples only, largest unit first. A window like 500000s is NOT
+ * rounded to "6 days" — a budget denominator that reads as a round number it
+ * is not is precisely the kind of small lie that makes an agent mis-plan its
+ * spend, so an inexact value falls back to raw seconds.
+ */
+function describeWindow(sec: number): string {
+  for (const [unit, size] of [
+    ['week', 604_800],
+    ['day', 86_400],
+    ['hour', 3_600],
+  ] as const) {
+    if (sec % size === 0) {
+      const n = sec / size;
+      return n === 1 ? unit : `${n} ${unit}s`;
+    }
+  }
+  return `${sec}s`;
+}
+
 export function buildGoalKickoffBrief(opts: {
   goalId: string;
   title: string;
@@ -112,6 +134,12 @@ export function buildGoalKickoffBrief(opts: {
    * different true statement about why it is absent.
    */
   standing?: boolean;
+  /**
+   * Seconds; the denominator for `budgetCents` (P-004). Null/omitted ⇒ the
+   * ceiling is for the goal's lifetime and the CEILING line reads as it always
+   * has.
+   */
+  budgetWindowSec?: number | null;
   /** Injectable for tests; defaults to the moment the brief is written. */
   writtenAt?: Date;
 }): string {
@@ -123,10 +151,19 @@ export function buildGoalKickoffBrief(opts: {
      never gave. Never render `$0.00` or an empty criterion here — a fabricated
      constraint is worse than an acknowledged absent one. */
   const kill = opts.killCriterion?.trim();
+  /*
+   * The ceiling's DENOMINATOR is part of the number (P-004). "$25.00 declared"
+   * means two different budgets depending on whether a window is set, and the
+   * agent cannot tell which from the figure alone — so an unqualified amount
+   * on a windowed goal reads as far more restrictive than it is, and on a
+   * standing goal reads as a total that will inevitably be reached.
+   */
   const ceiling =
     opts.budgetCents == null
       ? null
-      : `$${(opts.budgetCents / 100).toFixed(2)}`;
+      : `$${(opts.budgetCents / 100).toFixed(2)}${
+          opts.budgetWindowSec == null ? '' : ` per ${describeWindow(opts.budgetWindowSec)}`
+        }`;
   const spendVisibility =
     'SPEND VISIBILITY — use `goals:pots { goalId }` for measured child-fleet spend. No reliable interactive-session attribution source is exposed; do not invent per-session actuals.';
   const writtenAt = (opts.writtenAt ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -221,6 +258,17 @@ export default defineTool({
       .optional()
       .describe(
         'OPTIONAL — the declared spend ceiling in cents, the number actuals are reported against. Omitted ⇒ stored NULL (no ceiling declared), NOT 0.',
+      ),
+    /* work-on-everything-goal-2026-08-23 P-004. Omitted ⇒ the ceiling is per
+       goal LIFETIME (unchanged for every existing caller). Independent of
+       `standing` on purpose: the window is a property of the CEILING. */
+    budgetWindowSec: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'OPTIONAL — the denominator for budgetCents, in seconds (e.g. 604800 = weekly). Omitted ⇒ the ceiling is for the goal\'s LIFETIME. Strongly advised WITH standing:true: a standing goal\'s lifetime spend crosses any finite ceiling eventually, so a lifetime ceiling on one is really a scheduled auto-kill.',
       ),
     /* work-on-everything-goal-2026-08-23 P-001. Default false, and the DEFAULT
        is the honest one for every caller that has no opinion: a goal is an
@@ -358,6 +406,7 @@ export default defineTool({
         budgetCents: args.budgetCents,
         status: 'active',
         standing: args.standing ?? false,
+        budgetWindowSec: args.budgetWindowSec ?? null,
         killCriterion: args.killCriterion,
         tripwires: args.tripwires ?? null,
         metadata: { startedBy: callerOwnerId ?? 'operator-ui', agentOwnerId: ownerId },
@@ -570,6 +619,7 @@ export default defineTool({
         budgetCents: args.budgetCents,
         body: args.body ?? null,
         standing: args.standing ?? false,
+        budgetWindowSec: args.budgetWindowSec ?? null,
       }),
     };
     const label = `goal · ${args.title.slice(0, 40)}`;

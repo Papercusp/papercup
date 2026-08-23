@@ -152,10 +152,17 @@ export async function sessionSpendForGoal(
   };
 }
 
-/** Both legs, combined into the number the snapshot writes. */
+/**
+ * Both legs, combined into the number the snapshot writes.
+ *
+ * `sinceMs` threads to BOTH legs unchanged (each already clamps it up to the
+ * goal's creation, so it can narrow the window but never reach back before the
+ * goal existed). Omitted ⇒ goal lifetime, which is what the snapshot wants;
+ * the rolling-window ceiling (P-004) passes one.
+ */
 export async function computeGoalSpendRollup(
   sql: Sql,
-  opts: { workspaceId: string; goalId: string },
+  opts: { workspaceId: string; goalId: string; sinceMs?: number },
 ): Promise<GoalSpendRollup> {
   const [pot, session] = await Promise.all([goalSpend(sql, opts), sessionSpendForGoal(sql, opts)]);
   const potCents = Math.round(pot.costUsd * 100);
@@ -268,8 +275,8 @@ async function enforceGoalBreaches(
   rollup: GoalSpendRollup,
   breached: ReturnType<typeof breachedTripwires>,
 ): Promise<void> {
-  const budgetRows = await sql<Array<{ budget_cents: string | null }>>`
-    SELECT budget_cents
+  const budgetRows = await sql<Array<{ budget_cents: string | null; budget_window_sec: number | null }>>`
+    SELECT budget_cents, budget_window_sec
       FROM harness_shared.goals
      WHERE id = ${scope.goalId}
        AND workspace_id = ${scope.workspaceId}
@@ -277,18 +284,46 @@ async function enforceGoalBreaches(
      LIMIT 1
   `;
   const budgetCents = budgetRows[0]?.budget_cents == null ? null : Number(budgetRows[0].budget_cents);
+  const windowSec =
+    budgetRows[0]?.budget_window_sec == null ? null : Number(budgetRows[0].budget_window_sec);
+
+  /*
+   * THE DENOMINATOR (work-on-everything-goal-2026-08-23 P-004).
+   *
+   * With no window the ceiling is per goal LIFETIME and `rollup` — computed
+   * over exactly that — is the figure to judge. That is correct for an outcome
+   * goal: the ceiling bounds a bet.
+   *
+   * With a window the ceiling is spend-per-window and lifetime spend is the
+   * WRONG number, not merely a stricter one. A standing goal (P-001) pursues an
+   * ongoing duty, so its lifetime spend crosses any finite ceiling by
+   * construction — judging it against lifetime does not budget the goal, it
+   * schedules its auto-kill for whenever the total happens to arrive. Since
+   * this function KILLS on breach, getting the denominator wrong here is a
+   * silent guaranteed-termination bug, which is why the window is re-measured
+   * rather than approximated from the lifetime figure.
+   *
+   * The extra query is paid ONLY by goals that declare a window; every other
+   * goal keeps the single pre-existing read.
+   */
+  const judged =
+    budgetCents !== null && windowSec !== null
+      ? await computeGoalSpendRollup(sql, { ...scope, sinceMs: Date.now() - windowSec * 1000 })
+      : rollup;
+
   // `totalCents` is a lower bound when any sample is unpriced. If that known
   // floor already reaches the ceiling, the true spend necessarily does too;
   // the incomplete measurement marker must not prevent the terminal stop.
-  const budgetBreached = budgetCents !== null && rollup.totalCents >= budgetCents;
+  const budgetBreached = budgetCents !== null && judged.totalCents >= budgetCents;
   if (!budgetBreached && breached.length === 0) return;
 
+  const per = windowSec === null ? '' : ` per ${windowSec}s window`;
   const reasons = [
     ...(budgetBreached
       ? [
-          rollup.measured
-            ? `measured spend ${rollup.totalCents}c reached budget ${budgetCents}c`
-            : `spend floor ${rollup.totalCents}c reached budget ${budgetCents}c with ${rollup.unpricedSamples} unpriced sample(s)`,
+          judged.measured
+            ? `measured spend ${judged.totalCents}c reached budget ${budgetCents}c${per}`
+            : `spend floor ${judged.totalCents}c reached budget ${budgetCents}c${per} with ${judged.unpricedSamples} unpriced sample(s)`,
         ]
       : []),
     ...breached.map((b) => `${b.metric} ${b.current} reached threshold ${b.threshold}`),

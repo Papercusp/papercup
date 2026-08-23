@@ -502,6 +502,53 @@ describe('the kickoff brief', () => {
     });
   });
 
+  /**
+   * The ceiling's DENOMINATOR is part of the number
+   * (work-on-everything-goal-2026-08-23 P-004).
+   *
+   * `$25.00 declared` means two different budgets depending on whether a
+   * window is set, and the agent cannot tell which from the figure. On a
+   * STANDING goal the unqualified reading is the dangerous one: it presents as
+   * a total that will inevitably be reached, when the real rule is per-window.
+   */
+  describe('a windowed ceiling states its window (P-004)', () => {
+    it('renders the window beside the amount', () => {
+      const brief = buildGoalKickoffBrief({
+        goalId: 'g-1',
+        title: 't',
+        budgetCents: 2_500,
+        budgetWindowSec: 604_800,
+      });
+      expect(brief).toContain('CEILING — $25.00 per week declared.');
+    });
+
+    it('an un-windowed ceiling is unchanged — the control', () => {
+      const brief = buildGoalKickoffBrief({ goalId: 'g-1', title: 't', budgetCents: 2_500 });
+      expect(brief).toContain('CEILING — $25.00 declared.');
+      // Anchored to the CEILING line: the brief says "per-session actuals"
+      // elsewhere, so a bare not-toContain('per') would fail on unrelated prose.
+      const ceilingLine = brief.split('\n').find((l) => l.startsWith('CEILING —'));
+      expect(ceilingLine).not.toMatch(/ per /);
+    });
+
+    it('names exact multiples, and refuses to round an inexact one into a lie', () => {
+      const at = (sec: number) =>
+        buildGoalKickoffBrief({ goalId: 'g', title: 't', budgetCents: 100, budgetWindowSec: sec });
+      expect(at(604_800)).toContain('$1.00 per week');
+      expect(at(1_209_600)).toContain('$1.00 per 2 weeks');
+      expect(at(86_400)).toContain('$1.00 per day');
+      expect(at(3_600)).toContain('$1.00 per hour');
+      // 500000s is ~5.8 days. Rounding it to "6 days" would misstate the
+      // denominator of a spend rule, so it stays raw.
+      expect(at(500_000)).toContain('$1.00 per 500000s');
+    });
+
+    it('a window with no ceiling changes nothing — there is no number to qualify', () => {
+      const brief = buildGoalKickoffBrief({ goalId: 'g-1', title: 't', budgetWindowSec: 604_800 });
+      expect(brief).toContain('CEILING — none declared. Flag before any large spend.');
+    });
+  });
+
   it('does not restate the mode contract (which arrives with the mode)', () => {
     const brief = buildGoalKickoffBrief({
       goalId: 'g-1',
