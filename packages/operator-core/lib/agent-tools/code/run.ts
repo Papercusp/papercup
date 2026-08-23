@@ -704,7 +704,7 @@ function sanitizeCodeRunLogLine(raw: string): string {
     .replace(CONTROL_PATTERN, '');
 }
 
-const CODE_RUN_SUMMARY_CHAR_BUDGET = 3_500;
+export const CODE_RUN_SUMMARY_CHAR_BUDGET = 3_500;
 const CODE_RUN_SUMMARY_PROJECTION_STEPS = [
   { arrayLimit: 8, stringChars: 360, maxDepth: 4 },
   { arrayLimit: 4, stringChars: 220, maxDepth: 3 },
@@ -762,6 +762,15 @@ function noteCodeRunSummaryPath(stats: CodeRunSummaryProjectionStats, path: stri
   }
 }
 
+/**
+ * EI-21254588525256811: head-only clipping destroys the one property a caller who wrote
+ * `checkpoint.slice(-5000)` was relying on — that the END of the value survives. Keeping both ends
+ * costs the same bytes and is strictly more informative, so clip out of the MIDDLE once there is
+ * enough room for two useful segments; below that the elision marker would dominate, so the
+ * historical head-only form is kept.
+ */
+const CODE_RUN_SUMMARY_ELISION_MIN_CHARS = 240;
+
 function clipCodeRunSummaryString(
   value: string,
   path: string,
@@ -772,6 +781,20 @@ function clipCodeRunSummaryString(
   stats.stringsTruncated++;
   stats.omittedItems += value.length - maxChars;
   noteCodeRunSummaryPath(stats, path);
+
+  if (maxChars >= CODE_RUN_SUMMARY_ELISION_MIN_CHARS) {
+    // Size the kept span against the WIDEST marker this value could produce, so the result is
+    // guaranteed to fit `maxChars` without a second pass over a marker whose digit count depends
+    // on the very number it reports.
+    const keep = maxChars - `… [truncated ${value.length} chars] …`.length;
+    if (keep >= 2) {
+      const head = Math.ceil(keep / 2);
+      const tail = keep - head;
+      const marker = `… [truncated ${value.length - keep} chars] …`;
+      return value.slice(0, head) + marker + (tail > 0 ? value.slice(value.length - tail) : '');
+    }
+  }
+
   const suffix = `… [truncated ${value.length - maxChars} chars]`;
   if (suffix.length >= maxChars) return value.slice(0, maxChars);
   return value.slice(0, maxChars - suffix.length) + suffix;
@@ -949,6 +972,42 @@ function newCodeRunSummaryProjectionStats(): CodeRunSummaryProjectionStats {
 }
 
 /**
+ * EI-21254588525256811: the ladder below stops at the FIRST rung that fits, and its `stringChars`
+ * rungs (360/220/120) are absolute constants with no relationship to CODE_RUN_SUMMARY_CHAR_BUDGET.
+ * So a summary whose bytes are dominated by strings was returned at ~11% of the budget it was
+ * entitled to: a caller who had ALREADY bounded the value themselves (`checkpoint.slice(-5000)`)
+ * had that deliberate reduction silently re-cut to 360 chars, defeating the point of bounding it.
+ *
+ * Spend the budget: keep the fitting rung's array/depth decisions and grow `stringChars` to the
+ * largest value that still fits. Serialized size is monotone in `stringChars` (a larger cap only
+ * ever keeps more of each string), so a binary search finds that maximum in ~log2(budget) probes,
+ * and only a candidate measured to fit is ever returned.
+ */
+function growCodeRunSummaryToBudget(
+  summary: unknown,
+  options: CodeRunSummaryProjectionOptions,
+  budget: number,
+): { value: unknown; stats: CodeRunSummaryProjectionStats } | undefined {
+  let best: { value: unknown; stats: CodeRunSummaryProjectionStats } | undefined;
+  let low = options.stringChars + 1;
+  let high = budget;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const stats = newCodeRunSummaryProjectionStats();
+    const candidate = projectCodeRunSummaryValue(summary, 'summary', 0, { ...options, stringChars: mid }, stats);
+    if (codeRunSummarySerializedChars(candidate) <= budget) {
+      best = { value: candidate, stats };
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best;
+}
+
+/**
  * EI-20981474230843769: bound the arbitrary value returned by a code:run script before the
  * generic result door sees it. A marker monitor commonly returns scalar counters alongside a
  * nested `lines` array; keep those counters, cap nested arrays/strings, and disclose every cut.
@@ -973,8 +1032,9 @@ export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<str
     const candidateStats = newCodeRunSummaryProjectionStats();
     const candidate = projectCodeRunSummaryValue(summary, 'summary', 0, options, candidateStats);
     if (codeRunSummarySerializedChars(candidate) <= CODE_RUN_SUMMARY_CHAR_BUDGET) {
-      projected = candidate;
-      stats = candidateStats;
+      const grown = growCodeRunSummaryToBudget(summary, options, CODE_RUN_SUMMARY_CHAR_BUDGET);
+      projected = grown?.value ?? candidate;
+      stats = grown?.stats ?? candidateStats;
       break;
     }
   }
