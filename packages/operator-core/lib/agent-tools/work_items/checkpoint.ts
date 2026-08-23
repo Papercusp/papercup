@@ -316,6 +316,21 @@ function checksSpec() {
                 'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
                 'telling a successor to run `recheck` before relying on the claim.',
             ).optional(),
+            // EI-21234745917984459 — the SAME class as the `id` gap above, one field over.
+            // `contested` was already supported end to end: CARRY_ROW_SOFT_CAPS.contested
+            // exists, normalizeCheckEntries (imported from ../../carry-note, the SAME
+            // normalizer loop:checkpoint uses) already reads `verified ?? contested` and
+            // re-emits it, and the renderer already prints ⚠ CONTESTED. ONLY this strict
+            // schema rejected it, so the identical payload was valid on one carry surface
+            // and `invalid_args` on the other — and the caller's only route to the
+            // CONTESTED tier here was to smuggle a magic phrase ("STILL RUNNING") through
+            // `verified` and rely on findVerificationConflict's auto-downgrade, which is
+            // implicit where the sibling is explicit.
+            contested: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.contested,
+              'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
+                'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
+            ).optional(),
           }),
         )
         .max(CARRY_NOTE_MAX_CHECKS),
@@ -334,8 +349,11 @@ function checksSpec() {
         "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
         "`rowsMode:'replace'` to send the FULL set you want stored, because any stored claim you leave out is DROPPED — " +
         'that is how you RETIRE a stale check. A supplied ' +
-        'row whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit ' +
-        'them, so re-sending a claim never loses its evidence. Rows dropped come back as `checksDropped`.',
+        'row whose claim text matches a stored one inherits that row\'s recheck/verified/contested/sinceMs when ' +
+        'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
+        '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
+        'evidence that contradicts itself (for example "STILL RUNNING") is auto-downgraded to ⚠ CONTESTED rather ' +
+        'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`.',
     );
 }
 
