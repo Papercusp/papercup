@@ -68,9 +68,25 @@ describe('social platform registry', () => {
       for (const scope of row.auth.scopes) {
         expect(scope.startsWith('r_'), `${row.id} declares read scope '${scope}' but no readable stream`).toBe(false);
       }
-      // …and it must say so where an owner will see it, not only in code.
-      expect(row.blockedOn ?? '', `${row.id} is write-only but explains nothing`).not.toBe('');
+      // …and it must explain itself somewhere a reader will look.
+      //
+      // NOT via `blockedOn`, which was the obvious choice and is a trap:
+      // `assertSocialPlatformUsable` THROWS on any row carrying one, so using
+      // it to describe a PARTIAL wall would make the platform's working verbs
+      // unreachable at runtime while every unit test still passed. A write-only
+      // row explains itself in `policyNotes` instead.
+      expect(row.policyNotes ?? '', `${row.id} is write-only but explains nothing`).not.toBe('');
     }
+  });
+
+  it('keeps a usable write-only row OUT of the blockedOn gate', () => {
+    // The regression guard for the trap named above. LinkedIn's post path is
+    // self-serve and verified, so the platform must actually resolve — if a
+    // future edit describes its read wall in `blockedOn`, this fails instead of
+    // silently disabling a working adapter.
+    const linkedin = assertSocialPlatformUsable('linkedin');
+    expect(linkedin.id).toBe('linkedin');
+    expect(linkedin.blockedOn).toBeUndefined();
   });
 
   it('exposes a non-empty registry whose keys match their row ids', () => {

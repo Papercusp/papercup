@@ -1163,10 +1163,32 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
       notes:
         'Member 150 requests/day, Application 100,000 requests/day, both resetting at midnight UTC. The member limit is the binding one for a single owner, so it is the floor here. ⚠ ZERO API-SIDE OBSERVABILITY: no response header reports quota or usage, and unlike Threads there is no limits ENDPOINT either, so observedPeakUsagePct can never become non-null and this floor is permanent. The only feedback loop is an email alert at 75% of quota — application-level only, explicitly not real-time ("delay of approximately 1-2 hours"), and therefore useless to the adapter. Throttling surfaces as HTTP 429, which is also returned "in rare cases ... as part of infrastructure protection", so a 429 is not proof the daily cap was reached. SECOND, INDEPENDENT THROTTLE: comment creation carries a "short term 1 minute rate limit" (429 "Comment create throttled: creation rate limit exceeded for member") — LinkedIn must not be modelled as daily-only, even though this adapter does not comment today.',
     },
+    // ⚠ NO `blockedOn`, DELIBERATELY, AND THIS IS THE SUBTLEST LINE IN THE ROW.
+    //
+    // Setting it would have been the natural thing to do — LinkedIn genuinely
+    // has owner-walled capabilities (reading anything, organization/page
+    // access, and a recurring 60-day re-authorisation). But `blockedOn` is not
+    // a notes field: `assertSocialPlatformUsable` THROWS on any row that
+    // carries one, before it ever reaches the write gate. So describing those
+    // walls here would have made the whole platform unusable — including the
+    // self-serve personal posting path this item exists to deliver, and which
+    // is verified above. The adapter would have been unreachable at runtime
+    // while every unit test passed.
+    //
+    // Per the field's own definition ("blocked on something only the owner can
+    // do"), nothing blocks what this row DECLARES. It declares post and delete
+    // against the member's own profile; both are self-serve today. The walls
+    // are already expressed structurally where they bind — `read: null` for the
+    // read wall, the absent verbs for reply and organization posting — and in
+    // prose in `auth.notes` (the 60-day re-authorisation) and `policyNotes`.
+    //
+    // KNOWN GAP this exposes rather than papers over: `blockedOn` is both the
+    // hard usability gate AND the only owner-visible prose the admin pane
+    // renders, so a platform that is USABLE but carries an operational caveat
+    // has nowhere to say so. That conflation is a registry limitation, not a
+    // LinkedIn one; the 60-day expiry is the first caveat to hit it.
     policyNotes:
-      'The self-serve grant is write-only against the authenticated member\'s OWN profile. Organization/page posting (w_organization_social) and any read of posts or comments (r_member_social, r_member_social_feed) require approval — "Open Permissions are the only permissions that are available to all developers without special approval."',
-    blockedOn:
-      'owner: nothing blocks personal-profile POSTING — that grant is self-serve and this row is verified for it. Two things ARE owner-walled: (1) reading anything (r_member_social / r_member_social_feed are restricted to approved developers), and organization/page access (partner review); (2) a RECURRING 60-day re-authorisation, because programmatic refresh tokens are partner-only — an unattended connection stops working every 60 days until a human completes the browser flow.',
+      'The self-serve grant is write-only against the authenticated member\'s OWN profile. Organization/page posting (w_organization_social) and any read of posts or comments (r_member_social, r_member_social_feed) require approval — "Open Permissions are the only permissions that are available to all developers without special approval." Personal-profile posting itself needs no review. ⚠ OPERATIONAL: an unattended connection stops working every 60 days until the member re-authorises in a browser, because programmatic refresh tokens are partner-only.',
   },
 
   tiktok: {

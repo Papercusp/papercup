@@ -60,13 +60,20 @@ describe('socialAdminFacts', () => {
       expect(facts!.writeVerbs).not.toContain('reply');
     });
 
-    it('surfaces the owner-facing wall', () => {
+    it('reports NO blockedOn, because the verbs it declares are not blocked', () => {
+      // `blockedOn` is a hard usability gate, not a notes field:
+      // `assertSocialPlatformUsable` throws on any row carrying one. LinkedIn's
+      // post path is self-serve and verified, so a blockedOn here would have
+      // disabled a working adapter at runtime while the unit tests stayed green.
+      //
+      // The consequence for the pane is a real gap and is recorded as such: the
+      // 60-day re-authorisation is an operational caveat an owner would want,
+      // and `blockedOn` is currently the only prose channel the pane renders —
+      // so there is nowhere for a USABLE-but-caveated platform to say it.
       const facts = socialAdminFacts('linkedin', {}, NOW);
-      expect(facts!.blockedOn).toBeTruthy();
-      // The recurring 60-day re-authorisation is the operational surprise most
-      // worth showing an owner, so it must reach the pane rather than living
-      // only in a code comment.
-      expect(facts!.blockedOn).toMatch(/60-day|re-authorisation/i);
+      expect(facts!.blockedOn).toBeNull();
+      // It is usable, which is the fact that matters for the adapter.
+      expect(facts!.verified).toBe(true);
     });
   });
 
