@@ -675,7 +675,10 @@ export default defineTool({
                     harnessSlug: resolveHarness(r.harness_slug, null),
                     ownerAgentId: r.taken_by,
                   }),
-                  occurredAt: toIsoOrNull(r.updated_ts),
+                  // Migration 896: lifecycle age, not metadata churn. Legacy
+                  // NULL remains unknown rather than pretending a recent
+                  // summary/edit is when the item entered needs-human.
+                  occurredAt: toIsoOrNull(r.state_changed_at),
                 });
               }
             } catch {

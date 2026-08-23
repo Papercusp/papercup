@@ -18,6 +18,8 @@
  * trigger_config knobs (editable via the routines admin):
  *   - cron (default weekly Mon 13:30) — the drain cadence.
  *   - top_n (default 5) — how many items the digest leads with.
+ *   - needs_human_stale_days (default 7) — remind once per work-item state
+ *     episode after this many days in needs-human.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -33,7 +35,7 @@ async function main(): Promise<void> {
   const { sql } = getOrgPg();
   const name = 'improvement-human-digest';
   const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: CRON, top_n: 5 };
+  const triggerConfig = { cron: CRON, top_n: 5, needs_human_stale_days: 7 };
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,

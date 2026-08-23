@@ -31,9 +31,16 @@ export interface NeedsHumanWorkItemRow {
   harness_slug: string | null;
   item_kind: string | null;
   taken_by: string | null;
+  /** Raw payload so reminder producers can render the structured owner ask
+   *  (question / askedBy / unblock action) instead of a title-only nag. */
+  payload: unknown;
   /** Last-updated timestamp of the row — drives the Inbox card date
    *  (inbox-pane-active-scope-dates-filters-2026-07-19). */
   updated_ts: string | null;
+  /** Migration 896's lifecycle clock. Unlike updated_ts, metadata writes do
+   *  not reset this age, so weekly stale reminders measure the current state
+   *  episode rather than arbitrary row churn. NULL means legacy/unknown age. */
+  state_changed_at: string | null;
   /** The row's lifecycle status. Selected so the shape can EXPRESS finishedness:
    *  before WI-5981 this column was not read at all, so no consumer downstream was
    *  even capable of filtering a completed item out of the owner's inbox. */
@@ -47,13 +54,27 @@ export async function readNeedsHumanWorkItems(opts?: {
   /** Restrict to one harness_slug; null/undefined = all. */
   harness?: string | null;
   limit?: number;
+  /** Optional lifecycle-age cutoff. Supplying it turns this into a stale read;
+   *  legacy rows with unknown (NULL) state age are deliberately excluded. */
+  stateChangedBefore?: string | Date;
+  /** Stale reminder consumers want the oldest state episodes first. The owner
+   *  inbox keeps its existing newest-updated ordering by default. */
+  oldestFirst?: boolean;
 }): Promise<NeedsHumanWorkItemRow[]> {
   const { sql } = getOrgPg();
   const wid = opts?.workspaceId ?? activeWorkspaceId();
   const hf = opts?.harness ?? null;
   const limit = opts?.limit ?? NEEDS_HUMAN_LIMIT;
+  const stateChangedBefore =
+    opts?.stateChangedBefore instanceof Date
+      ? opts.stateChangedBefore.toISOString()
+      : opts?.stateChangedBefore ?? null;
+  const orderBy = opts?.oldestFirst
+    ? sql`state_changed_at ASC NULLS LAST, feature_id ASC`
+    : sql`updated_ts DESC NULLS LAST, feature_id ASC`;
   return await sql<NeedsHumanWorkItemRow[]>`
-    SELECT feature_id, title, summary, harness_slug, item_kind, taken_by, updated_ts, status
+    SELECT feature_id, title, summary, harness_slug, item_kind, taken_by, payload,
+           updated_ts, state_changed_at, status
       FROM harness_shared.work_items
      WHERE (workspace_id = ${wid} OR workspace_id = 'default')
        AND (${hf}::text IS NULL OR harness_slug = ${hf})
@@ -71,6 +92,10 @@ export async function readNeedsHumanWorkItems(opts?: {
        -- the feature-family leg below is unaffected.
        AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
        AND (
+         ${stateChangedBefore}::timestamptz IS NULL
+         OR (state_changed_at IS NOT NULL AND state_changed_at <= ${stateChangedBefore}::timestamptz)
+       )
+       AND (
          status = 'needs-human'
          OR (
            item_kind IN ('bug', 'change', 'task')
@@ -82,7 +107,7 @@ export async function readNeedsHumanWorkItems(opts?: {
      -- whatever Postgres happened to return — real owner decisions would vanish
      -- silently and unreproducibly. (At 249 rows we were already at 83% of the
      -- cap, and the 161 terminal rows above were what would have pushed it over.)
-     ORDER BY updated_ts DESC NULLS LAST
+     ORDER BY ${orderBy}
      LIMIT ${limit}
   `;
 }
