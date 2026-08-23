@@ -1,0 +1,22 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "Full-width view options" },
+    { "id": "page-2", "name": "Plans row timestamps" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Option A — Mission-control table", "x": 0, "y": 0, "w": 1440, "h": 880, "page": "page-1" },
+    { "file": "OptionB.dc.html", "title": "Option B — Status board", "x": 1560, "y": 0, "w": 1440, "h": 880, "page": "page-1" },
+    { "file": "OptionC.dc.html", "title": "Option C — Split list + live detail", "x": 0, "y": 1200, "w": 1440, "h": 880, "page": "page-1" },
+    { "file": "OptionD.dc.html", "title": "Option D — Activity swimlanes", "x": 1560, "y": 1200, "w": 1440, "h": 800, "page": "page-1" },
+    { "file": "RowTimestamps.dc.html", "title": "Plans face — dual timestamps", "x": 0, "y": 0, "w": 424, "h": 900, "page": "page-2" }
+  ],
+  "annotations": [
+    { "id": "routes", "x": 0, "y": -340, "w": 860, "page": "page-1", "text": "WHERE IT LIVES — any option can ride any of 3 integration routes:\n1) an expand button on the op-chat Plans face → full-width takeover of the app pane\n2) a new view of the /adv Plans tab (?view=mission) beside the existing list/editor\n3) a new top-level /adv tab.\nAll four options reuse feeds that already exist: plans.list, advRoster.list, plans.attention, planSessions.list — \"Open session\" is the existing SessionChatModal. A and C compose naturally: A's table with C's detail as the expanded row." },
+    { "id": "opt-a", "x": 0, "y": -150, "w": 640, "page": "page-1", "text": "OPTION A — Mission-control table (leading candidate). One dense row per plan: progress, live agents, ✎ last edit / ⚒ last work, needs-you. Click a row → inline expand with that plan's agent sessions + launch/transcript actions.\n+ Cheapest full-width build; ~466 plans virtualized; sortable by any column (incl. last work).\n− Least visual grouping; one plan expanded at a time." },
+    { "id": "opt-b", "x": 1560, "y": -150, "w": 640, "page": "page-1", "text": "OPTION B — Status board. Kanban by lifecycle bucket (draft / ready / running / finished); cards carry agent chips, both timestamps, progress strip.\n+ Best pipeline overview — how much is in flight vs parked; drag-to-bucket later.\n− Weaker for \"who is working right now\" scanning; long columns need collapse/virtualization at this plan count." },
+    { "id": "opt-c", "x": 0, "y": 1030, "w": 640, "page": "page-1", "text": "OPTION C — Split: list + live detail. Left = the Plans-face rows (with the dual times); right = always-on detail for the selected plan: working-now session cards + a merged edit/work activity feed.\n+ Zero-modal drill-in — sessions and activity are one click, no popup.\n− One plan's detail at a time; less of an all-plans overview than A." },
+    { "id": "opt-d", "x": 1560, "y": 1030, "w": 640, "page": "page-1", "text": "OPTION D — Activity swimlanes. Time on x, one lane per active plan, bars = agent sessions (click → transcript). Stalls and overlap are visible at a glance — red now-line, amber stall flags.\n− Highest build cost: needs a session-activity-interval feed (adv_sessions + tool_invocations time buckets) that doesn't exist yet. Best shipped later as a second view beside A/B/C." },
+    { "id": "ts-note", "x": 520, "y": 0, "w": 440, "page": "page-2", "text": "ASK 1 — dual timestamps on the Plans-face row (PlansPane.tsx).\n✎ last edit = harness_plans.updated — already on the row today.\n⚒ last work = newest work-item activity where source_plan_slug = plan → one small new sync query (planWorkActivity.list: slug → timestamp), joined client-side exactly like the existing needs-you / live-agents maps.\nV1 keeps the compact header pair; V2 spells it out in the status line. Hover = full timestamp + what happened. \"stale\" switches to max(edit, work) so a worked-but-unedited plan stops reading stale." }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}
