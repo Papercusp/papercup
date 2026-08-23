@@ -57,6 +57,12 @@ function catalog(input: {
 }
 
 describe('recipe contract metadata schemas', () => {
+  it('admits explicit replay-state output without inventing a new capability grant', () => {
+    expect(
+      capabilityManifestV1Schema.parse(manifest([], { content: { emits: ['text', 'replay-state'] } })),
+    ).toMatchObject({ content: { emits: ['text', 'replay-state'] } });
+  });
+
   it('requires the exact v1 representation and host:same topology premise', () => {
     expect(capabilityManifestV1Schema.parse(manifest())).toMatchObject({
       version: 1,
@@ -408,4 +414,3 @@ describe('combined recipe contract preflight', () => {
     ).toMatchObject({ ok: false, error: { code: 'durable_replay_unsafe' } });
   });
 });
-

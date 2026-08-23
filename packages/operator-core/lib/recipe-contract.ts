@@ -86,7 +86,7 @@ export type RecipeBindingSchemaV1 = z.infer<typeof recipeBindingSchemaV1Schema>;
 export const REPLAY_CLASSES = ['read-only', 'idempotent', 'checkpointed', 'non-replayable'] as const;
 export type ReplayClass = (typeof REPLAY_CLASSES)[number];
 export type RecipeLifecycle = 'foreground' | 'background';
-export type RecipeContentKind = 'text' | 'reference' | 'image' | 'audio' | 'pty-frame';
+export type RecipeContentKind = 'text' | 'reference' | 'image' | 'audio' | 'pty-frame' | 'replay-state';
 
 export type LogicalCapability =
   | `tools:${string}:${string}`
@@ -144,7 +144,7 @@ export const capabilityManifestV1Schema = z
       })
       .strict(),
     content: z
-      .object({ emits: z.array(z.enum(['text', 'reference', 'image', 'audio', 'pty-frame'])) })
+      .object({ emits: z.array(z.enum(['text', 'reference', 'image', 'audio', 'pty-frame', 'replay-state'])) })
       .strict(),
   })
   .strict()

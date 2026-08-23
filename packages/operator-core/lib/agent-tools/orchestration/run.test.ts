@@ -102,8 +102,51 @@ describe('orchestrate:run server-script adapter', () => {
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ backend: 'server' }));
   });
 
+  it('returns store/load state as an accounted replay-state content item', async () => {
+    const result = await runServerScriptAdapter(
+      {
+        script: {
+          source: `store('cursor', load('cursor') + 1); return 'advanced';`,
+          bindingSchema: {
+            version: 1,
+            properties: {
+              cursor: { type: 'number', required: true, lifetime: { kind: 'stable' } },
+              filters: { type: 'json', required: true, lifetime: { kind: 'stable' } },
+            },
+            additionalProperties: false,
+          },
+        },
+        bindings: { values: { cursor: 2, filters: ['open'] } },
+      },
+      {} as UnifiedToolContext,
+      {
+        runCode: async () =>
+          codeResult({
+            ok: true,
+            summary: 'advanced',
+            state: { cursor: 3, filters: ['open'] },
+            plannedMutations: [],
+          }),
+      },
+    );
+
+    expect(envelope(result)).toMatchObject({
+      summary: 'advanced',
+      content: [
+        { kind: 'replay-state', values: { cursor: 3, filters: ['open'] } },
+      ],
+      accounting: { contentBytes: expect.any(Number) },
+    });
+    expect(envelope(result).accounting.contentBytes).toBeGreaterThan(0);
+  });
+
   it('preserves explicitly returned image/audio blocks outside the JSON envelope', async () => {
-    const image = { type: 'image' as const, data: 'aGVsbG8=', mimeType: 'image/png' };
+    const image = {
+      type: 'image' as const,
+      data: 'aGVsbG8=',
+      mimeType: 'image/png',
+      _meta: { output_hint: 'preview' },
+    };
     const result = await runServerScriptAdapter({ script: { source: 'return media;' } }, {} as UnifiedToolContext, {
       runCode: async () => codeResult({ ok: true, summary: 'rendered' }, [image]),
     });
