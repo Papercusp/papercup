@@ -163,12 +163,18 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     label: 'Bluesky',
     wave: 'A',
     verifiedAt: '2026-08-23',
-    sources: ['https://atproto.com/specs/event-stream'],
+    sources: [
+      'https://atproto.com/specs/event-stream',
+      'https://atproto.com/specs/xrpc',
+      'https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/repo/createRecord.json',
+      'https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/app/bsky/feed/post.json',
+      'https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/com/atproto/repo/strongRef.json',
+    ],
     auth: {
       mode: 'app-password',
       scopes: [],
       notes:
-        'Read stream endpoints are documented as unauthenticated. The write path (app password vs OAuth) is NOT yet verified — see D-005 residue; verify before enabling write verbs.',
+        'Read stream endpoints are documented as unauthenticated. Writes use the LEGACY HTTP Bearer scheme (OAuth is the primary scheme, but app passwords are what an owner can issue without registering an app): com.atproto.server.createSession with an identifier + app password returns accessJwt + refreshJwt; send `Authorization: Bearer <accessJwt>`. Access tokens are short-lived — refresh via com.atproto.server.refreshSession. Tokens MUST be treated as opaque strings; the spec states the internal JWT fields are explicitly NOT a stable interface, so never parse one to decide expiry. App passwords match the shape xxxx-xxxx-xxxx-xxxx.',
     },
     read: {
       transport: 'outbound-websocket',
@@ -178,10 +184,18 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     },
     write: {
       verbs: ['reply', 'post', 'delete'],
-      idempotency: 'unknown',
-      verifiedAt: null,
+      // DOCUMENTED ABSENCE, not an unread fact. atproto.com/specs/xrpc defines
+      // no idempotency mechanism for procedures: no key header, no replay-safe
+      // retry semantics. `swapCommit` is NOT one — it is a compare-and-swap
+      // against the current repo commit (error `InvalidSwap`), i.e. a
+      // concurrency guard. So a retried createRecord after an ambiguous timeout
+      // CAN double-post publicly, and the dedupe must be ours: rkey is
+      // client-suppliable (record-key, maxLength 512), which is the hook a
+      // replay-safe adapter uses to make a retry land on the same record.
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
       notes:
-        'Write path UNVERIFIED (D-005 residue): docs.bsky.app 301s to bsky.network, which renders client-side and returns an empty body to fetch, so the createRecord / app.bsky.feed.post shape and the app-password-vs-OAuth model are unread. The verbs listed here are what the platform is expected to support, NOT what we have confirmed how to call — which is precisely why write.verifiedAt is null and assertSocialWriteAllowed refuses. The READ half is fully specified and unblocked.',
+        'Write path VERIFIED 2026-08-23 from byte-serving sources after docs.bsky.app proved unreadable (it 301s to a client-rendered host returning an empty body to fetch) — the blocker was the SOURCE, not the platform. POST /xrpc/com.atproto.repo.createRecord against the account PDS. Input requires repo (at-identifier), collection (nsid), record (needs a $type); optional rkey, validate, swapCommit. Output: uri (at-uri) + cid, optional commit and validationStatus. app.bsky.feed.post requires text (maxLength 3000 / maxGraphemes 300, may be empty with embeds) and createdAt (client-declared datetime); a reply needs BOTH root and parent as com.atproto.repo.strongRef = { uri: at-uri, cid: cid }. Errors use a uniform { error, message } envelope; 501 must NOT be retried, 502-504 retry after delay, 429 may carry Retry-After.',
     },
     limits: {
       budgetHeaders: ['Retry-After'],
@@ -443,21 +457,47 @@ export function isSocialWriteVerified(row: SocialPlatformRow): boolean {
  */
 export function assertSocialWriteAllowed(id: string, verb: SocialWriteVerb): SocialPlatformRow {
   const row = assertSocialPlatformUsable(id);
+  const refusal = socialWriteRefusal(row, verb);
+  if (refusal) throw refusal;
+  return row;
+}
+
+/**
+ * The write-gate decision for an ALREADY-USABLE row, returned as a value rather
+ * than thrown. `null` means the write is allowed.
+ *
+ * Split out of `assertSocialWriteAllowed` so the refusal logic can be exercised
+ * against SYNTHETIC rows, and that is not a testing convenience — it closes a
+ * coverage cliff that opened the moment Wave A finished verifying.
+ *
+ * As of 2026-08-23 every Wave A row is write-verified and every other row
+ * carries `blockedOn`, which `assertSocialPlatformUsable` refuses FIRST. So
+ * zero real registry rows reach the `write-unverified` branch below (measured,
+ * not assumed — `platform-registry.test.ts` asserts the population). The branch
+ * is the guard that stops a guessed write from reaching the owner's real public
+ * identity, so leaving it reachable only by real data would have meant leaving
+ * it untested until some future platform happened to verify its read path
+ * before its write path — exactly the moment it must work.
+ */
+export function socialWriteRefusal(
+  row: SocialPlatformRow,
+  verb: SocialWriteVerb,
+): SocialPlatformUnusableError | null {
   if (!row.write.verbs.includes(verb)) {
-    throw new SocialPlatformUnusableError(
-      id,
+    return new SocialPlatformUnusableError(
+      row.id,
       'write-verb-unsupported',
       `platform declares [${row.write.verbs.join(', ')}], not '${verb}'`,
     );
   }
   if (!isSocialWriteVerified(row)) {
-    throw new SocialPlatformUnusableError(
-      id,
+    return new SocialPlatformUnusableError(
+      row.id,
       'write-unverified',
       `the row is verified for reading but its WRITE path is not (write.verifiedAt is null)${
         row.write.notes ? ` — ${row.write.notes}` : ''
       }`,
     );
   }
-  return row;
+  return null;
 }

@@ -28,7 +28,10 @@ import {
 import {
   SocialPlatformUnusableError,
   assertSocialWriteAllowed,
+  isSocialWriteVerified,
   listSocialPlatforms,
+  socialWriteRefusal,
+  type SocialPlatformRow,
 } from '../external-triggers/social/platform-registry';
 import type { CanonicalDocument } from './resolve';
 
@@ -254,14 +257,78 @@ describe('rail 1 — reply coordinates come from the document alone', () => {
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A row that reads fine and whose write path is unread. SYNTHETIC on purpose.
+ *
+ * Until 2026-08-23 Bluesky was this case in real data, and these tests named it
+ * directly. Verifying Bluesky's write path (P-011) made every Wave A row
+ * write-verified, while every remaining row carries `blockedOn` and is refused
+ * EARLIER as `owner-blocked`/`unverified`. So no real row reaches the
+ * `write-unverified` branch any more — and a gate whose whole job is to stop a
+ * guessed write from reaching the owner's real public identity would have
+ * silently lost its coverage at the exact moment Wave A started writing.
+ *
+ * Binding these tests to a synthetic row instead of to whichever platform
+ * happens to be half-verified means this can never rot again. It is at module
+ * scope because the write-gate block and the CONTROL at the bottom of the file
+ * must be talking about the SAME row — a second copy could drift into being
+ * write-verified and silently disarm the control.
+ */
+const HALF_VERIFIED_ROW: SocialPlatformRow = {
+  id: 'bluesky',
+  label: 'Synthetic half-verified platform',
+  wave: 'A',
+  verifiedAt: '2026-08-23',
+  sources: ['https://example.invalid/spec'],
+  auth: { mode: 'app-password', scopes: [] },
+  read: { transport: 'outbound-websocket', replay: 'bounded-cursor-window' },
+  write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
+  limits: {},
+};
+
 describe('write gate — read-verified does not imply write-verified', () => {
-  it('REFUSES a Bluesky write while its write path is unread (D-005 residue)', () => {
-    // This is the case the whole `write.verifiedAt` field exists for. Bluesky's
-    // event stream is exhaustively specified, so the row is verified and the
-    // ingest adapter is buildable now — but docs.bsky.app 301s to a
-    // client-rendered host, so the createRecord shape is a guess. Before this
-    // gate that guess lived in a `notes` string no code could enforce.
-    expect(() => assertSocialWriteAllowed('bluesky', 'reply')).toThrow(/write-unverified/);
+  const halfVerifiedRow = HALF_VERIFIED_ROW;
+
+  it('REFUSES a write whose path is unread, even though the row reads fine', () => {
+    const refusal = socialWriteRefusal(halfVerifiedRow, 'reply');
+    expect(refusal, 'a read-verified row with write.verifiedAt=null must be refused').toBeTruthy();
+    expect(refusal!.reason).toBe('write-unverified');
+  });
+
+  it('ALLOWS the same row once its write path is verified — the gate is the date, not the id', () => {
+    const verified: SocialPlatformRow = {
+      ...halfVerifiedRow,
+      write: { ...halfVerifiedRow.write, verifiedAt: '2026-08-23' },
+    };
+    expect(socialWriteRefusal(verified, 'reply')).toBeNull();
+  });
+
+  it('refuses an undeclared verb BEFORE it considers write verification', () => {
+    // Ordering matters: a platform that genuinely cannot do the verb should say
+    // so, not send someone off to verify a lexicon that would not help.
+    expect(socialWriteRefusal(halfVerifiedRow, 'delete')!.reason).toBe('write-verb-unsupported');
+  });
+
+  it('keeps the branch reachable for any real row that ever lands in that state', () => {
+    // Data-driven, so a future platform that verifies its read path before its
+    // write path is covered the day it is added, with no test edit. Vacuous
+    // today by construction — the assertion below states that plainly rather
+    // than letting an empty loop masquerade as coverage.
+    const halfVerified = listSocialPlatforms().filter(
+      (row) => Boolean(row.verifiedAt) && !row.blockedOn && !isSocialWriteVerified(row),
+    );
+    for (const row of halfVerified) {
+      expect(() => assertSocialWriteAllowed(row.id, 'post')).toThrow(/write-unverified/);
+    }
+    // Pin the population itself. If this ever fails, the synthetic control
+    // above is no longer the ONLY coverage — which is good news, not a defect.
+    expect(halfVerified.map((row) => row.id)).toEqual([]);
+  });
+
+  it('now allows Bluesky writes — its write path was verified 2026-08-23 (P-011)', () => {
+    expect(assertSocialWriteAllowed('bluesky', 'reply').id).toBe('bluesky');
+    expect(assertSocialWriteAllowed('bluesky', 'post').id).toBe('bluesky');
+    expect(assertSocialWriteAllowed('bluesky', 'delete').id).toBe('bluesky');
   });
 
   it('still allows Bluesky to be READ — the gate is write-specific, not a block', () => {
@@ -344,14 +411,21 @@ describe('controls — deliberately wrong implementations, kept so the guards st
   });
 
   it('CONTROL: a write gate reading only the ROW verifiedAt would publish a guess', () => {
-    const bluesky = listSocialPlatforms().find((row) => row.id === 'bluesky')!;
-    // The row IS verified …
-    expect(bluesky.verifiedAt).toBeTruthy();
+    // Re-pointed 2026-08-23 at the SYNTHETIC half-verified row, and the reason
+    // is worth recording: this control used to name Bluesky, and when P-011
+    // verified Bluesky's write path the control FAILED — not because the guard
+    // regressed, but because its subject stopped being a discriminating case.
+    // A control is only a control while the broken implementation and the real
+    // one still disagree about it. That is precisely the rot this file exists
+    // to catch, so it caught itself.
+    const row = HALF_VERIFIED_ROW;
+    // The row IS verified for reading …
+    expect(row.verifiedAt).toBeTruthy();
     // … so a gate that stopped there would admit the write.
-    const brokenGate = (row: typeof bluesky) => Boolean(row.verifiedAt);
-    expect(brokenGate(bluesky)).toBe(true);
-    // The real gate reads the write half and refuses.
-    expect(() => assertSocialWriteAllowed('bluesky', 'reply')).toThrow(/write-unverified/);
+    const brokenGate = (candidate: SocialPlatformRow) => Boolean(candidate.verifiedAt);
+    expect(brokenGate(row)).toBe(true);
+    // The real gate reads the WRITE half and refuses.
+    expect(socialWriteRefusal(row, 'reply')?.reason).toBe('write-unverified');
   });
 
   it('CONTROL: a resolver that trusts participants[0] is redirected by an injected post', () => {

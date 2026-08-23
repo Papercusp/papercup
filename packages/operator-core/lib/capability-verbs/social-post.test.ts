@@ -67,8 +67,15 @@ const REDDIT_SOURCE = {
 };
 
 const BLUESKY_SOURCE = { ...REDDIT_SOURCE, id: 'src-bsky-1', kind: 'bluesky', credentialRef: 'cred-bsky-1' };
+/** Wave B, `blockedOn` an owner-side app review — refused by the registry gate. */
+const LINKEDIN_SOURCE = {
+  ...REDDIT_SOURCE,
+  id: 'src-li-1',
+  kind: 'linkedin',
+  credentialRef: 'cred-li-1',
+};
 
-function recordingAdapter(platform: 'reddit' | 'bluesky' | 'mastodon' = 'reddit') {
+function recordingAdapter(platform: 'reddit' | 'bluesky' | 'mastodon' | 'linkedin' = 'reddit') {
   const seen: SocialPostRequest[] = [];
   const adapter: SocialWriteAdapter = {
     platform,
@@ -113,6 +120,7 @@ afterEach(() => {
   unregisterSocialWriteAdapter('reddit');
   unregisterSocialWriteAdapter('bluesky');
   unregisterSocialWriteAdapter('mastodon');
+  unregisterSocialWriteAdapter('linkedin');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -218,19 +226,36 @@ describe('rail 2 — a destination lifted from message content is refused', () =
 });
 
 describe('registry write gate — runs before the adapter lookup', () => {
-  it("refuses bluesky as write-unverified EVEN WITH an adapter registered", async () => {
-    // The whole point of the ordering: once a Bluesky adapter exists (P-011),
-    // a reversed order would let an unread lexicon reach the owner's real
-    // public identity. Registering one here proves the gate does not consult it.
-    const { adapter, seen } = recordingAdapter('bluesky');
+  it('refuses a registry-refused platform EVEN WITH an adapter registered', async () => {
+    // The ordering claim: a registered adapter must never be consulted for a
+    // platform the registry refuses. Registering one here is what makes the
+    // claim falsifiable — if the lookup ran first, `seen` would be non-empty.
+    //
+    // This used to be asserted against Bluesky, whose write path was unread.
+    // P-011 verified it, so the subject moved to a platform that is still
+    // refused (LinkedIn is `blockedOn` an owner-side app review). The property
+    // is unchanged; only the reason for the refusal is.
+    const { adapter, seen } = recordingAdapter('linkedin');
     registerSocialWriteAdapter(adapter);
-    expect(getSocialWriteAdapter('bluesky')).toBeDefined();
-    const sql = fakeSql([STANDING_UNKNOWN, [BLUESKY_SOURCE]]);
+    expect(getSocialWriteAdapter('linkedin')).toBeDefined();
+    const sql = fakeSql([STANDING_UNKNOWN, [LINKEDIN_SOURCE]]);
 
     await expect(
-      post(sql, { destination: 'bluesky:at://did:plc:xyz/app.bsky.feed.post/3k' }),
-    ).rejects.toThrow(/write-unverified/);
-    expect(seen).toHaveLength(0);
+      post(sql, { destination: 'linkedin:urn:li:share:123' }),
+    ).rejects.toThrow(/social_platform_unusable:linkedin/);
+    expect(seen, 'the adapter must not be consulted for a refused platform').toHaveLength(0);
+  });
+
+  it('no longer refuses bluesky — its write path verified 2026-08-23 (P-011)', async () => {
+    // The state change this suite must not silently absorb. If Bluesky ever
+    // regresses to write-unverified, this fails loudly rather than the refusal
+    // quietly returning under a test that still says "refuses bluesky".
+    const { adapter, seen } = recordingAdapter('bluesky');
+    registerSocialWriteAdapter(adapter);
+    const sql = fakeSql([STANDING_UNKNOWN, [BLUESKY_SOURCE]]);
+
+    await post(sql, { destination: 'bluesky:at://did:plc:xyz/app.bsky.feed.post/3k' });
+    expect(seen, 'a verified platform must now reach its adapter').toHaveLength(1);
   });
 });
 

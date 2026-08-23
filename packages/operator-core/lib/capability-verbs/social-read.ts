@@ -203,7 +203,12 @@ export interface SocialWriteAvailability {
  * Delegates to `assertSocialWriteAllowed` rather than re-deriving the rule, so
  * a read result can never advertise a reply the write path would refuse. Told
  * at read time, this saves an agent from drafting text for a post it cannot
- * answer — Bluesky today reads fine and refuses every write.
+ * answer — a Wave B platform reads nothing and refuses every write, and any
+ * platform whose read path verifies before its write path refuses writes while
+ * still returning posts.
+ *
+ * (Bluesky was that second case until 2026-08-23, when its write path was
+ * verified; it is no longer an example of a refusal.)
  */
 export function socialWriteAvailability(
   platform: SocialPlatformId,
