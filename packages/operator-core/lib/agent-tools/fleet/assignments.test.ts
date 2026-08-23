@@ -20,6 +20,7 @@ import {
   decorateDirectiveActuation,
   decorateCoordDeafness,
   filterActiveCoverage,
+  agentPlansFromLiveCoverage,
   COVERAGE_ORDER,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
@@ -29,7 +30,12 @@ import {
 import fleetAssignmentsTool from './assignments';
 import { shapeFleetAssignments } from './assignments-shape';
 import type { AgentAssignment } from '../../fleet/assignments';
-import { COVERAGE_LEVELS, type PlanItemCoverage, type CoverageLevel } from '../../plan-item-coverage';
+import {
+  COVERAGE_LEVELS,
+  duplicateCoverage,
+  type PlanItemCoverage,
+  type CoverageLevel,
+} from '../../plan-item-coverage';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
@@ -1073,6 +1079,61 @@ describe('filterActiveCoverage (EI-9015)', () => {
     const atEdge = cov('p#P-1', 'complete', new Date(NOW - COVERAGE_ACTIVE_WINDOW_MS));
     const pastEdge = cov('p#P-2', 'complete', new Date(NOW - COVERAGE_ACTIVE_WINDOW_MS - 1));
     expect(refs(filterActiveCoverage([atEdge, pastEdge], { now: NOW }))).toEqual(['p#P-1']);
+  });
+});
+
+describe('agentPlansFromLiveCoverage (EI-21216638867560930)', () => {
+  it('keeps a P-033-only linked duplicate in an agent-scoped coverage lane', () => {
+    const linkedDuplicate: PlanItemCoverage = {
+      ref: 'linked-only-plan#P-033',
+      links: [
+        {
+          workItemId: 'WI-P033-A',
+          rel: 'fixes',
+          terminal: false,
+          activity: 'alive',
+          holder: 'su-agent-1',
+        },
+        {
+          workItemId: 'WI-P033-B',
+          rel: 'relates',
+          terminal: false,
+          activity: 'progressing',
+          holder: 'su-agent-1',
+        },
+      ],
+      directlyClaimed: false,
+      directHolder: null,
+      directActivity: null,
+      holder: null,
+      level: 'full',
+      workers: ['su-agent-1'],
+      lastActivityAt: null,
+    };
+    const unrelated: PlanItemCoverage = {
+      ...linkedDuplicate,
+      ref: 'other-plan#P-022',
+      links: linkedDuplicate.links.map((link) => ({ ...link, holder: 'other-agent' })),
+      workers: ['other-agent'],
+    };
+
+    const plans = agentPlansFromLiveCoverage(
+      [linkedDuplicate, unrelated],
+      new Set(['su-agent-1']),
+    );
+    const scoped = [linkedDuplicate, unrelated].filter((coverage) => {
+      const hash = coverage.ref.indexOf('#');
+      return hash > 0 && plans.has(coverage.ref.slice(0, hash));
+    });
+
+    expect(plans).toEqual(new Set(['linked-only-plan']));
+    expect(duplicateCoverage(scoped)).toEqual([
+      {
+        ref: 'linked-only-plan#P-033',
+        holder: 'su-agent-1',
+        workItemIds: ['WI-P033-A', 'WI-P033-B'],
+      },
+    ]);
   });
 });
 

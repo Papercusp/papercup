@@ -129,6 +129,31 @@ export function filterActiveCoverage(
 }
 
 /**
+ * Return the plan slugs represented by live linked coverage held by one or
+ * more queried agents. An agent-scoped assignments read otherwise derives its
+ * lane only from direct claim rows and the declared plan; a linked work-item
+ * can be the sole evidence that the agent is working a plan item, so omitting
+ * these refs makes duplicateCoverage silently inspect the wrong scope.
+ *
+ * Pure so the agent-scoped coverage boundary is regression-tested without PG.
+ */
+export function agentPlansFromLiveCoverage(
+  entries: Iterable<PlanItemCoverage>,
+  agentIds: ReadonlySet<string>,
+): Set<string> {
+  const plans = new Set<string>();
+  if (agentIds.size === 0) return plans;
+  for (const coverage of entries) {
+    const hash = coverage.ref.indexOf('#');
+    if (hash <= 0) continue;
+    if (coverage.links.some((link) => link.holder != null && agentIds.has(link.holder))) {
+      plans.add(coverage.ref.slice(0, hash));
+    }
+  }
+  return plans;
+}
+
+/**
  * EI-6077 (detector gap): `AgentAssignment.alive` is heartbeat-freshness only
  * (the `fleet_assignment` view's `holder_alive`) — EI-6374 already downgrades it
  * for a CONFIRMED-ended session (adv_sessions.ended_at set), but a session that
@@ -989,14 +1014,29 @@ export default defineTool({
       // coverage table (~60 rows of other agents' plans) — coverage was plan-scoped
       // but never agent-scoped. When `agent` is set and `plan` is not, restrict the
       // rollup to the plans that agent actually touches (its claim rows + declared
-      // plan). An agent touching no plans gets an empty rollup (correct — nothing
-      // it works is covered elsewhere); an explicit {plan} still wins.
+      // plan + live linked coverage). An agent touching no plans gets an empty
+      // rollup (correct — nothing it works is covered elsewhere); an explicit
+      // {plan} still wins. Linked coverage must be included before duplicate/
+      // collision detection so a plan represented only by a live work-item link
+      // cannot disappear from the agent-scoped correctness view.
+      const agentIds = args.agent && !args.plan
+        ? new Set([
+            args.agent,
+            ...rows
+              .filter((r) => r.agentId && (r.agentId === args.agent || r.agentName === args.agent))
+              .map((r) => r.agentId as string),
+          ])
+        : null;
+      const linkedAgentPlans = agentIds
+        ? agentPlansFromLiveCoverage(covMap.values(), agentIds)
+        : new Set<string>();
       const agentPlans: Set<string> | null =
-        args.agent && !args.plan
+        agentIds
           ? new Set(
               [
                 ...rows.map((r) => r.planSlug),
                 ...agents.map((a) => a.declaredPlanSlug),
+                ...linkedAgentPlans,
               ].filter((s): s is string => typeof s === 'string' && s.length > 0),
             )
           : null;
