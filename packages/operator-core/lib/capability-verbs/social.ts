@@ -375,6 +375,30 @@ export type SocialReplyTarget =
        * the strength of a guess.
        */
       rootPostOwnerId?: string;
+    }
+  | {
+      /**
+       * ⚠ LINKEDIN CANNOT REPLY, so this variant exists ONLY to address an
+       * existing post for DELETE — `SocialDeleteRequest.target` reuses this
+       * union, so a delete-capable platform must appear here even when it has
+       * no reply path.
+       *
+       * A future reader adding LinkedIn reply support needs more than this
+       * field: LinkedIn's self-serve grant does not include the Comments API's
+       * `w_member_social_feed` scope at all. See linkedin-common.ts.
+       */
+      platform: 'linkedin';
+      /**
+       * The post's own URN, VERBATIM as LinkedIn issued it in the `x-restli-id`
+       * response header — `urn:li:share:{id}` or `urn:li:ugcPost:{id}`.
+       *
+       * Both spellings are live and the API returns either one for the same
+       * create call, so this is stored as issued rather than normalised to a
+       * preferred form. Rewriting `ugcPost` to `share` (or the reverse) to make
+       * ids look uniform would address a different entity — LinkedIn treats
+       * them as distinct URN types and answers INVALID_URN_TYPE.
+       */
+      postUrn: string;
     };
 
 export interface SocialReplyCoordinates {
