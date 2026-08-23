@@ -60,13 +60,25 @@ const FOREIGN_BASELINES = [
   },
 ];
 
+const USAGE = `Usage:
+  npm run lint:tsc:operator              # any file above its baseline fails, named
+  npm run lint:tsc:operator -- --files=a.ts,b.ts   # scope to the files you edited
+  npm run lint:tsc:operator -- --update  # lower each improved file's baseline (never raises)
+`;
+
 async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(USAGE);
+    return;
+  }
+
   await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
     baselineFile,
     label: 'operator',
-    argv: process.argv.slice(2),
+    argv,
     foreignBaselines: FOREIGN_BASELINES,
   });
 }
