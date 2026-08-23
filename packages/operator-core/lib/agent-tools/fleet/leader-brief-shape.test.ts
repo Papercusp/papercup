@@ -24,6 +24,7 @@ function largeBrief() {
       fleet: 'large-fleet',
       members: members.length,
       dead: 2,
+      dead_member_ids: ['su-51', 'su-52'],
       stalled: 3,
       claimable_now: 1432,
       population: { candidates: 63, counted: 53, withheld: 10, basis: 'x'.repeat(1000) },
@@ -76,6 +77,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.ok).toBe(true);
     expect(out.blockedAt).toMatchObject({ layer: 'members' });
     expect(out.summary).toMatchObject({ fleet: 'large-fleet', members: 53, claimable_now: 1432 });
+    expect(out.summary).toMatchObject({ dead: 2, dead_member_ids: ['su-51', 'su-52'] });
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },

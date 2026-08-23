@@ -2542,6 +2542,11 @@ export async function buildLeaderBrief(
     parked_awaiting_capability: members.filter((m) => m.monitorState === 'parked-awaiting-capability').length,
     stalled: members.filter((m) => m.verdict === 'stalled' || m.stalled).length,
     dead: members.filter((m) => m.verdict === 'dead').length,
+    // EI-21238131879315614: `members` is live-first and may be transport-truncated,
+    // so a bare dead count can name no visible row. Carry the exact member ids beside
+    // the aggregate; the shaper bounds this list independently without losing the
+    // identity needed to verify a relaunch/takeover decision.
+    dead_member_ids: members.filter((m) => m.verdict === 'dead').map((m) => m.agentId),
     unanswered_directed: members.filter((m) => (m.unanswered?.count ?? 0) > 0).length,
     high_context: members.filter((m) => m.contextPressure === 'high').length,
     critical_context: members.filter((m) => m.contextPressure === 'critical').length,

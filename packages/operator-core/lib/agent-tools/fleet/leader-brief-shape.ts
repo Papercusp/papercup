@@ -112,6 +112,16 @@ function compactSummary(value: unknown, ultra = false): unknown {
   ];
   const out = pick(source, metricKeys, 120) ?? {};
 
+  // EI-21238131879315614: the verbose member rows are live-first and bounded, so
+  // `dead` can otherwise be positive while every shown member looks live. Keep a
+  // bounded identity list beside the aggregate; one named row is enough to falsify
+  // or confirm a relaunch decision, and the total remains in `dead`.
+  if (Array.isArray(source.dead_member_ids)) {
+    const deadIds = source.dead_member_ids.filter((id): id is string => typeof id === 'string');
+    out.dead_member_ids = deadIds.slice(0, 8);
+    if (deadIds.length > 8) out.dead_member_ids_truncated = { total: deadIds.length, shown: 8 };
+  }
+
   const population = pick(source.population, ['population', 'basis', 'candidates', 'counted', 'withheld', 'withheldReason', 'reveal'], 150);
   if (population) out.population = population;
 
