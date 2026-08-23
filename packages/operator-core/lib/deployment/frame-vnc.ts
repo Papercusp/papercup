@@ -207,7 +207,14 @@ function bindViewer(session: PendingSession, mode: VncMode | 'none'): void {
 export function vncBridgeScript(display: number, mode: VncMode): string {
   const viewonly = mode === 'takeover' ? '' : ' -viewonly';
   // No single quotes inside the script: the frame path wraps it in single quotes.
+  //
+  // The binary preflight is not ceremony. Without it a MISSING x11vnc reports
+  // `x11vnc-no-port`, which reads as "x11vnc ran and gave no port" — the exact
+  // opposite of the truth, and the reader goes hunting for a display problem
+  // that does not exist. Verified on a host with no x11vnc installed.
   return (
+    `command -v x11vnc >/dev/null 2>&1 || { echo "x11vnc-not-installed" >&2; exit 10; }; ` +
+    `command -v socat >/dev/null 2>&1 || { echo "socat-not-installed" >&2; exit 11; }; ` +
     `P=$(x11vnc -display :${display} -localhost -nopw${viewonly} -once -timeout 30 -autoport 5900 -bg 2>/dev/null ` +
     `| sed -n "s/.*PORT=\\([0-9]*\\).*/\\1/p"); ` +
     `[ -n "$P" ] || { echo "x11vnc-no-port" >&2; exit 9; }; ` +
