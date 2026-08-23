@@ -865,17 +865,17 @@ export default defineTool({
         const appendBaseGuard: CheckpointGuard | null =
           additiveChecks && !wantsConfirmShrink
             ? // WI-7190: `append:true` used to arm NO guard at all — "the one mode whose
-                  // whole contract is 'never lose the existing text' was the mode with no
-                  // shrink protection." Confirmed live: the tool's own pre-read
-                  // (getWorkItemCheckpoint, above) came back empty on a resolvable item while
-                  // a 10,671-char checkpoint genuinely existed — the join then had nothing to
-                  // join onto, so `checkpointToStore` was just the addendum, and the write
-                  // silently REPLACED the real checkpoint while still returning
-                  // ok:true/verified:true. `_priorNote`/`priorLen` here are the AUTHORITATIVE
-                  // prior — read inside this same locked transaction, independent of the
-                  // tool's separate pre-read above — so disagreement between the two is
-                  // exactly the failure signature: the write path resolves the item, the
-                  // (different) read path used to build the join does not.
+              // whole contract is 'never lose the existing text' was the mode with no
+              // shrink protection." Confirmed live: the tool's own pre-read
+              // (getWorkItemCheckpoint, above) came back empty on a resolvable item while
+              // a 10,671-char checkpoint genuinely existed — the join then had nothing to
+              // join onto, so `checkpointToStore` was just the addendum, and the write
+              // silently REPLACED the real checkpoint while still returning
+              // ok:true/verified:true. `_priorNote`/`priorLen` here are the AUTHORITATIVE
+              // prior — read inside this same locked transaction, independent of the
+              // tool's separate pre-read above — so disagreement between the two is
+              // exactly the failure signature: the write path resolves the item, the
+              // (different) read path used to build the join does not.
               (_priorNote, priorLen) =>
                 didAttemptJoin && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)
                   ? `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
