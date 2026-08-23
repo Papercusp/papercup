@@ -1775,6 +1775,51 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // planWorkActivity.list — plan slug → last-WORK timestamp (epoch ms), the ⚒
+  // half of the PlansPane dual-timestamp pair + the HUD plan cards
+  // (plan-visibility-revamp-2026-08-23 P-001 / D-003). One aggregate row per
+  // plan with >=1 attributed work-item; a plan absent from the result was
+  // simply never worked (the pane renders the dim em-dash from the map miss).
+  // Full-bust invalidated by any work_items write via table-to-query-names —
+  // workspace-keyed, so no per-row scope can match. Semantics + the
+  // observation-lane exclusion are documented in ./plan-work-activity.
+  'planWorkActivity.list': {
+    backingTables: ['harness_shared.work_items'],
+    argsSchema: z
+      .object({
+        workspaceId: z.string().nullable().optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const { workspaceId = null } = (args ?? {}) as { workspaceId?: string | null };
+      const { listPlanWorkActivity } = await import('./plan-work-activity');
+      return (await listPlanWorkActivity({ workspaceId })) as unknown[];
+    },
+  },
+
+  // planActivity.list — the PlanDashboard "Recent activity" feed: merged plan
+  // EDITS (plan_revisions) + work-item PROGRESS rows (work_items by
+  // source_plan_slug) for one plan, newest first
+  // (plan-visibility-revamp-2026-08-23 P-004; the option-C dashboard consumes
+  // it, P-003). Full-bust from both backing tables via table-to-query-names.
+  'planActivity.list': {
+    backingTables: ['harness_shared.plan_revisions', 'harness_shared.work_items'],
+    argsSchema: z.object({
+      planSlug: z.string().min(1),
+      workspaceId: z.string().nullable().optional(),
+      limit: clampedLimit(100, 30).optional(),
+    }),
+    resolve: async (args) => {
+      const {
+        planSlug,
+        workspaceId = null,
+        limit = 30,
+      } = args as { planSlug: string; workspaceId?: string | null; limit?: number };
+      const { listPlanActivity } = await import('./plan-activity-feed');
+      return (await listPlanActivity({ planSlug, workspaceId, limit })) as unknown[];
+    },
+  },
+
   // hiveFromRepo.progress — REAL step transitions for the long create-from-URL
   // (hive-from-repo-hardening P-008). The composition records to the in-process
   // store + invalidates this name per step; the form subscribes with its
@@ -3649,6 +3694,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // set — an empty set is indistinguishable from a read that failed, and the
   // strip must render its IDLE state on "no run", never on "unknown".
   'plans.attentionBulkRun': {
+    // Producer-push, not table-bridged (the agentOrders.byOwner shape): every
+    // writer to both tables fires notifySyncInvalidate('plans.attentionBulkRun')
+    // after its write commits — createRun/reportOutcomes in
+    // agent-tools/inbox/bulk-run.ts and the admin bulk-resolve route — so the
+    // pane refreshes on the write's MEANING, and the per-item outcome batch
+    // carries no per-row notify cost. PUSH_EXEMPT in
+    // resolver-backing-table-coverage.test.ts documents the pairing + re-arm.
+    backingTables: [
+      'harness_shared.attention_bulk_runs',
+      'harness_shared.attention_bulk_run_items',
+    ],
     resolve: async (args) => {
       const { getRun, getLatestRun, getRunItems } = await import('../attention/bulk-run-store');
       const runId = typeof (args as { runId?: unknown })?.runId === 'string'
