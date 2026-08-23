@@ -15,8 +15,10 @@ Runs wherever `@papercusp/template-kit` is available (it is NOT one of the
 dependency-free portable checks):
 
 - **In this repo, unconfigured** — against the sibling `templates/<id>/`
-  dirs, as the `@papercusp/templates` workspace suite
-  (`npm test -w @papercusp/templates`).
+  dirs. (There is no `@papercusp/templates` npm workspace: in-repo the
+  composition semantics are pinned by `@papercusp/template-kit`'s own suite —
+  `templates-dir.test.ts` + `composition.test.ts` — and by the
+  operator-core `template-bundle-integrity` guard.)
 - **Configured** — `TEMPLATE_CHECKS_CONFIG` section
   `composition.templateYamls` names a materialized app's CHOSEN set.
 
