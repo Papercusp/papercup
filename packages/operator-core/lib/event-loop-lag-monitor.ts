@@ -602,7 +602,22 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     // Reset so each window is independent (a one-off spike doesn't pin the
     // gauge high forever).
     h.reset();
-  }, { category: 'watchdog' });
+  }, {
+    category: 'watchdog',
+    // WI-40842: this monitor is a deliberately-exercised real interval under Vitest —
+    // event-loop-lag-monitor.test.ts induces REAL libuv delay and reads the native
+    // histogram, so there is nothing to fake and no injected seam to substitute. Without
+    // the opt-in the scheduled registry keeps the default backend inert (the guard for
+    // EI-21209553211440005) and the tick never runs, which is silent: it returns a no-op
+    // handle rather than failing, so 9 tick-dependent assertions in that file go red with
+    // no indication of the cause.
+    //
+    // Scoped by construction: the guard stays fully armed for every OTHER call site, and
+    // this monitor is only ever armed by an explicit startEventLoopLagMonitor() call —
+    // never as an import side effect — so no test gets a live timer it did not ask for.
+    // Inert in production either way: the guard is only evaluated under process.env.VITEST.
+    allowInTest: true,
+  });
 
   const handle: LagMonitorHandle = {
     stop() {

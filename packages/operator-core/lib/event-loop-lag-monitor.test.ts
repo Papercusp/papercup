@@ -30,6 +30,7 @@ import {
   type LagMonitorHandle,
 } from './event-loop-lag-monitor';
 import { SENTINEL_SAB_IDX, SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
+import { getManaged, managedSetInterval, stopManaged } from '@papercusp/scheduled-registry';
 
 function blockFor(ms: number): void {
   const end = Date.now() + ms;
@@ -936,5 +937,43 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
     handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
     await expect(new Promise((r) => setTimeout(r, 60))).resolves.toBeUndefined();
     expect(handle.sample().p95Ms).toBeGreaterThanOrEqual(0);
+  });
+
+  // WI-40842 — recurrence guard for the CLASS, not for one assertion.
+  //
+  // Every tick-dependent test in this file measures a monitor that must actually be
+  // running. The scheduled-registry keeps the default timer backend inert under Vitest
+  // (a real interval firing into another test's factory mocks is EI-21209553211440005),
+  // and a suppressed timer produces NO error — it returns a no-op handle, so a whole
+  // class of assertions here silently measured a monitor that never ticked. That is
+  // exactly what happened at 03:00Z on 2026-08-23: 9 of 45 tests in this file went red
+  // and stayed red. Assert the arm DIRECTLY, so the next time the opt-in is dropped the
+  // failure names the cause instead of surfacing as nine unrelated timing assertions.
+  describe('WI-40842: the monitor arms a LIVE managed timer under Vitest', () => {
+    afterEach(() => {
+      stopManaged('wi40842-control-not-opted-in');
+    });
+
+    it('registers a live managed timer, and deregisters it on stop()', () => {
+      handle = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
+      // Pre-fix this is undefined: the Vitest guard returned a no-op handle and
+      // registered nothing, so no tick ever ran.
+      expect(getManaged('event-loop-lag-monitor')).toBeDefined();
+      handle.stop();
+      handle = undefined;
+      expect(getManaged('event-loop-lag-monitor')).toBeUndefined();
+    });
+
+    it('CONTROL: a NON-opted-in real interval stays inert (EI-21209553211440005 stays closed)', () => {
+      // The remedy above is an opt-in at ONE deliberately-exercised call site, never a
+      // relaxation of the guard. If someone "fixes" a future red by weakening the guard
+      // itself, this fails loudly rather than silently re-opening the original hazard.
+      const fired = vi.fn();
+      const h = managedSetInterval('wi40842-control-not-opted-in', 5, fired, {
+        category: 'watchdog',
+      });
+      expect(getManaged('wi40842-control-not-opted-in')).toBeUndefined();
+      h.stop();
+    });
   });
 });
