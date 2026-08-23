@@ -213,7 +213,7 @@ describe('resolveInspectCommand — verb mapping', () => {
 
   it('publishes self-correcting guidance for the flattened test/typecheck argument surface', () => {
     const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
-    expect(shape.onlyPaths.description).toMatch(/never pass with check:\\"test\\"/);
+    expect(shape.onlyPaths.description).toMatch(/never pass with check:"test"/);
     expect(shape.path.description).toMatch(/one package-relative test file\/dir/);
     expect(shape.path.description).toMatch(/one capability:inspect call per path/);
   });
