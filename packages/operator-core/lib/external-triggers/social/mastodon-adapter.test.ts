@@ -486,6 +486,7 @@ describe('controls — the kit must FAIL a broken adapter', () => {
     expect(await failuresFor(broken)).toEqual([
       'no-op-reconcile-emits-nothing',
       'no-op-reconcile-emits-nothing',
+      'unreadable-cursor-falls-back-to-backfill',
     ]);
   });
 

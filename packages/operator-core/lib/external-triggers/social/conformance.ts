@@ -262,6 +262,39 @@ export async function runSocialAdapterConformance<World>(
     });
   }
 
+  // ── unreadable persisted state is not a cold start ────────────────────────
+  // A non-null cursor that a newer/older adapter cannot parse is still a
+  // previous connection's state. Treating it as null and reporting cold-start
+  // hides the recovery path and can silently lose the gap. Every adapter must
+  // use its bounded backfill and identify the local invalid-cursor condition as
+  // rejected state, even when the provider itself never saw the cursor.
+  checksRun.push('unreadable-cursor-falls-back-to-backfill');
+  {
+    const { adapter, world } = await harness.create();
+    const ids = await harness.publish(world, 3);
+    const { result, events } = await drain(adapter, { __unreadable_social_cursor__: true });
+
+    if (result.path !== 'backfill') {
+      fail(
+        'unreadable-cursor-falls-back-to-backfill',
+        `expected path='backfill' for an unreadable persisted cursor, got '${result.path}' — reporting cold-start hides recovery`,
+      );
+    }
+    if (result.backfillReason !== 'cursor-rejected') {
+      fail(
+        'unreadable-cursor-falls-back-to-backfill',
+        `expected backfillReason='cursor-rejected' for an unreadable persisted cursor, got '${result.backfillReason ?? 'undefined'}'`,
+      );
+    }
+    const lost = ids.filter((id) => !events.some((event) => event.externalId === id));
+    if (lost.length > 0) {
+      fail(
+        'unreadable-cursor-falls-back-to-backfill',
+        `backfill did not recover events after an unreadable persisted cursor; missing: ${lost.join(', ')}`,
+      );
+    }
+  }
+
   // ── rate limiting is absorbed, not propagated ─────────────────────────────
   if (harness.rateLimitOnce) {
     checksRun.push('rate-limit-is-absorbed');

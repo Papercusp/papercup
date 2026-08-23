@@ -62,7 +62,7 @@ export interface BlueskyCursor {
   lastEventAt?: string | null;
 }
 
-/** True when `value` is a usable stored cursor. Anything else means cold start. */
+/** True when `value` is a usable stored cursor. Unusable values need backfill. */
 export function isBlueskyCursor(value: unknown): value is BlueskyCursor {
   return (
     typeof value === 'object' &&
@@ -288,7 +288,23 @@ export class BlueskyAdapter implements SocialAdapter {
 
   async reconcile(ctx: SocialReconcileContext): Promise<SocialReconcileResult> {
     const stored = isBlueskyCursor(ctx.cursor) ? ctx.cursor : null;
+    const cursorUnreadable = ctx.cursor !== null && stored === null;
     const lastSeq = stored?.seq ?? null;
+
+    // A non-null cursor that this adapter cannot parse is persisted state we
+    // must recover, not a first connect. Starting the stream from null here
+    // would silently discard the gap while reporting a truthful-looking
+    // cold-start path, so use the bounded REST backfill instead.
+    if (cursorUnreadable) {
+      const recovered = await this.withRetry(() => this.client.backfill(null, ctx.signal));
+      const emitted = await this.emitAll(recovered, null, ctx);
+      return {
+        cursor: this.nextCursor(recovered, null, null),
+        emitted: emitted.count,
+        path: 'backfill',
+        backfillReason: 'cursor-rejected',
+      };
+    }
 
     const page = await this.withRetry(() => this.client.streamSince(stored?.seq ?? null, ctx.signal));
 

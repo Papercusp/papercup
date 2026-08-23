@@ -99,7 +99,7 @@ export interface MastodonCursor {
   lastEventAt?: string | null;
 }
 
-/** True when `value` is a usable stored cursor. Anything else means cold start. */
+/** True when `value` is a usable stored cursor. Unusable values need backfill. */
 export function isMastodonCursor(value: unknown): value is MastodonCursor {
   return (
     typeof value === 'object' &&
@@ -423,6 +423,7 @@ export class MastodonAdapter implements SocialAdapter {
 
   async reconcile(ctx: SocialReconcileContext): Promise<SocialReconcileResult> {
     const stored = isMastodonCursor(ctx.cursor) ? ctx.cursor : null;
+    const cursorUnreadable = ctx.cursor !== null && stored === null;
 
     const collected: MastodonRawStatus[] = [];
     let marker: string | null = stored?.minId ?? null;
@@ -452,7 +453,7 @@ export class MastodonAdapter implements SocialAdapter {
       emitted,
       // See the class note: with a stored marker the REST re-read is the ONLY
       // route that closes the gap on this platform, so that is what we report.
-      ...this.declarePath(stored),
+      ...this.declarePath(stored, cursorUnreadable),
     };
   }
 
@@ -473,8 +474,15 @@ export class MastodonAdapter implements SocialAdapter {
    * ones. An alert keyed on the REASON stays meaningful across all three Wave A
    * platforms, where one keyed on `path === 'backfill'` would fire forever here.
    */
-  private declarePath(stored: MastodonCursor | null): Pick<SocialReconcileResult, 'path' | 'backfillReason'> {
-    if (stored === null) return { path: 'cold-start' as SocialReconcilePath };
+  private declarePath(
+    stored: MastodonCursor | null,
+    cursorUnreadable: boolean,
+  ): Pick<SocialReconcileResult, 'path' | 'backfillReason'> {
+    if (stored === null) {
+      return cursorUnreadable
+        ? { path: 'backfill', backfillReason: 'cursor-rejected' }
+        : { path: 'cold-start' as SocialReconcilePath };
+    }
     return { path: 'backfill', backfillReason: 'no-replay-supported' };
   }
 

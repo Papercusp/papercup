@@ -383,6 +383,7 @@ export class RedditAdapter implements SocialAdapter {
 
   async reconcile(ctx: SocialReconcileContext): Promise<SocialReconcileResult> {
     const stored = isRedditCursor(ctx.cursor) ? ctx.cursor : null;
+    const cursorUnreadable = ctx.cursor !== null && stored === null;
     const marker = stored?.newestFullname ?? null;
 
     const collected: RedditRawThing[] = [];
@@ -420,7 +421,15 @@ export class RedditAdapter implements SocialAdapter {
     const cursor = this.nextCursor(collected, stored);
 
     const path: SocialReconcilePath =
-      marker === null ? 'cold-start' : markerFound ? (emitted === 0 ? 'live-only' : 'cursor-replay') : 'backfill';
+      marker === null
+        ? cursorUnreadable
+          ? 'backfill'
+          : 'cold-start'
+        : markerFound
+          ? emitted === 0
+            ? 'live-only'
+            : 'cursor-replay'
+          : 'backfill';
 
     if (path !== 'backfill') return { cursor, emitted, path };
 
@@ -433,7 +442,12 @@ export class RedditAdapter implements SocialAdapter {
     // distinction is not pedantic: this walk never sends the marker to reddit,
     // so reddit cannot have rejected it. 'cursor-rejected' would send whoever
     // reads the field looking for a provider error that was never emitted.
-    return { cursor, emitted, path, backfillReason: 'cursor-expired' };
+    return {
+      cursor,
+      emitted,
+      path,
+      backfillReason: cursorUnreadable ? 'cursor-rejected' : 'cursor-expired',
+    };
   }
 
   /**

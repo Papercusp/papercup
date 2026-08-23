@@ -327,12 +327,13 @@ describe('the cursor carries one meaning, not two', () => {
     expect(isRedditCursor('t3_abc1')).toBe(false);
   });
 
-  it('treats an unrecognised cursor as a cold start rather than throwing', async () => {
+  it('treats an unrecognised cursor as rejected state rather than a cold start or throw', async () => {
     const h = harness();
     const { adapter, world } = await h.create();
     await h.publish(world, 2);
     const { result, events } = await drain(adapter, { minId: 'a-mastodon-cursor' });
-    expect(result.path).toBe('cold-start');
+    expect(result.path).toBe('backfill');
+    expect(result.backfillReason).toBe('cursor-rejected');
     expect(events.length).toBe(2);
   });
 });
