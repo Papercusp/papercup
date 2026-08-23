@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { listFleetLeader } from '../coordination/audience-host';
+import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates, type LivenessVerdict } from '../coordination/liveness-oracle';
 import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
@@ -109,7 +109,7 @@ async function resolveAnnouncementOwnership(
       let ids: string[] = [];
       try {
         ids = binding.kind === 'fleet-leadership'
-          ? await listFleetLeader(binding.ref)
+          ? await hostAudienceResolvers.listFleetLeader(binding.ref)
           : await resolveLiveRoleHolders(binding.ref, { workspaceId });
       } catch {
         ids = [];

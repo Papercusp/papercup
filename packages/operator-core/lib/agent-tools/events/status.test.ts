@@ -17,7 +17,7 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-status', ownerLabel: 's', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
 vi.mock('../coordination/audience-host', () => ({
-  listFleetLeader: vi.fn(async () => []),
+  hostAudienceResolvers: { listFleetLeader: vi.fn(async () => []) },
 }));
 vi.mock('../coordination/role-slot-live-resolve', () => ({
   resolveLiveRoleHolders: vi.fn(async () => []),
@@ -38,7 +38,7 @@ vi.mock('../../events/await/compose-store', () => ({
 
 import status from './status';
 import { inspectEventKey, listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
-import { listFleetLeader } from '../coordination/audience-host';
+import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 
@@ -339,7 +339,7 @@ describe('events:status projection', () => {
       waiters: [],
       deliveries: [],
     } as never);
-    vi.mocked(listFleetLeader).mockResolvedValueOnce(['su-ended']);
+    vi.mocked(hostAudienceResolvers.listFleetLeader).mockResolvedValueOnce(['su-ended']);
     vi.mocked(resolveSessionStates).mockResolvedValueOnce(new Map([
       ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
     ]) as never);
