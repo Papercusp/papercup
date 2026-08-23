@@ -1751,3 +1751,147 @@ describe('EI-20474047462811254: an episodic run IN FLIGHT carries no verdict', (
     expect(said.some((s) => s.includes('recovered'))).toBe(false);
   });
 });
+
+/**
+ * EI-21232345359778222 — a completed RUN is not a recovered CONDITION.
+ *
+ * EI-20474047462811254 (above) fixed the half where a run STARTING read as a recovery. This is
+ * the half it left: a run FINISHING reads as one too, and for `papercup-live-federation-gate`
+ * that is false — because the gate's exit code encodes whether the WINDOW had news, not the
+ * verdict. Read at the writer, `papercusp-desktop/bin/live-federation-gate.sh`:
+ *
+ *   verdict "GATE: FRESH-RED (red ${RED_AGE_H}h ago — still red, already tracked; NOT a green)"; exit 0
+ *
+ * Exit **0**, with the line itself saying "NOT a green". `GATE: FRESH-DOWNGRADE (… not a
+ * green)` exits 0 as well. So `inactive` (a completed successful oneshot) spans GREEN,
+ * still-RED and downgraded alike.
+ *
+ * Measured 2026-08-23 04:34 EDT: the unit started, freshness-suppressed the unchanged tracked
+ * red, emitted `GATE: FRESH-RED`, exited 0/inactive — and supervision broadcast
+ * `✅ … recovered` while WI-40905 was still red and no content-matrix or K4 witness had rerun.
+ * A reader acted on that all-clear and had to retract it. That retraction is the entire cost of
+ * the word.
+ *
+ * The fix is a WEAKER CLAIM, not a new oracle: `decideReconcile` stays a pure, domain-agnostic
+ * systemd reader and never learns to parse the gate's verdict bank. See
+ * `SupervisionEntry.exitEncodesRunOnly`.
+ */
+describe('EI-21232345359778222: exit 0 from a verdict-bearing unit is a completed RUN, not a recovery', () => {
+  const RUN_ONLY_ENTRY: SupervisionEntry = {
+    name: 'live-federation-gate',
+    layer: 'systemd-user',
+    unit: 'papercup-live-federation-gate',
+    criticality: 'important',
+    autoRestart: false,
+    episodic: true,
+    exitEncodesRunOnly: true,
+  };
+  /** The SAME unit without the flag — the control for every over-application assertion below. */
+  const PLAIN_EPISODIC_ENTRY: SupervisionEntry = { ...RUN_ONLY_ENTRY, exitEncodesRunOnly: undefined };
+
+  const st = (active: string): SystemctlUnitStatus => ({
+    unit: 'papercup-live-federation-gate.service',
+    load: 'loaded',
+    active,
+    sub: 'x',
+    description: '',
+  });
+  const run = (entry: SupervisionEntry, states: string[]) => {
+    let state = initialFlapState(entry.unit!);
+    const actions: ReconcileAction[] = [];
+    let now = 1_000_000;
+    for (const active of states) {
+      const r = decideReconcile({ entry, status: st(active), show: undefined, state, autoRestartFlagOn: true, now });
+      actions.push(r.action);
+      state = r.nextState;
+      now += 60_000;
+    }
+    return { actions, state };
+  };
+
+  it('THE BUG: FRESH-RED exit 0 (failed -> activating -> inactive) emits run-succeeded, never recovered', () => {
+    const { actions } = run(RUN_ONLY_ENTRY, ['failed', 'activating', 'inactive']);
+    expect(actions[1]).toEqual({ kind: 'run-in-flight', unit: 'live-federation-gate' });
+    expect(actions[2]).toEqual({ kind: 'run-succeeded', unit: 'live-federation-gate' });
+    expect(actions.some((a) => a.kind === 'recovered')).toBe(false);
+  });
+
+  it('THE BUG, at the broadcast: the summary states the run and DISCLAIMS the verdict', async () => {
+    _resetReconcilerState();
+    let active = 'failed';
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? `papercup-live-federation-gate.service loaded ${active} x Live 2-peer federation gate\n`
+          : '',
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [RUN_ONLY_ENTRY],
+      log: () => {},
+    };
+
+    await reconcileTick(deps); // a run FAILED  -> one honest down report
+    active = 'activating';
+    await reconcileTick(deps); // the next run starts (held — EI-20474047462811254)
+    active = 'inactive';
+    await reconcileTick(deps); // the run exits 0 on GATE: FRESH-RED
+
+    const said = notify.mock.calls.map((c) => c[0].summary);
+    // The word that cost a retraction must not appear on ANY of these broadcasts.
+    expect(said.some((s) => s.includes('recovered'))).toBe(false);
+    const up = said.find((s) => s.includes('last run exited 0'));
+    expect(up).toBeDefined();
+    // The disclaimer must ride IN the summary — a doc note does not reach the reader.
+    expect(up).toContain('NOT a verdict');
+    expect(up).toContain('read the verdict writer');
+    // Both ends pair: the down message states the same run-level fact, not "is down".
+    expect(said.some((s) => s.includes('last run exited NON-ZERO'))).toBe(true);
+    expect(said.some((s) => s.includes('is down'))).toBe(false);
+  });
+
+  it('CALIBRATION: WITHOUT the flag the identical sequence still emits a real "recovered"', () => {
+    // The failure direction that would make this fix worse than the bug — muting genuine
+    // recoveries for every episodic unit. Same states, same unit, flag off.
+    const { actions } = run(PLAIN_EPISODIC_ENTRY, ['failed', 'activating', 'inactive']);
+    expect(actions[2]).toEqual({ kind: 'recovered', unit: 'live-federation-gate' });
+    expect(actions.some((a) => a.kind === 'run-succeeded')).toBe(false);
+  });
+
+  it('CALIBRATION: the flag weakens the CLAIM only — the up-transition and its state reset are unchanged', () => {
+    const flagged = run(RUN_ONLY_ENTRY, ['failed', 'activating', 'inactive', 'inactive']);
+    const plain = run(PLAIN_EPISODIC_ENTRY, ['failed', 'activating', 'inactive', 'inactive']);
+    // Identical damping/telemetry state: only the third action's KIND differs.
+    expect(flagged.state).toEqual(plain.state);
+    expect(flagged.state.wasDown).toBe(false);
+    // And the transition fires exactly once, so a steady-state healthy unit stays silent.
+    expect(flagged.actions[3]).toEqual({ kind: 'healthy', unit: 'live-federation-gate' });
+    expect(flagged.actions.filter((a) => a.kind === 'run-succeeded')).toHaveLength(1);
+  });
+
+  it('CALIBRATION: a give-up EI still auto-resolves — that IS a run-level fact', async () => {
+    _resetReconcilerState();
+    let active = 'failed';
+    const resolveGiveUpEi = vi.fn(async (_o: { unit: string }) => []);
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? `papercup-live-federation-gate.service loaded ${active} x Live 2-peer federation gate\n`
+          : '',
+      now: () => 1_000_000,
+      notify: async () => {},
+      autoRestartFlagOn: async () => true,
+      registry: () => [RUN_ONLY_ENTRY],
+      log: () => {},
+      resolveGiveUpEi,
+    };
+    await reconcileTick(deps);
+    active = 'inactive';
+    await reconcileTick(deps);
+    // A give-up EI records that SUPERVISION gave up restarting the unit. A completed run
+    // settles that, whatever the subject's verdict — so weakening the notification must not
+    // strand the EI (the EI-19966318801100410 orphan this would otherwise reintroduce).
+    expect(resolveGiveUpEi).toHaveBeenCalledWith({ unit: 'papercup-live-federation-gate' });
+  });
+});
