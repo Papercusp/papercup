@@ -76,19 +76,25 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('<AdvAutomationsTab>', () => {
-  it('renders one triggered-plan identity with schedule, Slack, manual inputs, costs, and system routines', async () => {
+  it('lands on the causal trigger-flow view and keeps non-triggered routines in Catalog', async () => {
     renderTab();
     expect(await screen.findByRole('heading', { name: 'Automations' })).toBeTruthy();
-    const planRow = screen.getByRole('button', { name: /Customer feedback digest/ });
+    expect(screen.getAllByText('Outcome / next').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Trigger flows')).toBeTruthy();
+    const planRow = screen.getByRole('button', { name: /Schedule \+ Slack \+ Manual starts Customer feedback digest/ });
     expect(planRow).toBeTruthy();
-    expect(screen.getAllByText('git-sync').length).toBeGreaterThan(0);
     fireEvent.click(planRow);
     const details = screen.getByLabelText('Automation details');
+    expect(within(details).getByText('Flow inspector')).toBeTruthy();
+    expect(within(details).getByText('Causal path')).toBeTruthy();
+    expect(within(details).getAllByText('Turns feedback into a prioritized brief').length).toBeGreaterThanOrEqual(2);
     expect(within(details).getByText('schedule')).toBeTruthy();
     expect(within(details).getByText('slack')).toBeTruthy();
     expect(within(details).getByText('manual')).toBeTruthy();
     await waitFor(() => expect(within(details).getByText(/2 required · ready/)).toBeTruthy());
     expect(within(details).getByText('$0.62 · 1 runs')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
+    expect(screen.getAllByText('git-sync').length).toBeGreaterThan(0);
   });
 
   it('fires Run now through plans:run-now and keeps role spend inside Activity', async () => {

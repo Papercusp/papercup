@@ -3,6 +3,7 @@ import type { AutomationCatalog, AutomationRoutine } from '@papercusp/operator-c
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 import {
   buildAutomationActivity,
+  buildAutomationFlows,
   buildAutomationItems,
   buildAutomationSources,
   filterAutomationItems,
@@ -127,6 +128,41 @@ describe('automations model', () => {
     expect(plan?.nextAt).toBe(NOW + 18 * 60_000);
     expect(plan?.timingLabel).toBe('Next in 18m');
     expect(plan?.spendLabel).toContain('Run-linked');
+    expect(plan?.flow).toMatchObject({
+      sourceLabel: 'Schedule + Slack + 2 more',
+      sourceDetail: '3/3 automatic armed · manual available',
+      planDetail: 'papercusp · Ready',
+      outcomeLabel: 'Turns feedback into a prioritized brief',
+      outcomeDetail: 'Last observed outcome · Done',
+      outcomeState: 'completed',
+    });
+  });
+
+  it('builds flow rows only for triggered plans and keeps a truthful undeclared-next fallback', () => {
+    const input = fixture();
+    input.plans = [
+      ...input.plans,
+      {
+        slug: 'manual-review',
+        title: 'Manual review',
+        harness: 'papercusp',
+        status: 'ready',
+        triggered: true,
+        triggerSources: ['manual'],
+      },
+    ];
+    const items = buildAutomationItems(input);
+    const flows = buildAutomationFlows(items);
+    expect(flows).toHaveLength(2);
+    expect(flows.every((item) => item.kind === 'triggered-plan')).toBe(true);
+    expect(flows.find((item) => item.planSlug === 'manual-review')?.flow).toMatchObject({
+      sourceLabel: 'Manual',
+      sourceDetail: 'Manual start available',
+      outcomeLabel: 'No next action declared',
+      outcomeDetail: 'No observed run yet',
+      outcomeState: 'waiting',
+    });
+    expect(flows.some((item) => item.label === 'git-sync')).toBe(false);
   });
 
   it('keeps AI routines, deterministic tasks, and spend truth separate', () => {
