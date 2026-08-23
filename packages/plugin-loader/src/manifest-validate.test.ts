@@ -109,6 +109,57 @@ describe('plugin dependency + config fields', () => {
   });
 });
 
+describe('triggerPack manifest shape (external-triggers P-012)', () => {
+  const triggerPack = {
+    source: { kind: 'gmail', oauthField: 'googleWorkspace' },
+    plan: {
+      path: 'plan.md',
+      inputSchema: { type: 'object', properties: { trigger: { type: 'object' } } },
+    },
+    binding: {
+      eventPattern: 'ext:gmail:message.received',
+      filter: { direction: 'inbound' },
+      stormPolicy: { maxRuns: 5, windowSeconds: 60 },
+    },
+  };
+
+  it('accepts the strict pure-data declaration', () => {
+    expect(validateManifest({
+      name: '@test/email-draft-responder',
+      version: '0.1.0',
+      kind: 'plugin',
+      triggerPack,
+    }).ok).toBe(true);
+  });
+
+  it('refuses an inline armed bit — install and arm stay separate', () => {
+    const r = validateManifest({
+      name: '@test/email-draft-responder',
+      version: '0.1.0',
+      kind: 'plugin',
+      triggerPack: {
+        ...triggerPack,
+        binding: { ...triggerPack.binding, armed: true },
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.issues.map((issue) => issue.message).join(' ')).toMatch(/unknown property "armed"/);
+  });
+
+  it('refuses unknown nested fields and invalid storm limits', () => {
+    const r = validateManifest({
+      name: '@test/email-draft-responder',
+      version: '0.1.0',
+      triggerPack: {
+        ...triggerPack,
+        source: { ...triggerPack.source, token: 'leak' },
+        binding: { ...triggerPack.binding, stormPolicy: { maxRuns: 0 } },
+      },
+    });
+    expect(r.ok).toBe(false);
+  });
+});
+
 describe('provides.events + dependencies.events (events-as-a-dependency axis, D-003/P-005)', () => {
   const base = { name: '@test/events', version: '0.1.0', kind: 'plugin', papercusp: '^1.0', capabilities: [] as string[] };
 

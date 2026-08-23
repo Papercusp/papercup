@@ -129,6 +129,80 @@ describe('loadPluginFromDir', () => {
     }
   });
 
+  it('loads a manifest-only trigger pack and preserves its discovery descriptor', async () => {
+    const dir = join(ROOT, 'email-draft-responder');
+    const scopes = [
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.compose',
+    ];
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'plan.md'), `---
+title: Email draft responder
+slug: email-draft-responder
+status: draft
+---
+# Email draft responder
+## Phase 1 — Draft
+- **P-001** \`todo\` Draft the reply.
+`, 'utf8');
+    await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({
+      name: 'email-draft-responder',
+      version: '0.1.0',
+      kind: 'plugin',
+      capabilities: [],
+      oauth: [{ provider: 'google', scopes, fieldName: 'googleWorkspace' }],
+      configSchema: {
+        type: 'object',
+        properties: {
+          googleWorkspace: {
+            type: 'string',
+            secret: true,
+            shareable: false,
+            snapshotPolicy: 'strip',
+            oauth: { provider: 'google', scopes },
+          },
+        },
+      },
+      triggerPack: {
+        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
+        plan: { path: 'plan.md', inputSchema: { type: 'object', properties: {} } },
+        binding: { eventPattern: 'ext:gmail:message.received' },
+      },
+    }), 'utf8');
+
+    const r = await loadPluginFromDir(dir, 'project');
+    assert.ok(!('error' in r) && !('skipped' in r), `expected success, got ${JSON.stringify(r)}`);
+    if ('plugin' in r) {
+      assert.equal((r.plugin as unknown as { __runtime?: string }).__runtime, 'manifest-only');
+      assert.deepEqual(r.triggerPack, {
+        source: { kind: 'gmail', oauthField: 'googleWorkspace' },
+        plan: { path: 'plan.md', inputSchema: { type: 'object', properties: {} } },
+        binding: { eventPattern: 'ext:gmail:message.received' },
+      });
+      assert.deepEqual(r.plugin.triggerPack, r.triggerPack);
+    }
+  });
+
+  it('rejects a trigger pack whose OAuth field is not snapshot-safe', async () => {
+    const dir = join(ROOT, 'leaky-trigger-pack');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, 'plan.md'), '# plan', 'utf8');
+    await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({
+      name: 'leaky-trigger-pack',
+      version: '0.1.0',
+      configSchema: { type: 'object', properties: { token: { type: 'string' } } },
+      oauth: [{ provider: 'google', scopes: ['gmail.readonly'], fieldName: 'token' }],
+      triggerPack: {
+        source: { kind: 'gmail', oauthField: 'token' },
+        plan: { path: 'plan.md', inputSchema: { type: 'object' } },
+        binding: { eventPattern: 'ext:gmail:message.received' },
+      },
+    }), 'utf8');
+    const r = await loadPluginFromDir(dir, 'project');
+    assert.ok('error' in r);
+    if ('error' in r) assert.match(r.error, /secret must be true/);
+  });
+
   it('rejects when manifest.version != plugin.version', async () => {
     const dir = await makePlugin({ name: 'version-mismatch', manifestVersionMismatch: true });
     const r = await loadPluginFromDir(dir, 'project');
