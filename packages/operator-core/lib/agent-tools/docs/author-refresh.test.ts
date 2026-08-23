@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DocPageRefresh } from '../../search/doc-embed-sync';
 
 const h = vi.hoisted(() => {
   const order: string[] = [];
@@ -16,7 +17,7 @@ const h = vi.hoisted(() => {
     invalidateEngineeringAdapter: vi.fn(() => {
       order.push('invalidate');
     }),
-    refreshDocPageSections: vi.fn(async () => {
+    refreshDocPageSections: vi.fn<() => Promise<DocPageRefresh>>(async () => {
       order.push('refresh');
       return { ok: true, sections: 1, unchanged: false };
     }),
@@ -78,13 +79,18 @@ describe('docs:author search refresh', () => {
   });
 
   it('keeps author success but surfaces a refresh failure as a warning', async () => {
-    h.refreshDocPageSections.mockResolvedValueOnce({ ok: false, reason: 'page_not_found:agent-insights/current-refresh' });
+    h.refreshDocPageSections.mockResolvedValueOnce({
+      ok: false,
+      reason: 'page_not_found:agent-insights/current-refresh',
+    });
 
     const result = await callAuthor(baseArgs);
     const payload = JSON.parse(result.content[0].text) as { ok: boolean; warnings?: string[] };
 
     expect(result.isError).not.toBe(true);
     expect(payload.ok).toBe(true);
-    expect(payload.warnings?.some((warning) => warning.includes('page_not_found:agent-insights/current-refresh'))).toBe(true);
+    expect(payload.warnings?.some((warning) => warning.includes('page_not_found:agent-insights/current-refresh'))).toBe(
+      true,
+    );
   });
 });
