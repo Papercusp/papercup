@@ -52,6 +52,8 @@ import {
   type A11yNode,
 } from './accessibility-tree';
 import { provisionSandboxDesktop, type SandboxDesktop } from './desktop-provisioner';
+import { runComputerAction } from './computer';
+import { runObserve, runClickElement } from './observe';
 
 const LIVE = process.env.PAPERCUSP_A11Y_LIVE === '1';
 const TIMEOUT = 120_000;
@@ -253,5 +255,136 @@ describe.skipIf(!LIVE)('accessibility observation — live', () => {
     await new Promise((r) => setTimeout(r, 3000));
     const after = walk(d.display, bus);
     expect(after.apps, 'Cancel was activated but the dialog is still registered').toBeLessThan(before.apps);
+  }, TIMEOUT);
+
+  // -------------------------------------------------------------------------
+  // P-008 / D-012 — the tools themselves, end to end
+  //
+  // Everything above drives the LOW-LEVEL commands (walkerCommand, actionCommand)
+  // directly, which is deliberate: it isolates the mechanism. But it means the
+  // shipped tool handlers — runComputerAction's observation branch, and the
+  // runObserve/runClickElement path P-008 refactored onto the shared snapshot —
+  // are not exercised by any of it. These two tests close that hole.
+  // -------------------------------------------------------------------------
+
+  /** Read a PNG's real dimensions from its IHDR, so image cost is derived, not assumed. */
+  function pngDims(b64: string): { width: number; height: number } {
+    const buf = Buffer.from(b64, 'base64');
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+
+  /** Point capability:computer at a provisioned desktop for the duration of `fn`. */
+  async function onDisplay<T>(display: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.PAPERCUSP_COMPUTER_DISPLAY;
+    process.env.PAPERCUSP_COMPUTER_DISPLAY = display;
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
+      else process.env.PAPERCUSP_COMPUTER_DISPLAY = prev;
+    }
+  }
+
+  it('MEASURES a real trajectory through capability:computer — tree observations vs a screenshot after every action', async () => {
+    const d = await gtkDesktop();
+    const bus = busFor(d.display);
+    if (!bus) throw new Error('precondition: desktop published no a11y bus');
+    expectRegisteredApp(walk(d.display, bus).apps);
+
+    await onDisplay(d.display, async () => {
+      const STEPS = 5;
+      const trajectory = async (observe: 'auto' | 'image') => {
+        let tokens = 0;
+        const lines: string[] = [];
+        for (let i = 0; i < STEPS; i += 1) {
+          const r = await runComputerAction({
+            action: 'mouse_move',
+            coordinate: [200 + i * 20, 200 + i * 20],
+            observe,
+          });
+          for (const c of r.content) {
+            if (c.type === 'text') tokens += estimateTextTokens(c.text);
+            else {
+              const { width, height } = pngDims(c.data);
+              tokens += estimateImageTokens(width, height);
+            }
+          }
+          lines.push((r.content[0] as { text: string }).text);
+        }
+        return { tokens, lines };
+      };
+
+      const auto = await trajectory('auto');
+      const image = await trajectory('image');
+
+      // THE MEASUREMENT IS ONLY MEANINGFUL IF `auto` REALLY TOOK THE TREE PATH.
+      // A silent fallback to pixels would make both numbers equal and the ratio
+      // 1.0 — a green test proving nothing, which is exactly the shape this
+      // suite exists to refuse. Assert the path before trusting the number.
+      expect(
+        auto.lines.every((l) => l.includes('· tree')),
+        `observe:'auto' did not observe via the tree — it fell back: ${auto.lines.join(' | ')}`,
+      ).toBe(true);
+      expect(image.lines.every((l) => l.includes('· image'))).toBe(true);
+
+      const ratio = image.tokens / Math.max(1, auto.tokens);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[P-008] TRAJECTORY: ${STEPS} steps · tree=${auto.tokens} tokens vs ` +
+          `screenshot-every-step=${image.tokens} tokens => ${ratio.toFixed(2)}x cheaper over the trajectory`,
+      );
+      expect(auto.tokens).toBeLessThan(image.tokens);
+
+      // D-012's ledger contract: exactly ONE line per result, numbered, and no
+      // result re-emits an earlier step.
+      auto.lines.forEach((l, i) => {
+        expect(l.split('\n')).toHaveLength(1);
+        expect(l.startsWith(`#${i + 1} mouse_move`), `unexpected ledger line: ${l}`).toBe(true);
+      });
+      expect(auto.lines[STEPS - 1]).not.toContain('#1 ');
+    });
+  }, TIMEOUT);
+
+  it('drives computer:observe and computer:click_element end to end over the shared snapshot path', async () => {
+    const d = await gtkDesktop();
+    const bus = busFor(d.display);
+    if (!bus) throw new Error('precondition: desktop published no a11y bus');
+    const before = walk(d.display, bus);
+    expectRegisteredApp(before.apps);
+
+    await onDisplay(d.display, async () => {
+      const obs = await runObserve({});
+      const rendered = (obs.content[0] as { text: string }).text;
+      // eslint-disable-next-line no-console
+      console.log(`[P-008] observe -> ${rendered.split('\n')[0]}`);
+      expect(rendered).toContain('application(s) on the accessibility bus');
+      expect(rendered).toContain('Cancel');
+
+      const { roots } = compressA11yTree(buildA11yTree(before.nodes));
+      const cancel: A11yNode[] = [];
+      const visit = (n: A11yNode): void => {
+        if (/cancel|close/i.test(n.name) && isInteractive(n)) cancel.push(n);
+        n.children.forEach(visit);
+      };
+      roots.forEach(visit);
+      expect(cancel.length, 'the suite-provisioned dialog has a Cancel button').toBeGreaterThan(0);
+      expect(findByRef(roots, cancel[0]!.ref)?.name).toBe(cancel[0]!.name);
+
+      const clicked = await runClickElement({ ref: cancel[0]!.ref });
+      const said = (clicked.content[0] as { text: string }).text;
+      // eslint-disable-next-line no-console
+      console.log(`[P-008] click_element #${cancel[0]!.ref} -> ${said}`);
+      expect(clicked.isError ?? false).toBe(false);
+      expect(said).toMatch(/Activated|Clicked/);
+
+      // Falsifiable half, same as the low-level activation test: the app must
+      // actually have reacted. A handler that reports success and changes
+      // nothing is precisely what a return-shape assertion cannot see.
+      await new Promise((r) => setTimeout(r, 3000));
+      expect(
+        walk(d.display, bus).apps,
+        'computer:click_element reported success but the dialog is still registered',
+      ).toBeLessThan(before.apps);
+    });
   }, TIMEOUT);
 });
