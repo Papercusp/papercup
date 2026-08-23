@@ -2057,6 +2057,22 @@ export async function trackGateStall(
           ? `${orchestratorStdoutTag()} '${status}' — suite verdict recorded before promotion decision; carrying the prior red streak until final disposition`
           : gateStallRecordOnlyLogMessage(status),
       );
+      // P-003 final clause (D-002): the streak-carry above is the CORRECTION; this is the
+      // REPORT. Without it a torn sweep is absorbed silently — correct counters, zero
+      // observability — so the phenomenon cannot be measured or subscribed to.
+      // `promotionPending` is excluded deliberately: that branch carries the streak for a
+      // different reason (a verdict recorded before the promotion decision), and announcing
+      // it as a torn sweep would attribute a git-sync tear to a run that never proved one.
+      if (!promotionPending) {
+        const tornSweep = buildTornSweepAnnouncement({
+          installSlug: ctx.installSlug,
+          candidate,
+          failingTests,
+          retriage,
+          runId: options.runId ?? null,
+        });
+        if (tornSweep) await emitTornSweepEvent(tornSweep);
+      }
     }
     const carryStreak = recordOnly || alreadyCountedPending;
     const consecutiveReds = carryStreak ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1;

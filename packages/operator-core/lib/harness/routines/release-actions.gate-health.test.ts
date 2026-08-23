@@ -82,6 +82,17 @@ vi.mock('../../severe-event-broadcast', async (importOriginal) => ({
   broadcastSevereEventResolved: (r: Record<string, unknown>) => broadcastSevereEventResolved(r),
 }));
 
+// gate-resilience P-003 (D-002): the torn-sweep announcement goes out through
+// `emitAwaitedEvent`, as does the pre-existing legacy red verdict event. Capture it so the
+// WIRING can be asserted — and so neither emitter reaches the real events engine (which
+// needs a DB) from a unit test. Both call sites swallow their own errors, so an unmocked
+// engine would not fail these tests, it would just make them silently prove nothing.
+const emitAwaitedEvent = vi.fn(async (_e: Record<string, unknown>) => ({}) as unknown);
+vi.mock('../../events/await/engine', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/engine')>()),
+  emitAwaitedEvent: (e: Record<string, unknown>) => emitAwaitedEvent(e),
+}));
+
 import {
   trackGateStall,
   mergeGateHealthMonotonic,
@@ -114,6 +125,90 @@ beforeEach(() => {
   notifyAttention.mockClear();
   broadcastSevereEvent.mockClear();
   broadcastSevereEventResolved.mockClear();
+  emitAwaitedEvent.mockClear();
+});
+
+/**
+ * gate-resilience-vs-torn-git-sync-sweeps..., P-003 final clause (D-002).
+ *
+ * The streak-carry for a proven-stale candidate already shipped (WI-39450) and is asserted
+ * elsewhere in this file. What did NOT exist was any ANNOUNCEMENT: a torn sweep was absorbed
+ * perfectly and reported nowhere, so the phenomenon could not be measured or subscribed to.
+ *
+ * These test the WIRING specifically, for the reason this file's P-005 block already states —
+ * the pure composer (`buildTornSweepAnnouncement`, covered in release-actions.torn-sweep.test.ts)
+ * would pass just as happily if the emit were never called.
+ */
+describe('P-003: trackGateStall ANNOUNCES a torn sweep on the record-only tick', () => {
+  const CANDIDATE = '1a9e8a1f0000000000000000000000000000abcd';
+  const TIP = '9f7c3d2e1111111111111111111111111111beef';
+  const staleRetriage = {
+    classification: 'stale-candidate' as const,
+    tip: TIP,
+    detail: '2 failing file(s) PASS at tip',
+  };
+  const tornSweepEmits = () =>
+    emitAwaitedEvent.mock.calls
+      .map((c) => c[0] as { key?: string })
+      .filter((e) => typeof e.key === 'string' && e.key.startsWith('green-checkpoint:torn-sweep'));
+  /** The gate_health payload this tick wrote; every test here writes exactly one. */
+  const gateHealth = (): Record<string, unknown> => {
+    const w = lastGateHealthWrite();
+    expect(w).not.toBeNull();
+    return w!;
+  };
+
+  it('⭐ emits the global and install-scoped torn-sweep keys, naming files and the sha range', async () => {
+    seededGh = { consecutiveReds: 4, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts', 'b/two.test.ts'], null, staleRetriage);
+
+    const emits = tornSweepEmits();
+    expect(emits.map((e) => e.key)).toEqual([
+      'green-checkpoint:torn-sweep',
+      'green-checkpoint:torn-sweep:test-slug',
+    ]);
+    const payload = (emits[0] as { payload?: Record<string, unknown> }).payload!;
+    expect(payload).toMatchObject({
+      installSlug: 'test-slug',
+      candidate: CANDIDATE,
+      tip: TIP,
+      shaRange: '1a9e8a1f0000..9f7c3d2e1111',
+      fileCount: 2,
+      streakAdvanced: false,
+    });
+    expect(payload.failingTests).toEqual(['a/one.test.ts', 'b/two.test.ts']);
+  });
+
+  it('⭐ announces WITHOUT advancing the streak — the correction and the report both hold', async () => {
+    seededGh = { consecutiveReds: 4, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts'], null, staleRetriage);
+
+    expect(tornSweepEmits()).toHaveLength(2);
+    // The pre-existing WI-39450 behaviour must be untouched by the announcement.
+    expect(gateHealth().consecutiveReds).toBe(4);
+  });
+
+  it('does NOT announce a real red — a genuine red is not a torn sweep', async () => {
+    seededGh = { consecutiveReds: 4, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts'], null, {
+      classification: 'real-red',
+      tip: TIP,
+      detail: 'reproduces at tip',
+    });
+
+    expect(tornSweepEmits()).toEqual([]);
+    // And the genuinely-red path keeps advancing the streak, exactly as before.
+    expect(gateHealth().consecutiveReds).toBe(5);
+  });
+
+  it('does NOT announce when the gate never re-triaged at all', async () => {
+    seededGh = { consecutiveReds: 4, stallAlerted: false, lastGreenAt: Date.now() };
+    await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts']);
+    expect(tornSweepEmits()).toEqual([]);
+  });
 });
 
 /**
