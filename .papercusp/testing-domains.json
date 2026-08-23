@@ -1350,6 +1350,14 @@
       "tier": "project",
       "sections": [
         {
+          "id": "repo-root",
+          "label": "repo root",
+          "globs": [
+            "*.test.ts",
+            "*.test.tsx"
+          ]
+        },
+        {
           "id": "lib-root",
           "label": "lib (root)",
           "globs": [
