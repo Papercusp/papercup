@@ -287,6 +287,50 @@ describe('PlansPane', () => {
     expect(setters.plf).toHaveBeenCalledWith(true);
   });
 
+  it('exposes the sort picker in the toolbar and writes ?plSort (WI-40982)', () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: 'p-old', title: 'Older plan', updated: '2026-08-01T00:00:00Z' }),
+        plan({ slug: 'p-new', title: 'Newer plan', updated: '2026-08-09T00:00:00Z' }),
+      ],
+    };
+    render(<PlansPane />);
+
+    const sort = screen.getByTestId('plans-pane-sort') as HTMLSelectElement;
+    expect(sort.getAttribute('aria-label')).toBe('Sort plans');
+    expect(sort.value).toBe('needs');
+
+    fireEvent.change(sort, { target: { value: 'title' } });
+    expect(setters.plSort).toHaveBeenCalledWith('title');
+  });
+
+  it('re-orders the rendered rows when ?plSort changes, without changing which rows show', () => {
+    // Titles are deliberately INVERSE to recency, so the two orders disagree —
+    // a test where both orders coincide would pass against a sort that is wired
+    // to nothing at all.
+    planListData.value = {
+      plans: [
+        plan({ slug: 'p-zulu', title: 'Zulu', updated: '2026-08-09T00:00:00Z' }),
+        plan({ slug: 'p-alpha', title: 'Alpha', updated: '2026-08-01T00:00:00Z' }),
+      ],
+    };
+    const rowsInOrder = () =>
+      Array.from(document.querySelectorAll('[data-testid^="plans-pane-row-"]')).map((el) =>
+        el.getAttribute('data-testid'),
+      );
+
+    // Default: no needs-you anywhere, so recency decides — newest (Zulu) leads.
+    const first = render(<PlansPane />);
+    expect(rowsInOrder()).toEqual(['plans-pane-row-p-zulu', 'plans-pane-row-p-alpha']);
+    first.unmount();
+
+    nuqs.plSort = 'title';
+    render(<PlansPane />);
+    // Same two rows, flipped: a sort re-orders, it never adds or drops a row.
+    expect(rowsInOrder()).toEqual(['plans-pane-row-p-alpha', 'plans-pane-row-p-zulu']);
+    expect(screen.getByTestId('plans-pane-count').textContent).toBe('2');
+  });
+
   it('shows the active-empty message when there are no active plans', () => {
     planListData.value = { plans: [plan({ slug: 'shipped', status: 'shipped' })] };
     render(<PlansPane />);

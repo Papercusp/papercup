@@ -89,6 +89,31 @@ vi.mock('../chat/SessionChatModal', () => ({
   },
 }));
 
+// The sort picker is the shared Radix Select (design-primitives allowlists ZERO
+// native <select>s in app code). Radix's popup does not open under jsdom, so
+// stand in a native <select> carrying the SAME testId + aria-label — the same
+// seam GoalProposalCard/FleetLaunchRow/PlanFilters already use.
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({ value, onChange, options, ariaLabel, testId }: {
+    value: string;
+    onChange: (v: string) => void;
+    options: Array<{ value: string; label: React.ReactNode }>;
+    ariaLabel?: string;
+    testId?: string;
+  }) => (
+    <select
+      aria-label={ariaLabel}
+      data-testid={testId}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  ),
+}));
+
 const discussionProps = vi.fn();
 vi.mock('../work-items/WorkItemDiscussion', () => ({
   WORK_ITEM_DISCUSSION_PARAM: 'opcid',
@@ -111,7 +136,14 @@ vi.mock('../work-items/WorkItemDiscussion', () => ({
   },
 }));
 
-import InboxPane, { formatRelativeDate } from './InboxPane';
+import InboxPane, {
+  formatRelativeDate,
+  sortInboxItems,
+  INBOX_SORTS,
+  INBOX_SORT_IDS,
+  DEFAULT_INBOX_SORT,
+  inboxSortLabel,
+} from './InboxPane';
 import { effectiveTier, useInboxPendingCount, isInboxActive, scopeInboxItems } from './use-inbox-pending';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
@@ -576,16 +608,125 @@ describe('inbox search + kind facets (P-3xx)', () => {
     expect(screen.queryByTestId('inbox-row-d2')).toBeNull();
   });
 
-  it('the Filter toggle reveals data-driven kind facets with counts', () => {
+  it('shows data-driven kind facets with counts EXPANDED by default, with no toggle (WI-40982)', () => {
     seedAttention([
       mkItem('d1', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
       mkItem('d2', { kind: 'coord-escalation', tier: 'alert', needsHuman: false }),
       mkItem('d3', { kind: 'coord-message', tier: 'alert', needsHuman: false }),
     ]);
-    renderPane('?opci=all&opcf=true');
+    // No ?opcf — the owner's ask (2026-08-23) is that the facets are simply open.
+    renderPane('?opci=all');
     const facet = screen.getByTestId('inbox-facet-coord-escalation');
     expect(facet.textContent).toContain('escalation');
     expect(facet.textContent).toContain('2');
     expect(screen.getByTestId('inbox-facet-coord-message')).toBeTruthy();
+    // Both halves pinned: facets present AND the disclosure button gone.
+    expect(screen.queryByTestId('inbox-filter-toggle')).toBeNull();
+  });
+
+  it('exposes the sort picker in the toolbar and writes ?opcsort (WI-40982)', async () => {
+    seedAttention([mkItem('d1')]);
+    const { lastQuery } = renderPane();
+    const sort = screen.getByTestId('inbox-sort') as HTMLSelectElement;
+    expect(sort.getAttribute('aria-label')).toBe('Sort inbox');
+    expect(sort.value).toBe(DEFAULT_INBOX_SORT);
+
+    fireEvent.change(sort, { target: { value: 'oldest' } });
+    await waitFor(() => expect(lastQuery()).toContain('opcsort=oldest'));
+  });
+
+  it('renders rows in the ?opcsort order, over the filtered set only', () => {
+    // Titles run inverse to age, so "oldest" and "title" disagree with the
+    // default priority order — a fixture where the orders coincide would pass
+    // against a sort wired to nothing.
+    const common = { tier: 'alert' as const, needsHuman: false, kind: 'coord-message' as const };
+    seedAttention([
+      mkItem('zulu', { ...common, title: 'Zulu', occurredAt: '2026-08-09T00:00:00Z' }),
+      mkItem('alpha', { ...common, title: 'Alpha', occurredAt: '2026-08-01T00:00:00Z' }),
+    ]);
+    const rowsInOrder = () =>
+      Array.from(document.querySelectorAll('[data-testid^="inbox-row-"]')).map((el) =>
+        el.getAttribute('data-testid'),
+      );
+
+    const first = renderPane('?opci=all');
+    expect(rowsInOrder()).toEqual(['inbox-row-zulu', 'inbox-row-alpha']); // newest first
+    cleanup();
+    void first;
+
+    renderPane('?opci=all&opcsort=oldest');
+    expect(rowsInOrder()).toEqual(['inbox-row-alpha', 'inbox-row-zulu']);
+    cleanup();
+
+    // …and the tier filter still governs WHICH rows exist under a chosen sort:
+    // "Needs you" admits only decision-tier rows, whatever the order.
+    renderPane('?opci=needs&opcsort=oldest');
+    expect(rowsInOrder()).toEqual([]);
+  });
+});
+
+describe('inbox sort orders (WI-40982)', () => {
+  // The fixture is built so that ALL SIX orders land on a DIFFERENT permutation
+  // of the same three rows. That is the whole point: on a careless fixture the
+  // orders coincide, and every assertion then passes even against a comparator
+  // that silently fell through to the default — a green test measuring nothing.
+  //   priority → b,a,c   newest → a,c,b   oldest  → b,c,a
+  //   kind     → c,a,b   agent  → a,b,c   title   → c,b,a
+  const items = [
+    mkItem('a', { occurredAt: '2026-08-09T00:00:00Z', title: 'Zulu', kind: 'improvement', ownerLabel: 'alfa', tier: 'alert', needsHuman: false }),
+    mkItem('b', { occurredAt: '2026-08-01T00:00:00Z', title: 'Mike', kind: 'coord-message', ownerLabel: 'mike', tier: 'decision', needsHuman: true }),
+    mkItem('c', { occurredAt: '2026-08-05T00:00:00Z', title: 'Alpha', kind: 'coord-escalation', ownerLabel: 'zeta', tier: 'alert', needsHuman: false }),
+  ] as AttentionItem[];
+  const ids = (sort?: Parameters<typeof sortInboxItems>[1]) =>
+    sortInboxItems(items, sort).map((i) => i.id);
+
+  it('gives every offered order a DISTINCT result on this fixture (the guard on the guards)', () => {
+    const seen = INBOX_SORT_IDS.map((id) => ids(id).join(''));
+    expect(new Set(seen).size, `orders collided: ${seen.join(' | ')}`).toBe(seen.length);
+  });
+
+  it('defaults to priority: decisions above alerts, newest within a tier', () => {
+    expect(ids()).toEqual(['b', 'a', 'c']);
+    expect(ids(DEFAULT_INBOX_SORT)).toEqual(ids());
+  });
+
+  it('orders by date in both directions, ignoring tier', () => {
+    // b is the DECISION and also the oldest — so a date sort that quietly kept
+    // the tier rank would be caught here rather than agreeing by accident.
+    expect(ids('newest')).toEqual(['a', 'c', 'b']);
+    expect(ids('oldest')).toEqual(['b', 'c', 'a']);
+  });
+
+  it('orders by kind label, agent and title', () => {
+    expect(ids('kind')).toEqual(['c', 'a', 'b']); // escalation < improvement < message
+    expect(ids('agent')).toEqual(['a', 'b', 'c']); // alfa < mike < zeta
+    expect(ids('title')).toEqual(['c', 'b', 'a']); // Alpha < Mike < Zulu
+  });
+
+  it('sorts an UNDATED row last in BOTH directions — unknown is not "oldest"', () => {
+    const withUndated = [...items, mkItem('u', { occurredAt: null, tier: 'alert', needsHuman: false })];
+    expect(sortInboxItems(withUndated, 'newest').map((i) => i.id).at(-1)).toBe('u');
+    expect(sortInboxItems(withUndated, 'oldest').map((i) => i.id).at(-1)).toBe('u');
+  });
+
+  it('is STABLE and never adds or drops a row, under every offered order', () => {
+    for (const id of INBOX_SORT_IDS) {
+      const out = sortInboxItems(items, id);
+      expect(out.map((i) => i.id).slice().sort(), `sort=${id}`).toEqual(['a', 'b', 'c']);
+      // Same input twice ⇒ same output (no Array#sort instability on ties).
+      expect(sortInboxItems(items, id).map((i) => i.id), `sort=${id}`).toEqual(
+        out.map((i) => i.id),
+      );
+    }
+    expect(sortInboxItems([], 'newest')).toEqual([]);
+  });
+
+  it('exposes a label for every offered order, and no duplicate ids', () => {
+    expect(new Set(INBOX_SORT_IDS).size).toBe(INBOX_SORT_IDS.length);
+    expect(INBOX_SORT_IDS).toContain(DEFAULT_INBOX_SORT);
+    for (const s of INBOX_SORTS) {
+      expect(inboxSortLabel(s.id)).toBe(s.label);
+      expect(s.label.trim()).not.toBe('');
+    }
   });
 });

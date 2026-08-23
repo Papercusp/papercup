@@ -127,6 +127,69 @@ describe('buildGlanceRows', () => {
   });
 });
 
+describe('plan sort orders (WI-40982)', () => {
+  const plans = [
+    plan({ slug: 'alpha', title: 'Alpha', updated: '2026-08-01T00:00:00Z', created: '2026-01-01', itemCounts: { done: 1, todo: 9 } }),
+    plan({ slug: 'bravo', title: 'Bravo', updated: '2026-08-03T00:00:00Z', created: '2026-03-01', itemCounts: { done: 9, todo: 1 } }),
+    plan({ slug: 'charlie', title: 'Charlie', updated: '2026-08-02T00:00:00Z', created: '2026-02-01', itemCounts: { done: 5, todo: 5 } }),
+  ];
+  const needs = new Map<string, number>([['alpha', 3]]);
+  const live = new Map<string, number>([['charlie', 4], ['alpha', 1]]);
+  const base = { plans, query: '', showFinished: false, needsYouByPlan: needs, liveByPlan: live };
+  const order = (sort?: Parameters<typeof buildGlanceRows>[0]['sort']) =>
+    buildGlanceRows({ ...base, sort }).map((r) => r.plan.slug);
+
+  it('defaults to needs-you first, then most recently updated', () => {
+    // Omitting `sort` and passing the default id must be the SAME order — the
+    // pane relies on that equivalence when it clears ?plSort back to null.
+    expect(order()).toEqual(['alpha', 'bravo', 'charlie']);
+    expect(order(DEFAULT_PLANS_PANE_SORT)).toEqual(order());
+  });
+
+  it('ranks busiest plans first under "live", tie-breaking on needs-you', () => {
+    expect(order('live')).toEqual(['charlie', 'alpha', 'bravo']);
+  });
+
+  it('orders by activity in both directions', () => {
+    expect(order('updated-desc')).toEqual(['bravo', 'charlie', 'alpha']);
+    expect(order('updated-asc')).toEqual(['alpha', 'charlie', 'bravo']);
+  });
+
+  it('orders by creation date and by title', () => {
+    expect(order('created-desc')).toEqual(['bravo', 'charlie', 'alpha']);
+    expect(order('title')).toEqual(['alpha', 'bravo', 'charlie']);
+  });
+
+  it('orders by completion fraction, closest to done first', () => {
+    expect(order('progress')).toEqual(['bravo', 'charlie', 'alpha']);
+  });
+
+  it('SORTS THE FILTERED SET — no order can re-admit a row the filters dropped', () => {
+    // The owner's contract: sort acts on the current result set, after filters.
+    // Asserting it for EVERY order (not one sampled order) is the point — a
+    // comparator that reached past the filter would show up on exactly one id.
+    for (const id of PLANS_PANE_SORT_IDS) {
+      const rows = buildGlanceRows({ ...base, query: 'bravo', sort: id });
+      expect(rows.map((r) => r.plan.slug), `sort=${id}`).toEqual(['bravo']);
+    }
+    // …and the finished filter likewise stays authoritative under every order.
+    const withShipped = [...plans, plan({ slug: 'shipped-one', status: 'shipped', updated: '2026-08-09T00:00:00Z' })];
+    for (const id of PLANS_PANE_SORT_IDS) {
+      const slugs = buildGlanceRows({ ...base, plans: withShipped, sort: id }).map((r) => r.plan.slug);
+      expect(slugs, `sort=${id}`).not.toContain('shipped-one');
+    }
+  });
+
+  it('exposes a label for every offered order, and no duplicate ids', () => {
+    expect(new Set(PLANS_PANE_SORT_IDS).size).toBe(PLANS_PANE_SORT_IDS.length);
+    expect(PLANS_PANE_SORT_IDS).toContain(DEFAULT_PLANS_PANE_SORT);
+    for (const s of PLANS_PANE_SORTS) {
+      expect(plansPaneSortLabel(s.id)).toBe(s.label);
+      expect(s.label.trim()).not.toBe('');
+    }
+  });
+});
+
 describe('progressOf', () => {
   it('returns done/total from itemCounts, excluding "unknown"', () => {
     expect(progressOf({ itemCounts: { done: 3, todo: 2, wip: 1, unknown: 9 } })).toEqual({ done: 3, total: 6 });
