@@ -18,7 +18,7 @@
 import { spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { applyGlStrategy, detectGlStrategy, type GlStrategy } from '../../desktop/gl-strategy';
-import { managedSpawn } from '../../task-manager/managed-spawn';
+import { managedSpawn, markManagedSpawnTeardown } from '../../task-manager/managed-spawn';
 import { killScopeUnit, killTask } from '../../task-manager/control';
 import { sandboxXEnv } from './desktop-driver';
 import { startA11yBus, type A11yBus } from '../../desktop/a11y-bus';
@@ -167,6 +167,8 @@ export interface DesktopReleaseDeps {
   killTask?: typeof killTask;
   /** Safe fallback for a confined scope that has no ledger row. */
   killScopeUnit?: typeof killScopeUnit;
+  /** Mark systemd-run clients before their owning scope is intentionally drained. */
+  markManagedTeardown?: typeof markManagedSpawnTeardown;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -188,7 +190,21 @@ export async function releaseDesktopProcesses(
 ): Promise<void> {
   const taskKiller = deps.killTask ?? killTask;
   const scopeKiller = deps.killScopeUnit ?? killScopeUnit;
+  const markTeardown = deps.markManagedTeardown ?? markManagedSpawnTeardown;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  // A systemd-run client can exit with SIGTERM while its payload scope is still
+  // draining. Mark the handles before issuing the cross-process kill so the exit
+  // recorder downgrades that expected handoff to info rather than a false warning.
+  const teardownMarkerCleanups: Array<() => void> = [];
+  const hasManagedRoot = Boolean((root.ledgered && root.taskId) || (root.confined && root.scopeUnit));
+  if (hasManagedRoot) {
+    for (const p of procs) teardownMarkerCleanups.push(markTeardown(p));
+  }
+  const clearTeardownMarkers = (): void => {
+    for (const cleanup of teardownMarkerCleanups) cleanup();
+    teardownMarkerCleanups.length = 0;
+  };
 
   let managedOutcome:
     | Awaited<ReturnType<typeof killTask>>
@@ -214,6 +230,7 @@ export async function releaseDesktopProcesses(
       managedOutcome = await scopeKiller(root.scopeUnit);
     }
   } catch (error) {
+    clearTeardownMarkers();
     console.warn(
       `[desktop-provisioner] managed desktop teardown failed for ${root.taskId ?? root.scopeUnit ?? 'unknown root'}: ` +
         `${error instanceof Error ? error.message : String(error)} — leaving client handles untouched`,
@@ -222,6 +239,7 @@ export async function releaseDesktopProcesses(
   }
 
   if (managedOutcome && !managedOutcome.ok) {
+    clearTeardownMarkers();
     console.warn(
       `[desktop-provisioner] managed desktop teardown refused for ${root.taskId ?? root.scopeUnit ?? 'unknown root'}: ` +
         `${managedOutcome.error}${managedOutcome.detail ? ` — ${managedOutcome.detail}` : ''} — leaving client handles untouched`,

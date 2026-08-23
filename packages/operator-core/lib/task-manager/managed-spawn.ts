@@ -23,7 +23,12 @@
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { readProcessIdentity } from '../process-identity';
-import { buildExactEnvPayload, buildTaskScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
+import {
+  buildExactEnvPayload,
+  buildTaskScopeArgv,
+  SCOPE_LAUNCH_FAILURE_RE,
+  SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+} from '../systemd-scope';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -70,6 +75,26 @@ export interface ManagedSpawnResult {
 }
 
 /**
+ * Child handles whose owning task is being torn down deliberately. The handle
+ * is the systemd-run client, so it can emit a signal while the payload scope is
+ * still draining; that is an expected handoff during release, not an orphan.
+ */
+type ManagedSpawnHandle = Pick<ChildProcess, 'kill'>;
+const intentionalTeardownChildren = new WeakSet<ManagedSpawnHandle>();
+
+/**
+ * Mark a managed-spawn client before its owning task scope is intentionally
+ * killed. The returned cleanup is used when scope control is refused so a
+ * later, unrelated client exit remains observable as an abnormal handoff.
+ */
+export function markManagedSpawnTeardown(child: ManagedSpawnHandle): () => void {
+  intentionalTeardownChildren.add(child);
+  return () => {
+    intentionalTeardownChildren.delete(child);
+  };
+}
+
+/**
  * systemd-run can report its client gone before the payload has joined the
  * transient scope. Keep the row live for a short, bounded handoff window so a
  * one-shot empty cgroup read cannot turn a resident payload into `unaccounted`.
@@ -110,7 +135,7 @@ export function probeScopeSupport(spawnFn: typeof spawn = spawn): Promise<{ ok: 
     try {
       const child = spawnFn(
         'systemd-run',
-        ['--user', '--scope', '--quiet', '--collect', '--', 'true'],
+        ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'],
         { stdio: ['ignore', 'ignore', 'pipe'] },
       );
       let stderr = '';
@@ -455,17 +480,22 @@ function wireExit(
     code: number | null,
     signal: NodeJS.Signals | null,
     afterDelayedHandoff: boolean,
+    intentionalTeardown: boolean,
   ): void => {
     const message =
       `[managed-spawn] task ${taskId}: the systemd-run client exited ` +
       `(${signal ? `signal ${signal}` : `code ${code}`}) ` +
       (afterDelayedHandoff ? 'after the delayed handoff window, ' : '') +
-      'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
+      'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).' +
+      (intentionalTeardown ? ' Intentional teardown.' : '');
     // A clean systemd-run client exit is an expected handoff to the reconciler,
     // not a warning. Keep abnormal exits loud so the task ledger still surfaces
-    // a client that died while its payload remained alive.
-    if (signal || code !== 0) console.warn(message);
-    else console.info(message);
+    // a client that died while its payload remained alive. A release-triggered
+    // signal is the same expected handoff in the opposite direction: the task
+    // manager is already draining the scope on purpose, so preserve the message
+    // at info level without raising a false orphan warning.
+    if (intentionalTeardown || (!signal && code === 0)) console.info(message);
+    else console.warn(message);
   };
 
   /**
@@ -478,13 +508,14 @@ function wireExit(
   const waitForPayloadHandoff = (
     code: number | null,
     signal: NodeJS.Signals | null,
+    intentionalTeardown: boolean,
     settle: () => void,
   ): void => {
     const deadline = Date.now() + SCOPE_HANDOFF_GRACE_MS;
     const recheck = (): void => {
       if (closed) return;
       if (payloadOutlivedClient()) {
-        reportPayloadOutlivedClient(code, signal, true);
+        reportPayloadOutlivedClient(code, signal, true, intentionalTeardown);
         return;
       }
       const remaining = deadline - Date.now();
@@ -528,14 +559,15 @@ function wireExit(
   };
 
   child.on('exit', (code, signal) => {
+    const intentionalTeardown = intentionalTeardownChildren.delete(child);
     if (payloadOutlivedClient()) {
-      reportPayloadOutlivedClient(code, signal, false);
+      reportPayloadOutlivedClient(code, signal, false, intentionalTeardown);
       return;
     }
     if (confined && scopeCgroupPath) {
-      waitForPayloadHandoff(code, signal, () => {
+      waitForPayloadHandoff(code, signal, intentionalTeardown, () => {
         if (payloadOutlivedClient()) {
-          reportPayloadOutlivedClient(code, signal, true);
+          reportPayloadOutlivedClient(code, signal, true, intentionalTeardown);
           return;
         }
         closeAfterExit(code, signal);
@@ -546,6 +578,7 @@ function wireExit(
   });
 
   child.on('error', (e) => {
+    intentionalTeardownChildren.delete(child);
     const msg = e.message ?? String(e);
     // A scope that could not start is NOT a payload failure — record it as such
     // so a box that has quietly lost its user bus is diagnosable from the ledger.

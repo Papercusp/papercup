@@ -52,11 +52,18 @@ describe('releaseDesktopProcesses — managed teardown', () => {
       events.push(`task:${options.includeSubtree === true ? 'subtree' : 'root'}`);
       return { ok: true as const, taskId: 'task-root', action: 'kill' };
     });
+    const markManagedTeardown = vi.fn(() => {
+      events.push('mark');
+      return () => {};
+    });
 
-    await releaseDesktopProcesses(clients, root, { killTask, sleep: async () => {} });
+    await releaseDesktopProcesses(clients, root, { killTask, markManagedTeardown, sleep: async () => {} });
 
-    expect(events[0]).toBe('task:subtree');
+    expect(markManagedTeardown).toHaveBeenCalledTimes(2);
+    expect(events[2]).toBe('task:subtree');
     expect(events).toEqual([
+      'mark',
+      'mark',
       'task:subtree',
       'client-2:SIGTERM',
       'client-1:SIGTERM',
@@ -89,11 +96,15 @@ describe('releaseDesktopProcesses — managed teardown', () => {
       error: 'command_failed' as const,
       detail: 'systemctl unavailable',
     }));
+    const clearMarker = vi.fn();
+    const markManagedTeardown = vi.fn(() => clearMarker);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
-      await releaseDesktopProcesses([client], root, { killTask, sleep: async () => {} });
+      await releaseDesktopProcesses([client], root, { killTask, markManagedTeardown, sleep: async () => {} });
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('leaving client handles untouched'));
+      expect(markManagedTeardown).toHaveBeenCalledTimes(1);
+      expect(clearMarker).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
     }

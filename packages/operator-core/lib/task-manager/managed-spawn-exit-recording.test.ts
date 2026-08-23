@@ -54,7 +54,12 @@ vi.mock('./store', () => ({
   },
 }));
 
-import { managedSpawn, SCOPE_HANDOFF_GRACE_MS, SCOPE_HANDOFF_RECHECK_MS } from './managed-spawn';
+import {
+  managedSpawn,
+  markManagedSpawnTeardown,
+  SCOPE_HANDOFF_GRACE_MS,
+  SCOPE_HANDOFF_RECHECK_MS,
+} from './managed-spawn';
 import { CGROUP_ROOT, type CgroupFs } from './cgroup-read';
 import { scopeCgroupRelPath, scopeUnitForTask, type TaskSpec } from './types';
 
@@ -173,6 +178,41 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+  });
+
+  it('downgrades a populated-scope signal during intentional teardown to info', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, result } = await spawnConfined([3204532, 3204609, 3204726]);
+
+    markManagedSpawnTeardown(result.child);
+    emitter.emit('exit', null, 'SIGTERM');
+    await flush();
+
+    expect(L.closed).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
+    expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+  });
+
+  it('preserves the intentional marker across the delayed scope handoff window', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, result, scope } = await spawnConfined([]);
+
+    markManagedSpawnTeardown(result.child);
+    emitter.emit('exit', null, 'SIGTERM');
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_RECHECK_MS - 1);
+    scope.procs = [3204532, 3204609, 3204726];
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+
+    expect(L.closed).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
   });
 
   it('waits for a delayed scope handoff instead of closing a live task row', async () => {
