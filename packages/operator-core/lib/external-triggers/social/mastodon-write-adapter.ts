@@ -38,7 +38,7 @@ import type {
   SocialReplyRequest,
   SocialReplyOutcome,
   SocialVisibility,
-  SocialWriteAdapter,
+  SocialReplyCapableAdapter,
 } from '../../capability-verbs/social';
 // Declared in resolve.ts and only IMPORTED by social.ts, so it must be taken
 // from its origin rather than re-exported through the verb module (TS2459).
@@ -191,7 +191,7 @@ function assertSameInstance(credentialHost: string, targetHost: string): void {
  * accounts on several instances, and a module-level singleton would publish to
  * whichever was registered last.
  */
-export function createMastodonWriteAdapter(deps: MastodonWriteAdapterDeps): SocialWriteAdapter {
+export function createMastodonWriteAdapter(deps: MastodonWriteAdapterDeps): SocialReplyCapableAdapter {
   async function bind(context: OutboundContext, targetHost: string): Promise<MastodonWriteClient> {
     const credentialHost = await deps.resolveInstanceHost(context);
     // Rail 2 — runs before any client is built, so a cross-instance write
