@@ -40,7 +40,7 @@ export interface SavedRecipeRunInput {
   dryRun?: boolean;
 }
 
-export type SavedRecipePreflightErrorCode = 'recipe_not_found' | 'recipe_authority_stale' | 'binding_invalid';
+export type SavedRecipePreflightErrorCode = 'recipe_not_found' | 'recipe_authority_stale';
 
 export interface SavedRecipePreflightFailure {
   ok: false;
@@ -114,10 +114,6 @@ function authorityRevision(authority: unknown): string | null {
   return typeof revision === 'string' && revision.length > 0 ? revision : null;
 }
 
-function hasBindings(bindings: SavedRecipeBindings | undefined): boolean {
-  return bindings != null && Object.keys(bindings.values).length > 0;
-}
-
 /**
  * Dependency-injected constructor used by focused tests and later orchestrate:*
  * composition. Production callers should normally use savedRecipeAdapterFor.
@@ -183,21 +179,10 @@ export function createSavedRecipeAdapter(call: InnerCall): SavedRecipeAdapter {
       const inspected = await inspect(args.recipe);
       if (!inspected.ok) return inspected;
 
-      // P-015 owns versioned binding-schema storage and runtime injection. A
-      // legacy recipe has no safe place to validate/apply non-empty bindings, so
-      // fail before recipes:run instead of interpolating source or shadow-storing
-      // values. Empty bindings remain a compatibility no-op.
-      if (hasBindings(args.bindings)) {
-        return preflightFailure(
-          'binding_invalid',
-          'this saved recipe revision has no stored binding schema; recapture it after binding support lands',
-          'bindings',
-        );
-      }
-
       return call('recipes:run', {
         id: inspected.continuation.id,
         authority: inspected.continuation.authority,
+        ...(args.bindings === undefined ? {} : { bindings: args.bindings }),
         ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }),
         ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
       });

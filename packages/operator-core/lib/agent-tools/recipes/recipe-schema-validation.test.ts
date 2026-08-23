@@ -35,7 +35,7 @@ describe('validateRecipeScriptAgainstCatalog', () => {
         additionalProperties: false,
       })],
     );
-    expect(result).toEqual({ ok: true, issues: [] });
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:deploy'] });
   });
 
   it('does not reject dynamic arguments that cannot be proven statically', async () => {
@@ -48,6 +48,6 @@ describe('validateRecipeScriptAgainstCatalog', () => {
         additionalProperties: false,
       })],
     );
-    expect(result).toEqual({ ok: true, issues: [] });
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:deploy'] });
   });
 });

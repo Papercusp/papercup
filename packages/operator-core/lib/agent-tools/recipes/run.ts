@@ -56,12 +56,23 @@ import { readIdentity } from '../locks/identity';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { normalizeExecutionTrace } from '../../orchestration-trace';
+import {
+  deriveLegacyForegroundManifest,
+  preflightRecipeContract,
+  projectedToolName,
+  type CurrentCallerCapabilityCatalog,
+  type LogicalCapability,
+  type RecipeBindingSet,
+  type RecipeContractFailure,
+  type ReplayClass,
+} from '../../recipe-contract';
 
 interface RunItem {
   id: string;
   dryRun?: boolean;
   timeoutSec?: number;
   authority?: RecipeAuthorityProof | RecipeAuthorityMetadata;
+  bindings?: RecipeBindingSet;
 }
 
 type LiveClaimRow = { plan_slug: string; harness_slug: string; item_id: string };
@@ -140,6 +151,83 @@ function isAuthorityMetadata(
   return 'refs' in authority;
 }
 
+const bindingsInputSchema = z
+  .object({ values: z.record(z.string(), z.unknown()) })
+  .strict();
+
+function projectedNames(tools: ReturnType<typeof listAllProjectedTools>): Set<string> {
+  return new Set(
+    tools
+      .map((tool) => tool.expose.mcp?.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0),
+  );
+}
+
+function hasEvery(names: ReadonlySet<string>, required: readonly string[]): boolean {
+  return required.every((name) => names.has(name));
+}
+
+/** Current implementation + current reuser envelope, expressed in P-015 logical capabilities. */
+function currentCallerCatalog(
+  tools: ReturnType<typeof listAllProjectedTools>,
+  allowedTools: ReadonlySet<string>,
+): CurrentCallerCapabilityCatalog {
+  const allTools = projectedNames(tools);
+  const availableCapabilities = new Set<LogicalCapability>(['content:image', 'content:audio']);
+  const allowedCapabilities = new Set<LogicalCapability>(['content:image', 'content:audio']);
+  const capabilityFamilies: Array<{ capability: LogicalCapability; tools: string[] }> = [
+    { capability: 'execution:shell', tools: ['capability:bash'] },
+    {
+      capability: 'execution:background-task',
+      tools: ['capability:bash', 'capability:bash_output', 'capability:bash_kill'],
+    },
+    {
+      capability: 'execution:pty',
+      tools: [
+        'capability:pty_open',
+        'capability:pty_write_stdin',
+        'capability:pty_read_screen',
+        'capability:pty_kill',
+      ],
+    },
+  ];
+  for (const family of capabilityFamilies) {
+    if (hasEvery(allTools, family.tools)) availableCapabilities.add(family.capability);
+    if (hasEvery(allowedTools, family.tools)) allowedCapabilities.add(family.capability);
+  }
+  return {
+    projectedTools: allTools,
+    allowedTools,
+    availableCapabilities,
+    allowedCapabilities,
+    // D-012: the client/server split is collapsed because both capability families run on this host.
+    topology: { hostSame: true },
+  };
+}
+
+function runtimeReplayClass(
+  staticToolNames: readonly string[],
+  tools: ReturnType<typeof listAllProjectedTools>,
+): ReplayClass {
+  const effects = new Map(
+    tools
+      .map((tool) => [tool.expose.mcp?.name, tool.effect] as const)
+      .filter((entry): entry is readonly [string, 'read' | 'write' | undefined] => typeof entry[0] === 'string'),
+  );
+  return staticToolNames.every((name) => effects.get(name) === 'read') ? 'read-only' : 'non-replayable';
+}
+
+function preflightResult(id: string, failure: RecipeContractFailure): BulkItemResult {
+  return {
+    ok: false,
+    id,
+    phase: failure.phase,
+    executed: failure.executed,
+    error: failure.error.code,
+    diagnostic: failure.error,
+  };
+}
+
 export default defineTool({
   name: 'recipes:run',
   description:
@@ -147,7 +235,9 @@ export default defineTool({
     'role-scoped tool envelope (NOT the author\'s — no privilege travels with a recipe); returns ' +
     'only each script\'s summary. Pass the exact runArgs from a recipes:search/code:run recommendation, or pass the ' +
     'authority metadata returned by recipes:get; both are revalidated against the stored revision and YOUR live lane. ' +
-    'Use dryRun:true to preview write-effect mutations. Single: { id, authority?, dryRun?, ' +
+    'Use dryRun:true to preview write-effect mutations. Contracted recipes accept bindings:{ values:{…} }; ' +
+    'bindings are validated against the exact stored revision and only non-secret JSON inputs enter the VM. ' +
+    'Single: { id, authority?, bindings?, dryRun?, ' +
     'timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. ' +
     'Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe ' +
     'failing never fails the rest.',
@@ -184,6 +274,7 @@ export default defineTool({
         .describe('Preview: record effect:write tool calls without executing them (reads still run). Applies to the inline id / every id in `ids`.'),
       timeoutSec: z.number().int().min(1).max(120).optional().describe('Wall-clock budget (default 30s). Applies to the inline id / every id in `ids`.'),
       authority: authorityInputSchema.optional().describe('Exact proof from a recommendation\'s runArgs, or authority metadata from recipes:get; required for entity-bound recipes.'),
+      bindings: bindingsInputSchema.optional().describe('Runtime values validated against this recipe revision\'s stored binding schema; secret refs never enter the script VM.'),
       ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('run MANY recipes with the same dryRun/timeoutSec (homogeneous)'),
       items: z
         .array(
@@ -192,6 +283,7 @@ export default defineTool({
             dryRun: z.boolean().optional(),
             timeoutSec: z.number().int().min(1).max(120).optional(),
             authority: authorityInputSchema.optional(),
+            bindings: bindingsInputSchema.optional(),
           }),
         )
         .min(1)
@@ -211,10 +303,23 @@ export default defineTool({
           dryRun: it.dryRun ?? args.dryRun,
           timeoutSec: it.timeoutSec ?? args.timeoutSec,
           authority: it.authority ?? args.authority,
+          bindings: it.bindings ?? args.bindings,
         }))
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, dryRun: args.dryRun, timeoutSec: args.timeoutSec, authority: args.authority }))
-        : [{ id: args.id as string, dryRun: args.dryRun, timeoutSec: args.timeoutSec, authority: args.authority }];
+        ? args.ids.map((id) => ({
+            id,
+            dryRun: args.dryRun,
+            timeoutSec: args.timeoutSec,
+            authority: args.authority,
+            bindings: args.bindings,
+          }))
+        : [{
+            id: args.id as string,
+            dryRun: args.dryRun,
+            timeoutSec: args.timeoutSec,
+            authority: args.authority,
+            bindings: args.bindings,
+          }];
 
     // Resolve the REUSER's identity ONCE (used by every per-recipe run-record).
     // Best-effort: a recipe run does not require an identity to execute.
@@ -285,6 +390,20 @@ export default defineTool({
             schemaIssues: schemaValidation.issues,
           };
         }
+        const staticToolNames = [...new Set([
+          ...schemaValidation.staticToolNames.map(projectedToolName),
+          ...recipe.toolsUsed.map(projectedToolName),
+        ])].sort();
+        const contract = preflightRecipeContract({
+          manifest: recipe.capabilityManifest ?? deriveLegacyForegroundManifest(staticToolNames),
+          bindingSchema: recipe.bindingSchema ?? undefined,
+          bindings: it.bindings,
+          staticToolNames,
+          lifecycle: 'foreground',
+          derivedReplayClass: runtimeReplayClass(staticToolNames, all),
+          catalog: currentCallerCatalog(all, allowed),
+        });
+        if (!contract.ok) return preflightResult(it.id, contract);
         const authority = await validateRecipeAuthorityProof({
           script: recipe.script,
           updatedAt: recipe.updatedAt,
@@ -343,6 +462,7 @@ export default defineTool({
           dryRun,
           timeoutMs: it.timeoutSec ? it.timeoutSec * 1000 : undefined,
           wrapDispatch: bindCurrentCallerDispatch,
+          inputs: contract.value.bindings.inputs,
         });
         // P-012: counted before any early return below — a failed item's dispatches
         // still wrote their own telemetry rows.

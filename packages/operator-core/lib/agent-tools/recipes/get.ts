@@ -82,6 +82,8 @@ export default defineTool({
             title: recipe.title,
             description: recipe.description,
             script: recipe.script,
+            bindingSchema: recipe.bindingSchema,
+            capabilityManifest: recipe.capabilityManifest,
             toolsUsed: recipe.toolsUsed,
             authorRole: recipe.authorRole,
             runCount: recipe.runCount,

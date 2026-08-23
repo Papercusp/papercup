@@ -108,6 +108,9 @@ import './run';
 import './candidates';
 import './merge';
 import './sweep';
+// Authority fixtures below execute work_items:get; register it so P-015's current-catalog
+// preflight observes the same implementation that the production define-tool router loads.
+import '../work_items/get';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -189,6 +192,16 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       uiClientId: 'reuser-test',
     }) as never;
 
+  const emptyManifest = (requirements: string[] = []) => ({
+    version: 1 as const,
+    representation: 'recipe-script' as const,
+    topology: { premises: ['host:same'] as ['host:same'] },
+    requirements: requirements.map((capability) => ({ capability })),
+    lifecycle: { allowed: ['foreground'] as ['foreground'], default: 'foreground' as const },
+    replay: { class: 'read-only' as const },
+    content: { emits: ['text'] as ['text'] },
+  });
+
   it('runs the AUTHOR\'s recipe under the REUSER\'s role-scoped envelope, not the author\'s', async () => {
     // A recipe AUTHORED by an operator (privileged), referencing whatever tools.
     getRecipeMock.mockResolvedValue({
@@ -237,6 +250,94 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
 
     // code:run is excluded (no recursive code-mode nesting).
     expect(allowed.has('code:run')).toBe(false);
+  });
+
+  it('preflights typed bindings and passes only validated safe inputs into the VM', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'bound-inputs', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
+      script: 'return inputs.query;', authorRole: 'operator', toolsUsed: [], runCount: 0,
+      successCount: 0, status: 'active', tags: [],
+      bindingSchema: {
+        version: 1,
+        properties: {
+          query: { type: 'string', required: true, lifetime: { kind: 'stable' } },
+          token: {
+            type: 'secret-ref', required: true,
+            lifetime: { kind: 'resolved-ref', refKind: 'secret', resolution: 'each-use' },
+          },
+        },
+        additionalProperties: false,
+      },
+      capabilityManifest: emptyManifest(),
+    });
+
+    const res = await findTool('recipes:run').fn({
+      id: 'bound-inputs',
+      bindings: {
+        values: {
+          query: 'open queue',
+          token: { secretRef: 'secret://github/pat' },
+        },
+      },
+    }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(payload.results[0]).toMatchObject({ ok: true, id: 'bound-inputs' });
+    expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+    const [, options] = runOrchestrationMock.mock.calls[0] as unknown as [string, { inputs: unknown }];
+    expect(options.inputs).toEqual({ query: 'open queue' });
+    expect(options.inputs).not.toHaveProperty('token');
+  });
+
+  it('returns typed binding preflight diagnostics without dispatching the script', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'invalid-binding', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
+      script: 'return inputs.count;', authorRole: 'operator', toolsUsed: [], runCount: 0,
+      successCount: 0, status: 'active', tags: [],
+      bindingSchema: {
+        version: 1,
+        properties: { count: { type: 'integer', required: true, lifetime: { kind: 'stable' } } },
+        additionalProperties: false,
+      },
+      capabilityManifest: emptyManifest(),
+    });
+
+    const res = await findTool('recipes:run').fn({
+      id: 'invalid-binding',
+      bindings: { values: { count: 'many' } },
+    }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(payload.results[0]).toMatchObject({
+      ok: false,
+      id: 'invalid-binding',
+      phase: 'preflight',
+      executed: false,
+      error: 'binding_invalid',
+      diagnostic: { code: 'binding_invalid', path: 'bindings.values.count' },
+    });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
+  it('fails unavailable declared capabilities in current-caller preflight before execution', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'durable-unavailable', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
+      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0,
+      successCount: 0, status: 'active', tags: [], bindingSchema: null,
+      capabilityManifest: emptyManifest(['lifecycle:durable']),
+    });
+
+    const res = await findTool('recipes:run').fn({ id: 'durable-unavailable' }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(payload.results[0]).toMatchObject({
+      ok: false,
+      phase: 'preflight',
+      executed: false,
+      error: 'capability_unavailable',
+      diagnostic: { capability: 'lifecycle:durable' },
+    });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 
   it('records the run with reused:true on a successful committing run', async () => {
@@ -506,10 +607,25 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
       id: 'r1', workspaceId: 'ws-test', potSlug: 'alpha', title: 't', description: 'd',
       script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 0, successCount: 0,
       lastRunAt: null, status: 'active', tags: [],
+      bindingSchema: { version: 1, properties: {}, additionalProperties: false },
+      capabilityManifest: {
+        version: 1, representation: 'recipe-script', topology: { premises: ['host:same'] },
+        requirements: [], lifecycle: { allowed: ['foreground'], default: 'foreground' },
+        replay: { class: 'read-only' }, content: { emits: ['text'] },
+      },
     });
     const b = await getBody({ id: 'r1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(b.results[0]).toMatchObject({ ok: true, id: 'r1', recipe: { id: 'r1', script: 'return 1;' } });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      id: 'r1',
+      recipe: {
+        id: 'r1',
+        script: 'return 1;',
+        bindingSchema: { version: 1, properties: {}, additionalProperties: false },
+        capabilityManifest: { version: 1, representation: 'recipe-script' },
+      },
+    });
   });
 
   it('ids:[…] → many; a not-found id fails only itself', async () => {

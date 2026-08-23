@@ -13,6 +13,8 @@ export interface RecipeSchemaIssue {
 export interface RecipeSchemaValidation {
   ok: boolean;
   issues: RecipeSchemaIssue[];
+  /** Canonical current-catalog tool names resolved statically from the script. */
+  staticToolNames: string[];
 }
 
 type JsonSchema = {
@@ -111,5 +113,9 @@ export async function validateRecipeScriptAgainstCatalog(
       issues.push({ tool: name, path: 'args', message });
     }
   }
-  return { ok: issues.length === 0, issues };
+  return {
+    ok: issues.length === 0,
+    issues,
+    staticToolNames: [...new Set(analysis.calls.map((call) => call.tool))].sort(),
+  };
 }

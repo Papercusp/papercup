@@ -151,8 +151,13 @@ describe('saved-recipe adapter', () => {
     expect(call).toHaveBeenCalledTimes(1);
   });
 
-  it('fails non-empty legacy bindings closed without source substitution or a second store', async () => {
-    const call = vi.fn<InnerCall>().mockResolvedValue(getEnvelope);
+  it('forwards bindings only after inspecting and pinning the current recipe revision', async () => {
+    const runEnvelope = {
+      ok: true,
+      results: [{ ok: true, id: recipe.id, result: { summary: { ageDays: 30 } } }],
+      counts: { requested: 1, succeeded: 1, failed: 0 },
+    };
+    const call = vi.fn<InnerCall>().mockResolvedValueOnce(getEnvelope).mockResolvedValueOnce(runEnvelope);
     const adapter = createSavedRecipeAdapter(call);
 
     const result = await adapter.run({
@@ -160,14 +165,13 @@ describe('saved-recipe adapter', () => {
       bindings: { values: { ageDays: 30 } },
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      phase: 'preflight',
-      executed: false,
-      error: { code: 'binding_invalid', path: 'bindings' },
+    expect(result).toBe(runEnvelope);
+    expect(call).toHaveBeenNthCalledWith(1, 'recipes:get', { id: recipe.id });
+    expect(call).toHaveBeenNthCalledWith(2, 'recipes:run', {
+      id: recipe.id,
+      authority: metadata,
+      bindings: { values: { ageDays: 30 } },
     });
-    expect(call).toHaveBeenCalledTimes(1);
-    expect(call).toHaveBeenCalledWith('recipes:get', { id: recipe.id });
   });
 
   it('maps a missing saved recipe to the public preflight failure shape', async () => {
