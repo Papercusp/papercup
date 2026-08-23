@@ -113,6 +113,11 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     findPsuHost: (() => null) as never, // hermetic: no live psu-pty host
     injectPsuHost: (async () => true) as never,
     fireHiveWake: (async () => true) as never, // never reached (label null)
+    // Channel 2 claims the adv row atomically before spawning; the production
+    // claim writes to PG, so keep this fixture hermetic and model a WINNING
+    // claim. The claim's losing/faulting paths are covered in
+    // wake-executor-matrix.test.ts.
+    claimResume: async () => true,
     ...over,
   };
 }

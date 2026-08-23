@@ -367,6 +367,65 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('error');
   });
 
+  // ── Channel 2 single-winner resume claim (EI-21247460909447431) ───────────
+  //
+  // The claim exists so a queued loop wake and a manual `psu --resume` cannot
+  // both spawn a writer for the same session. Both rows below must PARK without
+  // spawning — but they must not be conflated: one lost a real race, the other
+  // never got an answer. Reporting a datastore fault as a lost race sends an
+  // operator hunting a competing resumer that never existed.
+
+  it('resume claim LOST to a competing resumer → parks without spawning a second writer', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: null }),
+    });
+    let spawned = 0;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: null, endedAt: new Date().toISOString(), agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        claimResume: async () => false,
+        spawnDetached: () => {
+          spawned += 1;
+          return 4242;
+        },
+      }),
+    );
+    expect(out.kind).toBe('park');
+    expect(out.kind === 'park' && out.reason).toMatch(/won by another resumer/);
+    expect(spawned).toBe(0); // the entire point of the claim
+  });
+
+  it('resume claim that cannot be EVALUATED parks as unavailable, not as a lost race', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: null }),
+    });
+    let spawned = 0;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: null, endedAt: new Date().toISOString(), agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        claimResume: async () => {
+          throw new Error('ECONNREFUSED writing the claim');
+        },
+        spawnDetached: () => {
+          spawned += 1;
+          return 4242;
+        },
+      }),
+    );
+    expect(out.kind).toBe('park');
+    const reason = out.kind === 'park' ? out.reason : '';
+    expect(reason).toMatch(/could not be evaluated/);
+    expect(reason).toContain('ECONNREFUSED writing the claim');
+    expect(reason).not.toMatch(/won by another resumer/);
+    expect(spawned).toBe(0); // an unevaluable claim is still never a second writer
+  });
+
   // ── plan-run handle row ───────────────────────────────────────────────────
 
   it('plan-run handle → plan-run-resume (delivered)', async () => {

@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
-import { listRecordedLiveSessions, reactivateAdvSession } from '../../adv-sessions';
+import { claimAdvSessionResume, listRecordedLiveSessions, reactivateAdvSession } from '../../adv-sessions';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -136,5 +136,51 @@ describe('reactivateAdvSession (resume re-activates an ended row → roster surf
 
   it('returns false for an unknown id', async () => {
     expect(await reactivateAdvSession(99999999)).toBe(false);
+  });
+});
+
+/**
+ * claimAdvSessionResume (EI-21247460909447431) — the single-winner resume claim.
+ *
+ * Separate from reactivateAdvSession above on purpose: that one is an idempotent
+ * self-report where `false` means "already live, no-op". Here `false` means
+ * "another writer won — do not spawn", so the two cannot share a predicate.
+ *
+ * The regression this pins: an `ended_at IS NOT NULL`-only predicate cannot
+ * claim a row whose process died WITHOUT recording its exit, making such a
+ * session permanently un-resumable (the wake parks forever, reporting a race
+ * that never happened). That state is the common one, not an edge case.
+ */
+describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
+  async function seedRow(startedAgo: string, ended: boolean): Promise<number> {
+    const rows = await admin`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, agent, mode, coord_owner_id, started_at, ended_at)
+      VALUES (${WS}, 'claude', 'console', ${`s-claim-${Math.random().toString(36).slice(2, 10)}`},
+              now() - ${startedAgo}::interval, ${ended ? new Date() : null})
+      RETURNING id`;
+    return Number(rows[0].id);
+  }
+
+  it('claims a cleanly-ENDED row', async () => {
+    expect(await claimAdvSessionResume(await seedRow('90 minutes', true))).toBe(true);
+  });
+
+  it('claims a row that was NEVER marked ended (process died without recording its exit)', async () => {
+    // The regression: this row is indistinguishable from a live one by ended_at
+    // alone, but its process is long gone. It must be resumable.
+    const id = await seedRow('2 days', false);
+    expect(await claimAdvSessionResume(id)).toBe(true);
+  });
+
+  it('LOSES to a resumer that just claimed the same row (single-winner preserved)', async () => {
+    // A winning claim bumps started_at to now(), so a second claimant inside the
+    // window must lose — this is what stops two writers on one session.
+    const id = await seedRow('2 days', false);
+    expect(await claimAdvSessionResume(id)).toBe(true);
+    expect(await claimAdvSessionResume(id)).toBe(false);
+  });
+
+  it('returns false for an unknown id', async () => {
+    expect(await claimAdvSessionResume(99999999)).toBe(false);
   });
 });
