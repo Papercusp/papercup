@@ -19,6 +19,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
@@ -210,6 +212,12 @@ describe('useInboxPendingCount', () => {
 });
 
 describe('<InboxPane>', () => {
+  it('keeps the tier-filter rail visible when the 360px pane is height-constrained', () => {
+    const css = readFileSync(join(__dirname, 'inbox-pane.css'), 'utf8');
+    const chipsRule = css.match(/\.op-inbox__chips\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(chipsRule).toMatch(/flex:\s*0\s+0\s+auto/);
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem('d1'),
