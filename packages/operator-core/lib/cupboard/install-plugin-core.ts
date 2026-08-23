@@ -219,7 +219,7 @@ async function inspectTriggerPackForInstall(
   const planTargets: InstalledTriggerPackReceipt['planTargets'] = [];
   for (const target of manifest.triggerPack.targets) {
     if (target.kind === 'recipe') {
-      if (target.argsSchema && !isCompilableSchema(target.argsSchema)) {
+      if (!isCompilableSchema(target.argsSchema)) {
         throw new InstallPluginError(
           `trigger-pack manifest invalid: recipe target "${target.id}" argsSchema is not compilable JSON Schema`,
           422,
