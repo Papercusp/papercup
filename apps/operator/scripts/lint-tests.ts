@@ -6,7 +6,7 @@
  *
  * D-006 says new tests go in Vitest / Playwright / Cargo / LLM
  * scenarios — never `.mjs` integration scripts or tsx `-smoke.ts`
- * files. This lint enforces FOUR things:
+ * files. This lint enforces FIVE things:
  *
  *   1. No NEW `.mjs` under `apps/operator/__tests__/integration/`
  *      (debt counter `lint-tests-debt.json` accepts pre-existing).
@@ -17,7 +17,10 @@
  *      this is the failure the audit fixed (614 of 1168 were orphaned).
  *      Fix by widening a domain in testing-domains-registry.ts, then
  *      `npx tsx scripts/gen-testing-domains-contract.ts`.
- *   4. No bash `*.test.sh` / `*.spec.sh` ANYWHERE (EI-1736). No CI runner
+ *   4. RUNNABILITY: every registry-visible canonical test resolves to a
+ *      Vitest config that includes it, or an explicit Playwright,
+ *      WebdriverIO, or Node:test executor (EI-15951).
+ *   5. No bash `*.test.sh` / `*.spec.sh` ANYWHERE (EI-1736). No CI runner
  *      globs them (test:affected only globs Vitest `*.test.ts`), so they
  *      masquerade as coverage while silently never running — and the
  *      `set -e` + `((x++))` trap aborts them after Test 1. Use a Vitest
@@ -37,8 +40,10 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findUnrunnableTests } from '@papercusp/operator-core/lib/test-executor-runnability';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveRepoRoot(__dirname);
@@ -70,7 +75,7 @@ async function loadDebt(): Promise<Debt> {
 }
 
 async function listFiles(dir: string, predicate: (name: string) => boolean): Promise<string[]> {
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  let entries: Dirent<string>[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
@@ -209,7 +214,7 @@ const COVERAGE_IGNORE_RE = /^\.|\.(?:tmp|old)\.\d+$/;
 /** Recursively list every file under `dir` whose basename matches `match`,
  * POSIX-relative, skipping ignore dirs. Defaults to canonical TS/JS tests. */
 async function walkAll(dir: string, match: RegExp = CANONICAL_TEST_RE, base = ''): Promise<string[]> {
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  let entries: Dirent<string>[];
   try { entries = await readdir(dir, { withFileTypes: true }); } catch { return []; }
   const out: string[] = [];
   for (const e of entries) {
@@ -258,6 +263,20 @@ async function findOrphanTests(): Promise<string[]> {
   return tests.filter((t) => !compiled.some((g) => globMatches(g, t))).sort();
 }
 
+/**
+ * Return registry-visible tests that no real runner executes. Visibility and
+ * runnability are separate contracts: a registry glob can make a dead test
+ * look covered even when every resolved runner config excludes it.
+ */
+async function findUnrunnableRegistryTests(): Promise<
+  Awaited<ReturnType<typeof findUnrunnableTests>>
+> {
+  const compiled = (await loadContractGlobs()).map(compileGlob);
+  const tests = await walkAll(REPO_ROOT);
+  const visible = tests.filter((test) => compiled.some((glob) => globMatches(glob, test)));
+  return findUnrunnableTests(visible, REPO_ROOT);
+}
+
 async function main(): Promise<void> {
   const debt = await loadDebt();
   const debtMjs = new Set(debt.integrationMjs);
@@ -296,6 +315,17 @@ async function main(): Promise<void> {
     offenders.push(`[ORPHAN] ${o}\n        → matches no registry glob → invisible in the /adv Tests tab. ` +
       `Widen a domain in apps/operator/lib/testing-domains-registry.ts, then ` +
       `regenerate: npx tsx scripts/gen-testing-domains-contract.ts`);
+  }
+
+  // Forbidden #3b: registry visibility must resolve to a real executor.
+  // Resolve runner configs instead of collecting the suite: collection can
+  // fail for unrelated imports/setup and turn thousands of sound paths into a
+  // false `matched=0`, while resolved include/exclude is the authoritative,
+  // fast contract the runner itself applies.
+  const unrunnable = await findUnrunnableRegistryTests();
+  for (const finding of unrunnable) {
+    offenders.push(`[UNRUNNABLE] ${finding.file}\n        → visible through a registry glob, but no runner executes it: ${finding.reason ?? 'unknown executor gap'}. ` +
+      `Fix the owning Vitest include/exclude, Playwright/WebdriverIO executor, or registry declaration.`);
   }
 
   // Forbidden #4: bash *.test.sh / *.spec.sh — invisible to every CI runner
@@ -339,6 +369,7 @@ async function main(): Promise<void> {
   process.stdout.write('✓ lint-tests: no new offenders\n');
   process.stdout.write(`  ${debtMjs.size} .mjs + ${debtSmoke.size} -smoke.ts debt entries\n`);
   process.stdout.write('  every canonical test matches a registry glob (visible in the /adv Tests tab)\n');
+  process.stdout.write('  every registry-visible canonical test resolves to an executing runner\n');
 }
 
 void main();
