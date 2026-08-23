@@ -396,6 +396,11 @@ describe('attention bulk-run store (real PG)', () => {
       markActionStarted = resolve;
     });
 
+    // `audit` is REQUIRED (WI-41023): the audit write joins the action's
+    // transaction so an unaudited `auto_resolved` cannot commit. Recording the
+    // call here also pins WHEN it runs — inside the authority window, after the
+    // action and before the outcome row.
+    let auditedInsideAuthority = false;
     const action = executeBulkRunAction({
       runId: run.runId,
       itemId: item!.itemId,
@@ -406,6 +411,9 @@ describe('attention bulk-run store (real PG)', () => {
         markActionStarted();
         await actionMayFinish;
         return { resolved: true };
+      },
+      audit: async () => {
+        auditedInsideAuthority = true;
       },
     });
     await actionStarted;
@@ -431,6 +439,9 @@ describe('attention bulk-run store (real PG)', () => {
       actionId: 'resolve',
       rationale: 'The owner gate is moot.',
     });
+    // An `auto_resolved` row that committed without its audit having run is
+    // precisely the WI-41023 defect.
+    expect(auditedInsideAuthority).toBe(true);
 
     // The opposite ordering is the revocation guarantee: once Stop commits,
     // a later actor must be refused before its irreversible callback begins.
@@ -440,6 +451,7 @@ describe('attention bulk-run store (real PG)', () => {
     expect((await settleRunPhase({ runId: lateRun.runId, workspaceId: ws }))!.phase).toBe('review');
 
     let dispatchedAfterStop = false;
+    let auditedAfterStop = false;
     const late = await executeBulkRunAction({
       runId: lateRun.runId,
       itemId: lateItem!.itemId,
@@ -450,9 +462,16 @@ describe('attention bulk-run store (real PG)', () => {
         dispatchedAfterStop = true;
         return { resolved: true };
       },
+      audit: async () => {
+        auditedAfterStop = true;
+      },
     });
     expect(late.refused).toEqual({ reason: 'run_authority_revoked', phase: 'review' });
     expect(dispatchedAfterStop).toBe(false);
+    // The refusal short-circuits BEFORE the audit too, so a revoked run leaves
+    // no audit row for an action it never took — the audit trail must not imply
+    // a resolution that did not happen.
+    expect(auditedAfterStop).toBe(false);
     expect((await getRunItems(lateRun.runId, ws))[0]!.outcome).toBe('pending');
   });
 });

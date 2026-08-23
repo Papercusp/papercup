@@ -325,9 +325,20 @@ export async function executeBulkRunAction<T>(input: {
   consultReply?: string | null;
   workspaceId?: string;
   execute: () => Promise<T>;
-  /** Required audit work can join this transaction; a failure rolls the run
-   *  outcome back instead of reporting a clean, unaudited success. */
-  audit?: (sql: TransactionSql) => Promise<void>;
+  /**
+   * REQUIRED, not optional. The audit write joins this transaction, so a
+   * failure rolls the run outcome back instead of reporting a clean, unaudited
+   * success — that rollback IS the fix for WI-41023, and it only holds if the
+   * callback is actually supplied.
+   *
+   * Optional would have made the guarantee rest on every future caller
+   * REMEMBERING to pass it, which is the convention-tier enforcement WI-41023
+   * was filed about in the first place (its swallowed `catch {}` was the same
+   * bug one layer down). Requiring it moves the rule to the structural tier:
+   * a caller that omits the audit does not compile. A terminal action that
+   * genuinely needs no audit row must say so explicitly with a no-op.
+   */
+  audit: (sql: TransactionSql) => Promise<void>;
 }): Promise<{
   actionResult: T | null;
   item: BulkRunItemRow | null;
@@ -375,7 +386,8 @@ export async function executeBulkRunAction<T>(input: {
     }
 
     const actionResult = await input.execute();
-    await input.audit?.(tx);
+    // No `?.` — the audit is part of the success contract (see the type above).
+    await input.audit(tx);
     const updatedRows = await tx<RawItemRow[]>`
       UPDATE harness_shared.attention_bulk_run_items
          SET outcome = 'auto_resolved',
