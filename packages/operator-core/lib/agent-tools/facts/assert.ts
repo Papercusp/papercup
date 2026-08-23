@@ -42,7 +42,8 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { factMeasurementHint } from '../../fact-measurement-detector';
-import { getCellUnchecked } from '../../cell-registry';
+import { getCell, type CellReader } from '../../cell-registry';
+import { cellReaderFromCtx } from '../cell-reader-ctx';
 import {
   suggestDependsOnCells,
   type DependsOnSuggestion,
@@ -125,10 +126,19 @@ export interface DependsOnSuggestionField {
   note: string;
 }
 
-function dependencyAcceptance(cell: string):
+/**
+ * The exported suggestion helper is also exercised as a pure function in unit tests,
+ * where there is no dispatch identity. Keep that path fail-closed: an empty reader can
+ * see only workspace cells. The live handler always passes the reader built from its
+ * actual identity/context, so a suggested narrow cell is treated as unavailable rather
+ * than inspected through the unchecked registry.
+ */
+const EMPTY_CELL_READER: CellReader = { ownerId: '' };
+
+function dependencyAcceptance(cell: string, reader: CellReader = EMPTY_CELL_READER):
   | { acceptReady: true }
   | { acceptReady: false; required: string; reason: IncompleteDependsOnSuggestion['reason'] } {
-  const spec = getCellUnchecked(cell);
+  const spec = getCell(cell, reader);
   if (!spec) {
     return {
       acceptReady: false,
@@ -178,6 +188,7 @@ function dependencyAcceptance(cell: string):
 export function dependsOnSuggestionField(
   body: string,
   declaredDependencies: readonly DependsOnInput[],
+  reader: CellReader = EMPTY_CELL_READER,
 ): DependsOnSuggestionField | null {
   const declaredCells = declaredDependencies.map((dependency) =>
     typeof dependency === 'string' ? dependency : dependency.cell,
@@ -190,9 +201,9 @@ export function dependsOnSuggestionField(
   }
   if (suggested.length === 0) return null;
 
-  const acceptReady = suggested.filter((suggestion) => dependencyAcceptance(suggestion.cell).acceptReady);
+  const acceptReady = suggested.filter((suggestion) => dependencyAcceptance(suggestion.cell, reader).acceptReady);
   const incomplete = suggested.flatMap((suggestion) => {
-    const acceptance = dependencyAcceptance(suggestion.cell);
+    const acceptance = dependencyAcceptance(suggestion.cell, reader);
     return acceptance.acceptReady
       ? []
       : [{ cell: suggestion.cell, required: acceptance.required, reason: acceptance.reason }];
@@ -669,18 +680,18 @@ export default defineTool({
     // table's write path has been hardened against twice already.
     let dependsOn: FactDependency[] = [];
     const declaredCells = (args.dependsOn ?? []).map((d) => (typeof d === 'string' ? d : d.cell));
+    const { reader: cellReader } = cellReaderFromCtx(identity, ctx);
     if (declaredCells.length > 0) {
       try {
-        const { cellReaderFromCtx } = await import('../cell-reader-ctx');
         const { captureFactDependencies } = await import('./dependency-staleness');
-        const { reader, env } = cellReaderFromCtx(identity, ctx);
+        const { env } = cellReaderFromCtx(identity, ctx);
         // A caller-relative cell needs its SUBJECT, or the read comes back
         // `insufficient-data` and the dependency can never be compared.
         const subjects: Record<string, string> = {};
         for (const d of args.dependsOn ?? []) {
           if (typeof d !== 'string' && d.as) subjects[d.cell] = d.as;
         }
-        dependsOn = await captureFactDependencies(declaredCells, reader, env, subjects);
+        dependsOn = await captureFactDependencies(declaredCells, cellReader, env, subjects);
       } catch {
         dependsOn = [];
       }
@@ -783,7 +794,7 @@ export default defineTool({
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
     const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
-    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, args.dependsOn ?? []);
+    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, args.dependsOn ?? [], cellReader);
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {
