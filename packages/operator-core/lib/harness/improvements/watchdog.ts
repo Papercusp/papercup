@@ -1452,7 +1452,7 @@ export async function fetchRedTestRows(
   const windowHours = opts.redTestWindowHours ?? 6;
   const minFails = opts.redTestMinFails ?? 3;
   const normalizedPaths = paths === undefined
-    ? undefined
+    ? []
     : [...new Set(paths.map(normalizeRedTestPath).filter((p): p is string => p != null))];
   const pathFilter = paths === undefined
     ? sql`TRUE`
