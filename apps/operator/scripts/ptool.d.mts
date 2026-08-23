@@ -6,7 +6,7 @@
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.
  */
-export function parseArgs(argv: any): {
+export function parseArgs(argv?: any[]): {
     tool: null;
     json: null;
     jsonFile: null;

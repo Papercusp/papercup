@@ -2,9 +2,6 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/task-exit-class.mjs and regenerate.
 /**
- * @typedef {'pass' | 'not-checked' | 'quarantined' | 'failed'} TaskExitClass
- */
-/**
  * Classify a finished task's exit status.
  *
  * Precedence is deliberate and mirrors the reporting order it replaced: "I could not look"
@@ -16,13 +13,25 @@
  * @param {number} opts.notCheckedExitCode the caller's EXIT_NOT_CHECKED mirror
  * @param {boolean} [opts.notCheckedIsNonGating] does THIS task's registration forgive "I could not look"?
  * @param {boolean} [opts.quarantined] is this task quarantined?
+ * @param {string} [opts.output] combined captured stdout/stderr
+ * @param {string} [opts.stdout] captured stdout, when the caller keeps the streams separate
+ * @param {string} [opts.stderr] captured stderr, when the caller keeps the streams separate
+ * @param {number} [opts.capturedBytes] bytes captured from the child process
+ * @param {number} [opts.elapsedMs] elapsed time before the child exited
+ * @param {number} [opts.durationEstimateMs] historical duration estimate for this task
  * @returns {TaskExitClass}
  */
-export function classifyTaskExit({ status, notCheckedExitCode, notCheckedIsNonGating, quarantined, }: {
+export function classifyTaskExit({ status, notCheckedExitCode, notCheckedIsNonGating, quarantined, output, stdout, stderr, capturedBytes, elapsedMs, durationEstimateMs, }: {
     status: number | null | undefined;
     notCheckedExitCode: number;
     notCheckedIsNonGating?: boolean | undefined;
     quarantined?: boolean | undefined;
+    output?: string | undefined;
+    stdout?: string | undefined;
+    stderr?: string | undefined;
+    capturedBytes?: number | undefined;
+    elapsedMs?: number | undefined;
+    durationEstimateMs?: number | undefined;
 }): TaskExitClass;
 /**
  * Does this classification count against the run?
@@ -38,4 +47,4 @@ export function classifyTaskExit({ status, notCheckedExitCode, notCheckedIsNonGa
  * @returns {boolean}
  */
 export function isGatingFailure(cls: TaskExitClass): boolean;
-export type TaskExitClass = "pass" | "not-checked" | "quarantined" | "failed";
+export type TaskExitClass = "pass" | "not-checked" | "undetermined" | "quarantined" | "failed";
