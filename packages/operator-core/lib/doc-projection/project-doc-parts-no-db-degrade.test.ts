@@ -68,6 +68,16 @@ function runProjector(args: string[]): { status: number; output: string } {
 }
 
 describe('project-doc-parts — the no-DB degrade is CHECK-ONLY', () => {
+  it.each(['--help', '-h'])('prints usage without connecting to Postgres for %s', (flag) => {
+    const { status, output } = runProjector([flag, '--write']);
+    expect(status).toBe(0);
+    expect(output).toContain('Usage:');
+    expect(output).toContain('project-doc-parts.mjs');
+    expect(output).toContain('--write');
+    expect(output).not.toContain('ECONNREFUSED');
+    expect(output).not.toContain('dry run — nothing written');
+  });
+
   it('the CHECK path exits 0 when Postgres is unreachable, so the guard is wireable off-box', () => {
     const { status } = runProjector([]);
     expect(status).toBe(0);

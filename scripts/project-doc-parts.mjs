@@ -694,8 +694,32 @@ function fmt(n) {
   return n.toLocaleString('en-US');
 }
 
+export const HELP_TEXT = `Usage:
+  node scripts/project-doc-parts.mjs [options]
+
+Project the canonical harness_shared.harness_doc_parts rows into CLAUDE.md and
+AGENTS.md. With no write flag, the command only checks and reports the projection.
+
+Options:
+  --write                                      write client projections and cache
+  --write-corpus                               write the DB-free corpus projection
+  --doc-id=<id>                                document id (default: claude-md)
+  --context-tokens=<count>                     context window used for the budget
+  --chars-per-token=<count>                    budget chars/token (default: 4)
+  --accept-canonicalized-drift=<client>:<sha>  acknowledge reviewed file drift
+  -h, --help                                   show this help and exit
+
+Examples:
+  node scripts/project-doc-parts.mjs
+  node scripts/project-doc-parts.mjs --write
+  node scripts/project-doc-parts.mjs --write-corpus`;
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const argv = process.argv.slice(2);
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(HELP_TEXT);
+    process.exit(0);
+  }
   const write = argv.includes('--write');
   const writeCorpus = argv.includes('--write-corpus');
   let acceptedCanonicalizedDrift;
