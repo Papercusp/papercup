@@ -66,6 +66,17 @@ function callsSweep(text: string): boolean {
   return /sweepHost\s*\(\s*\([^)]*\)\s*=>\s*sweepA11yBuses\s*\(/.test(text);
 }
 
+/** True when the sweep call sits inside a try/catch opened after its watermark write. */
+function guardedByTry(text: string): boolean {
+  const mark = text.indexOf('lastA11ySweepAtMs = nowMs;');
+  if (mark < 0) return false;
+  const call = text.indexOf('sweepHost(', mark);
+  if (call < 0) return false;
+  const before = text.slice(mark, call);
+  const after = text.slice(call);
+  return before.includes('try {') && /^[\s\S]{0,300}?\bcatch\b/.test(after);
+}
+
 function callIsScheduled(text: string): boolean {
   return (
     /isMaintDue\(\{\s*lastAtMs:\s*lastA11ySweepAtMs[^}]*intervalMs:\s*A11Y_SWEEP_INTERVAL_MS/.test(text) &&
@@ -99,9 +110,11 @@ describe('a11y-bus sweep wiring (live source)', () => {
   });
 
   it('never lets a sweep failure escape into the reconcile tick', () => {
-    const call = source.slice(source.indexOf('lastA11ySweepAtMs = nowMs;'));
-    expect(call.slice(0, 400)).toContain('try {');
-    expect(call.slice(0, 400)).toContain('catch');
+    // Structural, not distance-based: assert `try {` sits BETWEEN the watermark
+    // write and the call. An earlier version of this test allowed 400 chars and
+    // broke the moment a comment grew — a judge that fails on prose length is
+    // measuring the wrong thing.
+    expect(guardedByTry(source)).toBe(true);
   });
 });
 
@@ -119,6 +132,12 @@ describe('the judge is falsifiable (permanent fixture controls)', () => {
   it('REJECTS a call that is not on the schedule', () => {
     expect(callsSweep(UNSCHEDULED_FIXTURE)).toBe(true);
     expect(callIsScheduled(UNSCHEDULED_FIXTURE)).toBe(false);
+  });
+
+  it('accepts the try/catch in a correctly wired fixture, rejects it without one', () => {
+    expect(guardedByTry(WIRED_FIXTURE)).toBe(true);
+    const unguarded = WIRED_FIXTURE.replace('try {', '').replace(/\} catch[\s\S]*$/, '');
+    expect(guardedByTry(unguarded)).toBe(false);
   });
 
   it('REJECTS an empty source — the broken-instrument control', () => {
