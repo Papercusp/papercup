@@ -208,8 +208,7 @@ describe('<AdvAutomationsTab>', () => {
   });
 
   it('toggles an external binding through the audited trigger admin route', async () => {
-    renderTab();
-    await goToFlows();
+    renderTabOnFlows();
     fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
     const details = await screen.findByLabelText('Automation details');
     const armed = within(details).getAllByRole('button', { name: 'Armed' });
