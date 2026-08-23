@@ -3,7 +3,17 @@
 // progressOf (item done/total), agoLabel (compact recency). No jsdom / no
 // mocks — pure functions, the highest-value least-brittle coverage.
 import { describe, expect, it } from 'vitest';
-import { buildGlanceRows, progressOf, agoLabel, isStale, STALE_MS } from './PlansPane';
+import {
+  buildGlanceRows,
+  progressOf,
+  agoLabel,
+  isStale,
+  STALE_MS,
+  PLANS_PANE_SORTS,
+  PLANS_PANE_SORT_IDS,
+  DEFAULT_PLANS_PANE_SORT,
+  plansPaneSortLabel,
+} from './PlansPane';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
 /** Minimal PlanListRow factory — only the fields the pure logic reads. */
@@ -13,6 +23,7 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     title: over.title ?? over.slug,
     status: over.status ?? 'active',
     updated: over.updated,
+    created: over.created,
     archived: over.archived ?? false,
     isLegacy: over.isLegacy ?? false,
     itemCounts: over.itemCounts,
