@@ -347,6 +347,67 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       }),
     ]);
   });
+
+  it('promotes an exact-title probation row when direct evidence has a different message fingerprint', async () => {
+    const title = 'ptool work_items:get exits silently with empty output after delayed invocation';
+    const prior = existing({
+      id: 'EI-TITLE-PROBATION',
+      title,
+      kind: 'change',
+      severity: 'nit',
+      payload: {
+        lane: 'observation',
+        watchdogKey: 'repeated-tool-error:work_items:get:structural:first-shape',
+        toolFailureProbation: {
+          state: 'probation',
+          class: 'structural',
+          watchdogKey: 'repeated-tool-error:work_items:get:structural:first-shape',
+          intendedKind: 'bug',
+          reporters: ['su-a'],
+        },
+      },
+    });
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      ...deps({ found: [prior] }),
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
+      mergeIssuePayload: async (_id, patch) =>
+        existing({ ...prior, kind: 'bug', severity: 'major', payload: { ...(prior.payload as object), ...patch } }),
+      tagIssue: async () => {},
+      untagIssue: async () => {},
+    };
+
+    const res = await captureImprovement(
+      {
+        title,
+        kind: 'bug',
+        watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+        createdBy: 'su-a',
+        payloadExtra: {
+          toolFailureProbation: {
+            state: 'promoted',
+            class: 'structural',
+            watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+            intendedKind: 'bug',
+            directEvidence: true,
+            reporters: ['su-a'],
+          },
+        },
+      },
+      d,
+    );
+
+    expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-TITLE-PROBATION' } });
+    expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: 'EI-TITLE-PROBATION',
+        reporter: 'su-a',
+        sourceTool: 'improvements:capture',
+        reportKind: 'promoted',
+      }),
+    ]);
+  });
 });
 
 describe('captureImprovement — auto-ratify-on-first-scorecard hook (WI-5415)', () => {
