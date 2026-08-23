@@ -981,15 +981,15 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     expect(results.filter((r) => r.stderr.includes('coalesced:')).length).toBe(n - 1);
   }, 60_000);
 
-  it('WI-40946: capture tees cannot retain a heavy slot after the real result is terminal', async () => {
+  it('WI-40946: capture tees cannot retain a heavy slot after their wrapper dies', async () => {
     // A command descendant can legitimately keep stdout/stderr open after the
     // command leader exits. That keeps pc-heavy's process-substitution tees
     // alive, but it must NOT keep the heavy slot alive through a descriptor the
     // passive capture process inherited. The descendant below closes its own
     // slot descriptor first, then deliberately holds only the output pipes.
-    // Pre-fix, the wrapper returned and the surviving tee alone kept slot.0
-    // flocked for the full sleep; the live incident left such tees behind for
-    // 32–45 minutes after their final .exit artifacts were written.
+    // We kill ONLY the wrapper and positively prove its tee children survived;
+    // pre-fix those orphaned tees alone kept slot.0 flocked. The live incident
+    // left the same process class behind for 32–45 minutes after final artifacts.
     const lingerPidFile = join(dir, 'pipe-keeper.pid');
     const command = [
       '  for fd_path in /proc/self/fd/*; do',
@@ -1005,29 +1005,66 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       '  exec sleep 20',
     ].join('\n');
 
+    const wrapper = spawn('bash', [PC_HEAVY, 'setsid', '-f', 'bash', '-c', command], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }),
+      cwd: dir,
+    });
+    const wrapperErr = createTextCollector(wrapper.stderr);
     let lingerPid = 0;
+    let teePids: number[] = [];
+    const captureTeePids = (): number[] => {
+      const coalesceDir = join(dir, 'coalesce');
+      if (!existsSync(coalesceDir)) return [];
+      const partFiles = readdirSync(coalesceDir)
+        .filter((name) => name.endsWith('.part'))
+        .map((name) => join(coalesceDir, name));
+      const pids = new Set<number>();
+      for (const partFile of partFiles) {
+        const probe = spawnSync('fuser', [partFile], { encoding: 'utf8' });
+        for (const token of probe.stdout.match(/\d+/g) ?? []) {
+          const pid = Number(token);
+          if (!Number.isSafeInteger(pid) || pid <= 1) continue;
+          try {
+            if (readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'tee') pids.add(pid);
+          } catch { /* process exited between fuser and /proc */ }
+        }
+      }
+      return [...pids];
+    };
     try {
-      // `setsid -f` forces a fork: its launcher returns immediately while the
-      // child keeps the inherited stdout/stderr pipes open in a new session.
-      // A plain `(...) &` under the nested non-interactive Bash waits for the
-      // child before exiting and would make the positive control dead already.
-      const result = runSync(['setsid', '-f', 'bash', '-c', command], {
-        PC_HEAVY_SLOTS: '1',
-        PC_HEAVY_COALESCE_SEC: '30',
-      });
-      expect(result.status).toBe(0);
+      await untilStderr(
+        wrapper,
+        wrapperErr,
+        (text) => text.includes('[pc-heavy] slot acquired — starting real work'),
+        'the wrapper acquiring slot.0',
+      );
       await waitFor('the detached pipe keeper starts', () => existsSync(lingerPidFile));
-      expect(existsSync(lingerPidFile)).toBe(true);
       lingerPid = Number(readFileSync(lingerPidFile, 'utf8').trim());
       expect(Number.isSafeInteger(lingerPid) && lingerPid > 1).toBe(true);
       expect(() => process.kill(lingerPid, 0)).not.toThrow(); // positive control: the pipe keeper is still live
+
+      await waitFor('both process-substitution tee children exist', () => captureTeePids().length === 2);
+      teePids = captureTeePids();
+      expect(teePids).toHaveLength(2);
+
+      // Kill the wrapper PID only. The detached pipe keeper keeps both capture
+      // pipes open, so the two recorded tees survive and isolate their own fd set.
+      wrapper.kill('SIGKILL');
+      await waitFor('the wrapper exits', () => wrapper.exitCode !== null || wrapper.signalCode !== null);
+      expect(teePids.some((pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      })).toBe(true); // positive control: a capture tee really outlived the wrapper
       expect(heldSlotCount(dir, 1)).toBe(0);
     } finally {
+      if (wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill('SIGKILL');
       if (lingerPid > 1) {
         try { process.kill(lingerPid, 'SIGKILL'); } catch { /* already exited */ }
       }
+      for (const pid of teePids) {
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+      }
     }
-  });
+  }, 20_000);
 
   it('reclaims a lock whose leader DIED even though the stamped pid was recycled by a live process (EI-19343301596011451)', () => {
     // Leader liveness is observed via pid, and PID wrap is ~daily on this box
