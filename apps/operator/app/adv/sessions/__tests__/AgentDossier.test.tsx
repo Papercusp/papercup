@@ -506,7 +506,7 @@ describe('AgentDossier', () => {
   it('P-005: an inactive loop renders "not armed", not the interval/next-fire fields', async () => {
     syncState.detail = {
       ...DETAIL,
-      signals: { ...DETAIL.signals, loop: { active: false, intervalSec: null, nextFireAt: null, parked: false, stalled: false } },
+      signals: { ...DETAIL.signals!, loop: { active: false, intervalSec: null, nextFireAt: null, parked: false, stalled: false } },
     } satisfies AgentDetail;
     const { findByText, queryByText } = render(
       <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
@@ -519,7 +519,7 @@ describe('AgentDossier', () => {
     syncState.detail = {
       ...DETAIL,
       signals: {
-        ...DETAIL.signals,
+        ...DETAIL.signals!,
         loop: { active: true, intervalSec: 60, nextFireAt: null, parked: true, stalled: true },
       },
     } satisfies AgentDetail;
@@ -530,7 +530,7 @@ describe('AgentDossier', () => {
   it('P-005: holding no claim renders "none held" rather than hiding the row', async () => {
     syncState.detail = {
       ...DETAIL,
-      signals: { ...DETAIL.signals, currentClaim: null },
+      signals: { ...DETAIL.signals!, currentClaim: null },
     } satisfies AgentDetail;
     const { findByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
     expect(await findByText('none held')).toBeTruthy();
@@ -542,7 +542,7 @@ describe('AgentDossier', () => {
   it('EI-18694403367371331: a claim read that THREW renders "unavailable", never the same "none held" as a genuine empty claim', async () => {
     syncState.detail = {
       ...DETAIL,
-      signals: { ...DETAIL.signals, currentClaim: null, unavailableSignals: ['currentClaim'] },
+      signals: { ...DETAIL.signals!, currentClaim: null, unavailableSignals: ['currentClaim'] },
     } satisfies AgentDetail;
     const { findByText, queryByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
     expect(await findByText('⚠ unavailable (read failed)')).toBeTruthy();
@@ -552,7 +552,7 @@ describe('AgentDossier', () => {
   it('EI-18694403367371331: a loop read that THREW renders "unavailable", never the same "no loop" as a genuinely-never-armed agent', async () => {
     syncState.detail = {
       ...DETAIL,
-      signals: { ...DETAIL.signals, loop: null, unavailableSignals: ['loop'] },
+      signals: { ...DETAIL.signals!, loop: null, unavailableSignals: ['loop'] },
     } satisfies AgentDetail;
     const { findByText, queryByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
     expect(await findByText('⚠ unavailable (read failed)')).toBeTruthy();
@@ -562,7 +562,7 @@ describe('AgentDossier', () => {
   it('P-005: no unanswered-directed messages hides the row (not "0 peers waiting")', async () => {
     syncState.detail = {
       ...DETAIL,
-      signals: { ...DETAIL.signals, unansweredDirectedCount: 0 },
+      signals: { ...DETAIL.signals!, unansweredDirectedCount: 0 },
     } satisfies AgentDetail;
     const { findByText, queryByText } = render(
       <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
@@ -575,7 +575,7 @@ describe('AgentDossier', () => {
     const longNote = 'x'.repeat(500);
     syncState.detail = {
       ...DETAIL,
-      signals: { ...DETAIL.signals, lastCheckpoint: { text: longNote, updatedAtMs: Date.now() } },
+      signals: { ...DETAIL.signals!, lastCheckpoint: { text: longNote, updatedAtMs: Date.now() } },
     } satisfies AgentDetail;
     const { findByText, queryByText } = render(
       <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
