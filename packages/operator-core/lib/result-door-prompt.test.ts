@@ -81,9 +81,11 @@ describe('result-door standing-context section', () => {
     // and results[].state silently match nothing and can be misread as null.
     expect(text).toContain('event_inspection.current_generation');
     expect(text).toContain('event_inspection.current_state');
+    expect(text).toContain('results[].id", "results[].workItem.state');
     expect(text).toContain('results[].workItem.state');
     expect(text).toContain('results[].workItem.assignee');
     expect(text).toContain('results[].checkpoint');
+    expect(text).not.toContain('results[].state');
   });
 
   it('never emits a literal splice marker (psu-prompt-isolation)', () => {
