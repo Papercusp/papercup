@@ -276,15 +276,6 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   const csrf = requireAllowedOriginOr403(req);
   if (csrf) return csrf;
 
-  // The flag has to cut the WRITE SEAM, not just the strip. InboxPane gates the
-  // UI with useFlag, but a client-only gate leaves this route reachable while the
-  // feature is "off" — and `op:'start'` LAUNCHES A REAL HEADLESS RESOLVER AGENT
-  // that then acts on the owner's inbox. A kill switch that still spawns agents is
-  // not a kill switch. Gating the whole handler (not just `start`) also keeps the
-  // owner ops off, so a run cannot be driven while the feature is disabled.
-  const gated = await gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE);
-  if (gated) return gated;
-
   let body: Record<string, unknown> = {};
   try {
     const txt = await req.text();
@@ -297,6 +288,35 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   }
 
   const op = typeof body.op === 'string' ? body.op : 'start';
+
+  // WI-41021 — THE FLAG GATES ACTING, NEVER STOPPING.
+  //
+  // The flag still has to cut the WRITE SEAM and not just the strip: InboxPane
+  // gates the UI with useFlag, but a client-only gate leaves this route reachable
+  // while the feature is "off", and `op:'start'` LAUNCHES A REAL HEADLESS RESOLVER
+  // AGENT that then acts on the owner's inbox. A kill switch that still spawns
+  // agents is not a kill switch.
+  //
+  // But the previous version gated the WHOLE handler, above this point, and that
+  // was backwards. Every owner op routes through here, so a blanket gate ALSO 404'd
+  // `op:'stop'` — flipping the kill switch took away the owner's kill button. And
+  // it bought nothing, because the resolver does not drive a run through this route
+  // at all: it uses inbox:bulk-run-* (gated separately, same rule). So the flag-off
+  // state was the worst of both — the owner could not stop the run, and the agent
+  // could not be stopped.
+  //
+  // STOP_OPS are therefore ALWAYS reachable, flag or no flag. `stop` is the kill
+  // path itself; `dismiss` only closes a review list the owner is already looking
+  // at, and refusing it strands them with a list they cannot clear. Everything else
+  // — `start` (spawns an agent) and `accept` (takes a terminal action on the
+  // owner's behalf) — is ACTING, and stays gated. Nothing is lost by gating
+  // `accept`: every recommended item remains resolvable by hand in the pane.
+  const STOP_OPS = new Set(['stop', 'dismiss']);
+  if (!STOP_OPS.has(op)) {
+    const gated = await gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE);
+    if (gated) return gated;
+  }
+
   if (op !== 'start') return handleOwnerOp(op, body);
 
   const items = parseItems(body.items);

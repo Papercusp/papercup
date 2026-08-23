@@ -31,6 +31,8 @@
  */
 
 import { z } from 'zod';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -46,6 +48,32 @@ import {
   type BulkOutcomeReport,
 } from '../../attention/bulk-run-store';
 import { upsertTriage } from '../../attention/triage-store';
+
+/**
+ * WI-41021 — the resolver's own verbs have to honour the kill switch.
+ *
+ * The feature flag used to be read in exactly two places: the client strip
+ * (InboxPane's useFlag) and the owner's HTTP route. Neither is on the path an
+ * ALREADY-LAUNCHED resolver takes — it drives its run entirely through the three
+ * tools in this file. So flipping the feature off stopped the next start and did
+ * nothing at all to the agent that was already acting on the owner's inbox.
+ *
+ * The rule, matching the route: the flag gates ACTING, never STOPPING.
+ *   - manifest: on OFF, report the run as `stopped` (below). This reuses the
+ *     WI-41013 halt signal the resolver already obeys, so the flag revokes
+ *     in-flight authority through machinery that exists rather than a new
+ *     channel. Deliberately NOT a refusal — a refused manifest read leaves the
+ *     resolver blind, and a blind resolver keeps acting on stale item state.
+ *   - report: on OFF, refuse the write, same shape as a settled run.
+ *   - settle: NEVER gated. It is the wind-down path; refusing it would strand
+ *     runs in `running` forever, which is the same inversion one level down.
+ */
+async function bulkResolveEnabled(): Promise<boolean> {
+  // Fail CLOSED on a flag-backend error: getFlag already falls back to
+  // FLAG_DEFAULTS, and "we cannot verify the kill switch" must read as stopped,
+  // never as licence to keep taking terminal actions on the owner's inbox.
+  return await getFlag(FLAGS.INBOX_BULK_RESOLVE, 'system:inbox-bulk-run').catch(() => false);
+}
 
 /**
  * Action ids that open a sub-surface instead of resolving anything. Mirrors
@@ -201,6 +229,11 @@ export const bulkRunManifest = defineTool({
             },
             items,
             remaining: rows.filter((r) => r.outcome === 'pending').length,
+            // WI-41021 — a run is ALSO stopped when the owner flips the feature
+            // off underneath you. The flag is the kill switch; you are a separate
+            // process that would otherwise never notice it moved, so it reaches
+            // you through this same `stopped` bit rather than a second channel.
+            featureDisabled: !featureEnabled,
             // WI-41013 — the owner's Stop settles the run row; you are a
             // separate process and will not otherwise notice. When this is
             // true the run is NO LONGER YOURS: stop immediately, take no
