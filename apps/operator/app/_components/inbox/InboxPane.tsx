@@ -16,8 +16,11 @@
  *     (drops the plan-item execution backlog + recency-bounds stale activity).
  *   - DATES (P-2xx): each row shows a relative date (from `AttentionItem.occurredAt`)
  *     with an absolute-time tooltip; ties sort by recency.
- *   - FILTER/SEARCH (P-3xx): a QueueFilterBar-style collapsed Filter with
- *     per-kind facet chips + counts, plus a text search over title/body/owner/plan.
+ *   - FILTER/SEARCH (P-3xx): QueueFilterBar-style per-kind facet chips + counts,
+ *     plus a text search over title/body/owner/plan.
+ *   - SORT (WI-40982): a sort picker whose orders run over the ALREADY-FILTERED
+ *     set — the tier chip, the kind facets and the search all narrow first, and
+ *     the chosen order is applied last to whatever survived.
  *
  * REUSE, not re-derivation:
  *   - data: useInboxAttention → the SAME `plans.attention` sync feed the
@@ -33,9 +36,15 @@
  * WorkItemDiscussion directly beneath the expanded item. The workspace-global
  * Papercup transcript is never seeded or selected by this path.
  *
- * Filter + selection + search live in the URL (nuqs `?opci` / `?opcis` /
- * `?opcq` / `?opck` / `?opcf`) so the pane is deep-linkable and agent-driveable
- * (ui:get_state / ui:dispatch), per the nuqs-by-default policy.
+ * Filter + selection + search + sort live in the URL (nuqs `?opci` / `?opcis` /
+ * `?opcq` / `?opck` / `?opcsort`) so the pane is deep-linkable and
+ * agent-driveable (ui:get_state / ui:dispatch), per the nuqs-by-default policy.
+ *
+ * The kind facets are ALWAYS OPEN (owner ask 2026-08-23, WI-40982). The old
+ * `?opcf` disclosure and its "Kinds" toggle button are GONE: the facet chips
+ * are the pane's cheapest read of what is actually waiting, and hiding them
+ * behind a click bought nothing. The toolbar slot the toggle vacated now holds
+ * the sort picker. A stale `?opcf=…` deep link is inert.
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -44,17 +53,18 @@ import {
   useQueryStates,
   parseAsString,
   parseAsStringLiteral,
-  parseAsBoolean,
 } from 'nuqs';
 import {
+  ArrowUpDown,
+  ChevronDown,
   ClipboardList,
   ChevronRight,
   Inbox as InboxIcon,
   MessageCircle,
   Search,
-  SlidersHorizontal,
   X,
 } from 'lucide-react';
+import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
 import {
@@ -90,6 +100,107 @@ const FILTER_LABEL: Record<InboxFilter, string> = {
 
 /** Decisions first, then alerts — the order the owner should read. */
 const TIER_RANK: Record<AttentionTier, number> = { decision: 0, alert: 1, handled: 2, activity: 3 };
+
+/** Sort orders this pane offers (WI-40982). `priority` is the pane's original
+ *  order and stays the default: tier first, newest within a tier. */
+export const INBOX_SORTS = [
+  { id: 'priority', label: 'Priority' },
+  { id: 'newest', label: 'Newest first' },
+  { id: 'oldest', label: 'Oldest first' },
+  { id: 'kind', label: 'Kind' },
+  { id: 'agent', label: 'Agent' },
+  { id: 'title', label: 'Title A–Z' },
+] as const;
+
+export type InboxSort = (typeof INBOX_SORTS)[number]['id'];
+
+export const INBOX_SORT_IDS = INBOX_SORTS.map((s) => s.id) as InboxSort[];
+
+export const DEFAULT_INBOX_SORT: InboxSort = 'priority';
+
+export function inboxSortLabel(sort: InboxSort): string {
+  return INBOX_SORTS.find((s) => s.id === sort)?.label ?? sort;
+}
+
+/** Epoch ms for an item's timestamp, or null when it has none / an unparseable
+ *  one. Null is "unknown", never "old" — see the ordering rules below. */
+function occurredMs(i: AttentionItem): number | null {
+  const t = i.occurredAt ? new Date(i.occurredAt).getTime() : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Newest first. An undated row sorts AFTER every dated one in BOTH directions:
+ *  a missing timestamp means "we don't know when", so promoting it to the top of
+ *  the oldest-first list would be an invented fact. */
+function byNewest(a: AttentionItem, b: AttentionItem): number {
+  const at = occurredMs(a);
+  const bt = occurredMs(b);
+  if (at !== null && bt !== null) return bt - at;
+  if (at !== bt) return at === null ? 1 : -1;
+  return 0;
+}
+
+function byOldest(a: AttentionItem, b: AttentionItem): number {
+  const at = occurredMs(a);
+  const bt = occurredMs(b);
+  if (at !== null && bt !== null) return at - bt;
+  if (at !== bt) return at === null ? 1 : -1;
+  return 0;
+}
+
+/** Case-insensitive text order; an EMPTY key sorts last rather than first, so a
+ *  row with no agent/title never leads the list. */
+function byText(a: string, b: string): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return a.localeCompare(b, undefined, { sensitivity: 'base' });
+}
+
+function agentKey(i: AttentionItem): string {
+  return (i.ownerLabel ?? i.ownerAgentId ?? '').trim();
+}
+
+function kindKey(i: AttentionItem): string {
+  return KIND_LABEL[i.kind] ?? i.kind ?? '';
+}
+
+/** Comparator for one inbox order. Pure — exported for unit tests. */
+export function compareInboxItems(
+  sort: InboxSort,
+): (a: AttentionItem, b: AttentionItem) => number {
+  switch (sort) {
+    case 'newest':
+      return byNewest;
+    case 'oldest':
+      return byOldest;
+    case 'kind':
+      return (a, b) => byText(kindKey(a), kindKey(b)) || byNewest(a, b);
+    case 'agent':
+      return (a, b) => byText(agentKey(a), agentKey(b)) || byNewest(a, b);
+    case 'title':
+      return (a, b) => byText(a.title ?? '', b.title ?? '') || byNewest(a, b);
+    case 'priority':
+    default:
+      // The pane's original order: decisions on top, then alerts; newest within
+      // a tier.
+      return (a, b) =>
+        TIER_RANK[effectiveTier(a)] - TIER_RANK[effectiveTier(b)] || byNewest(a, b);
+  }
+}
+
+/** Order a filtered item set. STABLE: ties keep the server's order via the idx
+ *  decoration, so an undated backlog never reshuffles between renders. */
+export function sortInboxItems(
+  items: readonly AttentionItem[],
+  sort: InboxSort = DEFAULT_INBOX_SORT,
+): AttentionItem[] {
+  const cmp = compareInboxItems(sort);
+  return items
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => cmp(a.item, b.item) || a.idx - b.idx)
+    .map((x) => x.item);
+}
 
 /** A relative "how long ago" label from an ISO timestamp — "just now", "5m",
  *  "3h", "2d", "3w", else an absolute short date. Null timestamp → null. */
@@ -174,9 +285,11 @@ export default function InboxPane() {
   // Selected kind facets — comma-joined kind ids (a QueueFilterBar-style
   // per-kind narrowing). Empty ⇒ all kinds.
   const [kindsParam, setKindsParam] = useQueryState('opck', parseAsString.withDefault(''));
-  // Filter panel open-state (the kind-facet chips are behind the collapsed
-  // "Filter" trigger, like the Queue's).
-  const [filtersOpen, setFiltersOpen] = useQueryState('opcf', parseAsBoolean.withDefault(false));
+  // Sort order over the filtered set (WI-40982).
+  const [sort, setSort] = useQueryState(
+    'opcsort',
+    parseAsStringLiteral(INBOX_SORT_IDS).withDefault(DEFAULT_INBOX_SORT),
+  );
   // The "chat-grade session context" popup (P-007): which agent's live session
   // to show, keyed by ownerAgentId.
   const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
@@ -290,8 +403,6 @@ export default function InboxPane() {
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [scoped]);
 
-  const activeFilterCount = selectedKinds.size + (q ? 1 : 0);
-
   // Best-effort friendly label for the SessionChatModal title.
   const chatOwnerLabel = useMemo(
     () => scoped.find((i) => i.ownerAgentId === chatOwner)?.ownerLabel ?? null,
@@ -319,27 +430,14 @@ export default function InboxPane() {
       if (q && !searchHaystack(i).includes(q)) return false;
       return true;
     });
-    // Stable sort: decisions on top, then alerts; within a tier, newest first
-    // (an item with no occurredAt keeps its server order via the idx tiebreak).
-    const ordered = filtered
-      .map((item, idx) => ({ item, idx }))
-      .sort((a, b) => {
-        const tierDelta = TIER_RANK[effectiveTier(a.item)] - TIER_RANK[effectiveTier(b.item)];
-        if (tierDelta !== 0) return tierDelta;
-        const at = a.item.occurredAt ? new Date(a.item.occurredAt).getTime() : NaN;
-        const bt = b.item.occurredAt ? new Date(b.item.occurredAt).getTime() : NaN;
-        const aok = Number.isFinite(at);
-        const bok = Number.isFinite(bt);
-        if (aok && bok && bt !== at) return bt - at; // newest first
-        if (aok !== bok) return aok ? -1 : 1; // dated before undated
-        return a.idx - b.idx;
-      })
-      .map((x) => x.item);
+    // Sort runs LAST, over the already-filtered set (WI-40982), so changing the
+    // order can never re-admit a row the tier/kind/search filters excluded.
+    const ordered = sortInboxItems(filtered, sort);
     if (selectedItem && !ordered.some((item) => item.id === selectedItem.id)) {
       return [selectedItem, ...ordered];
     }
     return ordered;
-  }, [scoped, filter, selectedKinds, q, selectedItem]);
+  }, [scoped, filter, selectedKinds, q, selectedItem, sort]);
 
   // Virtualize the row list (WI-5339): even scoped, the inbox can hold many rows.
   const rowVirtualizer = useVirtualizer({
@@ -417,19 +515,28 @@ export default function InboxPane() {
             </button>
           ) : null}
         </div>
-        <button
-          type="button"
-          className={`op-inbox__filter-toggle${filtersOpen ? ' is-open' : ''}`}
-          aria-expanded={filtersOpen}
-          data-testid="inbox-filter-toggle"
-          onClick={() => void setFiltersOpen(!filtersOpen)}
-        >
-          <SlidersHorizontal size={13} aria-hidden="true" />
-          <span>Kinds</span>
-          {activeFilterCount > 0 ? (
-            <span className="op-inbox__filter-active">{activeFilterCount}</span>
-          ) : null}
-        </button>
+        {/* Sort picker — the shared Radix Select (native <select> is banned by
+            _lints/design-primitives), standing where the retired "Kinds" toggle
+            was. A fixed toolbar slot: putting it down with the facet chips
+            would let it move every time the chip row rewraps. */}
+        <Select
+          value={sort}
+          onChange={(v) =>
+            void setSort(v === DEFAULT_INBOX_SORT ? null : (v as InboxSort))
+          }
+          options={INBOX_SORTS.map((s) => ({ value: s.id, label: s.label }))}
+          ariaLabel="Sort inbox"
+          testId="inbox-sort"
+          triggerClassName="op-inbox__sort"
+          align="end"
+          triggerChildren={
+            <>
+              <ArrowUpDown size={13} aria-hidden="true" />
+              <span className="op-inbox__sort-label">{inboxSortLabel(sort)}</span>
+              <ChevronDown size={11} aria-hidden="true" />
+            </>
+          }
+        />
       </div>
 
       <div className="op-inbox__chips" aria-label="Inbox filter">
@@ -448,7 +555,9 @@ export default function InboxPane() {
         ))}
       </div>
 
-      {filtersOpen && kindFacets.length > 0 ? (
+      {/* Always open (WI-40982) — no disclosure, no toggle. Still conditional on
+          HAVING facets: an empty scoped feed has no kinds to chip. */}
+      {kindFacets.length > 0 ? (
         <div className="op-inbox__facets" aria-label="Filter by kind">
           {selectedKinds.size > 0 ? (
             <button

@@ -61,6 +61,30 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: rosterData.value, loading: false, error: null, invalidate: vi.fn() }),
 }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
+// The sort picker is the shared Radix Select (design-primitives allowlists ZERO
+// native <select>s in app code). Radix's popup does not open under jsdom, so
+// stand in a native <select> carrying the SAME testId + aria-label — the same
+// seam GoalProposalCard/FleetLaunchRow/PlanFilters already use.
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({ value, onChange, options, ariaLabel, testId }: {
+    value: string;
+    onChange: (v: string) => void;
+    options: Array<{ value: string; label: React.ReactNode }>;
+    ariaLabel?: string;
+    testId?: string;
+  }) => (
+    <select
+      aria-label={ariaLabel}
+      data-testid={testId}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  ),
+}));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-1' }));
 // Keep bucketOf real (buildGlanceRows uses it) — only stub the data hook + the write.
 vi.mock('@/app/admin/plans/plans-api', async (orig) => ({
@@ -132,7 +156,7 @@ function daysAgo(days: number): string {
 }
 
 describe('PlansPane', () => {
-  it("renders the Inbox-style masthead/count and keeps filters collapsed by default (P-020)", () => {
+  it("renders the Inbox-style masthead/count and shows the filter row EXPANDED by default, with no toggle (WI-40982)", () => {
     planListData.value = {
       plans: [
         plan({ slug: "p-active", title: "Active plan" }),
@@ -146,13 +170,20 @@ describe('PlansPane', () => {
     expect(
       screen.getByTestId("plans-pane-count").getAttribute("aria-label"),
     ).toBe("1 plans shown");
-    expect(screen.queryByTestId("plans-pane-filters")).toBeNull();
 
-    const toggle = screen.getByTestId("plans-pane-filter-toggle");
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.getAttribute("aria-controls")).toBe("plans-pane-filters");
-    fireEvent.click(toggle);
-    expect(setters.plFilters).toHaveBeenCalledWith(true);
+    // Owner ask 2026-08-23: filters are ALWAYS open. Both halves are pinned —
+    // the row present AND the disclosure button gone — because a regression that
+    // restored the button would otherwise still satisfy a presence-only check.
+    const filters = screen.getByTestId("plans-pane-filters");
+    expect(filters).toBeTruthy();
+    expect(screen.getByTestId("plans-pane-finished-toggle")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "triggered" })).toBeTruthy();
+    expect(screen.queryByTestId("plans-pane-filter-toggle")).toBeNull();
+    // …and nothing else claims to control it either (a leftover aria-controls
+    // pointing at the row would mean some collapsed trigger survived).
+    expect(
+      document.querySelector('[aria-controls="plans-pane-filters"]'),
+    ).toBeNull();
   });
 
   it("clears a populated plan search from the compact search shell (P-020)", () => {
@@ -228,7 +259,6 @@ describe('PlansPane', () => {
       ],
     };
     nuqs.plTrigger = 'triggered';
-    nuqs.plFilters = true;
     render(<PlansPane />);
     expect(screen.queryByText('Plain plan')).toBeNull();
     expect(screen.getByText('Event plan')).toBeTruthy();
@@ -252,7 +282,6 @@ describe('PlansPane', () => {
 
   it('finished toggle flips ?plf', () => {
     planListData.value = { plans: [plan({ slug: 'p1' })] };
-    nuqs.plFilters = true;
     render(<PlansPane />);
     fireEvent.click(screen.getByTestId('plans-pane-finished-toggle'));
     expect(setters.plf).toHaveBeenCalledWith(true);

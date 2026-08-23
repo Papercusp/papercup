@@ -9,6 +9,9 @@
  *   - ACTIVE plans only by default (bucketOf ∈ draft/ready/running); one
  *     search box; ONE "show finished" toggle. None of the Create dock's 11
  *     filter facets — authoring/power-filtering stays in /adv Create.
+ *   - A sort picker (WI-40982) whose orders run over the ALREADY-FILTERED set:
+ *     buildGlanceRows filters first and sorts last, so changing the sort never
+ *     changes WHICH plans are shown, only their order.
  *   - Every row answers "does this need me?" without opening it: a needs-you
  *     badge (decision-tier attention count), a live-agents count, item
  *     progress (done/total), and last-activity recency.
@@ -25,15 +28,32 @@
  *     roster reads (active entries' currentPlanSlug).
  *
  * State lives in the URL (nuqs) so the pane is deep-linkable and
- * agent-driveable: `?plq` search, `?plf` show-finished, `?plFilters` filter
- * disclosure, `?pplan` popup plan, `?ppv` popup tab (see PlanPopupModal).
+ * agent-driveable: `?plq` search, `?plf` show-finished, `?plTrigger` trigger
+ * facet, `?plSort` sort order, `?pplan` popup plan, `?ppv` popup tab (see
+ * PlanPopupModal).
+ *
+ * The filter row is ALWAYS OPEN (owner ask 2026-08-23, WI-40982). The old
+ * `?plFilters` disclosure and its "Filters" toggle button are GONE: a two-facet
+ * filter set costs less to show than a button that hides it, and the toolbar
+ * slot the toggle vacated is exactly where the sort picker belongs — a fixed
+ * position that cannot drift as facet chips wrap. A stale `?plFilters=…` deep
+ * link is inert (the row it used to reveal is already open).
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Archive, ChevronRight, ClipboardList, Search, SlidersHorizontal, X } from 'lucide-react';
+import {
+  Archive,
+  ArrowUpDown,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  Search,
+  X,
+} from 'lucide-react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
@@ -51,6 +71,7 @@ import {
   PLAN_TRIGGER_FILTERS,
   type PlanTriggerFilter,
 } from '@/app/admin/plans/plan-filtering';
+import { comparePlans, type PlanSort } from '@/app/admin/plans/plan-sorting';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import PlanPopupModal from './PlanPopupModal';
@@ -148,8 +169,78 @@ export interface PlanGlanceRow {
   liveAgents: number;
 }
 
+/**
+ * Sort orders this pane offers (WI-40982). Two of them are PANE-LOCAL because
+ * they rank by data the shared plan comparator cannot see — `needsYou` comes
+ * from the attention feed and `liveAgents` from the sessions roster, neither of
+ * which is a field on PlanListRow. Every other order is DELEGATED to
+ * `comparePlans` rather than re-derived here, so "Recently updated" means the
+ * same thing in this pane as it does in the /adv Create dock (and the
+ * undated-sorts-last and stable-tiebreak rules come along for free).
+ */
+const DELEGATED_SORTS = [
+  'updated-desc',
+  'updated-asc',
+  'created-desc',
+  'progress',
+  'title',
+] as const;
+type DelegatedSort = (typeof DELEGATED_SORTS)[number];
+
+/** Compile-time pin: every delegated id must still BE a `PlanSort`. Renaming one
+ *  upstream fails here instead of silently falling through to the default sort. */
+const _DELEGATED_ARE_PLAN_SORTS: readonly PlanSort[] = DELEGATED_SORTS;
+void _DELEGATED_ARE_PLAN_SORTS;
+
+export type PlansPaneSort = 'needs' | 'live' | DelegatedSort;
+
+export const PLANS_PANE_SORTS: ReadonlyArray<{ id: PlansPaneSort; label: string }> = [
+  { id: 'needs', label: 'Needs you' },
+  { id: 'live', label: 'Live agents' },
+  { id: 'updated-desc', label: 'Recently updated' },
+  { id: 'updated-asc', label: 'Oldest updated' },
+  { id: 'created-desc', label: 'Recently created' },
+  { id: 'progress', label: 'Progress' },
+  { id: 'title', label: 'Title A–Z' },
+];
+
+export const PLANS_PANE_SORT_IDS: PlansPaneSort[] = PLANS_PANE_SORTS.map((s) => s.id);
+
+/** The default order — needs-you first, then most recently active. */
+export const DEFAULT_PLANS_PANE_SORT: PlansPaneSort = 'needs';
+
+export function plansPaneSortLabel(sort: PlansPaneSort): string {
+  return PLANS_PANE_SORTS.find((s) => s.id === sort)?.label ?? sort;
+}
+
+/** Comparator for one glance-row order. Pure — exported for unit tests. */
+export function compareGlanceRows(
+  sort: PlansPaneSort,
+): (a: PlanGlanceRow, b: PlanGlanceRow) => number {
+  // Shared tail for the two pane-local orders: within an equal rank, the most
+  // recently active plan reads first (what the pane has always done).
+  const byRecency = comparePlans('updated-desc');
+  switch (sort) {
+    case 'needs':
+      return (a, b) => b.needsYou - a.needsYou || byRecency(a.plan, b.plan);
+    case 'live':
+      // Busiest plans first; a tie falls back to the needs-you read, so the
+      // "does this need me?" signal is never buried by a quiet plan.
+      return (a, b) =>
+        b.liveAgents - a.liveAgents || b.needsYou - a.needsYou || byRecency(a.plan, b.plan);
+    default: {
+      const cmp = comparePlans(sort);
+      return (a, b) => cmp(a.plan, b.plan);
+    }
+  }
+}
+
 /** Filter + decorate + sort the raw plan list into the glance rows.
- *  Pure — exported for unit tests. */
+ *  Pure — exported for unit tests.
+ *
+ *  ORDER OF OPERATIONS is the contract (WI-40982): every filter runs first and
+ *  the sort runs last, over whatever survived. A sort can therefore never
+ *  re-admit a plan the search/finished/trigger facets excluded. */
 export function buildGlanceRows(opts: {
   plans: readonly PlanListRow[];
   query: string;
@@ -157,6 +248,7 @@ export function buildGlanceRows(opts: {
   needsYouByPlan: ReadonlyMap<string, number>;
   liveByPlan: ReadonlyMap<string, number>;
   triggerFilter?: PlanTriggerFilter;
+  sort?: PlansPaneSort;
 }): PlanGlanceRow[] {
   const q = opts.query.trim().toLowerCase();
   const rows: PlanGlanceRow[] = [];
@@ -176,12 +268,7 @@ export function buildGlanceRows(opts: {
       liveAgents: opts.liveByPlan.get(plan.slug) ?? 0,
     });
   }
-  rows.sort((a, b) => {
-    if (a.needsYou !== b.needsYou) return b.needsYou - a.needsYou;
-    const au = a.plan.updated ? Date.parse(a.plan.updated) : 0;
-    const bu = b.plan.updated ? Date.parse(b.plan.updated) : 0;
-    return bu - au;
-  });
+  rows.sort(compareGlanceRows(opts.sort ?? DEFAULT_PLANS_PANE_SORT));
   return rows;
 }
 
@@ -193,9 +280,11 @@ interface RosterPayloadRow {
 export default function PlansPane() {
   const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
   const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
-  const [filtersOpen, setFiltersOpen] = useQueryState(
-    'plFilters',
-    parseAsBoolean.withDefault(false),
+  const [sort, setSort] = useQueryState(
+    'plSort',
+    parseAsStringEnum<PlansPaneSort>([...PLANS_PANE_SORT_IDS]).withDefault(
+      DEFAULT_PLANS_PANE_SORT,
+    ),
   );
   const [triggerFilter, setTriggerFilter] = useQueryState(
     'plTrigger',
@@ -265,12 +354,12 @@ export default function PlansPane() {
         needsYouByPlan,
         liveByPlan,
         triggerFilter,
+        sort,
       }),
-    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter],
+    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter, sort],
   );
 
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
-  const activeFilterCount = Number(showFinished) + Number(triggerFilter !== 'all');
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
   // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
@@ -367,67 +456,75 @@ export default function PlansPane() {
             </button>
           ) : null}
         </label>
-        <button
-          type="button"
-          className={`plans-pane__filter-toggle${filtersOpen ? " is-open" : ""}`}
-          aria-expanded={filtersOpen}
-          aria-controls="plans-pane-filters"
-          onClick={() => void setFiltersOpen(filtersOpen ? null : true)}
-          data-testid="plans-pane-filter-toggle"
-        >
-          <SlidersHorizontal size={13} aria-hidden="true" /> Filters
-          {activeFilterCount > 0 ? (
-            <span className="plans-pane__filter-active">
-              {activeFilterCount}
-            </span>
-          ) : null}
-        </button>
+        {/* Sort picker — the shared Radix Select (native <select> is banned by
+            _lints/design-primitives). It sits in the slot the deleted "Filters"
+            toggle vacated, so it holds a FIXED position: parking it in the
+            filter row below would let it drift sideways as facet chips wrap. */}
+        <Select
+          value={sort}
+          onChange={(v) =>
+            void setSort(
+              v === DEFAULT_PLANS_PANE_SORT ? null : (v as PlansPaneSort),
+            )
+          }
+          options={PLANS_PANE_SORTS.map((s) => ({ value: s.id, label: s.label }))}
+          ariaLabel="Sort plans"
+          testId="plans-pane-sort"
+          triggerClassName="plans-pane__sort"
+          align="end"
+          triggerChildren={
+            <>
+              <ArrowUpDown size={13} aria-hidden="true" />
+              <span className="plans-pane__sort-label">
+                {plansPaneSortLabel(sort)}
+              </span>
+              <ChevronDown size={11} aria-hidden="true" />
+            </>
+          }
+        />
       </div>
 
-      {filtersOpen ? (
-        <div
-          id="plans-pane-filters"
-          className="plans-pane__filters"
-          data-testid="plans-pane-filters"
+      {/* Always open (WI-40982) — no disclosure, no toggle. */}
+      <div
+        id="plans-pane-filters"
+        className="plans-pane__filters"
+        data-testid="plans-pane-filters"
+      >
+        <Tooltip
+          label={
+            showFinished
+              ? "Hide finished plans"
+              : "Also show shipped / superseded plans"
+          }
         >
-          <Tooltip
-            label={
-              showFinished
-                ? "Hide finished plans"
-                : "Also show shipped / superseded plans"
-            }
+          <button
+            type="button"
+            className={`plans-pane__finished-toggle${showFinished ? " is-on" : ""}`}
+            onClick={() => void setShowFinished(showFinished ? null : true)}
+            aria-pressed={showFinished}
+            data-testid="plans-pane-finished-toggle"
           >
+            Finished
+          </button>
+        </Tooltip>
+        <div
+          className="plans-pane__trigger-filter"
+          role="group"
+          aria-label="Plan trigger type"
+        >
+          {PLAN_TRIGGER_FILTERS.map((value) => (
             <button
+              key={value}
               type="button"
-              className={`plans-pane__finished-toggle${showFinished ? " is-on" : ""}`}
-              onClick={() => void setShowFinished(showFinished ? null : true)}
-              aria-pressed={showFinished}
-              data-testid="plans-pane-finished-toggle"
+              className={`plans-pane__trigger-chip${triggerFilter === value ? " is-on" : ""}`}
+              aria-pressed={triggerFilter === value}
+              onClick={() => void setTriggerFilter(value === "all" ? null : value)}
             >
-              Finished
+              {value}
             </button>
-          </Tooltip>
-          <div
-            className="plans-pane__trigger-filter"
-            role="group"
-            aria-label="Plan trigger type"
-          >
-            {PLAN_TRIGGER_FILTERS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`plans-pane__trigger-chip${triggerFilter === value ? " is-on" : ""}`}
-                aria-pressed={triggerFilter === value}
-                onClick={() =>
-                  void setTriggerFilter(value === "all" ? null : value)
-                }
-              >
-                {value}
-              </button>
-            ))}
-          </div>
+          ))}
         </div>
-      ) : null}
+      </div>
 
       {planList.loading && !plans ? (
         <div className="plans-pane__empty">Loading plans…</div>
