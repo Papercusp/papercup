@@ -650,18 +650,112 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     id: 'instagram',
     label: 'Instagram',
     wave: 'B',
-    verifiedAt: null,
-    sources: [],
-    auth: { mode: 'app-review', scopes: [] },
+    verifiedAt: '2026-08-23',
+    sources: [
+      'https://developers.facebook.com/docs/instagram-platform/overview',
+      'https://developers.facebook.com/docs/instagram-platform/content-publishing',
+      'https://developers.facebook.com/docs/instagram-platform/comment-moderation',
+      'https://developers.facebook.com/docs/instagram-platform/reference/instagram-media',
+      'https://developers.facebook.com/docs/permissions',
+      'https://developers.facebook.com/docs/graph-api/overview/rate-limiting',
+    ],
+    auth: {
+      mode: 'app-review',
+      // FLAVOR CHOICE, not an omission (D-030). Two configurations exist and they
+      // are separate app identities: "Instagram API with Business Login for
+      // Instagram" (graph.instagram.com, an Instagram User token, no Facebook
+      // Page) and "Instagram API with Facebook Login for Business"
+      // (graph.facebook.com, a Facebook User or Page token, Page "Required").
+      // We take the Facebook Login flavor because the Page half is already
+      // landed and reviewed under P-016, and because P-018 (Threads) is
+      // sequenced on sharing that same Meta app identity and review surface.
+      // These scopes are therefore the instagram_* family, NOT the
+      // instagram_business_* family, which belongs to the other flavor.
+      scopes: [
+        'instagram_basic',
+        'instagram_content_publish',
+        'instagram_manage_comments',
+        'pages_show_list',
+        'pages_read_engagement',
+      ],
+      notes:
+        'D-024 CHECK RAN AND PASSED HERE, which is worth recording as a result rather than a silence: every scope string named by Instagram\'s tutorial pages WAS found in the permissions reference, unlike Facebook Pages where two named permissions did not exist at all. Same instrument, opposite outcome — and the reference confirmed the ten other candidates too, so the search was working when it failed to contradict anything. `ads_management` / `ads_read` are documented as needed only "if the user got a Page role through Business Manager" and are deliberately NOT requested: unjustifiable privilege at review for a capability we do not use, the same reasoning that excluded pages_manage_metadata for Pages. ACCOUNT SHAPE is a hard precondition, not a nicety: "your app users must have an Instagram professional account" (business or creator), it must be linked to a Facebook Page, and "your app user must also be able to perform admin-equivalent tasks on the linked Facebook Page". Advanced Access — required for any account we do not own — "requires App Review and Business Verification".',
+    },
     read: {
       transport: 'poll-cursor',
-      replay: 'poll-cursor',
+      replay: 'watermark-rescan',
       backfill:
-        'Comment webhooks are unusable without public ingress (D-003), so this is poll+cursor. If measured poll latency cannot serve comment triage, that measurement is the documented trigger to reopen the Svix decision.',
+        'Re-read each watched media\'s comments from the top and filter client-side against a stored timestamp watermark. D-025 REVERIFIED INDEPENDENTLY FOR INSTAGRAM rather than inherited from Facebook: the IG Media reference documents the /comments edge as one line ("Represents a collection of Instagram Comments on an Instagram Media object") and states NO paging cursors, NO ordering, and NO since/until/after filter — its only documented query parameters are access_token, fields and comment_enabled. An undocumented ordering is not a chronological guarantee, so the adapter filters every item and never early-exits.',
+      streams: {
+        comments: {
+          transport: 'poll-cursor',
+          replay: 'watermark-rescan',
+          backfill:
+            'GET /{ig-media-id}/comments — comments hang off MEDIA, and no account-wide comments edge is documented, so this is one call PER WATCHED MEDIA and its cost scales with the watch window rather than with comment volume (the same shape as the Pages comments stream, D-026, reached from Instagram\'s own reference). The comment-moderation page recommends webhooks "to prevent rate limiting", which D-003 declines for lack of public ingress — so the poll cost here is a known, accepted consequence of that decision, not an oversight.',
+        },
+      },
     },
-    write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
-    limits: {},
-    blockedOn: 'owner: Meta app review',
+    write: {
+      verbs: ['reply', 'post'],
+      // Documented nowhere: no idempotency key, client token, request id or dedup
+      // parameter. A retried publish creates a second post, exactly as on Pages.
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
+      notes:
+        'TWO SHAPES, NOT ONE. A reply is a single call — POST /{ig-comment-id}/replies. A POST is TWO — POST /{ig-id}/media creates a container, POST /{ig-id}/media_publish publishes it — and "The container was not published within 24 hours and has expired." THE TWO-STEP MODEL IS ALSO THE ONLY RECOVERY PATH, and it is strictly better than Pages\': when media_publish times out without returning a media id, the container\'s own `status_code` distinguishes an already-published call from a lost one (GET /{ig-container-id}?fields=status_code), where Pages\' single-call /feed leaves a timeout genuinely ambiguous. That is a DETECTION affordance, not idempotency — the retry still has to be gated on the probe, and the vendor\'s own polling guidance is "once per minute, for no more than 5 minutes".',
+    },
+    limits: {
+      // TWO NON-FUNGIBLE REGIMES AT ONCE — the fact that forced D-030. Instagram
+      // states a moving CALL budget and a fixed PUBLISHING cap, and neither can
+      // be spent on the other's behalf.
+      budgetHeaders: ['X-Business-Use-Case-Usage'],
+      dynamicQuota: {
+        // NOTE THE DRIVER, and do not read across from Facebook: the multiplier
+        // is 4800 on BOTH platforms and the thing it multiplies is DIFFERENT.
+        formula: 'Calls within 24 hours = 4800 * Number of Impressions',
+        driver:
+          'the number of times any content from the app user\'s Instagram professional account has entered a person\'s screen within the last 24 hours',
+        usageHeader: 'X-Business-Use-Case-Usage',
+        // Verified against the header's own documented `type` list, which reads
+        // "ads_insights, ads_management, custom_audience, instagram, leadgen,
+        // messenger, or pages" — so an Instagram adapter reading the `pages`
+        // rows would be reading another product's budget.
+        usageType: 'instagram',
+        // The formula at one impression. The floor NUMBER coincides with
+        // Facebook's and the reasoning does not: an account with a single
+        // impression is a far smaller thing than one with a single engaged user,
+        // so this is the same arithmetic on a different quantity, not a copy.
+        assumedDailyFloor: 4800,
+        // 80002 is Instagram's OWN BUC throttle code. Pages' 80001/32 are
+        // documented as "Page calls made with a Page or System User access
+        // token" and "Page calls made with a User access token" — different
+        // product, and carrying them here would be inherited-not-verified.
+        throttleCodes: [80002],
+        retryExtendsBlock: true,
+      },
+      buckets: {
+        publishing: {
+          appliesTo: 'POST /{ig-id}/media_publish — organic feed posts (a carousel counts as one)',
+          // THE VENDOR CONTRADICTS ITSELF ON THIS PAGE, so the lower figure is
+          // taken and the disagreement is recorded rather than resolved by
+          // preference. Under "Rate Limit": "Instagram accounts are limited to
+          // 100 API-published posts within a 24-hour moving period." Under the
+          // carousel limitations on the SAME page: "Accounts are limited to 50
+          // published posts within a 24-hour period." Both sentences add
+          // "Carousels count as a single post", so they are describing one
+          // limit, not two. 50 is the safe reading; and unlike the call budget,
+          // the real figure is QUERYABLE at runtime — see notes.
+          perDay: 50,
+          unit: 'calls',
+          verbs: ['post'],
+          notes:
+            'Call-capped, not unit-capped: the cap counts PUBLISHES regardless of media size, and "This limit is enforced on the POST /{ig-id}/media_publish endpoint" — so container creation and status polling do not draw on it. `reply` is deliberately NOT declared here: a comment reply is not a published post and the cap is documented on media_publish alone, so replies fall to the call budget instead.',
+        },
+      },
+      notes:
+        'THE PUBLISHING CAP IS QUERYABLE AND THE CALL BUDGET IS NOT — the sharpest operational difference from Facebook Pages. GET /{ig-id}/content_publishing_limit reports "app user\'s current publishing rate limit usage" as an ABSOLUTE figure, so the 100-vs-50 documentation contradiction is resolvable at runtime by asking; the 50 above is only the compile-time floor to act on before the first answer arrives. The call budget has no such endpoint: X-Business-Use-Case-Usage reports percentages only, which is why `assumedDailyFloor` exists at all (D-029). ⚠ ONE UNRESOLVED AMBIGUITY, recorded rather than smoothed over: the Instagram overview states the call formula over "a rolling 24 hour window", while the header reference describes `call_count` as "a whole number expressing the percentage of allowed calls made by your app over a rolling one hour period". The two windows cannot both be right. It does not change the cap arithmetic — a percentage of the allowance is a headroom fraction either way — but it does change how fast headroom recovers, so no code may assume a recovery rate from it. ⚠ A THROTTLE MUST NOT BE RETRIED: "When the limit has been reached, stop making API calls. Continuing to make calls will continue to increase your call count, which will increase the time before calls will be successful again."',
+    },
+    blockedOn: 'owner: Meta app review (Advanced Access requires App Review and Business Verification; multi-week lead time)',
   },
 
   threads: {

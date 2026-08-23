@@ -402,19 +402,29 @@ export function socialStormPolicyFor(
   verb: SocialQuotaVerb = 'read',
   observation?: SocialQuotaObservation,
 ): SocialStormPolicy {
-  // D-028 outranks every compiled-in figure BY CONSTRUCTION: a declared
-  // `dynamicQuota` is the row saying that any number it also carries describes a
-  // budget that moves. Checking buckets or requestsPerMinute first would let a
-  // stale constant win over the field added to overrule it.
-  if (row.limits.dynamicQuota) return dynamicQuotaPolicy(row.limits.dynamicQuota, observation);
-
-  // D-020: a verb's own non-fungible bucket outranks any aggregate figure. A cap
-  // derived from `quotaUnitsPerDay` alone is not merely imprecise for a
-  // call-capped verb, it is calibrated against an unrelated quantity.
+  // ORDERING, AND THE ONE CASE THAT LOOKS LIKE A CONFLICT AND IS NOT (D-030).
+  //
+  // A declared `dynamicQuota` outranks a compiled-in FIGURE — that is what the
+  // field is for: the row saying any constant it also carries describes a budget
+  // that moves. But a declared BUCKET is not a competing estimate of that same
+  // budget; it is a DIFFERENT, non-fungible one. Instagram states both at once:
+  // a call budget of "4800 * Number of Impressions" AND a publishing cap of
+  // ~50 posts/24h enforced specifically on `media_publish`. A read-heavy day
+  // cannot consume publishing quota and vice versa, so whichever runs out first
+  // is the real bound on ITS OWN verb.
+  //
+  // So the precedence is per-verb: a bucket that DECLARES this verb wins,
+  // because it is a hard cap on exactly this operation. Every verb no bucket
+  // declares falls to the dynamic quota — never to the tightest-bucket fallback,
+  // which would cap a read against a publishing limit it does not draw on.
   const buckets = row.limits.buckets;
+  const dynamicQuota = row.limits.dynamicQuota;
   if (buckets) {
     const picked = selectQuotaBucket(buckets, verb);
-    if (picked) {
+    // D-020: a verb's own non-fungible bucket outranks any aggregate figure. A cap
+    // derived from `quotaUnitsPerDay` alone is not merely imprecise for a
+    // call-capped verb, it is calibrated against an unrelated quantity.
+    if (picked && !(dynamicQuota && picked.fallbackToTightest)) {
       const { name, bucket, fallbackToTightest } = picked;
       const spendPerRun = assumedSpendPerRun(bucket, verb);
       const runsPerDay = Math.floor(bucket.perDay / spendPerRun);
@@ -476,6 +486,9 @@ export function socialStormPolicyFor(
       };
     }
   }
+
+  // D-028: the allowance is not a constant, so it outranks anything compiled in.
+  if (dynamicQuota) return dynamicQuotaPolicy(dynamicQuota, observation);
 
   const rpm = row.limits.requestsPerMinute;
 

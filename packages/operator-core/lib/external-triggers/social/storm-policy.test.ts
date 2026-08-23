@@ -560,11 +560,117 @@ describe('P-016 storm policy — an allowance that is not a constant', () => {
   });
 
   it('a declared dynamic quota OUTRANKS a fixed number on the same row', () => {
+    // (see also the D-030 block below, where a declared BUCKET does NOT lose to
+    // a dynamic quota — the two cases differ and the distinction is the ruling.)
     // Ordering, asserted. A row carrying both is exactly the case where a stale
     // constant could win over the field added to overrule it — and it would
     // present as a working cap, just one calibrated against a budget that no
     // longer applies.
     const both = { ...facebook, limits: { ...facebook.limits, requestsPerMinute: 600 } };
     expect(socialStormPolicyFor(both).basis.kind).toBe('dynamic-quota');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* P-017 / D-030 — a row stating TWO non-fungible budgets at once             */
+/* -------------------------------------------------------------------------- */
+
+describe('P-017 storm policy — a dynamic call budget AND a fixed publishing cap', () => {
+  const instagram = rowFor('instagram');
+
+  it('the registry premise: instagram declares BOTH, and the publishing bucket claims only `post`', () => {
+    // If a later edit makes this row state only one of the two, every assertion
+    // below stops testing what it says it tests — so the premise fails loudly
+    // here rather than passing vacuously there.
+    expect(instagram.limits.dynamicQuota).toBeDefined();
+    expect(instagram.limits.buckets?.publishing).toBeDefined();
+    expect(instagram.limits.buckets!.publishing.verbs).toEqual(['post']);
+    expect(instagram.limits.buckets!.publishing.unit).toBe('calls');
+  });
+
+  it('`post` is capped by the PUBLISHING bucket, not by the call budget', () => {
+    const policy = socialStormPolicyFor(instagram, 'post');
+    expect(policy.basis).toMatchObject({ kind: 'quota-bucket', bucket: 'publishing', unit: 'calls' });
+  });
+
+  it('`read` and `reply` fall to the CALL budget — a read is not capped by a publishing limit', () => {
+    // The failure this prevents is silent and severe in the wrong direction: 50
+    // publishes/day against a 10-call run derives ~5 runs/day, which would
+    // throttle comment reading to near-nothing for a reason that has nothing to
+    // do with reading.
+    for (const verb of ['read', 'reply'] as const) {
+      expect(socialStormPolicyFor(instagram, verb).basis.kind).toBe('dynamic-quota');
+    }
+  });
+
+  it('CONTROL: the pre-D-030 ordering (dynamic quota unconditionally first) really would differ', () => {
+    // This block exists because D-029 originally said the dynamic quota outranks
+    // buckets UNCONDITIONALLY, and Instagram falsified it. Keeping the old rule
+    // modelled here means the amendment cannot quietly regress into the version
+    // that was wrong.
+    const dynamicFirst = socialStormPolicyFor(
+      { ...instagram, limits: { ...instagram.limits, buckets: undefined } },
+      'post',
+    );
+    const actual = socialStormPolicyFor(instagram, 'post');
+
+    expect(dynamicFirst.basis.kind).toBe('dynamic-quota');
+    expect(actual.basis.kind).toBe('quota-bucket');
+
+    // ...and they are not merely differently-labelled. NOTE WHICH DIMENSION
+    // DIFFERS — an earlier version of this control compared `maxRuns` and
+    // passed-as-failing, because BOTH paths derive a cap of 1. The cap is the
+    // wrong quantity: what a widened window changes is the RATE. Comparing the
+    // wrong dimension would have made this control vacuous while looking strict.
+    const perDay = (p: { maxRuns: number; windowSeconds: number }) =>
+      p.maxRuns * (86_400 / p.windowSeconds);
+
+    expect(perDay(dynamicFirst)).toBe(288); // one run per 5-minute window
+    // The derived rate lands exactly on the vendor's stated publishing cap,
+    // which is the strongest available evidence that it came from that bucket.
+    expect(perDay(actual)).toBe(instagram.limits.buckets!.publishing.perDay);
+    expect(perDay(actual)).toBeLessThan(perDay(dynamicFirst));
+  });
+
+  it('the publishing cap is the LOWER of the two figures the vendor states', () => {
+    // The page says 100 in one place and 50 in another, about the same limit.
+    // Taking the smaller is the recorded resolution; if someone later "fixes" it
+    // upward, that is a decision to re-argue, not a typo to correct silently.
+    expect(instagram.limits.buckets!.publishing.perDay).toBe(50);
+  });
+
+  it('YouTube is unaffected: with no dynamic quota, the tightest-bucket fallback still applies', () => {
+    // The amendment narrowed the bucket path with a condition. This asserts the
+    // narrowing is conditional on a dynamic quota EXISTING, rather than having
+    // quietly disabled the fallback for every platform.
+    const youtube = rowFor('youtube');
+    expect(youtube.limits.dynamicQuota).toBeUndefined();
+    expect(socialStormPolicyFor(youtube, 'read').basis.kind).toBe('quota-bucket');
+  });
+
+  it('still coalesces rather than dropping, on both of instagram\'s paths', () => {
+    const events = Array.from({ length: 200 }, (_, i) => ({ dedupeKey: `k${i}` }));
+    for (const verb of ['post', 'read'] as const) {
+      const outcome = planCoalesceWithCap(events, socialStormPolicyFor(instagram, verb));
+      expect(outcome.launched.length + outcome.coalesced.length + outcome.held.length).toBe(200);
+    }
+  });
+
+  it('instagram reads its OWN throttle code and header type, not Facebook\'s', () => {
+    // Inherited-not-verified, made mechanical. Pages' codes are 80001/32 and its
+    // header rows are type `pages`; reading either here would be measuring
+    // another product's budget while looking correct.
+    const dq = instagram.limits.dynamicQuota!;
+    expect(dq.throttleCodes).toEqual([80002]);
+    expect(dq.usageType).toBe('instagram');
+
+    const facebook = rowFor('facebook-pages').limits.dynamicQuota!;
+    expect(facebook.throttleCodes).not.toEqual(dq.throttleCodes);
+    expect(facebook.usageType).not.toBe(dq.usageType);
+
+    // Same multiplier, different multiplicand — the coincidence most likely to
+    // be read as a copy-paste.
+    expect(dq.assumedDailyFloor).toBe(facebook.assumedDailyFloor);
+    expect(dq.formula).not.toBe(facebook.formula);
   });
 });
