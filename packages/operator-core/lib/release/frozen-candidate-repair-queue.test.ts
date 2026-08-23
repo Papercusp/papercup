@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+  createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  markFrozenCandidateVerificationRed,
+  markFrozenRepairExhausted,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
   markFrozenRepairStagingMismatch,
@@ -34,7 +37,7 @@ describe('frozen-candidate repair queue', () => {
   it('persists the first red as an unassigned serialized queue without moving C', () => {
     const queue = fresh();
     expect(queue).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'awaiting-fixer',
       candidate: C,
       base: BASE,
@@ -56,6 +59,50 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
+  it('persists C before its first suite, resumes that exact SHA, and transitions red in place', () => {
+    const queue = createFrozenCandidateQueue({
+      candidate: C,
+      base: BASE,
+      worktreePath: ROOT,
+      affectedTestProofGroup: 'initial-gate-run',
+      nowMs: T0,
+    });
+
+    expect(queue).toMatchObject({
+      schemaVersion: 3,
+      phase: 'ready-to-test',
+      candidate: C,
+      repairHead: C,
+      attempts: 0,
+      fixerSpawnId: null,
+      failingTests: [],
+    });
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 1 })).toEqual({
+      kind: 'test-candidate',
+      candidate: C,
+      gateDisposition: 'initial-candidate',
+      runSuite: true,
+      recordVerdict: true,
+    });
+
+    const red = markFrozenCandidateVerificationRed(queue, {
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 2,
+    });
+    expect(red).toMatchObject({
+      phase: 'awaiting-fixer',
+      candidate: C,
+      repairHead: C,
+      attempts: 0,
+      failingTests: ['lib/a.test.ts'],
+    });
+    expect(decideFrozenCandidateRepairQueue(red, { nowMs: T0 + 3 })).toMatchObject({
+      kind: 'dispatch-fixer',
+      repairHead: C,
+      nextAttempt: 1,
+    });
+  });
+
   it('persists the initial proof group and parses legacy or malformed proof state fail-closed', () => {
     const current = createFrozenCandidateRepairQueue({
       candidate: C,
@@ -65,7 +112,7 @@ describe('frozen-candidate repair queue', () => {
       nowMs: T0,
     });
     expect(current).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       affectedTestProofGroup: 'initial-gate-run',
     });
     expect(
@@ -74,13 +121,19 @@ describe('frozen-candidate repair queue', () => {
         schemaVersion: 1,
         affectedTestProofGroup: undefined,
       }),
-    ).toMatchObject({ schemaVersion: 2, affectedTestProofGroup: null });
+    ).toMatchObject({ schemaVersion: 3, affectedTestProofGroup: null });
+    expect(
+      parseFrozenCandidateRepairQueue({
+        ...current,
+        schemaVersion: 2,
+      }),
+    ).toMatchObject({ schemaVersion: 3, affectedTestProofGroup: 'initial-gate-run' });
     expect(
       parseFrozenCandidateRepairQueue({
         ...current,
         affectedTestProofGroup: { corrupt: true },
       }),
-    ).toMatchObject({ schemaVersion: 2, affectedTestProofGroup: null });
+    ).toMatchObject({ schemaVersion: 3, affectedTestProofGroup: null });
   });
 
   it('leaves an absent queue on the existing normal gate path', () => {
@@ -309,7 +362,7 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
-  it('abandons honestly at the attempt bound and allows a fresh tip cut', () => {
+  it('holds the same queue head at the attempt bound and persists the blocked state', () => {
     let queue = fresh();
     for (let attempt = 1; attempt <= DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAttempts; attempt++) {
       queue = markFrozenRepairFixerDispatched(queue, {
@@ -326,21 +379,36 @@ describe('frozen-candidate repair queue', () => {
         nowMs: T0 + attempt * 10 + 2,
       });
     }
-    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 })).toEqual({
-      kind: 'abandon-repair',
+    const decision = decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 });
+    expect(decision).toEqual({
+      kind: 'hold-exhausted',
       reason: 'attempts-exhausted',
       candidate: C,
       repairHead: '3'.repeat(40),
-      allowFreshCandidate: true,
+      gateDisposition: 'blocked',
       runSuite: false,
       recordVerdict: false,
     });
+    if (decision.kind !== 'hold-exhausted') throw new Error('expected attempt exhaustion');
+    queue = markFrozenRepairExhausted(queue, {
+      reason: decision.reason,
+      nowMs: T0 + 101,
+    });
+    expect(queue).toMatchObject({
+      phase: 'blocked',
+      blockedReason: 'attempts-exhausted',
+      candidate: C,
+      repairHead: '3'.repeat(40),
+      fixerSpawnId: null,
+    });
+    expect(parseFrozenCandidateRepairQueue(queue)).toEqual(queue);
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 102 })).toEqual(decision);
   });
 
-  it('abandons at the wall-clock boundary but never discards an already-green head', () => {
+  it('holds at the wall-clock boundary but never blocks an already-green head', () => {
     const expiresAt = T0 + DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAgeMs;
     expect(decideFrozenCandidateRepairQueue(fresh(), { nowMs: expiresAt })).toMatchObject({
-      kind: 'abandon-repair',
+      kind: 'hold-exhausted',
       reason: 'wall-clock-exhausted',
     });
 
@@ -389,7 +457,7 @@ describe('frozen-candidate repair queue', () => {
     expect(parsed).toEqual(raw);
     expect(parsed).not.toBe(raw);
     expect(parsed?.failingTests).not.toBe(raw.failingTests);
-    expect(parseFrozenCandidateRepairQueue({ ...raw, schemaVersion: 3 })).toBeNull();
+    expect(parseFrozenCandidateRepairQueue({ ...raw, schemaVersion: 4 })).toBeNull();
     expect(parseFrozenCandidateRepairQueue({ ...raw, attempts: -1 })).toBeNull();
     expect(parseFrozenCandidateRepairQueue({ ...raw, updatedAtMs: T0 - 1 })).toBeNull();
     expect(
@@ -400,5 +468,20 @@ describe('frozen-candidate repair queue', () => {
         fixerSpawnId: null,
       }),
     ).toBeNull();
+    expect(
+      parseFrozenCandidateRepairQueue({
+        ...raw,
+        phase: 'blocked',
+        blockedReason: undefined,
+      }),
+    ).toBeNull();
+
+    const readyToTest = createFrozenCandidateQueue({
+      candidate: C,
+      base: BASE,
+      worktreePath: ROOT,
+      nowMs: T0,
+    });
+    expect(parseFrozenCandidateRepairQueue(readyToTest)).toEqual(readyToTest);
   });
 });

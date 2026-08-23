@@ -1317,7 +1317,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(String(b.note)).toMatch(/fresh current-quiet-cut candidate/i);
   });
 
-  it('attempts=3 + owner gone predicts abandon-repair and checks the fresh candidate, not stale repairHead', async () => {
+  it('attempts=3 + owner gone holds the exhausted queue and refuses without checking a fresh tip', async () => {
     mockQueue(awaitingFixerQueue(), false);
     const launchSpy = vi.fn(async () => ({
       launched: true,
@@ -1357,19 +1357,25 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({ requiredAncestorSha: REQUIRED }, MAKE_CTX())) as never);
 
-    expect(ancestrySpy).toHaveBeenCalledOnce();
-    expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, CURRENT, expect.any(Function));
-    expect(launchSpy).toHaveBeenCalledWith({ candidate: CURRENT });
+    expect(ancestrySpy).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
     expect(b).toMatchObject({
-      ok: true,
-      requiredAncestor: {
-        candidate: CURRENT,
-        candidateSource: 'current-quiet-cut',
-        containedAtPreflight: true,
-        queueDecision: 'abandon-repair',
-        fixerAlive: false,
+      ok: false,
+      launched: false,
+      reason: 'required_ancestor_unverifiable',
+      required_ancestor: REQUIRED,
+      candidate: null,
+      candidate_source: 'unresolved',
+      queue_decision: 'hold-exhausted',
+      fixer_alive: false,
+      repair_queue: {
+        candidate: 'ed20de6dcb05c0c780437990f7f1070c3a92c853',
+        repairHead: QUEUE_HEAD,
+        attempts: 3,
       },
     });
+    expect(String(b.note)).toMatch(/queue-not-runnable/);
+    expect(String(b.note)).toMatch(/hold-exhausted/);
   });
 
   it('attempts=3 + liveness unknown preserves wait-for-fixer and fails closed without ancestry check or spawn', async () => {

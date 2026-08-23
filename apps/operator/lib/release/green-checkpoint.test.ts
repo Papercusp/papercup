@@ -243,6 +243,59 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
 });
 
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
+  it("persists the immutable candidate before setup or its first suite", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps, calls } = stubDeps(true);
+    let queue: FrozenCandidateRepairQueue | null = null;
+    const trace: string[] = [];
+    const persisted: Array<FrozenCandidateRepairQueue | null> = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      trace.push(`write:${next?.phase ?? "clear"}`);
+      persisted.push(next);
+      queue = next;
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error("a green initial candidate must not prepare a repair worktree");
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error("a green initial candidate must not dispatch a fixer");
+    };
+    deps.setupTree = async (ref) => {
+      trace.push("setup");
+      calls.push(`setup:${ref.slice(0, 7)}`);
+    };
+    deps.runGreen = async () => {
+      trace.push("suite");
+      calls.push("runGreen");
+      return { green: true, summary: "all pass" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: true,
+      candidate,
+      green: true,
+      reason: "advanced",
+    });
+    expect(trace).toEqual(["write:ready-to-test", "setup", "suite", "write:clear"]);
+    expect(persisted[0]).toMatchObject({
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate,
+      repairHead: candidate,
+      base: ready,
+      attempts: 0,
+    });
+    expect(queue).toBeNull();
+  });
+
   it("freezes the first red candidate and does not run or dispatch again while its fixer is live", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -338,7 +391,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const frozen = await commit("b", "2", "frozen candidate");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: "awaiting-fixer",
       candidate: frozen,
       base: ready,
@@ -674,7 +727,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const stagingTip = await commit("c", "3", "later staging work");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: "ready-to-verify",
       candidate: frozen,
       base: ready,
@@ -744,7 +797,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const youngStagingTip = await commit("c", "young", "newer tip after launch target was selected");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: "ready-to-verify",
       candidate: frozen,
       base: ready,
@@ -806,7 +859,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const stagingTip = await commit("b", "different", "canonical staging tip");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: "ready-to-verify",
       candidate: frozen,
       base: ready,
@@ -870,7 +923,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: "ready-to-verify",
       candidate: frozen,
       base: ready,
@@ -1029,6 +1082,87 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(dispatchedHeads).toEqual([repaired]);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(await revParse(repo, "ready")).toBe(ready);
+  });
+
+  it("persists automation exhaustion as blocked and never selects a newer staging tip", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const movingTip = await commit("c", "3", "newer staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 3,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: "dead-fixer",
+      failingTests: ["lib/still-broken.test.ts"],
+    };
+    const { deps, calls } = stubDeps(true);
+    const writes: Array<FrozenCandidateRepairQueue | null> = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      writes.push(next);
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error("an exhausted queue must not prepare a fixer worktree");
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error("an exhausted queue must not dispatch another fixer");
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      throw new Error("an exhausted queue must remain durable");
+    };
+
+    const first = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(first).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      from: ready,
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: {
+        phase: "blocked",
+        blockedReason: "attempts-exhausted",
+        candidate: frozen,
+        repairHead: frozen,
+        attempts: 3,
+      },
+    });
+    expect(first.summary).toContain("refusing to select a newer staging tip");
+    expect(movingTip).not.toBe(frozen);
+    expect(queue).toMatchObject({
+      phase: "blocked",
+      blockedReason: "attempts-exhausted",
+      candidate: frozen,
+      repairHead: frozen,
+    });
+    expect(writes).toHaveLength(1);
+    expect(calls).not.toContain("runGreen");
+    expect(calls).not.toContain("advance");
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
+
+    const resumed = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(resumed).toMatchObject({
+      candidate: frozen,
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: {
+        phase: "blocked",
+        blockedReason: "attempts-exhausted",
+      },
+    });
+    expect(writes).toHaveLength(1);
+    expect(calls).not.toContain("runGreen");
   });
 });
 
