@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { appendFileSync, statSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
@@ -59,6 +59,14 @@ function readJobLogForVerdict(job: BashJob): string {
 export const STRANDED_LOG_TAIL_BYTES = 8_000;
 
 /**
+ * Keep the full body available for a filtered stranded-log read only while it
+ * remains within the same bounded-read ceiling used by verdict inspection. A
+ * larger log still gets its tail, but is never loaded wholesale just to apply
+ * a caller-supplied regex.
+ */
+const MAX_STRANDED_LOG_CONTENT_BYTES = MAX_VERDICT_LOG_BYTES;
+
+/**
  * EI-8855: the in-memory job registry (bash-jobs.ts) assumes "the operator is one
  * long-lived process" — false on a shared dev box where a DIFFERENT agent's
  * routine `systemctl --user restart papercup-*-api.service` (a common, documented
@@ -75,16 +83,50 @@ export const STRANDED_LOG_TAIL_BYTES = 8_000;
  * a proxy for the job's own start time) so the caller can tell a genuine operator
  * restart apart from the job's OWN process dying independently — see
  * `diagnoseStrandedCause`. */
-export type StrandedJobLog = { logPath: string; sizeBytes: number; tail: string; birthtimeMs: number };
+export type StrandedJobLog = {
+  logPath: string;
+  sizeBytes: number;
+  tail: string;
+  /** Full bounded body, present when the spill log fits the read ceiling. */
+  content?: string;
+  birthtimeMs: number;
+};
+
+/** Read only the final bounded tail of a spill log that is too large to retain whole. */
+function readStrandedLogTail(logPath: string, sizeBytes: number): string {
+  const bytesToRead = Math.min(sizeBytes, STRANDED_LOG_TAIL_BYTES);
+  if (bytesToRead <= 0) return '';
+  const buffer = Buffer.alloc(bytesToRead);
+  const fd = openSync(logPath, 'r');
+  let bytesRead = 0;
+  try {
+    while (bytesRead < bytesToRead) {
+      const read = readSync(fd, buffer, bytesRead, bytesToRead - bytesRead, sizeBytes - bytesToRead + bytesRead);
+      if (read === 0) break;
+      bytesRead += read;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return buffer.subarray(0, bytesRead).toString('utf8');
+}
 
 /** Read a known spill-log path without reconstructing it from this worker's stateDir. */
 export function strandedJobLookupAtPath(logPath: string): StrandedJobLog | null {
   try {
     const st = statSync(logPath);
     if (!st.isFile()) return null;
-    const fd = readFileSync(logPath, 'utf8');
-    const tail = fd.length > STRANDED_LOG_TAIL_BYTES ? fd.slice(-STRANDED_LOG_TAIL_BYTES) : fd;
-    return { logPath, sizeBytes: st.size, tail, birthtimeMs: st.birthtimeMs };
+    if (st.size <= MAX_STRANDED_LOG_CONTENT_BYTES) {
+      const content = readFileSync(logPath, 'utf8');
+      const tail = content.length > STRANDED_LOG_TAIL_BYTES ? content.slice(-STRANDED_LOG_TAIL_BYTES) : content;
+      return { logPath, sizeBytes: st.size, tail, content, birthtimeMs: st.birthtimeMs };
+    }
+    return {
+      logPath,
+      sizeBytes: st.size,
+      tail: readStrandedLogTail(logPath, st.size),
+      birthtimeMs: st.birthtimeMs,
+    };
   } catch {
     return null;
   }
@@ -428,10 +470,18 @@ export function isLedgerConfirmedUnobservedDeath(state: string): boolean {
  * Keeping these decisions together prevents the tracking-loss branches from
  * drifting away from the normal BashOutput filter contract.
  */
-export function inspectStrandedJobLog(log: string, filter: string | undefined): StrandedJobLogInspection {
-  const filtered = filterOutputLines(log, filter);
-  const terminal = parseJobLogEndMarker(log);
-  const died = terminal ? null : parseJobLogDiedMarker(log);
+export function inspectStrandedJobLog(
+  log: string | Pick<StrandedJobLog, 'tail' | 'content'>,
+  filter: string | undefined,
+): StrandedJobLogInspection {
+  // A caller asking for a filter needs the whole bounded body so a match before
+  // the retained tail is not silently reported as absent. Without a filter,
+  // preserve the established tail-only recovery contract and memory bound.
+  const body =
+    typeof log === 'string' ? log : filter && log.content !== undefined ? log.content : log.tail;
+  const filtered = filterOutputLines(body, filter);
+  const terminal = parseJobLogEndMarker(body);
+  const died = terminal ? null : parseJobLogDiedMarker(body);
   return {
     terminal,
     ...(died ? { died } : {}),
@@ -667,7 +717,7 @@ export default defineTool({
         (ledgerRow?.logPath ? strandedJobLookupAtPath(ledgerRow.logPath) : null);
       if (stranded || ledgerRow) {
         const strandedLog: StrandedJobLogInspection = stranded
-          ? inspectStrandedJobLog(stranded.tail, args.filter)
+          ? inspectStrandedJobLog(stranded, args.filter)
           : { terminal: null, output: '' };
         const strandedOutput = {
           output_tail: strandedLog.output,

@@ -13,7 +13,13 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { strandedJobAdvice, strandedJobLookup, strandedJobLookupAtPath, STRANDED_LOG_TAIL_BYTES } from './bash_output';
+import {
+  inspectStrandedJobLog,
+  strandedJobAdvice,
+  strandedJobLookup,
+  strandedJobLookupAtPath,
+  STRANDED_LOG_TAIL_BYTES,
+} from './bash_output';
 
 describe('strandedJobAdvice (EI-20219872509843731)', () => {
   it('does not promise that a confined systemd scope survives an operator restart', () => {
@@ -67,6 +73,21 @@ describe('strandedJobLookup (EI-8855)', () => {
     expect(r!.tail.length).toBeLessThanOrEqual(STRANDED_LOG_TAIL_BYTES);
     expect(r!.tail.endsWith('THE_TAIL_MARKER')).toBe(true);
     expect(r!.sizeBytes).toBe(Buffer.byteLength(big, 'utf8'));
+  });
+
+  it('filters a pre-tail match from the bounded full body without changing the returned tail', () => {
+    dir = mkdtempSync(join(tmpdir(), 'bash-stranded-'));
+    mkdirSync(join(dir, 'scratch'), { recursive: true });
+    const big = 'MATCH_BEFORE_TAIL\n' + 'x'.repeat(STRANDED_LOG_TAIL_BYTES + 500) + 'THE_TAIL_MARKER';
+    writeFileSync(join(dir, 'scratch', 'bash-filter000001.log'), big);
+
+    const r = strandedJobLookup('filter000001', dir);
+    expect(r).not.toBeNull();
+    expect(r!.tail).not.toContain('MATCH_BEFORE_TAIL');
+    expect(r!.content).toBe(big);
+
+    const recovered = inspectStrandedJobLog(r!, 'MATCH_BEFORE_TAIL');
+    expect(recovered.output).toBe('MATCH_BEFORE_TAIL');
   });
 
   it('falls back to the shared tmp scratch dir when stateDir is undefined (matches scratchDir default)', () => {
