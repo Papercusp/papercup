@@ -230,17 +230,28 @@ function baseAgent(overrides: Partial<DecoratedAgent> = {}): DecoratedAgent {
 
 describe('reconcilePsuHostLiveness (WI-4755)', () => {
   it('marks a parked visible member ended when its psu host is gone', () => {
-    const agent = baseAgent({ sessionState: 'parked' });
+    const agent = baseAgent({ sessionState: 'parked', tty: '/dev/pts/11' });
     reconcilePsuHostLiveness([agent], new Map([['su-1', 'su']]), () => null);
     expect(agent.sessionState).toBe('ended');
     expect(agent.alive).toBe(false);
   });
 
   it('does not let a stale directed-wake activity row keep a hostless member live', () => {
-    const agent = baseAgent({ sessionState: 'live' });
+    const agent = baseAgent({ sessionState: 'live', tty: '/dev/pts/12' });
     reconcilePsuHostLiveness([agent], new Map([['su-1', 'su']]), () => null);
     expect(agent.sessionState).toBe('ended');
     expect(agent.alive).toBe(false);
+  });
+
+  it('preserves a headless su member without a psu host', () => {
+    const agent = baseAgent({
+      sessionState: 'live',
+      tty: null,
+      lastToolCallAt: new Date(NOW - 1_645).toISOString(),
+    });
+    reconcilePsuHostLiveness([agent], new Map([['su-1', 'su']]), () => null);
+    expect(agent.sessionState).toBe('live');
+    expect(agent.alive).toBe(true);
   });
 
   it('preserves nursery cups without a psu host', () => {
@@ -251,7 +262,7 @@ describe('reconcilePsuHostLiveness (WI-4755)', () => {
   });
 
   it('keeps a no-host ghost out of the leader census after reconciliation', () => {
-    const agent = baseAgent({ agentId: 'su-ghost', sessionState: 'live' });
+    const agent = baseAgent({ agentId: 'su-ghost', sessionState: 'live', tty: '/dev/pts/13' });
     reconcilePsuHostLiveness([agent], new Map([['su-ghost', 'su']]), () => null);
     const { rows, census } = selectLeaderBriefMembers([agent], 'p2p-git');
     expect(rows).toEqual([]);

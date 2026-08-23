@@ -1785,6 +1785,10 @@ export function topExcludedFloors(
 }
 
 export type DecoratedAgent = AgentAssignment & {
+  /** Terminal device from the visible psu launcher. Null/absent identifies a
+   * headless member (or a pre-tty-tracking row), so it is not a psu-host
+   * authority cohort. */
+  tty?: string | null;
   sessionState?: SessionState | null;
   wakeable?: boolean | null;
   confirmLiveness?: boolean | null;
@@ -1995,7 +1999,18 @@ export function reconcilePsuHostLiveness<T extends DecoratedAgent>(
   // Unification P-005: the rule itself now lives in the shared liveness
   // oracle (applyPsuHostAuthority) so it is no longer leader-brief-private —
   // any surface whose cohort is known-psu-hosted applies the SAME authority.
-  return applyPsuHostAuthority(agents, agentRoles, findHost);
+  // A role of `su` alone is not enough to establish that cohort: headless su
+  // members also carry that role and legitimately have no local psu-pty host.
+  // Match fleet:status's existing tty gate so a headless member cannot be
+  // rewritten to ended merely because this operator cannot inject a terminal.
+  const visibleRoles = new Map<string, string | null>();
+  for (const agent of agents) {
+    const role = agentRoles.get(agent.agentId);
+    if (agent.tty != null && role != null && role !== 'cup') {
+      visibleRoles.set(agent.agentId, role);
+    }
+  }
+  return applyPsuHostAuthority(agents, visibleRoles, findHost);
 }
 
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed).
