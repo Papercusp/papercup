@@ -8,7 +8,16 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, utimesSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readFileSync,
+  utimesSync,
+  openSync,
+  closeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +44,9 @@ import {
   isDeadShadow,
   DEAD_SHADOW_STALE_MS,
   cleanCrashResidue,
+  probeOpenHandles,
+  classifyWriterLiveness,
+  type OpenHandleProbe,
   judgeCanary,
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
@@ -595,6 +607,14 @@ describe('isOrphanWal', () => {
  * `isDeadShadow` is false for another five minutes — exactly the window that
  * matters. `writerKnownDead` substitutes the caller's proof for the proxy.
  */
+/**
+ * A probe result standing for "the scan ran and found nobody holding the file".
+ * Used as the CALIBRATION arm: it is what the real /proc scan returns for a temp
+ * file no process has open, so a test can prove the surrounding tree is cleanable
+ * without depending on the host's process table at that instant.
+ */
+const NO_HOLDERS: OpenHandleProbe = { ok: true, holders: [], scannedPids: 1, unreadablePids: 0 };
+
 describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery)', () => {
   function poisonedRoot(): string {
     const root = mkdtempSync(join(tmpdir(), 'gitnexus-killsite-'));
@@ -633,20 +653,122 @@ describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery
     expect(existsSync(db)).toBe(true);
   });
 
-  it('STILL refuses to delete a non-empty shadow, even with the writer known dead', () => {
-    // The zero-byte term is the half that must survive: a shadow with bytes in
-    // it can belong to a concurrent MANUAL `gitnexus analyze` on the same root,
-    // which this must never destroy. Relaxing staleness must not relax that.
+  it('STILL refuses to delete a non-empty shadow a process HOLDS OPEN, writer known dead or not', () => {
+    // The protection that must survive, expressed with the instrument that can
+    // actually carry it: a shadow with bytes in it can belong to a concurrent
+    // MANUAL `gitnexus analyze` on the same root, which this must never destroy.
+    //
+    // Until 2026-08-23 that protection was spelled `size !== 0`, which cannot tell
+    // a concurrent writer from a mid-write corpse — see the sibling test below for
+    // the orphan that spelling let through. An OPEN FILE DESCRIPTOR can: this test
+    // holds a real one, so the real /proc scan is what is under test here.
     const root = mkdtempSync(join(tmpdir(), 'gitnexus-livebuild-'));
     mkdirSync(join(root, '.gitnexus'));
     const { db, shadow } = gitnexusDbPaths(root);
     writeFileSync(db, 'a real promoted database');
     writeFileSync(shadow, 'partially built shadow');
 
+    const fd = openSync(shadow, 'r+'); // stand in for the concurrent analyze
+    try {
+      const result = cleanCrashResidue(root, { writerKnownDead: true });
+
+      expect(result.writerLiveness).toBe('live');
+      expect(result.cleaned).toBe(false);
+      expect(existsSync(shadow)).toBe(true);
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  it('CLEANS a NON-ZERO orphaned shadow — the shape the size proxy could never see', () => {
+    // THE GAP THIS FIX CLOSES, and the direct falsifier for the old policy: with
+    // `size === 0` as the test, this exact tree was cleaned by NEITHER the kill site
+    // NOR the next tick's preflight, so the outage recurred looking brand-new.
+    //
+    // Not a hypothetical shape — the live mid-analyze shadow on this box measured
+    // 800,280 bytes at 2026-08-23T20:50Z. A SIGKILL one second later strands this.
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-nonzero-orphan-'));
+    mkdirSync(join(root, '.gitnexus'));
+    const { db, shadow, wal, walCheckpoint } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+    writeFileSync(shadow, 'x'.repeat(800_280)); // killed MID-WRITE, not before it
+    writeFileSync(wal, 'pending wal');
+    writeFileSync(walCheckpoint, '');
+    // Deliberately FRESH: seconds old, exactly as the kill site finds it. The old
+    // policy failed on both terms here — too young to be stale, too big to be empty.
+
     const result = cleanCrashResidue(root, { writerKnownDead: true });
 
-    expect(result.cleaned).toBe(false);
+    expect(result.writerLiveness).toBe('orphaned'); // nothing holds it open
+    expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('dead-shadow-wal');
+    expect(existsSync(shadow)).toBe(false);
+    expect(existsSync(wal)).toBe(false);
+    // The promoted index is still never a target.
+    expect(existsSync(db)).toBe(true);
+  });
+
+  it('SPARES a zero-byte STALE shadow while a process holds it open (the probe strengthens the OLD rule too)', () => {
+    // The pre-probe rule would have DELETED this tree: empty + stale was, by
+    // itself, taken as proof of death. It is not — a build that is slow to write
+    // its first byte looks identical. The holder outranks both terms, so this fix
+    // closes a live-build hazard as well as the orphan gap.
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-slow-starter-'));
+    mkdirSync(join(root, '.gitnexus'));
+    const { db, shadow, wal } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+    writeFileSync(shadow, '');
+    writeFileSync(wal, 'pending wal');
+    const old = (Date.now() - (DEAD_SHADOW_STALE_MS + 60_000)) / 1000;
+    utimesSync(shadow, old, old);
+
+    const fd = openSync(shadow, 'r+');
+    try {
+      const result = cleanCrashResidue(root);
+      expect(result.writerLiveness).toBe('live');
+      expect(result.cleaned).toBe(false);
+      expect(existsSync(shadow)).toBe(true);
+      expect(existsSync(wal)).toBe(true);
+
+      // CALIBRATION, taken while the tree is still intact: the SAME tree with the
+      // holder taken out of the picture IS cleaned. Without this the assertions
+      // above would pass just as well against a cleanCrashResidue that no-ops.
+      expect(cleanCrashResidue(root, { probeOpenHandles: () => NO_HOLDERS }).cleaned).toBe(true);
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  it('DEGRADES to the old size-only rule when the probe cannot answer', () => {
+    // The safety property of the fallback: no /proc (or a probe that throws) must
+    // never be read as "nobody holds it". It reverts to the pre-2026-08-23
+    // behaviour exactly — which spares the non-zero shadow rather than risking it.
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-noprobe-'));
+    mkdirSync(join(root, '.gitnexus'));
+    const { db, shadow } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+    writeFileSync(shadow, 'partially built shadow');
+
+    const unavailable = cleanCrashResidue(root, {
+      writerKnownDead: true,
+      probeOpenHandles: () => ({ ok: false, holders: [], scannedPids: 0, unreadablePids: 0 }),
+    });
+    expect(unavailable.writerLiveness).toBe('unknown');
+    expect(unavailable.cleaned).toBe(false);
+
+    const threw = cleanCrashResidue(root, {
+      writerKnownDead: true,
+      probeOpenHandles: () => {
+        throw new Error('/proc is not mounted');
+      },
+    });
+    expect(threw.writerLiveness).toBe('unknown');
+    expect(threw.cleaned).toBe(false);
     expect(existsSync(shadow)).toBe(true);
+
+    // CALIBRATION: a WORKING probe on that same tree does clean it, so the two
+    // assertions above measure the fallback and not a permanently-inert function.
+    expect(cleanCrashResidue(root, { writerKnownDead: true, probeOpenHandles: () => NO_HOLDERS }).cleaned).toBe(true);
   });
 
   it('is inert on a healthy tree, so the kill site cannot damage a clean index', () => {
@@ -734,23 +856,58 @@ describe('cleanCrashResidue', () => {
     expect(readFileSync(db, 'utf8')).toBe('a real promoted database');
   });
 
-  it('LEAVES A LIVE BUILD ALONE — a non-empty shadow is not residue', () => {
+  it('LEAVES A LIVE BUILD ALONE — a shadow its writer still holds OPEN is not residue', () => {
     // The dangerous direction. If this ever cleans, a running analyze is corrupted
     // mid-build and we have traded an outage for a worse one.
+    //
+    // Note what this test asserts and what it no longer does. "Non-empty" used to
+    // BE the liveness test, so a stale written shadow was spared on the theory that
+    // it must be a slow build. That theory is false — a SIGKILL mid-write produces
+    // the identical file — and believing it is what left the non-zero orphan
+    // uncleanable. Liveness is now the open handle, so this test holds a real one.
     const root = freshRoot();
     const { db, shadow, wal } = gitnexusDbPaths(root);
     writeFileSync(db, 'real db');
     writeFileSync(shadow, 'a build genuinely in progress');
     writeFileSync(wal, 'live wal');
     const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
-    utimesSync(shadow, old, old); // even STALE, a written shadow is a slow build
+    utimesSync(shadow, old, old); // even STALE, an OPEN shadow is a slow build
+
+    const fd = openSync(shadow, 'r+');
+    try {
+      const result = cleanCrashResidue(root);
+
+      expect(result.writerLiveness).toBe('live');
+      expect(result.cleaned).toBe(false);
+      expect(result.kind).toBe('none');
+      expect(existsSync(shadow)).toBe(true);
+      expect(existsSync(wal)).toBe(true);
+    } finally {
+      closeSync(fd);
+    }
+  });
+
+  it('...and cleans that SAME tree once nothing holds the shadow open', () => {
+    // The falsifier for the test above: identical tree, no open handle. Before the
+    // open-handle discriminator this was indistinguishable from a live build and
+    // survived forever, poisoning every read with "Couldn't replay shadow pages
+    // under read-only mode".
+    const root = freshRoot();
+    const { db, shadow, wal } = gitnexusDbPaths(root);
+    writeFileSync(db, 'real db');
+    writeFileSync(shadow, 'a build that was SIGKILLed mid-write');
+    writeFileSync(wal, 'orphaned wal');
+    const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
+    utimesSync(shadow, old, old);
 
     const result = cleanCrashResidue(root);
 
-    expect(result.cleaned).toBe(false);
-    expect(result.kind).toBe('none');
-    expect(existsSync(shadow)).toBe(true);
-    expect(existsSync(wal)).toBe(true);
+    expect(result.writerLiveness).toBe('orphaned');
+    expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('dead-shadow-wal');
+    expect(existsSync(shadow)).toBe(false);
+    expect(existsSync(wal)).toBe(false);
+    expect(existsSync(db)).toBe(true);
   });
 
   it('removes the orphan WAL beside a real db — the read-path segfault (D-016)', () => {

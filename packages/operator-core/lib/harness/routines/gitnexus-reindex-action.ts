@@ -40,7 +40,15 @@
 import { execFile } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readFileSync, existsSync, unlinkSync, statSync } from 'node:fs';
+import {
+  readFileSync,
+  existsSync,
+  unlinkSync,
+  statSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+} from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { managedSpawn } from '../../task-manager/managed-spawn';
@@ -470,11 +478,193 @@ export function isDeadShadow(
   return shadowExists && shadowSizeBytes === 0 && shadowAgeMs > DEAD_SHADOW_STALE_MS;
 }
 
+// ---------------------------------------------------------------------------
+// THE OPEN-HANDLE DISCRIMINATOR (2026-08-23) — replacing a proxy with the fact.
+//
+// Every predicate above keys "is a build in flight?" on the shadow's SIZE. `size === 0`
+// was chosen to mean "the writer is dead", but what it actually means is "the writer
+// died at ONE PARTICULAR INSTANT" — after creating the shadow and before its first byte.
+// A SIGKILL landing a second later leaves a NON-ZERO orphan that is byte-for-byte
+// indistinguishable from a healthy live build, so it slips past BOTH size-keyed sites:
+// `isDeadShadow` (the next tick's preflight) and the `writerKnownDead` branch (the kill
+// site). Nothing then ever clears it, every read-only query fails with "Couldn't replay
+// shadow pages under read-only mode", and the fleet-wide outage recurs looking like a
+// brand-new bug.
+//
+// Not hypothetical: at 2026-08-23T20:50Z the live mid-analyze shadow on this box
+// measured 800,280 bytes. A kill in that window strands exactly that shape.
+//
+// So stop testing the PROXY and test the FACT it proxies: does any process still hold
+// the shadow open? A file no process has open cannot be being written to — that is a
+// kernel guarantee, not an inference from a byte count or a clock.
+// ---------------------------------------------------------------------------
+
+/** The kernel appends this to an fd symlink whose file has been unlinked. */
+const PROC_FD_DELETED_SUFFIX = ' (deleted)';
+
+export interface OpenHandleProbe {
+  /**
+   * The scan itself ran to completion. FALSE means we learned nothing — no `/proc`
+   * (non-Linux, or a container without it), or the target vanished — and the verdict is
+   * UNKNOWN. It must never be read as "nobody has it open".
+   */
+  ok: boolean;
+  /** Pids observed holding the path open. Non-empty ⇒ a writer is alive. */
+  holders: number[];
+  /** Process directories whose fd table was read successfully. */
+  scannedPids: number;
+  /**
+   * Process directories that exist but are EACCES to us — almost always root daemons.
+   * Reported so the assumption below is auditable rather than silent; see
+   * `classifyWriterLiveness` for why it does not by itself force UNKNOWN.
+   */
+  unreadablePids: number;
+}
+
+export type WriterLiveness =
+  /** A process holds the shadow open. NEVER touch it, whatever its size or age says. */
+  | 'live'
+  /** No process holds it. Nothing can be writing to it, whatever its size says. */
+  | 'orphaned'
+  /** The probe could not answer. Callers must degrade to the size/staleness proxy. */
+  | 'unknown';
+
+/**
+ * PURE. Turn a probe into the verdict the residue policy actually needs.
+ *
+ * WHAT THIS PROBE CANNOT DISTINGUISH, stated rather than assumed — which is the whole
+ * lesson the size proxy taught, applied to its own replacement:
+ *
+ *  1. **Another uid's fds.** `/proc/<pid>/fd` is EACCES across a uid boundary, so a
+ *     holder running as a different user is invisible and `unreadablePids` counts it.
+ *     That deliberately does NOT force 'unknown', because on every surface this ships
+ *     to — the dev box and the packaged desktop app — the operator and any manual
+ *     `gitnexus analyze` run as the SAME user, so the concurrent writer this exists to
+ *     protect is always readable. Forcing 'unknown' on a nonzero count would disable
+ *     the fix permanently on any box with a root daemon (i.e. all of them), trading a
+ *     real observed outage for a hypothetical root-run analyze on this checkout.
+ *  2. **A hard link under a different basename.** The inode cross-check below is
+ *     narrowed by basename for cost, so a holder that opened the same inode by another
+ *     name reads as absent. Nothing hard-links a LadybugDB shadow.
+ *
+ * Both unseen cases fail toward 'orphaned'. That is why the CALLER keeps a second,
+ * independent corroborator (staleness away from the kill site; its own SIGKILL at it)
+ * before acting on 'orphaned' — no single instrument gets to condemn a live build.
+ */
+export function classifyWriterLiveness(probe: OpenHandleProbe | null): WriterLiveness {
+  if (!probe || !probe.ok) return 'unknown';
+  return probe.holders.length > 0 ? 'live' : 'orphaned';
+}
+
+/**
+ * Scan `/proc/*​/fd` for any process holding `targetPath` open.
+ *
+ * ⚠ DELIBERATELY PROBES THE SHADOW ONLY — never `lbug` itself. Readers hold the promoted
+ * database open all the time; treating that as "a writer is alive" would pin every
+ * shadow as live for as long as anyone is querying, which is the opposite failure. The
+ * shadow is the build-in-progress artifact, so its holders are exactly its writers.
+ *
+ * ⚠ NOT argv matching. `proc-guard.mjs check "gitnexus analyze"` is a measured FALSE
+ * NEGATIVE on the real analyze process — its argv is `…/gitnexus/dist/cli/index.js
+ * analyze`, whose basename is `index.js` (EI-21277960228841563). An open fd is a fact
+ * about this file; a command line is a string about a process that may not even be the
+ * one holding it.
+ */
+export function probeOpenHandles(targetPath: string, procRoot = '/proc'): OpenHandleProbe {
+  const probe: OpenHandleProbe = { ok: false, holders: [], scannedPids: 0, unreadablePids: 0 };
+
+  let targetDev: number;
+  let targetIno: number;
+  try {
+    const st = statSync(targetPath);
+    targetDev = st.dev;
+    targetIno = st.ino;
+  } catch {
+    // The target is gone. Callers gate this behind their own existence check, so rather
+    // than claim a confident "no holders" for a file that isn't there, stay UNKNOWN and
+    // let that existence check remain the authority on the vanished case.
+    return probe;
+  }
+
+  let canonical = targetPath;
+  try {
+    canonical = realpathSync(targetPath);
+  } catch {
+    // Keep the literal path; the inode cross-check below still catches the holder.
+  }
+  const targetBase = path.basename(canonical);
+
+  let entries: string[];
+  try {
+    entries = readdirSync(procRoot);
+  } catch {
+    return probe; // No /proc at all — verdict stays UNKNOWN, which is the safe direction.
+  }
+  probe.ok = true;
+
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const fdDir = `${procRoot}/${entry}/fd`;
+    let fds: string[];
+    try {
+      fds = readdirSync(fdDir);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // ENOENT/ESRCH is a process that exited mid-scan — not an unreadable one, and not
+      // a holder either way. Only a permission refusal is a blind spot worth counting.
+      if (code === 'EACCES' || code === 'EPERM') probe.unreadablePids += 1;
+      continue;
+    }
+    probe.scannedPids += 1;
+    for (const fd of fds) {
+      const link = `${fdDir}/${fd}`;
+      let dest: string;
+      try {
+        dest = readlinkSync(link);
+      } catch {
+        continue; // Closed between readdir and readlink.
+      }
+      // Sockets, pipes and anon_inodes read as `socket:[1234]` / `pipe:[…]` — never a file.
+      if (!dest.startsWith('/')) continue;
+      // An UNLINKED file still held open IS a live holder, so strip the kernel's marker
+      // rather than skipping the row.
+      const clean = dest.endsWith(PROC_FD_DELETED_SUFFIX)
+        ? dest.slice(0, -PROC_FD_DELETED_SUFFIX.length)
+        : dest;
+      if (clean === canonical || clean === targetPath) {
+        probe.holders.push(Number(entry));
+        break;
+      }
+      // Identity, not spelling: a bind mount or a symlinked parent directory yields the
+      // same inode under a different path string, and a pure string compare would miss
+      // that holder — the one direction of error that corrupts a live build. Narrowed by
+      // basename so this costs one extra stat per genuinely similar fd, not per fd.
+      if (path.basename(clean) !== targetBase) continue;
+      try {
+        const s = statSync(link);
+        if (s.ino === targetIno && s.dev === targetDev) {
+          probe.holders.push(Number(entry));
+          break;
+        }
+      } catch {
+        // Deleted or vanished between readlink and stat — nothing further to learn.
+      }
+    }
+  }
+  return probe;
+}
+
 export interface OrphanShadowCleanup {
   cleaned: boolean;
   removed: string[];
   /** Which residue was found, for a log line that names the failure mode rather than the files. */
   kind: 'none' | 'orphan-shadow' | 'orphan-wal' | 'dead-shadow-wal';
+  /**
+   * How the shadow's liveness was established this run. Optional so no caller is
+   * stranded; present so a journald line can say WHY a shadow was spared or removed
+   * instead of leaving the next investigator to re-derive it.
+   */
+  writerLiveness?: WriterLiveness;
 }
 
 /**
@@ -493,12 +683,21 @@ export interface CleanCrashResidueOptions {
    * actively harmful, because the shadow it must clean is by definition seconds
    * old and so fails the staleness term for the next five minutes.
    *
-   * It relaxes ONLY the staleness term. The zero-byte requirement stays, because
-   * that is the unambiguous half of the signal: a shadow with bytes in it could
-   * belong to a concurrent MANUAL `gitnexus analyze` on the same root, which this
-   * must never delete. Emptiness plus a known-dead writer cannot.
+   * It relaxes ONLY the staleness term. Until 2026-08-23 it also kept a zero-byte
+   * requirement, on the reasoning that "a shadow with bytes in it could belong to a
+   * concurrent MANUAL `gitnexus analyze`, which this must never delete" — sound intent,
+   * wrong instrument. Size cannot tell a concurrent writer from a mid-write corpse, so
+   * that term protected the manual analyze by ALSO protecting the orphan it was
+   * supposed to clean. The open-handle probe answers the real question directly, so the
+   * size term is now the FALLBACK for when the probe cannot run, not the primary test.
    */
   writerKnownDead?: boolean;
+  /**
+   * Seam for tests, and the escape hatch for a host without a usable `/proc`. Defaults
+   * to the real scan. A probe that returns `ok:false` — or throws — yields UNKNOWN,
+   * which degrades this function to exactly its pre-2026-08-23 size-only behaviour.
+   */
+  probeOpenHandles?: (targetPath: string) => OpenHandleProbe;
 }
 
 export function cleanCrashResidue(
@@ -514,12 +713,43 @@ export function cleanCrashResidue(
   // An empty, stale shadow is a corpse, and treating it as live is what left the tree
   // segfaulting on 2026-08-21 with NEITHER arm firing (see isDeadShadow).
   let shadowIsDead = false;
+  let writerLiveness: WriterLiveness = 'unknown';
   if (shadowExists) {
     try {
       const st = statSync(shadow);
-      shadowIsDead = opts.writerKnownDead
-        ? st.size === 0
-        : isDeadShadow(true, st.size, Date.now() - st.mtimeMs);
+      const probeFn = opts.probeOpenHandles ?? probeOpenHandles;
+      let probe: OpenHandleProbe | null = null;
+      try {
+        probe = probeFn(shadow);
+      } catch {
+        // A probe that throws taught us nothing. UNKNOWN, never "nobody holds it".
+        probe = null;
+      }
+      writerLiveness = classifyWriterLiveness(probe);
+      const shadowAgeMs = Date.now() - st.mtimeMs;
+
+      if (writerLiveness === 'live') {
+        // The kernel says a process still has this shadow open. That outranks every
+        // other signal here — INCLUDING zero-bytes-and-stale, which the pre-probe code
+        // would have deleted out from under a build that was merely slow to start.
+        shadowIsDead = false;
+      } else if (writerLiveness === 'orphaned') {
+        // No process holds it, so nothing can be writing to it — whatever its size says.
+        // THIS is the arm that closes the non-zero orphan gap. It still demands a second,
+        // independent corroborator before condemning the file, because the probe has
+        // stated blind spots (see classifyWriterLiveness): away from the kill site that
+        // corroborator is staleness — a writer between two open() calls would still be
+        // touching the file — and at the kill site it is the caller's own SIGKILL, which
+        // is stronger evidence than any clock.
+        shadowIsDead = opts.writerKnownDead === true || shadowAgeMs > DEAD_SHADOW_STALE_MS;
+      } else {
+        // No usable probe (no /proc, or it threw). Degrade to exactly the
+        // pre-2026-08-23 rule: size is a poor instrument, but it is the one that
+        // survives without the kernel's help, and it errs toward leaving files alone.
+        shadowIsDead = opts.writerKnownDead
+          ? st.size === 0
+          : isDeadShadow(true, st.size, shadowAgeMs);
+      }
     } catch {
       // Vanished between the check and the stat — that IS the not-present case.
       shadowIsDead = false;
@@ -544,7 +774,7 @@ export function cleanCrashResidue(
     kind = 'dead-shadow-wal';
     targets = [shadow, walCheckpoint];
   } else {
-    return { cleaned: false, removed: [], kind: 'none' };
+    return { cleaned: false, removed: [], kind: 'none', writerLiveness };
   }
 
   const removed: string[] = [];
@@ -558,7 +788,7 @@ export function cleanCrashResidue(
       // unlink) — not our job to report, the residue condition is gone either way.
     }
   }
-  return { cleaned: removed.length > 0, removed, kind };
+  return { cleaned: removed.length > 0, removed, kind, writerLiveness };
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,12 +1260,23 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
         `[gitnexus-reindex] post-timeout residue cleanup could not run: ${e instanceof Error ? e.message : e}`,
       );
     }
+    // Name the liveness verdict, not just the outcome. "No residue was present" and "a
+    // holder made us spare it" look identical from the outside and mean opposite things,
+    // and re-deriving which one happened after the fact is exactly what cost this bug a
+    // second investigation.
+    const livenessNote =
+      recovered?.writerLiveness === 'live'
+        ? ' ⚠ A process still holds the shadow open despite the kill (a concurrent manual `gitnexus analyze`?) — it was deliberately SPARED.'
+        : recovered?.writerLiveness === 'unknown'
+          ? ' (open-handle probe unavailable — fell back to the zero-byte size proxy, which cannot see a mid-write orphan.)'
+          : '';
     console.warn(
       `[gitnexus-reindex] TIMED OUT after ${timeoutMs}ms (${elapsedSec}s) — process tree killed. ` +
         (recovered?.cleaned
           ? `Crash residue (D-016) recovered IMMEDIATELY (${recovered.kind}): ${recovered.removed.join(', ')} — ` +
             'reads stay answerable instead of segfaulting until the next tick.'
-          : 'No crash residue was present to recover; the next tick\'s cleanCrashResidue() preflight remains the backstop.'),
+          : 'No crash residue was present to recover; the next tick\'s cleanCrashResidue() preflight remains the backstop.') +
+        livenessNote,
     );
   } else if (r.code !== 0) {
     console.warn(`[gitnexus-reindex] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
