@@ -1432,7 +1432,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
 
     const out = await runGitSync('test', { repoPath: repo });
 
-    expect(out.status).toBe('synced');
+    expect(out.status, JSON.stringify(out)).toBe('synced');
     expect(existsSync(lockPath)).toBe(false);
     expect(git(subOrigin, 'ls-tree', '-r', '--name-only', 'main')).toContain('sub-stale-lock-recovered.txt');
 
