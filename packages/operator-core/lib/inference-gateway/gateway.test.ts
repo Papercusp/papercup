@@ -1144,7 +1144,7 @@ test('COLD-START rate hint disqualifies a projection-known-exhausted account eve
   resetGovernorRegistry();
 });
 
-test('DYNAMIC owner pin (POST /admin/owner-pin) routes an owner to the pinned account, overrides the static header, and unpin reverts (account-dynamic-pin-2026-06-29)', async () => {
+test('DYNAMIC owner route can override a static pin with another account or auto, and unpin restores the static route (WI-4402)', async () => {
   const acct = (id: string, tok: string): ActiveAccount => ({ accountId: id, token: async () => tok, invalidateToken: () => {} });
   const acctA = acct('A', 'tA');
   const acctB = acct('B', 'tB');
@@ -1166,10 +1166,15 @@ test('DYNAMIC owner pin (POST /admin/owner-pin) routes an owner to the pinned ac
   // it OVERRIDES a conflicting static x-papercusp-account header (the dynamic pin wins by owner id)
   await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
   assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'dynamic owner pin overrides the static x-papercusp-account header');
+  // A present `auto` owner route is NOT the same as clearing the override: it suppresses the static
+  // header and returns this already-gateway-routed session to active()/failover selection.
+  await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', account: 'auto' }) });
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'B' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tA', 'dynamic auto route suppresses the static B pin and uses active account A');
   // unpin → reverts to the static header (A)
   await ask('/admin/owner-pin', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'spawn-7', clear: true }) });
-  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'A' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(upstream.last.headers['authorization'], 'Bearer tA', 'after unpin, spawn-7 reverts to its static header account A');
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'spawn-7', 'x-papercusp-account': 'B' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tB', 'after unpin, spawn-7 reverts to its static header account B');
 });
 
 test('Fault #3 — a header-pinned request whose account is paced fails over to active() (no $0 hang)', async () => {

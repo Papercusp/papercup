@@ -23,11 +23,11 @@ import assert from 'node:assert/strict';
 
 // Capture the workspace each durable write is actually scoped to. This is the ONLY thing that
 // distinguishes the bug from the fix — both return ok:true.
-const writes: Array<{ op: 'set' | 'clear'; ws: string; ownerId: string }> = [];
+const writes: Array<{ op: 'set' | 'clear'; ws: string; ownerId: string; account?: string; hard?: boolean }> = [];
 
 vi.mock('../../deployment/account-owner-pins', () => ({
   setOwnerPin: async (workspaceId: string, ownerId: string, pin: { account: string; hard: boolean }) => {
-    writes.push({ op: 'set', ws: workspaceId, ownerId });
+    writes.push({ op: 'set', ws: workspaceId, ownerId, account: pin.account, hard: pin.hard });
     return pin;
   },
   clearOwnerPin: async (workspaceId: string, ownerId: string) => {
@@ -85,6 +85,35 @@ test("accounts:unpin under a wildcard superuser ctx clears from the CONCRETE wor
   assert.equal(writes.length, 1, 'the handler reached the durable clear (guard is not vacuous)');
   assert.notEqual(writes[0]!.ws, '*', 'unpin scoped to the wildcard bucket cannot clear a real pin');
   assert.equal(writes[0]!.ws, activeWorkspaceId());
+});
+
+test("accounts:pin accepts reserved 'auto' as a durable soft route, distinct from unpin", async () => {
+  const r = body(
+    await accountsPinTool.handler(
+      { agent: 'su-static-pin', account: 'AUTO' } as never,
+      { workspaceId: '*' } as never,
+    ),
+  );
+  assert.equal(r.ok, true);
+  assert.deepEqual(writes[0], {
+    op: 'set',
+    ws: activeWorkspaceId(),
+    ownerId: 'su-static-pin',
+    account: 'auto',
+    hard: false,
+  });
+});
+
+test("accounts:pin rejects hard:true with reserved 'auto' before any durable write", async () => {
+  const r = body(
+    await accountsPinTool.handler(
+      { agent: 'su-static-pin', account: 'auto', hard: true } as never,
+      { workspaceId: '*' } as never,
+    ),
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.error, /hard:true.*auto/);
+  assert.equal(writes.length, 0);
 });
 
 test("a wildcard on the PRINCIPAL leg is caught too — every leg is filtered, not just the first", async () => {

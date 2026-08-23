@@ -18,6 +18,7 @@ const gwBase = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PO
 const ok = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...p }) }] });
 const fail = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...p }) }] });
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 200);
+const AUTO_ACCOUNT_ROUTE = 'auto';
 
 /**
  * Owner pins are a per-workspace DURABLE WRITE, so both legs below resolve through
@@ -70,7 +71,7 @@ export const gatewayStatusTool = defineTool({
 export const accountsPinTool = defineTool({
   name: 'accounts:pin',
   description:
-    "Pin an agent to a pool account on the inference gateway, LIVE (no respawn) — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id — pass your OWN id to pin yourself, or another agent's id to pin them. `account` = a pool account id (see gateway:status / accounts:list). `hard:true` ⇒ NEVER fail over off it (waits / 429s on that account); default (soft) prefers it but yields if it is paused/exhausted. Effective on that agent's NEXT model call — no respawn, no lost context. Reaches any session whose launch path forwards the `x-papercusp-owner` identity header (every fresh spawn, and every `psu --resume`'d session routed `auto`/a pool account). A `--account=default` session is a deliberate gateway-free escape hatch and CANNOT be dynamically re-pinned — respawn it instead. CAUTION: concentrating many agents on one account rate-throttles it — spread load. DURABLE (survives a gateway restart). Returns {ok, ownerId, pin}.",
+    "Route an agent LIVE (no respawn) through the inference gateway — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id. `account` = a pool account id, or reserved `auto` to suppress the session's launch-time static pin and restore gateway selection/failover. `hard:true` is valid only for a named account and NEVER fails over off it; named pins are soft by default. Effective on the NEXT model call and durable across gateway restarts. Reaches sessions whose launch path forwards `x-papercusp-owner` (fresh and resumed `auto`/pool-account sessions). A `--account=default` session deliberately bypasses the gateway and CANNOT be dynamically re-pinned — respawn it instead. Returns {ok, ownerId, pin}.",
   guidance: {
     when: 'Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.',
     notWhen: 'Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override. Re-pinning a `--account=default` session — not reachable; respawn it instead.',
@@ -87,27 +88,31 @@ export const accountsPinTool = defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     agent: z.string().min(1).describe("target agent's owner/spawn id (pass your own id to pin yourself)"),
-    account: z.string().min(1).describe('pool account id to route the agent to'),
-    hard: z.boolean().optional().describe('true ⇒ never fail over off the account (default: soft, yields if paused/exhausted)'),
+    account: z.string().min(1).describe("pool account id, or reserved 'auto' to remove the launch-time pin while staying gateway-routed"),
+    hard: z.boolean().optional().describe("true ⇒ never fail over off a named account; incompatible with account:'auto'"),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler({ agent, account, hard, workspace }, ctx) {
     const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
+    const requestedAccount = account.trim();
+    const autoRoute = requestedAccount.toLowerCase() === AUTO_ACCOUNT_ROUTE;
+    const routedAccount = autoRoute ? AUTO_ACCOUNT_ROUTE : requestedAccount;
+    if (autoRoute && hard) return fail({ error: "hard:true is incompatible with account:'auto'" });
     try {
       const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
         .then((r) => r.json())
         .catch(() => ({}))) as { accounts?: string[] };
-      if (Array.isArray(cfg.accounts) && !cfg.accounts.includes(account)) {
-        return fail({ error: `account '${account}' is not in the gateway pool`, accounts: cfg.accounts });
+      if (!autoRoute && Array.isArray(cfg.accounts) && !cfg.accounts.includes(routedAccount)) {
+        return fail({ error: `account '${routedAccount}' is not in the gateway pool`, accounts: cfg.accounts });
       }
       // DURABLE write FIRST (the DB store is the source of truth — survives a gateway restart), THEN push to
       // the running gateway for IMMEDIATE effect. If the live push fails, the pin is still durable and loads
       // on the gateway's next poll / restart, so we report success-with-warning rather than failing.
-      const pin = await setOwnerPin(ws, agent, { account, hard: !!hard });
+      const pin = await setOwnerPin(ws, agent, { account: routedAccount, hard: !!hard });
       const r = await fetch(`${gwBase()}/admin/owner-pin`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ownerId: agent, account, hard: !!hard }),
+        body: JSON.stringify({ ownerId: agent, account: routedAccount, hard: !!hard }),
         signal: AbortSignal.timeout(10000),
       }).catch((e) => ({ ok: false, status: 0, _e: errMsg(e) }) as unknown as Response);
       void trackDetached(import('../../sync-sse')).then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});

@@ -499,6 +499,10 @@ export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
  *  rate-limit shed back to THIS bee and a coordinator can wake it once the account recovers
  *  (gateway-rate-limit-stall-autowake P-001). Stripped before the upstream forward. */
 export const OWNER_HEADER = 'x-papercusp-owner';
+/** Reserved durable owner-route value: explicitly ignore a session's static account header and let
+ * the gateway select/fail over per request. Distinct from clearing the owner route, which restores
+ * the launch-time header. `auto` is already reserved by every launcher account-routing contract. */
+export const OWNER_AUTO_ACCOUNT_ROUTE = 'auto';
 const ANTHROPIC_VERSION = '2023-06-01';
 
 /** The request's effective priority label: the explicit `x-papercusp-priority` header when present,
@@ -3083,7 +3087,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // OVERRIDES the static x-papercusp-account spawn header — so an agent can re-route itself or another LIVE.
     // Absent ⇒ the static header (today's behavior). The dynamic pin also carries its own hard/soft choice.
     const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
-    const wantAccount = dynPin?.accountId ?? wantAccountHeader;
+    const wantAccount = dynPin
+      ? (dynPin.accountId.trim().toLowerCase() === OWNER_AUTO_ACCOUNT_ROUTE ? undefined : dynPin.accountId)
+      : wantAccountHeader;
     const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
     // HARD PIN (account-hard-pin-2026-06-29): an operator / PSU-utility pin that must NEVER fail over.
     // When set (only honored once the pin resolved to a live pool account), every "cache-affinity yields
@@ -4771,7 +4777,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
     const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
     const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
-    const wantAccount = dynPin?.accountId ?? wantAccountHeader;
+    const wantAccount = dynPin
+      ? (dynPin.accountId.trim().toLowerCase() === OWNER_AUTO_ACCOUNT_ROUTE ? undefined : dynPin.accountId)
+      : wantAccountHeader;
     // ChatGPT-subscription bridge resolution (codex-cli-bridge.ts): an explicit pin to a
     // CLI account wins; otherwise the CLI list is the FALLBACK when there is no bearer
     // pool at all, or the bearer pool momentarily resolves no available account. Bearer
