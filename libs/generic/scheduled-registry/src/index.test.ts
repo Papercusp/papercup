@@ -521,3 +521,60 @@ describe('dual module instance shares ONE inventory (EI-19451658870832332)', () 
     expect(reported?.evaluations).toBe(2);
   });
 });
+
+describe('the Vitest inertness guard distinguishes REAL timers from FAKE ones (WI-40841)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    resetScheduledRegistry();
+  });
+
+  // The guard added for EI-21209553211440005 keeps the DEFAULT backend inert under Vitest so a
+  // wall-clock callback cannot fire into another test's factory mocks. Its condition ("no
+  // injected setIntervalImpl") also catches `vi.useFakeTimers()`, which is a perfectly
+  // deterministic seam — and that silently red-pinned every fake-timer test over a
+  // managedSetInterval call site (116 non-test sites; ~34 test files red from 03:00Z).
+  //
+  // `defaultSetIntervalImpl` resolves `setInterval` at CALL time, so under fake timers the
+  // default backend is ALREADY driven by the fake clock. Arming is therefore safe: the callback
+  // belongs to the clock and is torn down with it, so it cannot outlive the test.
+  it('ARMS and FIRES under vi.useFakeTimers() with no injected backend', async () => {
+    resetScheduledRegistry(); // default (production) backend in play — nothing injected
+    vi.useFakeTimers();
+
+    const tick = vi.fn();
+    const handle = managedSetInterval('wi-40841-fake-clock', 1_000, tick, {
+      category: 'watchdog',
+    });
+
+    // The inert path returns a no-op handle and registers nothing at all.
+    expect(managedCount()).toBe(1);
+    expect(getManaged('wi-40841-fake-clock')).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(tick).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(tick).toHaveBeenCalledTimes(3);
+
+    handle.stop();
+  });
+
+  // The control for the ORIGINAL defect (EI-21209553211440005): with genuinely REAL timers the
+  // default backend must still be inert, or that unhandled-rejection class returns. If this ever
+  // fails, the fix above has been over-applied.
+  it('still keeps the default backend inert when timers are REAL', () => {
+    resetScheduledRegistry();
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    try {
+      const skipped = managedSetInterval('wi-40841-real-clock', 1_000, () => undefined, {
+        category: 'watchdog',
+      });
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+      expect(managedCount()).toBe(0);
+      skipped.stop();
+    } finally {
+      setIntervalSpy.mockRestore();
+      resetScheduledRegistry();
+    }
+  });
+});

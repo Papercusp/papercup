@@ -129,6 +129,24 @@ export type SetIntervalImpl = (cb: () => void, ms: number) => TimerHandle;
 export type SetTimeoutImpl = (cb: () => void, ms: number) => TimerHandle;
 export type ClearTimerImpl = (h: TimerHandle) => void;
 
+/**
+ * Are Vitest's fake timers currently installed?
+ *
+ * `vi.useFakeTimers()` delegates to @sinonjs/fake-timers, which REPLACES the global timer
+ * functions and stamps each installed function with a back-reference to its clock
+ * (`target[method].clock = clock` — fake-timers-src.js). That property is absent on the native
+ * function and on a plain `vi.spyOn(globalThis, 'setInterval')` wrapper, so its presence is a
+ * precise "a fake clock owns this timer" signal rather than a general "we are under test" one.
+ *
+ * This matters because `defaultSetIntervalImpl` resolves `setInterval` at CALL time: with fake
+ * timers installed the default backend is already driven by the fake clock, so an armed callback
+ * is deterministic and is torn down with the clock. It cannot outlive the test and reach another
+ * test's factory mocks — which is the only hazard the Vitest inertness guard exists to prevent.
+ */
+function timersAreFaked(): boolean {
+  return (globalThis.setInterval as unknown as { clock?: unknown } | undefined)?.clock !== undefined;
+}
+
 const defaultSetIntervalImpl: SetIntervalImpl = (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle;
 const defaultClearIntervalImpl: ClearTimerImpl = (h) => clearInterval(h as unknown as ReturnType<typeof setInterval>);
 const defaultSetTimeoutImpl: SetTimeoutImpl = (cb, ms) => setTimeout(cb, ms) as unknown as TimerHandle;
@@ -306,10 +324,15 @@ export function managedSetInterval(
   // observes a partial module and turns an otherwise passing run into an unhandled rejection.
   // Keep the real backend inert under Vitest by default. Deterministic injected timer seams
   // still run, and a test that explicitly exercises a real interval can opt in.
+  //
+  // "Deterministic seam" means BOTH an injected setIntervalImpl AND `vi.useFakeTimers()` — see
+  // timersAreFaked(). Treating only the injected case as deterministic silently disarms every
+  // fake-timer test over a managedSetInterval call site (WI-40841).
   if (
     process.env.VITEST &&
     !opts.allowInTest &&
-    state.resolved.setIntervalImpl === defaultSetIntervalImpl
+    state.resolved.setIntervalImpl === defaultSetIntervalImpl &&
+    !timersAreFaked()
   ) {
     if (!instanced) stopManaged(name);
     return { stop: () => undefined };
