@@ -2215,7 +2215,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         /\.(?:[cm]?[jt]sx?|mjs|cjs)$/.test(f)) &&
         !/(?:^|\/)(?:\.git|\.next|_retired|build|coverage|dist|dist-host|dist-sidecar|node_modules|out|public|target)\//.test(f) &&
         !/(?:\.test|\.spec)\.[cm]?[jt]sx?$/.test(f) &&
-        !f.endsWith(".d.ts"))),
+        !f.endsWith(".d.ts")),
   },
   {
     // WI-38269 — the VACUOUS FLAG GUARD class, routed from the acceptance scorecard for
