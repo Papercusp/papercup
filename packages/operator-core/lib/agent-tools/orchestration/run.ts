@@ -268,8 +268,14 @@ function stampOrchestrationRow(
     backend: 'server',
     // A requested mode the server did not honour is one of gap 4's HARD rollback triggers
     // (server-backend mismatch), so it has to be measurable rather than inferred.
+    //
+    // ⚠ `auto` is NOT a mismatch. It is a request to let the server CHOOSE, so being served
+    // server-side is that request being honoured, not violated. Counting it would have fired a
+    // hard rollback trigger on correct behaviour — and because `auto` is the mode a caller picks
+    // when they have no opinion, it would likely have been the most common value, making the
+    // gate's loudest alarm also its least meaningful one.
     requestedExecutionMode: requested,
-    backendMismatch: requested !== 'server',
+    backendMismatch: requested !== 'server' && requested !== 'auto',
     source: input.source,
     phase: input.phase,
     executed: input.executed,
@@ -520,7 +526,26 @@ function recipeRunEnvelope(
       metrics: { ...metrics, phase: 'execution', executed: true },
     });
   }
-  return { content: [{ type: 'text', text: JSON.stringify(envelope) }] } as ToolResult;
+  const serialized = JSON.stringify(envelope);
+  if (ctx) {
+    stampOrchestrationRow(ctx, {
+      envelope,
+      serializedBytes: Buffer.byteLength(serialized, 'utf8'),
+      durationMs,
+      phase: 'execution',
+      executed: true,
+      source: 'recipe',
+      requestedExecutionMode: args.execution?.mode ?? 'server',
+      // Saved-recipe reuse is a headline P-020 rollout metric, and this path recorded none of
+      // it — the recipe was requested and reused with nothing counting either fact.
+      extra: {
+        recipeRequested: true,
+        recipeReuse: true,
+        ...(typeof args.recipe === 'string' ? { recipeId: args.recipe } : {}),
+      },
+    });
+  }
+  return { content: [{ type: 'text', text: serialized }] } as ToolResult;
 }
 
 export async function runOrchestration(
@@ -543,7 +568,7 @@ export async function runOrchestration(
       ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }),
       ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
     });
-    return recipeRunEnvelope(raw, args, Math.max(0, Date.now() - startedAt));
+    return recipeRunEnvelope(raw, args, Math.max(0, Date.now() - startedAt), ctx);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const envelope = buildOutputEnvelope({
@@ -552,7 +577,17 @@ export async function runOrchestration(
       error: { code: 'server_adapter_failed', message, retryable: false },
       metrics: { backend: 'server', phase: 'execution', executed: false },
     });
-    return { isError: true, content: [{ type: 'text', text: JSON.stringify(envelope) }] } as ToolResult;
+    const serialized = JSON.stringify(envelope);
+    stampOrchestrationRow(ctx, {
+      envelope,
+      serializedBytes: Buffer.byteLength(serialized, 'utf8'),
+      durationMs: Math.max(0, Date.now() - startedAt),
+      phase: 'execution',
+      executed: false,
+      source: 'recipe',
+      requestedExecutionMode: args.execution?.mode ?? 'server',
+    });
+    return { isError: true, content: [{ type: 'text', text: serialized }] } as ToolResult;
   }
 }
 
