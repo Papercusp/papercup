@@ -35,9 +35,22 @@
  *
  * So the trigger is now, on the AST:
  *   (1) a spawn/fork call whose options carry `detached` set to anything but the
- *       literal `false` — a strict superset of the old rule; and
+ *       literal `false` — a strict superset of the old rule;
  *   (2) a spawn/fork call whose handle is STORED ON A PROPERTY (`state.child = c`,
- *       `this.proc = c`) — the statically-detectable form of "kept past the call".
+ *       `this.proc = c`) — the statically-detectable form of "kept past the call"; and
+ *   (3) a launch whose ARGV carries a SELF-DAEMONIZING flag (`--fork`, `--daemon`,
+ *       `--daemonize`) — see C below.
+ *
+ *   C. A child that DAEMONIZES ITSELF presents NEITHER (1) nor (2), and was invisible
+ *      twice over. The parent passes no `detached` (it never asked — the CHILD forks),
+ *      and there is no handle worth parking (the one returned refers to a process that
+ *      has already exited). Worse, such a site never reaches the ALLOWLIST check, so
+ *      there is no allowlist entry to find and grepping for one is a FALSE-ABSENCE
+ *      instrument: the escape looks deliberate when nothing decided it.
+ *      Measured cost of the blind spot (WI-41043): `dbus-daemon --fork` in
+ *      desktop/a11y-bus.ts leaked one daemon + 2 at-spi children per provisioned
+ *      desktop, ~10/hour, reaching 115 host-wide with 14 leaders 77h old — entirely
+ *      unseen by this guard, which is the defect WI-41108 fixes.
  *
  * Deliberately NOT a trigger: a handle merely RETURNED to the caller (9 measured
  * sites). An awaited caller is precisely the false-positive class the ALLOWLIST
@@ -208,6 +221,45 @@ const SPAWN_CALLEES = new Set(['spawn', 'childSpawn', 'spawnFn', 'fork']);
 /** Cheap RAW pre-filter: no spawn token in the raw bytes ⇒ no need to parse at all. */
 const SPAWN_TOKEN = /\b(spawn|childSpawn|spawnFn|fork)\s*\(/;
 
+/**
+ * TRIGGER (3) — callees that launch a process SYNCHRONOUSLY. Deliberately absent from
+ * SPAWN_CALLEES, and that absence is correct for (1)/(2): a sync launch blocks until
+ * the child exits, so the child CANNOT outlive the call and there is nothing to enrol.
+ * That premise has exactly one exception — a child that daemonizes ITSELF — so these
+ * callees are admitted for trigger (3) ONLY, and only together with a daemonizing flag.
+ *
+ * Note `spawnSync(` does not match SPAWN_TOKEN (`spawn` must be followed by `(`), so
+ * before this widening such a file was skipped by the raw pre-filter BEFORE any parse.
+ * That is why a11y-bus.ts was invisible for two independent reasons, not one.
+ *
+ * Measured 2026-08-23 over 6,734 tracked non-test files: admitting these callees
+ * UNCONDITIONALLY would put 121 files in front of a triage pass (spawnSync 34,
+ * execFileSync 58, execFile 29); gated on the flag below it is exactly 1.
+ */
+const SYNC_LAUNCH_CALLEES = new Set(['spawnSync', 'execFileSync', 'execSync', 'execFile', 'exec']);
+
+/**
+ * Flags whose ONLY meaning is "detach from the caller and keep running".
+ *
+ * DELIBERATELY EXCLUDED — `--detach`, `-d`, `-D`, `-b`. They are ambiguous, and in THIS
+ * tree the ambiguity dominates: all four `--detach` sites are `git checkout --detach`,
+ * a ref operation that daemonizes nothing. A guard that cries wolf on `git checkout`
+ * gets its findings rubber-stamped into ALLOWLIST — the D-012 failure this file already
+ * warns about — so the narrow set is the load-bearing choice, not timidity.
+ *
+ * Known cost of that exclusion: a `docker run --detach` would NOT be caught. Widen this
+ * by pairing a flag with its COMMAND (`docker` + `--detach`), never by adding the bare
+ * ambiguous flag.
+ */
+const SELF_DAEMONIZING_FLAGS = new Set(['--fork', '--daemon', '--daemonize']);
+
+/**
+ * Cheap RAW pre-filter for trigger (3). Same MONOTONICITY contract as SPAWN_TOKEN: a
+ * file with no daemonizing flag in its raw bytes cannot fire (3) in its AST, because
+ * (3) requires one of these exact strings as a string literal.
+ */
+const DAEMONIZE_TOKEN = /--(fork|daemon|daemonize)\b/;
+
 const require_ = createRequire(import.meta.url);
 /** @type {any} */
 let tsCache = null;
@@ -227,8 +279,8 @@ function ts() {
  * @returns {boolean}
  */
 export function isUnenrolledDetachedSpawn(relPath, source) {
-  const { detachedNotFalse, storedOnProperty } = spawnTriggers(relPath, source);
-  if (!detachedNotFalse && !storedOnProperty) return false;
+  const { detachedNotFalse, storedOnProperty, selfDaemonizing } = spawnTriggers(relPath, source);
+  if (!detachedNotFalse && !storedOnProperty && !selfDaemonizing) return false;
   // The EXEMPTION needs a mask that keeps STRINGS: it reads a string VALUE — the enrolment
   // module SPECIFIER — so a strings-blanking mask would erase the very evidence and score
   // every file unenrolled (mass false POSITIVES). Masking nothing is the opposite failure and
@@ -247,16 +299,16 @@ export function isUnenrolledDetachedSpawn(relPath, source) {
  *
  * @param {string} relPath - Repo-relative path.
  * @param {string} source - The file's full source text.
- * @returns {{ detachedNotFalse: boolean, storedOnProperty: boolean }}
+ * @returns {{ detachedNotFalse: boolean, storedOnProperty: boolean, selfDaemonizing: boolean }}
  */
 export function spawnTriggers(relPath, source) {
-  const none = { detachedNotFalse: false, storedOnProperty: false };
+  const none = { detachedNotFalse: false, storedOnProperty: false, selfDaemonizing: false };
   if (SELF_EXCLUDED.has(relPath)) return none;
   // Cheap RAW pre-filter. Gating the TS parse on a raw token is what keeps this
   // affordable: ~160 of 7,058 tracked files carry a spawn token, and an unconditional
   // parse of all of them costs minutes. The filter is MONOTONIC — a file with no spawn
   // token in its raw bytes cannot have a spawn CALL in its AST.
-  if (!SPAWN_TOKEN.test(source)) return none;
+  if (!SPAWN_TOKEN.test(source) && !DAEMONIZE_TOKEN.test(source)) return none;
 
   const t = ts();
   const sf = t.createSourceFile(
@@ -269,6 +321,9 @@ export function spawnTriggers(relPath, source) {
 
   let detachedNotFalse = false;
   let storedOnProperty = false;
+  /** TRIGGER (3), halves — see `selfDaemonizing` below for why both are file-level. */
+  let hasLaunchCall = false;
+  let hasDaemonizeFlag = false;
   /** identifiers bound to a spawn result: `const child = spawn(...)` */
   const spawnBound = new Set();
   /** identifiers used as the RHS of a property assignment: `state.child = child` */
@@ -316,8 +371,34 @@ export function spawnTriggers(relPath, source) {
     return false;
   };
 
+  /** Any process launch, sync or async — the widened callee set, for TRIGGER (3) only. */
+  const isLaunchCall = (node) => {
+    if (isSpawnCall(node)) return true;
+    if (!t.isCallExpression(node)) return false;
+    const e = node.expression;
+    if (t.isIdentifier(e)) return SYNC_LAUNCH_CALLEES.has(e.text);
+    if (t.isPropertyAccessExpression(e)) return SYNC_LAUNCH_CALLEES.has(e.name.text);
+    return false;
+  };
+
   const visit = (node) => {
     if (isSpawnCall(node) && detachedTrigger(node)) detachedNotFalse = true;
+
+    // TRIGGER (3), matched at FILE level rather than per-call, deliberately. The argv is
+    // routinely built somewhere other than the call: a11y-bus.ts:82 parks `--fork` in an
+    // `args:` property of a command DESCRIPTOR and spawns it at :230 as `busCmd.args`, so
+    // walking a call's own arguments would miss the real offender — the exact site this
+    // trigger exists for. File-level also matches how every exemption here already works
+    // (ALLOWLIST, KNOWN_DEFECTS and the enrolment-import check are all keyed by file).
+    // Reading string LITERALS off the AST — not the raw text — is what keeps a flag named
+    // only in a comment from tripping it.
+    if (isLaunchCall(node)) hasLaunchCall = true;
+    if (
+      (t.isStringLiteral(node) || t.isNoSubstitutionTemplateLiteral(node)) &&
+      SELF_DAEMONIZING_FLAGS.has(node.text)
+    ) {
+      hasDaemonizeFlag = true;
+    }
 
     // TRIGGER (2), direct form: `state.child = spawn(...)`, `this.proc = spawn(...)`,
     // or a class field initialised straight from a spawn.
@@ -349,7 +430,7 @@ export function spawnTriggers(relPath, source) {
       }
     }
   }
-  return { detachedNotFalse, storedOnProperty };
+  return { detachedNotFalse, storedOnProperty, selfDaemonizing: hasLaunchCall && hasDaemonizeFlag };
 }
 
 /**
@@ -382,10 +463,13 @@ function main() {
       continue;
     }
     if (isUnenrolledDetachedSpawn(rel, source)) {
-      const { detachedNotFalse, storedOnProperty } = spawnTriggers(rel, source);
+      const { detachedNotFalse, storedOnProperty, selfDaemonizing } = spawnTriggers(rel, source);
       const why = [
         detachedNotFalse ? '`detached` set to something other than false' : null,
         storedOnProperty ? 'spawn handle parked on a property (outlives the call)' : null,
+        selfDaemonizing
+          ? 'argv carries a SELF-DAEMONIZING flag (--fork/--daemon/--daemonize): the child forks and reparents to init, so no `detached` option and no handle ever appear'
+          : null,
       ]
         .filter(Boolean)
         .join(' + ');
@@ -414,12 +498,15 @@ function main() {
   for (const o of offenders) console.error(`  ${o}`);
   console.error(parked);
   console.error(
-    '\nA spawn that outlives the call that made it — because it is `detached`, or because\n' +
-      'its handle is parked on a property — is the exact population the task manager exists\n' +
-      'to keep addressable. Either:\n\n' +
+    '\nA spawn that outlives the call that made it — because it is `detached`, because its\n' +
+      'handle is parked on a property, or because the CHILD DAEMONIZES ITSELF — is the exact\n' +
+      'population the task manager exists to keep addressable. Either:\n\n' +
       '  1. enrol it — `beginSyncEnrolment` + `completeSyncEnrolment` from\n' +
       '     packages/operator-core/lib/task-manager/enroll-sync.ts (sync seams), or\n' +
-      '     `managedSpawn` from task-manager/managed-spawn.ts (async seams); or\n' +
+      '     `managedSpawn` from task-manager/managed-spawn.ts (async seams).\n' +
+      '     A self-daemonizing child has NO handle to enrol — that is not a blocker:\n' +
+      '     the sync seam takes a PID, so ask the daemon for its own\n' +
+      '     (`dbus-daemon --print-pid=1`) and enrol that; or\n' +
       '  2. add it to ALLOWLIST in this file WITH A REASON, if its lifetime genuinely\n' +
       '     is not ours to own (a human terminal window, a pre-operator bootstrap, a\n' +
       '     release cut that must survive the restart it performs).\n\n' +
