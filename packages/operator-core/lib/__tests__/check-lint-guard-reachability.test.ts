@@ -46,6 +46,10 @@ import {
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const SCRIPT = 'scripts/check-lint-guard-reachability.mjs';
+// A wedged checker must fail this test with evidence, not hold the lane until the
+// affected-suite watchdog reaps it. The normal run completes in a few seconds; this
+// leaves generous headroom for a loaded worker while bounding the failure mode.
+const CHECKER_TIMEOUT_MS = 120_000;
 
 /** No corpus mentions anything unless a test says so. */
 const corpora = (over: Partial<Record<string, string>> = {}) => ({
@@ -692,7 +696,11 @@ describe('INERT registrations — registering a guard is a CLAIM, declaring the 
   it('REAL TREE — every registration in the live registry is actually declared', () => {
     // The enforcing half: a logic-only version of this axis would itself be the false green
     // this file exists to detect. Executes the checker over THIS repository.
-    const out = spawnSync('node', [SCRIPT], { cwd: REPO_ROOT, encoding: 'utf-8' });
+    const out = spawnSync('node', [SCRIPT], {
+      cwd: REPO_ROOT,
+      encoding: 'utf-8',
+      timeout: CHECKER_TIMEOUT_MS,
+    });
     expect(`${out.stdout ?? ''}${out.stderr ?? ''}`).not.toMatch(/registration\(s\) are INERT/);
   });
 });
@@ -937,10 +945,18 @@ describe('the repository itself (real-tree assertion)', () => {
   it('has no unenforced lint guard beyond the acknowledged, shrink-only set', () => {
     const run = () => {
       try {
-        return { code: 0, out: execFileSync('node', [SCRIPT], { cwd: REPO_ROOT, encoding: 'utf-8' }) };
+        return {
+          code: 0,
+          out: execFileSync('node', [SCRIPT], {
+            cwd: REPO_ROOT,
+            encoding: 'utf-8',
+            timeout: CHECKER_TIMEOUT_MS,
+          }),
+        };
       } catch (e) {
-        const err = e as { status?: number; stdout?: string; stderr?: string };
-        return { code: err.status ?? 1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+        const err = e as { message?: string; signal?: string; status?: number; stdout?: string; stderr?: string };
+        const detail = err.message ?? (err.signal ? `child terminated by ${err.signal}` : 'child failed');
+        return { code: err.status ?? 1, out: `${err.stdout ?? ''}${err.stderr ?? ''}\n${detail}` };
       }
     };
     const { code, out } = run();
@@ -1015,6 +1031,7 @@ describe('the repository itself (real-tree assertion)', () => {
     const r = spawnSync('node', [SCRIPT], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
+      timeout: CHECKER_TIMEOUT_MS,
       env: { ...process.env, LINT_GUARD_REACHABILITY_AFFECTED_TESTS: stub },
     });
     const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
@@ -1028,7 +1045,11 @@ describe('the repository itself (real-tree assertion)', () => {
   it('states the coverage caveat in the ordinary PASS output, not only on failure', () => {
     // The whole defect was a number quoted without its qualifier: "68/82 enforced" read
     // as "the tree is protected". The caveat has to reach the reader of the NUMBER.
-    const out = execFileSync('node', [SCRIPT], { cwd: REPO_ROOT, encoding: 'utf-8' });
+    const out = execFileSync('node', [SCRIPT], {
+      cwd: REPO_ROOT,
+      encoding: 'utf-8',
+      timeout: CHECKER_TIMEOUT_MS,
+    });
     expect(out).toMatch(/enforced over only PART of what they scan/);
     expect(out).toMatch(/per-GUARD boolean, never a per-SCOPE one/);
   });
