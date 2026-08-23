@@ -27,6 +27,10 @@ const createWorkItemMock = vi.fn(async (input: { kind: string; title: string; ha
   payload: input.payload,
 }));
 const linkWorkItemMock = vi.fn(async (...args: unknown[]) => {});
+let planCollisionRows: Array<{ feature_id: string; status: string }> = [];
+const sqlMock = vi.fn(async (strings: readonly string[], ..._args: unknown[]) =>
+  strings.join('').includes('SELECT wi.feature_id, wi.status') ? planCollisionRows : [],
+);
 vi.mock('../../work-items', () => ({
   createWorkItem: (...args: unknown[]) => createWorkItemMock(...(args as [never])),
   getWorkItem: vi.fn(async () => null),
@@ -40,7 +44,7 @@ vi.mock('../_hive-scope', () => ({
   resolveHiveScope: vi.fn(async () => ({ kind: 'hive', slug: 'papercusp' })),
   HIVE_REQUIRED_DETAIL: 'hive required',
 }));
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
 vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
@@ -56,6 +60,8 @@ const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
 beforeEach(() => {
   createWorkItemMock.mockClear();
   linkWorkItemMock.mockClear();
+  sqlMock.mockClear();
+  planCollisionRows = [];
 });
 
 describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', () => {
@@ -142,5 +148,51 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
       item_id: 'P-413',
       harness_slug: 'papercusp',
     });
+  });
+
+  it('rejects a caller-supplied payload.plan_item when an open canonical row covers the same lane', async () => {
+    planCollisionRows = [{ feature_id: 'WI-EXISTING', status: 'wip' }];
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'duplicate lane work',
+        harness: 'papercusp',
+        payload: { plan_item: { plan_slug: 'some-plan', item_id: 'P-413', harness_slug: 'papercusp' } },
+      },
+      ctx,
+    );
+
+    expect(r).toEqual({
+      ok: false,
+      error: 'duplicate_plan_item',
+      message: expect.stringContaining('WI-EXISTING'),
+      existing: { id: 'WI-EXISTING', state: 'wip' },
+    });
+    expect(createWorkItemMock).not.toHaveBeenCalled();
+    const query = sqlMock.mock.calls
+      .map(([strings]) => strings.join(''))
+      .find((candidate) => candidate.includes('SELECT wi.feature_id, wi.status')) ?? '';
+    expect(query).toContain('source_plan_slug');
+    expect(query).toContain("payload->'plan_item'");
+  });
+
+  it('allows a payload.plan_item whose only existing history is terminal', async () => {
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'follow up completed lane',
+        harness: 'papercusp',
+        payload: { plan_item: { plan_slug: 'some-plan', item_id: 'P-413', harness_slug: 'papercusp' } },
+      },
+      ctx,
+    );
+
+    expect(r.ok).toBe(true);
+    expect(createWorkItemMock).toHaveBeenCalledTimes(1);
+    const query = sqlMock.mock.calls
+      .map(([strings]) => strings.join(''))
+      .find((candidate) => candidate.includes('SELECT wi.feature_id, wi.status')) ?? '';
+    expect(query).toContain('NOT (wi.status = ANY(');
   });
 });

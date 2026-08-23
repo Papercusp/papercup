@@ -39,6 +39,7 @@ import {
 } from './_derive-paths';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import {
   adoptConditionIncumbent,
   settleConditionClaim,
@@ -310,6 +311,71 @@ async function appendWorkItemOccurrence(
     evidence: workItemOccurrenceEvidence(args, similarOpen, dedupCoverage, queueAdmission),
     admissionIdentity: identity,
   }).catch(() => null);
+}
+
+interface PlanItemIdentity {
+  planSlug: string;
+  itemId: string;
+}
+
+interface PlanItemCollisionRow {
+  feature_id: string;
+  status: string;
+}
+
+function readPlanItemIdentity(raw: unknown): PlanItemIdentity | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const planSlug = typeof value.plan_slug === 'string' ? value.plan_slug.trim() : '';
+  const itemId = typeof value.item_id === 'string' ? value.item_id.trim() : '';
+  return planSlug && itemId ? { planSlug, itemId } : null;
+}
+
+/**
+ * D-046: one live work-item per plan lane. Promoted rows prove the lane through
+ * source_plan_slug/source_plan_item_ids, while ad-hoc rows use payload.plan_item as
+ * their only durable stamp. Read both before INSERT so a caller-supplied stamp cannot
+ * bypass the canonical plan-link path. The terminal predicate deliberately preserves
+ * history: a finished row does not prevent a later follow-up from addressing a lane.
+ */
+async function findOpenPlanItemCollision(
+  workspaceId: string | undefined,
+  identities: readonly PlanItemIdentity[],
+): Promise<PlanItemCollisionRow | null> {
+  if (!workspaceId || identities.length === 0) return null;
+
+  const { sql } = getOrgPg();
+  const matches = identities.map(({ planSlug, itemId }) => sql`(
+    (
+      NULLIF(btrim(wi.source_plan_slug), '') IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+          FROM unnest(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])) AS source_item(item_id)
+         WHERE btrim(source_item.item_id) <> ''
+      )
+      AND btrim(wi.source_plan_slug) = ${planSlug}
+      AND EXISTS (
+        SELECT 1
+          FROM unnest(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])) AS source_item(item_id)
+         WHERE btrim(source_item.item_id) = ${itemId}
+      )
+    )
+    OR (
+      wi.payload->'plan_item' IS NOT NULL
+      AND wi.payload->'plan_item'->>'plan_slug' = ${planSlug}
+      AND wi.payload->'plan_item'->>'item_id' = ${itemId}
+    )
+  )`);
+  const exactMatch = matches.slice(1).reduce((acc, next) => sql`${acc} OR ${next}`, matches[0]);
+  const rows = await sql<PlanItemCollisionRow[]>`
+    SELECT wi.feature_id, wi.status
+      FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ${workspaceId}
+       AND NOT (wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND (${exactMatch})
+     ORDER BY wi.created_ts ASC NULLS LAST, wi.feature_id ASC
+     LIMIT 1`;
+  return rows[0] ?? null;
 }
 
 export async function createOneWorkItem(
@@ -785,6 +851,31 @@ export async function createOneWorkItem(
           },
         }
       : payloadWithPlanStamp;
+    const planItemIdentities = new Map<string, PlanItemIdentity>();
+    const stampedPlanItem = readPlanItemIdentity(payloadForCreate?.plan_item);
+    if (stampedPlanItem) {
+      planItemIdentities.set(`${stampedPlanItem.planSlug}#${stampedPlanItem.itemId}`, stampedPlanItem);
+    }
+    if (args.targetPlanItem?.slug && args.targetPlanItem.itemId) {
+      const targetPlanItem = {
+        planSlug: args.targetPlanItem.slug.trim(),
+        itemId: args.targetPlanItem.itemId.trim(),
+      };
+      if (targetPlanItem.planSlug && targetPlanItem.itemId) {
+        planItemIdentities.set(`${targetPlanItem.planSlug}#${targetPlanItem.itemId}`, targetPlanItem);
+      }
+    }
+    const planItemCollision = await findOpenPlanItemCollision(workspaceId, [...planItemIdentities.values()]);
+    if (planItemCollision) {
+      return {
+        ok: false,
+        error: 'duplicate_plan_item',
+        message:
+          `plan item coverage already exists on OPEN work-item ${planItemCollision.feature_id} ` +
+          `(state=${planItemCollision.status}); continue that item instead of creating a sibling`,
+        existing: { id: planItemCollision.feature_id, state: planItemCollision.status },
+      };
+    }
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
