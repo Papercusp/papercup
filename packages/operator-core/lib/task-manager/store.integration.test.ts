@@ -64,7 +64,7 @@ async function insertAgentSessionTask(input: {
       ${input.taskId}, ${WS}, ${input.taskId}, ${input.taskClass ?? 'agent-session'},
       ${input.taskId}, '[]'::jsonb, 'test', true, ${state}, ${input.sessionId ?? null},
       CASE WHEN ${state === 'exited'} THEN now() ELSE NULL END,
-      jsonb_build_object('coordOwnerId', ${input.coordOwnerId})
+      jsonb_build_object('coordOwnerId', ${input.coordOwnerId}::text)
     )
   `;
 }
