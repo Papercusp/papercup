@@ -22,11 +22,7 @@ import {
   type HostedVerifiedIdentitySession,
 } from '../../../auth/hosted/provider';
 import { readCookie, serializeDeleteCookie, serializeSetCookie } from '../../cookies';
-import {
-  OAuthHostedAuthFlowStore,
-  type HostedAuthFlow,
-  type HostedAuthFlowStore,
-} from './flow';
+import { OAuthHostedAuthFlowStore, type HostedAuthFlow, type HostedAuthFlowStore } from './flow';
 
 export const HOSTED_AUTH_FLOW_COOKIE = '__Secure-papercusp_hosted_auth_flow';
 export const HOSTED_AUTH_CALLBACK_ROUTE = '/hosted/auth/callback';
@@ -54,9 +50,7 @@ export interface BindHostedIdentityInput {
   readonly identity: HostedVerifiedIdentity;
 }
 
-export type BindHostedIdentity = (
-  input: BindHostedIdentityInput,
-) => Promise<HostedIdentityBinding | null>;
+export type BindHostedIdentity = (input: BindHostedIdentityInput) => Promise<HostedIdentityBinding | null>;
 
 export type HostedAuthSessionStore = Pick<HostedSessionStore, 'create' | 'resolve' | 'revoke'>;
 
@@ -81,12 +75,12 @@ function nonEmpty(value: unknown): value is string {
 function publicHttpsOrigin(value: string): string {
   const url = new URL(value);
   if (
-    url.protocol !== 'https:'
-    || url.username
-    || url.password
-    || (url.pathname !== '/' && url.pathname !== '')
-    || url.search
-    || url.hash
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    (url.pathname !== '/' && url.pathname !== '') ||
+    url.search ||
+    url.hash
   ) {
     throw new TypeError('hosted_auth_public_origin_must_be_an_exact_https_origin');
   }
@@ -96,13 +90,13 @@ function publicHttpsOrigin(value: string): string {
 /** Accept only an origin-relative browser target; never a scheme-relative URL. */
 export function safeHostedReturnTarget(value: unknown, origin: string): string | null {
   if (
-    typeof value !== 'string'
-    || value.length === 0
-    || value.length > 2_048
-    || !value.startsWith('/')
-    || value.startsWith('//')
-    || value.includes('\\')
-    || /[\r\n\0]/.test(value)
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 2_048 ||
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.includes('\\') ||
+    /[\r\n\0]/.test(value)
   ) {
     return null;
   }
@@ -148,30 +142,16 @@ function deleteFlowCookie(): string {
   });
 }
 
-function jsonError(
-  code: string,
-  safeMessage: string,
-  status: number,
-  headers?: HeadersInit,
-): Response {
-  return Response.json(
-    { ok: false, error: { code, safeMessage } },
-    { status, headers },
-  );
+function jsonError(code: string, safeMessage: string, status: number, headers?: HeadersInit): Response {
+  return Response.json({ ok: false, error: { code, safeMessage } }, { status, headers });
 }
 
 function providerErrorStatus(error: HostedIdentityProviderError): number {
   if (error.code === 'rate_limited') return 429;
-  if (
-    error.code === 'provider_unavailable'
-    || error.code === 'provider_error'
-    || error.code === 'configuration_error'
-  ) return 503;
-  if (
-    error.code === 'invalid_session'
-    || error.code === 'session_expired'
-    || error.code === 'session_revoked'
-  ) return 401;
+  if (error.code === 'provider_unavailable' || error.code === 'provider_error' || error.code === 'configuration_error')
+    return 503;
+  if (error.code === 'invalid_session' || error.code === 'session_expired' || error.code === 'session_revoked')
+    return 401;
   return 400;
 }
 
@@ -220,29 +200,26 @@ function validProviderRedirect(value: string | null): string | null {
 
 function validIdentitySession(value: HostedVerifiedIdentitySession, nowMs: number): boolean {
   return (
-    nonEmpty(value.externalSessionId)
-    && nonEmpty(value.identity?.externalUserId)
-    && nonEmpty(value.identity?.primaryEmail)
-    && value.identity.emailVerified === true
-    && Number.isFinite(value.expiresAtMs)
-    && value.expiresAtMs > nowMs
+    nonEmpty(value.externalSessionId) &&
+    nonEmpty(value.identity?.externalUserId) &&
+    nonEmpty(value.identity?.primaryEmail) &&
+    value.identity.emailVerified === true &&
+    Number.isFinite(value.expiresAtMs) &&
+    value.expiresAtMs > nowMs
   );
 }
 
 function validBinding(value: HostedIdentityBinding): boolean {
   return (
-    nonEmpty(value.userId)
-    && nonEmpty(value.organizationId)
-    && (value.workspaceId == null || nonEmpty(value.workspaceId))
-    && Number.isSafeInteger(value.permissionVersion)
-    && value.permissionVersion >= 0
+    nonEmpty(value.userId) &&
+    nonEmpty(value.organizationId) &&
+    (value.workspaceId == null || nonEmpty(value.workspaceId)) &&
+    Number.isSafeInteger(value.permissionVersion) &&
+    value.permissionVersion >= 0
   );
 }
 
-async function revokeUpstreamBestEffort(
-  provider: HostedIdentityProvider,
-  externalSessionId: string,
-): Promise<void> {
+async function revokeUpstreamBestEffort(provider: HostedIdentityProvider, externalSessionId: string): Promise<void> {
   try {
     await provider.revokeSession({ externalSessionId, reason: 'security_event' });
   } catch {
@@ -256,8 +233,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
   const callbackUri = `${origin}${HOSTED_AUTH_CALLBACK_PATH}`;
   const clock = deps.clock ?? (() => new Date());
   const random = deps.randomBytes ?? ((size: number) => nodeRandomBytes(size));
-  const flowStore = deps.flowStore
-    ?? new OAuthHostedAuthFlowStore(deps.provider.providerId, new URL(origin).host);
+  const flowStore = deps.flowStore ?? new OAuthHostedAuthFlowStore(deps.provider.providerId, new URL(origin).host);
 
   const signIn = defineTool({
     method: 'GET',
@@ -350,9 +326,9 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
       const flow = consumed.flow;
       const browserBinding = readCookie(req, HOSTED_AUTH_FLOW_COOKIE) ?? '';
       if (
-        flow.providerId !== deps.provider.providerId
-        || flow.redirectUri !== callbackUri
-        || !equalDigest(flow.browserBindingDigest, digest(browserBinding))
+        flow.providerId !== deps.provider.providerId ||
+        flow.redirectUri !== callbackUri ||
+        !equalDigest(flow.browserBindingDigest, digest(browserBinding))
       ) {
         return jsonError('browser_flow_mismatch', 'The sign-in flow does not match this browser.', 400, {
           'set-cookie': deleteFlowCookie(),
@@ -393,9 +369,12 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
         });
       }
       if (!exchanged.ok) {
-        return providerErrorResponse(exchanged.error, new Headers({
-          'set-cookie': deleteFlowCookie(),
-        }));
+        return providerErrorResponse(
+          exchanged.error,
+          new Headers({
+            'set-cookie': deleteFlowCookie(),
+          }),
+        );
       }
       const upstream = exchanged.value;
       const now = clock();
@@ -411,9 +390,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
         binding = await deps.bindIdentity({
           providerId: deps.provider.providerId,
           identity: upstream.identity,
-          ...(upstream.externalOrganizationId
-            ? { externalOrganizationId: upstream.externalOrganizationId }
-            : {}),
+          ...(upstream.externalOrganizationId ? { externalOrganizationId: upstream.externalOrganizationId } : {}),
         });
       } catch {
         await revokeUpstreamBestEffort(deps.provider, upstream.externalSessionId);
@@ -489,18 +466,20 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
 
       const postLogoutRedirectUri = new URL(returnTo, origin).toString();
       const [logoutResult, revokeResult] = await Promise.all([
-        deps.provider.beginLogout({
-          externalSessionId: session.upstreamSessionId,
-          postLogoutRedirectUri,
-        }).catch(() => null),
-        deps.provider.revokeSession({
-          externalSessionId: session.upstreamSessionId,
-          reason: 'user_logout',
-        }).catch(() => null),
+        deps.provider
+          .beginLogout({
+            externalSessionId: session.upstreamSessionId,
+            postLogoutRedirectUri,
+          })
+          .catch(() => null),
+        deps.provider
+          .revokeSession({
+            externalSessionId: session.upstreamSessionId,
+            reason: 'user_logout',
+          })
+          .catch(() => null),
       ]);
-      const logoutUrl = logoutResult?.ok
-        ? validProviderRedirect(logoutResult.value.logoutUrl)
-        : null;
+      const logoutUrl = logoutResult?.ok ? validProviderRedirect(logoutResult.value.logoutUrl) : null;
       return Response.json(
         {
           ok: true,
@@ -552,10 +531,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
 
       const upstream = validated.value;
       const now = clock();
-      if (
-        upstream.externalSessionId !== local.upstreamSessionId
-        || !validIdentitySession(upstream, now.getTime())
-      ) {
+      if (upstream.externalSessionId !== local.upstreamSessionId || !validIdentitySession(upstream, now.getTime())) {
         await deps.sessionStore.revoke(sessionId, 'upstream_session_mismatch', now).catch(() => false);
         return jsonError('session_invalid', 'The hosted session is not valid.', 401, clearHeaders);
       }
@@ -590,9 +566,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
 }
 
 /** Named integration seam; deliberately side-effect-free. */
-export function configureHostedAuthRoutes(
-  deps: HostedAuthRouteDependencies,
-): ReadonlyArray<AnyRoute> {
+export function configureHostedAuthRoutes(deps: HostedAuthRouteDependencies): ReadonlyArray<AnyRoute> {
   return createHostedAuthRoutes(deps);
 }
 

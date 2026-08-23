@@ -5,10 +5,7 @@ import {
   type CreateHostedSessionInput,
   type HostedSession,
 } from '../../../auth/hosted-session';
-import {
-  createFakeHostedIdentityProvider,
-  FAKE_HOSTED_IDENTITY_NOW_MS,
-} from '../../../auth/hosted/fake-provider';
+import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_NOW_MS } from '../../../auth/hosted/fake-provider';
 import { hostedIdentityProviderFailure } from '../../../auth/hosted/provider';
 import {
   HOSTED_AUTH_CALLBACK_PATH,
@@ -18,11 +15,7 @@ import {
   safeHostedReturnTarget,
   type HostedAuthSessionStore,
 } from './index';
-import type {
-  HostedAuthFlow,
-  HostedAuthFlowConsumeResult,
-  HostedAuthFlowStore,
-} from './flow';
+import type { HostedAuthFlow, HostedAuthFlowConsumeResult, HostedAuthFlowStore } from './flow';
 
 const ORIGIN = 'https://app.papercusp.com';
 const NOW = new Date(FAKE_HOSTED_IDENTITY_NOW_MS);
@@ -194,15 +187,17 @@ describe('hosted auth route contract', () => {
       code: 'code-1',
       redirectUri: `${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}`,
     });
-    expect(s.sessionStore.created).toEqual([{
-      userId: 'user-local-1',
-      organizationId: 'org-local-1',
-      workspaceId: 'workspace-local-1',
-      permissionVersion: 7,
-      upstreamProvider: 'fake',
-      upstreamSessionId: 'session_test_001',
-      expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
-    }]);
+    expect(s.sessionStore.created).toEqual([
+      {
+        userId: 'user-local-1',
+        organizationId: 'org-local-1',
+        workspaceId: 'workspace-local-1',
+        permissionVersion: 7,
+        upstreamProvider: 'fake',
+        upstreamSessionId: 'session_test_001',
+        expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
+      },
+    ]);
     expect(s.sessionStore.created[0]).not.toHaveProperty('permissions');
     expect(s.sessionStore.created[0]).not.toHaveProperty('capabilities');
     const signedCookie = responseCookieValue(response, '__Host-papercusp_session');
@@ -284,8 +279,12 @@ describe('hosted auth route contract', () => {
     });
     const s = setup(provider);
     await s.sessionStore.create({
-      userId: 'user-local-1', organizationId: 'org-local-1', workspaceId: null,
-      permissionVersion: 7, upstreamProvider: 'fake', upstreamSessionId: 'session_test_001',
+      userId: 'user-local-1',
+      organizationId: 'org-local-1',
+      workspaceId: null,
+      permissionVersion: 7,
+      upstreamProvider: 'fake',
+      upstreamSessionId: 'session_test_001',
       expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
     });
     const cookie = s.codec.serialize(SESSION_ID, s.sessionStore.current!.expiresAt, NOW);
@@ -303,17 +302,25 @@ describe('hosted auth route contract', () => {
     const provider = createFakeHostedIdentityProvider({
       script: {
         beginLogout: hostedIdentityProviderFailure({
-          code: 'provider_unavailable', safeMessage: 'Unavailable.', retryable: true,
+          code: 'provider_unavailable',
+          safeMessage: 'Unavailable.',
+          retryable: true,
         }),
         revokeSession: hostedIdentityProviderFailure({
-          code: 'provider_unavailable', safeMessage: 'Unavailable.', retryable: true,
+          code: 'provider_unavailable',
+          safeMessage: 'Unavailable.',
+          retryable: true,
         }),
       },
     });
     const s = setup(provider);
     await s.sessionStore.create({
-      userId: 'user-local-1', organizationId: 'org-local-1', workspaceId: null,
-      permissionVersion: 7, upstreamProvider: 'fake', upstreamSessionId: 'session_test_001',
+      userId: 'user-local-1',
+      organizationId: 'org-local-1',
+      workspaceId: null,
+      permissionVersion: 7,
+      upstreamProvider: 'fake',
+      upstreamSessionId: 'session_test_001',
       expiresAt: new Date(FAKE_HOSTED_IDENTITY_NOW_MS + 3_600_000),
     });
     const cookie = s.codec.serialize(SESSION_ID, s.sessionStore.current!.expiresAt, NOW);
@@ -321,7 +328,9 @@ describe('hosted auth route contract', () => {
     const crossOrigin = await invoke(
       s.route('POST', '/hosted/auth/logout'),
       new Request(`${ORIGIN}/api/hosted/auth/logout`, {
-        method: 'POST', headers: { origin: 'https://evil.example', cookie }, body: '{}',
+        method: 'POST',
+        headers: { origin: 'https://evil.example', cookie },
+        body: '{}',
       }),
     );
     expect(crossOrigin.status).toBe(403);
@@ -337,7 +346,10 @@ describe('hosted auth route contract', () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      ok: true, returnTo: '/signed-out', redirectTo: '/signed-out', upstreamRevoked: false,
+      ok: true,
+      returnTo: '/signed-out',
+      redirectTo: '/signed-out',
+      upstreamRevoked: false,
     });
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(s.sessionStore.revoked).toEqual([{ id: SESSION_ID, reason: 'user_logout' }]);
@@ -345,12 +357,16 @@ describe('hosted auth route contract', () => {
 });
 
 describe('safeHostedReturnTarget', () => {
-  it.each(['https://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)'])('rejects %s', (value) => {
-    expect(safeHostedReturnTarget(value, ORIGIN)).toBeNull();
-  });
+  it.each(['https://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)'])(
+    'rejects %s',
+    (value) => {
+      expect(safeHostedReturnTarget(value, ORIGIN)).toBeNull();
+    },
+  );
 
   it('preserves a same-origin relative path, query, and hash', () => {
-    expect(safeHostedReturnTarget('/workspaces/ws-1?tab=activity#recent', ORIGIN))
-      .toBe('/workspaces/ws-1?tab=activity#recent');
+    expect(safeHostedReturnTarget('/workspaces/ws-1?tab=activity#recent', ORIGIN)).toBe(
+      '/workspaces/ws-1?tab=activity#recent',
+    );
   });
 });

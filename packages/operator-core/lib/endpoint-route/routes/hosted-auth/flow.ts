@@ -79,12 +79,12 @@ export class OAuthHostedAuthFlowStore implements HostedAuthFlowStore {
     }
     const claims = verified.claims;
     if (
-      !claims
-      || claims.plugin !== FLOW_PLUGIN
-      || claims.harness !== FLOW_HARNESS
-      || claims.field !== FLOW_FIELD
-      || claims.provider !== this.providerId
-      || claims.providerHost !== this.publicOriginHost
+      !claims ||
+      claims.plugin !== FLOW_PLUGIN ||
+      claims.harness !== FLOW_HARNESS ||
+      claims.field !== FLOW_FIELD ||
+      claims.provider !== this.providerId ||
+      claims.providerHost !== this.publicOriginHost
     ) {
       return { ok: false, error: 'wrong-flow' };
     }
