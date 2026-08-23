@@ -591,6 +591,7 @@ run_guard() {
     # supervised child so it reaches every test process without leaking into
     # the caller's environment.
     export PAPERCUSP_MUTATION_PROBE=1
+    export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
     if [ "$FAKE_DESTRUCTIVE" -eq 1 ]; then
       # PATH-level interception, scoped to the supervised child only.
       export PATH="$FAKE_BIN:$PATH"
@@ -616,6 +617,91 @@ run_guard() {
   cat "$output"
   return "$rc"
 }
+
+if [ "$HISTORICAL_MODE" -eq 1 ]; then
+  # Hand each child a fresh copy of a frozen snapshot. A guard/calibration
+  # suite that writes its subject must not rewrite the reference used by the
+  # next phase, and the current working file must never be the `{}` target.
+  SNAPSHOT_RUN=0
+  run_snapshot_command() {
+    local phase="$1" label="$2" snapshot="$3" template="$4" output="$5" target cmd rc
+    SNAPSHOT_RUN=$((SNAPSHOT_RUN + 1))
+    target="$SCRATCH/snapshot-run-$SNAPSHOT_RUN"
+    cp -p "$snapshot" "$target" || die "could not stage $phase snapshot copy"
+    cmd="${template//\{\}/$target}"
+    run_guard "$phase" "$label" "$cmd" "$output"
+    rc=$?
+    if ! cmp -s "$snapshot" "$target"; then
+      die "$phase command modified its snapshot copy; calibration/verdict evidence is unsound"
+    fi
+    return "$rc"
+  }
+
+  TARGET_MODE="historical:$HISTORICAL_SHA"
+  readonly TARGET_MODE
+  CURRENT_GUARD_LOG="$SCRATCH/current-guard.log"
+  CALIBRATION_CURRENT_LOG="$SCRATCH/calibration-current.log"
+  CALIBRATION_HISTORICAL_LOG="$SCRATCH/calibration-historical.log"
+  HISTORICAL_GUARD_LOG="$SCRATCH/historical-guard.log"
+
+  CURRENT_RC=0
+  if run_snapshot_command baseline "current snapshot guard" "$CURRENT_SNAPSHOT" "$TEST_CMD" "$CURRENT_GUARD_LOG"; then
+    :
+  else
+    CURRENT_RC=$?
+    log "CURRENT FAILED (guard exited $CURRENT_RC) — refusing to score the historical source"
+    printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=-1 calibration_current=-1 calibration_historical=-1 against_commit=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_SHA"
+    exit 2
+  fi
+
+  CALIBRATION_CURRENT_RC=0
+  if run_snapshot_command calibration-current "current snapshot calibration" "$CURRENT_SNAPSHOT" "$CALIBRATION_CMD" "$CALIBRATION_CURRENT_LOG"; then
+    :
+  else
+    CALIBRATION_CURRENT_RC=$?
+    log "CALIBRATION FAILED on current snapshot (exit $CALIBRATION_CURRENT_RC)"
+    printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=-1 calibration_current=%d calibration_historical=-1 against_commit=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$CALIBRATION_CURRENT_RC" "$HISTORICAL_SHA"
+    exit 2
+  fi
+
+  CALIBRATION_HISTORICAL_RC=0
+  if run_snapshot_command calibration-historical "historical snapshot calibration" "$HISTORICAL_SNAPSHOT" "$CALIBRATION_CMD" "$CALIBRATION_HISTORICAL_LOG"; then
+    :
+  else
+    CALIBRATION_HISTORICAL_RC=$?
+    log "CALIBRATION FAILED on historical snapshot (exit $CALIBRATION_HISTORICAL_RC) — the calibration must pass on the old source"
+    printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=-1 calibration_current=%d calibration_historical=%d against_commit=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$HISTORICAL_SHA"
+    exit 2
+  fi
+
+  HISTORICAL_RC=0
+  if run_snapshot_command historical "historical snapshot guard" "$HISTORICAL_SNAPSHOT" "$TEST_CMD" "$HISTORICAL_GUARD_LOG"; then
+    :
+  else
+    HISTORICAL_RC=$?
+  fi
+
+  if [ "$HISTORICAL_RC" -eq 1 ]; then
+    VERDICT="caught"
+    log "VERDICT: HISTORICAL SOURCE CAUGHT (guard exited $HISTORICAL_RC) — the guard is falsifiable against the selected before-fix source ✓"
+  elif [ "$HISTORICAL_RC" -eq 0 ]; then
+    VERDICT="survived"
+    log "VERDICT: HISTORICAL SOURCE SURVIVED (guard exited 0) — the guard does NOT constrain this historical source ✗"
+  else
+    VERDICT="harness-error"
+    log "VERDICT: HARNESS ERROR (historical guard exited $HISTORICAL_RC) — no falsifiability verdict is sound"
+  fi
+
+  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d\n' \
+    "$VERDICT" "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$MUST_BE_ABSENT" "${#POSITIVE_CONTROLS[@]}"
+
+  [ "$VERDICT" = "harness-error" ] && exit 2
+  [ "$VERDICT" = "$EXPECT" ] || exit 1
+  exit 0
+fi
 
 if [ "$IN_TREE" = "1" ]; then
   TARGET_MODE="in-tree:$SWEEP_ACK"
