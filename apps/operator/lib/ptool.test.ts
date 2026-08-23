@@ -50,6 +50,10 @@ import {
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
+  it('defaults omitted argv to the interactive picker', () => {
+    expect(parseArgs()).toEqual(parseArgs([]));
+  });
+
   it('defaults to the interactive picker', () => {
     expect(parseArgs([])).toEqual({
       tool: null,

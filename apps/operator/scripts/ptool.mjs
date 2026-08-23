@@ -78,7 +78,7 @@ const OPERATOR_URL = resolveOperatorBase({}, process.env);
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.
  */
-export function parseArgs(argv) {
+export function parseArgs(argv = []) {
   const out = {
     tool: null,
     json: null,
