@@ -41,6 +41,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stripComments } from './comment-stripper.fixture';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -65,66 +66,12 @@ const WAVE_A_PLATFORMS = ['bluesky', 'mastodon', 'reddit'] as const;
 const read = (file: string): string => readFileSync(join(SUBJECT_DIR, file), 'utf8');
 
 /**
- * Strip comments while preserving string literals.
- *
- * Both naive forms are wrong in ways that matter here: cutting at every `//`
- * eats the back half of any URL inside a string literal, and cutting at every
- * `/*` eats a string that merely contains one. So this tracks quote state.
- *
- * Regex literals are not tracked. The kit contains none whose body could be
- * mistaken for a comment, and the CONTROL below measures that this function
- * still removes prose and still keeps code — so a future regression in the
- * stripper shows up as a failing control rather than as a guard that silently
- * stops looking at anything.
+ * `stripComments` moved to ./comment-stripper.fixture (P-019). The Wave B gate
+ * needs the identical prose-vs-code distinction, and a second copy of a stripper
+ * is the dangerous kind of duplication: one that quietly stops stripping does not
+ * fail, it makes every absence claim built on it pass. The CONTROL below is
+ * unchanged and now measures the shared implementation.
  */
-function stripComments(source: string): string {
-  let out = '';
-  let i = 0;
-  let quote: string | null = null;
-
-  while (i < source.length) {
-    const ch = source[i];
-    const next = source[i + 1];
-
-    if (quote) {
-      if (ch === '\\') {
-        out += ch + (source[i + 1] ?? '');
-        i += 2;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      out += ch;
-      i += 1;
-      continue;
-    }
-
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-      out += ch;
-      i += 1;
-      continue;
-    }
-
-    if (ch === '/' && next === '*') {
-      const end = source.indexOf('*/', i + 2);
-      i = end === -1 ? source.length : end + 2;
-      out += ' ';
-      continue;
-    }
-
-    if (ch === '/' && next === '/') {
-      const end = source.indexOf('\n', i);
-      i = end === -1 ? source.length : end;
-      out += ' ';
-      continue;
-    }
-
-    out += ch;
-    i += 1;
-  }
-
-  return out;
-}
 
 describe('P-014 Wave A gate — the kit was not bent to fit a platform', () => {
   it.each(KIT_FILES)('%s names no Wave A platform in executable code', (file) => {
