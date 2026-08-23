@@ -19,6 +19,7 @@ import { spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { applyGlStrategy, detectGlStrategy, type GlStrategy } from '../../desktop/gl-strategy';
 import { managedSpawn } from '../../task-manager/managed-spawn';
+import { killScopeUnit, killTask } from '../../task-manager/control';
 import { sandboxXEnv } from './desktop-driver';
 import { startA11yBus, type A11yBus } from '../../desktop/a11y-bus';
 import {
@@ -152,6 +153,93 @@ export interface ProvisionOptions {
   sandboxHomeDir?: string;
 }
 
+/** The durable root handle used to tear down a provisioned desktop safely. */
+export interface DesktopTaskHandle {
+  taskId: string | null;
+  scopeUnit: string | null;
+  confined: boolean;
+  /** False when the task manager was disabled or ledger registration degraded. */
+  ledgered: boolean;
+}
+
+export interface DesktopReleaseDeps {
+  /** Injectable so teardown order is regression-tested without systemd or PG. */
+  killTask?: typeof killTask;
+  /** Safe fallback for a confined scope that has no ledger row. */
+  killScopeUnit?: typeof killScopeUnit;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+type KillableProcess = Pick<ChildProcess, 'kill'>;
+
+/**
+ * Tear down the desktop's managed scopes before touching systemd-run client handles.
+ *
+ * For a confined, ledgered desktop, the ChildProcess values are systemd-run CLIENTS;
+ * killing those first lets the payload scopes outlive their owners (WI-37509). The
+ * task-manager root kill addresses the Xvfb scope and its logically-nested children,
+ * after which the client handles are safe to finish. A task-manager-disabled desktop
+ * has no scope/ledger and retains the old direct-process fallback.
+ */
+export async function releaseDesktopProcesses(
+  procs: readonly KillableProcess[],
+  root: DesktopTaskHandle,
+  deps: DesktopReleaseDeps = {},
+): Promise<void> {
+  const taskKiller = deps.killTask ?? killTask;
+  const scopeKiller = deps.killScopeUnit ?? killScopeUnit;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  let managedOutcome:
+    | Awaited<ReturnType<typeof killTask>>
+    | Awaited<ReturnType<typeof killScopeUnit>>
+    | undefined;
+  try {
+    if (root.ledgered && root.taskId) {
+      managedOutcome = await taskKiller(root.taskId, { includeSubtree: true });
+      // A row can disappear between provision and release. If the scope handle is
+      // still available, use the explicit unledgered control path instead of ever
+      // reverting to client-first teardown.
+      if (!managedOutcome.ok && managedOutcome.error === 'task_not_found' && root.confined && root.scopeUnit) {
+        managedOutcome = await scopeKiller(root.scopeUnit);
+      } else if (!managedOutcome.ok && managedOutcome.error === 'task_not_found') {
+        // No scope means this was an unconfined/legacy row after all; retain the
+        // direct-process fallback rather than treating a missing ledger row as a
+        // managed teardown failure.
+        managedOutcome = undefined;
+      }
+    } else if (root.confined && root.scopeUnit) {
+      // Registration may have failed after systemd accepted the scope. The scope
+      // unit is still a validated, safe handle even though no ledger row exists.
+      managedOutcome = await scopeKiller(root.scopeUnit);
+    }
+  } catch (error) {
+    console.warn(
+      `[desktop-provisioner] managed desktop teardown failed for ${root.taskId ?? root.scopeUnit ?? 'unknown root'}: ` +
+        `${error instanceof Error ? error.message : String(error)} — leaving client handles untouched`,
+    );
+    return;
+  }
+
+  if (managedOutcome && !managedOutcome.ok) {
+    console.warn(
+      `[desktop-provisioner] managed desktop teardown refused for ${root.taskId ?? root.scopeUnit ?? 'unknown root'}: ` +
+        `${managedOutcome.error}${managedOutcome.detail ? ` — ${managedOutcome.detail}` : ''} — leaving client handles untouched`,
+    );
+    return;
+  }
+
+  // This is the legacy path only after a safe scope teardown, or when the task
+  // manager was genuinely unavailable and there was no scope to address.
+  for (const p of [...procs].reverse()) {
+    try { p.kill('SIGTERM'); } catch { /* already gone */ }
+  }
+  await sleep(300);
+  for (const p of procs) {
+    try { p.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
 /**
  * Lowest free display number ≥ base (no `/tmp/.X<n>-lock`), NEVER 0. Pure over
  * an injectable `exists` so it unit-tests without touching the filesystem.
@@ -199,15 +287,15 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   const height = opts.height ?? DEFAULT_H;
   const procs: ChildProcess[] = [];
   let taskId: string | null = null;
+  let rootHandle: DesktopTaskHandle = {
+    taskId: null,
+    scopeUnit: null,
+    confined: false,
+    ledgered: false,
+  };
 
   const release = async (): Promise<void> => {
-    for (const p of [...procs].reverse()) {
-      try { p.kill('SIGTERM'); } catch { /* already gone */ }
-    }
-    await new Promise((r) => setTimeout(r, 300));
-    for (const p of procs) {
-      try { p.kill('SIGKILL'); } catch { /* already gone */ }
-    }
+    await releaseDesktopProcesses(procs, rootHandle);
   };
 
   try {
@@ -245,6 +333,15 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
       { spawnOptions: { stdio: 'ignore' } },
     );
     taskId = xvfbTask.taskId;
+    // Replace the provisional closure metadata once the Xvfb root exists. The
+    // release closure reads these mutable values at invocation time, after all
+    // children have been attached to `procs`.
+    rootHandle = {
+      taskId: xvfbTask.taskId,
+      scopeUnit: xvfbTask.scopeUnit,
+      confined: xvfbTask.confined,
+      ledgered: xvfbTask.row.detail.unledgered !== true,
+    };
     procs.push(xvfbTask.child);
     await waitForDisplay(display, opts.readyTimeoutMs ?? 8000);
 
