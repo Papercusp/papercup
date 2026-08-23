@@ -4571,6 +4571,16 @@ describe('P-005 ACCEPTANCE TEST — one call answers "is it live, and if not wha
     expect(res.summary).toMatch(/^WAITING AT PUSHED \(nothing to do/);
   });
 
+  it('clean detached candidate ⇒ waits for HEAD containment without calling it committed', async () => {
+    const res = await run({ contains: {} });
+    expect(res.positions.committedLocal).toBe(false);
+    expect(res.dirtyUncommitted).toBe(false);
+    expect(res.blockedOn).toBe('committed');
+    expect(res.nextAction).toBeNull();
+    expect(res.summary).toMatch(/^WAITING FOR HEAD CONTAINMENT \(target commit is not reachable from HEAD/);
+    expect(res.summary).not.toMatch(/^.*(?:AT|BLOCKED AT) COMMITTED/);
+  });
+
   it('pushed but not in main ⇒ blocked at GATE', async () => {
     const res = await run({ contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'] } });
     expect(res.blockedOn).toBe('gate');

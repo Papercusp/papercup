@@ -3775,6 +3775,22 @@ function sweepClause(sweep: SweepExposure): string {
  */
 function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
   if (!p.blockedOn) return '';
+  // A clean tree with a target commit that is not reachable from HEAD is a
+  // detached/remote candidate, not an uncommitted local change. Calling this
+  // "AT COMMITTED" (or "WAITING AT COMMITTED") reads the false boolean as an
+  // affirmative position and sends the caller looking at the wrong lever.
+  // Name the measured condition directly; there is no local action until HEAD
+  // contains the target.
+  if (
+    p.blockedOn === 'committed' &&
+    !p.positions.committedLocal &&
+    !p.dirtyUncommitted &&
+    !p.positionsUnknown.includes('committedLocal')
+  ) {
+    return p.nextAction
+      ? `WAITING FOR HEAD CONTAINMENT → ${p.nextAction}. `
+      : 'WAITING FOR HEAD CONTAINMENT (target commit is not reachable from HEAD; nothing to do locally). ';
+  }
   const at = p.blockedOn.toUpperCase();
   if (!p.nextAction) return `WAITING AT ${at} (nothing to do — this leg is advancing on its own). `;
   // When the lever belongs to a LATER stage than where the change sits, say both: "the leg
