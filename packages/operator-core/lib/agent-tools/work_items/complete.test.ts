@@ -1854,7 +1854,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.verificationCoverageError).toBeUndefined();
     });
 
-    it('rejects an explicit empty residue array even without universal-claim wording', async () => {
+    it('publishes and enforces a non-empty residue array even without universal-claim wording', async () => {
       const ordinaryVerification = {
         ...item,
         id: 'WI-ordinary-residue',
@@ -1866,9 +1866,10 @@ describe('work_items:complete (keyed-array)', () => {
       };
       getWorkItem.mockResolvedValue(ordinaryVerification);
 
-      const r = await one({
+      const input = {
         id: 'WI-ordinary-residue',
         state: 'resolved',
+        assumptions: 'none',
         completion: {
           summary: 'Captured the baseline.',
           verifiedHow: 'manual',
@@ -1879,7 +1880,24 @@ describe('work_items:complete (keyed-array)', () => {
             residue: [],
           },
         },
-      });
+      };
+      const schema = complete.args as {
+        safeParse: (value: unknown) => {
+          success: boolean;
+          error?: { issues: Array<{ path: Array<string | number>; message: string }> };
+        };
+      };
+      const schemaResult = schema.safeParse(input);
+      expect(schemaResult.success).toBe(false);
+      expect(schemaResult.error?.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ['completion', 'coverage', 'residue'] }),
+        ]),
+      );
+
+      // Keep the handler-level guard covered independently of the public schema.
+      const response = (await complete.handler(input as never, ctx)) as Out;
+      const r = response.data.results[0];
 
       expect(r.ok).toBe(false);
       expect(r.verificationCoverageError).toContain('empty array');

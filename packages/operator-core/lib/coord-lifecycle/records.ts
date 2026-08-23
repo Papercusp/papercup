@@ -82,6 +82,7 @@ export const CompletionCoverageSchema = z.object({
     .describe('Population entries that do not apply; entries must be copied verbatim and appear at most once.'),
   residue: z
     .array(z.string().min(1))
+    .min(1)
     .optional()
     .describe("For a universal-verification close this is required and non-empty; use ['none'] for zero residue."),
 }).describe(
