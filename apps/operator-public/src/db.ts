@@ -117,6 +117,10 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
   'rubric',
   'plan',
   'recipe',
+  // migration 016 / work-on-everything-goal-2026-08-23 P-006: a goal package is
+  // duties prose an agent EXECUTES (a kickoff brief + launch defaults) — the same
+  // fail-closed reasoning as `plan`, in the list from the moment the kind exists.
+  'goal',
 ];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
