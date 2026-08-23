@@ -69,7 +69,7 @@ function clipEventTexts(
 export default defineTool({
   name: "coord:plan-events",
   description:
-    "Read the plan-event history — created / now_updated / decision_added / item_added / item_status_changed / promoted events across all plans. Returns the most-recent events first-bounded (a no-arg call is always size-capped so it never overflows the result), newest kept. Widen with `plan_slug` (one plan), `files_back` (N rotation files), or `limit` (max events). Returns `{ events, total, truncated }`. Distinct from coord:inbox (which scans messages, not plan-events).",
+    "Read the plan-event history — created / now_updated / decision_added / item_added / item_status_changed / promoted events across all plans. Returns the most-recent events first-bounded (a no-arg call is always size-capped so it never overflows the result), newest kept. Widen with `plan_slug` (one plan), `files_back` (N rotation files; 0 means the current rotation file), or `limit` (max events). Returns `{ events, total, truncated }`. Distinct from coord:inbox (which scans messages, not plan-events).",
   guidance: {
     when: "Turn start — the OMP coordination extension calls this to show which plans changed since the agent last read. Also ad-hoc, to review recent plan activity.",
     notWhen:
@@ -87,9 +87,9 @@ export default defineTool({
     files_back: z
       .number()
       .int()
-      .positive()
+      .nonnegative()
       .optional()
-      .describe("Read only the most-recent N monthly rotation files."),
+      .describe("Read the current rotation file when 0; otherwise read the most-recent N monthly rotation files."),
     limit: z
       .number()
       .int()

@@ -141,3 +141,10 @@ describe('coord:plan-events tool — result bound (EI-1737)', () => {
     expect(out.truncated).toBe(false);
   });
 });
+
+describe('coord:plan-events tool — files_back schema', () => {
+  it('accepts zero for the current rotation file and rejects negative values', () => {
+    expect(planEventsTool.args.safeParse({ files_back: 0 }).success).toBe(true);
+    expect(planEventsTool.args.safeParse({ files_back: -1 }).success).toBe(false);
+  });
+});
