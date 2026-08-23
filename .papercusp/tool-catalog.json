@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 781,
+  "count": 782,
   "tools": [
     {
       "name": "ablation:report",
@@ -28688,6 +28688,42 @@
         "when": "Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].",
         "notWhen": "Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.",
         "chaining": "work_items:get → work_items:update { id, …fields }."
+      }
+    },
+    {
+      "name": "work_items:withdraw_release_request",
+      "http": {
+        "path": "/api/agent-tools/work_items/withdraw_release_request",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Withdraw a pending work_items:request_release filed by you — resolves it immediately, before its deadline, with NO consequence firing. The item stays with its current holder. Refuses with no_pending_request when there is nothing to withdraw, or not_requester when another agent filed the request.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You filed a release request that is stale, no longer needed, or was based on a holder snapshot that changed — withdraw it instead of asking the current holder to decline it.",
+        "notWhen": "You are the holder pushing back on someone else's request — use work_items:decline_release_request; or you agree the item should go — use work_items:release.",
+        "chaining": "work_items:request_release → work_items:withdraw_release_request (requester cancels) → the item remains with its current holder and no consequence fires."
       }
     }
   ]

@@ -39,6 +39,8 @@ export interface FileLockAcquireParams {
   paths: string[];
   intent: string;
   ttlSec: number;
+  /** Durable work-item/plan goal associated with this lock, when known. */
+  goalRef?: string | null;
   /** Internal automatic-guard acquire; never refresh an overlapping
    * deliberate same-owner claim. */
   automatic?: boolean;
@@ -213,6 +215,7 @@ export function buildFileLockAuthorityHandlers(
         paths: p.paths,
         intent: p.intent,
         ttlSec,
+        goalRef: p.goalRef,
         automatic: p.automatic,
         waitMaxSec: p.waitMaxSec,
         coordinationDomain: p.coordinationDomain,

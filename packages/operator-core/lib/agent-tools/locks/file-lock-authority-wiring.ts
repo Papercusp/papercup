@@ -92,6 +92,7 @@ export function adaptSuLockStore(): FileLockCoordinator {
           paths: p.paths,
           intent: p.intent,
           ttlSec: p.ttlSec,
+          goalRef: p.goalRef,
           automatic: p.automatic,
         }),
         { paths: p.paths },

@@ -75,6 +75,8 @@ beforeAll(async () => {
       id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY,
       workspace_id text DEFAULT '' NOT NULL,
       harness_slug text,
+      subject_kind text DEFAULT 'global' NOT NULL,
+      subject_ref text,
       title text,
       status text DEFAULT 'active' NOT NULL,
       started_at bigint NOT NULL,

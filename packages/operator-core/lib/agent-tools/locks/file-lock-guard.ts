@@ -51,6 +51,7 @@ import { notifyPlanLockChange } from './notify-lock-change';
 import { enrichBusy } from './enrich-busy';
 import { DEFAULT_LOCK_TTL_SEC } from './lock-config';
 import type { CellReader } from '../../cell-registry';
+import { readAgentStateStamp } from '../../agent-state-stamp';
 
 /** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). The body runs
  *  while held and releases in a finally, so this is just the crash/abort
@@ -198,6 +199,7 @@ export async function guardFileLock<T>(
 
   const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
   const ttlSec = spec.ttlSec ?? DEFAULT_TTL_SEC;
+  const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
 
   let acquired: Awaited<ReturnType<typeof tryAcquire>>;
   try {
@@ -214,6 +216,7 @@ export async function guardFileLock<T>(
           paths,
           intent: spec.intent,
           ttlSec,
+          goalRef,
           automatic: true,
         }),
         { paths },

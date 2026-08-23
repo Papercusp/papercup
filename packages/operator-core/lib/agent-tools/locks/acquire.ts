@@ -276,6 +276,7 @@ export default defineTool({
           paths,
           intent: args.intent,
           ttlSec,
+          goalRef,
           automatic: args.intent.startsWith('PreToolUse:'),
         }),
         { paths },
@@ -311,6 +312,7 @@ export default defineTool({
                 paths,
                 intent: args.intent,
                 ttlSec,
+                goalRef,
                 automatic: args.intent.startsWith('PreToolUse:'),
                 coordinationDomain,
               } satisfies FileLockAcquireParams,
@@ -413,6 +415,7 @@ export default defineTool({
           intent: args.intent,
           ttlSec,
           maxWaitSec: WAKE_QUEUE_WINDOW_SEC,
+          goalRef,
           pendingEdit,
         }),
         { paths },
@@ -539,6 +542,7 @@ export default defineTool({
             intent: args.intent,
             ttlSec,
             maxWaitSec,
+            goalRef,
           }),
           { paths },
         );
@@ -771,6 +775,7 @@ export default defineTool({
             paths,
             intent: args.intent,
             ttlSec,
+            goalRef,
           });
           if (r.ok) {
             // Lucky race — got it after timeout fired but before re-read.
