@@ -82,7 +82,7 @@ const HOST_WORKSPACE = '@papercusp/operator-core';
 const DEPENDENCY_INTEGRITY_SCRIPT = 'lint:dependency-integrity';
 const DEPENDENCY_INTEGRITY_TASK = `${HOST_WORKSPACE} :: ${DEPENDENCY_INTEGRITY_SCRIPT}`;
 const TEST_RUNNABILITY_SCRIPT = 'lint:tests';
-const TEST_RUNNABILITY_TASK = `@papercusp/operator :: ${TEST_RUNNABILITY_SCRIPT}`;
+const TEST_RUNNABILITY_TASK = `@papercusp/web :: ${TEST_RUNNABILITY_SCRIPT}`;
 const GUARD_SCRIPT = 'lint:chunk-safe';
 const GUARD_TASK = `${HOST_WORKSPACE} :: ${GUARD_SCRIPT}`;
 

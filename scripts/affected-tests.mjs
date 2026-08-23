@@ -1098,6 +1098,40 @@ const UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR = "scripts/lib/tracked-files.mjs";
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-15951 — registry visibility is not execution. A canonical test can
+    // match .papercusp/testing-domains.json while every real runner excludes
+    // it; that exact hole left tools/eslint-rules tests permanently dead while
+    // lint:tests stayed green. The strengthened lint resolves route ownership
+    // plus each Vitest config's authoritative include/exclude contract, with
+    // explicit Playwright and WebdriverIO contracts.
+    //
+    // This is a repository invariant rather than an operator-suite assertion:
+    // changing ANY canonical test, runner config, workspace manifest, registry
+    // projection, or either guard/router implementation can create the hole.
+    // Keep it as a narrow task (no hostSuiteRatchet); the operator suite does
+    // not execute this filesystem/config audit for us.
+    workspace: "@papercusp/web",
+    script: "lint:tests",
+    appliesTo: (f) =>
+      f === ".papercusp/testing-domains.json" ||
+      f === "package.json" ||
+      f === "package-lock.json" ||
+      f.endsWith("/package.json") ||
+      f === "apps/operator/scripts/lint-tests.ts" ||
+      f === "libs/test-config/src/lane-split.ts" ||
+      f === "libs/test-config/src/vitest-config.ts" ||
+      f === "packages/operator-core/lib/test-executor-runnability.ts" ||
+      f === "packages/operator-core/lib/test-executor-runnability.test.ts" ||
+      f === "packages/operator-core/lib/testing-domains-registry.ts" ||
+      f === "scripts/gen-testing-domains-contract.ts" ||
+      f === "scripts/resolve-vitest-config-contracts.mjs" ||
+      f === "scripts/test-files.mjs" ||
+      /(^|\/)vitest(?:\.(?:integration|browser))?\.config\.[^/]+$/.test(f) ||
+      /(^|\/)playwright\.config\.[^/]+$/.test(f) ||
+      /(^|\/)wdio\.conf\.[^/]+$/.test(f) ||
+      /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
     // EI-20863794002653922 — a workspace-local Vitest directory survived npm reify
     // without its package.json/entrypoints. The package's own test task then failed
     // before collecting a single test, and test:affected classified the opaque
