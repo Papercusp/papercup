@@ -1202,7 +1202,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
   const parsed = rubricTemplateDataSchema.safeParse(data);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
-    throw new Error(`proposeRubric: invalid rubric data for '${input.rubricId}': ${issues}`);
+    throw new Error(`invalid_args: proposeRubric: invalid rubric data for '${input.rubricId}': ${issues}`);
   }
   return parsed.data;
 }

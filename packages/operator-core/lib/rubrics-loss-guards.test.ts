@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   assertNoSilentRubricLoss,
+  proposeRubric,
   rubricCompleteness,
   planRowToRubric,
   REPLICATION_DRILL_MARKER,
@@ -67,6 +68,29 @@ const proposal = (criteria: RubricCriterion[], over: Partial<ProposeRubricInput>
 });
 
 describe('assertNoSilentRubricLoss (WI-4287 propose loss-guard)', () => {
+  it('EI-21268788942647452: malformed rubric data classifies as caller input, not structural', async () => {
+    let thrown: unknown;
+    try {
+      await proposeRubric({
+        rubricId: 'acceptance-with-release-gate',
+        kind: 'acceptance',
+        subjectPlan: 'some-plan',
+        characteristic: 'acceptance',
+        title: 'Acceptance rubric',
+        criteria: [crit({ key: 'outcome', instrumentKey: 'acceptance-outcome' })],
+        releaseGating: true,
+        by: 'author-a',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain('releaseGating is standard-kind only');
+    expect(classifyToolError(undefined, 'handler_error', message)).toBe('caller');
+  });
+
   it('a brand-new rubric (stored=null) always passes — the seeder/new-propose path', () => {
     expect(() => assertNoSilentRubricLoss(null, proposal([crit({ key: 'a' })]))).not.toThrow();
   });
