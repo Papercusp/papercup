@@ -38,6 +38,7 @@ const reanchorByOwnerMock = vi.hoisted(() =>
 );
 const clearContextUsageMock = vi.hoisted(() => vi.fn());
 const clearContextAnchorMock = vi.hoisted(() => vi.fn());
+const bindTasksMock = vi.hoisted(() => vi.fn(async (): Promise<string[]> => ['task-bound']));
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -66,11 +67,15 @@ vi.mock('../../../system-health/context-usage-cache', () => ({
 vi.mock('../../../compaction-usage', () => ({
   clearContextAnchor: clearContextAnchorMock,
 }));
+vi.mock('../../../task-manager/store', () => ({
+  bindLiveAgentSessionTasksToNativeSession: bindTasksMock,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
   reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' });
   reanchorByOwnerMock.mockResolvedValue({ reanchored: true, owner: 'su-interactive-owner' });
+  bindTasksMock.mockResolvedValue(['task-bound']);
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -104,12 +109,34 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     expect(clearContextAnchorMock).toHaveBeenCalledWith('su-resp-owner');
   });
 
+  it('rebinds the owner task row to the successor native session after re-anchor', async () => {
+    const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    expect(res.status).toBe(200);
+    expect(bindTasksMock).toHaveBeenCalledWith(expect.objectContaining({
+      coordOwnerId: 'su-resp-owner',
+      sessionId: FRESH_ID,
+    }));
+  });
+
+  it('keeps respawn successful when the best-effort task bind fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    bindTasksMock.mockRejectedValueOnce(new Error('task ledger unavailable'));
+
+    const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, reanchored: true });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('respawn task/session bind failed'));
+    warn.mockRestore();
+  });
+
   it('skips both gauge-cache clears when the reanchor reports no owner (never throws)', async () => {
     reanchorMock.mockResolvedValue({ reanchored: true, owner: null });
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);
     expect(clearContextUsageMock).not.toHaveBeenCalled();
     expect(clearContextAnchorMock).not.toHaveBeenCalled();
+    expect(bindTasksMock).not.toHaveBeenCalled();
   });
 
   it('an already-anchored id is a harmless no-op (reanchored: false)', async () => {

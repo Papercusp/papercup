@@ -50,9 +50,17 @@ vi.mock('./console-launch-bridge', () => ({ requestDesktopConsoleLaunch: vi.fn()
 // (the dev box HAS gnome-terminal + an X socket — an unmocked Linux-path call
 // would now actually open one, since spawnConsole injects the desktop env).
 const spawnMock = vi.fn();
+const taskEnrolment = vi.hoisted(() => ({
+  begin: vi.fn(() => ({ taskId: 'task1234', confined: false, scopeUnit: null })),
+  complete: vi.fn(),
+}));
 vi.mock('node:child_process', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   spawn: (...a: unknown[]) => spawnMock(...a),
+}));
+vi.mock('./task-manager/enroll-sync', () => ({
+  beginSyncEnrolment: taskEnrolment.begin,
+  completeSyncEnrolment: taskEnrolment.complete,
 }));
 
 /** A fake detached terminal child: emit 'exit' to simulate an early death. */
@@ -390,7 +398,11 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     needsSuperuserBootstrap: false,
     sessionId: 'test-sid',
   };
-  beforeEach(() => spawnMock.mockReset());
+  beforeEach(() => {
+    spawnMock.mockReset();
+    taskEnrolment.begin.mockClear();
+    taskEnrolment.complete.mockClear();
+  });
 
   // No-systemd-run fallback path — pin hasSystemdRun:false so these don't flake
   // with whichever host/CI runner actually runs the suite (same class of bug
@@ -409,6 +421,26 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(bin).toBe('bash');
     expect(args[0]).toBe('-lc');
     expect(args[1]).toContain('psu --headless');
+  }, 10_000);
+
+  it('stamps a known trimmed coord owner only into the agent-session ledger detail', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7788));
+    await spawnHeadless({
+      envelope,
+      label: 'hl',
+      logDir: null,
+      coordOwnerId: '  su-known-owner  ',
+      ...noSystemdRun,
+    });
+
+    expect(taskEnrolment.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        class: 'agent-session',
+        detail: { headless: true, label: 'hl', coordOwnerId: 'su-known-owner' },
+      }),
+      7788,
+    );
   }, 10_000);
 
   it('a psu that dies at boot inside the probe ⇒ LOUD error (not a false ok+pid)', async () => {

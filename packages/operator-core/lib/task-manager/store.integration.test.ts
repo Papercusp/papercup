@@ -48,11 +48,42 @@ async function insertUnaccounted(taskId: string, cgroupPath = '/sys/fs/cgroup/fo
   `;
 }
 
+async function insertAgentSessionTask(input: {
+  taskId: string;
+  coordOwnerId: string;
+  state?: 'pending' | 'running' | 'exited';
+  taskClass?: string;
+  sessionId?: string | null;
+}) {
+  const state = input.state ?? 'running';
+  await db.sql`
+    INSERT INTO harness_shared.task_ledger (
+      task_id, workspace_id, root_task_id, class, title, argv,
+      launched_by, confined, state, session_id, ended_at, detail
+    ) VALUES (
+      ${input.taskId}, ${WS}, ${input.taskId}, ${input.taskClass ?? 'agent-session'},
+      ${input.taskId}, '[]'::jsonb, 'test', true, ${state}, ${input.sessionId ?? null},
+      CASE WHEN ${state === 'exited'} THEN now() ELSE NULL END,
+      jsonb_build_object('coordOwnerId', ${input.coordOwnerId})
+    )
+  `;
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('task-ledger-store');
   h.sql = db.sql;
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '696-task-ledger.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '700-task-ledger-bash-job-id-idx.sql'));
+  await db.sql`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      coord_owner_id text,
+      session_id text,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz
+    )
+  `;
 });
 
 afterAll(async () => {
@@ -61,6 +92,72 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.task_ledger`;
+  await db.sql`DELETE FROM harness_shared.adv_sessions`;
+});
+
+describe('agent-session native-id binding (EI-21268871278252116)', () => {
+  it('binds every matching live task when enrolment lands before bootstrap, without crossing owner/class/state', async () => {
+    await insertAgentSessionTask({ taskId: 'match-pending', coordOwnerId: 'su-owner', state: 'pending' });
+    await insertAgentSessionTask({ taskId: 'match-running', coordOwnerId: 'su-owner' });
+    await insertAgentSessionTask({
+      taskId: 'match-rebind',
+      coordOwnerId: 'su-owner',
+      sessionId: 'native-predecessor',
+    });
+    await insertAgentSessionTask({ taskId: 'wrong-owner', coordOwnerId: 'su-other' });
+    await insertAgentSessionTask({ taskId: 'wrong-class', coordOwnerId: 'su-owner', taskClass: 'bash-job' });
+    await insertAgentSessionTask({ taskId: 'ended-owner', coordOwnerId: 'su-owner', state: 'exited' });
+
+    const bound = await store.bindLiveAgentSessionTasksToNativeSession({
+      workspaceId: WS,
+      coordOwnerId: 'su-owner',
+      sessionId: 'native-current',
+    });
+
+    expect(bound.sort()).toEqual(['match-pending', 'match-rebind', 'match-running']);
+    const rows = await db.sql`
+      SELECT task_id, session_id FROM harness_shared.task_ledger ORDER BY task_id
+    `;
+    expect(Object.fromEntries(rows.map((row) => [row.task_id, row.session_id]))).toEqual({
+      'ended-owner': null,
+      'match-pending': 'native-current',
+      'match-rebind': 'native-current',
+      'match-running': 'native-current',
+      'wrong-class': null,
+      'wrong-owner': null,
+    });
+  });
+
+  it('binds one newly enrolled task to the newest open owner session when bootstrap lands first', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, coord_owner_id, session_id, started_at, ended_at)
+      VALUES
+        (${WS}, 'su-owner', 'native-closed', now() - interval '3 minutes', now()),
+        (${WS}, 'su-owner', 'native-older-open', now() - interval '2 minutes', null),
+        (${WS}, 'su-owner', 'native-newest-open', now() - interval '1 minute', null),
+        (${WS}, 'su-other', 'native-other', now(), null)
+    `;
+    await insertAgentSessionTask({ taskId: 'late-enrolment', coordOwnerId: 'su-owner' });
+    await insertAgentSessionTask({ taskId: 'other-owner-task', coordOwnerId: 'su-other' });
+    await insertAgentSessionTask({ taskId: 'ended-late', coordOwnerId: 'su-owner', state: 'exited' });
+
+    await expect(
+      store.bindAgentSessionTaskToLatestNativeSession('late-enrolment'),
+    ).resolves.toBe('native-newest-open');
+    await expect(
+      store.bindAgentSessionTaskToLatestNativeSession('ended-late'),
+    ).resolves.toBeNull();
+
+    const rows = await db.sql`
+      SELECT task_id, session_id FROM harness_shared.task_ledger ORDER BY task_id
+    `;
+    expect(Object.fromEntries(rows.map((row) => [row.task_id, row.session_id]))).toEqual({
+      'ended-late': null,
+      'late-enrolment': 'native-newest-open',
+      'other-owner-task': null,
+    });
+  });
 });
 
 describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
