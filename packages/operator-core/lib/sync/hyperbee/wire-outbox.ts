@@ -184,7 +184,8 @@ export async function wireOutboxForHarness(
   // private-at-boot → Hive-after-rekey lifecycle means boot-time null is NOT a
   // permanent answer. Own a refreshable controller beside the drain; re-key
   // hooks update it in place, and startOutboxDrain resolves its current value at
-  // the beginning of every pass. The drain/LISTEN itself is still started once.
+  // each selected row's encryption point. The drain/LISTEN itself is still
+  // started once.
   const rekeyState = createEpochEncryptRefreshState(handle, deps.buildHiveRekeyBootDeps ?? buildHiveRekeyBootDeps);
   epochEncryptByHandle.set(handle, rekeyState);
   await rekeyState.refresh();
