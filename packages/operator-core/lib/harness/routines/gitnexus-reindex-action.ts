@@ -37,12 +37,13 @@
  * for the measured hazard (gitnexus self-grants 0.75x of a cgroup it does not own alone)
  * and analyzeEnv/analyzeNodeArgs for why the budget is split across env and argv.
  */
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { readFileSync, existsSync, unlinkSync, statSync } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { managedSpawn } from '../../task-manager/managed-spawn';
 
 /** Registry alias this repo is indexed under (`analyze --name papercusp`). The alias
  *  disambiguates it from other checkouts on the box whose basename would collide. */
@@ -51,6 +52,13 @@ export const GITNEXUS_REPO_NAME = 'papercusp';
 /** Cold build measured 309.2s; give a busy/colder box generous headroom without letting
  *  a genuinely wedged indexer hang the tick forever. */
 export const GITNEXUS_ANALYZE_TIMEOUT_MS = 20 * 60_000;
+
+/**
+ * The measured analyze peak is 10.59 GiB RSS, while the explicit V8 heap is 16 GiB.
+ * Keep ~4 GiB for native tree-sitter/LadybugDB overhead, but put the whole run in its
+ * own cgroup so a future regression cannot consume the background host's 40 GiB quota.
+ */
+export const GITNEXUS_ANALYZE_MEMORY_MAX_BYTES = 20 * 1024 ** 3;
 
 // ---------------------------------------------------------------------------
 // P-004 — ANALYZE RESOURCE CAP (heap / semi-space / stack).
@@ -727,22 +735,39 @@ export interface AnalyzeRunResult {
 }
 
 export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: number): Promise<AnalyzeRunResult> {
-  return new Promise((resolvePromise) => {
+  return (async () => {
+    const command = process.env.GITNEXUS_NODE_BIN ?? process.execPath;
+    const args = analyzeNodeArgs(analyzeCliPath(), root, repoName);
+    const managed = await managedSpawn(
+      command,
+      args,
+      {
+        class: 'build',
+        title: `gitnexus analyze ${repoName}`,
+        argv: [command, ...args],
+        cwd: root,
+        launchedBy: 'system:gitnexus-reindex',
+        memoryMaxBytes: GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,
+        runtimeMaxSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
+        detail: { subsystem: 'gitnexus', operation: 'analyze', repoName },
+      },
+      {
+        // Keep the process-group kill fallback for unconfined hosts. On Linux,
+        // managedSpawn adds the same deadline to the transient scope, so the
+        // payload remains bounded even if this operator process dies mid-run.
+        spawnOptions: {
+          cwd: root,
+          env: analyzeEnv(process.env),
+          detached: true,
+        },
+      },
+    );
+    const child = managed.child;
+
+    return new Promise<AnalyzeRunResult>((resolvePromise) => {
     // detached ⇒ own process-group leader, so a timeout kills the whole tree
     // (npx → node → tree-sitter workers), never just the wrapper. Same precedent as
     // cargo-test-action.ts / p2p-perf-actions.ts.
-    // P-004: run the PINNED cli under OUR node, with the resource cap applied. The
-    // node binary is this process's own (process.execPath), so the indexer cannot end
-    // up on a different runtime than the operator that supervises it.
-    const child = spawn(
-      process.env.GITNEXUS_NODE_BIN ?? process.execPath,
-      analyzeNodeArgs(analyzeCliPath(), root, repoName),
-      {
-        cwd: root,
-        env: analyzeEnv(process.env),
-        detached: true,
-      },
-    );
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -773,7 +798,8 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
     child.stderr?.on('data', (d) => (stderr += d.toString()));
     child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e), timedOut }));
     child.on('close', (code) => finish({ code: code ?? 1, stdout, stderr, timedOut }));
-  });
+    });
+  })();
 }
 
 /** Resolve the gitnexus binary for canary probes, mirroring the bridge's own resolution

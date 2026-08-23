@@ -6,7 +6,8 @@
  * source, and (b) the ORDER of the gates in `decideReindex` — the policy is only correct
  * if load outranks a missing index and the interval floor outranks staleness.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -17,6 +18,7 @@ import {
   analyzeNodeArgs,
   analyzeCliPath,
   GITNEXUS_ANALYZE_HEAP_MB,
+  GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,
   GITNEXUS_ANALYZE_SEMI_SPACE_MB,
   GITNEXUS_ANALYZE_STACK_KB,
   GITNEXUS_LBUG_MAX_DB_BYTES,
@@ -37,9 +39,39 @@ import {
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
   decideGitnexusHealthUpdate,
+  runGitnexusAnalyze,
   type ReindexDecisionInput,
   type GitnexusHealth,
 } from './gitnexus-reindex-action';
+
+const taskManager = vi.hoisted(() => ({
+  managedSpawn: vi.fn(),
+}));
+
+vi.mock('../../task-manager/managed-spawn', () => ({ managedSpawn: taskManager.managedSpawn }));
+
+function fakeManagedChild(): EventEmitter & {
+  pid: number;
+  kill: ReturnType<typeof vi.fn>;
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+} {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    kill: ReturnType<typeof vi.fn>;
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+  };
+  child.pid = 4242;
+  child.kill = vi.fn();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  return child;
+}
+
+beforeEach(() => {
+  taskManager.managedSpawn.mockReset();
+});
 
 /** A baseline that WOULD run, so each test can flip exactly one field. */
 function baseInput(over: Partial<ReindexDecisionInput> = {}): ReindexDecisionInput {
@@ -177,6 +209,50 @@ describe('analyzeNodeArgs — the stack budget + argv order (P-004)', () => {
     const p = analyzeCliPath();
     expect(p.startsWith('/')).toBe(true);
     expect(p).toContain('gitnexus');
+  });
+});
+
+describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', () => {
+  it('uses the managed build scope with provenance, resource cap, and a real deadline', async () => {
+    const child = fakeManagedChild();
+    taskManager.managedSpawn.mockResolvedValue({ child, taskId: 'task-gitnexus' });
+    const root = '/repo';
+    const repoName = 'papercusp';
+    const timeoutMs = 61_001;
+
+    const resultPromise = runGitnexusAnalyze(root, repoName, timeoutMs);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(taskManager.managedSpawn).toHaveBeenCalledTimes(1);
+    const [command, args, spec, options] = taskManager.managedSpawn.mock.calls[0] as [
+      string,
+      string[],
+      Record<string, unknown>,
+      { spawnOptions: Record<string, unknown> },
+    ];
+    expect(command).toBe(process.env.GITNEXUS_NODE_BIN ?? process.execPath);
+    expect(args).toEqual(analyzeNodeArgs(analyzeCliPath(), root, repoName));
+    expect(spec).toMatchObject({
+      class: 'build',
+      title: 'gitnexus analyze papercusp',
+      argv: [command, ...args],
+      cwd: root,
+      launchedBy: 'system:gitnexus-reindex',
+      memoryMaxBytes: GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,
+      runtimeMaxSec: 62,
+      detail: { subsystem: 'gitnexus', operation: 'analyze', repoName },
+    });
+    expect(options.spawnOptions).toMatchObject({
+      cwd: root,
+      env: expect.objectContaining({
+        NODE_OPTIONS: expect.stringContaining(`--max-old-space-size=${GITNEXUS_ANALYZE_HEAP_MB}`),
+        GITNEXUS_LBUG_MAX_DB_SIZE: String(GITNEXUS_LBUG_MAX_DB_BYTES),
+      }),
+      detached: true,
+    });
+
+    child.emit('close', 0);
+    await expect(resultPromise).resolves.toEqual({ code: 0, stdout: '', stderr: '', timedOut: false });
   });
 });
 
