@@ -130,7 +130,7 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
         },
       },
     };
-    const r = await run(sid);
+    const r = await run(sid, { PAPERCUSP_HARNESS_SLUG: 'papercusp' });
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout)).toMatchObject({
       hookSpecificOutput: {
@@ -139,6 +139,7 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
       },
     });
     expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({ generation: null });
+    expect(lastRequest?.body.params.arguments.harness_slug).toBe('papercusp');
     const cur = cursorFor(sid);
     expect(cur).toEqual({ generation: 'host-a:1' }); // complete:true → generation persisted
   });

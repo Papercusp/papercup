@@ -321,6 +321,9 @@ if not glance_fixture:
              'summary': activity_summary}
         if agent:
             a['agent'] = agent
+        harness_slug = os.environ.get('PAPERCUSP_HARNESS_SLUG')
+        if harness_slug:
+            a['harness_slug'] = harness_slug
         sess = ev.get('session_id') or ev.get('sessionId')
         if isinstance(sess, str) and sess:
             a['session_id'] = sess

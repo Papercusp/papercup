@@ -46,11 +46,11 @@ INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
 
 report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" <<'PYEOF'
+  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" <<'PYEOF'
 import json, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, owner, agent = sys.argv[1:6]
+raw, operator_url, token, owner, agent, harness_slug = sys.argv[1:7]
 HTTP_TIMEOUT = 3
 STR_CAP = 500
 
@@ -101,6 +101,8 @@ args = {
 }
 if agent:
     args['agent'] = agent
+if harness_slug:
+    args['harness_slug'] = harness_slug
 
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',

@@ -276,17 +276,21 @@ def _record_delivery(key):
     if os.environ.get('PAPERCUSP_ADVISORY_LEDGER') == '0':
         return
     try:
+        arguments = {
+            'kind': 'lifecycle',
+            'owner': agent_id,
+            'session_id': _session_key(),
+            'status': 'advisory',
+            'summary': 'advisory delivered (say-once): ' + key,
+        }
+        harness_slug = os.environ.get('PAPERCUSP_HARNESS_SLUG')
+        if harness_slug:
+            arguments['harness_slug'] = harness_slug
         body = json.dumps({
             'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
             'params': {
                 'name': 'activity:report',
-                'arguments': {
-                    'kind': 'lifecycle',
-                    'owner': agent_id,
-                    'session_id': _session_key(),
-                    'status': 'advisory',
-                    'summary': 'advisory delivered (say-once): ' + key,
-                },
+                'arguments': arguments,
                 '_meta': {'format': 'json'},
             },
         }).encode()

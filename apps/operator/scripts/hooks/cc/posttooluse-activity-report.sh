@@ -87,11 +87,11 @@ AGENT="${PAPERCUSP_AGENT:-}"
 # inside fails open (the `|| true` at the call sites) — a reporting/coord blip
 # must never affect a tool.
 report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" "$(dirname "$0")" <<'PYEOF'
+  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, owner, agent, cache_dir, coord_fold_flag, hook_dir = sys.argv[1:9]
+raw, operator_url, token, owner, agent, cache_dir, coord_fold_flag, harness_slug, hook_dir = sys.argv[1:10]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response  # noqa: E402
 coord_fold = coord_fold_flag != '0'
@@ -165,6 +165,8 @@ if todos is not None:
 else:
     # Cap string fields so a full Write `content` / patch body never bloats the POST.
     args['tool_input'] = {k: cap(v) for k, v in tool_input.items()}
+if harness_slug:
+    args['harness_slug'] = harness_slug
 
 # ── delta-aware coordination fold (EI-11405) — only when COORD_FOLD is on ──
 # Cursor is keyed by PAPERCUSP_SID (per-launch), so a fresh session never

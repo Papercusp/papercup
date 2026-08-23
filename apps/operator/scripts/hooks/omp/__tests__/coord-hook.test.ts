@@ -4697,6 +4697,18 @@ describe('buildActivityArgs (OMP activity port)', () => {
     expect(args).not.toHaveProperty('todos');
   });
 
+  it('forwards the active harness scope when the OMP session provides one', () => {
+    const previous = process.env.PAPERCUSP_HARNESS_SLUG;
+    process.env.PAPERCUSP_HARNESS_SLUG = 'papercusp';
+    try {
+      expect(buildActivityArgs({ type: 'tool_call', toolName: 'edit', toolCallId: 'scoped', input: {} }))
+        .toMatchObject({ harness_slug: 'papercusp' });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_HARNESS_SLUG;
+      else process.env.PAPERCUSP_HARNESS_SLUG = previous;
+    }
+  });
+
   it('caps long string inputs + collapses arrays/objects so the report stays small', () => {
     const args = buildActivityArgs({
       type: 'tool_call', toolName: 'write', toolCallId: 'tc2',

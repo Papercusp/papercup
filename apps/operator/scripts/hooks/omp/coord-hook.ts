@@ -2480,6 +2480,11 @@ const pendingActivityCalls = new Map<string, ToolCallEvent>();
 const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
 let _hookBundleGeneration: string | null = null;
 
+function currentHarnessSlug(): string | null {
+  const slug = process.env.PAPERCUSP_HARNESS_SLUG?.trim();
+  return slug || null;
+}
+
 export interface ActivityHookBundle {
   schemaVersion?: string;
   generation?: string;
@@ -2505,6 +2510,8 @@ export function buildActivityArgs(event: ToolCallEvent): Record<string, unknown>
     tool_name: event.toolName,
     tool_use_id: event.toolCallId,
   };
+  const harnessSlug = currentHarnessSlug();
+  if (harnessSlug) args.harness_slug = harnessSlug;
   const todos = (event.input as Record<string, unknown> | undefined)?.todos;
   if (ACTIVITY_TODO_TOOLS.has(lower) && Array.isArray(todos)) {
     args.todos = todos.slice(0, 100);
@@ -2586,11 +2593,13 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
  * activity silence. Fire-and-forget; callMcpTool fails open when detached.
  */
 export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void> {
+  const harnessSlug = currentHarnessSlug();
   await callMcpTool('activity:report', {
     owner: hookOwnerId(),
     agent: 'omp',
     kind: 'lifecycle',
     summary: phase === 'start' ? '▶ session started' : '■ session ended',
+    ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
   });
 }
 
