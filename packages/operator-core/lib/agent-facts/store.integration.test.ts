@@ -1387,17 +1387,10 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
     expect(folded.map((fact) => fact.key)).toEqual(['incident-settled']);
     expect(listed.map((fact) => fact.key)).toEqual(['incident-settled']);
 
-    const wrongScope = await listFacts(
-      { scope: 'owner', scopeRef: 'a-different-owner' },
-      { workspaceId: WS },
-      db.sql,
-    );
+    const wrongScope = await listFacts({ scope: 'owner', scopeRef: 'a-different-owner' }, { workspaceId: WS }, db.sql);
     expect(wrongScope.map((fact) => fact.key)).toContain('wrong-scope');
 
-    const [alreadyRetired] = await factVersions(
-      { ...selector, key: 'already-retired', workspaceId: WS },
-      db.sql,
-    );
+    const [alreadyRetired] = await factVersions({ ...selector, key: 'already-retired', workspaceId: WS }, db.sql);
     expect(alreadyRetired.retractedBy).toBe('su-earlier');
     expect(alreadyRetired.retractionReason).toBe('already obsolete');
   });

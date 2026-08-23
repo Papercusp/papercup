@@ -1169,9 +1169,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     retiredKeySet.add(siblingKey);
   }
   if (retiredKeySet.size > FACT_MAX_SUPERSEDES) {
-    throw new InvalidInputError(
-      `facts:assert — supersedes accepts at most ${FACT_MAX_SUPERSEDES} distinct keys`,
-    );
+    throw new InvalidInputError(`facts:assert — supersedes accepts at most ${FACT_MAX_SUPERSEDES} distinct keys`);
   }
   // Stable ordering makes the receipt deterministic and gives concurrent
   // cross-key writers the same lock acquisition preference.
