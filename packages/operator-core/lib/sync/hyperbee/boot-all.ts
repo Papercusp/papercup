@@ -58,6 +58,7 @@ import {
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 import { backgroundWorkersEnabled } from '../../background-workers';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { getOwnLogForkState } from './own-log-fork-guard';
 
 /**
  * THE SUBSTRATE BOOT REGISTRY — pinned to the realm, not to this module record.
@@ -414,6 +415,23 @@ function markSendSideUnwired(
  */
 export async function ensureSendSideWired(handle: BootedHarnessHandle, deps: SendSideWiringDeps = {}): Promise<void> {
   const k = key(handle.workspaceId, handle.harnessSlug);
+  // EI-21157761175098740: a Hypercore own-log fork permanently closes every
+  // session for the current writable core. Re-creating an outbox drain against
+  // this SAME cached handle cannot recover it; it only recreates the
+  // SESSION_CLOSED → self-stop → re-wire cycle as fast as promises settle
+  // (~45-50 times/sec in the measured incident). The fork guard is a latch,
+  // cleared only after the supported store-reset recovery, so make it the
+  // cross-loop circuit breaker: presence may stay wired, but the outbox step
+  // remains explicitly unwired until recovery clears the latch and reboots.
+  const forkState = getOwnLogForkState(handle.workspaceId, handle.harnessSlug);
+  if (forkState.forked) {
+    markSendSideUnwired(
+      k,
+      'outbox',
+      `own-log fork ${forkState.keyHex?.slice(0, 12) ?? 'unknown'}… is latched — ` +
+        `refusing to re-wire the closed session until store-reset recovery clears the latch`,
+    );
+  }
   if (outboxWired.has(k) && presenceWired.has(k)) return;
   const existing = wiringInflight.get(k);
   if (existing) return existing;
@@ -432,7 +450,21 @@ export async function ensureSendSideWired(handle: BootedHarnessHandle, deps: Sen
   // throw or block on this). A no-op if `handle` was since evicted (`h` null)
   // or already re-wired by the time this runs.
   const rewireSoon = (step: 'outbox' | 'presence', reason?: string): void => {
-    markSendSideUnwired(k, step, reason);
+    const currentFork = step === 'outbox' ? getOwnLogForkState(handle.workspaceId, handle.harnessSlug) : null;
+    const forkBlocked = currentFork?.forked === true;
+    markSendSideUnwired(
+      k,
+      step,
+      reason ??
+        (forkBlocked
+          ? `own-log fork ${currentFork?.keyHex?.slice(0, 12) ?? 'unknown'}… is latched — ` +
+            `refusing to re-wire the closed session until store-reset recovery clears the latch`
+          : undefined),
+    );
+    // The explicit recovery path clears the fork latch only after retiring the
+    // damaged store. Its subsequent reboot/boot-all pass is the safe re-wire
+    // trigger; recursively wiring this cached handle is precisely the hot loop.
+    if (forkBlocked) return;
     const h = handles.get(k);
     if (h) void ensureSendSideWired(h, deps).catch(() => {});
   };
@@ -446,7 +478,7 @@ export async function ensureSendSideWired(handle: BootedHarnessHandle, deps: Sen
     //     permanently CONNECTION_ENDED PG client) — `rewireSoon` un-marks AND
     //     immediately re-attempts, so THIS successful wiring doesn't stay
     //     silently dead until some unrelated trigger happens to reconcile it.
-    if (!outboxWired.has(k)) {
+    if (!outboxWired.has(k) && !getOwnLogForkState(handle.workspaceId, handle.harnessSlug).forked) {
       try {
         await wireOutbox(handle, () => rewireSoon('outbox'));
         outboxWired.add(k);

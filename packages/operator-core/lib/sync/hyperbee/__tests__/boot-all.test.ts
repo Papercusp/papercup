@@ -30,6 +30,11 @@ import type { BootedHarnessHandle, BootHarnessOpts } from '../boot';
 import type { SwarmBinding } from '../derive-swarm-topic';
 import { RemoteBootedHarnessHandle } from '../remote-booted-harness';
 import { makeFakeBootedHandle } from './fake-booted-handle';
+import {
+  _resetOwnLogForkGuardForTests,
+  clearOwnLogForkState,
+  reportOwnLogForkConflict,
+} from '../own-log-fork-guard';
 
 // The DEFAULT discovery path (no discoverHarnessSlugs override) reads the PG
 // registry via loadHarnessRegistry — mocked here so unit tests never touch PG.
@@ -72,6 +77,7 @@ function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHand
 afterEach(async () => {
   await closeAllBootedHarnesses();
   _resetHandleMapForTests();
+  _resetOwnLogForkGuardForTests();
 });
 
 describe('boot-all — substrate orchestrator', () => {
@@ -831,6 +837,52 @@ describe('ensureSendSideWired — EI-521: send-side wiring is idempotent + retry
     expect(wirePresence, 'presence was never un-marked — must not re-wire').toHaveBeenCalledTimes(1);
 
     // And once re-wired it settles again (no-op on a further pass).
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(2);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-21157761175098740: a latched own-log fork blocks every cross-rewire attempt until store-reset recovery clears it', async () => {
+    const workspaceId = 'ws-fork-circuit-breaker';
+    const harnessSlug = 'h';
+    const handle = fakeHandle(workspaceId, harnessSlug);
+    _setHandleForTests(workspaceId, harnessSlug, handle);
+
+    let capturedOnSessionClosed: (() => void) | undefined;
+    const wireOutbox = vi.fn(async (_h: BootedHarnessHandle, onSessionClosed: () => void) => {
+      capturedOnSessionClosed = onSessionClosed;
+    });
+    const wirePresence = vi.fn(async () => {});
+
+    // The healthy handle wires once. A later Hypercore conflict latches the
+    // permanent fork before the drain observes SESSION_CLOSED and self-stops.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    reportOwnLogForkConflict(
+      {
+        workspaceId,
+        harnessSlug,
+        keyHex: 'f'.repeat(64),
+        detail: 'test conflict closes the own-log session',
+      },
+      { onEpisode: () => {} },
+    );
+    capturedOnSessionClosed?.();
+
+    // The old implementation recursively called ensureSendSideWired here,
+    // creating ~45-50 fresh drains/sec against the SAME closed handle. Neither
+    // that callback nor repeated boot-all reconcile passes may wire again while
+    // the durable fork latch remains set.
+    await Promise.resolve();
+    for (let i = 0; i < 50; i += 1) {
+      await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    }
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+
+    // The supported store-reset recovery clears this exact latch and reboots;
+    // model that post-reset boundary and prove normal one-shot wiring resumes.
+    clearOwnLogForkState(workspaceId, harnessSlug);
     await ensureSendSideWired(handle, { wireOutbox, wirePresence });
     expect(wireOutbox).toHaveBeenCalledTimes(2);
     expect(wirePresence).toHaveBeenCalledTimes(1);
