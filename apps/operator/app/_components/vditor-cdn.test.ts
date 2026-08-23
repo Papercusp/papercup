@@ -17,12 +17,12 @@
  * else in the build would notice. Hence a text-level assertion over the source:
  * the property either appears at each entry point or it does not.
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { listLiveTypeScriptFiles } from './live-source-files';
 import { stripJsComments } from './strip-js-comments';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -72,16 +72,11 @@ describe('vditor cdn (WI-7088)', () => {
 
   it('no OTHER module constructs Vditor behind this guard\'s back', async () => {
     // The assertion above only inspects MarkdownEditor.tsx. A second module
-    // constructing Vditor would be invisible to it — so pin the fact that
-    // MarkdownEditor.tsx is the single wrapper. `git grep` (not a tree walk)
-    // keeps this off node_modules, the generated public/vditor mirror, and dist.
-    const candidates = execFileSync(
-      'git',
-      ['grep', '-l', '-E', "from 'vditor'|import\\('vditor'\\)|new Vditor\\(|Vditor\\.preview\\(",
-       '--', '*.ts', '*.tsx'],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    )
-      .split('\n')
+    // constructing Vditor would be invisible to it — so enumerate every live
+    // source file. The filesystem-only source
+    // enumerator keeps this off node_modules, the generated public/vditor
+    // mirror, and dist without asking git to spawn worker threads.
+    const candidates = (await listLiveTypeScriptFiles(REPO_ROOT))
       .filter(Boolean)
       // Tests may stub the module; only real call sites matter here.
       .filter((f) => !f.includes('.test.'));
@@ -98,7 +93,10 @@ describe('vditor cdn (WI-7088)', () => {
       VDITOR_ENTRY_POINTS.lastIndex = 0; // /g regex carries state between .test()
     }
 
-    expect(constructors).toEqual(['apps/operator/app/_components/MarkdownEditor.tsx']);
+    expect(constructors).toEqual([
+      'apps/operator/app/_components/MarkdownEditor.tsx',
+      'libs/generic/ui-primitives/src/PlanDocumentView.tsx',
+    ]);
   });
 
   it('the cdn base resolves to a real local mirror, not the internet', async () => {

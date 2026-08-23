@@ -19,11 +19,11 @@
  * its own surface. Nothing else in the build would notice, which is precisely
  * why this has to be a source-level assertion.
  */
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { listLiveTypeScriptFiles } from './live-source-files';
 import { stripJsComments } from './strip-js-comments';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -53,12 +53,7 @@ const stripComments = stripJsComments;
 /** Real, live call sites — excludes tests (which mock the module) and the
  *  retired web app under libs/papercusp/_retired (guarded by lint:no-retired). */
 async function liveMonacoCallSites(): Promise<string[]> {
-  const candidates = execFileSync(
-    'git',
-    ['grep', '-l', '-E', "from '@monaco-editor/react'|import\\('@monaco-editor/react'\\)", '--', '*.ts', '*.tsx'],
-    { cwd: REPO_ROOT, encoding: 'utf8' },
-  )
-    .split('\n')
+  const candidates = (await listLiveTypeScriptFiles(REPO_ROOT))
     .filter(Boolean)
     .filter((f) => !f.includes('.test.'))
     .filter((f) => !f.includes('_retired/'));
@@ -72,6 +67,11 @@ async function liveMonacoCallSites(): Promise<string[]> {
 }
 
 describe('monaco cdn (cdn-egress-fixes-2026-08-02 P-001)', () => {
+  it('enumerates source files without a load-sensitive child process', async () => {
+    const enumerator = await readFile(resolve(HERE, 'live-source-files.ts'), 'utf8');
+    expect(enumerator).not.toMatch(/node:child_process|exec(?:File)?(?:Sync)?|spawn(?:Sync)?/);
+  });
+
   it('every live Monaco call site imports the runtime config', async () => {
     const sites = await liveMonacoCallSites();
 

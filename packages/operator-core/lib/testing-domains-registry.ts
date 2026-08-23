@@ -1129,6 +1129,10 @@ defineTestDomain({
   description: 'Flat catch-all for the operator app: every lib/app/bin/script/integration test, so nothing is invisible. Files here may also appear under a more specific domain — overlap is intentional.',
   tier: 'domain',
   sections: [
+    { id: 'repo-root', label: 'repo root', globs: [
+        '*.test.ts',
+        '*.test.tsx',
+      ] },
     { id: 'lib-root', label: 'lib (root)', globs: [
         'packages/operator-core/lib/*.test.ts',
         'packages/operator-core/lib/*.test.tsx',

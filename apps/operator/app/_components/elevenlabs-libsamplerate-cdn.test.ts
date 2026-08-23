@@ -39,11 +39,11 @@
  * `@elevenlabs/client`) at the SAME time — this guard will fail first and
  * point here.
  */
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { listLiveTypeScriptFiles } from './live-source-files';
 import { stripJsComments } from './strip-js-comments';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -54,12 +54,7 @@ const CONNECTION_TYPE_WEBRTC = /connectionType:\s*['"]webrtc['"]/;
 /** Real, live call sites — excludes tests (which mock the module) and the
  *  retired web app under libs/papercusp/_retired (guarded by lint:no-retired). */
 async function liveStartSessionCallSites(): Promise<string[]> {
-  const candidates = execFileSync(
-    'git',
-    ['grep', '-l', '-E', 'Conversation\\.startSession\\(', '--', '*.ts', '*.tsx'],
-    { cwd: REPO_ROOT, encoding: 'utf8' },
-  )
-    .split('\n')
+  const candidates = (await listLiveTypeScriptFiles(REPO_ROOT))
     .filter(Boolean)
     .filter((f) => !f.includes('.test.'))
     .filter((f) => !f.includes('_retired/'));
