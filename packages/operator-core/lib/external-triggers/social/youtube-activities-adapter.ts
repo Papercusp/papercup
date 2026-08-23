@@ -103,29 +103,75 @@ export function clampYouTubeMaxResults(value: number | null | undefined): number
  *     indistinguishable from a quiet channel. That is precisely the silent-loss
  *     failure D-005 named and the `path` field exists to expose.
  *
- * So the cursor does not pick a reading. It sends the watermark VERBATIM —
- * which under either reading returns a superset of what is genuinely new — and
- * carries the ids already emitted at that exact instant so the client can drop
- * the overlap. Under the inclusive reading the boundary items come back and are
- * filtered; under the exclusive reading they never come back and the filter is
- * a no-op. Correct either way, and `youtube-activities-adapter.test.ts` runs the
- * whole conformance kit against BOTH a provider fake that is inclusive and one
- * that is exclusive, so neither reading is merely assumed.
+ * So the cursor does not pick a reading. It stores the watermark verbatim and
+ * queries a floor ONE MILLISECOND BEFORE it (`youtubeQueryFloor`), carrying the
+ * ids already emitted at the watermark instant so the client can drop the
+ * overlap the wider query returns.
+ *
+ * THE ASYMMETRY THAT MAKES THE MARGIN GO BACKWARDS, WHICH IS THE WHOLE TRICK.
+ * A margin in either direction removes the ambiguity, but they fail in opposite
+ * ways, and only one of the two failures is recoverable:
+ *
+ *   - FORWARD (`watermark + 1ms`, the obvious fix for the inclusive re-emit):
+ *     UNDER-fetches. Anything at the watermark instant is now outside the query
+ *     under both readings, so a sibling published in that same instant but
+ *     indexed after our poll is never served again. Silent, permanent loss.
+ *   - BACKWARD (`watermark - 1ms`, what this adapter does): OVER-fetches. The
+ *     boundary instant is inside the query under both readings, and the extra
+ *     items it drags in are exactly the ones `boundaryIds` and the client-side
+ *     watermark filter already know how to drop.
+ *
+ * Over-fetching costs a filter pass. Under-fetching costs events, invisibly.
+ * That is why the margin points backwards, and `youtube-activities-adapter.test.ts`
+ * keeps the forward variant as a permanent control that demonstrably loses a
+ * sibling under BOTH readings.
+ *
+ * The whole conformance kit runs against both an inclusive and an exclusive
+ * provider fake, so neither reading is merely assumed.
  *
  * `boundaryIds` is bounded by how many activities share one instant, not by the
  * gap: it is reset every time the watermark advances.
+ *
+ * WHAT THIS DOES NOT SOLVE, stated so nobody mistakes it for solved: an activity
+ * whose `publishedAt` is OLDER than the stored watermark but which appears in
+ * the feed later is still dropped by the client-side filter. That is inherent to
+ * every time-watermark cursor, not something the margin addresses — the margin
+ * exists solely to make the boundary INSTANT reachable, and is deliberately the
+ * smallest representable step rather than a lag cushion, which would only move
+ * the same cliff a little further out while multiplying the re-read on every
+ * pass.
  */
 export interface YouTubeActivitiesCursor {
   /**
    * `snippet.publishedAt` of the newest activity read so far, stored exactly as
-   * the provider serialized it and sent back verbatim. Never re-formatted —
-   * a round-trip through `Date#toISOString` would silently rewrite the
-   * provider's own precision, and this value's whole job is to be the
-   * provider's own marker.
+   * the provider serialized it.
+   *
+   * Stored verbatim rather than re-serialized because this is the value every
+   * boundary comparison is made against, and a round-trip through
+   * `Date#toISOString` would rewrite the provider's own precision. It is NOT the
+   * value sent to the provider — see `youtubeQueryFloor`.
    */
   publishedAfter: string;
   /** Activity ids already emitted whose `publishedAt` is that same instant. */
   boundaryIds: string[];
+}
+
+/** The smallest representable step — see the header's forward/backward asymmetry. */
+export const YOUTUBE_QUERY_FLOOR_MARGIN_MS = 1;
+
+/**
+ * The value actually sent as `publishedAfter`: one millisecond BEFORE the stored
+ * watermark, so the watermark instant itself is inside the query under both the
+ * inclusive and the exclusive reading.
+ *
+ * Returns null for a cold start or an unusable cursor, which is the signal to
+ * read the window unfiltered.
+ */
+export function youtubeQueryFloor(cursor: YouTubeActivitiesCursor | null): string | null {
+  if (!cursor) return null;
+  const ms = youtubeInstantMs(cursor.publishedAfter);
+  if (ms === null) return null;
+  return new Date(ms - YOUTUBE_QUERY_FLOOR_MARGIN_MS).toISOString();
 }
 
 export function isYouTubeActivitiesCursor(value: unknown): value is YouTubeActivitiesCursor {
@@ -396,7 +442,9 @@ export class YouTubeActivitiesAdapter implements SocialAdapter {
       read = await this.walk(null, ctx);
     } else {
       try {
-        read = await this.walk(stored?.publishedAfter ?? null, ctx);
+        // The FLOOR, not the watermark — one millisecond earlier, so the
+        // watermark instant is reachable under either reading of publishedAfter.
+        read = await this.walk(youtubeQueryFloor(stored), ctx);
       } catch (error) {
         if (!(error instanceof YouTubeCursorRejected)) throw error;
         // The provider refused the watermark itself. Re-read the bounded window
