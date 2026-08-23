@@ -131,6 +131,23 @@ export default defineTool({
               '`summary` (the concrete question) and `nextVerb` (what action unblocks it).',
           };
         }
+        if (strictHumanAsk) {
+          // EI-13766 requirement 2: preflight plan truth BEFORE persisting the
+          // blocker payload. The canonical lifecycle writer repeats this guard,
+          // but discovering it only there would leave a half-written human
+          // blocker behind after the state transition is rejected.
+          const { planItemNeedsHumanContradiction } = await import('../../scheduler/plan-item-lane-guard');
+          const contradiction = await planItemNeedsHumanContradiction(workItem).catch(() => null);
+          if (contradiction) {
+            return {
+              ok: false as const,
+              id: input.id,
+              error:
+                `work_item '${input.id}' owner-capability blocker rejected — ${contradiction.reason}. ` +
+                'Update the plan item to needs-human first; no blocker was written.',
+            };
+          }
+        }
 
         const history = applyExternalBlockerUpdate(
           workItem.payload,
