@@ -40,6 +40,7 @@ const {
   getLoopCarryNote,
   getLoopCarryNoteWithMeta,
   getLoopCarryJournal,
+  shortCarryHash,
   hiveScope,
   workItemScope,
   loopScope,
@@ -152,6 +153,38 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
     expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect(await getLoopCarryNote(LOOP)).toBe('prior cold-wake anchor');
+  });
+
+  it('expectedHash prevents a stale successor from replacing a newer note', async () => {
+    await setLoopCarryNote(LOOP, 'newer checkpoint');
+
+    const result = await setLoopCarryNoteWithPrior(LOOP, 'stale successor checkpoint', {
+      expectedHash: shortCarryHash('older checkpoint'),
+    });
+
+    expect(result).toMatchObject({
+      stored: 'newer checkpoint',
+      blockedReason: 'expected_hash_mismatch',
+      conflict: {
+        expectedHash: shortCarryHash('older checkpoint'),
+        currentHash: shortCarryHash('newer checkpoint'),
+      },
+    });
+    expect(await getLoopCarryNote(LOOP)).toBe('newer checkpoint');
+  });
+
+  it('serializes same-baseline writers so exactly one wins the CAS', async () => {
+    await setLoopCarryNote(LOOP, 'baseline checkpoint');
+    const expectedHash = shortCarryHash('baseline checkpoint');
+
+    const results = await Promise.all([
+      setLoopCarryNoteWithPrior(LOOP, 'first successor', { expectedHash }),
+      setLoopCarryNoteWithPrior(LOOP, 'second successor', { expectedHash }),
+    ]);
+
+    expect(results.filter((result) => result.conflict)).toHaveLength(1);
+    expect(results.filter((result) => !result.conflict && result.stored !== 'baseline checkpoint')).toHaveLength(1);
+    expect(['first successor', 'second successor']).toContain(await getLoopCarryNote(LOOP));
   });
 });
 

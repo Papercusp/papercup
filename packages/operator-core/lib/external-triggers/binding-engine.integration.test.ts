@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import type { StartGoalByIdResult } from '../goals/start-goal-by-id';
 import { dispatchPendingTriggerRuns, triggerRunPlanToken } from './binding-engine';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,7 @@ const PLAN = 'triage-external-event';
 
 let org: OrgTestDb;
 let sql: Sql;
+let sourceId: string;
 let bindingId: string;
 let deliveryId: string;
 
@@ -34,6 +36,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
@@ -49,6 +52,7 @@ beforeEach(async () => {
   const sources = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
     VALUES (${WS}, 'gmail', 'connected') RETURNING id`;
+  sourceId = sources[0].id;
   const bindings = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_bindings
       (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
@@ -73,6 +77,7 @@ async function seedTriggerRun(over: {
   attempts?: number;
   startedAt?: string;
   args?: Record<string, unknown>;
+  bindingId?: string;
 } = {}): Promise<string> {
   const args = over.args ?? {
     trigger: {
@@ -85,7 +90,7 @@ async function seedTriggerRun(over: {
   const rows = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_runs
       (workspace_id, binding_id, delivery_id, dedupe_key, status, args, attempts, started_at)
-    VALUES (${WS}, ${bindingId}, ${deliveryId}, ${(args.trigger as { dedupeKey?: string })?.dedupeKey ?? 'gmail:dispatch-1'}, ${over.status ?? 'pending'},
+    VALUES (${WS}, ${over.bindingId ?? bindingId}, ${deliveryId}, ${(args.trigger as { dedupeKey?: string })?.dedupeKey ?? 'gmail:dispatch-1'}, ${over.status ?? 'pending'},
             ${JSON.stringify(args)}::text::jsonb,
             ${over.attempts ?? 0}, ${over.startedAt ?? null}::timestamptz)
     RETURNING id`;
@@ -213,5 +218,158 @@ describe('external trigger durable dispatch', () => {
       trigger: 'event',
       inputs: args,
     }));
+  });
+});
+
+describe('start-goal trigger dispatch (P-020)', () => {
+  const GOAL = 'goal-woe-dispatch-1';
+  let goalBindingId: string;
+
+  async function seedGoalBinding(goalId: string | null): Promise<string> {
+    const rows = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id, event_pattern,
+         event_filter, action, armed, storm_policy)
+      VALUES (${WS}, ${sourceId}, NULL, NULL, ${goalId}, 'ext:gmail:message.*',
+              '{}'::jsonb, '{"type":"start-goal"}'::jsonb, TRUE, '{}'::jsonb)
+      RETURNING id`;
+    return rows[0].id;
+  }
+
+  beforeEach(async () => {
+    await sql`
+      INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, status)
+      VALUES (${GOAL}, ${WS}, ${HARNESS}, 'Standing dispatch-test goal', 'active')`;
+    goalBindingId = await seedGoalBinding(GOAL);
+  });
+
+  async function readRun(triggerRunId: string): Promise<{
+    status: string;
+    attempts: number;
+    plan_run_ref: string | null;
+    outcome: Record<string, unknown> | null;
+    error: string | null;
+  }> {
+    const rows = await sql<Array<{
+      status: string;
+      attempts: number;
+      plan_run_ref: string | null;
+      outcome: Record<string, unknown> | null;
+      error: string | null;
+    }>>`
+      SELECT status, attempts, plan_run_ref, outcome, error
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    return rows[0];
+  }
+
+  it('activates the goal through the injected primitive and closes the run with a goal outcome', async () => {
+    const triggerRunId = await seedTriggerRun({ bindingId: goalBindingId });
+    const activation: StartGoalByIdResult = {
+      ok: true,
+      goalId: GOAL,
+      ownerId: 'su-goal-holder-1',
+      warnings: ['budget_policy_read_failed'],
+      startBlockedOverride: null,
+    };
+    const startGoal = vi.fn(async () => activation);
+
+    const result = await dispatchPendingTriggerRuns(sql, { startGoal });
+    expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0, skipped: 0 });
+    expect(result.triggerRunIds).toEqual([triggerRunId]);
+    expect(startGoal).toHaveBeenCalledWith(sql, {
+      workspaceId: WS,
+      goalId: GOAL,
+      launcherOwnerId: `trigger-binding:${goalBindingId}`,
+    });
+
+    const run = await readRun(triggerRunId);
+    expect(run.status).toBe('succeeded');
+    // A goal run's handle is the outcome, never a plan-run ref.
+    expect(run.plan_run_ref).toBeNull();
+    expect(run.error).toBeNull();
+    expect(run.outcome).toEqual({
+      goalId: GOAL,
+      agentOwnerId: 'su-goal-holder-1',
+      warnings: ['budget_policy_read_failed'],
+    });
+  });
+
+  it('retries a heal-able refusal (not-ready) as failed, then succeeds — outcome omits empty warnings', async () => {
+    const triggerRunId = await seedTriggerRun({ bindingId: goalBindingId });
+    const refused: StartGoalByIdResult = { ok: false, reason: 'not-ready', detail: 'blockers pending: 2' };
+    const activated: StartGoalByIdResult = {
+      ok: true, goalId: GOAL, ownerId: 'su-goal-holder-2', warnings: [], startBlockedOverride: null,
+    };
+    const startGoal = vi.fn()
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValueOnce(activated);
+
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1, skipped: 0 });
+    const failed = await readRun(triggerRunId);
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toContain('external_trigger_goal_start_refused:not-ready');
+
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0, skipped: 0 });
+    const done = await readRun(triggerRunId);
+    expect(done.status).toBe('succeeded');
+    expect(done.attempts).toBe(2);
+    // warnings: [] is elided from the persisted outcome entirely.
+    expect(done.outcome).toEqual({ goalId: GOAL, agentOwnerId: 'su-goal-holder-2' });
+  });
+
+  it('closes a terminal refusal (already-held) as skipped and never re-claims it', async () => {
+    const triggerRunId = await seedTriggerRun({ bindingId: goalBindingId });
+    const refused: StartGoalByIdResult = {
+      ok: false, reason: 'already-held', detail: 'goal has a live holder su-elsewhere',
+    };
+    const startGoal = vi.fn(async () => refused);
+
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 0, skipped: 1 });
+    const run = await readRun(triggerRunId);
+    expect(run.status).toBe('skipped');
+    expect(run.outcome).toEqual({ goalId: GOAL, refusal: 'already-held' });
+    expect(run.error).toBe('goal has a live holder su-elsewhere');
+
+    // Terminal: the claim query only takes pending/failed/stale-running rows.
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 0 });
+    expect(startGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a start-goal action whose binding carries no goal target, without invoking the primitive', async () => {
+    // The exactly-one-target CHECK allows a plan-targeted row whose action jsonb
+    // says start-goal (action is independent of the target columns) — the engine
+    // guard is what catches the mismatch.
+    const mismatched = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+         event_filter, action, armed, storm_policy)
+      VALUES (${WS}, ${sourceId}, ${HARNESS}, ${PLAN}, 'ext:gmail:message.*',
+              '{}'::jsonb, '{"type":"start-goal"}'::jsonb, TRUE, '{}'::jsonb)
+      RETURNING id`;
+    const triggerRunId = await seedTriggerRun({ bindingId: mismatched[0].id });
+    const startGoal = vi.fn();
+
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1, skipped: 0 });
+    const run = await readRun(triggerRunId);
+    expect(run.status).toBe('failed');
+    expect(run.error).toBe('external_trigger_missing_goal_target');
+    expect(startGoal).not.toHaveBeenCalled();
+  });
+
+  it('migration 921 canary: the DB refuses a binding with both targets or neither', async () => {
+    await expect(sql`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id, event_pattern,
+         event_filter, action, armed, storm_policy)
+      VALUES (${WS}, ${sourceId}, ${HARNESS}, ${PLAN}, ${GOAL}, 'ext:gmail:message.*',
+              '{}'::jsonb, '{"type":"start-goal"}'::jsonb, TRUE, '{}'::jsonb)`,
+    ).rejects.toThrow(/trigger_bindings_exactly_one_target/);
+    await expect(seedGoalBinding(null)).rejects.toThrow(/trigger_bindings_exactly_one_target/);
   });
 });

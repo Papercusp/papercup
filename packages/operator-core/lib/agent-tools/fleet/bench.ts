@@ -206,20 +206,18 @@ export default defineTool({
   description:
     "Bench a fleet member as TRACKED, queryable state instead of a hand-written per-member " +
     "convention. STAGE: fleet:bench { member, wakeEvent, stagedAssignment } captures the " +
-    "member's wake handle and registers the events:await FOR them (note tagged with the " +
-    "staged assignment) — returns `registered:false` immediately if no resumable session " +
-    "was found for that member (a bench miss caught before you ever emit). LIST: " +
+    "member's wake handle and registers the events:await FOR them (note carries the staged " +
+    "assignment) — returns `registered:false` immediately if no resumable session " +
+    "was found for that member. LIST: " +
     "fleet:bench { list: true } (optionally { fleet }) returns who is benched on YOUR fleet, " +
     "on what key, with what staged leg. Pairs with events:emit's `waiters`/`woken` counts " +
     "(P-005) for miss-visibility at both stage time and emit time. An exact " +
-    "`work-item:claimable` bench is automatically narrowed to the staged member's claim " +
-    "spec when the payload supports a sound filter.",
+    "`work-item:claimable` bench auto-narrows to the staged member's claim spec.",
   guidance: {
     when:
       "A leader staging a member's NEXT assignment while they wait on something (a watermark, " +
       "a peer's fix, a bench key) — instead of asking the member to events:await it themselves " +
-      "and hoping it landed, or directed-waking everyone as a fallback because you can't tell " +
-      "who actually registered. Also the query surface for 'who is benched on what right now'.",
+      "and hoping it landed. Also the query surface for 'who is benched on what right now'.",
     notWhen:
       "The member is awaiting something on their OWN initiative (they call events:await " +
       "directly). A one-off nudge — use coord:send / coord:wake. Fleet-wide health at a " +

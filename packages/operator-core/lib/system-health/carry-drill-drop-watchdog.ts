@@ -43,11 +43,7 @@ import {
 } from '../cold-boot-drill-live';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import {
-  PSU_PTY_DIR,
-  readHostEventTail,
-  type PtyHostEvent,
-} from '../events/await/psu-pty-discovery';
+import { PSU_PTY_DIR, readHostEventTail, type PtyHostEvent } from '../events/await/psu-pty-discovery';
 
 export const CARRY_DRILL_DROP_SWEEP_INTERVAL_MS = 60_000;
 /** How far back the first tick after boot looks — covers a restart gap without
@@ -138,8 +134,7 @@ export function summarizeProductionCarryDelivery(
     }
     if (kind !== 'respawn-carry-dropped' && kind !== 'respawn-failed') continue;
 
-    const reason =
-      typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : 'unknown';
+    const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : 'unknown';
     const reasonKey = kind === 'respawn-failed' ? `respawn-failed:${reason}` : reason;
     failureReasons.set(reasonKey, (failureReasons.get(reasonKey) ?? 0) + 1);
     if (kind === 'respawn-carry-dropped') dropped += 1;
@@ -180,11 +175,7 @@ export function readRecentProductionCarryEvents(
 
   const events: PtyHostEvent[] = [];
   for (const entry of entries) {
-    if (
-      !entry.isFile() ||
-      !entry.name.endsWith(HOST_EVENT_SUFFIX) ||
-      entry.name === SHARED_DRILL_LEDGER
-    ) {
+    if (!entry.isFile() || !entry.name.endsWith(HOST_EVENT_SUFFIX) || entry.name === SHARED_DRILL_LEDGER) {
       continue;
     }
     try {
@@ -245,7 +236,7 @@ async function defaultEscalateProduction(reading: ProductionCarryDeliveryReading
     .map(([reason, count]) => `${reason}=${count}`)
     .join(', ');
   await openEscalation(WATCHDOG_IDENTITY, {
-    severity: 'major',
+    severity: 'blocker',
     summary:
       `Production carry delivery fell to ${rate}% ` +
       `(${reading.delivered}/${reading.terminalOutcomes}) in the trailing hour`,
@@ -285,9 +276,7 @@ function sweepDeps(overrides: Partial<CarryDrillDropSweepDeps>): CarryDrillDropS
   };
 }
 
-function productionSweepDeps(
-  overrides: Partial<ProductionCarryDeliverySweepDeps>,
-): ProductionCarryDeliverySweepDeps {
+function productionSweepDeps(overrides: Partial<ProductionCarryDeliverySweepDeps>): ProductionCarryDeliverySweepDeps {
   return {
     readEvents: async (now, windowMs) => readRecentProductionCarryEvents(PSU_PTY_DIR, now, windowMs),
     escalate: defaultEscalateProduction,
@@ -336,11 +325,7 @@ export async function runProductionCarryDeliverySweepOnce(
   if (!(await deps.flagEnabled())) return { reading: null, escalated: false, skipped: true };
 
   const now = deps.now();
-  const reading = summarizeProductionCarryDelivery(
-    await deps.readEvents(now, deps.windowMs),
-    now,
-    deps.windowMs,
-  );
+  const reading = summarizeProductionCarryDelivery(await deps.readEvents(now, deps.windowMs), now, deps.windowMs);
   const breached =
     reading.terminalOutcomes >= deps.minTerminalOutcomes &&
     reading.deliveryRate != null &&
@@ -384,10 +369,9 @@ export function startCarryDrillDropWatchdog(opts: { intervalMs?: number } = {}):
             `[carry-drill-drop-watchdog] production sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
         }
-      })()
-        .finally(() => {
-          sweeping = false;
-        });
+      })().finally(() => {
+        sweeping = false;
+      });
     },
     { category: 'watchdog' },
   );

@@ -344,6 +344,15 @@ export default defineTool({
             "'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
             'no-op, never a clear.',
         ),
+      expectedHash: z
+        .string()
+        .regex(/^[0-9a-f]{12}$/i)
+        .nullable()
+        .optional()
+        .describe(
+          'Optional optimistic-CAS baseline: the 12-character contentHash returned by the last loop:checkpoint/read. ' +
+            'Use null to assert that no note existed; on mismatch the write is refused and the current hash is returned.',
+        ),
       ownerId: z
         .string()
         .max(120)
@@ -580,10 +589,11 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     let stored: string | null;
     try {
-      ({ stored } = await setLoopCarryNoteWithPrior(
+      const writeResult = await setLoopCarryNoteWithPrior(
         { harness, ownerId, workspaceId: workspaceId ?? undefined },
         baseNote,
         {
+          ...(args.expectedHash !== undefined ? { expectedHash: args.expectedHash } : {}),
           transform: (priorNote) => {
             captured.merged = mergeCarryRows({
               priorNote,
@@ -596,7 +606,30 @@ export default defineTool({
             return captured.merged.note;
           },
         },
-      ));
+      );
+      ({ stored } = writeResult);
+      if (writeResult.conflict) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_conflict',
+                retryable: false,
+                harness,
+                ownerId,
+                expectedHash: writeResult.conflict.expectedHash,
+                currentHash: writeResult.conflict.currentHash,
+                message:
+                  'The carry-note changed after the supplied contentHash was read; no note was written. ' +
+                  'Re-read the current carry-note and retry with its contentHash, or reconcile before writing.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     } catch (error) {
       // The loop carry-note is the cold successor's only durable anchor. A
       // transient lock wait or admin-pool acquisition deadline must be visible

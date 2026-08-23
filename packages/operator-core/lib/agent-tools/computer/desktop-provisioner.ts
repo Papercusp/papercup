@@ -259,6 +259,24 @@ export async function releaseDesktopProcesses(
 }
 
 /**
+ * Release all per-desktop resources, including the session bus that is not part
+ * of the Xvfb task subtree. Keeping this wrapper separate makes the ownership
+ * boundary explicit and gives teardown a single finally path for failed starts.
+ */
+export async function releaseDesktopResources(
+  procs: readonly KillableProcess[],
+  root: DesktopTaskHandle,
+  a11y: Pick<A11yBus, 'release'> | null | undefined,
+  deps: DesktopReleaseDeps = {},
+): Promise<void> {
+  try {
+    await releaseDesktopProcesses(procs, root, deps);
+  } finally {
+    a11y?.release();
+  }
+}
+
+/**
  * Lowest free display number ≥ base (no `/tmp/.X<n>-lock`), NEVER 0. Pure over
  * an injectable `exists` so it unit-tests without touching the filesystem.
  */
@@ -305,6 +323,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   const height = opts.height ?? DEFAULT_H;
   const procs: ChildProcess[] = [];
   let taskId: string | null = null;
+  let a11y: A11yBus | null = null;
   let rootHandle: DesktopTaskHandle = {
     taskId: null,
     scopeUnit: null,
@@ -313,7 +332,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
   };
 
   const release = async (): Promise<void> => {
-    await releaseDesktopProcesses(procs, rootHandle);
+    await releaseDesktopResources(procs, rootHandle, a11y);
   };
 
   try {
@@ -401,7 +420,7 @@ export async function provisionSandboxDesktop(opts: ProvisionOptions = {}): Prom
     // acquire the address of the accessibility bus" and stays invisible to
     // accessibility for its whole life, even though the bus appears moments later.
     // That is why this sits above the app loop rather than beside it.
-    const a11y = opts.accessibility === false ? null : startA11yBus(display);
+    a11y = opts.accessibility === false ? null : startA11yBus(display);
     const appEnv = a11y ? { ...env, ...a11y.env } : env;
 
     // P-010 (D-015): apps are the ONLY thing wrapped in bubblewrap. Xvfb and openbox are

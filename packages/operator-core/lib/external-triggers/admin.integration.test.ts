@@ -5,6 +5,7 @@ import {
   createExternalTriggerBinding,
   createExternalTriggerSource,
   detachExternalTriggerBinding,
+  ensureExternalTriggerBinding,
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
   setExternalTriggerBindingArmed,
@@ -33,6 +34,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.plan_run_turns WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = ${`plan-schedule-${PLAN}`}`;
@@ -313,5 +315,75 @@ describe('P-023 — a social binding defaults to coalesce-with-cap, never to unb
     const binding = await bindOn('bluesky', { maxRuns: 2, windowSeconds: 60 });
     expect(binding.stormPolicy).toMatchObject({ maxRuns: 2, windowSeconds: 60 });
     expect(binding.stormPolicy.mode).toBeUndefined();
+  });
+});
+
+describe('P-020 — goal-targeted bindings through the create door', () => {
+  const GOAL = 'goal-admin-door-1';
+  let goalSourceId: string;
+
+  beforeEach(async () => {
+    await sql`
+      INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, status)
+      VALUES (${GOAL}, ${WS}, ${HARNESS}, 'Admin-door test goal', 'active')`;
+    const source = await createExternalTriggerSource(sql, WS, { kind: 'slack' });
+    goalSourceId = source.id;
+  });
+
+  it('creates a goal-targeted binding: goal_id set, plan cols NULL, action start-goal, disarmed', async () => {
+    const binding = await createExternalTriggerBinding(sql, WS, {
+      sourceId: goalSourceId,
+      goalId: GOAL,
+      eventPattern: 'ext:slack:mention',
+      createdBy: 'agent-fixture',
+    });
+    expect(binding).toMatchObject({
+      sourceId: goalSourceId,
+      sourceKind: 'slack',
+      goalId: GOAL,
+      planHarnessSlug: null,
+      planSlug: null,
+      action: { type: 'start-goal' },
+      armed: false,
+    });
+    const rows = await sql<Array<{ goal_id: string | null; plan_slug: string | null }>>`
+      SELECT goal_id, plan_slug FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${WS} AND id = ${binding.id}::uuid`;
+    expect(rows[0]).toEqual({ goal_id: GOAL, plan_slug: null });
+  });
+
+  it('refuses both targets, no target, and an unknown goal — by name, before the DB constraint', async () => {
+    await expect(
+      createExternalTriggerBinding(sql, WS, {
+        sourceId: goalSourceId,
+        goalId: GOAL,
+        planHarnessSlug: HARNESS,
+        planSlug: PLAN,
+        eventPattern: 'ext:slack:mention',
+      }),
+    ).rejects.toThrow('external_trigger_binding_both_targets');
+    await expect(
+      createExternalTriggerBinding(sql, WS, {
+        sourceId: goalSourceId,
+        eventPattern: 'ext:slack:mention',
+      }),
+    ).rejects.toThrow('external_trigger_binding_no_target');
+    await expect(
+      createExternalTriggerBinding(sql, WS, {
+        sourceId: goalSourceId,
+        goalId: 'goal-that-does-not-exist',
+        eventPattern: 'ext:slack:mention',
+      }),
+    ).rejects.toThrow('external_trigger_unknown_goal:goal-that-does-not-exist');
+  });
+
+  it('ensure door stays plan-only: a goal target is refused as ensure-unsupported', async () => {
+    await expect(
+      ensureExternalTriggerBinding(sql, WS, {
+        sourceId: goalSourceId,
+        goalId: GOAL,
+        eventPattern: 'ext:slack:mention',
+      }),
+    ).rejects.toThrow('external_trigger_goal_binding_ensure_unsupported');
   });
 });

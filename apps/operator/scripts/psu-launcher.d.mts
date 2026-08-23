@@ -2418,8 +2418,11 @@ export function ensureInteractiveConfigViaOperator(owner: any, configDir: any, {
  * LOOKS like a config and carries none of the above — the resume then either
  * dies on the missing provider or, worse, comes up quietly with no coordination
  * MCP at all. Presence of the MCP block distinguishes ours from that stub.
+ *
+ * @param {string | null | undefined} codexHome
+ * @param {string | null} [expectedOwner]
  */
-export function isCodexHomeLaunchReady(codexHome: any, expectedOwner?: null): boolean;
+export function isCodexHomeLaunchReady(codexHome: string | null | undefined, expectedOwner?: string | null): boolean;
 /**
  * WI-38706 — the codex twin of `ensureInteractiveConfigViaOperator`, and for the
  * same structural reason: a FRESH psu launch has its CODEX_HOME materialized

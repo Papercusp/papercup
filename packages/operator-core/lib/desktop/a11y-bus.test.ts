@@ -5,10 +5,13 @@
  * module can produce is silent: a well-formed bus address for the WRONG desktop makes
  * every consumer downstream work correctly against the operator's own session.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   busBelongsToDisplay,
+  createOwnedDaemonRelease,
   minimalSessionBusConfig,
+  parseSessionBusPid,
+  parseSessionBusStartup,
   publishBusPropertyCommand,
   sessionBusCommand,
   A11Y_APP_ENV,
@@ -31,8 +34,48 @@ describe('sessionBusCommand', () => {
     const cmd = sessionBusCommand('/tmp/x/session.conf');
     expect(cmd.bin).toBe('dbus-daemon');
     expect(cmd.args).toContain('--fork');
-    expect(cmd.args).toContain('--print-address');
+    expect(cmd.args).toContain('--print-address=1');
+    expect(cmd.args).toContain('--print-pid=1');
     expect(cmd.args).toContain('--config-file=/tmp/x/session.conf');
+  });
+});
+
+describe('session-bus startup parsing', () => {
+  const output = 'unix:path=/tmp/dbus-abc,guid=deadbeef\n1812773\n';
+
+  it('parses the address and PID emitted by the forked daemon', () => {
+    expect(parseSessionBusStartup(output)).toEqual({
+      sessionBus: 'unix:path=/tmp/dbus-abc,guid=deadbeef',
+      pid: 1812773,
+    });
+  });
+
+  it('rejects incomplete or unsafe PID output', () => {
+    expect(parseSessionBusPid('unix:path=/tmp/dbus-abc\n')).toBeNull();
+    expect(parseSessionBusPid('unix:path=/tmp/dbus-abc\n1\n')).toBeNull();
+    expect(parseSessionBusStartup('1812773\n')).toBeNull();
+  });
+});
+
+describe('createOwnedDaemonRelease', () => {
+  it('signals the owned daemon once even when release is called repeatedly', () => {
+    const kill = vi.fn();
+    const release = createOwnedDaemonRelease(1812773, { kill });
+
+    release();
+    release();
+
+    expect(kill).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledWith(1812773, 'SIGTERM');
+  });
+
+  it('turns an already-exited daemon into a harmless idempotent release', () => {
+    const kill = vi.fn(() => { throw new Error('ESRCH'); });
+    const release = createOwnedDaemonRelease(1812773, { kill });
+
+    expect(() => release()).not.toThrow();
+    expect(() => release()).not.toThrow();
+    expect(kill).toHaveBeenCalledOnce();
   });
 });
 

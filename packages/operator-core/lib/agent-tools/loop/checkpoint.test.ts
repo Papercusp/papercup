@@ -656,6 +656,26 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
     await call({ next: 'x' });
     expect(withBoundedTimeout).not.toHaveBeenCalled();
   });
+
+  it('refuses a stale expectedHash without reading back or replacing the newer note', async () => {
+    setLoopCarryNoteWithPrior.mockResolvedValueOnce({
+      stored: 'newer note',
+      priorLength: 'newer note'.length,
+      blockedReason: 'expected_hash_mismatch',
+      conflict: { expectedHash: 'aaaaaaaaaaaa', currentHash: 'bbbbbbbbbbbb' },
+    });
+
+    const out = await call({ next: 'stale successor write', expectedHash: 'aaaaaaaaaaaa' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'checkpoint_conflict',
+      expectedHash: 'aaaaaaaaaaaa',
+      currentHash: 'bbbbbbbbbbbb',
+    });
+    expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+  });
 });
 
 describe('loop:checkpoint — the P-006 walls merge (commitments cleared explicitly, never incidentally)', () => {

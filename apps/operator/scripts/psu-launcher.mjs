@@ -9531,6 +9531,9 @@ export async function ensureInteractiveConfigViaOperator(
  * LOOKS like a config and carries none of the above — the resume then either
  * dies on the missing provider or, worse, comes up quietly with no coordination
  * MCP at all. Presence of the MCP block distinguishes ours from that stub.
+ *
+ * @param {string | null | undefined} codexHome
+ * @param {string | null} [expectedOwner]
  */
 export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
   try {

@@ -72,9 +72,63 @@ export function minimalSessionBusConfig(serviceDir: string): string {
 `;
 }
 
-/** `dbus-daemon` invocation that forks and prints the address it bound. */
+/** `dbus-daemon` invocation that forks and prints its address and owned PID. */
 export function sessionBusCommand(configPath: string): { bin: string; args: string[] } {
-  return { bin: 'dbus-daemon', args: [`--config-file=${configPath}`, '--fork', '--print-address'] };
+  // Use explicit stdout descriptors for both values. The options take an
+  // optional descriptor, so leaving the descriptor implicit makes a following
+  // option easy to misread as that descriptor on older dbus-daemon builds.
+  return {
+    bin: 'dbus-daemon',
+    args: [`--config-file=${configPath}`, '--fork', '--print-address=1', '--print-pid=1'],
+  };
+}
+
+/** Parse the PID printed by `dbus-daemon --print-pid=1`. */
+export function parseSessionBusPid(stdout: string): number | null {
+  const line = (stdout ?? '').split(/\r?\n/).map((part) => part.trim()).find((part) => /^\d+$/.test(part));
+  if (!line) return null;
+  const pid = Number(line);
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : null;
+}
+
+/** Parse the address printed by `dbus-daemon --print-address=1`. */
+export function parseSessionBusAddress(stdout: string): string | null {
+  const line = (stdout ?? '').split(/\r?\n/).map((part) => part.trim()).find((part) =>
+    /^(?:unix|tcp|nonce-tcp|autolaunch):/.test(part),
+  );
+  return line || null;
+}
+
+/** Parse the two values emitted by the session-bus startup command. */
+export function parseSessionBusStartup(stdout: string): { sessionBus: string; pid: number } | null {
+  const sessionBus = parseSessionBusAddress(stdout);
+  const pid = parseSessionBusPid(stdout);
+  return sessionBus && pid !== null ? { sessionBus, pid } : null;
+}
+
+export interface OwnedDaemonReleaseOptions {
+  /** Injectable for tests; production uses the process signal primitive. */
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+}
+
+/**
+ * Make a best-effort, idempotent release handle for a daemon started with
+ * `--fork`. The dbus parent exits immediately, so the returned PID is the only
+ * process handle available to the provisioner. SIGTERM asks dbus to tear down
+ * its activated at-spi children as well; an already-exited daemon is harmless.
+ */
+export function createOwnedDaemonRelease(pid: number, opts: OwnedDaemonReleaseOptions = {}): () => void {
+  let released = false;
+  const kill = opts.kill ?? ((ownedPid: number, signal: NodeJS.Signals) => process.kill(ownedPid, signal));
+  return () => {
+    if (released) return;
+    released = true;
+    try {
+      kill(pid, 'SIGTERM');
+    } catch {
+      // The daemon may have exited during a failed start or an earlier release.
+    }
+  };
 }
 
 /**
@@ -123,6 +177,8 @@ export interface A11yBus {
   a11yBus: string;
   /** Env additions an app must be launched with to register on it. */
   env: Record<string, string>;
+  /** Stop the owned session daemon. Safe to call repeatedly. */
+  release: () => void;
 }
 
 export interface StartA11yBusOptions {
@@ -140,6 +196,7 @@ export interface StartA11yBusOptions {
 export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A11yBus | null {
   if (!existsSync(A11Y_SERVICE_FILE)) return null;
   const timeout = (opts.timeoutSec ?? 20) * 1000;
+  let releaseDaemon: (() => void) | undefined;
   try {
     const dir = mkdtempSync(join(tmpdir(), 'pc-a11y-'));
     const serviceDir = join(dir, 'services');
@@ -167,16 +224,38 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
     // NOT managedSpawn: --fork means this process exits immediately and the daemon it
     // left behind is the thing we want, so there is no child handle to enrol. The
     // daemon is reaped with the desktop by `release()`, which kills the bus address's
-    // socket owner along with the rest of the display's processes.
+    // socket owner along with the rest of the display's processes. The daemon is
+    // reparented after `--fork`, so capture its explicit PID instead of assuming it
+    // remains under Xvfb's process tree.
     const started = spawnSync(busCmd.bin, busCmd.args, { encoding: 'utf8', timeout, env: daemonEnv });
-    const sessionBus = (started.stdout ?? '').trim();
-    if (!sessionBus) return null;
+    const partialPid = parseSessionBusPid(started.stdout ?? '');
+    releaseDaemon = partialPid === null ? undefined : createOwnedDaemonRelease(partialPid);
+    const startup = parseSessionBusStartup(started.stdout ?? '');
+    if (!startup) {
+      // A daemon can successfully fork and print only one of the two values before
+      // startup fails. Recover the PID independently so even that partial start is
+      // not leaked.
+      releaseDaemon?.();
+      return null;
+    }
+    const { sessionBus, pid } = startup;
+    // `partialPid` is the same PID on a complete startup; assigning the handle
+    // above means every path after the fork, including a malformed output, owns
+    // exactly one idempotent cleanup closure.
+    const ownedRelease = releaseDaemon ?? createOwnedDaemonRelease(pid);
+    releaseDaemon = ownedRelease;
 
     const probe = a11yBusCommand(sessionBus);
     const got = spawnSync(probe.bin, probe.args, { encoding: 'utf8', env: probe.env, timeout });
     const a11yBus = parseA11yBusAddress(got.stdout ?? '');
-    if (!a11yBus) return null;
-    if (!busBelongsToDisplay(a11yBus, display)) return null;
+    if (!a11yBus) {
+      ownedRelease();
+      return null;
+    }
+    if (!busBelongsToDisplay(a11yBus, display)) {
+      ownedRelease();
+      return null;
+    }
 
     const publish = publishBusPropertyCommand(display, a11yBus);
     spawnSync(publish.bin, publish.args, { env: sandboxXEnv(display), timeout: 5000 });
@@ -185,8 +264,10 @@ export function startA11yBus(display: string, opts: StartA11yBusOptions = {}): A
       sessionBus,
       a11yBus,
       env: { ...A11Y_APP_ENV, DBUS_SESSION_BUS_ADDRESS: sessionBus, AT_SPI_BUS_ADDRESS: a11yBus },
+      release: ownedRelease,
     };
   } catch {
+    releaseDaemon?.();
     return null;
   }
 }

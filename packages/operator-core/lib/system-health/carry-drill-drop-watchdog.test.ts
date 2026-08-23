@@ -83,11 +83,7 @@ describe('runCarryDrillDropSweepOnce (EI-12755)', () => {
 
 describe('production carry delivery rate (EI-18168050721107453)', () => {
   const NOW = Date.parse('2026-08-23T20:00:00.000Z');
-  const event = (
-    kind: string,
-    offsetMs: number,
-    extra: Record<string, unknown> = {},
-  ): PtyHostEvent => ({
+  const event = (kind: string, offsetMs: number, extra: Record<string, unknown> = {}): PtyHostEvent => ({
     ts: new Date(NOW + offsetMs).toISOString(),
     kind,
     mode: 'carry-respawn',
@@ -171,10 +167,7 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
     escalate.mockClear();
     const atFloor = await runProductionCarryDeliverySweepOnce({
       flagEnabled: async () => true,
-      readEvents: async () => [
-        event('respawn-carry-delivered', -2_000),
-        event('respawn-carry-dropped', -1_000),
-      ],
+      readEvents: async () => [event('respawn-carry-delivered', -2_000), event('respawn-carry-dropped', -1_000)],
       escalate,
       now: () => NOW,
       minTerminalOutcomes: 2,

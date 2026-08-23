@@ -231,6 +231,45 @@ status: draft
     expect(granted.flatMap((g) => g.capabilities)).toEqual([]);
   });
 
+  // P-025. The per-PLATFORM packs, which invert the P-026 shape above: each
+  // binds exactly ONE platform, across several of that platform's events.
+  //
+  // NOTE WHAT IS AND IS NOT ASSERTED HERE. `bindingCount` is compared against
+  // the manifest read off disk rather than a literal typed into this table.
+  // That is not tautological — the two are different subjects: this checks that
+  // the INSTALLER counts what the manifest declares. Whether the manifest
+  // declares the RIGHT events is a separate question, owned by
+  // external-triggers/social/platform-packs.test.ts, which drives each
+  // adapter's real `*EventName` function and fails on a binding no adapter can
+  // emit. Restating those counts here would be a second copy of a number that
+  // suite already pins.
+  it.each(['bluesky', 'mastodon', 'reddit', 'youtube', 'facebook-pages', 'instagram', 'threads'] as const)(
+    'installs the shipped social-%s platform pack through the real validation path',
+    async (platform) => {
+      const slug = `social-${platform}`;
+      fixtureRepo = join(REPO_ROOT, 'libs/papercusp/plugins', slug);
+      const manifest = JSON.parse(
+        await fs.readFile(join(fixtureRepo, 'papercusp.json'), 'utf8'),
+      ) as { triggerPack: { bindings: unknown[] } };
+
+      const res = await installPluginFromCupboardCore(
+        { githubUrl: `https://github.com/papercupai/${slug}` },
+        makeDeps(),
+      );
+
+      expect(res.triggerPack).toMatchObject({
+        targetCount: 1,
+        bindingCount: manifest.triggerPack.bindings.length,
+        edgeCount: 0,
+        sourceKinds: [platform],
+        planTargets: [{ path: 'plan.md', slug }],
+        armed: false,
+      });
+      expect(existsSync(join(res.installedTo, 'plan.md'))).toBe(true);
+      expect(granted.flatMap((g) => g.capabilities)).toEqual([]);
+    },
+  );
+
   it('refuses an invalid trigger pack before replacing the install target', async () => {
     await writeManifest(fixtureRepo, {
       name: 'broken-trigger-pack',

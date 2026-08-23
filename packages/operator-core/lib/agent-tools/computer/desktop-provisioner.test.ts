@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   findFreeDisplayNumber,
   provisionSandboxDesktop,
+  releaseDesktopResources,
   releaseDesktopProcesses,
 } from './desktop-provisioner';
 
@@ -109,6 +110,41 @@ describe('releaseDesktopProcesses — managed teardown', () => {
       warn.mockRestore();
     }
 
+    expect(client.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe('releaseDesktopResources — owned accessibility teardown', () => {
+  const root = {
+    taskId: 'task-root',
+    scopeUnit: 'pc-task-root.scope',
+    confined: true,
+    ledgered: true,
+  };
+
+  it('releases the a11y daemon even when managed desktop teardown is refused', async () => {
+    const release = vi.fn();
+    const client = { kill: vi.fn(() => true) };
+    const killTask = vi.fn(async () => ({
+      ok: false as const,
+      taskId: 'task-root',
+      action: 'kill',
+      error: 'command_failed' as const,
+      detail: 'systemctl unavailable',
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await releaseDesktopResources([client], root, { release }, {
+        killTask,
+        markManagedTeardown: () => () => {},
+        sleep: async () => {},
+      });
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(release).toHaveBeenCalledOnce();
     expect(client.kill).not.toHaveBeenCalled();
   });
 });
