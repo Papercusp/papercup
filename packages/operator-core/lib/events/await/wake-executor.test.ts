@@ -159,6 +159,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
       armedAt: '1970-01-01T00:00:00.000Z',
     })) as never,
     forceResume: vi.fn(async () => false),
+    claimResume: vi.fn(async () => true),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
     findPsuHost: vi.fn(() => null) as never,
@@ -1224,6 +1225,19 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
     expect(forceResume).toHaveBeenCalledWith(9999);
     expect(spawnDetached).toHaveBeenCalledTimes(1);
+  });
+
+  it('Channel 2 lost resume claim → parks before spawning an exact-session writer', async () => {
+    const claimResume = vi.fn(async () => false);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({ alive: vi.fn(() => false), claimResume, spawnDetached }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+    expect((out as { reason: string }).reason).toContain('resume claim');
+    expect(claimResume).toHaveBeenCalledWith(42);
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   it('WI-666: force-resume timeout keeps the alive loop owner safely parked', async () => {
