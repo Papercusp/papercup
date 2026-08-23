@@ -45,6 +45,40 @@ export function addedColumnsFor(sqlText: any): string[];
  */
 export function alteredTablesFor(sqlText: any): any[];
 /**
+ * Read a path found by a directory scan after re-stat'ing it.
+ *
+ * A parked migration is an in-flight authoring artifact: reservation and rename
+ * can remove it after readdirSync returned its name. Re-stat narrows the normal
+ * race window, while the read catch closes the final stat/read window. Callers
+ * choose whether ENOENT is tolerable; other errors always remain fatal.
+ *
+ * @param {string} filePath
+ * @param {{ allowMissing?: boolean, readFile?: Function, stat?: Function }} options
+ * @returns {string|null}
+ */
+export function readScannedFile(filePath: string, { allowMissing, readFile, stat }?: {
+    allowMissing?: boolean;
+    readFile?: Function;
+    stat?: Function;
+}): string | null;
+/**
+ * Read the names returned by a directory scan, tolerating only explicitly
+ * allowed files that disappear while the scan is in flight.
+ *
+ * @param {string} directory
+ * @param {string[]} files
+ * @param {{ allowMissing?: boolean|((file: string) => boolean), readFile?: Function, stat?: Function }} options
+ * @returns {Array<{file: string, text: string}>}
+ */
+export function readScannedFiles(directory: string, files: string[], { allowMissing, readFile, stat }?: {
+    allowMissing?: boolean | ((file: string) => boolean);
+    readFile?: Function;
+    stat?: Function;
+}): Array<{
+    file: string;
+    text: string;
+}>;
+/**
  * Find source files that already reference columns introduced by a parked
  * migration. `sourceFiles` is injectable so unit tests can prove the detector on
  * small fixtures without writing into the shared checkout.
