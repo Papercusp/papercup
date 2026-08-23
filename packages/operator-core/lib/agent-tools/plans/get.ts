@@ -375,13 +375,13 @@ export function narrowDecisionPayload<T extends { id: string }>(
 export default defineTool({
   name: "plans:get",
   description:
-    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. ALWAYS pass `harness` on an operator/superuser-scoped call: use the plan's concrete harness slug (for example, 'papercusp' for Papercusp's own plans). `harness: 'all'` is only valid in an unscoped (--all-workspaces) session. Omitting it throws harness_required; a harness-scoped session supplies it automatically.",
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace; pass a concrete `harness` to disambiguate or constrain the read. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
-    when: "You have a slug from plans:list and need the plan contents. Pass `harness` on THIS call as the plan's concrete project slug (for example, `harness: 'papercusp'` for Papercusp plans) unless your session is already scoped to a harness. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session; omitting harness at operator/superuser scope fails with harness_required.",
+    when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
     notWhen:
       "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
-      "plans:list → plans:get { slug, harness } → optionally plans:items for cross-plan picks.",
+      "plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks.",
   },
   capability: "plans:read",
   requirePrincipal: false,

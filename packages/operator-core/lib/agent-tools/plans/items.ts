@@ -157,13 +157,13 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Cross-plan item query. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. ALWAYS pass `harness` on an operator/superuser-scoped call (a concrete slug, or \'all\' for cross-harness/Papercusp\'s-own-plans) — omitting it throws harness_required (a harness-scoped session supplies it automatically, so this only applies when calling from operator scope; EI-8823).',
+    'Cross-plan item query. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
-    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one plan\'s items.',
+    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
     notWhen:
       "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
     chaining:
-      "plans:items { actionable: true } → plans:get { slug } for context on the picked item.",
+      "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug } for one auto-resolved plan.",
   },
   capability: "plans:read",
   requirePrincipal: false,
