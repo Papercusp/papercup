@@ -301,7 +301,38 @@ export interface HudPlanInput {
    *  filters by agent id like the Sessions tab does (P-006). Absent/null when
    *  the plan has no recorded owner; never substituted with the harness. */
   owner?: string | null;
+  /**
+   * ⚒ last WORK-ITEM activity on this plan, epoch ms — the `planWorkActivity.list`
+   * feed joined by slug (plan-visibility-revamp-2026-08-23 P-001/P-006), exactly
+   * the join PlansPane already does for its own ⚒ column. Absent/null = never
+   * worked (a real state, distinct from "feed not loaded" only at the caller —
+   * here both honestly mean "no ⚒ timestamp to sort by", so the row sinks under
+   * the last-work sort rather than colonizing the top).
+   */
+  lastWorkAtMs?: number | null;
 }
+
+/**
+ * The Plans board's sort axes (plan-visibility-revamp-2026-08-23 P-006, D-004:
+ * "add a sort picker (default: last work)").
+ *
+ * Exactly the two timestamps the whole revamp is about — ⚒ last work (when an
+ * agent last moved a work item on the plan) and ✎ last edit (when the plan text
+ * itself last changed). The picker replaces this board's previous fixed
+ * ordering; `sortKeyFor`'s oldest-first needs-you inversion remains the rule on
+ * the goals/items boards, but on the Plans board the picked axis governs EVERY
+ * column — a sort control that silently exempted one column would read as
+ * broken in exactly that column.
+ */
+export const HUD_PLAN_SORTS = ['last-work', 'last-edit'] as const;
+export type HudPlanSort = (typeof HUD_PLAN_SORTS)[number];
+
+export const HUD_DEFAULT_PLAN_SORT: HudPlanSort = 'last-work';
+
+export const HUD_PLAN_SORT_LABEL: Record<HudPlanSort, string> = {
+  'last-work': 'Last work',
+  'last-edit': 'Last edit',
+};
 
 /**
  * The `goals.list` wire row, narrowed the same way (goal-mode-2026-08-07 P-020).
@@ -709,7 +740,11 @@ function assemble(
 
 /* ── plans ───────────────────────────────────────────────────────────────── */
 
-export function toPlanCard(plan: HudPlanInput, nowMs: number): HudEntityCard {
+export function toPlanCard(
+  plan: HudPlanInput,
+  nowMs: number,
+  sort: HudPlanSort = HUD_DEFAULT_PLAN_SORT,
+): HudEntityCard {
   const column = planColumn(plan);
   const since = ageSec(plan.updated, nowMs);
   const badges: HudBadge[] = [];
@@ -751,7 +786,7 @@ export function toPlanCard(plan: HudPlanInput, nowMs: number): HudEntityCard {
     context: plan.harnessSlug ?? null,
     badges,
     sinceSec: since,
-    sortKey: sortKeyFor(column, plan.updated),
+    sortKey: planSortKey(plan, sort),
     // P-006. UNDEFINED when the plan has no recorded owner — deliberately NOT
     // falling back to `harnessSlug`, which is the nearest plausible string and
     // exactly the fabrication D-003 forbids: filtering by an agent id would
@@ -759,6 +794,28 @@ export function toPlanCard(plan: HudPlanInput, nowMs: number): HudEntityCard {
     // worked and is wrong.
     identity: plan.owner ? { ownerId: plan.owner, agentHandle: shortAssignee(plan.owner) } : undefined,
   };
+}
+
+/**
+ * The picked sort axis, as a numeric key (`assemble` orders ascending).
+ *
+ * Both axes are most-recent-first, and a plan with no timestamp on the picked
+ * axis SINKS rather than colonizing the top — an unknown date is not evidence
+ * of recency. Under `last-work` that sink is a real population, not an edge
+ * case: a plan nobody has ever run a work item on has no ⚒ at all, and showing
+ * it below every worked plan is exactly the "width follows attention" ordering
+ * D-004 picked.
+ *
+ * Uniform across columns, INCLUDING needs-you — see HUD_PLAN_SORTS' docblock
+ * for why the goals/items boards' oldest-first inversion does not apply here.
+ */
+function planSortKey(plan: HudPlanInput, sort: HudPlanSort): number {
+  const t =
+    sort === 'last-work'
+      ? typeof plan.lastWorkAtMs === 'number' ? plan.lastWorkAtMs : Number.NaN
+      : plan.updated ? new Date(plan.updated).getTime() : Number.NaN;
+  if (!Number.isFinite(t)) return Number.POSITIVE_INFINITY;
+  return -t;
 }
 
 /** needs-you sorts oldest-first, everything else newest-first (see `assemble`).
@@ -770,9 +827,12 @@ function sortKeyFor(column: HudEntityColumnId, iso: string | null | undefined): 
   return column === 'needs-you' ? t : -t;
 }
 
-export function buildPlanBoard(plans: HudPlanInput[], opts: HudEntityBuildOptions): HudEntityBoard {
+export function buildPlanBoard(
+  plans: HudPlanInput[],
+  opts: HudEntityBuildOptions & { sort?: HudPlanSort },
+): HudEntityBoard {
   return assemble(
-    plans.map((p) => toPlanCard(p, opts.nowMs)),
+    plans.map((p) => toPlanCard(p, opts.nowMs, opts.sort)),
     PLAN_COLUMN_EMPTY,
     opts,
   );

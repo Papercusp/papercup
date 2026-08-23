@@ -66,7 +66,8 @@ const read = (file: string): string => readFileSync(join(SUBJECT_DIR, file), 'ut
 
 /** Wave B, taken from the registry rather than hardcoded — see the D-019 test. */
 const waveBPlatforms = listSocialPlatformsByWave('B');
-const waveBIds = new Set(waveBPlatforms.map((row) => row.id));
+/** Widened to string on purpose: it is membership-tested against ids SCRAPED from source. */
+const waveBIds = new Set<string>(waveBPlatforms.map((row) => row.id));
 
 const googleConfig = {
   clientId: 'google-client.apps.googleusercontent.com',

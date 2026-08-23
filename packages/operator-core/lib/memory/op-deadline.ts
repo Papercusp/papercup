@@ -19,6 +19,8 @@
  * poison-cache handles client-level recovery.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 /** Thrown when a memory backend call exceeds its deadline. Distinct from
  *  `MemoryUnavailableError` (a clean "store is down" probe result) so callers
  *  can map a HANG to its own `memory_timeout` reason. */
@@ -90,6 +92,65 @@ export function resetMemoryDegradedForTest(): void {
   memoryDegradedUntil = 0;
 }
 
+interface MemoryDeadlineScope {
+  pending: Set<Promise<unknown>>;
+  closed: boolean;
+  drained: Promise<void>;
+  resolveDrained: () => void;
+}
+
+export type TrackedMemoryWork<T> = {
+  outcome: { ok: true; value: T } | { ok: false; error: unknown };
+  /** Null when every raw operation settled before the caller-facing work returned. */
+  pending: Promise<void> | null;
+};
+
+const memoryDeadlineScope = new AsyncLocalStorage<MemoryDeadlineScope>();
+
+function trackUnderlyingMemoryWork<T>(promise: Promise<T>): void {
+  const scope = memoryDeadlineScope.getStore();
+  if (!scope) return;
+  scope.pending.add(promise);
+  const settled = () => {
+    scope.pending.delete(promise);
+    if (scope.closed && scope.pending.size === 0) scope.resolveDrained();
+  };
+  void promise.then(settled, settled);
+}
+
+/**
+ * Run one caller-facing memory operation while retaining a drain signal for
+ * raw promises that outlive their deadline wrappers.
+ *
+ * `withMemoryTimeout` intentionally cannot cancel native/database work. A
+ * caller that owns a concurrency lease can use `pending` to keep that lease
+ * until the real work settles even though it returns its fail-soft result as
+ * soon as the deadline fires.
+ */
+export async function runWithTrackedMemoryTimeouts<T>(run: () => Promise<T>): Promise<TrackedMemoryWork<T>> {
+  let resolveDrained!: () => void;
+  const scope: MemoryDeadlineScope = {
+    pending: new Set(),
+    closed: false,
+    drained: new Promise<void>((resolve) => {
+      resolveDrained = resolve;
+    }),
+    resolveDrained: () => resolveDrained(),
+  };
+
+  let outcome: TrackedMemoryWork<T>['outcome'];
+  try {
+    outcome = { ok: true, value: await memoryDeadlineScope.run(scope, run) };
+  } catch (error) {
+    outcome = { ok: false, error };
+  }
+
+  scope.closed = true;
+  const pending = scope.pending.size > 0 ? scope.drained : null;
+  if (!pending) scope.resolveDrained();
+  return { outcome, pending };
+}
+
 /**
  * Race a memory backend promise against a deadline. Rejects with
  * `MemoryTimeoutError` if the deadline fires first. NOTE: this does NOT cancel
@@ -98,6 +159,7 @@ export function resetMemoryDegradedForTest(): void {
  * so the request returns instead of hanging forever.
  */
 export function withMemoryTimeout<T>(p: Promise<T>, label: string, timeoutMs: number): Promise<T> {
+  trackUnderlyingMemoryWork(p);
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`));

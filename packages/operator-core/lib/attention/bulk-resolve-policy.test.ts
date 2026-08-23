@@ -3,13 +3,21 @@
  * P-004/P-007). Three things are pinned here, all of them cross-file
  * invariants that no single file's own tests can hold:
  *
- *  1. THE NAVIGATE LOCKSTEP. `NAVIGATE_ACTION_IDS` is declared TWICE — once in
- *     the client card (attention-card.ts) and once server-side in the agent
- *     tool that validates a resolver's report. They must name the same ids. A
- *     divergence is silent and dangerous in one specific direction: an id the
- *     SERVER thinks is terminal but the CLIENT treats as navigation is an
- *     action a resolver may auto-resolve with and that resolves nothing. That
- *     exact drift (`discuss` missing from the set) once let the Discuss button
+ *  1. THE NAVIGATE SINGLE-DECLARATION RULE. `NAVIGATE_ACTION_IDS` decides "is
+ *     this action terminal" for BOTH terminal paths — the owner's click and
+ *     the agent's action — so the two must agree. It USED to be declared
+ *     TWICE (client card + agent tool) and this test parsed one file's source
+ *     to compare the lists: rung 2 (PIN) of the derived-truth ladder. It is now
+ *     declared ONCE, in `./types`, and both former sites re-export it: rung 1
+ *     (DERIVE), where the drift cannot be expressed at all.
+ *
+ *     So what is pinned here is no longer "the two lists agree" (they cannot
+ *     disagree) but "there is still only ONE list" — a future edit that
+ *     reintroduces a local `new Set` in either former site re-creates the
+ *     drift vector. The dangerous direction is unchanged: an id the SERVER
+ *     thinks is terminal but the CLIENT treats as navigation is an action a
+ *     resolver may auto-resolve with and that resolves nothing. That exact
+ *     drift (`discuss` missing from the set) once let the Discuss button
  *     silently close real owner gates (EI-13037).
  *
  *  2. THE RESOLVER BRIEF'S POLICY (D-001/D-002). The brief is what carries the
@@ -26,31 +34,62 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildResolverBrief } from '../endpoint-route/routes/admin/attention-bulk-resolve';
+// Deliberately imported via the AGENT TOOL's own export path, so the identity
+// assertion below fails if that re-export is ever swapped back for a copy.
 import { NAVIGATE_ACTION_IDS } from '../agent-tools/inbox/bulk-run';
+import {
+  NAVIGATE_ACTION_IDS as CANONICAL_NAVIGATE_ACTION_IDS,
+  isNavigateAction,
+} from './types';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 
-describe('NAVIGATE_ACTION_IDS lockstep (server ↔ client)', () => {
-  it('names exactly the ids the client card treats as navigation', () => {
-    // Read the CLIENT declaration from source rather than importing it: the
-    // client module pulls in React/`@/` alias machinery that has no business in
-    // an operator-core test, and the text IS the declaration.
-    const src = readFileSync(
-      join(REPO_ROOT, 'apps/operator/app/admin/plans/attention-card.ts'),
-      'utf8',
-    );
-    const block = src.match(
-      /export const NAVIGATE_ACTION_IDS[^=]*=\s*new Set<AttentionActionId>\(\[([\s\S]*?)\]\)/,
-    );
-    expect(block, 'client NAVIGATE_ACTION_IDS declaration not found — did it move?').toBeTruthy();
+describe('NAVIGATE_ACTION_IDS — exactly one declaration, shared by both terminal paths', () => {
+  // The two former declaration sites. Each must now REFERENCE the canonical
+  // set rather than build its own.
+  const REEXPORTERS = [
+    'apps/operator/app/admin/plans/attention-card.ts', // the owner's click
+    'packages/operator-core/lib/agent-tools/inbox/bulk-run.ts', // the agent's action
+  ] as const;
 
-    const clientIds = [...block![1]!.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]!);
-    // Positive control: the parse actually found ids, so an empty match cannot
-    // pass as agreement.
-    expect(clientIds.length).toBeGreaterThan(0);
-    expect(clientIds).toContain('discuss'); // the EI-13037 id specifically
+  it('the agent tool re-exports the canonical set itself, not a copy of it', () => {
+    // Object IDENTITY, not deep equality: two sets with equal contents today
+    // is exactly the state that used to drift. Only identity proves there is
+    // one set. (Imported via the agent tool's own export path, so this fails
+    // if that re-export is ever replaced by a local declaration.)
+    expect(NAVIGATE_ACTION_IDS).toBe(CANONICAL_NAVIGATE_ACTION_IDS);
+  });
 
-    expect([...NAVIGATE_ACTION_IDS].sort()).toEqual([...clientIds].sort());
+  it('still names the EI-13037 id, and is not empty', () => {
+    // Positive control: an empty set would make every "is it navigate?"
+    // assertion below vacuously pass.
+    expect(NAVIGATE_ACTION_IDS.size).toBeGreaterThan(0);
+    expect(NAVIGATE_ACTION_IDS.has('discuss')).toBe(true);
+    // `discuss` opening a sub-surface is the whole point of the incident.
+    expect(isNavigateAction('discuss')).toBe(true);
+    // ...and a genuinely terminal id must NOT be in it, or the predicate is
+    // inverted and every terminal action would read as navigation.
+    expect(isNavigateAction('resolve')).toBe(false);
+  });
+
+  it.each(REEXPORTERS)('%s declares no NAVIGATE_ACTION_IDS set of its own', (relPath) => {
+    // The drift vector is REINTRODUCTION of a second copy. A re-export cannot
+    // disagree with the canonical set; a fresh `new Set` can, and would restore
+    // exactly the hazard the single declaration removed.
+    const src = readFileSync(join(REPO_ROOT, relPath), 'utf8');
+
+    // Positive control: we are reading the file we think we are, and it does
+    // mention the symbol — so a zero-match below means "no local declaration",
+    // never "wrong path" or "file moved".
+    expect(src, `${relPath}: unreadable or unexpectedly empty`).toContain('NAVIGATE_ACTION_IDS');
+
+    const localDecl = src.match(/(?:const|let|var)\s+NAVIGATE_ACTION_IDS\b[^=]*=\s*new\s+Set/);
+    expect(
+      localDecl,
+      `${relPath} declares its own NAVIGATE_ACTION_IDS set. Re-export it from ` +
+        `packages/operator-core/lib/attention/types instead — a second copy is how the ` +
+        `owner-click path and the agent path drift (EI-13037).`,
+    ).toBeNull();
   });
 });
 

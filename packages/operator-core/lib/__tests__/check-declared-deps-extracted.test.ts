@@ -38,7 +38,7 @@ import { join } from 'node:path';
 import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePackages, findIncompleteWorkspacePackagesWithRetry, findInvalidWorkspacePackageVersions, findInvalidWorkspacePackageVersionsWithRetry, findUnextractedDeps, findUnextractedDepsWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, isDirectCliInvocation, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
-import { normalizeNpmArgs, packageLocalRepairTargets, parseCliArgs, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+import { normalizeNpmArgs, packageLocalRepairTargets, parseCliArgs, removePackageLocalRepairLockEntries, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
 
 type RuntimeProbeFailure = { specifier: string; detail: string };
 
@@ -589,6 +589,97 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     expect(status).toBe(0);
     expect(calls).toEqual([['install', '--legacy-peer-deps']]);
     expect(existsSync(packageDir)).toBe(false);
+  });
+
+  it('removes the matching stale lock entry before npm can recreate the package-local node', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: {
+        'libs/testing-shell': { devDependencies: { vitest: '^4.1.4' } },
+      },
+      extracted: { 'libs/testing-shell': ['vitest'] },
+    });
+    const packageDir = join(root, 'libs/testing-shell/node_modules/vitest');
+    const manifestPath = join(packageDir, 'package.json');
+    const lockPath = join(root, 'package-lock.json');
+    const staleLockKey = 'libs/testing-shell/node_modules/vitest';
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ name: 'vitest', version: '3.2.4' }),
+    );
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': {},
+          'libs/testing-shell': {
+            devDependencies: { vitest: '^4.1.4' },
+          },
+          [staleLockKey]: { version: '3.2.4', dev: true },
+        },
+      }),
+    );
+
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      runNpm: (args: string[]) => {
+        calls.push(args);
+        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+        if (lock.packages[staleLockKey]) {
+          mkdirSync(packageDir, { recursive: true });
+          writeFileSync(
+            manifestPath,
+            JSON.stringify({ name: 'vitest', version: '3.2.4' }),
+          );
+        }
+        return 0;
+      },
+      deps: { sleep: async () => {} },
+    });
+
+    expect(status).toBe(0);
+    expect(calls).toEqual([['install', '--legacy-peer-deps']]);
+    expect(existsSync(packageDir)).toBe(false);
+    expect(
+      JSON.parse(readFileSync(lockPath, 'utf8')).packages[staleLockKey],
+    ).toBeUndefined();
+  });
+
+  it('does not delete a lock entry that no longer matches the stale installed version', () => {
+    const root = fixture({
+      packages: {
+        'libs/testing-shell': { devDependencies: { vitest: '^4.1.4' } },
+      },
+      extracted: {},
+    });
+    const lockPath = join(root, 'package-lock.json');
+    const key = 'libs/testing-shell/node_modules/vitest';
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { [key]: { version: '4.1.8', dev: true } },
+      }),
+    );
+
+    expect(
+      removePackageLocalRepairLockEntries({
+        repoRoot: root,
+        findings: [
+          {
+            package: 'vitest',
+            workspace: 'libs/testing-shell',
+            declared: '^4.1.4',
+            installed: '3.2.4',
+          },
+        ],
+      }),
+    ).toEqual([]);
+    expect(JSON.parse(readFileSync(lockPath, 'utf8')).packages[key].version).toBe(
+      '4.1.8',
+    );
   });
 
   it('fails immediately when the bounded repair exits nonzero, even if later spot probes could pass', async () => {

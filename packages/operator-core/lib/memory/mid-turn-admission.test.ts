@@ -9,10 +9,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   guardMidTurnMemoryAdmission,
+  MID_TURN_MEMORY_HEARTBEAT_INTERVAL_MS,
   MID_TURN_MEMORY_MAX_HOLDERS,
   type MidTurnAdmissionLocalState,
   type MidTurnAdmissionStore,
 } from './mid-turn-admission';
+import { MemoryTimeoutError, runWithTrackedMemoryTimeouts, withMemoryTimeout } from './op-deadline';
 
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -27,6 +29,7 @@ const deferred = <T = void>() => {
 function sharedStore(capacity = MID_TURN_MEMORY_MAX_HOLDERS) {
   const active = new Map<string, string>();
   const acquireOwners: string[] = [];
+  const heartbeatOwners: string[] = [];
   const releaseOwners: string[] = [];
   let lockSeq = 0;
   const store: MidTurnAdmissionStore = {
@@ -40,13 +43,17 @@ function sharedStore(capacity = MID_TURN_MEMORY_MAX_HOLDERS) {
       active.set(ownerId, lockId);
       return { ok: true, lockId };
     },
+    async heartbeat(ownerId, lockId) {
+      heartbeatOwners.push(ownerId);
+      if (active.get(ownerId) !== lockId) throw new Error('wrong lock heartbeat');
+    },
     async release(ownerId, lockId) {
       releaseOwners.push(ownerId);
       if (active.get(ownerId) !== lockId) throw new Error('wrong lock release');
       active.delete(ownerId);
     },
   };
-  return { store, active, acquireOwners, releaseOwners };
+  return { store, active, acquireOwners, heartbeatOwners, releaseOwners };
 }
 
 const workerState = (): MidTurnAdmissionLocalState => ({ inFlight: false });
@@ -129,6 +136,90 @@ describe('mid-turn host admission — independent worker realms', () => {
     expect(shared.active.size).toBe(0);
     expect(shared.releaseOwners).toEqual(['worker-a']);
     expect(state.inFlight).toBe(false);
+  });
+
+  it('keeps the host and worker slots while a timed-out raw search remains active', async () => {
+    const shared = sharedStore(1);
+    const firstState = workerState();
+    const underlying = deferred<string>();
+    let underlyingActive = 1;
+    void underlying.promise.then(
+      () => {
+        underlyingActive -= 1;
+      },
+      () => {
+        underlyingActive -= 1;
+      },
+    );
+
+    const first = await guardMidTurnMemoryAdmission(
+      {
+        ownerId: 'worker-a',
+        state: firstState,
+        store: shared.store,
+        trackRun: runWithTrackedMemoryTimeouts,
+      },
+      async () => {
+        try {
+          return await withMemoryTimeout(underlying.promise, 'search', 5);
+        } catch (error) {
+          expect(error).toBeInstanceOf(MemoryTimeoutError);
+          return 'fail-soft';
+        }
+      },
+    );
+
+    expect(first).toEqual({ admitted: true, value: 'fail-soft' });
+    expect(underlyingActive).toBe(1);
+    expect(firstState.inFlight).toBe(true);
+    expect(shared.active.size).toBe(1);
+    await expect(
+      guardMidTurnMemoryAdmission(
+        { ownerId: 'worker-b', state: workerState(), store: shared.store },
+        async () => 'must-not-run',
+      ),
+    ).resolves.toEqual({ admitted: false, reason: 'at_capacity' });
+
+    underlying.resolve('late-result');
+    await vi.waitFor(() => {
+      expect(underlyingActive).toBe(0);
+      expect(firstState.inFlight).toBe(false);
+      expect(shared.active.size).toBe(0);
+    });
+  });
+
+  it('renews the crash-safe lease while timed-out underlying work drains', async () => {
+    vi.useFakeTimers();
+    try {
+      const shared = sharedStore(1);
+      const pending = deferred();
+      const state = workerState();
+      await expect(
+        guardMidTurnMemoryAdmission(
+          {
+            ownerId: 'worker-a',
+            state,
+            store: shared.store,
+            trackRun: async (run) => ({
+              outcome: { ok: true, value: await run() },
+              pending: pending.promise,
+            }),
+          },
+          async () => 'fail-soft',
+        ),
+      ).resolves.toEqual({ admitted: true, value: 'fail-soft' });
+
+      await vi.advanceTimersByTimeAsync(MID_TURN_MEMORY_HEARTBEAT_INTERVAL_MS);
+      expect(shared.heartbeatOwners).toEqual(['worker-a']);
+      expect(shared.active.size).toBe(1);
+
+      pending.resolve();
+      await vi.runAllTimersAsync();
+      expect(shared.active.size).toBe(0);
+      expect(state.inFlight).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails soft and does not run optional work when admission storage is unavailable', async () => {

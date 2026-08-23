@@ -76,19 +76,16 @@ async function bulkResolveEnabled(): Promise<boolean> {
 }
 
 /**
- * Action ids that open a sub-surface instead of resolving anything. Mirrors
- * `NAVIGATE_ACTION_IDS` in apps/operator/app/admin/plans/attention-card.ts —
- * kept in lockstep; bulk-run.test.ts pins the two lists together so a new
- * navigate action added there cannot silently become bulk-resolvable here.
+ * Action ids that open a sub-surface instead of resolving anything.
+ *
+ * Re-exported from the canonical declaration in `../../attention/types`, which
+ * the client card re-exports too. This used to be a second hand-maintained
+ * copy kept in lockstep with the client's by a test that parsed the other
+ * file's source; there is now ONE set, so that drift is no longer expressible.
  */
-export const NAVIGATE_ACTION_IDS: ReadonlySet<string> = new Set([
-  'chat',
-  'message-owner',
-  'answer',
-  'view-log',
-  'open',
-  'discuss',
-]);
+import { NAVIGATE_ACTION_IDS, isNavigateAction } from '../../attention/types';
+
+export { NAVIGATE_ACTION_IDS, isNavigateAction };
 
 /** An attention item as the manifest presents it to the resolver. */
 interface ManifestItem {
@@ -126,7 +123,7 @@ async function liveActionsFor(
           .map((a) => ({
             id: String(a.id),
             label: String(a.label ?? a.id),
-            terminal: !NAVIGATE_ACTION_IDS.has(String(a.id)),
+            terminal: !isNavigateAction(String(a.id)),
           }));
       }
     }

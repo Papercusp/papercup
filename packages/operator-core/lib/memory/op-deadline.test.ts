@@ -19,6 +19,7 @@ import {
   memoryWriteMaxAttempts,
   memoryWriteRetryBackoffMs,
   embedFailureReason,
+  runWithTrackedMemoryTimeouts,
 } from './op-deadline';
 
 describe('memory degraded latch — self-healing', () => {
@@ -90,6 +91,31 @@ describe('withMemoryTimeout — deadline race', () => {
 
   it('resolves with the value when the op beats the deadline', async () => {
     await expect(withMemoryTimeout(Promise.resolve('ok'), 'fast-op', 1000)).resolves.toBe('ok');
+  });
+
+  it('exposes raw work that outlives the caller deadline until that work really settles', async () => {
+    let resolveUnderlying!: (value: string) => void;
+    const underlying = new Promise<string>((resolve) => {
+      resolveUnderlying = resolve;
+    });
+
+    const tracked = await runWithTrackedMemoryTimeouts(async () => {
+      await expect(withMemoryTimeout(underlying, 'slow-op', 5)).rejects.toBeInstanceOf(MemoryTimeoutError);
+      return 'fail-soft';
+    });
+
+    expect(tracked.outcome).toEqual({ ok: true, value: 'fail-soft' });
+    expect(tracked.pending).not.toBeNull();
+    let drained = false;
+    void tracked.pending!.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    resolveUnderlying('late-result');
+    await tracked.pending;
+    expect(drained).toBe(true);
   });
 });
 

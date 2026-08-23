@@ -285,6 +285,37 @@ export type AttentionActionId =
   | 'grant'
   | 'dismiss';
 
+/**
+ * Action ids that open a SUB-SURFACE instead of resolving anything — the
+ * canonical declaration, and deliberately the only one in the repo.
+ *
+ * This predicate decides "is this action terminal", and it governs BOTH
+ * terminal paths: the owner's click (`resolveAttentionAction` in the client
+ * card ignores these ids) and the agent's action (the bulk-resolve tool
+ * derives `terminal:` from it and refuses an `auto_resolved` outcome carrying
+ * a navigate id). It therefore has to say the same thing on both sides by
+ * CONSTRUCTION — an id the server thinks is terminal but the client treats as
+ * navigation is an action a resolver may "resolve" with that resolves nothing.
+ *
+ * It lived as two hand-synced copies (here and in the client card) kept in
+ * lockstep by a test that parsed the other file's source text. That is rung 2
+ * (PIN) of the derived-truth ladder; this is rung 1 (DERIVE), so the drift the
+ * pin watched for can no longer be expressed. Both former sites now re-export
+ * this set.
+ *
+ * An id missing from this set is dispatched as a TERMINAL submit, so every
+ * navigate-style action the adapters emit MUST be listed — omitting `discuss`
+ * once made the Discuss button silently resolve real owner escalations
+ * (EI-13037).
+ */
+export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> =
+  new Set<AttentionActionId>(['chat', 'message-owner', 'answer', 'view-log', 'open', 'discuss']);
+
+/** True when `id` only opens a sub-surface — i.e. resolves nothing. */
+export function isNavigateAction(id: string): boolean {
+  return NAVIGATE_ACTION_IDS.has(id as AttentionActionId);
+}
+
 export interface AttentionAction {
   id: AttentionActionId;
   label: string;

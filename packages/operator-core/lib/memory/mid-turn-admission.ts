@@ -15,14 +15,23 @@
  *
  * The resource acquire never waits. A full or unavailable admission store is a
  * clean skip because this context is optional; the caller returns `{ text: '' }`
- * and the agent's tool turn continues. A short lease is the crash backstop,
- * while the normal path releases in `finally`.
+ * and the agent's tool turn continues. A short, renewable lease is the crash
+ * backstop. If a deadline returns before its uncancelled backend promise, the
+ * response still returns promptly but the local slot and host lease remain
+ * held (and heartbeated) until that underlying work actually settles.
  */
 
 import { pinModuleState } from '@papercusp/module-singleton';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { hostGlobalLockDomain } from '../agent-tools/locks/coordination-domain';
 import { inWorkspaceTxn } from '../agent-tools/locks/in-workspace-txn';
-import { registerResource, tryAcquireResource, tryReleaseResource } from '../agent-tools/locks/su-lock-store';
+import {
+  registerResource,
+  tryAcquireResource,
+  tryHeartbeatResource,
+  tryReleaseResource,
+} from '../agent-tools/locks/su-lock-store';
+import { runWithTrackedMemoryTimeouts, type TrackedMemoryWork } from './op-deadline';
 
 export const MID_TURN_MEMORY_RESOURCE = 'memory-injection:mid-turn';
 export const MID_TURN_MEMORY_MAX_HOLDERS = 2;
@@ -31,6 +40,7 @@ export const MID_TURN_MEMORY_MAX_HOLDERS = 2;
 // and an expired lease must never let a still-running zombie build exceed the
 // host cap. A crashed worker suppresses optional recall for at most two minutes.
 export const MID_TURN_MEMORY_LOCK_TTL_SEC = 120;
+export const MID_TURN_MEMORY_HEARTBEAT_INTERVAL_MS = 40_000;
 
 const REGISTRATION_RETRY_MS = 60_000;
 const WARNING_INTERVAL_MS = 60_000;
@@ -42,8 +52,11 @@ export interface MidTurnAdmissionLocalState {
 export interface MidTurnAdmissionStore {
   ensureRegistered: () => Promise<boolean>;
   tryAcquire: (ownerId: string) => Promise<{ ok: true; lockId: string } | { ok: false; reason: string }>;
+  heartbeat: (ownerId: string, lockId: string) => Promise<void>;
   release: (ownerId: string, lockId: string) => Promise<void>;
 }
+
+export type MidTurnAdmissionRunTracker = <T>(run: () => Promise<T>) => Promise<TrackedMemoryWork<T>>;
 
 export type MidTurnAdmissionOutcome<T> = { admitted: true; value: T } | { admitted: false; reason: string };
 
@@ -51,8 +64,58 @@ export interface MidTurnAdmissionGuardOptions {
   ownerId: string;
   state: MidTurnAdmissionLocalState;
   store: MidTurnAdmissionStore;
+  trackRun?: MidTurnAdmissionRunTracker;
   onShed?: (reason: string) => void;
   onDiagnostic?: (message: string, error: unknown) => void;
+}
+
+const runWithoutTracking: MidTurnAdmissionRunTracker = async <T>(run: () => Promise<T>) => {
+  try {
+    return { outcome: { ok: true, value: await run() }, pending: null };
+  } catch (error) {
+    return { outcome: { ok: false, error }, pending: null };
+  }
+};
+
+async function releaseAdmission(options: MidTurnAdmissionGuardOptions, lockId: string): Promise<void> {
+  const { ownerId, store, onDiagnostic } = options;
+  try {
+    await store.release(ownerId, lockId);
+  } catch (error) {
+    // Release failure must not discard a successfully built context block.
+    // The renewable two-minute lease is the correctness backstop; surface a
+    // throttled diagnostic so an expiry-backed release never looks healthy.
+    onDiagnostic?.('mid-turn admission release failed; lease will expire', error);
+  }
+}
+
+function releaseAdmissionAfterDrain(
+  options: MidTurnAdmissionGuardOptions,
+  lockId: string,
+  pending: Promise<void>,
+): void {
+  const { ownerId, state, store, onDiagnostic } = options;
+  let heartbeatInFlight = Promise.resolve();
+  const heartbeatTimer = managedSetInterval(
+    'mid-turn-memory-admission-heartbeat',
+    MID_TURN_MEMORY_HEARTBEAT_INTERVAL_MS,
+    () => {
+      heartbeatInFlight = heartbeatInFlight
+        .then(() => store.heartbeat(ownerId, lockId))
+        .catch((error) => {
+          onDiagnostic?.('mid-turn admission heartbeat failed while underlying work remained active', error);
+        });
+    },
+    { category: 'watchdog', classification: 'must-sample' },
+  );
+
+  const cleanup = async () => {
+    heartbeatTimer.stop();
+    await heartbeatInFlight;
+    await releaseAdmission(options, lockId);
+    state.inFlight = false;
+  };
+  void pending.then(cleanup, cleanup);
 }
 
 /**
@@ -63,7 +126,8 @@ export async function guardMidTurnMemoryAdmission<T>(
   options: MidTurnAdmissionGuardOptions,
   run: () => Promise<T>,
 ): Promise<MidTurnAdmissionOutcome<T>> {
-  const { ownerId, state, store, onShed, onDiagnostic } = options;
+  const { ownerId, state, store, trackRun = runWithoutTracking, onShed, onDiagnostic } = options;
+  let releaseDeferred = false;
 
   if (state.inFlight) {
     onShed?.('local_in_flight');
@@ -102,19 +166,18 @@ export async function guardMidTurnMemoryAdmission<T>(
     }
 
     try {
-      return { admitted: true, value: await run() };
-    } finally {
-      // Release failure must not discard a successfully built context block.
-      // The two-minute lease is the correctness backstop; surface a throttled
-      // diagnostic so an expiry-backed release never looks healthy.
-      try {
-        await store.release(ownerId, acquired.lockId);
-      } catch (error) {
-        onDiagnostic?.('mid-turn admission release failed; lease will expire', error);
+      const tracked = await trackRun(run);
+      if (tracked.pending) {
+        releaseAdmissionAfterDrain(options, acquired.lockId, tracked.pending);
+        releaseDeferred = true;
       }
+      if (!tracked.outcome.ok) throw tracked.outcome.error;
+      return { admitted: true, value: tracked.outcome.value };
+    } finally {
+      if (!releaseDeferred) await releaseAdmission(options, acquired.lockId);
     }
   } finally {
-    state.inFlight = false;
+    if (!releaseDeferred) state.inFlight = false;
   }
 }
 
@@ -161,7 +224,7 @@ async function ensureProductionResource(): Promise<boolean> {
       resource: MID_TURN_MEMORY_RESOURCE,
       description: 'Host-wide concurrency budget for optional per-tool-batch memory injection across operator workers.',
       rule_text:
-        'The mid-turn context endpoint acquires a shared, no-wait hold before optional recall and releases it in finally. Full or unavailable capacity sheds the recall; callers must never wait for this resource.',
+        'The mid-turn context endpoint acquires a shared, no-wait hold before optional recall. It releases only after caller-visible and timed-out underlying work settle, heartbeating the crash-safe lease while needed. Full or unavailable capacity sheds the recall; callers must never wait for this resource.',
       enforcement: 'enforced',
       max_holders: MID_TURN_MEMORY_MAX_HOLDERS,
     }),
@@ -207,6 +270,13 @@ const productionStore: MidTurnAdmissionStore = {
     );
     return result.ok ? { ok: true as const, lockId: result.lock_id } : { ok: false as const, reason: result.reason };
   },
+  async heartbeat(ownerId, lockId) {
+    const domain = hostGlobalLockDomain();
+    const result = await inWorkspaceTxn(domain, ownerId, (tx) =>
+      tryHeartbeatResource(tx, domain, ownerId, lockId, MID_TURN_MEMORY_LOCK_TTL_SEC),
+    );
+    if (!result.extended) throw new Error('admission lease expired before heartbeat');
+  },
   async release(ownerId, lockId) {
     const domain = hostGlobalLockDomain();
     const result = await inWorkspaceTxn(domain, ownerId, (tx) =>
@@ -230,6 +300,7 @@ export function withMidTurnMemoryAdmission<T>(run: () => Promise<T>): Promise<Mi
       ownerId: productionOwnerId,
       state: productionState,
       store: productionStore,
+      trackRun: runWithTrackedMemoryTimeouts,
       onShed: (reason) => warnOnce(`host-wide mid-turn admission shed optional recall (${reason})`),
       onDiagnostic: (message, error) => warnOnce(message, error),
     },

@@ -710,7 +710,7 @@ describe('inbox sort orders (WI-40982)', () => {
   });
 
   it('sorts an UNDATED row last in BOTH directions — unknown is not "oldest"', () => {
-    const withUndated = [...items, mkItem('u', { occurredAt: null, tier: 'alert', needsHuman: false })];
+    const withUndated = [...items, mkItem('u', { occurredAt: undefined, tier: 'alert', needsHuman: false })];
     expect(sortInboxItems(withUndated, 'newest').map((i) => i.id).at(-1)).toBe('u');
     expect(sortInboxItems(withUndated, 'oldest').map((i) => i.id).at(-1)).toBe('u');
   });

@@ -177,7 +177,8 @@ function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], planSlug: s
 /**
  * Every work-item that implements-or-was-stamped-for one plan item, deduped by
  * (harness, id). No harness filter needed — a plan item's ref ('<plan>#<item>')
- * is already the join key on both truth sources.
+ * is already the join key across the edge, payload-stamp, and feature-column
+ * truth sources.
  */
 export async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise<LinkedWorkItem[]> {
   const { sql } = getOrgPg();
@@ -222,6 +223,19 @@ export async function findAllLinkedWorkItems(planSlug: string, itemId: string): 
       FROM harness_shared.harness_features_consolidated
      WHERE ${stampMatchFragment(sql, planSlug, itemId)}`;
   for (const r of featureRows) add(await getWorkItem(r.feature_id, r.harness_slug), false);
+
+  // Truth source 3: the live feature columns written by plans:convert. Keep this
+  // as a separate indexed lookup rather than OR-ing it into the payload-stamp
+  // query above: the exact stamp predicate is what lets Postgres use
+  // work_items_plan_item_stamp_idx, while source_plan_slug/source_plan_item_ids
+  // are independently authoritative for feature-family rows whose payload stamp
+  // was never written (or was lost during legacy migration).
+  const featureColumnRows = await sql<{ feature_id: string; harness_slug: string }[]>`
+    SELECT feature_id, harness_slug
+      FROM harness_shared.harness_features_consolidated
+     WHERE source_plan_slug = ${planSlug}
+       AND ${itemId} = ANY(COALESCE(source_plan_item_ids, ARRAY[]::text[]))`;
+  for (const r of featureColumnRows) add(await getWorkItem(r.feature_id, r.harness_slug), false);
 
   // Read the UNIFIED base table rather than the engineer_issues view. The view
   // projects `payload - '_ei'`, and an index cannot be built on the base table to

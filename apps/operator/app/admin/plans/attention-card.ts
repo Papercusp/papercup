@@ -53,19 +53,18 @@ import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskC
  *  component handles these; `resolveAttentionAction` ignores them. An id
  *  missing from this set is dispatched as a TERMINAL submit, so every
  *  navigate-style action the adapters emit MUST be listed — omitting
- *  `discuss` made the Discuss button resolve real escalations (EI-13037). */
-export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> = new Set<AttentionActionId>([
-  'chat',
-  'message-owner',
-  'answer',
-  'view-log',
-  'open',
-  'discuss',
-]);
+ *  `discuss` made the Discuss button resolve real escalations (EI-13037).
+ *
+ *  Re-exported from the CANONICAL declaration in operator-core, which the
+ *  agent-side bulk-resolve tool re-exports too. Do NOT redeclare the set here:
+ *  it decides "is this action terminal" for BOTH the owner's click and the
+ *  agent's action, and a second copy is exactly how those two drift. */
+import {
+  NAVIGATE_ACTION_IDS,
+  isNavigateAction,
+} from '@papercusp/operator-core/lib/attention/types';
 
-export function isNavigateAction(id: string): boolean {
-  return NAVIGATE_ACTION_IDS.has(id as AttentionActionId);
-}
+export { NAVIGATE_ACTION_IDS, isNavigateAction };
 
 function optionStyle(a: AttentionAction): AskChoiceOption['style'] {
   if (a.id === 'drop') return 'danger';

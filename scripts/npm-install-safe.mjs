@@ -50,7 +50,7 @@
  * verified install boundary instead of repeatedly reading the transition.
  */
 import { spawnSync } from 'node:child_process';
-import { realpathSync, rmSync } from 'node:fs';
+import { readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -166,6 +166,84 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
 }
 
 /**
+ * Remove a detector-confirmed stale package-local entry from package-lock.json
+ * before npm reifies it again. The on-disk target alone is insufficient: npm
+ * treats an orphaned lock entry as install intent even when the workspace's
+ * current declaration is satisfied by a hoisted package.
+ *
+ * Only delete an exact entry whose locked version still matches the invalid
+ * installed version the detector observed. A newer/different lock entry may be
+ * a concurrent repair and must not be removed. The write is atomic so an
+ * interrupted repair cannot leave the shared lockfile half-written.
+ */
+export function removePackageLocalRepairLockEntries({
+  repoRoot = DEFAULT_REPO_ROOT,
+  findings = [],
+  deps = {},
+} = {}) {
+  if (findings.length === 0) return [];
+
+  const root = resolve(repoRoot);
+  const lockPath = join(root, 'package-lock.json');
+  const readLock =
+    deps.readLock ??
+    (() => JSON.parse(readFileSync(lockPath, 'utf8')));
+  const writeLock =
+    deps.writeLock ??
+    ((lock) => {
+      const tempPath = join(
+        root,
+        `.package-lock.json.papercusp-repair-${process.pid}`,
+      );
+      try {
+        writeFileSync(tempPath, `${JSON.stringify(lock, null, 2)}\n`);
+        renameSync(tempPath, lockPath);
+      } finally {
+        rmSync(tempPath, { force: true });
+      }
+    });
+
+  let lock;
+  try {
+    lock = readLock();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  if (
+    !lock ||
+    typeof lock !== 'object' ||
+    !lock.packages ||
+    typeof lock.packages !== 'object' ||
+    Array.isArray(lock.packages)
+  ) {
+    throw new Error('refusing package-local repair: package-lock.json has no packages object');
+  }
+
+  const removed = [];
+  for (const finding of findings) {
+    const [target] = packageLocalRepairTargets({
+      repoRoot: root,
+      findings: [finding],
+    });
+    const key = relative(root, target).split(sep).join('/');
+    const entry = lock.packages[key];
+    if (
+      typeof finding.installed !== 'string' ||
+      typeof entry?.version !== 'string' ||
+      entry.version !== finding.installed
+    ) {
+      continue;
+    }
+    delete lock.packages[key];
+    removed.push(key);
+  }
+
+  if (removed.length > 0) writeLock(lock);
+  return removed;
+}
+
+/**
  * Verify (post-install, still holding the lock) that dependency directories and
  * critical runtime contents actually landed on disk; repair once if not.
  *
@@ -241,10 +319,22 @@ export async function verifyDepsExtracted({
     findings: [...first.incomplete, ...first.invalidVersions],
     deps,
   });
+  const removedLockEntries = removePackageLocalRepairLockEntries({
+    repoRoot,
+    findings: first.invalidVersions,
+    deps,
+  });
   if (removedTargets.length > 0) {
     console.error(
       `NPM_INSTALL_SAFE removed ${removedTargets.length} invalid package-local node${removedTargets.length === 1 ? '' : 's'} before repair:\n${removedTargets
         .map((target) => `  - ${relative(repoRoot, target)}`)
+        .join('\n')}`,
+    );
+  }
+  if (removedLockEntries.length > 0) {
+    console.error(
+      `NPM_INSTALL_SAFE removed ${removedLockEntries.length} stale package-lock entr${removedLockEntries.length === 1 ? 'y' : 'ies'} before repair:\n${removedLockEntries
+        .map((entry) => `  - ${entry}`)
         .join('\n')}`,
     );
   }
