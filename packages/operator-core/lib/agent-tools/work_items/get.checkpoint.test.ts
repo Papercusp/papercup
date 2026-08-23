@@ -53,6 +53,7 @@ vi.mock('../../work-item-prior-work', async (importOriginal) => ({
 }));
 
 import get from './get';
+import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks } from '../../carry-note';
 
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -96,10 +97,44 @@ describe('work_items:get — checkpoint field', () => {
   });
 
   it('is null (not omitted) when no checkpoint was ever written — age is also null', async () => {
-    getWorkItem.mockResolvedValue({ id: 'WI-8', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItem.mockResolvedValue({
+      id: 'WI-8',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 't',
+      state: 'open',
+    });
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
     const r = await one({ id: 'WI-8' });
-    expect(r).toMatchObject({ ok: true, id: 'WI-8', checkpoint: null, checkpointAgeMs: null, checkpointUpdatedAtMs: null });
+    expect(r).toMatchObject({
+      ok: true,
+      id: 'WI-8',
+      checkpoint: null,
+      checkpointChecks: { count: 0, cap: CARRY_NOTE_MAX_CHECKS, remaining: CARRY_NOTE_MAX_CHECKS },
+      checkpointAgeMs: null,
+      checkpointUpdatedAtMs: null,
+    });
+  });
+
+  it('surfaces checkpoint check-row capacity from the stored canonical rows', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-8b',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 't',
+      state: 'open',
+    });
+    const checkpoint = withCarryNoteChecks(
+      'work remains',
+      Array.from({ length: 10 }, (_, i) => ({ claim: `check ${i + 1}`, recheck: `probe ${i + 1}` })),
+    );
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint, updatedAtMs: Date.now() });
+
+    const r = await one({ id: 'WI-8b' });
+
+    expect(r.checkpointChecks).toEqual({ count: 10, cap: CARRY_NOTE_MAX_CHECKS, remaining: 2 });
   });
 
   it('degrades to null (does not fail the read) when the checkpoint lookup throws', async () => {
@@ -107,6 +142,7 @@ describe('work_items:get — checkpoint field', () => {
     getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
     const r = await one({ id: 'WI-9' });
     expect(r).toMatchObject({ ok: true, id: 'WI-9', checkpoint: null, checkpointAgeMs: null, checkpointUpdatedAtMs: null });
+    expect(r.checkpointChecks).toBeNull();
     // WI-6737: fail-soft is right, but SILENT fail-soft is not — the degraded null was previously
     // byte-identical to a successful "never checkpointed" read, so a reader (or a compacted
     // successor) concluded in-flight state was lost during a mere PG blip. That is the exact

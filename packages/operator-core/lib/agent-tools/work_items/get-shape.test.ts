@@ -56,6 +56,20 @@ function envelope(rows: Array<Record<string, unknown>>): Envelope {
 }
 
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it('preserves checkpoint check-row capacity in both payload tiers and compact fallback', () => {
+    const checkpointChecks = { count: 10, cap: 12, remaining: 2 };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const normal = shapeWorkItemsGet(envelope([row({ checkpointChecks })]), tier) as Envelope;
+      expect(normal.results[0].checkpointChecks).toEqual(checkpointChecks);
+
+      const compact = shapeWorkItemsGet(
+        envelope([row({ checkpoint: 'C'.repeat(40_000), checkpointChecks })]),
+        tier,
+      ) as Envelope;
+      expect(compact.results[0].checkpointChecks).toEqual(checkpointChecks);
+    }
+  });
+
   it("keeps a large single-item checkpoint WHOLE (the post-respawn read that was broken)", () => {
     const checkpoint = "C".repeat(5_000);
     const out = shapeWorkItemsGet(envelope([row({ checkpoint })]), "trimmed") as Envelope;

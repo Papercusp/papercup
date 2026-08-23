@@ -342,14 +342,13 @@ function compactSingleRow(
     id: r.id ?? w?.id ?? null,
     workItem: projectWorkItem(r.workItem, caps, 0, dropped),
     checkpoint: clip(checkpoint, checkpointCap),
+    ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
-    ...(r.checkpointBgJobWarning
-      ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) }
-      : {}),
+    ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
@@ -575,12 +574,19 @@ function projectRow(
     id: r.id ?? null,
     workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped),
     ...(r.threadWindow !== undefined
-      ? { threadWindow: projectThreadWindow(r.threadWindow, caps === FIELD_CAPS.trimmed ? "trimmed" : "standard", dropped) }
+      ? {
+          threadWindow: projectThreadWindow(
+            r.threadWindow,
+            caps === FIELD_CAPS.trimmed ? 'trimmed' : 'standard',
+            dropped,
+          ),
+        }
       : {}),
     ...(r.threadWindowReadFailed ? { threadWindowReadFailed: true } : {}),
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
+    ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
@@ -588,9 +594,7 @@ function projectRow(
     // checkpoint above should be read. Kept whole.
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
-    ...(r.checkpointBgJobWarning
-      ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) }
-      : {}),
+    ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
     // Conditional "read before acting" warnings this tool's `returns` promises.
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
     ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
@@ -598,16 +602,10 @@ function projectRow(
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
     ...(r.holder ? { holder: r.holder } : {}),
     ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
-    ...(r.priorAttempts
-      ? { priorAttempts: projectPriorAttempts(r.priorAttempts, caps, dropped) }
-      : {}),
+    ...(r.priorAttempts ? { priorAttempts: projectPriorAttempts(r.priorAttempts, caps, dropped) } : {}),
     ...(r.priorAttemptRefResolution
       ? {
-          priorAttemptRefResolution: projectPriorAttemptRefResolution(
-            r.priorAttemptRefResolution,
-            caps,
-            dropped,
-          ),
+          priorAttemptRefResolution: projectPriorAttemptRefResolution(r.priorAttemptRefResolution, caps, dropped),
         }
       : {}),
   };
