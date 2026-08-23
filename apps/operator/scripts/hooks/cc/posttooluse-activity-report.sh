@@ -124,6 +124,40 @@ session_id = first('session_id', 'sessionId') or ''
 cwd = first('cwd') or ''
 tool_response = first('tool_response', 'toolResponse')
 
+# Native Claude Grep reports a zero-result search as a plain "No files found"
+# or "No matches found" string.  Those strings do not distinguish a completed
+# no-match (rg exit 1) from an aborted/failed search (rg exit 2), so surface a
+# small advisory rather than letting the agent treat the empty result as proof
+# of absence.  Keep this exact-result-only: a positive Grep result may contain
+# the same words in matched file content and must remain silent.
+GREP_NO_RESULT_RE = re.compile(r'^\s*No (?:files|matches) found\s*\.?\s*$', re.IGNORECASE)
+GREP_NO_RESULT_ADVISORY = (
+    '⚠ Native Grep returned no results. Treat this zero as UNMEASURED: '
+    'run a positive-control search for a token you know exists in the same batch, '
+    'then use `rg` via Bash and its exit status before claiming absence.'
+)
+
+
+def response_text(value):
+    """Best-effort text extraction for native Grep result envelopes."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return '\n'.join(text for text in (response_text(item) for item in value) if text)
+    if isinstance(value, dict):
+        for key in ('text', 'content', 'message', 'output', 'result', 'error'):
+            text = response_text(value.get(key))
+            if text:
+                return text
+    return ''
+
+
+grep_no_result_advisory = None
+if str(tool_name).strip().casefold() == 'grep':
+    response = response_text(tool_response)
+    if GREP_NO_RESULT_RE.fullmatch(response):
+        grep_no_result_advisory = GREP_NO_RESULT_ADVISORY
+
 # Best-effort status from the tool response (shape is tool-specific; only set when
 # clearly determinable so we never mislabel).
 status = None
@@ -146,6 +180,18 @@ def cap(v):
     if isinstance(v, dict):
         return '[object]'
     return v
+
+
+def emit_context(*parts):
+    """Emit PostToolUse context without ever adding a permission decision."""
+    values = [part for part in parts if isinstance(part, str) and part.strip()]
+    if not values:
+        sys.exit(0)
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': 'PostToolUse',
+        'additionalContext': '\n\n'.join(values),
+    }}, sys.stdout)
+    sys.exit(0)
 
 
 args = {
@@ -220,20 +266,22 @@ req = urllib.request.Request(
 try:
     raw_resp = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read().decode('utf-8', errors='replace')
 except Exception:
-    sys.exit(0)  # operator unreachable / slow → fail open; a missed report+fold is retried next call.
+    # Operator reporting remains fail-open, but a local Grep warning is still
+    # useful when the operator is down and must not depend on that RPC.
+    emit_context(grep_no_result_advisory)
 
 if not coord_fold:
-    sys.exit(0)  # plain report — no response parsing, no output (legacy contract).
+    emit_context(grep_no_result_advisory)  # plain report — no coord response to fold.
 
 inner, _rpc_error, phase = parse_mcp_response(raw_resp)
 if phase != 'ok' or not isinstance(inner, dict):
-    sys.exit(0)
+    emit_context(grep_no_result_advisory)
 
 bundle = inner.get('hook_bundle')
 if not isinstance(bundle, dict) or bundle.get('schemaVersion') != ACTIVITY_HOOK_BUNDLE_SCHEMA:
     # No usable bundle (server predates the fold, or errored) — never advance
     # the cursor on a guess; next call retries from the same baseline.
-    sys.exit(0)
+    emit_context(grep_no_result_advisory)
 
 new_generation = bundle.get('generation')
 if not isinstance(new_generation, str) or not new_generation:
@@ -241,7 +289,7 @@ if not isinstance(new_generation, str) or not new_generation:
 complete = bundle.get('complete') is True
 changed = bundle.get('changed') is True
 
-out_text = None
+context_parts = []
 
 if changed:
     surfaces = bundle.get('surfaces') if isinstance(bundle.get('surfaces'), dict) else {}
@@ -250,7 +298,7 @@ if changed:
         summ = inbox.get('summary') if isinstance(inbox.get('summary'), dict) else {}
         injection = inbox.get('injection')
         if isinstance(injection, str) and injection.strip():
-            out_text = injection
+            context_parts.append(injection)
         else:
             # DUMB PIPE parity with the deleted coord-inbox hook (P-015): no new
             # entries, but still surface the ≥80% LOUD context gauge so a
@@ -259,21 +307,17 @@ if changed:
             if isinstance(entries, list) and not entries:
                 gauge = inbox.get('context_gauge')
                 if isinstance(gauge, str) and gauge.strip():
-                    out_text = gauge
+                    context_parts.append(gauge)
+
+if grep_no_result_advisory:
+    context_parts.append(grep_no_result_advisory)
 
 # Only a COMPLETE fold advances the generation — an incomplete one (partial
 # hydrate failure) must retry the FULL hydrate next call, mirroring the OMP
 # consumer (consumeActivityHookBundle: `bundle.complete ? bundle.generation : null`).
 write_cursor(new_generation if complete else None)
 
-if not out_text:
-    sys.exit(0)
-
-json.dump({'hookSpecificOutput': {
-    'hookEventName': 'PostToolUse',
-    'additionalContext': out_text,
-}}, sys.stdout)
-sys.exit(0)
+emit_context(*context_parts)
 PYEOF
 }
 
