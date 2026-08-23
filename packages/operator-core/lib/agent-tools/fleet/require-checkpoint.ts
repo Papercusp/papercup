@@ -348,7 +348,38 @@ export default defineTool({
       specs = [{ kind: 'checkpoint', itemId: args.itemId, ...(harnessHint ? { harness: harnessHint } : {}) }];
     } else {
       const rows = await listFleetAssignments({ workspaceId, harness: args.harness, activeOnly: true });
-      const group = resolveMemberGroup(groupByAgent(rows), args.member);
+      let group = resolveMemberGroup(groupByAgent(rows), args.member);
+
+      // `harness_slug` is intentionally NULL on presence rows: identity/fleet
+      // membership is workspace-scoped, while claims are harness-scoped. An
+      // un-targeted harness-filtered assignment read therefore cannot see a
+      // live member who currently holds no claim (the exact cohort this
+      // safety primitive must protect). Re-run the lookup with the member
+      // targeted so listFleetAssignments preserves that member's presence row.
+      // If the caller supplied a short prefix, resolve it against the complete
+      // workspace roster first, then repeat the targeted, harness-scoped read.
+      if (!group && args.harness) {
+        const targetedRows = await listFleetAssignments({
+          workspaceId,
+          agent: args.member,
+          harness: args.harness,
+          activeOnly: true,
+        });
+        group = resolveMemberGroup(groupByAgent(targetedRows), args.member);
+      }
+      if (!group && args.harness) {
+        const rosterRows = await listFleetAssignments({ workspaceId, activeOnly: true });
+        const rosterGroup = resolveMemberGroup(groupByAgent(rosterRows), args.member);
+        if (rosterGroup) {
+          const targetedRows = await listFleetAssignments({
+            workspaceId,
+            agent: rosterGroup.agentId,
+            harness: args.harness,
+            activeOnly: true,
+          });
+          group = resolveMemberGroup(groupByAgent(targetedRows), rosterGroup.agentId);
+        }
+      }
       // A member we cannot RESOLVE is not a member with nothing to save. Collapsing
       // those two into "no claims ⇒ safe" would emit the one output this tool must
       // never produce: a false `itemStateSafe: true` — here caused by nothing worse

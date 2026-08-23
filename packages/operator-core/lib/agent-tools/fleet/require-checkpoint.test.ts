@@ -5,7 +5,46 @@
  * read "safe" and then destroy unsaved work, and must never be sent to respawn a
  * healthy member. The pure functions carry both rules, so they are tested directly.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const h = vi.hoisted(() => ({
+  listFleetAssignments: vi.fn(),
+}));
+
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  defineTool: (definition: unknown) => definition,
+}));
+vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({
+    ownerId: 'su-leader',
+    ownerLabel: 'leader',
+    source: 'static-client',
+    workspaceId: 'ws-1',
+    userId: null,
+  })),
+}));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim()) ?? 'ws-1',
+}));
+vi.mock('../../fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/assignments')>()),
+  listFleetAssignments: h.listFleetAssignments,
+  groupByAgent: (rows: unknown[]) => rows,
+}));
+vi.mock('../coordination/messages', () => ({ sendMessage: vi.fn() }));
+vi.mock('../coordination/inbox-wake', () => ({
+  wakeRecipients: vi.fn(async () => ({ woken: 0, staged: 0, stagedTargets: [] })),
+  reportIdleRecipients: vi.fn(async () => ({ idle: [], dormantScheduled: [], degraded: false })),
+}));
+vi.mock('../coordination/directive-effect', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/directive-effect')>()),
+  fetchDirectiveActuations: vi.fn(async () => []),
+}));
+
+import requireCheckpointTool from './require-checkpoint';
 import {
   classifyDelivery,
   resolveMemberGroup,
@@ -17,6 +56,69 @@ import {
 import type { DirectiveActuation, DirectiveEffectVerdict } from '../coordination/directive-effect';
 
 const MEMBER = 'su-member-1';
+
+const presenceOnlyGroup = (agentId: string) => ({ agentId, claims: [] });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.listFleetAssignments.mockImplementation(async (opts: { agent?: string; harness?: string }) =>
+    opts.agent ? [presenceOnlyGroup(opts.agent)] : [],
+  );
+});
+
+describe('fleet:require-checkpoint handler member resolution', () => {
+  const call = async (member: string) =>
+    (await requireCheckpointTool.handler(
+      { member, workspace: 'ws-1', harness: 'papercusp' } as never,
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' } as never,
+    )) as { data: Record<string, unknown> };
+
+  it('accepts an exact live presence-only member and reaches the no-itemId safe branch', async () => {
+    const out = await call('su-presence-only');
+
+    expect(out.data).toMatchObject({
+      ok: true,
+      member: 'su-presence-only',
+      items: [],
+      itemStateSafe: true,
+      directiveSent: false,
+    });
+    expect(out.data.summary).toMatch(/loop:checkpoint/);
+    expect(h.listFleetAssignments).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      agent: 'su-presence-only',
+      harness: 'papercusp',
+      activeOnly: true,
+    });
+  });
+
+  it('resolves a unique ownerId prefix through the workspace roster before targeting presence', async () => {
+    const fullId = 'su-presence-only-123';
+    h.listFleetAssignments.mockImplementation(async (opts: { agent?: string; harness?: string }) => {
+      if (!opts.agent && !opts.harness) return [presenceOnlyGroup(fullId)];
+      if (opts.agent === fullId) return [presenceOnlyGroup(fullId)];
+      return [];
+    });
+
+    const out = await call('su-presence-only');
+
+    expect(out.data).toMatchObject({ ok: true, member: 'su-presence-only', itemStateSafe: true, items: [] });
+    expect(h.listFleetAssignments).toHaveBeenLastCalledWith({
+      workspaceId: 'ws-1',
+      agent: fullId,
+      harness: 'papercusp',
+      activeOnly: true,
+    });
+  });
+
+  it('keeps the safety refusal for an owner absent from both claims and presence', async () => {
+    h.listFleetAssignments.mockResolvedValue([]);
+
+    const out = await call('su-unknown');
+
+    expect(out.data).toMatchObject({ ok: false, error: 'member_not_found', member: 'su-unknown' });
+  });
+});
 
 function actuation(verdict: DirectiveEffectVerdict, itemId = 'WI-1', observedAtMs: number | null = null): DirectiveActuation {
   return {
