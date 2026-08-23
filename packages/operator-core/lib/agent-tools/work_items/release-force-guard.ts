@@ -33,6 +33,7 @@ export type ForceReleaseBasis =
   | 'holder-not-live'
   | 'holder-warm-idle'
   | 'holder-session-ended'
+  | 'holder-wake-missed'
   | 'queen'
   | 'leads-holder-fleet';
 
@@ -108,6 +109,9 @@ export interface HolderLiveness {
    *  independently authorizes a reclaim (`holder-session-ended`), regardless of how
    *  fresh the raw heartbeat above still looks. */
   oracleSessionState: LivenessVerdict['sessionState'] | null;
+  /** EI-21216592915615709: a terminal wake attempt completed without any
+   * post-attempt activity. Null means the shared oracle signal was unavailable. */
+  oracleWakeAttemptMiss: boolean | null;
   live: boolean;
 }
 
@@ -133,7 +137,16 @@ export interface ForceReleaseDeps {
    *  A lookup failure degrades to `null` (oracle signal absent) — never throws, never
    *  makes the guard STRICTER than before this fix (only ever additionally permissive
    *  when the oracle affirmatively says `ended`/`suspect`). */
-  resolveHolderSessionState?: (ownerId: string) => Promise<LivenessVerdict['sessionState'] | null>;
+  /** The full shared verdict is accepted so the force guard can consume the
+   * pickup-miss leg without re-running the oracle. The legacy string shape is
+   * retained for focused callers/tests that only provide sessionState. */
+  resolveHolderSessionState?: (
+    ownerId: string,
+  ) => Promise<
+    | LivenessVerdict['sessionState']
+    | Pick<LivenessVerdict, 'sessionState' | 'wakeAttemptMiss'>
+    | null
+  >;
   now?: () => number;
 }
 
@@ -177,13 +190,19 @@ export async function assessForceRelease(
     (async (ownerId: string) => {
       const { resolveSessionStates } = await import('../coordination/liveness-oracle');
       const map = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
-      return map.get(ownerId)?.sessionState ?? null;
+      return map.get(ownerId) ?? null;
     });
-  const [holderPres, endedOwners, oracleSessionState] = await Promise.all([
+  const [holderPres, endedOwners, oracleSignal] = await Promise.all([
     getPresence(input.holderOwnerId).catch(() => null),
     endedOwnersOf([input.holderOwnerId]).catch(() => new Set<string>()),
     resolveHolderSessionState(input.holderOwnerId).catch(() => null),
   ]);
+  const oracleSessionState =
+    typeof oracleSignal === 'string' ? oracleSignal : oracleSignal?.sessionState ?? null;
+  const oracleWakeAttemptMiss =
+    oracleSignal != null && typeof oracleSignal === 'object'
+      ? oracleSignal.wakeAttemptMiss === true
+      : null;
   const recordedEnded = endedOwners.has(input.holderOwnerId);
   // 'suspect' = the oracle CONFIRMED the process is gone (pid-probed ESRCH or
   // 30-min hard-stale) but is withholding a flat `ended` verdict only because
@@ -191,6 +210,7 @@ export async function assessForceRelease(
   // authorizes here just as `ended` does (the oracle's own caution about claim
   // CLEANUP order does not apply to the release call that IS the cleanup).
   const oracleNotLive = oracleSessionState === 'ended' || oracleSessionState === 'suspect';
+  const wakeAttemptMiss = oracleWakeAttemptMiss === true;
 
   const heartbeatTs = holderPres ? parseTs(holderPres.heartbeatAt) : NaN;
   const lastActiveTs = holderPres ? parseTs(holderPres.lastActiveAt) : NaN;
@@ -219,7 +239,7 @@ export async function assessForceRelease(
   // affirmatively saying the session is `ended`/`suspect`. Only when BOTH say "live"
   // does authority get required; this can only make the guard MORE permissive than
   // before (a null/degraded oracle read never flips `live` to false on its own).
-  const live = presenceLive && !warmIdle && !oracleNotLive;
+  const live = presenceLive && !warmIdle && !oracleNotLive && !wakeAttemptMiss;
 
   const holderLiveness: HolderLiveness = {
     presenceFound: holderPres != null,
@@ -230,6 +250,7 @@ export async function assessForceRelease(
     freshestAgeMs: freshest == null ? null : now - freshest,
     warmIdle,
     oracleSessionState,
+    oracleWakeAttemptMiss,
     live,
   };
 
@@ -241,7 +262,13 @@ export async function assessForceRelease(
   if (!live) {
     return {
       allowed: true,
-      basis: !presenceLive ? 'holder-not-live' : warmIdle ? 'holder-warm-idle' : 'holder-session-ended',
+      basis: !presenceLive
+        ? 'holder-not-live'
+        : warmIdle
+          ? 'holder-warm-idle'
+          : oracleNotLive
+            ? 'holder-session-ended'
+            : 'holder-wake-missed',
       holderLiveness,
     };
   }
@@ -286,6 +313,7 @@ export function forceRefusalHint(holder: string): string {
     `${holder} holds a LIVE claim (fresh presence/progress, and the shared sessionState oracle also reads it live) ` +
     `and you have no authority over it — force refused (WI-4198). ` +
     `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases) — OR the shared liveness oracle (the same one coord:wake trusts) independently reporting the session \`ended\`/\`suspect\` (EI-18907586326157984), queen/hive authority, or leading ${holder}'s OWN fleet. ` +
+    `A terminal wake with no post-attempt activity may also authorize a reclaim, but a queued/pending wake is not a miss. ` +
     `Otherwise coordinate with the holder (coord:send) — or with their fleet leader — instead of forcing.`
   );
 }

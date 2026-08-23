@@ -30,6 +30,7 @@ const deps = (over: {
    *  Defaults to `null` (no oracle signal — the pre-fix behavior every OTHER test
    *  here relies on) unless a test explicitly exercises the new oracle leg. */
   oracleSessionState?: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | null;
+  oracleWakeAttemptMiss?: boolean | null;
 }): ForceReleaseDeps => ({
   now: () => NOW,
   getPresence: async (o) => (o === 'su-holder' ? (over.holder ?? null) : (over.caller ?? null)),
@@ -38,7 +39,15 @@ const deps = (over: {
   getFleet: async () => (over.leader === undefined ? null : { leaderOwnerId: over.leader }),
   endedRecordedOwnerIds: async (owners) =>
     over.recordedEnded ? new Set(owners.filter((owner) => owner === 'su-holder')) : new Set(),
-  resolveHolderSessionState: async () => over.oracleSessionState ?? null,
+  resolveHolderSessionState: async () => {
+    if (over.oracleWakeAttemptMiss !== undefined) {
+      return {
+        sessionState: over.oracleSessionState ?? null,
+        wakeAttemptMiss: over.oracleWakeAttemptMiss === true,
+      } as never;
+    }
+    return over.oracleSessionState ?? null;
+  },
 });
 
 describe('assessForceRelease — liveness leg (a)', () => {
@@ -189,6 +198,40 @@ describe('assessForceRelease — oracle leg (EI-18907586326157984)', () => {
       deps({ holder: freshHeartbeatHolder, oracleSessionState: null }),
     );
     expect(v.holderLiveness).toMatchObject({ live: true, oracleSessionState: null });
+  });
+
+  it('EI-21216592915615709: terminal wake after recent pre-wake activity with no pickup authorizes reclaim', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({
+        holder: freshHeartbeatHolder,
+        oracleSessionState: 'live',
+        oracleWakeAttemptMiss: true,
+      }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-wake-missed' });
+    expect(v.holderLiveness).toMatchObject({
+      live: false,
+      oracleSessionState: 'live',
+      oracleWakeAttemptMiss: true,
+    });
+  });
+
+  it('EI-21216592915615709: post-attempt activity preserves live-holder authority', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({
+        holder: freshHeartbeatHolder,
+        oracleSessionState: 'live',
+        oracleWakeAttemptMiss: false,
+      }),
+    );
+    expect(v).toMatchObject({ allowed: false });
+    expect(v.holderLiveness).toMatchObject({
+      live: true,
+      oracleSessionState: 'live',
+      oracleWakeAttemptMiss: false,
+    });
   });
 
   it('the two liveness legs are independent: a genuinely dead-by-heartbeat holder still reports basis holder-not-live even if the oracle disagrees (degraded to null here)', async () => {

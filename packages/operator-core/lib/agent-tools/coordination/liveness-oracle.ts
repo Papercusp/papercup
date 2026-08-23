@@ -107,6 +107,13 @@ export interface LivenessVerdict {
   sessionState: SessionState;
   wakeable: boolean;
   liveTurn: boolean;
+  /**
+   * A recent terminal, turn-burning wake delivery was not followed by agent
+   * activity. This is a narrow pickup-miss signal for force-reclaim callers;
+   * it never changes `sessionState` by itself and never treats queued work as
+   * a pickup.
+   */
+  wakeAttemptMiss?: boolean;
   /** WI-4400: draining/suspect verdicts need a fresh required wake before a
    *  coordinator assumes the owner is dead or alive. */
   confirmLiveness: boolean | null;
@@ -266,6 +273,7 @@ export function deriveVerdict(
     sessionState,
     wakeable: w.wakeable,
     liveTurn: w.liveTurn,
+    wakeAttemptMiss: w.wakeAttemptMiss === true,
     confirmLiveness: needsLivenessConfirmation(sessionState),
     heartbeatFresh: !stale,
     // Spread-when-present, never a `?? false` default: an absent self-wake leg

@@ -13,6 +13,7 @@ import {
   isHardStale,
   overrideIntentStaleForSessionState,
   PRESENCE_DEAD_MS,
+  isConfirmedWakeAttemptMiss,
 } from './presence-wakeability';
 
 describe('deriveSessionState', () => {
@@ -179,5 +180,22 @@ describe('isHardStale', () => {
   it('the 72-min-cold incident heartbeat is hard-stale (DEAD ceiling is 30m)', () => {
     expect(PRESENCE_DEAD_MS).toBe(30 * 60_000);
     expect(isHardStale(now - 72 * 60_000, now)).toBe(true);
+  });
+});
+
+describe('isConfirmedWakeAttemptMiss (EI-21216592915615709)', () => {
+  const attempt = Date.parse('2026-08-23T04:27:10Z');
+
+  it('recognizes recent pre-wake activity with a terminal wake and no pickup', () => {
+    expect(isConfirmedWakeAttemptMiss(attempt, attempt - 1_000)).toBe(true);
+  });
+
+  it('does not call a wake a miss when activity follows the attempt', () => {
+    expect(isConfirmedWakeAttemptMiss(attempt, attempt + 1_000)).toBe(false);
+  });
+
+  it('does not infer a miss from a queued/non-terminal delivery or bad telemetry', () => {
+    expect(isConfirmedWakeAttemptMiss(null, attempt - 1_000)).toBe(false);
+    expect(isConfirmedWakeAttemptMiss(attempt, Number.NaN)).toBe(false);
   });
 });

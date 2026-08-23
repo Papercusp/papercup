@@ -49,6 +49,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 import { SESSION_END_MARKER } from '../activity/lifecycle-markers';
+import { WAKE_TURN_CHANNELS } from '../../events/await/types';
 
 /**
  * Coordinator-facing session state.
@@ -87,6 +88,28 @@ export interface WakeabilitySignals {
   wakeable: boolean;
   /** A turn is running now: recent agent_activity with no trailing session-end marker. */
   liveTurn: boolean;
+  /**
+   * A durable, terminal wake attempt completed recently and no agent activity
+   * followed it. This is deliberately separate from `liveTurn`: queued,
+   * parked, or still-delivering rows are not a confirmed miss.
+   */
+  wakeAttemptMiss?: boolean;
+}
+
+/**
+ * PURE: a terminal wake attempt is a pickup miss only when the activity
+ * watermark has not advanced past the attempt. Missing activity is affirmative
+ * absence; an unparseable activity timestamp is unknown and therefore fails
+ * closed so a force-reclaim cannot be authorized from corrupt telemetry.
+ */
+export function isConfirmedWakeAttemptMiss(
+  attemptAtMs: number | null | undefined,
+  lastActivityAtMs: number | null | undefined,
+): boolean {
+  if (attemptAtMs == null || !Number.isFinite(attemptAtMs)) return false;
+  if (lastActivityAtMs == null) return true;
+  if (!Number.isFinite(lastActivityAtMs)) return false;
+  return lastActivityAtMs <= attemptAtMs;
 }
 
 /** "Recent turn" window for the liveTurn signal — matches the presence stale
@@ -237,6 +260,11 @@ export function overrideIntentStaleForSessionState(
  *     NOT (or is after) the most-recent `■ session ended` lifecycle marker. The
  *     recency window + the end-marker together separate a turn-in-flight from a
  *     just-ended-but-still-warm session.
+ *  3. wakeAttemptMiss — per owner, a recent terminal delivery on a turn-burning
+ *     wake channel whose attempt timestamp is not followed by agent activity.
+ *     Pending/parked/delivering rows and no-turn channels are intentionally
+ *     excluded: queueing is not pickup, and settlement without a turn is not a
+ *     confirmed wake attempt.
  */
 export async function fetchWakeability(
   ownerIds: string[],
@@ -246,7 +274,7 @@ export async function fetchWakeability(
   const { sql } = getOrgPg();
   const windowSec = Math.max(1, Math.round(LIVE_TURN_WINDOW_MS / 1000));
 
-  const [wake, turns] = await Promise.all([
+  const [wake, turns, attempts] = await Promise.all([
     sql<{ subscriber_id: string }[]>`
       SELECT DISTINCT subscriber_id
         FROM harness_shared.event_awaits
@@ -262,10 +290,24 @@ export async function fetchWakeability(
        WHERE owner_id = ANY(${ownerIds}::text[])
          AND created_at > now() - make_interval(secs => ${windowSec})
        GROUP BY owner_id`,
+    sql<{ owner_id: string; attempt_at: string | null }[]>`
+      SELECT subscriber_id AS owner_id,
+             max(COALESCE(delivered_at, created_at)) AS attempt_at
+        FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id = ANY(${ownerIds}::text[])
+         AND event_key = ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
+         AND status IN ('delivered', 'dropped', 'dead')
+         AND (
+           status IN ('dropped', 'dead')
+           OR channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}::text[])
+         )
+         AND COALESCE(delivered_at, created_at) > now() - make_interval(secs => ${windowSec})
+       GROUP BY subscriber_id`,
   ]);
 
   const wakeSet = new Set(wake.map((r) => r.subscriber_id));
   const turnByOwner = new Map(turns.map((r) => [r.owner_id, r]));
+  const attemptByOwner = new Map(attempts.map((r) => [r.owner_id, r]));
   for (const id of ownerIds) {
     const t = turnByOwner.get(id);
     const lastAny = t?.last_any ? Date.parse(t.last_any) : null;
@@ -274,7 +316,13 @@ export async function fetchWakeability(
     // trailing session-end marker — i.e. no end-marker, or activity after it.
     const liveTurn =
       lastAny != null && !Number.isNaN(lastAny) && (lastEnd == null || Number.isNaN(lastEnd) || lastAny > lastEnd);
-    out.set(id, { wakeable: wakeSet.has(id), liveTurn });
+    const attempt = attemptByOwner.get(id)?.attempt_at;
+    const attemptAt = attempt ? Date.parse(attempt) : null;
+    out.set(id, {
+      wakeable: wakeSet.has(id),
+      liveTurn,
+      wakeAttemptMiss: isConfirmedWakeAttemptMiss(attemptAt, lastAny),
+    });
   }
   return out;
 }
