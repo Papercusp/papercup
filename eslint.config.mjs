@@ -10,6 +10,7 @@
  */
 
 import papercuspRules from './tools/eslint-rules/index.js';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 export default [
@@ -36,6 +37,20 @@ export default [
       parserOptions: {
         ecmaFeatures: { jsx: true },
       },
+    },
+  },
+  {
+    // The workspace still uses deliberate `react-hooks/exhaustive-deps`
+    // suppressions in hooks whose dependency set is intentionally narrower
+    // than the rule's inferred set. Register the plugin at the root so those
+    // directives are valid under flat config (and keep the rule advisory,
+    // matching the existing custom-only lint posture).
+    files: ['**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}'],
+    plugins: {
+      'react-hooks': reactHooks,
+    },
+    rules: {
+      'react-hooks/exhaustive-deps': 'warn',
     },
   },
   {
