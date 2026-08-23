@@ -2750,7 +2750,12 @@ export async function mergeIssuePayload(
 }
 
 /** Threadable.addPost — comment on the issue (creates the thread on first post). */
-export async function commentIssue(id: string, body: string, authorId?: string): Promise<ThreadPostRow | null> {
+export async function commentIssue(
+  id: string,
+  body: string,
+  authorId?: string,
+  opts: { workspaceId?: string; harness?: string | null } = {},
+): Promise<ThreadPostRow | null> {
   const issue = await getIssue(id);
   if (!issue) return null;
   const created = nowIso();
@@ -2761,12 +2766,17 @@ export async function commentIssue(id: string, body: string, authorId?: string):
   // hanging the MCP call indefinitely (the admin pool has no default
   // statement_timeout). A tx-bound PgThreadStore reuses the exact tested store SQL.
   const post = await boundedOrgTxn(async (tx) => {
-    const txThreads = new PgThreadStore({ ...coordOpts, getSql: () => tx });
+    const txThreads = new PgThreadStore({
+      ...coordOpts,
+      getSql: () => tx,
+      getWorkspaceId: () => opts.workspaceId?.trim() || coordScopeWorkspace(),
+    });
     const thread = await txThreads.getOrCreateThread(issueRef(id), {
       thread_id: threadId(id),
       title: issue.title,
       created_by: issue.createdBy ?? undefined,
       created_ts: issue.createdAt,
+      harness_slug: opts.harness ?? undefined,
     });
     return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: created });
   });
