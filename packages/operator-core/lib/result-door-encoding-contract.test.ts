@@ -71,7 +71,14 @@ type SpillCursor = {
   uri?: string;
   encoding?: unknown;
   dataEncoding?: string;
-  bodyByteOffset?: number;
+  /** Offset of the JSON body within capability:read's returned `response.data`
+   *  (the manifest is already stripped there). */
+  bodyOffsetInPayload?: number;
+  /** Offset of the JSON body within the RAW on-disk file at `args.file_path`
+   *  (manifest header included) — the shell / jq / grep audience. */
+  bodyOffsetInFile?: number;
+  /** Present and false when the tool clipped fields before this door ran. */
+  bodyComplete?: boolean;
 };
 
 /** Drive a payload over the door and return its recovery cursor + prose. */
@@ -157,22 +164,43 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(cursor).not.toHaveProperty('encoding');
   });
 
-  it('does not advertise exact JSON recovery for a tool-internally clipped body (EI-21185758364267344)', () => {
+  it('still LOCATES a tool-internally clipped body, and marks it incomplete (P-005; supersedes the EI-21185758364267344 withholding)', () => {
     const { cursor, next } = doorOversizedPartialJsonResult();
 
-    // The spill remains readable for inspection, but bodyByteOffset is an
-    // exact-complete-JSON contract and must not be emitted for a body that
-    // already says records were omitted before this door ran.
     expect(cursor.kind).toBe('scratch-page');
-    expect(cursor.bodyByteOffset).toBeUndefined();
-    expect(next).toContain('inspect the emitted spill bytes');
-    expect(next).toContain('body_truncated');
+
+    // WHERE the body starts and WHETHER it is complete are orthogonal facts.
+    // EI-21185758364267344's complaint was the completeness PROMISE, and the
+    // remedy taken was to withhold the byte offset entirely. That did not stop
+    // anyone parsing these bytes — it pushed them onto "start at the first
+    // brace", which in a manifest-bearing spill finds the scratch-reference
+    // MANIFEST: a well-formed but WRONG object, i.e. a silent wrong answer
+    // instead of a loud failure (EI-21208128396414381, EI-21202588767992062).
+    // So the locator is always emitted, and incompleteness is carried by its
+    // own field rather than by an ABSENCE no caller can interpret.
+    expect(cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
+    expect(cursor.bodyComplete).toBe(false);
+
+    // The honesty half must survive intact: the offset must never be read as a
+    // promise that paging recovers the omitted records.
     expect(next).toContain('this JSON is partial');
+    expect(next).toContain('bodyComplete:false');
+    expect(next).toContain('body_truncated');
     expect(next).toContain('paging cannot recover omitted fields');
     expect(next).toContain('Re-call work_items:get');
     expect(next).not.toContain('recover the exact spill bytes');
 
-    const spill = spillBytes().toString('utf8');
+    // The locator must actually WORK on the partial path, not merely be present.
+    const payload = spillBytes();
+    const parsed = JSON.parse(payload.subarray(cursor.bodyOffsetInPayload!).toString('utf8')) as {
+      ok: boolean;
+      results: { section: { body_records_shown: number } }[];
+    };
+    expect(parsed.ok).toBe(true);
+    // ...and what it locates is still the clipped population it warned about.
+    expect(parsed.results[0].section.body_records_shown).toBe(11);
+
+    const spill = payload.toString('utf8');
     expect(spill).toContain('D-011');
     expect(spill).not.toContain('D-012');
   });
@@ -237,25 +265,57 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(/^[A-Za-z0-9+/\r\n=]*$/.test(text)).toBe(false);
   });
 
-  it('exposes the exact JSON body byte offset after the plaintext spill prefix', () => {
+  it('gives each byte stream its OWN body offset, and each one parses (EI-21239097430071791)', () => {
     const { cursor, next } = doorOversizedResult();
 
-    expect(cursor.bodyByteOffset).toEqual(expect.any(Number));
-    expect(cursor.bodyByteOffset).toBeGreaterThan(0);
-    expect(next).toContain('skip cursor.bodyByteOffset bytes in the raw file for JSON.');
+    // The regression this pins: a SINGLE `bodyByteOffset` was measured against
+    // the raw on-disk file while the cursor's own `next` sends the caller to
+    // capability:read, which strips the ~450-byte manifest header BEFORE
+    // applying byte_offset. Following the cursor exactly therefore overshot
+    // into the middle of the JSON and produced an unparseable fragment. Each
+    // offset is now named for the stream it measures, and both are proved here
+    // against that stream — an offset that parses on one and not the other is
+    // precisely the defect, so asserting only one would not catch it.
+    expect(cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
+    expect(cursor.bodyOffsetInFile).toEqual(expect.any(Number));
+    expect(next).toContain('skip cursor.bodyOffsetInPayload bytes of response.data for JSON.');
 
-    // `cursor.args.file_path` points at the raw self-describing scratch file,
-    // not the unwrapped payload returned by capability:read. The offset must
-    // therefore skip both the manifest header and the result-door prefix.
-    const bytes = spillRawBytes();
-    const body = bytes.subarray(cursor.bodyByteOffset!).toString('utf8');
+    // A complete body must NOT carry the incompleteness marker.
+    expect(cursor.bodyComplete).toBeUndefined();
 
-    // The offset must land exactly at the serialized tool body, not in the
-    // Markdown header or list index. Parsing the suffix proves the prefix can
-    // be skipped without guessing at the spill format.
-    const parsed = JSON.parse(body) as { ok: boolean; rows: unknown[] };
-    expect(parsed.ok).toBe(true);
-    expect(parsed.rows).toHaveLength(400);
+    const expectWholeBody = (body: string, stream: string): void => {
+      let parsed: { ok: boolean; rows: unknown[] };
+      try {
+        parsed = JSON.parse(body) as { ok: boolean; rows: unknown[] };
+      } catch (err) {
+        throw new Error(`${stream}: offset did not land on parseable JSON — ${String(err)}`);
+      }
+      expect(parsed.ok).toBe(true);
+      expect(parsed.rows).toHaveLength(400);
+    };
+
+    // Stream 1 — capability:read's `response.data`: manifest already stripped.
+    expectWholeBody(
+      spillBytes().subarray(cursor.bodyOffsetInPayload!).toString('utf8'),
+      'response.data',
+    );
+    // Stream 2 — the raw file at `args.file_path`: manifest header included.
+    expectWholeBody(
+      spillRawBytes().subarray(cursor.bodyOffsetInFile!).toString('utf8'),
+      'raw file',
+    );
+
+    // The two streams differ by exactly the manifest header — the quantity that
+    // was silently conflated. Pinning the RELATION keeps the two offsets from
+    // drifting back into one.
+    expect(cursor.bodyOffsetInFile!).toBeGreaterThan(cursor.bodyOffsetInPayload!);
+    expect(cursor.bodyOffsetInFile! - cursor.bodyOffsetInPayload!).toBe(
+      spillRawBytes().length - spillBytes().length,
+    );
+
+    // The first `{` in the raw file is the MANIFEST, not the body: the reason a
+    // "start at the first brace" fallback returns a well-formed WRONG object.
+    expect(spillRawBytes().indexOf('{')).toBeLessThan(cursor.bodyOffsetInFile!);
   });
 
   it('follows the emitted cursor end-to-end through the real capability:read', async () => {
