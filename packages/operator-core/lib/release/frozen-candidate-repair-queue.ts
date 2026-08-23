@@ -9,13 +9,11 @@
  * filesystem, database, or process work.
  */
 
-export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 2 as const;
+export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 3 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
-/** Three full repair attempts fit comfortably inside the four-hour wall-clock bound even
- * when each verification pays the current ~42-minute full checkpoint cost. Both bounds are
- * arguments at every policy seam so a later runtime-config owner can tune them without
- * changing the state format. */
+/** These bounds stop unattended fixer churn. Exhaustion retains the candidate at the queue
+ * head; it never authorizes a newer moving-tip candidate. */
 export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAttempts: 3,
   maxAgeMs: 4 * 60 * 60 * 1_000,
@@ -32,7 +30,13 @@ export const FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS = 5 * 60 * 1_000;
 const MAX_PERSISTED_FAILURES = 50;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
-export type FrozenCandidateRepairPhase = 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
+export type FrozenCandidateRepairPhase =
+  | 'ready-to-test'
+  | 'awaiting-fixer'
+  | 'ready-to-verify'
+  | 'ready-to-promote'
+  | 'blocked';
+export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'wall-clock-exhausted';
 
 export interface FrozenRepairDispatchReservation {
   token: string;
@@ -60,6 +64,8 @@ export interface FrozenCandidateRepairQueue {
   updatedAtMs: number;
   /** Current/last spawn. A completion from any other spawn is stale and rejected. */
   fixerSpawnId: string | null;
+  /** Automation may stop, but the queue head remains immutable until it is green. */
+  blockedReason?: FrozenCandidateBlockedReason;
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
   failingTests: string[];
@@ -73,6 +79,13 @@ export interface FrozenRepairQueueLimits {
 export type FrozenRepairQueueDecision =
   | {
       kind: 'run-normal-gate';
+      runSuite: true;
+      recordVerdict: true;
+    }
+  | {
+      kind: 'test-candidate';
+      candidate: string;
+      gateDisposition: 'initial-candidate';
       runSuite: true;
       recordVerdict: true;
     }
@@ -132,11 +145,11 @@ export type FrozenRepairQueueDecision =
       recordVerdict: false;
     }
   | {
-      kind: 'abandon-repair';
-      reason: 'attempts-exhausted' | 'wall-clock-exhausted';
+      kind: 'hold-exhausted';
+      reason: FrozenCandidateBlockedReason;
       candidate: string;
       repairHead: string;
-      allowFreshCandidate: true;
+      gateDisposition: 'blocked';
       runSuite: false;
       recordVerdict: false;
     };
@@ -202,9 +215,9 @@ function requireCurrentHead(queue: FrozenCandidateRepairQueue, repairHead: strin
   }
 }
 
-/** Create the one queue record at the first red verdict. Dispatch is a separate, explicit
- * transition so a crash between persistence and launch resumes safely as `unassigned`. */
-export function createFrozenCandidateRepairQueue(input: {
+/** Persist the immutable candidate before its first suite. A process crash or moving staging
+ * tip cannot replace it; the next gate invocation resumes this exact SHA. */
+export function createFrozenCandidateQueue(input: {
   candidate: string;
   base: string | null;
   worktreePath: string;
@@ -218,7 +231,7 @@ export function createFrozenCandidateRepairQueue(input: {
   assertTimestamp(input.nowMs, 'nowMs');
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
-    phase: 'awaiting-fixer',
+    phase: 'ready-to-test',
     candidate: input.candidate,
     base: input.base,
     repairHead: input.candidate,
@@ -234,12 +247,29 @@ export function createFrozenCandidateRepairQueue(input: {
   };
 }
 
+/** Compatibility constructor for callers that first learn about the candidate at its red
+ * verdict. New production orchestration persists through createFrozenCandidateQueue earlier. */
+export function createFrozenCandidateRepairQueue(
+  input: Parameters<typeof createFrozenCandidateQueue>[0],
+): FrozenCandidateRepairQueue {
+  return markFrozenCandidateVerificationRed(
+    createFrozenCandidateQueue(input),
+    { failingTests: input.failingTests, nowMs: input.nowMs },
+  );
+}
+
 /** Parse a JSONB metadata value without letting a malformed queue steer the release gate. */
 export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidateRepairQueue | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  if (row.schemaVersion !== 1 && row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION) return null;
-  if (row.phase !== 'awaiting-fixer' && row.phase !== 'ready-to-verify' && row.phase !== 'ready-to-promote')
+  if (row.schemaVersion !== 1 && row.schemaVersion !== 2 && row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION) return null;
+  if (
+    row.phase !== 'ready-to-test' &&
+    row.phase !== 'awaiting-fixer' &&
+    row.phase !== 'ready-to-verify' &&
+    row.phase !== 'ready-to-promote' &&
+    row.phase !== 'blocked'
+  )
     return null;
   if (!nonBlank(row.candidate) || !nonBlank(row.repairHead) || !nonBlank(row.worktreePath)) {
     return null;
@@ -254,8 +284,15 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
   }
-  if (row.phase !== 'awaiting-fixer' && (row.attempts as number) < 1) return null;
-  if (row.phase !== 'awaiting-fixer' && !nonBlank(row.fixerSpawnId)) return null;
+  if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && (row.attempts as number) < 1)
+    return null;
+  if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && !nonBlank(row.fixerSpawnId))
+    return null;
+  const blockedReason =
+    row.blockedReason === 'attempts-exhausted' || row.blockedReason === 'wall-clock-exhausted'
+      ? row.blockedReason
+      : undefined;
+  if (row.phase === 'blocked' && !blockedReason) return null;
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: row.phase,
@@ -271,6 +308,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     openedAtMs: row.openedAtMs,
     updatedAtMs: row.updatedAtMs,
     fixerSpawnId: row.fixerSpawnId as string | null,
+    ...(blockedReason ? { blockedReason } : {}),
     ...(dispatchReservation ? { dispatchReservation } : {}),
     failingTests: boundedFailures(row.failingTests as string[]),
   };
@@ -286,16 +324,37 @@ export function decideFrozenCandidateRepairQueue(
   assertLimits(limits);
   if (!queue) return { kind: 'run-normal-gate', runSuite: true, recordVerdict: true };
 
+  if (queue.phase === 'ready-to-test') {
+    return {
+      kind: 'test-candidate',
+      candidate: queue.candidate,
+      gateDisposition: 'initial-candidate',
+      runSuite: true,
+      recordVerdict: true,
+    };
+  }
+  if (queue.phase === 'blocked') {
+    return {
+      kind: 'hold-exhausted',
+      reason: queue.blockedReason!,
+      candidate: queue.candidate,
+      repairHead: queue.repairHead,
+      gateDisposition: 'blocked',
+      runSuite: false,
+      recordVerdict: false,
+    };
+  }
+
   const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
   // Going green inside the budget satisfies D-001 even if promotion bookkeeping crosses the
   // boundary a moment later. The normal promotion freshness checks still apply downstream.
   if (queue.phase !== 'ready-to-promote' && ageMs >= limits.maxAgeMs) {
     return {
-      kind: 'abandon-repair',
+      kind: 'hold-exhausted',
       reason: 'wall-clock-exhausted',
       candidate: queue.candidate,
       repairHead: queue.repairHead,
-      allowFreshCandidate: true,
+      gateDisposition: 'blocked',
       runSuite: false,
       recordVerdict: false,
     };
@@ -318,11 +377,11 @@ export function decideFrozenCandidateRepairQueue(
     if (!queue.fixerSpawnId || observation.fixerAlive === false) {
       if (queue.attempts >= limits.maxAttempts) {
         return {
-          kind: 'abandon-repair',
+          kind: 'hold-exhausted',
           reason: 'attempts-exhausted',
           candidate: queue.candidate,
           repairHead: queue.repairHead,
-          allowFreshCandidate: true,
+          gateDisposition: 'blocked',
           runSuite: false,
           recordVerdict: false,
         };
@@ -383,6 +442,36 @@ export function decideFrozenCandidateRepairQueue(
     originalCandidate: queue.candidate,
     runSuite: false,
     recordVerdict: false,
+  };
+}
+
+/** A first red transitions the already-persisted candidate into repair without changing C. */
+export function markFrozenCandidateVerificationRed(
+  queue: FrozenCandidateRepairQueue,
+  input: { failingTests?: readonly string[]; nowMs: number },
+): FrozenCandidateRepairQueue {
+  requirePhase(queue, 'ready-to-test', 'initial candidate red');
+  assertTimestamp(input.nowMs, 'nowMs');
+  return {
+    ...queue,
+    phase: 'awaiting-fixer',
+    updatedAtMs: input.nowMs,
+    failingTests: boundedFailures(input.failingTests ?? []),
+  };
+}
+
+/** Stop automated churn while preserving the same immutable queue head. */
+export function markFrozenRepairExhausted(
+  queue: FrozenCandidateRepairQueue,
+  input: { reason: FrozenCandidateBlockedReason; nowMs: number },
+): FrozenCandidateRepairQueue {
+  assertTimestamp(input.nowMs, 'nowMs');
+  return {
+    ...queue,
+    phase: 'blocked',
+    blockedReason: input.reason,
+    updatedAtMs: input.nowMs,
+    fixerSpawnId: null,
   };
 }
 

@@ -94,7 +94,10 @@ function resolveRunnableCandidate(
     const candidate = currentQuietCutCandidate(predictedCandidate, root);
     return { candidate, source: candidate ? 'current-quiet-cut' : 'unresolved' };
   }
-  if (queueDecision.kind === 'run-normal-gate' || queueDecision.kind === 'abandon-repair') {
+  if (queueDecision.kind === 'test-candidate') {
+    return { candidate: queueDecision.candidate, source: 'frozen-repair-queue' };
+  }
+  if (queueDecision.kind === 'run-normal-gate') {
     const candidate = currentQuietCutCandidate(predictedCandidate, root);
     return { candidate, source: candidate ? 'current-quiet-cut' : 'unresolved' };
   }
@@ -141,8 +144,8 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
 
 /**
  * Guard an ordinary detached launch against queue states whose writer returns
- * `repair-in-progress` without running a suite. The writer's `abandon-repair` and
- * `verify-repair` decisions continue into a suite-producing path, so they are allowed here;
+ * `repair-in-progress` without running a suite. Initial-candidate and repair verification
+ * decisions continue into a suite-producing path, so they are allowed here;
  * every other queue decision refuses before the systemd unit is created.
  */
 export async function assessFrozenRepairQueuePreflight(
@@ -158,8 +161,8 @@ export async function assessFrozenRepairQueuePreflight(
     const { queueDecision } = state;
     const suiteProducingDecision =
       queueDecision.kind === 'run-normal-gate' ||
-      queueDecision.kind === 'verify-repair' ||
-      queueDecision.kind === 'abandon-repair';
+      queueDecision.kind === 'test-candidate' ||
+      queueDecision.kind === 'verify-repair';
     const runnableCandidate = suiteProducingDecision
       ? resolveRunnableCandidate(queueDecision, repairQueue, predictedCandidate, root)
       : null;

@@ -67,8 +67,11 @@ import {
 } from "@papercusp/operator-core/lib/candidate-contains";
 import {
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+  createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  markFrozenCandidateVerificationRed,
+  markFrozenRepairExhausted,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
   markFrozenRepairStagingMismatch,
@@ -6426,6 +6429,7 @@ export async function runGreenCheckpoint(
   // than silently discarding a queue whose state we could not read.
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
+  let initialCandidateVerification = false;
   let repairOutcomeReconciled = false;
   const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
   const finalizeFrozenRepairFixer = deps.finalizeFrozenRepairFixer;
@@ -6675,13 +6679,31 @@ export async function runGreenCheckpoint(
       }
     }
 
-    if (decision.kind === "abandon-repair") {
-      deps.log(
-        `frozen repair queue abandoned (${decision.reason}) at ${decision.repairHead.slice(0, 8)} — allowing one fresh candidate cut`,
-      );
-      await deps.writeFrozenRepairQueue?.(null);
-      await deps.cleanupFrozenRepairWorktree?.(repairQueue).catch(() => {});
-      repairQueue = null;
+    if (decision.kind === "hold-exhausted") {
+      if (repairQueue.phase !== "blocked") {
+        repairQueue = markFrozenRepairExhausted(repairQueue, {
+          reason: decision.reason,
+          nowMs: Date.now(),
+        });
+        await deps.writeFrozenRepairQueue?.(repairQueue);
+      }
+      const summary =
+        `frozen candidate ${repairQueue.candidate.slice(0, 8)} exhausted automated repair ` +
+        `(${decision.reason}) at ${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head ` +
+        `and refusing to select a newer staging tip`;
+      deps.log(summary);
+      return {
+        advanced: false,
+        candidate: repairQueue.repairHead,
+        from: lastReady,
+        green: null,
+        reason: "repair-in-progress",
+        summary,
+        repairQueue,
+      };
+    } else if (decision.kind === "test-candidate") {
+      candidate = await revParse(cfg.integrationRoot, decision.candidate);
+      initialCandidateVerification = true;
     } else if (decision.kind === "dispatch-fixer") {
       const dispatch = await dispatchFrozenRepair(repairQueue, false);
       if (dispatch.reservationBlocked) {
@@ -6838,6 +6860,7 @@ export async function runGreenCheckpoint(
   if (
     !opts.candidate &&
     !repairVerification &&
+    !initialCandidateVerification &&
     !repairOutcomeReconciled &&
     quietCutSecFromEnv() > 0
   ) {
@@ -6929,6 +6952,32 @@ export async function runGreenCheckpoint(
         summary: headroom.summary,
       };
     }
+  }
+
+  // Persist C after every candidate-selection preflight, but before setup or suite work. A crash,
+  // red verdict, or newer staging tip therefore resumes this exact candidate. The production
+  // writer supplies the complete repair hooks; older/direct callers keep their historical path.
+  if (
+    !repairQueue &&
+    deps.writeFrozenRepairQueue &&
+    deps.prepareFrozenRepairWorktree &&
+    deps.dispatchFrozenRepairFixer
+  ) {
+    repairQueue = createFrozenCandidateQueue({
+      candidate,
+      base: lastReady,
+      worktreePath: path.join(
+        cfg.integrationRoot,
+        ".papercusp",
+        "worktrees",
+        `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
+      ),
+      affectedTestProofGroup: deps.runId ?? null,
+      nowMs: Date.now(),
+    });
+    await deps.writeFrozenRepairQueue(repairQueue);
+    initialCandidateVerification = true;
+    deps.log(`stable-candidate queue persisted ${candidate.slice(0, 8)} before its first suite`);
   }
 
   deps.log(
@@ -7416,6 +7465,12 @@ export async function runGreenCheckpoint(
           failingTests,
           nowMs: Date.now(),
         });
+      } else if (initialCandidateVerification && repairQueue?.phase === "ready-to-test") {
+        repairQueue = markFrozenCandidateVerificationRed(repairQueue, {
+          failingTests,
+          nowMs: Date.now(),
+        });
+        await deps.writeFrozenRepairQueue(repairQueue);
       } else if (!repairQueue) {
         repairQueue = createFrozenCandidateRepairQueue({
           candidate,
