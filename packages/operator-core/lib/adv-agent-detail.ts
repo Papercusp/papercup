@@ -58,6 +58,7 @@ import { getPresence } from './agent-tools/coordination/presence';
 // re-derived — a second local rule is how two surfaces end up disagreeing about
 // whether the same agent is stalled.
 import { computeIntentStale } from './agent-tools/coordination/presence-tier1';
+import { resolveSessionStates, type LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 import { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
 import {
   fetchOrientPipeline,
@@ -210,6 +211,13 @@ export interface AgentDossierLoopStatus {
   stalled: boolean;
 }
 
+/** The shared liveness-oracle verdict projected for the dossier Health rail. */
+export interface AgentDossierLiveness {
+  sessionState: LivenessVerdict['sessionState'];
+  /** A turn is actively speaking; false means the session is currently silent. */
+  liveTurn: boolean;
+}
+
 /**
  * Is the agent holding this claim actually MOVING it? (P-009 leg (c) — the
  * health word the deck renders on the claim's own row.)
@@ -256,6 +264,7 @@ export interface AgentDossierCheckpoint {
  */
 export type AgentSignalKey =
   | 'loop'
+  | 'liveness'
   | 'currentClaim'
   | 'context'
   | 'unanswered'
@@ -351,6 +360,9 @@ export interface AgentSignals {
   /** null when the agent has no engine loop routine at all (never armed) —
    *  OR the read threw; check `unavailableSignals` to tell them apart. */
   loop: AgentDossierLoopStatus | null;
+  /** One shared-oracle verdict, never a heartbeat-derived lookalike. null when
+   *  the oracle degraded; check `unavailableSignals` for that fail-soft state. */
+  liveness: AgentDossierLiveness | null;
   /** The agent's most recently taken held work-item, or null if it holds none
    *  — OR the read threw; check `unavailableSignals` to tell them apart. */
   currentClaim: AgentDossierClaim | null;
@@ -1198,6 +1210,7 @@ async function ensureClaudeResumeDirMaterialized(
 
 const ALL_AGENT_SIGNAL_KEYS: AgentSignalKey[] = [
   'loop',
+  'liveness',
   'currentClaim',
   'context',
   'unanswered',
@@ -1307,6 +1320,7 @@ export function deriveAnnouncedGates(
 
 const EMPTY_SIGNALS: AgentSignals = {
   loop: null,
+  liveness: null,
   currentClaim: null,
   contextTokens: null,
   compactionLimit: null,
@@ -1447,7 +1461,7 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
       : (await latestAdvSessionByCoordOwner(owner).catch(onFailure('lane')(null)))?.planSlug ?? null;
     const planSlug = declaredPlanSlug ?? launchPlanSlug;
     const harnessSlug = top?.harness ?? null;
-    const [lane, announcedGates, fleetControl, pipeline] = await Promise.all([
+    const [lane, announcedGates, fleetControl, pipeline, liveness] = await Promise.all([
       readAgentLane(planSlug, harnessSlug, workspaceId, declaredPlanSlug ? 'declared' : 'launch').catch(
         onFailure('lane')(null),
       ),
@@ -1464,6 +1478,30 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
       // holds one layer down. Cost is a shared 60s single-flight cache entry —
       // the same one the waking fleet is already paying for.
       fetchOrientPipeline(harnessSlug ?? undefined),
+      // The dossier must project the SAME verdict every other supervisory
+      // surface uses. Reuse the presence + claim reads already paid for above,
+      // call the oracle exactly once, and keep its two axes together: lifecycle
+      // (`sessionState`) and current turn activity (`liveTurn`). A missing map
+      // entry is the oracle's degraded-read shape, so surface it as unavailable
+      // rather than inventing a state from heartbeat freshness.
+      resolveSessionStates([
+        {
+          ownerId: owner,
+          heartbeatAt: presence?.heartbeatAt ?? null,
+          stale: presence?.stale ?? null,
+          host: presence?.host ?? null,
+          pid: presence?.pid ?? null,
+          source: presence?.source ?? null,
+          agentRole: presence?.agentRole ?? null,
+          claimsHeld: top != null,
+        },
+      ])
+        .then((verdicts): AgentDossierLiveness => {
+          const verdict = verdicts.get(owner);
+          if (!verdict) throw new Error('shared liveness oracle returned no verdict');
+          return { sessionState: verdict.sessionState, liveTurn: verdict.liveTurn };
+        })
+        .catch(onFailure('liveness')(null)),
     ]);
     const claimProgress = deriveClaimProgress(presence?.lastActiveAt ?? null);
 
@@ -1472,6 +1510,7 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
       pipeline,
       announcedGates,
       fleetControl,
+      liveness,
       loop: loopStatus
         ? {
             active: loopStatus.active,
@@ -1493,9 +1532,7 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
       contextTokens: presence?.contextTokens ?? null,
       compactionLimit: presence?.compactionLimit ?? null,
       lastCheckpoint:
-        top?.checkpoint != null
-          ? { text: top.checkpoint, updatedAtMs: top.checkpointUpdatedAtMs ?? null }
-          : null,
+        top?.checkpoint != null ? { text: top.checkpoint, updatedAtMs: top.checkpointUpdatedAtMs ?? null } : null,
       unansweredDirectedCount: unanswered.get(owner)?.count ?? 0,
       lastToolCallAt: lastToolCall.get(owner) ?? null,
       unavailableSignals: unavailable,

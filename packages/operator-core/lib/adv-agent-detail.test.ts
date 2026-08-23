@@ -35,6 +35,11 @@ vi.mock('./agent-tools/coordination/presence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./agent-tools/coordination/presence')>()),
   getPresence: (...a: unknown[]) => getPresence(...a),
 }));
+const resolveSessionStates = vi.fn();
+vi.mock('./agent-tools/coordination/liveness-oracle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/liveness-oracle')>()),
+  resolveSessionStates: (...a: unknown[]) => resolveSessionStates(...a),
+}));
 const fetchUnansweredDirected = vi.fn();
 vi.mock('./agent-tools/coordination/unanswered-directed', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./agent-tools/coordination/unanswered-directed')>()),
@@ -771,6 +776,15 @@ describe('getAgentSignals', () => {
     getLoopStatus.mockResolvedValue(null);
     readHeldWorkItems.mockResolvedValue([]);
     getPresence.mockResolvedValue(null);
+    resolveSessionStates.mockImplementation(
+      async (subjects: Array<{ ownerId: string }>) =>
+        new Map(
+          subjects.map((subject) => [
+            subject.ownerId,
+            { ownerId: subject.ownerId, sessionState: 'parked', liveTurn: false },
+          ]),
+        ),
+    );
     fetchUnansweredDirected.mockResolvedValue(new Map());
     lastToolCallAtByOwner.mockResolvedValue(new Map());
     // P-009 defaults: no fleet, no gates declared, no awaits. The lane + fleet
@@ -797,7 +811,52 @@ describe('getAgentSignals', () => {
     const out = await getAgentSignals('su-1');
     expect(out.currentClaim).toBeNull();
     expect(out.loop).toBeNull();
+    expect(out.liveness).toEqual({ sessionState: 'parked', liveTurn: false });
     expect(out.unavailableSignals).toEqual([]);
+  });
+
+  it('projects one shared-oracle verdict from the already-read presence and held-claim state', async () => {
+    getPresence.mockResolvedValue({
+      heartbeatAt: '2026-08-23T17:00:00.000Z',
+      stale: false,
+      host: 'devbox',
+      pid: 4242,
+      source: 'psu',
+      agentRole: 'su',
+      lastActiveAt: null,
+      currentPlanSlug: null,
+    });
+    readHeldWorkItems.mockResolvedValue([
+      { id: 'WI-6747', title: 'dossier rail', harness: 'papercusp', checkpoint: null },
+    ]);
+    resolveSessionStates.mockResolvedValue(
+      new Map([['su-1', { ownerId: 'su-1', sessionState: 'live', liveTurn: true }]]),
+    );
+
+    const out = await getAgentSignals('su-1');
+
+    expect(out.liveness).toEqual({ sessionState: 'live', liveTurn: true });
+    expect(resolveSessionStates).toHaveBeenCalledTimes(1);
+    expect(resolveSessionStates).toHaveBeenCalledWith([
+      {
+        ownerId: 'su-1',
+        heartbeatAt: '2026-08-23T17:00:00.000Z',
+        stale: false,
+        host: 'devbox',
+        pid: 4242,
+        source: 'psu',
+        agentRole: 'su',
+        claimsHeld: true,
+      },
+    ]);
+    expect(out.unavailableSignals).not.toContain('liveness');
+  });
+
+  it('marks liveness unavailable when the shared oracle returns no verdict', async () => {
+    resolveSessionStates.mockResolvedValue(new Map());
+    const out = await getAgentSignals('su-1');
+    expect(out.liveness).toBeNull();
+    expect(out.unavailableSignals).toEqual(['liveness']);
   });
 
   it('readHeldWorkItems THROWING is distinguishable from genuinely holding nothing — the regression this item exists to prevent', async () => {
@@ -847,10 +906,12 @@ describe('getAgentSignals', () => {
     lastToolCallAtByOwner.mockRejectedValue(new Error('e'));
     fetchPresenceFleet.mockRejectedValue(new Error('f'));
     listActiveAnnouncements.mockRejectedValue(new Error('g'));
+    resolveSessionStates.mockRejectedValue(new Error('h'));
     const out = await getAgentSignals('su-1');
     expect(new Set(out.unavailableSignals)).toEqual(
       new Set([
         'loop',
+        'liveness',
         'currentClaim',
         'context',
         'unanswered',
