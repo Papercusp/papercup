@@ -224,4 +224,24 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     expect(handlerSource).toContain('spillPath?: string | null;');
     expect(handlerSource).toContain('doorMeta.spillPath');
   });
+
+  it('stamps spillUri into the row metadata, not only into outputRef', () => {
+    // spillUri is the row's own outputRef column, so duplicating it into metadata_json looks
+    // redundant — that is exactly why it is easy to drop. The instrumentation SQL reads spills
+    // out of metadata_json; a spillUri that exists ONLY in the column is invisible to every
+    // spill count, so the measurement would report zero spills on a system that is spilling.
+    expect(handlerSource).toContain('spillUri?: string;');
+    expect(handlerSource).toContain('{ spillUri: doorMeta.spillUri }');
+  });
+
+  it('stamps spillFailed UNCONDITIONALLY, so absent never reads as measured-false', () => {
+    // The hard rollback trigger for spill-persistence failure is only falsifiable if the
+    // healthy case is stamped too. A conditional spread would omit the key whenever the spill
+    // SUCCEEDED, making "no failure recorded" indistinguishable from "never measured" — and
+    // gap 4 would read an unmeasured door as a clean pass. Hence `=== true`, never a spread.
+    expect(handlerSource).toContain('spillFailed?: boolean;');
+    expect(handlerSource).toContain('spillFailed: doorMeta.spillFailed === true');
+    // The negative half of the guard: a conditional stamp is the specific regression.
+    expect(handlerSource).not.toContain('...(doorMeta.spillFailed');
+  });
 });

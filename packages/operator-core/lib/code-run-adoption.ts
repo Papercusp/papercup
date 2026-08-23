@@ -836,3 +836,226 @@ export function gradeToolUtilization(roll: AdoptionRollup): ToolUtilizationGrade
       `(${roll.codeRunSpawns} spawns used code:run at all, ${roll.spawns} spawns total).`,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WI-40720 gap 4 — the staged rollout acceptance evaluator.
+//
+// PURE by construction: it takes a measured rollup, a build identity and an explicit threshold
+// set, and returns a verdict. It reads no clock, issues no query and touches no global, so the
+// gate's behaviour is fully determined by its inputs and every branch below is testable — which
+// matters because this function's whole job is to REFUSE to say "pass" on thin evidence, and a
+// refusal that cannot be reproduced in a test is a refusal nobody will trust.
+//
+// The design rule, stated once: ABSENCE OF EVIDENCE IS NEVER A PASS. Every path that lacks the
+// evidence to judge returns not_measured / not_qualified, never a clean verdict. Zero spills is
+// not a perfect spill-resolution rate; zero runs is not a healthy window; a null threshold is
+// not a satisfied threshold.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Soft thresholds. EVERY field is explicitly nullable and there are NO defaults, deliberately:
+ *  a defaulted threshold is a number nobody chose, and the gate would then be enforcing this
+ *  author's guess as if it were the team's policy. A null threshold leaves the ratio measured
+ *  but UNJUDGED, and — see `evaluateStagedRollout` — an unjudged ratio cannot qualify. */
+export interface StagedRolloutThresholds {
+  minRuns: number | null;
+  minWindowMs: number | null;
+  maxFailureRate: number | null;
+  minSpillResolutionRate: number | null;
+  minRecipeReuseRate: number | null;
+  maxMeanReturnedContextBytes: number | null;
+  /** P-020 names latency explicitly. Mean, not p95: the rollup carries summed durationMs, so a
+   *  percentile is not reconstructable from it — claiming one would be inventing precision. */
+  maxMeanDurationMs: number | null;
+  /** P-020's backend ROUTING ACCURACY: (runs - backendMismatches) / runs. Deliberately kept
+   *  alongside the backendMismatch HARD trigger rather than replacing it — the trigger answers
+   *  "was the invariant violated at all", this answers "how often", and a single mismatch in a
+   *  large window can look like excellent accuracy while still being a breach. */
+  minBackendRoutingAccuracy: number | null;
+}
+
+/** A ratio is either MEASURED (a real denominator existed) or NOT MEASURED. The two are kept
+ *  structurally distinct rather than collapsing an unmeasured ratio to 0, because 0 and
+ *  "no evidence" render identically in a dashboard and mean opposite things. */
+export type StagedRolloutRatio =
+  | { status: 'not_measured'; reason: string; value: null; threshold: number | null; verdict: 'unjudged' }
+  | { status: 'measured'; value: number; threshold: number | null; verdict: 'pass' | 'fail' | 'unjudged' };
+
+export interface StagedRolloutHardTrigger {
+  id: 'aggregate_output_escape' | 'spill_persistence_failure' | 'server_backend_mismatch' | 'capability_unavailable';
+  count: number;
+  detail: string;
+}
+
+export interface StagedRolloutEvaluation {
+  acceptance: 'qualified' | 'not_qualified';
+  /** The machine-actionable verdict, kept SEPARATE from `acceptance` because "not qualified"
+   *  collapses two opposite situations. `rollback` fires ONLY on a hard trigger — a stated
+   *  invariant was violated and the rollout must be undone. `hold` means the evidence does not
+   *  support advancing (thin window, missing threshold, soft-metric regression) — stay put and
+   *  keep measuring; rolling back here would discard a rollout on no evidence of harm, which is
+   *  its own kind of wrong. `advance` is the only path to more traffic. */
+  action: 'rollback' | 'hold' | 'advance';
+  /** Every reason the window failed to qualify, in evaluation order. EMPTY iff qualified. */
+  blockers: string[];
+  /** Invariant breaches. Non-empty ⇒ rollback, regardless of thresholds or window length. */
+  hardTriggers: StagedRolloutHardTrigger[];
+  ratios: {
+    failureRate: StagedRolloutRatio;
+    spillResolutionRate: StagedRolloutRatio;
+    recipeReuseRate: StagedRolloutRatio;
+    meanReturnedContextBytes: StagedRolloutRatio;
+    meanDurationMs: StagedRolloutRatio;
+    backendRoutingAccuracy: StagedRolloutRatio;
+  };
+  window: {
+    startMs: number;
+    endMs: number;
+    durationMs: number;
+    /** Whether the WHOLE window provably belongs to the measured build. */
+    attributedToBuild: boolean;
+    attributionReason: string;
+  };
+  build: { status: 'measured' | 'not_measured'; sidecarSha: string | null; sidecarStartedAtMs: number | null };
+}
+
+function ratio(
+  numerator: number,
+  denominator: number,
+  threshold: number | null,
+  compare: 'at_least' | 'at_most',
+  emptyReason: string,
+): StagedRolloutRatio {
+  if (!(denominator > 0)) {
+    return { status: 'not_measured', reason: emptyReason, value: null, threshold, verdict: 'unjudged' };
+  }
+  const value = numerator / denominator;
+  if (threshold == null) return { status: 'measured', value, threshold: null, verdict: 'unjudged' };
+  const ok = compare === 'at_least' ? value >= threshold : value <= threshold;
+  return { status: 'measured', value, threshold, verdict: ok ? 'pass' : 'fail' };
+}
+
+/**
+ * Decide whether a staged-rollout window QUALIFIES as evidence that default-on is safe.
+ *
+ * `buildIdentity` is structurally the `StagingBuildIdentity` returned by
+ * `readStagingBuildIdentity` (harness/dev-operators), accepted structurally so this module stays
+ * dependency-free and directly unit-testable.
+ */
+export function evaluateStagedRollout(input: {
+  rollup: CodeRunInstrumentationRollup;
+  buildIdentity: { status: 'measured' | 'not_measured'; sidecarSha: string | null; sidecarStartedAtMs: number | null };
+  windowStartMs: number;
+  windowEndMs: number;
+  thresholds: StagedRolloutThresholds;
+}): StagedRolloutEvaluation {
+  const { rollup, buildIdentity, windowStartMs, windowEndMs, thresholds } = input;
+  const durationMs = Math.max(0, windowEndMs - windowStartMs);
+
+  // ── Hard triggers: invariant BREACHES only ────────────────────────────────
+  // Each is a thing that must never happen even once, so the test is `> 0` and no threshold is
+  // consultable. They are kept separate from the ratios because a ratio answers "is this good
+  // enough" while these answer "did we violate a stated invariant" — mixing them would let a
+  // healthy average bury a breach.
+  const hardTriggers: StagedRolloutHardTrigger[] = [];
+  if (rollup.aggregateOutputEscapes > 0)
+    hardTriggers.push({ id: 'aggregate_output_escape', count: rollup.aggregateOutputEscapes,
+      detail: 'aggregate output escaped the result door — the safe-output invariant this rollout exists to enforce' });
+  if (rollup.spillFailures > 0)
+    hardTriggers.push({ id: 'spill_persistence_failure', count: rollup.spillFailures,
+      detail: 'a truncated response could not be spilled anywhere — those bytes are unrecoverable' });
+  if (rollup.backendMismatches > 0)
+    hardTriggers.push({ id: 'server_backend_mismatch', count: rollup.backendMismatches,
+      detail: 'a caller requested a non-server backend and was served server-side anyway' });
+  if (rollup.capabilityMisses > 0)
+    hardTriggers.push({ id: 'capability_unavailable', count: rollup.capabilityMisses,
+      detail: 'a capability the client depends on was unavailable through the unified door' });
+
+  // ── Ratios ────────────────────────────────────────────────────────────────
+  const ratios = {
+    failureRate: ratio(rollup.failedRuns, rollup.runs, thresholds.maxFailureRate, 'at_most',
+      'no runs in the window — a failure rate over zero runs is undefined, not zero'),
+    spillResolutionRate: ratio(rollup.spillReadSuccesses, rollup.spills, thresholds.minSpillResolutionRate, 'at_least',
+      'nothing spilled in the window — spill resolution is UNMEASURED, not perfect'),
+    recipeReuseRate: ratio(rollup.recipeReuses, rollup.recipeRequests, thresholds.minRecipeReuseRate, 'at_least',
+      'no recipe was requested in the window — reuse is UNMEASURED, not zero'),
+    meanReturnedContextBytes: ratio(rollup.returnedContextBytes, rollup.runs, thresholds.maxMeanReturnedContextBytes,
+      'at_most', 'no runs in the window — mean returned bytes is undefined'),
+    meanDurationMs: ratio(rollup.durationMs, rollup.runs, thresholds.maxMeanDurationMs, 'at_most',
+      'no runs in the window — mean duration is undefined, not fast'),
+    backendRoutingAccuracy: ratio(
+      Math.max(0, rollup.runs - rollup.backendMismatches), rollup.runs,
+      thresholds.minBackendRoutingAccuracy, 'at_least',
+      'no runs in the window — routing accuracy is UNMEASURED, not perfect',
+    ),
+  };
+
+  // ── Window attribution (leader ruling, 2026-08-23) ────────────────────────
+  // A sha attached to a window does not mean the window BELONGS to that sha. If the sidecar
+  // started INSIDE the window, the rows straddle a restart and mix pre- and post-build calls;
+  // stamping the new sha over all of them would attribute old behaviour to new code, which is
+  // exactly how a regression gets certified as an improvement. Attribution therefore requires a
+  // start timestamp at or before the window start — and a measured build with an UNKNOWN start
+  // time cannot clear that bar, so it is refused rather than assumed.
+  let attributedToBuild = false;
+  let attributionReason: string;
+  if (buildIdentity.status !== 'measured') {
+    attributionReason = 'build identity is not_measured — the window cannot be attributed to any build';
+  } else if (buildIdentity.sidecarSha == null || buildIdentity.sidecarSha.trim() === '') {
+    // A `measured` status with no sha is internally inconsistent: the status claims we know which
+    // build ran while the identity is missing. Trusting the status alone would attribute the
+    // window to a build nobody can name, so the inconsistency is refused rather than resolved in
+    // favour of the more convenient field.
+    attributionReason = 'build claims status=measured but carries no sha — identity is unusable';
+  } else if (buildIdentity.sidecarStartedAtMs == null) {
+    attributionReason = 'build is measured but its start time is unknown — cannot prove the window post-dates it';
+  } else if (buildIdentity.sidecarStartedAtMs > windowStartMs) {
+    attributionReason =
+      `build started ${buildIdentity.sidecarStartedAtMs - windowStartMs}ms INSIDE the window — ` +
+      'rows mix pre- and post-build calls';
+  } else {
+    attributedToBuild = true;
+    attributionReason = 'build started at or before the window start — the whole window belongs to it';
+  }
+
+  // ── Acceptance ────────────────────────────────────────────────────────────
+  const blockers: string[] = [];
+  // An inverted window is a caller bug, not a measurement: durationMs would clamp to 0 and the
+  // window would silently read as "too short" rather than as malformed. Name it instead.
+  if (windowEndMs < windowStartMs) blockers.push(`window is inverted: end ${windowEndMs} precedes start ${windowStartMs}`);
+  for (const t of hardTriggers) blockers.push(`hard trigger: ${t.id} (${t.count})`);
+  if (!attributedToBuild) blockers.push(`window not attributed to a measured build: ${attributionReason}`);
+
+  if (thresholds.minWindowMs == null) blockers.push('no minimum window length supplied — acceptance is unqualified until one is');
+  else if (durationMs < thresholds.minWindowMs) blockers.push(`window ${durationMs}ms is shorter than the required ${thresholds.minWindowMs}ms`);
+
+  if (thresholds.minRuns == null) blockers.push('no minimum run count supplied — acceptance is unqualified until one is');
+  else if (rollup.runs < thresholds.minRuns) blockers.push(`only ${rollup.runs} runs, fewer than the required ${thresholds.minRuns}`);
+
+  // An unjudged ratio blocks acceptance. Both of its causes are genuine evidence gaps: either no
+  // threshold was stated (nobody has said what good looks like) or the denominator was empty (we
+  // never observed the thing). Passing on either would be the "zero evidence reads as a clean
+  // pass" failure this gate was built to prevent.
+  for (const [name, r] of Object.entries(ratios) as Array<[string, StagedRolloutRatio]>) {
+    if (r.status === 'not_measured') blockers.push(`${name} is not measured: ${r.reason}`);
+    else if (r.verdict === 'unjudged') blockers.push(`${name} has no threshold — measured ${r.value} but nothing to judge it against`);
+    else if (r.verdict === 'fail') blockers.push(`${name} failed: ${r.value} vs threshold ${r.threshold}`);
+  }
+
+  return {
+    acceptance: blockers.length === 0 ? 'qualified' : 'not_qualified',
+    // ONLY a hard trigger rolls back. Everything else that blocks acceptance — a thin window, an
+    // unstated threshold, an unattributed build, a soft regression — is a reason to HOLD and keep
+    // measuring. Collapsing the two would make every under-measured window look like a failure
+    // and train operators to ignore the rollback signal.
+    action: hardTriggers.length > 0 ? 'rollback' : blockers.length > 0 ? 'hold' : 'advance',
+    blockers,
+    hardTriggers,
+    ratios,
+    window: { startMs: windowStartMs, endMs: windowEndMs, durationMs, attributedToBuild, attributionReason },
+    build: {
+      status: buildIdentity.status,
+      sidecarSha: buildIdentity.sidecarSha,
+      sidecarStartedAtMs: buildIdentity.sidecarStartedAtMs,
+    },
+  };
+}

@@ -17,12 +17,14 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  evaluateStagedRollout,
   gradeToolUtilization,
   readCodeRunAdoption,
   readCodeRunInstrumentation,
   readNativeExecRouting,
   rollupAdoption,
   type RunQuery,
+  type StagedRolloutThresholds,
 } from '../../code-run-adoption';
 import { NUDGE_CONVERSION_SQL } from '../../code-run-nudge-telemetry';
 import { readStagingBuildIdentity, type StagingBuildIdentity } from '../../harness/dev-operators';
@@ -54,9 +56,39 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     sinceDays: z.number().int().positive().max(90).optional().describe('Window in days (default 7).'),
+    // WI-40720 gap 4. EVERY threshold is optional AND nullable, with NO default, on purpose: a
+    // defaulted threshold is a number nobody chose, and the gate would then enforce this tool's
+    // guess as policy. Supplying none is the safe state — the rollout verdict is then `hold`
+    // (insufficient evidence), never `advance`.
+    rolloutThresholds: z
+      .object({
+        minRuns: z.number().int().nonnegative().nullable().optional(),
+        minWindowMs: z.number().int().nonnegative().nullable().optional(),
+        maxFailureRate: z.number().min(0).max(1).nullable().optional(),
+        minSpillResolutionRate: z.number().min(0).max(1).nullable().optional(),
+        minRecipeReuseRate: z.number().min(0).max(1).nullable().optional(),
+        maxMeanReturnedContextBytes: z.number().nonnegative().nullable().optional(),
+        maxMeanDurationMs: z.number().nonnegative().nullable().optional(),
+        minBackendRoutingAccuracy: z.number().min(0).max(1).nullable().optional(),
+      })
+      .optional()
+      .describe(
+        'P-020 staged-rollout acceptance thresholds. Omit any (or all) to leave that gate UNJUDGED — ' +
+          'an unjudged gate cannot qualify, so the verdict stays `hold` rather than `advance`.',
+      ),
   }),
   async handler(args) {
     const sinceDays = args.sinceDays ?? 7;
+    // Capture the window ONCE, BEFORE issuing any query, so every part of the emitted verdict
+    // describes the same interval. Note honestly what this is: the SQL selects rows by POSTGRES'
+    // now() at query time, so this JS stamp is an approximation of that boundary, not the
+    // boundary itself. Taking it BEFORE the queries makes the error conservative in the only
+    // direction that matters — windowStartMs lands at or BEFORE the true SQL boundary, so the
+    // build-attribution test (build must start at or before windowStartMs) is if anything
+    // stricter than reality. An over-strict gate holds; an over-loose one would certify a window
+    // the build did not cover.
+    const windowEndMs = Date.now();
+    const windowStartMs = windowEndMs - sinceDays * 24 * 60 * 60 * 1000;
     const { sql } = getOrgPg();
     const runQuery: RunQuery = async <T = unknown>(query: string, params: unknown[]) =>
       (await sql.unsafe(query, params as never)) as unknown as T[];
@@ -142,6 +174,28 @@ export default defineTool({
       /* readStagingBuildIdentity is already never-throws; this is belt-and-braces so a
          future change to it can never take the adoption read down with it. */
     }
+    // WI-40720 gap 4 — the staged-rollout verdict, emitted through THIS door rather than left as
+    // an uncalled helper (D-052 rail). Thresholds absent ⇒ every soft gate is unjudged ⇒
+    // `action: 'hold'`. A hard trigger (an invariant breach) yields `rollback` regardless of
+    // thresholds, so the rollback signal works even before anyone has stated a policy.
+    const t = args.rolloutThresholds;
+    const thresholds: StagedRolloutThresholds = {
+      minRuns: t?.minRuns ?? null,
+      minWindowMs: t?.minWindowMs ?? null,
+      maxFailureRate: t?.maxFailureRate ?? null,
+      minSpillResolutionRate: t?.minSpillResolutionRate ?? null,
+      minRecipeReuseRate: t?.minRecipeReuseRate ?? null,
+      maxMeanReturnedContextBytes: t?.maxMeanReturnedContextBytes ?? null,
+      maxMeanDurationMs: t?.maxMeanDurationMs ?? null,
+      minBackendRoutingAccuracy: t?.minBackendRoutingAccuracy ?? null,
+    };
+    const stagedRollout = evaluateStagedRollout({
+      rollup: instrumentation,
+      buildIdentity: stagingBuildIdentity,
+      windowStartMs,
+      windowEndMs,
+      thresholds,
+    });
     return {
       content: [
         {
@@ -149,12 +203,14 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             sinceDays,
+            window: { startMs: windowStartMs, endMs: windowEndMs },
             fleet,
             grade,
             nudge,
             runQuality,
             nativeExecRouting,
             stagingBuildIdentity,
+            stagedRollout,
             alerts,
             byRoleDay,
           }),

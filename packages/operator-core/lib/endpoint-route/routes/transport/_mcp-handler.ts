@@ -2619,6 +2619,11 @@ const handler = createMcpHandler(
                     // join key that lets a later capability:read of the spill be correlated back
                     // to the run that produced it (that read records the path in its args_json).
                     spillPath?: string | null;
+                    // result-door sets this when the spill could NOT be persisted. It is one of
+                    // P-020's HARD rollback triggers: the door truncated the response and then
+                    // failed to write the overflow anywhere, so those bytes are simply GONE —
+                    // strictly worse than an unread spill, and previously unstamped.
+                    spillFailed?: boolean;
                     originalChars?: number;
                     originalBytes?: number;
                     reason?: string;
@@ -2643,11 +2648,23 @@ const handler = createMcpHandler(
                         metadataJson: {
                           returnedContextBytes: measureResultContextBytes(result),
                           spilledBytes: doorMeta.spillUri ? originalBytes : 0,
-                          // The scratch FILE path, distinct from the papercusp:// spillUri above.
-                          // A later capability:read of the spill records this same path in its
-                          // args_json, so stamping it here is what makes spill-resolution success
-                          // measurable at all — without it the two halves cannot be joined.
+                          // BOTH spill addresses, because a later capability:read may name
+                          // either one — the scratch FILE path (args_json.file_path) or the
+                          // papercusp:// URI (args_json.uri). Stamping both is what makes
+                          // spill-resolution measurable; matching only one shape under-counts
+                          // reads that really happened.
+                          //
+                          // spillUri is duplicated here even though it is already the row's
+                          // output_ref column, deliberately: the instrumentation rollup is
+                          // contractually METADATA-ONLY and its guard test forbids the query
+                          // from touching output_ref/content/result_text. Carrying the URI in
+                          // metadata_json lets the correlation read it without breaching that.
                           ...(doorMeta.spillPath ? { spillPath: doorMeta.spillPath } : {}),
+                          ...(doorMeta.spillUri ? { spillUri: doorMeta.spillUri } : {}),
+                          // Stamped ALWAYS, not only when true: a hard trigger that is absent
+                          // on the healthy path is indistinguishable from one never measured,
+                          // which is how a rollback trigger silently reads as "no breaches".
+                          spillFailed: doorMeta.spillFailed === true,
                           resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
                           aggregateOutputEscape:
                             doorMeta.reason === 'aggregate-output-budget-exceeded' ||
