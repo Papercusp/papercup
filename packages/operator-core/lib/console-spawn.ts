@@ -363,6 +363,12 @@ export function buildConsoleOneliner(
    * runtime files into the launch cwd (which is often the shared repository).
    */
   includeLivenessSentinel = true,
+  /**
+   * Keep a visible terminal open after the greeting. Headless launches pass
+   * false: there is no window to inspect, and retaining the login shell after
+   * `psu` exits would leave a detached process consuming host resources.
+   */
+  keepOpen = true,
 ): string {
   const envExports: string[] = [];
   const pathExport = buildPathExport(env);
@@ -377,13 +383,11 @@ export function buildConsoleOneliner(
     `cd ${escapedCwd}`,
     ...envExports,
   ].join(' && ');
-  // Run the greeting in a subshell, then ALWAYS exec an interactive login shell
-  // — `;` (not `&&`) on BOTH sides of the greeting, so a command that exits
-  // non-zero still leaves the window open. This matches the Rust/Tauri spawner
-  // (native_console.rs build_launcher_oneliner: `… (eval {greet}) ; exec …`);
-  // the old server-side `.join(' && ')` form left an `&& exec` that closed the
-  // window when the greeting failed. capability:terminal runs arbitrary
-  // commands that may fail, so the user must still see the result.
+  // Visible launches run the greeting in a subshell, then ALWAYS exec an
+  // interactive login shell — `;` (not `&&`) on BOTH sides of the greeting, so
+  // a command that exits non-zero still leaves the window open. Headless
+  // launches use the same escaped eval but exit with the greeting's status
+  // instead of retaining a detached login shell.
   //
   // The greeting travels as a shellEscape'd LITERAL that a subshell `eval`s at
   // runtime — it is never spliced into the one-liner as bare syntax. The old
@@ -400,13 +404,36 @@ export function buildConsoleOneliner(
   // receipt path when one was supplied, so a poller outside the terminal can
   // observe the failure — the printf itself is unchanged (the window still
   // shows it), this just ALSO persists it to disk.
-  return `${prelude} ; ${keepWindowOpenOnFailure(greeting, {
-    receiptPath: bootReceiptPath,
-    interactivePrelude: includeLivenessSentinel
-      ? `touch .papercup-console-active.$$; ` +
-        `trap 'rm -f .papercup-console-active.$$' EXIT`
-      : null,
-  })}`;
+  const greetingScript = keepOpen
+    ? keepWindowOpenOnFailure(greeting, {
+        receiptPath: bootReceiptPath,
+        interactivePrelude: includeLivenessSentinel
+          ? `touch .papercup-console-active.$$; ` +
+            `trap 'rm -f .papercup-console-active.$$' EXIT`
+          : null,
+      })
+    : runCommandAndExit(greeting, { receiptPath: bootReceiptPath });
+  return `${prelude} ; ${greetingScript}`;
+}
+
+/**
+ * Run a headless greeting and terminate with its status. A detached headless
+ * member has no window that needs to remain open; if the greeting's agent
+ * process exits, retaining a shell here would create a live-but-useless task
+ * that consumes host resources and hides the real failure from the process
+ * liveness probe.
+ */
+function runCommandAndExit(command: string, opts?: { receiptPath?: string | null }): string {
+  const receiptTee = opts?.receiptPath ? ` | tee -a ${shellEscape(opts.receiptPath)}` : '';
+  return [
+    `(eval ${shellEscape(command)})`,
+    `__papercusp_greeting_rc=$?`,
+    `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
+      `printf '\\n[papercusp] initial terminal command exited with status %s; headless launch exiting.\\n' ` +
+      `"$__papercusp_greeting_rc"${receiptTee}; ` +
+      `fi`,
+    `exit "$__papercusp_greeting_rc"`,
+  ].join('; ');
 }
 
 /**
@@ -1760,10 +1787,12 @@ export function macConsoleInvocation(
 // headless-fleet-launch-and-carry-knob-2026-07-10 P-002 (D-004: "keep the pty,
 // drop the terminal emulator"). {@link spawnHeadless} is the third spawn BACKEND
 // alongside spawnConsole (Linux/macOS window) and the Windows desktop-bridge — NOT
-// a parallel launch system. It runs the EXACT SAME `buildConsoleOneliner` output
-// that spawnConsole runs, but under a bare detached `bash -lc` with stdio wired to
-// a log FILE instead of a terminal window. The greeting is a `psu --headless …`
-// command, so psu-launcher takes the managed-pty host despite the non-TTY stdio
+// a parallel launch system. It runs the shared `buildConsoleOneliner` prelude and
+// escaped greeting under a bare detached `bash -lc`, with stdio wired to a log
+// FILE instead of a terminal window. Unlike visible launches, headless mode
+// exits when the greeting exits; retaining a login shell would leave a detached
+// dead-session process behind. The greeting is a `psu --headless …` command, so
+// psu-launcher takes the managed-pty host despite the non-TTY stdio
 // (usePtyHost + PAPERCUSP_PSU_HEADLESS=1) — the member stays injectable for warm
 // `loop:arm` wakes exactly like a desktop member; it just has no window.
 //
@@ -2089,7 +2118,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       planSlug: null,
       label,
       scheme: null,
-    }, null, false),
+    }, null, false, false),
   );
 
   let logDir = opts.logDir?.trim() || null;
@@ -2183,7 +2212,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
         code: 502,
       };
     }
-    if (earlyExit && (earlyExit.signal != null || (earlyExit.code ?? 0) !== 0)) {
+    if (earlyExit) {
       let logTail = '';
       try {
         logTail = readFileSync(logPath, 'utf8').trim().slice(-800);
@@ -2193,18 +2222,18 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       return {
         status: 'error',
         error:
-          `headless psu died at boot (${earlyExit.signal ? `signal ${earlyExit.signal}` : `exit ${earlyExit.code}`}) within ${EARLY_EXIT_PROBE_MS}ms` +
+          `headless psu died at boot (${earlyExit.signal ? `signal ${earlyExit.signal}` : `exit ${earlyExit.code ?? 0}`}) within ${EARLY_EXIT_PROBE_MS}ms` +
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
       };
     }
 
-    // Boot RECEIPT (EI-19311623077693508, the real fix). The two checks above can
-    // only see a member whose PROCESS dies — and this failure class never does:
-    // buildConsoleOneliner runs the agent command, prints our sentinel if it
-    // exited non-zero, then `exec`s a login shell. The child therefore stays
-    // alive FOREVER holding a dead session, so watchEarlyExit is structurally
-    // blind to it and the fail-open branch reported a phantom member.
+    // Boot RECEIPT (EI-19311623077693508, the earlier defensive fix). Before the
+    // headless-only exit path above, buildConsoleOneliner printed its sentinel
+    // and then exec'd a login shell, so a dead agent command stayed alive and
+    // watchEarlyExit was structurally blind to it. Keep this receipt scan as a
+    // second defense for delayed/alternate launch behavior; the normal headless
+    // path now surfaces a command exit directly through watchEarlyExit.
     //
     // Measured on the rig mac 2026-08-02: psu launched, joined the fleet, then
     // died on "Your organization has disabled Claude subscription access for

@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 // NOTE: 'node:child_process' is vi.mock'd below with the original module
 // spread — only `spawn` is stubbed, so this execFileSync is the real one
 // (used to prove one-liners parse/execute under actual bash).
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -835,6 +835,39 @@ describe('buildConsoleOneliner', () => {
     const script = interactiveRcScript(out);
     expect(script).not.toContain('.papercup-console-active');
     expect(script).toContain('exec "${SHELL:-/bin/bash}" -l');
+  });
+
+  describe('headless exit mode (EI-21199387444499618)', () => {
+    it('runs a successful greeting and exits without retaining a login shell', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercup-headless-oneliner-'));
+      try {
+        const out = buildConsoleOneliner(
+          dir,
+          { SHELL: '/bin/bash' },
+          "printf 'HEADLESS_OK' > marker.txt",
+          APPEARANCE,
+          null,
+          false,
+          false,
+        );
+        const result = spawnSync('bash', ['-c', out], { encoding: 'utf8', timeout: 2_000 });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(readFileSync(join(dir, 'marker.txt'), 'utf8')).toBe('HEADLESS_OK');
+        expect(out).not.toContain('exec bash --noprofile --rcfile');
+        expect(out).not.toContain('exec "${SHELL:-/bin/bash}" -l');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('prints the failure banner and preserves a failed greeting status', () => {
+      const out = buildConsoleOneliner('/tmp', {}, 'exit 7', APPEARANCE, null, false, false);
+      const result = spawnSync('bash', ['-c', out], { encoding: 'utf8', timeout: 2_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(7);
+      expect(`${result.stdout}${result.stderr}`).toContain('headless launch exiting');
+    });
   });
 
   it(
