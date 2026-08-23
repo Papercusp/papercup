@@ -48,7 +48,15 @@ vi.mock('nuqs', () => ({
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
-vi.mock('@papercusp/sync', () => ({
+/* ⚠ SPREAD THE ORIGINAL, never a from-scratch factory: operator-core's
+   `lib/lazy-with-retry` RE-EXPORTS from `@papercusp/sync`, and PlansPane (which
+   PlanDashboard imports for agoLabel/progressOf) reaches it through
+   PlanDashboardHost's module-scope `lazy(...)` call. A partial mock makes that
+   binding undefined and the whole suite fails to COLLECT with
+   "lazyWithRetry is not a function" — exactly what red-flagged this file in the
+   2026-08-23 P-003/P-005 affected run. */
+vi.mock('@papercusp/sync', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     data: syncData.value[queryName]?.data ?? [],
