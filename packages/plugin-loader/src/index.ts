@@ -16,7 +16,7 @@
  */
 import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 /**
  * Resolve the active Papercusp root. The substrate moved to per-workspace
@@ -151,6 +151,8 @@ export interface LoadedPlugin {
   runtime?: import('@papercusp/plugin-sdk').PluginRuntime;
   /** Declarative reaction rules parsed from the manifest (merged with the entry plugin's `reactions` by `collectReactionRules`). */
   manifestReactions?: import('@papercusp/plugin-sdk').PluginReactionRule[];
+  /** Pure-data external source → plan-template declaration (never armed by discovery). */
+  triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
 }
 
 export interface LoaderOptions {
@@ -168,6 +170,10 @@ interface ManifestShape {
   version: string;
   description?: string;
   papercusp?: string;
+  kind?: import('@papercusp/plugin-sdk').Plugin['kind'];
+  capabilities?: string[];
+  configSchema?: Record<string, unknown>;
+  oauth?: import('@papercusp/plugin-sdk').PluginOAuthRequirement[];
   /** MCP tool declarations. Handlers live on the plugin's `tools` export. */
   tools?: import('@papercusp/plugin-sdk').ToolDefinition[];
   /**
@@ -197,6 +203,8 @@ interface ManifestShape {
    */
   provides?: import('@papercusp/plugin-sdk').ManifestProvides;
   dependencies?: import('@papercusp/plugin-sdk').ManifestDependencies;
+  /** Pure-data trigger-pack declaration (external-triggers P-012). */
+  triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -218,10 +226,22 @@ async function readManifest(dir: string): Promise<ManifestShape | { __error: str
     // family uniqueness + keyTemplate↔params consistency, dependencies.events
     // family presence (events-as-a-dependency axis, D-003 / P-005). Runs for
     // every manifest — js / wasm / daemon — since they all funnel through here.
-    const { validateManifestEventDeclarations } = await import('@papercusp/plugin-sdk');
+    const { validateManifestEventDeclarations, validateTriggerPackDeclaration } = await import('@papercusp/plugin-sdk');
     const evtIssues = validateManifestEventDeclarations(parsed);
     if (evtIssues.length > 0) {
       return { __error: `manifest invalid: ${evtIssues.join('; ')}` };
+    }
+    const triggerPackIssues = validateTriggerPackDeclaration(parsed);
+    if (triggerPackIssues.length > 0) {
+      return { __error: `manifest invalid: ${triggerPackIssues.join('; ')}` };
+    }
+    if (parsed.triggerPack) {
+      const planPath = resolve(dir, parsed.triggerPack.plan.path);
+      if (!planPath.startsWith(resolve(dir) + sep) || !existsSync(planPath)) {
+        return {
+          __error: `manifest invalid: triggerPack.plan.path does not resolve to a bundled file (${parsed.triggerPack.plan.path})`,
+        };
+      }
     }
     return parsed;
   } catch {
@@ -561,6 +581,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
     toolDefinitions: manifest.tools ?? [],
     runtime,
     manifestReactions: manifest.reactions ?? [],
+    triggerPack: manifest.triggerPack,
   };
 }
 
@@ -627,9 +648,17 @@ function makeDaemonPluginShim(manifest: ManifestShape): import('@papercusp/plugi
  */
 function makeManifestOnlyPluginShim(manifest: ManifestShape): import('@papercusp/plugin-sdk').Plugin {
   return {
+    kind: manifest.kind,
     name: manifest.name,
     version: manifest.version,
+    papercusp: manifest.papercusp ?? '*',
     description: manifest.description,
+    capabilities: manifest.capabilities ?? [],
+    configSchema: manifest.configSchema,
+    oauth: manifest.oauth,
+    provides: manifest.provides,
+    dependencies: manifest.dependencies,
+    triggerPack: manifest.triggerPack,
     __runtime: 'manifest-only',
   } as unknown as import('@papercusp/plugin-sdk').Plugin;
 }

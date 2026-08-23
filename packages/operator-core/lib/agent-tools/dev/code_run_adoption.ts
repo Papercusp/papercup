@@ -121,6 +121,26 @@ export default defineTool({
     } catch {
       /* fires table absent / query failed — omit the funnel rather than fail the read */
     }
+    // WI-40893 / D-052: P-020 is a STAGED rollout judged by regression telemetry, and a
+    // measurement you cannot attribute to a build cannot establish a regression. This is
+    // the P-020 rollout telemetry door, so the live staging build identity is derived
+    // HERE at read time rather than hand-recorded into evidence after the fact. It is a
+    // typed measured/not_measured value: unreachable, non-JSON, and the literal 'unknown'
+    // sentinel all render as not_measured, because absence must never read as a build.
+    // Best-effort, like the funnel above — the adoption read must not fail for it.
+    let stagingBuildIdentity: StagingBuildIdentity = {
+      status: 'not_measured',
+      reason: 'unreachable',
+      sidecarSha: null,
+      sidecarStartedAtMs: null,
+      origin: '',
+    };
+    try {
+      stagingBuildIdentity = await readStagingBuildIdentity();
+    } catch {
+      /* readStagingBuildIdentity is already never-throws; this is belt-and-braces so a
+         future change to it can never take the adoption read down with it. */
+    }
     return {
       content: [
         {
@@ -133,6 +153,7 @@ export default defineTool({
             nudge,
             runQuality,
             nativeExecRouting,
+            stagingBuildIdentity,
             alerts,
             byRoleDay,
           }),

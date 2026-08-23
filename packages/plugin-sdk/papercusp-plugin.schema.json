@@ -107,6 +107,72 @@
         }
       }
     },
+    "triggerPack": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Pure-data external source -> plan-template package (external-triggers P-012). It rides kind:'plugin' / the manifest-only loader, not kind:'pack' (which is executable tools only). Installing exposes the descriptor but never arms its binding.",
+      "required": ["source", "plan", "binding"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9._-]*$",
+              "description": "Canonical trigger-source kind (gmail, slack, gcal, ...)."
+            },
+            "oauthField": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional configSchema property holding the OAuth credential. Loader cross-validation requires secret:true, shareable:false, snapshotPolicy:'strip', and matching inline/top-level OAuth declarations."
+            }
+          }
+        },
+        "plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "inputSchema"],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 4,
+              "description": "Safe relative path to the bundled structured plan markdown. Cross-validation rejects absolute, backslash, dot, and dot-dot segments."
+            },
+            "inputSchema": {
+              "type": "object",
+              "description": "Plan-authored JSON Schema supplied when the template is instantiated."
+            }
+          }
+        },
+        "binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["eventPattern"],
+          "properties": {
+            "eventPattern": {
+              "type": "string",
+              "minLength": 5,
+              "description": "Canonical ext:<source-kind>:<event> key or anchored pattern. Cross-validation enforces the source-kind prefix."
+            },
+            "filter": {
+              "type": "object",
+              "description": "Payload matcher passed to the existing external-trigger binding engine."
+            },
+            "stormPolicy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxRuns": { "type": "integer", "minimum": 1 },
+                "windowSeconds": { "type": "integer", "minimum": 1 }
+              },
+              "description": "Existing v1 storm-policy vocabulary. Omitted means unbounded."
+            }
+          }
+        }
+      }
+    },
     "papercusp": {
       "type": "string",
       "description": "Semver range against the runtime version (PAPERCUSP_RUNTIME_VERSION)."
