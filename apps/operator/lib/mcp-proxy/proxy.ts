@@ -154,6 +154,14 @@ export interface McpProxyOptions {
   targetPort?: number;
   /** Resolve the current upstream per attempt. Used by packaged installs whose operator port changes per boot. */
   resolveTarget?: () => McpProxyTarget;
+  /**
+   * WI-41045 — the superuser MCP client config contains a bearer captured at
+   * session boot. When the token file rotates, refresh it at the proxy boundary
+   * instead of forwarding that stale client header. The path and reader are
+   * injectable so rotation can be exercised without touching the host token.
+   */
+  superuserTokenPath?: string;
+  readSuperuserToken?: (path: string) => string | null;
   /** Total wall-clock budget to keep retrying a refused upstream (a :3070 restart). */
   retryWindowMs: number;
   /** WI-6740: per-attempt wait for response headers on the write-free control-plane batch
@@ -203,6 +211,51 @@ export interface McpProxyTarget {
   host: string;
   port: number;
   source?: string;
+}
+
+/** The shared host token used by the superuser MCP endpoint. */
+export function defaultSuperuserTokenPath(): string {
+  const configured = process.env.PAPERCUSP_MCP_TOKEN_FILE?.trim();
+  return configured || join(homedir(), '.papercusp', 'superuser-token');
+}
+
+/** Read the current bearer without caching it across requests. */
+export function readCurrentSuperuserToken(path = defaultSuperuserTokenPath()): string | null {
+  try {
+    const token = readFileSync(path, 'utf8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True only for the query form that opts a request into superuser MCP auth. */
+export function isSuperuserMcpRequest(requestUrl: string): boolean {
+  try {
+    return new URL(requestUrl, 'http://127.0.0.1').searchParams.get('superuser') === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replace a stale client bearer with the token currently on disk, but only on
+ * the superuser MCP path. A missing/unreadable token preserves the original
+ * headers so the upstream returns its normal auth failure rather than the
+ * proxy inventing one.
+ */
+export function injectCurrentSuperuserBearer(
+  requestUrl: string,
+  headers: http.IncomingHttpHeaders,
+  options: { tokenPath?: string; readToken?: (path: string) => string | null } = {},
+): http.IncomingHttpHeaders {
+  if (!isSuperuserMcpRequest(requestUrl)) return headers;
+  const token = (options.readToken ?? readCurrentSuperuserToken)(options.tokenPath ?? defaultSuperuserTokenPath());
+  if (!token?.trim()) return headers;
+  const withoutAuthorization = Object.fromEntries(
+    Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'authorization'),
+  );
+  return { ...withoutAuthorization, authorization: `Bearer ${token.trim()}` };
 }
 
 export function staticMcpProxyTarget(host: string, port: number): McpProxyTarget {
@@ -521,7 +574,15 @@ function forwardOnce(
         port: target.port,
         method,
         path: reqUrl,
-        headers: { ...headers, host: `${target.host}:${target.port}` },
+        // WI-41045: this is deliberately inside forwardOnce, not outside the
+        // retry loop. A token can rotate between a reset and its replay.
+        headers: {
+          ...injectCurrentSuperuserBearer(reqUrl, headers, {
+            tokenPath: opts.superuserTokenPath,
+            readToken: opts.readSuperuserToken,
+          }),
+          host: `${target.host}:${target.port}`,
+        },
         // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070
         // cluster may be closing (the ~13% spurious-400 root cause). See UPSTREAM_AGENT above.
         agent,

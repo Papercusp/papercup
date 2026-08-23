@@ -27,6 +27,7 @@ import {
   isReservedControlPlanePath,
   shouldSkipDefaultFailureLog,
   shouldRotateFailureLog,
+  injectCurrentSuperuserBearer,
   type McpProxyTarget,
 } from './proxy';
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -121,6 +122,28 @@ describe('prepareForward — classify + inject idempotencyKey', () => {
   });
 });
 
+describe('WI-41045 — refresh the superuser bearer at the proxy boundary', () => {
+  it('overrides a stale bearer only for superuser MCP requests and uses the injected reader', () => {
+    let reads = 0;
+    const headers = { authorization: 'Bearer stale-client-token', accept: 'application/json' };
+    const refreshed = injectCurrentSuperuserBearer('/api/mcp?superuser=1', headers, {
+      tokenPath: '/tmp/test-superuser-token',
+      readToken: (path) => {
+        expect(path).toBe('/tmp/test-superuser-token');
+        reads++;
+        return 'fresh-token';
+      },
+    });
+
+    expect(refreshed).toEqual({ authorization: 'Bearer fresh-token', accept: 'application/json' });
+    expect(reads).toBe(1);
+    expect(injectCurrentSuperuserBearer('/api/mcp', headers, {
+      tokenPath: '/tmp/test-superuser-token',
+      readToken: () => 'must-not-be-read',
+    })).toBe(headers);
+  });
+});
+
 describe('postConnectRetryable — write-free requests only', () => {
   it('opaque never replays (write-safety invariant)', () => {
     expect(postConnectRetryable('opaque', 0, 1, 100, 5_000)).toBe(false);
@@ -187,9 +210,14 @@ function freePort(): Promise<number> {
     });
   });
 }
-function request(p: number, body = '{"jsonrpc":"2.0"}', path = '/api/mcp'): Promise<{ status: number; body: string }> {
+function request(
+  p: number,
+  body = '{"jsonrpc":"2.0"}',
+  path = '/api/mcp',
+  headers: http.OutgoingHttpHeaders = {},
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path }, (res) => {
+    const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path, headers }, (res) => {
       let b = '';
       res.on('data', (d) => (b += d));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
@@ -605,6 +633,60 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
       expect(upstream.hits()).toBe(1); // opaque → not replayed
     }),
   );
+
+  it('WI-41045: rereads the rotated bearer before a post-connect retry', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tokenPath = path.join(os.tmpdir(), `mcp-proxy-token-rotate-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(tokenPath, 'token-one\n');
+    let hits = 0;
+    const upstream = track(
+      http.createServer((req, res) => {
+        hits++;
+        if (hits === 1) {
+          expect(req.headers.authorization).toBe('Bearer token-one');
+          // Rotate after the first attempt has authenticated, before its retry.
+          fs.writeFileSync(tokenPath, 'token-two\n');
+          req.socket.destroy();
+          return;
+        }
+        expect(req.headers.authorization).toBe('Bearer token-two');
+        req.on('data', () => {});
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"result":"fresh-token"}');
+        });
+      }),
+    );
+    try {
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: '127.0.0.1',
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          retryBackoffMs: 20,
+          superuserTokenPath: tokenPath,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const r = await request(
+        port(proxy),
+        '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        '/api/mcp?superuser=1',
+        { authorization: 'Bearer stale-client-token' },
+      );
+      expect(r.status).toBe(200);
+      expect(r.body).toBe('{"result":"fresh-token"}');
+      expect(hits).toBe(2);
+    } finally {
+      fs.rmSync(tokenPath, { force: true });
+    }
+  });
 });
 
 /**
