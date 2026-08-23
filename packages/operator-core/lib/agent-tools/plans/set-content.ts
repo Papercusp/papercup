@@ -38,6 +38,9 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan, type ParsedPlan } from './parser';
+import { detectItemTextChanges, type PlanItemTextChange } from '../../plan-items/text-drift';
+import { planItemTextDriftForWrite } from '../../plan-items/text-drift-report';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 import { summarizeItemParse, type ItemParseSummary } from './item-parse-feedback';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
@@ -95,7 +98,23 @@ export const argsSchema = z.object({
 });
 
 export type SetContentValue =
-  | { ok: true; slug: string; contentHash: string; warning?: string; nowStamped?: boolean; parseFeedback: ItemParseSummary }
+  | {
+      ok: true;
+      slug: string;
+      contentHash: string;
+      warning?: string;
+      nowStamped?: boolean;
+      parseFeedback: ItemParseSummary;
+      /**
+       * WI-40825: plan items whose SEMANTIC text this write changed or removed.
+       * Computed here (in the one evaluator all three whole-body writers share)
+       * so the handler can look up the work_items already minted from those
+       * items and warn/notify their holders — a converted item's text is
+       * snapshotted at mint and never refreshed, so a rewrite silently strands
+       * whoever is executing it. Empty/absent ⇒ this write touched no item text.
+       */
+      itemTextChanges?: PlanItemTextChange[];
+    }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
   | {
@@ -463,6 +482,12 @@ export async function evaluateSetContent(
   // unparsed item lines warrant a hint. Parsed off `body` (the exact bytes
   // written, post frontmatter-reattach).
   const parseFeedback = summarizeItemParse(body, { bodyProvided: true });
+  // WI-40825: which items' semantic text this write rewrites or removes. Parsed
+  // off `body` (the exact bytes written) against the live parse, so it reflects
+  // the real before/after — including the frontmatter-reattach and terminal-Now
+  // stamp above. The PG lookup for work_items minted from these items is the
+  // HANDLER's job (this evaluator stays pure); see plan-items/text-drift-report.
+  const itemTextChanges = detectItemTextChanges(currentParsed, proposed);
   return {
     newBody: body,
     value: {
@@ -472,6 +497,7 @@ export async function evaluateSetContent(
       ...(warning ? { warning } : {}),
       ...(nowStamped ? { nowStamped: true } : {}),
       parseFeedback,
+      ...(itemTextChanges.length > 0 ? { itemTextChanges } : {}),
     },
   };
 }
@@ -604,6 +630,13 @@ export default defineTool({
       }
     }
 
+    const planItemDrift = await planItemTextDriftForWrite(
+      ctx as ResolveIdentityCtx,
+      args.slug,
+      v.itemTextChanges,
+      result.scope.harnessSlug,
+    );
+
     return {
       content: [
         {
@@ -624,6 +657,10 @@ export default defineTool({
             // when the best-effort append failed — the file write still
             // succeeded; the gap is recoverable via P-005's backfill.
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            // WI-40825: open work-items minted from items this write rewrote or
+            // removed. A whole-document write is the easiest way to reword an
+            // item without noticing anyone is executing it.
+            ...(planItemDrift ? { planItemDrift } : {}),
           }),
         },
       ],

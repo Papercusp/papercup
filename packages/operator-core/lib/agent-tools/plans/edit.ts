@@ -29,6 +29,8 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { planItemTextDriftForWrite } from '../../plan-items/text-drift-report';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
@@ -208,6 +210,19 @@ export default defineTool({
     // (by editing the `status:` line), but that's what set-plan-status is for;
     // the started/paused cleanup is skipped here and plans:list self-heals it
     // (reconcileStartStatus) on the next read.
+
+    // WI-40825: a targeted edit is the MOST likely writer to reword one item in
+    // place, and the least likely to know who is already executing it. Report the
+    // open work-items minted from any item this edit rewrote, and ping their
+    // holders — their title/summary/brief are mint-time snapshots nothing else
+    // refreshes. Post-commit + fully fail-soft.
+    const planItemDrift = await planItemTextDriftForWrite(
+      ctx as ResolveIdentityCtx,
+      args.slug,
+      v.itemTextChanges,
+      harnessSlug,
+    );
+
     return {
       content: [
         {
@@ -220,6 +235,7 @@ export default defineTool({
             version: result.version,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            ...(planItemDrift ? { planItemDrift } : {}),
             // Item-parse feedback (WI-3363), computed in evaluateSetContent — a
             // targeted edit can silently break (or fix) an item line, so report
             // itemsParsed + a hint when list-like lines look like unparsed items.

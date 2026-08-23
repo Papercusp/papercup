@@ -53,6 +53,7 @@ import {
 import { claimPlanItem, type PriorHolderWarning } from './liveness';
 import { releaseClaim, type LivenessMode, type PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
+import { planItemTextHash } from './text-drift';
 import { resolveGoalContext } from '../modes/goal-context';
 import type { Sql } from 'postgres';
 
@@ -64,6 +65,20 @@ export interface PlanItemStamp {
   plan_slug: string;
   item_id: string;
   harness_slug: string;
+  /**
+   * Hash of the plan item's SEMANTIC text at mint time (WI-40825) — the
+   * fingerprint that lets a later reader DERIVE whether the plan item has been
+   * rewritten out from under this execution record. See ./text-drift.ts for why
+   * this is a hash rather than a `stale` boolean, and why it is computed off
+   * `PlanItem.text` (status / blocked-by / importance keywords excluded) so the
+   * surgical verbs never register as drift.
+   *
+   * OPTIONAL on purpose: records minted before this stamp existed carry no hash,
+   * and the drift verdict for those is `unknown` — never `match`. Written at MINT
+   * only; a resume deliberately does not heal it (that would add a payload write
+   * to a hot path to buy an answer `unknown` already states honestly).
+   */
+  item_text_hash?: string;
 }
 
 /** Work-item states that mean "this execution record is finished" — a re-pickup
@@ -593,10 +608,16 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   });
   if (claimRes.status !== 'claimed') return claimRes;
 
+  // WI-40825: fingerprint the item text we are minting FROM, so a later plan
+  // rewrite of this item is derivable rather than silent. `item.text` is the
+  // parser's semantic prose (status/blocked-by/importance already stripped), so
+  // a status flip after this point does not read as drift.
+  const itemTextHash = planItemTextHash(item.text);
   const stamp: PlanItemStamp = {
     plan_slug: opts.planSlug,
     item_id: opts.itemId,
     harness_slug: opts.harnessSlug,
+    ...(itemTextHash ? { item_text_hash: itemTextHash } : {}),
   };
   const planItem = { plan: opts.planSlug, item: opts.itemId, status: item.status, text: item.text };
 

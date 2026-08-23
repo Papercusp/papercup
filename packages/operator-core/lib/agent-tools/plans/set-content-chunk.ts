@@ -19,6 +19,8 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { evaluateSetContent, type SetContentValue } from './set-content';
+import { planItemTextDriftForWrite } from '../../plan-items/text-drift-report';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { parsePlan } from './parser';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
@@ -404,6 +406,16 @@ export default defineTool({
       }
     }
 
+    // WI-40825: same post-commit drift report as set-content / edit — a chunked
+    // commit is a whole-document rewrite, so it is the writer most able to reword
+    // many items at once without noticing who is executing them.
+    const planItemDrift = await planItemTextDriftForWrite(
+      ctx as ResolveIdentityCtx,
+      args.slug,
+      result.value.ok ? result.value.itemTextChanges : undefined,
+      result.scope.harnessSlug,
+    );
+
     await removeDraft(args.draftId);
     return {
       content: [{
@@ -411,6 +423,7 @@ export default defineTool({
         text: JSON.stringify({
           ok: true,
           op: 'commit',
+          ...(planItemDrift ? { planItemDrift } : {}),
           slug: result.value.ok ? result.value.slug : args.slug,
           draftId: args.draftId,
           bytes: draft.meta.bytes,
