@@ -3,7 +3,7 @@
  * (await-event-primitive-2026-06-05 P-006, D-003/D-009).
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -179,6 +179,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     collectSessionFiles: vi.fn(async () => [{}]) as never,
     rematerializeSession: vi.fn(async () => ({ ok: true, written: 0 })) as never,
     findArchivedSessionIdForAdv: vi.fn(async () => null) as never,
+    // Hermetic by default: the production repair helper rebuilds its launch
+    // spec through PG. Dedicated Codex archive tests inject the ordering seam.
+    ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
     // Hermetic by default (turn-provenance P-002): the real tagger writes ledger
     // rows under ~/.papercusp/turn-provenance — stub it to a passthrough so the
     // long-standing exact-text assertions stay byte-identical. The dedicated
@@ -1507,6 +1510,63 @@ describe('executeWake — the liveness ladder', () => {
       expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
       const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
       expect(args[5]).toBe(restoredSessionId);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs a missing Codex config after archived rollout restore and before exact UUID resume', async () => {
+    const advSessionId = 1001;
+    const home = codexHomeForAdvSession(advSessionId);
+    const restoredSessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const spawnDetached = vi.fn(() => 4321);
+    const repair = vi.fn(async ({ codexHome }: { codexHome: string }) => {
+      expect(existsSync(codexHome)).toBe(true);
+      expect(existsSync(join(codexHome, 'config.toml'))).toBe(false);
+      writeFileSync(join(codexHome, 'config.toml'), '[mcp_servers.papercusp-su]\n');
+      return { ok: true, repaired: true };
+    });
+    rmSync(home, { recursive: true, force: true });
+    try {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: null,
+              coordOwnerId: 'su-archive-repair',
+            }),
+          ) as never,
+          findArchivedSessionIdForAdv: vi.fn(async () => restoredSessionId) as never,
+          rematerializeSession: vi.fn(async () => {
+            const sessionsDir = join(home, 'sessions', '2026', '08', '23');
+            mkdirSync(sessionsDir, { recursive: true });
+            writeFileSync(
+              join(sessionsDir, `rollout-2026-08-23T17-00-00-${restoredSessionId}.jsonl`),
+              '{"type":"session_meta","payload":{"model_provider":"papercusp-codex-gateway"}}\n',
+            );
+            return { ok: true, written: 1 };
+          }) as never,
+          ensureCodexHomeForWake: repair as never,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(repair).toHaveBeenCalledWith(
+        expect.objectContaining({
+          advSessionId,
+          owner: 'su-archive-repair',
+          codexHome: home,
+        }),
+      );
+      const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+      expect(args[5]).toBe(restoredSessionId);
+      expect(args).not.toContain('--last');
+      expect(readFileSync(join(home, 'config.toml'), 'utf8')).toContain('[mcp_servers.papercusp-su]');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

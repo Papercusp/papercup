@@ -59,7 +59,11 @@ import {
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
-import { getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
+import {
+  fallbackCodexLaunchSpecFromAdvSession,
+  getAdvSession,
+  claimAdvSessionResume,
+} from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
   collectSessionFiles as defaultCollectSessionFiles,
@@ -376,6 +380,95 @@ export function findCodexRolloutSessionId(codexHome: string): string | null {
  *  P-004). */
 export function codexHomeForAdvSession(advSessionId: number): string {
   return codexHomeForSessionKey(advSessionId);
+}
+
+type CodexRepairSessionRow = Parameters<typeof fallbackCodexLaunchSpecFromAdvSession>[0];
+
+export interface EnsureCodexHomeForWakeInput {
+  advSessionId: number;
+  owner: string;
+  codexHome: string;
+  sessionRow?: CodexRepairSessionRow | null;
+  /** The launcher passes this when the rollout is bound to the gateway provider. */
+  requireGatewayProvider?: boolean;
+}
+
+export type EnsureCodexHomeForWakeResult = {
+  ok: boolean;
+  repaired?: boolean;
+  reason?: string;
+};
+
+/**
+ * Repair the existing per-session Codex home using the same launch inputs as
+ * POST /adv/sessions/ensure-codex-home. This is deliberately a lazy/default
+ * dependency: wake-executor's unit tests can inject a filesystem-only seam, and
+ * a live wake does not load the launch-spec/PG graph until it actually needs a
+ * Codex resume. `ensureSuCodexHomeConfig` only rewrites managed files in an
+ * existing home, so the rollout restored by the archive leg remains intact.
+ */
+async function defaultEnsureCodexHomeForWake(
+  input: EnsureCodexHomeForWakeInput,
+): Promise<EnsureCodexHomeForWakeResult> {
+  try {
+    const [
+      { readSuLaunchSpecByOwner },
+      { parseSuLaunchSpecRecord },
+      { buildLaunchSpec },
+      { ensureSuCodexHomeConfig },
+      { readSuperuserToken },
+    ] = await Promise.all([
+      import('../../adv-sessions'),
+      import('../../su-persona-render'),
+      import('../../role-launch-spec'),
+      import('../../role-codex-home'),
+      import('../../superuser-token'),
+    ]);
+    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner));
+    const record =
+      persistedRecord ??
+      fallbackCodexLaunchSpecFromAdvSession(
+        input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null)),
+        input.owner,
+      );
+    if (!record) return { ok: true, repaired: false, reason: 'no-launch-spec' };
+    if (record.agent !== 'codex') return { ok: true, repaired: false, reason: 'unsupported-agent' };
+
+    const operatorBaseUrl =
+      resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL) ||
+      `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? '3070'}`;
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'codex',
+      workspaceId: record.workspaceId,
+      operatorBaseUrl,
+      harnessSlug: record.harnessSlug,
+      profile: record.profile,
+      contextSize: record.contextSize,
+      personaTier: record.personaTier,
+      model: record.model,
+      planSlug: record.planSlug,
+    });
+    return {
+      ok: true,
+      ...ensureSuCodexHomeConfig({
+        sessionKey: input.advSessionId,
+        mcpUrl: spec.mcpUrl,
+        sid: input.owner,
+        model: record.model,
+        token: readSuperuserToken(),
+        codexGatewayAuto: input.requireGatewayProvider === true,
+        trustDir: null,
+      }),
+    };
+  } catch (err) {
+    // A repair failure must not turn a recoverable rollout into a dropped wake;
+    // the exact UUID check below remains the authoritative resume safety gate.
+    console.warn(
+      `[wake-executor] codex home repair failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { ok: false, repaired: false, reason: 'repair-failed' };
+  }
 }
 
 /** Whether a (possibly coalesced) delivery payload carries a timeout fire.
@@ -1327,6 +1420,12 @@ export interface ExecuteWakeDeps {
   collectSessionFiles?: typeof defaultCollectSessionFiles;
   rematerializeSession?: typeof defaultRematerializeSession;
   findArchivedSessionIdForAdv?: typeof defaultFindArchivedSessionIdForAdv;
+  /** WI-212651: repair an existing Codex home before resolving its rollout UUID.
+   *  Injected so the archive/repair ordering is testable without PG or a live
+   *  launch-spec store; the default reuses the /adv route's repair inputs. */
+  ensureCodexHomeForWake?: (
+    input: EnsureCodexHomeForWakeInput,
+  ) => Promise<EnsureCodexHomeForWakeResult>;
   /** WI-3940: upper bound (ms) on each rematerialize-on-miss PG call in the
    *  resume leg. The seams above are fail-soft on REJECTION, but a WEDGED PG
    *  connection HANGS past every try/catch and stalls the whole wake pipeline
@@ -1859,6 +1958,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
+  const ensureCodexHomeForWake = deps.ensureCodexHomeForWake ?? defaultEnsureCodexHomeForWake;
   const rematerializeTimeoutMs = deps.rematerializeTimeoutMs ?? REMATERIALIZE_TIMEOUT_MS;
 
   try {
@@ -2213,6 +2313,20 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         }
       }
       if (existsSync(home)) {
+        // Repair the existing home AFTER archive rematerialization has restored
+        // the rollout, but BEFORE resolving its native UUID. The repair helper
+        // never recreates/removes the home, so it cannot erase the exact archive
+        // that the resume safety check below is about to select.
+        await ensureCodexHomeForWake({
+          advSessionId: handle.advSessionId,
+          owner: fresh?.coordOwnerId ?? d.subscriberId,
+          codexHome: home,
+          sessionRow: fresh,
+        }).catch((err) => {
+          console.warn(
+            `[wake-executor] codex home repair seam failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
         // The adv-session/handle id is only an archive lookup hint. It may be
         // stale, and using it here would let a missing/failed rematerialize
         // launch `codex exec resume` against a home with no matching rollout.
