@@ -180,6 +180,11 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-tools');
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
+  // The work-items handlers read the canonical agent-mode tables and emit the
+  // durable per-key fire latch. Apply the production migrations so missing
+  // relations cannot mask the handler contracts under test.
+  await db.sql.unsafe(readMigration('500-agent-modes.sql')).simple();
+  await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim trust-leg join (mig 276)
