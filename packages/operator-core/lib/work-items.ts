@@ -4423,6 +4423,10 @@ export interface ClaimNextFilter {
    * are excluded — see {@link crossMachineRigExclusionSql}.
    */
   rigAvailable?: boolean;
+  /** EI-13524: claimant fleet authorized to draw its own fleet-stamped plan lane. */
+  claimantFleetSlug?: string;
+  /** EI-13524: the active claim spec structurally names `fleet` and may adopt that lane. */
+  claimSpecReferencesFleet?: boolean;
 }
 
 /**
@@ -4478,6 +4482,10 @@ export interface ClaimFloorsOpts {
    * feature-family floor matches the long-standing issue-family one and the two never drift.
    */
   rigAvailable?: boolean;
+  /** EI-13524: claimant fleet authorized to draw its own fleet-stamped plan lane. */
+  claimantFleetSlug?: string;
+  /** EI-13524: the active claim spec structurally names `fleet` and may adopt that lane. */
+  claimSpecReferencesFleet?: boolean;
 }
 
 /** Release-cooldown window (seconds). Env-overridable; small on purpose — the floor only
@@ -4659,7 +4667,10 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- harness_features_consolidated context). opts.cooldownAssignee already carries the claiming
     -- agent's ownerId (see its own doc comment) so it doubles for free as the owner-exemption arg —
     -- a lease THIS agent itself holds must not block its own re-claim.
-    AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload')}
+    AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload', {
+      claimantFleetSlug: opts.claimantFleetSlug,
+      claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    })}
     -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
     -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can
     -- ALSO carry the tag (WI-3487, a p2p rig-readiness feature) and this path — getNextWorkItem
@@ -4869,6 +4880,10 @@ export function reservedPlanLaneExclusionSql(
   // shape as {@link crossMachineRigExclusionSql}. A closed literal union, never interpolated
   // user input, so composing it via sql.unsafe is injection-safe.
   payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
+  authorization: {
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
+  } = {},
 ) {
   // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
   // `'{}'::jsonb ? 'plan_item'` = FALSE ⇒ NOT(FALSE AND …) = TRUE ⇒ the row is INCLUDED
@@ -4894,9 +4909,19 @@ export function reservedPlanLaneExclusionSql(
   const wsCol = sql.unsafe(
     payloadCol === 'wi.payload' ? 'wi.workspace_id' : 'harness_shared.harness_features_consolidated.workspace_id',
   );
+  const claimantFleetSlug = authorization.claimantFleetSlug?.trim();
+  const authorized = authorization.claimSpecReferencesFleet
+    ? sql`TRUE`
+    : claimantFleetSlug
+      ? sql`(${col}->>'fleet_slug' = ${claimantFleetSlug})`
+      : sql`FALSE`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
-      EXISTS (
+      -- EI-13524: a fleet stamp is a reservation in its own right, independently of
+      -- plan lifecycle. The owning fleet, or a spec that explicitly references the
+      -- fleet field (and therefore still must pass the compiled filter), may adopt it.
+      (NOT (${authorized}) AND COALESCE(${col}, '{}'::jsonb) ? 'fleet_slug')
+      OR (NOT (${authorized}) AND EXISTS (
         SELECT 1 FROM harness_shared.harness_plans p
          WHERE p.workspace_id = ${wsCol}
            AND p.plan_slug = ${col}->'plan_item'->>'plan_slug'
@@ -4956,15 +4981,15 @@ export function reservedPlanLaneExclusionSql(
              p.op_status IN ('started', 'paused')
              OR (p.status IN ('draft', 'paused', 'active') AND p.template_slug IS NULL)
            )
-      )
-      OR EXISTS (
+      ))
+      OR (NOT (${authorized}) AND EXISTS (
         SELECT 1 FROM harness_shared.plan_item_claims c
          WHERE c.workspace_id = ${wsCol}
            AND c.plan_slug = ${col}->'plan_item'->>'plan_slug'
            AND c.item_id  = ${col}->'plan_item'->>'item_id'
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
-      )
+      ))
       -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
       -- planItemLaneBlockReason already rejects this after a claim, but that is too late for
       -- claimable previews, aggregate diagnostics, and fleet:bench. The normalized index is the
@@ -5995,6 +6020,8 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             cooldownAssignee: filter.assignee,
             // EI-14806: feature-family rig floor — same rigAvailable the issue tier already honors.
             rigAvailable: filter.rigAvailable,
+            claimantFleetSlug: filter.claimantFleetSlug,
+            claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
           })}
             -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
             AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
@@ -6120,6 +6147,8 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        // EI-14806: mirror the claim's feature-family rig floor so READY never over-counts a
        // rig-gated feature the claim would skip for a no-rig caller (same as the issue leg below).
        rigAvailable: filter.rigAvailable,
+       claimantFleetSlug: filter.claimantFleetSlug,
+       claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
      })}`;
   let pendingUnclaimed = poolRows[0]?.n ?? 0;
   let readyUnclaimed = readyRows[0]?.n ?? 0;
@@ -6211,7 +6240,10 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- WI-2118 (P-009 leak): a reserved-plan-lane item is NOT ready to self-select — count it
          -- as pending-but-gated (present in the POOL above, excluded here), the SAME floor the claim
          -- applies, so the miss diagnosis never disagrees with what claim_next actually serves.
-         AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}
+         AND ${reservedPlanLaneExclusionSql(sql, filter.assignee, 'wi.payload', {
+           claimantFleetSlug: filter.claimantFleetSlug,
+           claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+         })}
          -- WI-2796: a cross-machine-rig-gated item is likewise pending-but-gated for a
          -- single-box caller — same floor the claim applies.
          AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
@@ -6327,7 +6359,13 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
 export async function explainIssueClaimFloors(
   harness: string,
   ids: readonly string[],
-  opts: { assignee?: string; rigAvailable?: boolean; states?: readonly string[] } = {},
+  opts: {
+    assignee?: string;
+    rigAvailable?: boolean;
+    states?: readonly string[];
+    claimantFleetSlug?: string;
+    claimSpecReferencesFleet?: boolean;
+  } = {},
 ): Promise<ClaimFloorAttribution[]> {
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
@@ -6369,7 +6407,10 @@ export async function explainIssueClaimFloors(
            (${agentReviewNormalExclusionSql(sql)})                                 AS ok_agent_review,
            (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
            (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
-           (${reservedPlanLaneExclusionSql(sql, assignee)})                       AS ok_plan_lane,
+           (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
+             claimantFleetSlug: opts.claimantFleetSlug,
+             claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+           })})                                                                  AS ok_plan_lane,
            (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
            (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
            (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
@@ -6659,7 +6700,10 @@ export async function claimNextIssueWorkItem(
           -- hardcode — so the preview advertised as claimable 5 items this path refuses.
           AND ${depsBlockedExclusionSql(tx)}
           -- WI-2118 (P-009 leak): never self-select an item reserved by another active plan lane.
-          AND ${reservedPlanLaneExclusionSql(tx, filter.assignee)}
+          AND ${reservedPlanLaneExclusionSql(tx, filter.assignee, 'wi.payload', {
+            claimantFleetSlug: filter.claimantFleetSlug,
+            claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+          })}
           -- WI-2796: never self-select a cross-machine-rig-gated item unless the caller
           -- declared it has rig access.
           AND ${crossMachineRigExclusionSql(tx, filter.rigAvailable)}
