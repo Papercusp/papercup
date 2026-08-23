@@ -93,6 +93,7 @@ export type SavedFleetLaunchSpecResolution =
       ok: true;
       found: true;
       target: number;
+      config: FleetHeadcountConfig;
       saved: SavedFleetLaunchSpec;
       effective: SavedFleetLaunchSpec;
       preservedFields: SavedFleetLaunchField[];
@@ -361,6 +362,7 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
     ok: true,
     found: true,
     target: target.target,
+    config: target.config,
     saved,
     effective,
     preservedFields,

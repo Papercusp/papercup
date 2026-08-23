@@ -333,6 +333,8 @@ export function buildAgentLaunchCommand(opts: {
   effort?: string | null;
   workspace?: string | null;
   headless?: boolean;
+  /** psu --carry: persist warm/cold recovery behavior on a fresh fleet member. */
+  carry?: 'warm' | 'cold' | null;
   /** psu --context-size: 'full' (~180k, whole tool catalog) or 'trimmed' (~50k spine). */
   contextSize?: 'full' | 'trimmed' | null;
   /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch. */
@@ -416,6 +418,7 @@ export function buildAgentLaunchCommand(opts: {
   // stays injectable (wakes AND the resume kickoff both ride that pty). Without it a
   // windowless member parks forever after one turn.
   if (opts.headless) parts.push('--headless');
+  if (opts.carry) parts.push(`--carry=${opts.carry}`);
   // Effort rides the MODEL SPEC — psu has no --effort flag (D-001), so join them here.
   // Free-form-safe: a spec like `opus[1m]:high` carries `[]` outside the identity set,
   // so quote (matching memberLaunchCommand) rather than reject it via safe().

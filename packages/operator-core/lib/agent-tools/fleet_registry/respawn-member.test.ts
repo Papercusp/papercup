@@ -14,6 +14,7 @@ const resolveFleetMemberTarget = vi.fn();
 const killHandler = vi.fn();
 const launchHandler = vi.fn();
 const listFleetPresence = vi.fn();
+const resolveSavedFleetLaunchSpec = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -26,6 +27,9 @@ vi.mock('../fleet/kill', () => ({ default: { handler: (...a: unknown[]) => killH
 vi.mock('../capability/launch-agent', () => ({ default: { handler: (...a: unknown[]) => launchHandler(...a) } }));
 vi.mock('../coordination/presence-fleet', () => ({
   listFleetPresence: (...a: unknown[]) => listFleetPresence(...a),
+}));
+vi.mock('./saved-launch-spec', () => ({
+  resolveSavedFleetLaunchSpec: (...a: unknown[]) => resolveSavedFleetLaunchSpec(...a),
 }));
 vi.mock('./_shared', () => ({
   ROUTING_LADDER: 'ladder',
@@ -77,6 +81,50 @@ beforeEach(() => {
   listFleetPresence
     .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
     .mockResolvedValue([row(LEADER), row('su-new-xyz')]);
+  resolveSavedFleetLaunchSpec.mockReset();
+  resolveSavedFleetLaunchSpec.mockImplementation(async (opts: { requested?: Record<string, unknown>; reusePath: string }) => {
+    const member: Record<string, unknown> = {
+      agent: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+      account: 'default',
+      headless: true,
+      carry: 'warm',
+      contextSize: 'trimmed',
+      role: 'su',
+    };
+    for (const [field, value] of Object.entries(opts.requested ?? {})) {
+      if (value !== undefined) member[field] = value;
+    }
+    return {
+      ok: true,
+      found: true,
+      target: 16,
+      config: {
+        plan: 'byoc-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        contextSize: 'trimmed',
+        role: 'su',
+      },
+      saved: { plan: 'byoc-plan', harness: 'papercusp', member: { ...member } },
+      effective: { plan: 'byoc-plan', harness: 'papercusp', member },
+      preservedFields: ['plan', 'harness', 'carry', 'role'],
+      overrides: [],
+      provenance: {
+        source: 'fleet:headcount-target',
+        workspaceId: 'ws',
+        fleetSlug: SLUG,
+        target: 16,
+      },
+      reusePath: opts.reusePath,
+    };
+  });
 });
 
 describe('fleet:respawn-member (P-008)', () => {

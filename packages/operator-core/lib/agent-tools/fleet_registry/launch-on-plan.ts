@@ -51,7 +51,6 @@ import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
   fleetSlugFromName,
-  getFleetHeadcountTarget,
   getFleetScheme,
   releaseFleetLaunchSlot,
   setFleetLeader,
@@ -79,6 +78,10 @@ import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mir
 import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
 import { ensureFleetLeaderControl, type LeaderControlOutcome } from './leader-control';
+import {
+  resolveLoadedSavedFleetLaunchSpec,
+  resolveSavedFleetLaunchSpec,
+} from './saved-launch-spec';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import {
   resolveWorkspaceHiveScope,
@@ -226,49 +229,28 @@ export function persistedFleetLaunchProfileConflicts(
   },
   saved: FleetHeadcountConfig,
 ): PersistedFleetLaunchProfileConflict[] {
-  const savedValues: Record<string, unknown> = {
-    plan: saved.plan,
-    harness: saved.harness,
-    agent: saved.agent,
-    model: composeModelSpec(saved.model, saved.effort),
-    account: saved.account,
-    headless: saved.headless ?? true,
-    carry: saved.carry,
-    role: saved.role,
-    brief: saved.brief,
-    launchContext: saved.launchContext,
-    contextSize: saved.contextSize,
-    compactionLimit: saved.compactionLimit,
-    extraArgs: saved.extraArgs,
-  };
-  const conflicts: PersistedFleetLaunchProfileConflict[] = [];
-  for (const [field, requestedValue] of Object.entries(requested)) {
-    // The runtime args object also contains launch controls such as `name`,
-    // `count`, and `placement`. They are intentionally not persisted in the
-    // homogeneous boot profile, so they cannot conflict with one. Compare only
-    // fields represented in savedValues; the member-specific overrides below
-    // remain explicit conflicts by design.
-    if (requestedValue === undefined || !Object.hasOwn(savedValues, field)) continue;
-    const savedValue = savedValues[field];
-    if (JSON.stringify(requestedValue) !== JSON.stringify(savedValue)) {
-      conflicts.push({ field, saved: savedValue, requested: requestedValue });
-    }
-  }
-  if (requested.members?.length) {
-    conflicts.push({
-      field: 'members',
-      saved: 'fleet-wide persisted profile',
-      requested: `${requested.members.length} member override(s)`,
-    });
-  }
-  if (requested.perMemberLaunchContext?.length) {
-    conflicts.push({
-      field: 'perMemberLaunchContext',
-      saved: saved.launchContext,
-      requested: `${requested.perMemberLaunchContext.length} per-member launch context override(s)`,
-    });
-  }
-  return conflicts;
+  const result = resolveLoadedSavedFleetLaunchSpec({
+    target: {
+      workspaceId: 'compat',
+      fleetSlug: 'compat',
+      target: 1,
+      config: saved,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    },
+    workspaceId: 'compat',
+    fleetSlug: 'compat',
+    requested,
+    reusePath: 'fleet:launch-on-plan',
+  });
+  return result.ok
+    ? []
+    : result.conflicts.map(({ field, saved: savedValue, requested: requestedValue }) => ({
+        field,
+        saved: savedValue,
+        requested: requestedValue,
+      }));
 }
 
 /**
@@ -1587,25 +1569,46 @@ export default defineTool({
     // name and any deliberate overrides; omitted values come from this one row.
     // Read it before resolving agent/model/plan so every downstream validation
     // and command composer sees the same effective inputs as the governor.
-    let persistedHeadcountProfile: Awaited<ReturnType<typeof getFleetHeadcountTarget>> = null;
-    try {
-      persistedHeadcountProfile = await getFleetHeadcountTarget(workspaceId, fleetSlug);
-    } catch (e: any) {
+    const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
+      workspaceId,
+      fleetSlug,
+      requested: {
+        plan: args.plan,
+        harness: args.harness,
+        agent: args.agent,
+        model: args.model,
+        account: args.account,
+        headless: args.headless,
+        carry: args.carry,
+        role: args.role,
+        brief: args.brief,
+        launchContext: args.launchContext,
+        contextSize: args.contextSize,
+        compactionLimit: args.compactionLimit,
+        extraArgs: args.extraArgs,
+        members: args.members,
+        perMemberLaunchContext: args.perMemberLaunchContext,
+        claimKinds: args.claimKinds,
+        addDir: args.addDir,
+        allowSubagents: args.allowSubagents,
+        brain: args.brain,
+        feature: args.feature,
+        profile: args.profile,
+        display: args.display,
+      },
+      reusePath: 'fleet:launch-on-plan -> agent-launch-core.memberLaunchCommand',
+    });
+    if (!savedLaunchSpec.ok) {
       return err(
-        `Could not read the persisted launch profile for fleet \`${fleetSlug}\`: ${e?.message ?? e}. ` +
-          'Refusing to reconstruct member settings ad hoc.',
+        `${savedLaunchSpec.message} Existing-fleet top-up/takeover may vary only count and host placement. ` +
+          'Use fleet:respawn-member for an explicit audited per-member boot-setting change.',
       );
     }
+    const persistedHeadcountProfile = savedLaunchSpec.found
+      ? { target: savedLaunchSpec.target, config: savedLaunchSpec.config }
+      : null;
     if (persistedHeadcountProfile) {
       const profile = persistedHeadcountProfile.config;
-      const conflicts = persistedFleetLaunchProfileConflicts(args, profile);
-      if (conflicts.length) {
-        return err(
-          `Saved launch profile conflict for fleet \`${fleetSlug}\`: ${JSON.stringify(conflicts)}. ` +
-            'Recovery/top-up reuses fleet:headcount-target automatically; omit these fields and pass only count/headless. ' +
-            'To deliberately change boot-baked settings, use fleet:respawn-member so the delta is explicit and audited.',
-        );
-      }
       const profileModel = composeModelSpec(profile.model, profile.effort);
       args.count ??= persistedHeadcountProfile.target;
       args.plan ??= profile.plan;
@@ -3957,6 +3960,8 @@ export default defineTool({
               applied: true,
               target: persistedHeadcountProfile.target,
               config: persistedHeadcountProfile.config,
+              provenance: savedLaunchSpec.provenance,
+              reusePath: savedLaunchSpec.reusePath,
             }
           : null,
         // P-004: the resolved per-member config (model/account/carry/compactionLimit/claimKinds),

@@ -21,6 +21,7 @@ import launchTool from '../capability/launch-agent';
 import { resolveFleetMemberTarget } from './member-target';
 import { listFleetPresence, type FleetPresenceRow } from '../coordination/presence-fleet';
 import { json, ROUTING_LADDER } from './_shared';
+import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 
 /** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
 const DEFAULT_VERIFY_SEC = 90;
@@ -209,6 +210,59 @@ export default defineTool({
     }
     const { slug, memberOwnerId, invokedAs, workspaceId } = target;
 
+    // D-004/P-044: a respawn is a recovery, never a fresh reconstruction. Read
+    // the canonical saved fleet profile BEFORE killing the old member, merge
+    // only the explicit audited boot-setting delta, and preserve every omitted
+    // field (plan/harness/account/carry/role/context/launch context included).
+    const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
+      workspaceId,
+      fleetSlug: slug,
+      requested: {
+        model: args.model,
+        effort: args.effort,
+        account: args.account,
+        contextSize: args.contextSize,
+        agent: args.agent,
+        compactionLimit: args.compactionLimit,
+        headless: args.headless,
+        brief: args.brief,
+      },
+      allowDeltas: ['model', 'account', 'contextSize', 'agent', 'compactionLimit', 'headless', 'brief'],
+      reusePath: 'fleet:respawn-member -> capability:launch-agent',
+      requireSaved: true,
+    });
+    if (!savedLaunchSpec.ok) {
+      return json(
+        {
+          ok: false,
+          error: savedLaunchSpec.error,
+          fleet: slug,
+          member: memberOwnerId,
+          message: savedLaunchSpec.message,
+          conflicts: savedLaunchSpec.conflicts,
+          provenance: savedLaunchSpec.provenance,
+          reusePath: savedLaunchSpec.reusePath,
+          killed: false,
+        },
+        true,
+      );
+    }
+    if (!savedLaunchSpec.found) {
+      // `requireSaved:true` makes this unreachable at runtime; retain an
+      // explicit defense so a future resolver contract change cannot kill first.
+      return json(
+        {
+          ok: false,
+          error: 'saved_launch_spec_missing',
+          fleet: slug,
+          member: memberOwnerId,
+          message: `No canonical saved launch spec exists for fleet '${slug}'; old member was NOT killed.`,
+          killed: false,
+        },
+        true,
+      );
+    }
+
     // 0. Snapshot the fleet's roster BEFORE the kill, so the replacement is identified by being
     //    an owner-id that was not there before — a respawn mints a NEW identity, so "some member
     //    is present" is not evidence; "a member nobody had seen is present" is.
@@ -232,28 +286,24 @@ export default defineTool({
       return json({ ok: false, error: 'kill_failed', fleet: slug, member: memberOwnerId, killed: kill.data, message: 'could not drain the old member — NOT launching a replacement (would double-run the lane).' }, true);
     }
 
-    // 2. Fresh-launch the replacement into the SAME fleet with the new declarative MemberSpec. Only
-    //    the provided fields are set; unset ones fall through to the fleet/system defaults.
-    const brief = args.brief ?? `You were respawned into fleet '${slug}' with new settings (${changedFields.join(', ')}). Resume your role: if you are a self-pulling fleet member, pull work via scheduler:get_next, then verify + complete with evidence.`;
+    // 2. Fresh-launch the replacement into the SAME fleet from the RESOLVED
+    //    canonical spec. The caller's explicit delta is already audited above;
+    //    nothing omitted can now fall through to a system default.
+    const brief =
+      savedLaunchSpec.effective.member.brief ??
+      `You were respawned into fleet '${slug}' with new settings (${changedFields.join(', ')}). Resume your role: if you are a self-pulling fleet member, pull work via scheduler:get_next, then verify + complete with evidence.`;
     const spec: MemberSpec = {
-      ...(args.model != null ? { model: args.model } : {}),
-      ...(args.effort != null ? { effort: args.effort } : {}),
-      ...(args.account != null ? { account: args.account } : {}),
-      ...(args.contextSize != null ? { contextSize: args.contextSize } : {}),
-      ...(args.agent != null ? { agent: args.agent } : {}),
-      ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
-      ...(args.headless != null ? { headless: args.headless } : {}),
+      ...savedLaunchSpec.effective.member,
       brief,
     };
-    const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
-    const harness = typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
     const launch = launchOutcome(
       await launchTool.handler(
         {
           fleet: slug,
           count: 1,
+          plan: savedLaunchSpec.effective.plan,
+          harness: savedLaunchSpec.effective.harness,
           members: [spec],
-          ...(harness ? { harness } : {}),
           ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}),
         } as never,
         ctx,
@@ -271,6 +321,12 @@ export default defineTool({
           drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
           killed: kill.data,
           launched: launch.text,
+          launchSpec: {
+            provenance: savedLaunchSpec.provenance,
+            reusePath: savedLaunchSpec.reusePath,
+            overrides: savedLaunchSpec.overrides,
+            preservedFields: savedLaunchSpec.preservedFields,
+          },
           verified: false,
           message: 'old member drained but the replacement launch FAILED — the fleet is down one member; relaunch it (capability:launch-agent) or retry.',
         },
@@ -293,6 +349,12 @@ export default defineTool({
         drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
         killed: kill.data,
         launched: launch.text,
+        launchSpec: {
+          provenance: savedLaunchSpec.provenance,
+          reusePath: savedLaunchSpec.reusePath,
+          overrides: savedLaunchSpec.overrides,
+          preservedFields: savedLaunchSpec.preservedFields,
+        },
         verified: false,
         verification: rosterReadable ? 'skipped' : 'unavailable',
         message: `Launch REQUESTED but NOT verified${rosterReadable ? ' (verifySec:0)' : ' (the fleet presence roster could not be read)'} — the launcher only knows it spawned a terminal, which survives a CLI that dies before its first turn. Confirm a real agent exists before relying on it: fleet:leader-brief { fleet:'${slug}', include_stale:true } and require a NEW member with loopMode set and a fresh heartbeat.`,
@@ -315,6 +377,12 @@ export default defineTool({
         drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
         killed: kill.data,
         launched: launch.text,
+        launchSpec: {
+          provenance: savedLaunchSpec.provenance,
+          reusePath: savedLaunchSpec.reusePath,
+          overrides: savedLaunchSpec.overrides,
+          preservedFields: savedLaunchSpec.preservedFields,
+        },
         verified: verify.verified,
         newMember: verify.newMemberOwnerId,
         waitedMs: verify.waitedMs,
