@@ -73,6 +73,7 @@ vi.mock('./RevisionDiffModal', () => ({ default: () => null }));
 vi.mock('./RevisionConversationModal', () => ({ default: () => null }));
 vi.mock('./AgentsPanel', () => ({ default: () => null }));
 vi.mock('./RunsPanel', () => ({ default: () => null }));
+vi.mock('./PlanTriggersPanel', () => ({ default: () => <div data-testid="plan-triggers-panel" /> }));
 vi.mock('./PlanConflictModal', () => ({ default: () => null }));
 vi.mock('./PlanKanbanView', () => ({ default: () => null }));
 vi.mock('./PlanStatusPopover', () => ({
@@ -208,6 +209,14 @@ describe('PlanDetail (plan-detail main pane)', () => {
     // The EditBar Save button is present in edit mode.
     expect(screen.getByRole('button', { name: /Save/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+  });
+
+  it('deep-links to the per-plan Triggers tab through the ptab key', () => {
+    planResult = { data: mkPlan({ harness: 'papercusp' }), loading: false, error: null };
+    renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />, '?ptab=triggers');
+    expect(screen.getByRole('tab', { name: 'Triggers' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('plan-triggers-panel')).toBeTruthy();
+    expect(screen.queryByTestId('plan-editor')).toBeNull();
   });
 
   // WI-5520 regression coverage: "PlanDetail popup crashes ('This view hit an
