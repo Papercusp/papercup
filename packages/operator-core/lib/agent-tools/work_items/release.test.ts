@@ -123,6 +123,22 @@ describe('work_items:release reason soft cap', () => {
 
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', reasonTruncated: true });
   });
+
+  it('warns that a plain reason is recorded but does not make the disposition sticky', async () => {
+    releaseM.mockImplementation(async (id: string, opts?: Record<string, unknown>) => {
+      (opts?.onPriorState as ((p: { assignee: string | null; wasClaimed: boolean }) => void) | undefined)?.({
+        assignee: 'me',
+        wasClaimed: true,
+      });
+      return { id, assignee: null } as never;
+    });
+
+    const b = await body({ id: 'WI-DEFER', reason: 'deferred until the supervised migration window' });
+
+    expect(b.results[0].claimHoldNudge).toMatch(/release reason was recorded, but does not change selectability/);
+    expect(b.results[0].claimHoldNudge).toMatch(/work_items:release.*claimHold:true/);
+    expect(holdM).not.toHaveBeenCalled();
+  });
 });
 
 // EI-7588: release refuses to silently clear ANOTHER agent's live claim.

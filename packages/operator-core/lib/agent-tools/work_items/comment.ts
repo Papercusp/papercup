@@ -172,7 +172,11 @@ export default defineTool({
     const env = await runBulk(
       items,
       async (it) => {
-        const post = await commentWorkItem(it.id, it.body, ident.ownerId, { harness: it.harness ?? args.harness });
+        const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined;
+        const post = await commentWorkItem(it.id, it.body, ident.ownerId, {
+          harness: it.harness ?? args.harness,
+          ...(workspaceId ? { workspaceId } : {}),
+        });
         if (!post) return { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
         let hint: string | undefined;
         // ONE state lookup serves BOTH predicates (EI-8837 completion,

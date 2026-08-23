@@ -99,6 +99,16 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
     expect(cmtM).toHaveBeenCalledWith('WI-1', 'hello', 'me', { harness: undefined });
   });
 
+  it('forwards a concrete request workspace while rejecting the unscoped wildcard', async () => {
+    cmtM.mockResolvedValue({ id: 'post-1' } as never);
+    await tool.handler({ id: 'WI-1', body: 'hello' } as never, { workspaceId: 'ws-scoped' } as never);
+    expect(cmtM).toHaveBeenCalledWith('WI-1', 'hello', 'me', { harness: undefined, workspaceId: 'ws-scoped' });
+
+    cmtM.mockClear();
+    await tool.handler({ id: 'WI-2', body: 'hello' } as never, { workspaceId: '*' } as never);
+    expect(cmtM).toHaveBeenCalledWith('WI-2', 'hello', 'me', { harness: undefined });
+  });
+
   it('items:[…] comments on many; a not-found item fails only itself', async () => {
     cmtM.mockImplementation(async (id: string) => (id === 'WI-X' ? null : ({ id: `post-${id}` } as never)));
     const b = await body({ items: [{ id: 'WI-1', body: 'a' }, { id: 'WI-X', body: 'b' }, { id: 'WI-2', body: 'c' }] });
