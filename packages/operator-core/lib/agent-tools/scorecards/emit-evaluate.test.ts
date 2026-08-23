@@ -15,6 +15,12 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/scorecards/emit-evaluate.test.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  dispatchProjectedTool,
+  lookupByMcpName,
+  readJsonResult,
+} from '@papercusp/agent-mcp';
+import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { Rubric } from '../../rubrics';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
@@ -407,6 +413,71 @@ describe('evaluateScorecard', () => {
     const r = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
     expect(r).toMatchObject({ ok: true, changed: true });
     expect((r as { delta: { changedCriteria: string[] } }).delta.changedCriteria.sort()).toEqual(['crit-a', 'crit-b']);
+  });
+
+  it('keeps every skeleton + canonical-rating row through an ambient trimmed dispatch', async () => {
+    const criteria = Array.from({ length: 26 }, (_, i) => ({
+      key: `criterion-${i + 1}`,
+      title: `Criterion ${i + 1} ${'t'.repeat(120)}`,
+      model: 'm',
+      method: 'm',
+      driftMarkers: 'd',
+    }));
+    const rubric = { ...RUBRIC, criteria } as Rubric;
+    const ratings = Object.fromEntries(
+      criteria.map((criterion) => [
+        criterion.key,
+        { rating: 'pass', evidence: `verified ${criterion.key} ${'e'.repeat(180)}` },
+      ]),
+    );
+    getRubricM.mockResolvedValue(rubric);
+
+    // Non-vacuity: this is large enough to trigger the generic trimmed fallback
+    // that caused the live 26 → 12+marker / 6 split, but still below the separate
+    // hard ceiling. The declaration under test must therefore be the reason the
+    // payload remains complete.
+    const raw = await evaluateScorecard({ rubricRef: rubric.rubricId, ratings });
+    const rawChars = JSON.stringify(raw).length;
+    expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
+    expect(rawChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+
+    const projected = lookupByMcpName('scorecards:evaluate');
+    expect(projected).toBeDefined();
+    expect(projected?.ignoreSessionPayloadTier).toBe(true);
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'scorecards:evaluate',
+      { rubricRef: rubric.rubricId, ratings },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'scorecards-evaluate-completeness-test',
+        isSuperuser: true,
+        uiClientId: 'su-scorecards-evaluate-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        contextTier: 'trimmed',
+        tx: {},
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{
+      rubric: { criteriaCount: number };
+      skeleton: unknown[];
+      canonicalRatings: Record<string, unknown>;
+      _projection?: unknown;
+    }>(dispatched.result!);
+    expect(payload?._projection).toBeUndefined();
+    expect(payload?.rubric.criteriaCount).toBe(26);
+    expect(payload?.skeleton).toHaveLength(26);
+    expect(Object.keys(payload?.canonicalRatings ?? {})).toHaveLength(26);
   });
 
   it('with ratings identical to the latest scorecard: changed:false and an empty changedCriteria delta', async () => {

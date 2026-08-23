@@ -387,6 +387,18 @@ describe('scrubExecEnv (EI-1617 — allowlist, not a passthrough-minus-denylist)
     expect(out.PAPERCUSP_WORKSPACE_ROOT).toBe('/home/op/workspace');
   });
 
+  it('keeps tracked session/workspace identity for provenance-aware helper scripts', () => {
+    const out = scrubExecEnv({
+      PATH: '/usr/bin',
+      PAPERCUSP_SID: 'su-session-123',
+      PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+      PAPERCUSP_DB_PASSWORD: 'must-not-leak',
+    });
+    expect(out.PAPERCUSP_SID).toBe('su-session-123');
+    expect(out.PAPERCUSP_WORKSPACE).toBe('papercusp-workspace');
+    expect(out).not.toHaveProperty('PAPERCUSP_DB_PASSWORD');
+  });
+
   it('drops undefined-valued entries (a bare NodeJS.ProcessEnv can carry them)', () => {
     const out = scrubExecEnv({ PATH: '/usr/bin', HOME: undefined });
     expect(out).toEqual({ PATH: '/usr/bin' });

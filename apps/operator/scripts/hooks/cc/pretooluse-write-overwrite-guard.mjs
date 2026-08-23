@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // apps/operator/scripts/hooks/cc/pretooluse-write-overwrite-guard.mjs
 //
-// PreToolUse (Write) ADVISORY guard against EI-19966323166806405 — the CLI's
+// PreToolUse (Write) overwrite guard against EI-19966323166806405 and
+// EI-21263341660938734 — the CLI's
 // built-in Write tool's own description states an overwrite of an existing,
 // un-Read file "will fail", but on 2026-08-09 (su-e0359276) it did not: it
 // silently replaced a 350-line shared module with 123 lines of unrelated new
@@ -37,9 +38,13 @@
 // tool_use recorded against that same absolute path earlier in THIS
 // session's transcript (self-excluded by tool_use_id).
 //
-// CONTRACT (advisory — NEVER blocks, FAIL-OPEN)
-//   - On a hit: additionalContext (model-facing), no permissionDecision —
-//     the Write PROCEEDS. Never `deny`.
+// CONTRACT (targeted deny + advisory fallback, FAIL-OPEN)
+//   - A high-confidence destructive signature is denied even after a prior
+//     Read: a substantial existing file collapsing below 10% of its original
+//     byte size, or a JSON document replacing a source-code file. These are
+//     payload/path invariants and therefore do not depend on transcript shape.
+//   - Other unread-file overwrites remain advisory: additionalContext
+//     (model-facing), no permissionDecision, and the Write proceeds.
 //   - FAIL-OPEN on any error / missing transcript / oversized transcript /
 //     unparseable line: exit 0, silent. A bug here must never wedge an
 //     ordinary Write.
@@ -55,6 +60,27 @@ import process from 'node:process';
 // long-running warm-carry session.
 const MAX_TRANSCRIPT_BYTES = 200 * 1024 * 1024;
 const READ_LIKE_TOOL_NAMES = new Set(['Read', 'Edit', 'MultiEdit', 'Write']);
+const MIN_PROTECTED_BYTES = 1024;
+const MAX_REPLACEMENT_RATIO = 0.1;
+const SOURCE_EXTENSIONS = new Set([
+  '.c',
+  '.cc',
+  '.cpp',
+  '.cs',
+  '.go',
+  '.java',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.mts',
+  '.py',
+  '.rb',
+  '.rs',
+  '.sh',
+  '.ts',
+  '.tsx',
+]);
+const DESTRUCTIVE_WRITE_BYPASS_ENV = 'PAPERCUSP_ALLOW_DESTRUCTIVE_WRITE';
 
 main();
 
@@ -73,6 +99,12 @@ async function main() {
     const existing = statExisting(abs);
     if (!existing || existing.size === 0) return done(); // new file, or trivial — nothing to protect
 
+    const content = (hook.tool_input || {}).content;
+    const destructive = destructiveWriteReason(abs, existing.size, content);
+    if (destructive && process.env[DESTRUCTIVE_WRITE_BYPASS_ENV] !== '1') {
+      return denyDestructive(abs, destructive);
+    }
+
     const transcriptPath = hook.transcript_path || hook.transcriptPath;
     if (typeof transcriptPath !== 'string' || !transcriptPath || !existsSync(transcriptPath)) {
       return done(); // can't verify — fail open, never guess
@@ -88,6 +120,41 @@ async function main() {
     // fail-open: never wedge a Write on a hook bug
   }
   done();
+}
+
+function destructiveWriteReason(abs, existingBytes, content) {
+  if (typeof content !== 'string') return null;
+  const replacementBytes = Buffer.byteLength(content, 'utf8');
+  const ratio = existingBytes > 0 ? replacementBytes / existingBytes : 1;
+  if (existingBytes >= MIN_PROTECTED_BYTES && ratio < MAX_REPLACEMENT_RATIO) {
+    return {
+      kind: 'catastrophic-shrink',
+      existingBytes,
+      replacementBytes,
+      detail: `replacement is ${(ratio * 100).toFixed(1)}% of the existing file`,
+    };
+  }
+
+  if (SOURCE_EXTENSIONS.has(path.extname(abs).toLowerCase()) && parsesAsJsonDocument(content)) {
+    return {
+      kind: 'json-to-source',
+      existingBytes,
+      replacementBytes,
+      detail: `replacement parses as JSON but target suffix is '${path.extname(abs)}'`,
+    };
+  }
+  return null;
+}
+
+function parsesAsJsonDocument(content) {
+  const trimmed = content.trim();
+  if (!trimmed || !['{', '['].includes(trimmed[0])) return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function statExisting(abs) {
@@ -191,6 +258,31 @@ function warn(abs, stat) {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           additionalContext: reason,
+        },
+      }) + '\n',
+    );
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
+}
+
+function denyDestructive(abs, finding) {
+  const base = abs.split(/[/\\]/).pop();
+  const reason =
+    `BLOCKED DESTRUCTIVE FULL-FILE WRITE (EI-21263341660938734): '${base}' is ${finding.existingBytes} bytes, ` +
+    `the proposed replacement is ${finding.replacementBytes} bytes, and ${finding.detail}. This strongly matches ` +
+    `an MCP/JSON argument blob misrouted into a repository source path, which previously replaced 2128-line and ` +
+    `291-line TypeScript modules without any warning. Re-check the tool target and payload; use Edit/apply_patch for ` +
+    `a scoped source change. If this full replacement is genuinely intentional, re-run the session with ` +
+    `${DESTRUCTIVE_WRITE_BYPASS_ENV}=1 and document why the destructive overwrite is safe.`;
+  try {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: reason,
         },
       }) + '\n',
     );

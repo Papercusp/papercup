@@ -2,6 +2,8 @@
  * pretooluse-write-overwrite-guard.mjs — advisory guard against
  * EI-19966323166806405 (Write silently overwrote a 350-line un-Read file,
  * clobbering another plan's module and crash-looping shared staging).
+ * EI-21263341660938734 added high-confidence blocking for catastrophic
+ * shrink and JSON-to-source payload misroutes, including after a prior Read.
  *
  * Drives the hook exactly as Claude Code does — a PreToolUse JSON on stdin
  * (tool_name: 'Write', tool_input: {file_path, content}, cwd,
@@ -43,6 +45,90 @@ function withTmpDir<T>(fn: (dir: string) => T): T {
 }
 
 describe('pretooluse-write-overwrite-guard.mjs', () => {
+  it('denies a tiny JSON blob replacing a large TypeScript source file even after a prior Read', () =>
+    withTmpDir((dir) => {
+      const target = join(dir, 'gcp-provider.ts');
+      writeFileSync(target, 'export const provider = true;\n'.repeat(200));
+      const transcript = join(dir, 'transcript.jsonl');
+      writeFileSync(
+        transcript,
+        JSON.stringify({
+          message: {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 'toolu_read1', name: 'Read', input: { file_path: target } }],
+          },
+        }) + '\n',
+      );
+
+      const out = runHook({
+        tool_name: 'Write',
+        tool_input: { file_path: target, content: JSON.stringify({ name: 'tools:invoke', args: { id: 'x' } }) },
+        cwd: dir,
+        transcript_path: transcript,
+        tool_use_id: 'toolu_current',
+      });
+
+      expect(out.status).toBe(0);
+      const parsed = JSON.parse(out.stdout);
+      expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('EI-21263341660938734');
+      expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('gcp-provider.ts');
+    }));
+
+  it('denies catastrophic shrink even when the replacement is not JSON', () =>
+    withTmpDir((dir) => {
+      const target = join(dir, 'large-module.ts');
+      writeFileSync(target, 'export const retained = true;\n'.repeat(100));
+      const transcript = join(dir, 'transcript.jsonl');
+      writeFileSync(transcript, JSON.stringify({ message: { content: [] } }) + '\n');
+      const out = runHook({
+        tool_name: 'Write',
+        tool_input: { file_path: target, content: 'export const replacement = 1;\n' },
+        cwd: dir,
+        transcript_path: transcript,
+      });
+      expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+    }));
+
+  it('denies a JSON document replacing a small source file even below the shrink floor', () =>
+    withTmpDir((dir) => {
+      const target = join(dir, 'small.ts');
+      writeFileSync(target, 'export const x = 1;\n');
+      const transcript = join(dir, 'transcript.jsonl');
+      writeFileSync(transcript, JSON.stringify({ message: { content: [] } }) + '\n');
+      const out = runHook({
+        tool_name: 'Write',
+        tool_input: { file_path: target, content: '{"tool":"mcp","args":{}}' },
+        cwd: dir,
+        transcript_path: transcript,
+      });
+      expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+    }));
+
+  it('keeps an intentional normal-sized source rewrite on the existing advisory path', () =>
+    withTmpDir((dir) => {
+      const target = join(dir, 'existing-module.ts');
+      const original = 'export const x = 1;\n'.repeat(20);
+      writeFileSync(target, original);
+      const transcript = join(dir, 'transcript.jsonl');
+      writeFileSync(
+        transcript,
+        JSON.stringify({
+          message: {
+            content: [{ type: 'tool_use', id: 'toolu_read1', name: 'Read', input: { file_path: target } }],
+          },
+        }) + '\n',
+      );
+      const out = runHook({
+        tool_name: 'Write',
+        tool_input: { file_path: target, content: original.replaceAll('x', 'y') },
+        cwd: dir,
+        transcript_path: transcript,
+      });
+      expect(out.status).toBe(0);
+      expect(out.stdout.trim()).toBe('');
+    }));
+
   it('warns when Write targets an existing file with no prior Read in the transcript', () =>
     withTmpDir((dir) => {
       const target = join(dir, 'existing-module.ts');
