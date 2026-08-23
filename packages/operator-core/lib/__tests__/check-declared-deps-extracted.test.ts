@@ -18,9 +18,11 @@
  *      but missing on disk);
  *   2. it does NOT false-positive on the ways a dep legitimately resolves — hoisted
  *      to the repo root, or via an ANCESTOR node_modules for a nested workspace;
- *   3. devDependencies / peerDependencies are deliberately OUT of scope (`npm ls`'s
- *      unmet-peer noise under --legacy-peer-deps is the false-positive that once
- *      blocked a build for a dependency it never needed);
+ *   3. absent devDependencies / peerDependencies are deliberately OUT of the direct
+ *      declaration leg (`npm ls`'s unmet-peer noise under --legacy-peer-deps is the
+ *      false-positive that once blocked a build for a dependency it never needed),
+ *      while an EXISTING package-local dev-tool directory with no readable manifest
+ *      is still flagged as a partial extraction;
  *   4. the retry absorbs a filesystem-sync race (a miss that CLEARS on a later
  *      attempt is not reported) but still reports a PERSISTENT miss;
  *   5. install:safe's post-install verification repairs once, then fails loudly —
@@ -28,15 +30,15 @@
  *      failing npm run with a dep verdict.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import { RUNTIME_CONTENT_PROBES, findUnextractedDeps, findUnextractedDepsWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
+import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePackages, findIncompleteWorkspacePackagesWithRetry, findInvalidWorkspacePackageVersions, findInvalidWorkspacePackageVersionsWithRetry, findUnextractedDeps, findUnextractedDepsWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, isDirectCliInvocation, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
-import { normalizeNpmArgs, parseCliArgs, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+import { normalizeNpmArgs, packageLocalRepairTargets, parseCliArgs, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
 
 type RuntimeProbeFailure = { specifier: string; detail: string };
 
@@ -181,6 +183,172 @@ describe('retry absorbs a filesystem-sync race but not a real miss (WI-5769 retr
   });
 });
 
+describe('package-local manifest guard catches partial dev-tool installs (EI-20863794002653922)', () => {
+  it('FLAGS an unscoped package directory whose package.json is missing', () => {
+    const root = fixture({
+      packages: {
+        'libs/generic/sse': { devDependencies: { vitest: '^3.0.0' } },
+      },
+      extracted: { 'libs/generic/sse': ['vitest'] },
+    });
+
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([
+      { package: 'vitest', workspace: 'libs/generic/sse' },
+    ]);
+  });
+
+  it('FLAGS a scoped package with a malformed manifest and ignores metadata dirs', () => {
+    const root = fixture({
+      packages: { 'apps/operator': { devDependencies: {} } },
+      extracted: { 'apps/operator': ['@vitest/runner', '.cache'] },
+    });
+    writeFileSync(
+      join(root, 'apps/operator/node_modules/@vitest/runner/package.json'),
+      '{not-json',
+    );
+
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([
+      { package: '@vitest/runner', workspace: 'apps/operator' },
+    ]);
+  });
+
+  it('accepts a package-local directory with a readable object manifest', () => {
+    const root = fixture({
+      packages: { 'libs/generic/sse': { devDependencies: { vitest: '^4.1.4' } } },
+      extracted: { 'libs/generic/sse': ['vitest'] },
+    });
+    writeFileSync(
+      join(root, 'libs/generic/sse/node_modules/vitest/package.json'),
+      JSON.stringify({ name: 'vitest', version: '4.1.8' }),
+    );
+
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([]);
+  });
+
+  it('retries a package-local manifest so a filesystem-settle race does not become a false red', async () => {
+    const root = fixture({
+      packages: { 'libs/generic/sse': { devDependencies: { vitest: '^4.1.4' } } },
+      extracted: { 'libs/generic/sse': ['vitest'] },
+    });
+    const manifestPath = join(
+      root,
+      'libs/generic/sse/node_modules/vitest/package.json',
+    );
+    const result = await findIncompleteWorkspacePackagesWithRetry({
+      repoRoot: root,
+      attempts: 3,
+      delayMs: 0,
+      deps: {
+        sleep: async () => {
+          writeFileSync(
+            manifestPath,
+            JSON.stringify({ name: 'vitest', version: '4.1.8' }),
+          );
+        },
+      },
+    });
+
+    expect(result).toEqual({ incomplete: [], attempts: 2 });
+  });
+});
+
+describe('bundle-safe CLI entry detection', () => {
+  it('runs only for the named script, never when esbuild imports it into the Hono host', () => {
+    expect(isDirectCliInvocation('/repo/scripts/check-declared-deps-extracted.mjs')).toBe(true);
+    expect(isDirectCliInvocation('C:\\repo\\scripts\\check-declared-deps-extracted.mjs')).toBe(true);
+    expect(isDirectCliInvocation('/repo/apps/operator/dist-host/hono-host.mjs')).toBe(false);
+    expect(isDirectCliInvocation(undefined)).toBe(false);
+  });
+});
+
+describe('package-local version guard catches readable stale dev tools (EI-20863794002653922)', () => {
+  it('FLAGS Vitest 3 retained under an SSE declaration that now requires Vitest 4', () => {
+    const root = fixture({
+      packages: {
+        'libs/generic/sse': { devDependencies: { vitest: '^4.1.4' } },
+      },
+      extracted: { 'libs/generic/sse': ['vitest', 'std-env'] },
+    });
+    writeFileSync(
+      join(root, 'libs/generic/sse/node_modules/vitest/package.json'),
+      JSON.stringify({ name: 'vitest', version: '3.2.6' }),
+    );
+    writeFileSync(
+      join(root, 'libs/generic/sse/node_modules/std-env/package.json'),
+      JSON.stringify({ name: 'std-env', version: '3.10.0' }),
+    );
+
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([
+      {
+        package: 'vitest',
+        workspace: 'libs/generic/sse',
+        declared: '^4.1.4',
+        installed: '3.2.6',
+      },
+    ]);
+  });
+
+  it('accepts a satisfying version, supports npm aliases, and ignores transitive local packages', () => {
+    const root = fixture({
+      packages: {
+        'libs/generic/sse': {
+          devDependencies: {
+            typescript: 'npm:@typescript/typescript6@6.0.2',
+            vitest: '^4.1.4',
+          },
+        },
+      },
+      extracted: { 'libs/generic/sse': ['typescript', 'vitest', 'std-env'] },
+    });
+    for (const [name, version] of [
+      ['typescript', '6.0.2'],
+      ['vitest', '4.1.8'],
+      ['std-env', '3.10.0'],
+    ]) {
+      writeFileSync(
+        join(root, 'libs/generic/sse/node_modules', name, 'package.json'),
+        JSON.stringify({ name, version }),
+      );
+    }
+
+    expect(declaredVersionRange('npm:@typescript/typescript6@6.0.2')).toBe('6.0.2');
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([]);
+  });
+
+  it('retries so a local version transition that settles is not a false red', async () => {
+    const root = fixture({
+      packages: {
+        'libs/generic/sse': { devDependencies: { vitest: '^4.1.4' } },
+      },
+      extracted: { 'libs/generic/sse': ['vitest'] },
+    });
+    const manifestPath = join(
+      root,
+      'libs/generic/sse/node_modules/vitest/package.json',
+    );
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ name: 'vitest', version: '3.2.6' }),
+    );
+
+    const result = await findInvalidWorkspacePackageVersionsWithRetry({
+      repoRoot: root,
+      attempts: 3,
+      delayMs: 0,
+      deps: {
+        sleep: async () => {
+          writeFileSync(
+            manifestPath,
+            JSON.stringify({ name: 'vitest', version: '4.1.8' }),
+          );
+        },
+      },
+    });
+
+    expect(result).toEqual({ invalid: [], attempts: 2 });
+  });
+});
+
 describe('runtime-content probes catch partial packages that directory checks cannot (EI-21252116452570853)', () => {
   it('selects probes from the locked graph and flags missing entrypoint/transitive/native content', () => {
     const root = fixture({
@@ -257,6 +425,27 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('refuses every pre-repair target outside the repo or workspace node_modules boundary', () => {
+    expect(
+      packageLocalRepairTargets({
+        repoRoot: '/repo',
+        findings: [{ workspace: 'libs/testing-shell', package: '@vitest/runner' }],
+      }),
+    ).toEqual(['/repo/libs/testing-shell/node_modules/@vitest/runner']);
+    expect(() =>
+      packageLocalRepairTargets({
+        repoRoot: '/repo',
+        findings: [{ workspace: '../outside', package: 'vitest' }],
+      }),
+    ).toThrow(/outside repo root/);
+    expect(() =>
+      packageLocalRepairTargets({
+        repoRoot: '/repo',
+        findings: [{ workspace: 'libs/testing-shell', package: '../../outside' }],
+      }),
+    ).toThrow(/outside workspace node_modules/);
+  });
+
   it('returns 0 without repairing when every declared dep resolves', async () => {
     const root = fixture({
       packages: { 'apps/operator': { dependencies: { ok: '^1' } } },
@@ -338,6 +527,68 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     });
     expect(status).toBe(0);
     expect(calls).toEqual([['install', '--legacy-peer-deps']]);
+  });
+
+  it('repairs a package-local dev tool whose directory exists without a manifest', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: {
+        'libs/generic/sse': { devDependencies: { vitest: '^4.1.4' } },
+      },
+      extracted: { 'libs/generic/sse': ['vitest'] },
+    });
+    const packageDir = join(root, 'libs/generic/sse/node_modules/vitest');
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      runNpm: (args: string[]) => {
+        calls.push(args);
+        expect(existsSync(packageDir)).toBe(false);
+        mkdirSync(packageDir, { recursive: true });
+        writeFileSync(
+          join(packageDir, 'package.json'),
+          JSON.stringify({ name: 'vitest', version: '4.1.8' }),
+        );
+        return 0;
+      },
+      deps: { sleep: async () => {} },
+    });
+
+    expect(status).toBe(0);
+    expect(calls).toEqual([['install', '--legacy-peer-deps']]);
+  });
+
+  it('removes a stale package-local dev tool before repair even when npm does not rewrite it', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: {
+        'libs/generic/sse': { devDependencies: { vitest: '^4.1.4' } },
+      },
+      extracted: { 'libs/generic/sse': ['vitest'] },
+    });
+    const manifestPath = join(
+      root,
+      'libs/generic/sse/node_modules/vitest/package.json',
+    );
+    const packageDir = join(root, 'libs/generic/sse/node_modules/vitest');
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ name: 'vitest', version: '3.2.6' }),
+    );
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      runNpm: (args: string[]) => {
+        calls.push(args);
+        expect(existsSync(packageDir)).toBe(false);
+        return 0;
+      },
+      deps: { sleep: async () => {} },
+    });
+
+    expect(status).toBe(0);
+    expect(calls).toEqual([['install', '--legacy-peer-deps']]);
+    expect(existsSync(packageDir)).toBe(false);
   });
 
   it('fails immediately when the bounded repair exits nonzero, even if later spot probes could pass', async () => {

@@ -50,14 +50,18 @@
  * verified install boundary instead of repeatedly reading the transition.
  */
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withFsMutexRead, withFsMutex } from './lib/fs-mutex.mjs';
 import {
+  findIncompleteWorkspacePackagesWithRetry,
+  findInvalidWorkspacePackageVersionsWithRetry,
   findUnextractedDepsWithRetry,
   findUnusableRuntimeDepsWithRetry,
+  formatIncompleteWorkspacePackages,
+  formatInvalidWorkspacePackageVersions,
   formatMissing,
   formatRuntimeFailures,
 } from "./check-declared-deps-extracted.mjs";
@@ -66,6 +70,100 @@ const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const REPAIR_ARGS = ['install', '--legacy-peer-deps'];
 const EXEC_UNDER_LOCK_FLAG = "--exec-under-lock";
+const CACHE_VERIFY_ARGS = ['cache', 'verify'];
+
+/**
+ * Keep an explicit --cache override attached to the cache repair. Without it,
+ * `npm run install:safe -- --cache <dir> ...` would verify the user's default
+ * cache and then reify from a different cache, leaving the corrupt one
+ * untouched. Environment/config-file cache selection is inherited by npm.
+ */
+export function cacheVerifyArgs(npmArgs = []) {
+  const cacheArgs = [];
+  for (let index = 0; index < npmArgs.length; index += 1) {
+    const arg = npmArgs[index];
+    if (arg === '--cache' && typeof npmArgs[index + 1] === 'string') {
+      cacheArgs.push(arg, npmArgs[index + 1]);
+      index += 1;
+    } else if (typeof arg === 'string' && arg.startsWith('--cache=')) {
+      cacheArgs.push(arg);
+    }
+  }
+  return [...CACHE_VERIFY_ARGS, ...cacheArgs];
+}
+
+/**
+ * Verify and repair npm's content-addressed cache before reification. npm's
+ * cache verifier removes index entries whose content blobs disappeared, so a
+ * stale cacache reference cannot make the install fail with an opaque ENOENT.
+ * The caller runs this while holding the same repo-keyed install mutex as the
+ * subsequent npm command.
+ */
+export function verifyNpmCache({
+  repoRoot = DEFAULT_REPO_ROOT,
+  npmArgs = [],
+  runNpm = spawnSync,
+  env = process.env,
+} = {}) {
+  const result = runNpm('npm', cacheVerifyArgs(npmArgs), {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env,
+  });
+  if (result.error) throw result.error;
+  return result.status ?? 1;
+}
+
+function isStrictlyWithin(parent, candidate) {
+  const rel = relative(parent, candidate);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+/**
+ * Convert detector findings into the only paths install:safe may remove before
+ * its bounded repair. Both the workspace and package segments are untrusted
+ * manifest-derived strings, so validate the repo boundary and the narrower
+ * <workspace>/node_modules boundary before returning a target.
+ */
+export function packageLocalRepairTargets({
+  repoRoot = DEFAULT_REPO_ROOT,
+  findings = [],
+} = {}) {
+  const root = resolve(repoRoot);
+  const targets = findings.map((finding) => {
+    if (
+      typeof finding?.workspace !== 'string' ||
+      finding.workspace.length === 0 ||
+      typeof finding?.package !== 'string' ||
+      finding.package.length === 0
+    ) {
+      throw new Error('refusing package-local repair target without workspace and package names');
+    }
+    const nodeModulesDir = resolve(root, finding.workspace, 'node_modules');
+    if (!isStrictlyWithin(root, nodeModulesDir)) {
+      throw new Error(
+        `refusing package-local repair outside repo root: ${finding.workspace}/node_modules`,
+      );
+    }
+    const target = resolve(nodeModulesDir, finding.package);
+    if (!isStrictlyWithin(nodeModulesDir, target)) {
+      throw new Error(
+        `refusing package-local repair outside workspace node_modules: ${finding.workspace}/node_modules/${finding.package}`,
+      );
+    }
+    return target;
+  });
+  return [...new Set(targets)].sort();
+}
+
+function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
+  const removePath =
+    deps.removePath ??
+    ((target) => rmSync(target, { recursive: true, force: true }));
+  const targets = packageLocalRepairTargets({ repoRoot, findings });
+  for (const target of targets) removePath(target);
+  return targets;
+}
 
 /**
  * Verify (post-install, still holding the lock) that dependency directories and
@@ -86,27 +184,70 @@ export async function verifyDepsExtracted({
 
   const inspect = async () => {
     const declared = await findUnextractedDepsWithRetry({ repoRoot, deps });
-    if (declared.missing.length > 0)
-      return { missing: declared.missing, runtimeFailures: [] };
+    const packageLocal = await findIncompleteWorkspacePackagesWithRetry({
+      repoRoot,
+      deps,
+    });
+    const packageVersions = await findInvalidWorkspacePackageVersionsWithRetry({
+      repoRoot,
+      deps,
+    });
+    if (
+      declared.missing.length > 0 ||
+      packageLocal.incomplete.length > 0 ||
+      packageVersions.invalid.length > 0
+    )
+      return {
+        missing: declared.missing,
+        incomplete: packageLocal.incomplete,
+        invalidVersions: packageVersions.invalid,
+        runtimeFailures: [],
+      };
     const runtime = await findUnusableRuntimeDepsWithRetry({
       repoRoot,
       probeSpecifiers,
       deps,
     });
-    return { missing: [], runtimeFailures: runtime.failures };
+    return {
+      missing: [],
+      incomplete: [],
+      invalidVersions: [],
+      runtimeFailures: runtime.failures,
+    };
   };
 
-  const report = ({ missing, runtimeFailures }) => {
+  const report = ({ missing, incomplete, invalidVersions, runtimeFailures }) => {
     if (missing.length > 0) console.error(formatMissing(missing));
+    if (incomplete.length > 0)
+      console.error(formatIncompleteWorkspacePackages(incomplete));
+    if (invalidVersions.length > 0)
+      console.error(formatInvalidWorkspacePackageVersions(invalidVersions));
     if (runtimeFailures.length > 0)
       console.error(formatRuntimeFailures(runtimeFailures));
   };
 
+  const healthy = ({ missing, incomplete, invalidVersions, runtimeFailures }) =>
+    missing.length === 0 &&
+    incomplete.length === 0 &&
+    invalidVersions.length === 0 &&
+    runtimeFailures.length === 0;
+
   const first = await inspect();
-  if (first.missing.length === 0 && first.runtimeFailures.length === 0)
-    return 0;
+  if (healthy(first)) return 0;
 
   report(first);
+  const removedTargets = removePackageLocalRepairTargets({
+    repoRoot,
+    findings: [...first.incomplete, ...first.invalidVersions],
+    deps,
+  });
+  if (removedTargets.length > 0) {
+    console.error(
+      `NPM_INSTALL_SAFE removed ${removedTargets.length} invalid package-local node${removedTargets.length === 1 ? '' : 's'} before repair:\n${removedTargets
+        .map((target) => `  - ${relative(repoRoot, target)}`)
+        .join('\n')}`,
+    );
+  }
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${REPAIR_ARGS.join(" ")} (one bounded attempt, still holding the lock)`,
   );
@@ -119,9 +260,9 @@ export async function verifyDepsExtracted({
   }
 
   const second = await inspect();
-  if (second.missing.length === 0 && second.runtimeFailures.length === 0) {
+  if (healthy(second)) {
     console.log(
-      "NPM_INSTALL_SAFE repaired: dependency directories and critical runtime imports are healthy",
+      "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, and critical runtime imports are healthy",
     );
     return 0;
   }
@@ -229,6 +370,13 @@ export function main(argv = process.argv.slice(2)) {
   return withFsMutex(
     lockName,
     async () => {
+      const cacheStatus = verifyNpmCache({ repoRoot, npmArgs });
+      if (cacheStatus !== 0) {
+        console.error(
+          `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
+        );
+        return cacheStatus;
+      }
       console.log(`NPM_INSTALL_SAFE running: npm ${npmArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
       const result = spawnSync('npm', npmArgs, { cwd: repoRoot, stdio: 'inherit' });
       if (result.error) throw result.error;
