@@ -602,6 +602,7 @@ export async function reclaimStaleWorkItemClaims(
         const lockRelease = await releaseReclaimedWorkItemLocks({
           ownerId: row.former_taken_by,
           paths: readWorkItemPaths(row.payload),
+          goalRef: row.feature_id,
         });
         if (lockRelease.failures > 0) {
           console.warn(
