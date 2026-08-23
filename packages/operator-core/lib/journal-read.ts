@@ -180,6 +180,16 @@ export interface JournalReadResult {
    */
   unitsUnknown: string[];
   /**
+   * Units that systemd no longer has loaded, but whose bounded, unscoped
+   * journal fallback returned historical records containing the exact unit
+   * name. Transient units disappear from `systemctl` after exit while their
+   * manager-written lifecycle messages remain in the journal, so this is a
+   * distinct, useful answer rather than a contradiction of `unitsUnknown`.
+   */
+  unitsHistorical?: string[];
+  /** The exact bounded fallback command, when the historical probe ran. */
+  historicalCommand?: string | null;
+  /**
    * Non-null ⇒ the read returned nothing because THE WINDOW IS IN THE FUTURE
    * relative to the newest record in the journal — a fifth distinct meaning of
    * an empty `entries`, and the only one the caller cannot discover by reading
@@ -397,6 +407,38 @@ export function buildJournalctlArgs(opts: JournalReadOptions): string[] {
   const limit = clampLimit(opts.limit);
   args.push('-n', String(limit + 1));
   return args;
+}
+
+/** Escape a unit name before embedding it in journalctl's PCRE `--grep`. */
+function escapeJournalGrepLiteral(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+/**
+ * Build the bounded fallback used when a named transient unit has exited.
+ *
+ * `journalctl -u` is the cheap, precise path, but the unit manager can forget
+ * a transient unit before its manager-written lifecycle messages age out of
+ * the journal. In that window an unscoped message grep is the only way to
+ * recover those records. Keep the caller's time/severity/row bounds. When the
+ * caller supplied a grep, retain it as the server-side filter and use the
+ * decoded unit/message fields to reject unrelated records after the bounded
+ * read; journalctl's deployed matcher does not support composing look-aheads.
+ */
+export function buildHistoricalJournalctlArgs(
+  opts: JournalReadOptions,
+  units: string[],
+  limit = clampLimit(opts.limit),
+): string[] {
+  const unitPattern = units.map(escapeJournalGrepLiteral).join('|');
+  const grep = opts.grep ?? `(?:${unitPattern})`;
+  return buildJournalctlArgs({
+    ...opts,
+    units: [],
+    identifier: undefined,
+    grep,
+    limit,
+  });
 }
 
 /** PURE — clamp a caller's row cap into the supported range. */
@@ -781,6 +823,8 @@ export async function readJournal(
     },
     units,
     unitsUnknown: [] as string[],
+    unitsHistorical: [] as string[],
+    historicalCommand: null as string | null,
     windowOutsideJournal: null as JournalWindowDiagnosis | null,
     command: backend === 'none' ? 'no host log backend' : `${commandName} ${args.join(' ')}`,
     backend,
@@ -800,7 +844,54 @@ export async function readJournal(
   /** Zero lines from a named unit is ambiguous — resolve it before returning. */
   const withUnknownUnits = async (result: JournalReadResult): Promise<JournalReadResult> => {
     if (backend !== 'systemd' || result.entries.length || !units.length || !result.journalAvailable) return result;
-    return { ...result, unitsUnknown: await probeUnits(units, opts.scope ?? JOURNAL_DEFAULT_SCOPE) };
+    const unitsUnknown = await probeUnits(units, opts.scope ?? JOURNAL_DEFAULT_SCOPE);
+    if (!unitsUnknown.length) return { ...result, unitsUnknown: [] };
+
+    // An identifier-constrained query cannot safely be widened to systemd's
+    // manager messages, so preserve the ordinary unknown-unit answer there.
+    // The common unit-only path gets one bounded, unscoped fallback instead.
+    if (opts.identifier) return { ...result, unitsUnknown };
+
+    const historicalArgs = buildHistoricalJournalctlArgs(opts, unitsUnknown, limit);
+    const historicalCommand = `journalctl ${historicalArgs.join(' ')}`;
+    let historicalRecords: RawJournalRecord[] = [];
+    try {
+      const historical = await run(historicalArgs);
+      historicalRecords = parseJournalJson(historical.stdout)
+        // With no caller grep, the fallback's literal unit pattern is already
+        // server-side. With one, journalctl must retain that original filter;
+        // this exact check prevents its unscoped read from returning another
+        // unit's matching message. Some historical rows carry the requested
+        // unit in a decoded field; manager lifecycle rows carry it in MESSAGE.
+        .filter((record) => unitsUnknown.some((unit) => record.unit === unit || record.message.includes(unit)));
+    } catch {
+      // The primary read succeeded. A failed auxiliary probe must not turn a
+      // genuinely empty read into a journal failure; keep unitsUnknown honest.
+      return { ...result, unitsUnknown, historicalCommand };
+    }
+
+    const historicalUnits = unitsUnknown.filter((unit) =>
+      historicalRecords.some((record) => record.unit === unit || record.message.includes(unit)),
+    );
+    if (!historicalUnits.length) return { ...result, unitsUnknown, historicalCommand };
+
+    const historicalTruncated = historicalRecords.length > limit;
+    const historicalKept = historicalTruncated
+      ? historicalRecords.slice(historicalRecords.length - limit)
+      : historicalRecords;
+    const { entries, collapsed } = collapseConsecutive(historicalKept);
+    return {
+      ...result,
+      entries,
+      matched: historicalRecords.length,
+      collapsed,
+      truncated: historicalTruncated,
+      // A unit with durable journal evidence is not a typo or a never-seen
+      // unit. Keep only the genuinely unproven names in unitsUnknown.
+      unitsUnknown: unitsUnknown.filter((unit) => !historicalUnits.includes(unit)),
+      unitsHistorical: historicalUnits,
+      historicalCommand,
+    };
   };
 
   /**

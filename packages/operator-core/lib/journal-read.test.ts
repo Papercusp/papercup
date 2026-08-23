@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildMacLogArgs,
   buildMacLogPredicate,
+  buildHistoricalJournalctlArgs,
   buildJournalctlArgs,
   clampLimit,
   classifyJournalctlFailure,
@@ -75,6 +76,20 @@ describe('buildJournalctlArgs', () => {
     expect(args[at + 1]).toBe('oom|killed process');
     // Case-insensitive, matching the `grep -i` the corpus hand-wrote.
     expect(args).toContain('--case-sensitive=false');
+  });
+
+  it('builds a bounded unscoped fallback for an exited transient unit', () => {
+    const args = buildHistoricalJournalctlArgs(
+      { units: ['gone.service'], since: '-20m', grep: 'error|failed' },
+      ['gone.service'],
+      4,
+    );
+    expect(args).not.toContain('-u');
+    expect(args[args.indexOf('--since') + 1]).toBe('-20 minutes');
+    expect(args[args.indexOf('-n') + 1]).toBe('5');
+    // Preserve the caller's grep server-side; unit attribution is checked from
+    // decoded fields/message after this bounded unscoped read.
+    expect(args[args.indexOf('--grep') + 1]).toBe('error|failed');
   });
 
   it('omits --grep entirely when no pattern is given (never an empty filter)', () => {
@@ -477,6 +492,27 @@ describe('readJournal — an empty result from a unit that does not exist', () =
   it('reports no unknown units when the unit exists and the window is simply clean', async () => {
     const out = await readJournal({ units: ['papercup-bg-host.service'] }, execReturning(''), probeSaying([]));
     expect(out.unitsUnknown).toEqual([]);
+  });
+
+  it('recovers historical records after a transient unit leaves systemd', async () => {
+    const unit = 'papercup-green-checkpoint-manual-1fxzuva.service';
+    const calls: string[][] = [];
+    const exec: JournalExec = async (args) => {
+      calls.push(args);
+      return { stdout: args.includes('-u') ? '' : jsonLine({ MESSAGE: `${unit}: Consumed 56s CPU time.` }) };
+    };
+    const out = await readJournal(
+      { units: [unit], since: '-20 min' },
+      exec,
+      probeSaying([unit]),
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).not.toContain('-u');
+    expect(out.entries[0]?.message).toContain(unit);
+    expect(out.unitsUnknown).toEqual([]);
+    expect(out.unitsHistorical).toEqual([unit]);
+    expect(out.historicalCommand).toContain('--grep');
+    expect(out.matched).toBe(1);
   });
 
   it('also resolves the ambiguity on the --grep-matched-nothing exit path', async () => {
