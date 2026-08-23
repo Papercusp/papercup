@@ -185,6 +185,19 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
 
   it('preserves the monitoring-blind advisory in the emergency byte-pressure projection', () => {
     const input = largeBrief();
+    (input.summary as Record<string, unknown>).admission_blocked = 6;
+    (input as Record<string, unknown>).admissionBlocked = Array.from({ length: 6 }, (_, index) => ({
+      itemId: `WI-${5891 + index}`,
+      member: `su-blocked-${index}`,
+      specId: 'large-fleet-spec',
+      specRevision: 3,
+      code: 'fleet_scope_violation',
+      occurrences: index + 1,
+      action: `work_items:claim WI-${5891 + index} → su-blocked-${index}`,
+      reason: 'work item is outside the fleet claim spec '.repeat(20),
+    }));
+    (input as Record<string, unknown>).admissionBlockedAction =
+      'NOT member discipline — widen the lane with scheduler:set_claim_spec, then let the member self-claim.';
     input.campaign.axes = Object.fromEntries(
       Array.from({ length: 200 }, (_, index) => [
         `axis-${index}`,
@@ -208,6 +221,18 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       line: expect.stringContaining('monitoring blind'),
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
     });
+    expect(out.summary).toMatchObject({ admission_blocked: 6 });
+    expect(out.admissionBlocked).toEqual([
+      expect.objectContaining({
+        itemId: 'WI-5891',
+        member: 'su-blocked-0',
+        specId: 'large-fleet-spec',
+        specRevision: 3,
+      }),
+    ]);
+    expect(out.admissionBlockedTruncated).toMatchObject({ total: 6, shown: 1 });
+    expect(out.admissionBlockedAction).toContain('scheduler:set_claim_spec');
+    expect(out.membersTruncated).toMatchObject({ total: 53, shown: 0 });
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });
 });

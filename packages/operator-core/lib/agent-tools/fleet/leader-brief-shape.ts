@@ -431,7 +431,11 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
       : {}),
     ...(source.summary !== undefined ? { summary: compactSummary(source.summary, true) } : {}),
-    leaderBriefProjection: { tier, emergency: true, note: 'Further optional detail was omitted to keep the monitor response valid JSON.' },
+    leaderBriefProjection: {
+      tier,
+      emergency: true,
+      note: 'Further optional detail was omitted to keep the monitor response valid JSON.',
+    },
   };
   if (Array.isArray(source.benchSuggestions)) {
     emergency.benchSuggestions = source.benchSuggestions.map(compactBenchSuggestion);
@@ -439,17 +443,34 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   // Emergency is a byte-pressure tier, not permission to turn bounded arrays
   // into unexplained omissions. Keep one actionable member/verdict and retain
   // truthful zero-shown pointers for every dropped family.
+  //
+  // EI-18680302159738037: an admission block outranks the ordinary member sample.
+  // The live 27-member reproduction reached this tier with admission_blocked=6
+  // but admissionBlocked shown=0, recreating the exact failure this field fixes:
+  // a leader knew *something* was blocked but could not see item/member/spec.
+  // Spend the existing verbose-member slot on one compact block instead, and
+  // carry its resolving action. memberVerdicts still preserves a member identity.
+  const hasAdmissionBlocks = Array.isArray(source.admissionBlocked) && source.admissionBlocked.length > 0;
   addCappedArray(emergency, source, 'memberVerdicts', 1, compactVerdict);
-  addCappedArray(emergency, source, 'members', 1, compactMember);
+  addCappedArray(emergency, source, 'members', hasAdmissionBlocks ? 0 : 1, compactMember);
   for (const key of ['unownedCriticals', 'unownedCriticalsFederated', 'abandonedUnclaimed', 'orphanedInFlight']) {
     addCappedArray(emergency, source, key, 0, compactAdvisory);
   }
-  addCappedArray(emergency, source, 'admissionBlocked', 0, compactAdmissionBlock);
+  addCappedArray(emergency, source, 'admissionBlocked', hasAdmissionBlocks ? 1 : 0, compactAdmissionBlock);
+  if (hasAdmissionBlocks && source.admissionBlockedAction !== undefined) {
+    emergency.admissionBlockedAction = clip(source.admissionBlockedAction, 220) ?? source.admissionBlockedAction;
+  }
   addCappedArray(emergency, source, 'customInvariants', 0, compactInvariant);
   if (source.specFilter !== undefined) {
     emergency.specFilterOmitted = {
       reason: 'bounded for monitor transport',
-      chars: (() => { try { return JSON.stringify(source.specFilter).length; } catch { return null; } })(),
+      chars: (() => {
+        try {
+          return JSON.stringify(source.specFilter).length;
+        } catch {
+          return null;
+        }
+      })(),
       more: 'scheduler:get_claim_spec { fleet }',
     };
   }
