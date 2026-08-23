@@ -1664,12 +1664,11 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   'sed',
   'ss',
   'systemctl',
-  'journalctl',
-  'date',
+  'tail',
+  'tsc',
   'uptime',
-  'nproc',
-  'free',
-  'grep',
+  'vitest',
+  // END GENERATED gen:tool-routing prefilter heads
 ]);
 
 /**

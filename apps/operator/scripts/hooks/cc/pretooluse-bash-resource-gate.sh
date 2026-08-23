@@ -5031,59 +5031,35 @@ _SUBST_RUNNER_RE = re.compile(
     r'^(?:sudo\s+(?:-n\s+)?|nohup\s+|timeout\s+\S+\s+|time\s+|env\s+|command\s+|exec\s+)+')
 _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 
-# Atom heads any enabled registry row can claim. Kept as a SET (not a regex
-# alternation) so it stays a cheap hash lookup on the hot path.
-#
-# DRIFT IS THE HAZARD HERE — the same one migration 665's comment names about
-# the resource pre-filter ("a new resource with a novel pattern needs a token
-# added here"). A row added to the registry whose verb is missing from this set
-# is enforced nowhere and reports nothing. That is guarded mechanically rather
-# than by memory: bash-resource-gate.test.ts replays every atom in the committed
-# equivalence FIXTURES through this script and asserts each one reaches the
-# operator, so adding a pair without adding its verb here fails that test.
-#
-# P-009 adds 'systemctl' and 'curl' (the service family). `systemctl` is ALSO
-# matched by the resource regex below, so it reaches the operator either way
-# today — it is listed here regardless, because the two pre-filters answer
-# different questions and a future edit to the resource token list must not
-# silently disable the substitution rules that depend on this verb.
-#
-# P-010 adds 'git' (the git-read family, `capability:git`). Reads only — the
-# pair's own pattern decides which `git` atoms it claims; this set only decides
-# which ones pay the operator round-trip at all.
-#
-# 'ss'/'netstat'/'lsof' serve `service.listening-ports` → `dev:listening_ports`.
-# The pair's own bashPattern (/^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/)
-# decides which atoms it actually claims — notably only `lsof` calls carrying an
-# `-i`/`--i` socket selector. This set only decides which heads pay the operator
-# round-trip at all, so it lists the bare verbs.
-#
-# P-021 adds 'npx'/'vitest' (the test family → `testing:run`): `tests.raw-vitest`
-# claims `(npx )?vitest run <paths>`, so the head after runner/env stripping is
-# either `npx` or the bare `vitest`. Its sibling `tests.router-files` claims
-# `npm run test:file -- <paths>`, whose head is `npm` — deliberately NOT listed
-# here, because `npm` fronts nearly every build/test/lint command in this repo
-# and `npm run lint` must keep paying nothing. That shape is matched as a PHRASE
-# by _SUBSTITUTION_PHRASE_RE below instead.
-#
-# P-023 adds 'journalctl' (the service-log family → `logs:read`). The pair's own
-# pattern excludes the non-window shapes (follow, boot selection, kernel,
-# cursors, maintenance verbs) and elevated reads, so this only decides which
-# atoms pay the operator round-trip at all.
-#
-# P-026/P-027 add the AMBIENT-CONTEXT family ('date', 'uptime', 'nproc',
-# 'free') — the four reads whose answer coord:orient already delivers in the
-# agent's `host` block, so the substitution is "call nothing". Only a
-# COMMAND-POSITION atom head is tested, so an inline `$(date …)` string
-# interpolation inside a larger command is NOT claimed (its head is the outer
-# verb) — which is exactly right: that shape has no tool form and the pairs
-# deliberately exclude it.
+# Atom heads any enabled registry row can claim. A SET (not a regex alternation)
+# keeps this a cheap hash lookup on the hot path. The shell and TypeScript hooks
+# cannot import application code, so `npm run gen:tool-routing` derives both
+# copies from `BASH_GATE_PAIRS` plus their committed fixtures. Check mode refuses
+# drift before CI; the fixture-replay tests independently prove every actionable
+# atom still clears this prefilter. Broad `npm` remains phrase-routed below.
 _SUBSTITUTION_HEADS = frozenset((
-    'sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git',
-    'ss', 'netstat', 'lsof',
-    'npx', 'vitest', 'journalctl',
-    'date', 'uptime', 'nproc', 'free',
+    # BEGIN GENERATED gen:tool-routing prefilter heads — do not edit by hand
+    'cat',
+    'curl',
+    'date',
+    'free',
+    'git',
     'grep',
+    'head',
+    'journalctl',
+    'lsof',
+    'netstat',
+    'nproc',
+    'npx',
+    'psql',
+    'sed',
+    'ss',
+    'systemctl',
+    'tail',
+    'tsc',
+    'uptime',
+    'vitest',
+    # END GENERATED gen:tool-routing prefilter heads
 ))
 
 # Narrow phrases a substitution row claims whose bare head is too common for the
