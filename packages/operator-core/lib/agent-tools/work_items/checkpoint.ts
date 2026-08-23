@@ -824,18 +824,47 @@ export default defineTool({
                 return withCarryNoteChecks(trimmedBody, merged);
               }
             : undefined;
-        let res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
-          ...(checksTransform ? { transform: checksTransform } : {}),
-          guard:
-            isPlainReplace && !wantsConfirmShrink
-              ? (_priorNote, priorLen) =>
-                  priorLen > 500 && newLength < priorLen * 0.5
-                    ? `plain replace would shrink the checkpoint from ${priorLen} to ${newLength} chars (>50% loss). ` +
-                      'Pass { append: true } to join onto the existing checkpoint instead, or { confirmShrink: true } ' +
-                      'if this replace is intentional.'
-                    : null
-              : additiveChecks && !wantsConfirmShrink
-                ? // WI-7190: `append:true` used to arm NO guard at all — "the one mode whose
+        /**
+         * EI-21228214077347799: the shrink guard and the checks-overflow guard protect
+         * INDEPENDENT axes — the first the BODY being replaced, the second the check ROWS
+         * being unioned — and the default `rowsMode:'merge'` WITH a body is BOTH at once
+         * (the body replaces, so `isPlainReplace`; the rows union, so `additiveChecks`).
+         * Chaining them as `isPlainReplace ? shrink : additiveChecks ? overflow : undefined`
+         * handed the single guard slot to the shrink guard, which knows nothing about rows,
+         * so the overflow guard never ran on the most common write shape in the tool and the
+         * transform evicted the carried tail exactly as the pre-WI-7190 append path did —
+         * silently, still returning ok:true, and trading ✓ VERIFIED carried rows for
+         * ? PREDICTED supplied ones.
+         *
+         * Compose instead: every APPLICABLE guard runs and the first refusal wins, so
+         * neither axis can mask the other. Order is deliberate — the two no-loss guards are
+         * checked BEFORE the shrink guard, because a shrink refusal is retried below
+         * (EI-20232176364474286) while a row-loss refusal must be terminal.
+         */
+        type CheckpointGuard = (priorNote: string | null, priorLength: number) => string | null;
+        const composeGuards = (...guards: Array<CheckpointGuard | null>): CheckpointGuard | undefined => {
+          const active = guards.filter((g): g is CheckpointGuard => g !== null);
+          if (active.length === 0) return undefined;
+          return (priorNote, priorLen) => {
+            for (const guard of active) {
+              const refusal = guard(priorNote, priorLen);
+              if (refusal) return refusal;
+            }
+            return null;
+          };
+        };
+        const shrinkGuard: CheckpointGuard | null =
+          isPlainReplace && !wantsConfirmShrink
+            ? (_priorNote, priorLen) =>
+                priorLen > 500 && newLength < priorLen * 0.5
+                  ? `plain replace would shrink the checkpoint from ${priorLen} to ${newLength} chars (>50% loss). ` +
+                    'Pass { append: true } to join onto the existing checkpoint instead, or { confirmShrink: true } ' +
+                    'if this replace is intentional.'
+                  : null
+            : null;
+        const appendBaseGuard: CheckpointGuard | null =
+          additiveChecks && !wantsConfirmShrink
+            ? // WI-7190: `append:true` used to arm NO guard at all — "the one mode whose
                   // whole contract is 'never lose the existing text' was the mode with no
                   // shrink protection." Confirmed live: the tool's own pre-read
                   // (getWorkItemCheckpoint, above) came back empty on a resolvable item while
@@ -847,30 +876,54 @@ export default defineTool({
                   // tool's separate pre-read above — so disagreement between the two is
                   // exactly the failure signature: the write path resolves the item, the
                   // (different) read path used to build the join does not.
-                  (_priorNote, priorLen) => {
-                    if (didAttemptJoin && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)) {
-                      return `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
-                        `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
-                        'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +
-                        'joining — refusing the write rather than losing it. Retry (a transient read/key mismatch is the ' +
-                        'likely cause), pass { harness } explicitly, or pass { confirmShrink: true } to force the replace ' +
-                        'if that is actually intended.';
-                    }
-                    const overflowCount = additiveChecks ? appendChecksOverflowCount(_priorNote, suppliedChecks) : 0;
-                    return overflowCount > 0
-                      ? `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
-                        `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
-                        `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
-                        '(or with `checks: []`) to preserve the carried set.'
-                      : null;
-                  }
-                : undefined,
+              (_priorNote, priorLen) =>
+                didAttemptJoin && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)
+                  ? `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
+                    `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
+                    'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +
+                    'joining — refusing the write rather than losing it. Retry (a transient read/key mismatch is the ' +
+                    'likely cause), pass { harness } explicitly, or pass { confirmShrink: true } to force the replace ' +
+                    'if that is actually intended.'
+                  : null
+            : null;
+        /**
+         * Armed independently of `isPlainReplace` — that is the EI-21228214077347799 fix.
+         * It also covers the shrink-retry below: that retry sets `preservePriorOnShrink`,
+         * which makes the checks additive (see `effectiveChecks`), so the same closure —
+         * reading both flags at call time, inside the store's lock — is what stops the
+         * retry from evicting the rows the first attempt refused to lose.
+         */
+        const overflowGuard: CheckpointGuard | null = !wantsConfirmShrink && suppliedChecks !== undefined
+          ? (_priorNote) => {
+              if (!(additiveChecks || preservePriorOnShrink)) return null;
+              const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
+              return overflowCount > 0
+                ? `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
+                  `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
+                  `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
+                  '(or with `checks: []`) to preserve the carried set.'
+                : null;
+            }
+          : null;
+        let res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+          ...(checksTransform ? { transform: checksTransform } : {}),
+          guard: composeGuards(appendBaseGuard, overflowGuard, shrinkGuard),
           ...depsOpt,
         });
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
         // not strand a normal concise progress refresh on a manual retry. A blocked
-        // plain shrink is retried once with no guard and the transform above appends
-        // it under the current locked prior. Other blockers remain refusals.
+        // plain shrink is retried once WITHOUT the shrink guard and the transform above
+        // appends it under the current locked prior. Other blockers remain refusals.
+        //
+        // EI-21228214077347799: "without the shrink guard" is not "without any guard".
+        // Setting `preservePriorOnShrink` makes the checks additive, so retrying with no
+        // guard at all re-opened the very row eviction the first attempt was refusing —
+        // the retry became a second door to the same loss. Re-arm the overflow guard;
+        // only the shrink guard is dropped, which is the whole point of the retry. The
+        // append-base guard is deliberately NOT re-armed: reaching this branch requires
+        // `isPlainReplace`, hence no append, so it could never fire here anyway — and
+        // arming an inert guard would break the invariant that this retry runs unguarded
+        // except where a real loss is possible.
         if (res.blockedReason?.includes('plain replace would shrink') && isPlainReplace && !wantsConfirmShrink) {
           preservePriorOnShrink = true;
           res = await setWorkItemCheckpointWithPrior(
@@ -878,6 +931,7 @@ export default defineTool({
             checkpointToStore,
             {
               ...(checksTransform ? { transform: checksTransform } : {}),
+              guard: composeGuards(appendBaseGuard, overflowGuard),
               ...depsOpt,
             },
           );
