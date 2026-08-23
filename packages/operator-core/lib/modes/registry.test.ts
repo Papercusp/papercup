@@ -122,6 +122,33 @@ describe('DRAIN mode defect-filing contract (WI-38401)', () => {
   });
 });
 
+describe('GOAL mode STANDING clause (work-on-everything-goal-2026-08-23 P-008)', () => {
+  const goal = modeById('goal');
+
+  it('carries the standing-goal addendum with posture, scope, placement and routing', () => {
+    expect(goal).not.toBeNull();
+    // The clause exists and names the real door — goals:start { standing: true }.
+    expect(goal!.contract).toContain('STANDING GOALS');
+    expect(goal!.contract).toContain('goals:start { standing: true }');
+    // P-008: posture unchanged — create/place/arbitrate/kill, never implement.
+    expect(goal!.contract).toMatch(/posture above is UNCHANGED/);
+    expect(goal!.contract).toMatch(/standing changes what you steward, not how/);
+    // D-003 coherence: the criterion's absence is definitional — never invented,
+    // never "corrected" (mirrors STANDING_GOAL_KILL_POLARITY in goals/kill-criterion.ts).
+    expect(goal!.contract).toMatch(/do NOT invent a kill criterion/);
+    expect(goal!.contract).toMatch(/ends only when the owner stops it or a tripwire fires/);
+    // P-004 coherence: the spend rail is the rolling window, not a lifetime ceiling.
+    expect(goal!.contract).toContain('budgetCents over budgetWindowSec');
+    expect(goal!.contract).toMatch(/scheduled auto-kill/);
+    // P-008: scope = the workspace's unowned frontier + platform self-improvement.
+    expect(goal!.contract).toMatch(/UNOWNED frontier/);
+    expect(goal!.contract).toContain('platform self-improvement');
+    // P-008: never a second silent placer; cross-goal findings go to their goal's agent.
+    expect(goal!.contract).toMatch(/NEVER place work into another ACTIVE goal's pots/);
+    expect(goal!.contract).toMatch(/ROUTE it\s+to that goal's agent/);
+  });
+});
+
 describe('GOAL mode DAG addendum (goal-dag-shared-substrate-2026-08-18 P-006)', () => {
   const goal = modeById('goal');
 
