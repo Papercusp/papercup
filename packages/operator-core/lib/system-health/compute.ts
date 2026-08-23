@@ -28,6 +28,7 @@ import { promisify } from 'node:util';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
+import { ALWAYS_ON_SYSTEM_ROUTINE_NAMES, isReaffirmed } from '../harness/routines/bespoke-active-seeds-check';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -899,6 +900,12 @@ export interface StalePausedRoutineInput {
   pausedAtMs?: number | null;
   /** metadata.pause.reason, if recorded. */
   pauseReason?: string | null;
+  /** metadata.pause.reviewBy — the RE-AFFIRMATION contract borrowed from the
+   *  learning-loop-health sweep (EI-19370236916382521): a dated future value means
+   *  "someone has looked at this pause again and it is still deliberate". Nothing
+   *  writes it for system routines today, which is exactly why an always-on routine
+   *  must not be allowed to age out silently — see the doc comment below. */
+  pauseReviewBy?: string | null;
   /** Fallback age anchor (the row's updated_at) for when pausedAtMs is absent —
    *  so an unattributed legacy pause still gets a reportable age instead of none. */
   updatedAtMs?: number | null;
@@ -922,6 +929,12 @@ export interface StalePausedRoutine {
   reasonMissing: boolean;
   /** A release/deploy-critical routine (release-trigger, green-checkpoint). */
   critical: boolean;
+  /** EI-18137248342636257: an ALWAYS-ON system routine (a `BESPOKE_ACTIVE_SEEDS`
+   *  registry name) whose pause has never been re-affirmed, reported past the
+   *  decommissioned-age cutoff that would otherwise have silenced it. Distinguishes
+   *  "this survived the exemption on purpose" from an ordinary in-window row, so the
+   *  alarm text can say WHY a 13-day-old pause is still being reported. */
+  alwaysOnUnreaffirmed: boolean;
 }
 
 /**
@@ -954,6 +967,26 @@ export interface StalePausedRoutine {
  * nobody has touched in a week+ (a decommissioned/retired routine, e.g. `hive-wake`) —
  * reporting it as a fresh stale-pause alarm indefinitely is itself the false-alarm bug.
  *
+ * EI-18137248342636257: that decommissioned reading is right for an ANONYMOUS routine
+ * (`hive-wake`) and empirically WRONG for an always-on one. Measured 2026-08-23: twelve
+ * `cross-hive-outbox-drain` rows — a `BESPOKE_ACTIVE_SEEDS` registry routine — had sat
+ * dark 13.6d carrying the reason "Owner directive 2026-08-09 (Avi, interactive): pause
+ * p2p work - machine churning. **Reversible; resume with active:true**", every one with
+ * `reviewBy: null`. A pause that names its own reversal is the opposite of decommissioned,
+ * and this cutoff had silenced all twelve since day 7 — the very outage class this
+ * subsystem exists to catch, reproduced under the exemption meant to quiet it.
+ *
+ * So an always-on system routine escapes the cutoff UNLESS its pause is re-affirmed
+ * (`metadata.pause.reviewBy` in the future — the learning-loop sweep's contract,
+ * EI-19370236916382521, via the shared `isReaffirmed`, which fails CLOSED). This is a
+ * REACH fix to an existing exemption, not a fourth aging mechanism — plan decision D-007
+ * (silent-halt-detection-and-owner-rails-2026-08-08) forbids the latter, and D-006 forbids
+ * the other intuitive remedy (tightening the pause-reason validator). Note the discriminator
+ * is deliberately NOT `reasonMissing`: all twelve live instances are fully ATTRIBUTED, so
+ * keying on missing attribution would have caught exactly none of them while re-breaking
+ * the retired-routine case above. The escape hatch stays bounded to the ~28 registry names,
+ * so a genuinely retired non-registry routine still ages out exactly as before.
+ *
  * This cutoff deliberately does NOT apply when `critical` is true (release-critical-
  * named AND install-matching): the whole POINT of the critical path is to keep
  * flagging a paused release-trigger/green-checkpoint no matter how long it sits —
@@ -967,12 +1000,13 @@ export interface StalePausedRoutine {
 export function computeStalePausedRoutines(
   rows: ReadonlyArray<StalePausedRoutineInput>,
   now: number,
-  opts: { generalMs?: number; criticalMs?: number; decommissionedMs?: number; criticalNames?: ReadonlySet<string>; currentInstallSlug?: string | null } = {},
+  opts: { generalMs?: number; criticalMs?: number; decommissionedMs?: number; criticalNames?: ReadonlySet<string>; alwaysOnNames?: ReadonlySet<string>; currentInstallSlug?: string | null } = {},
 ): StalePausedRoutine[] {
   const generalMs = opts.generalMs ?? STALE_PAUSE_GENERAL_MS;
   const criticalMs = opts.criticalMs ?? STALE_PAUSE_CRITICAL_MS;
   const decommissionedMs = opts.decommissionedMs ?? STALE_PAUSE_DECOMMISSIONED_MS;
   const criticalNames = opts.criticalNames ?? RELEASE_CRITICAL_ROUTINE_NAMES;
+  const alwaysOnNames = opts.alwaysOnNames ?? ALWAYS_ON_SYSTEM_ROUTINE_NAMES;
   const out: StalePausedRoutine[] = [];
   for (const r of rows) {
     // isReleaseCriticalNamed drives the THRESHOLD (a release routine deserves the
@@ -988,14 +1022,19 @@ export function computeStalePausedRoutines(
     if (anchorMs == null) {
       // No timestamp readable at all — can't judge decommissioned-vs-paused, so err
       // toward still flagging (the pre-existing, unchanged behavior for this case).
-      out.push({ name: r.name, ageMs: Number.POSITIVE_INFINITY, reasonMissing: true, critical });
+      out.push({ name: r.name, ageMs: Number.POSITIVE_INFINITY, reasonMissing: true, critical, alwaysOnUnreaffirmed: false });
       continue;
     }
     const ageMs = Math.max(0, now - anchorMs);
-    if (!critical && ageMs >= decommissionedMs) continue; // decommissioned, not a live stale-pause signal (critical rows are NEVER exempted this way — see doc comment)
+    // EI-18137248342636257: an always-on system routine outruns the decommissioned cutoff
+    // unless someone has RE-AFFIRMED the pause. isReaffirmed fails closed, so a missing or
+    // unparseable reviewBy keeps the row reported rather than silently exempting it.
+    const alwaysOnUnreaffirmed = alwaysOnNames.has(r.name) && !isReaffirmed(r.pauseReviewBy ?? null, now);
+    const decommissioned = ageMs >= decommissionedMs;
+    if (!critical && !alwaysOnUnreaffirmed && decommissioned) continue; // decommissioned, not a live stale-pause signal (critical + unreaffirmed always-on rows are NEVER exempted this way — see doc comment)
     const threshold = isReleaseCriticalNamed ? criticalMs : generalMs;
     if (reasonMissing || ageMs >= threshold) {
-      out.push({ name: r.name, ageMs, reasonMissing, critical });
+      out.push({ name: r.name, ageMs, reasonMissing, critical, alwaysOnUnreaffirmed: alwaysOnUnreaffirmed && decommissioned });
     }
   }
   // Critical first (the symptom that matters most), then oldest first within each group.
@@ -1035,13 +1074,15 @@ export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: str
             AND r2.install_slug IS NOT DISTINCT FROM r.install_slug
        )`;
   const inputs: StalePausedRoutineInput[] = rows.map((r) => {
-    const pause = (r.metadata?.pause ?? null) as { reason?: unknown; pausedAtMs?: unknown } | null;
+    const pause = (r.metadata?.pause ?? null) as { reason?: unknown; pausedAtMs?: unknown; reviewBy?: unknown } | null;
     const pausedAtMs = typeof pause?.pausedAtMs === 'number' ? pause.pausedAtMs : null;
     const pauseReason = typeof pause?.reason === 'string' && pause.reason.length > 0 ? pause.reason : null;
+    const pauseReviewBy = typeof pause?.reviewBy === 'string' && pause.reviewBy.length > 0 ? pause.reviewBy : null;
     return {
       name: r.name,
       pausedAtMs,
       pauseReason,
+      pauseReviewBy,
       updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : null,
       installSlug: r.install_slug,
     };
