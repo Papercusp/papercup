@@ -251,6 +251,36 @@ export type PlannedAction =
  * `xdotool` args do NOT include the `xdotool` binary or the `DISPLAY` env — the
  * executor supplies those (binding `DISPLAY` to the sandbox target).
  */
+/**
+ * The move prefix every coordinate action shares: a 1px NUDGE toward the interior,
+ * then the real `mousemove --sync` (D-014, EI-21256574817493619).
+ *
+ * ⚠ THE NUDGE IS LOAD-BEARING — do not "simplify" it away. `xdotool mousemove --sync
+ * X Y` takes ~15.1–15.4s when the pointer is ALREADY at (X,Y) and a window manager is
+ * running (~195ms without one, which is why a bare-Xvfb probe cannot see this). Since
+ * `EXEC_TIMEOUT_MS` is 15,000ms, we SIGKILL xdotool ~200ms into its own 15,196ms wait
+ * — DURING the sync, before the chained `click` is sent — so a second click on the
+ * same coordinate burns 15 seconds, reports FAILED, and never clicks. Repeated
+ * scrolling at one point and clicking a button twice are the ordinary cases.
+ *
+ * Nudging first makes the pre-sync position differ from the target BY CONSTRUCTION,
+ * so the sync always has a real transition to wait for: measured 5ms for the same
+ * repeat that costs 15,196ms without it. Both commands ride ONE xdotool invocation,
+ * hence one X connection, hence ordered.
+ *
+ * `--sync` itself is KEPT (dropping it also measures fast) because it is a real
+ * guarantee — on return the pointer IS at the target — and the next action is a
+ * separate xdotool process on a new connection, so without it the settle is a race.
+ * 50/50 trials came back clean on an IDLE display; this box runs at load 190, which
+ * is where that race would actually bite.
+ */
+export function movePrefixArgs(x: number, y: number): string[] {
+  // Toward the interior, so the nudge can never land off-screen (and be clamped back
+  // onto the target, which would reinstate the no-op sync it exists to prevent).
+  const nudged = x > 0 ? x - 1 : x + 1;
+  return ['mousemove', String(nudged), String(y), 'mousemove', '--sync', String(x), String(y)];
+}
+
 export function planAction(input: ComputerActionInput, target: DesktopTarget): PlannedAction {
   switch (input.action) {
     case 'screenshot':
@@ -263,7 +293,7 @@ export function planAction(input: ComputerActionInput, target: DesktopTarget): P
     }
     case 'mouse_move': {
       const [x, y] = coord(input, target);
-      return { kind: 'xdotool', args: ['mousemove', '--sync', String(x), String(y)] };
+      return { kind: 'xdotool', args: movePrefixArgs(x, y) };
     }
     case 'left_click':
     case 'right_click':
@@ -272,7 +302,7 @@ export function planAction(input: ComputerActionInput, target: DesktopTarget): P
       const args: string[] = [];
       if (input.coordinate) {
         const [x, y] = coord(input, target);
-        args.push('mousemove', '--sync', String(x), String(y));
+        args.push(...movePrefixArgs(x, y));
       }
       args.push('click', button);
       return { kind: 'xdotool', args };
@@ -283,7 +313,7 @@ export function planAction(input: ComputerActionInput, target: DesktopTarget): P
       const args: string[] = [];
       if (input.coordinate) {
         const [x, y] = coord(input, target);
-        args.push('mousemove', '--sync', String(x), String(y));
+        args.push(...movePrefixArgs(x, y));
       }
       args.push('click', '--repeat', repeat, '--delay', '120', '1');
       return { kind: 'xdotool', args };
@@ -295,7 +325,7 @@ export function planAction(input: ComputerActionInput, target: DesktopTarget): P
     case 'left_click_drag': {
       const [x, y] = coord(input, target);
       // Press at current position, drag to the target, release.
-      return { kind: 'xdotool', args: ['mousedown', '1', 'mousemove', '--sync', String(x), String(y), 'mouseup', '1'] };
+      return { kind: 'xdotool', args: ['mousedown', '1', ...movePrefixArgs(x, y), 'mouseup', '1'] };
     }
     case 'type': {
       if (typeof input.text !== 'string') throw new Error("capability:computer — 'type' requires text");
@@ -320,7 +350,7 @@ export function planAction(input: ComputerActionInput, target: DesktopTarget): P
       const args: string[] = [];
       if (input.coordinate) {
         const [x, y] = coord(input, target);
-        args.push('mousemove', '--sync', String(x), String(y));
+        args.push(...movePrefixArgs(x, y));
       }
       args.push('click', '--repeat', String(amount), button);
       return { kind: 'xdotool', args };

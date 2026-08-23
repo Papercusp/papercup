@@ -54,17 +54,17 @@ describe('planAction — canonical action → xdotool argv', () => {
     expect(planAction({ action: 'wait', duration: 999 }, T)).toEqual({ kind: 'wait', ms: 30000 });
   });
 
-  it('mouse_move → mousemove --sync x y', () => {
+  it('mouse_move → a 1px nudge, then mousemove --sync x y (D-014)', () => {
     expect(planAction({ action: 'mouse_move', coordinate: [300, 250] }, T)).toEqual({
       kind: 'xdotool',
-      args: ['mousemove', '--sync', '300', '250'],
+      args: ['mousemove', '299', '250', 'mousemove', '--sync', '300', '250'],
     });
   });
 
   it('left_click WITH coordinate moves then clicks button 1', () => {
     expect(planAction({ action: 'left_click', coordinate: [10, 20] }, T)).toEqual({
       kind: 'xdotool',
-      args: ['mousemove', '--sync', '10', '20', 'click', '1'],
+      args: ['mousemove', '9', '20', 'mousemove', '--sync', '10', '20', 'click', '1'],
     });
   });
 
@@ -80,13 +80,13 @@ describe('planAction — canonical action → xdotool argv', () => {
 
   it('double_click → click --repeat 2', () => {
     expect((planAction({ action: 'double_click', coordinate: [5, 5] }, T) as { args: string[] }).args).toEqual([
-      'mousemove', '--sync', '5', '5', 'click', '--repeat', '2', '--delay', '120', '1',
+      'mousemove', '4', '5', 'mousemove', '--sync', '5', '5', 'click', '--repeat', '2', '--delay', '120', '1',
     ]);
   });
 
   it('left_click_drag → mousedown, move, mouseup', () => {
     expect((planAction({ action: 'left_click_drag', coordinate: [100, 200] }, T) as { args: string[] }).args).toEqual([
-      'mousedown', '1', 'mousemove', '--sync', '100', '200', 'mouseup', '1',
+      'mousedown', '1', 'mousemove', '99', '200', 'mousemove', '--sync', '100', '200', 'mouseup', '1',
     ]);
   });
 
@@ -114,7 +114,7 @@ describe('planAction — canonical action → xdotool argv', () => {
 
   it('clamps an out-of-bounds coordinate into the display', () => {
     expect((planAction({ action: 'mouse_move', coordinate: [99999, -50] }, T) as { args: string[] }).args).toEqual([
-      'mousemove', '--sync', '1023', '0',
+      'mousemove', '1022', '0', 'mousemove', '--sync', '1023', '0',
     ]);
   });
 
@@ -267,7 +267,7 @@ describe('D-006 capture geometry', () => {
       // display that is (1875, 938). Without the mapping the click lands at (1000, 500)
       // — roughly half-way up and left of where the model aimed.
       const plan = planAction({ action: 'left_click', coordinate: [1000, 500] }, FRAME) as { args: string[] };
-      expect(plan.args).toEqual(['mousemove', '--sync', '1875', '938', 'click', '1']);
+      expect(plan.args).toEqual(['mousemove', '1874', '938', 'mousemove', '--sync', '1875', '938', 'click', '1']);
     });
 
     it('clamps in CAPTURE space, so the image corner reaches the SCREEN corner', () => {
@@ -275,7 +275,9 @@ describe('D-006 capture geometry', () => {
       // screenshot stayed full-size, so coord() clamped every click to 1023x767 and the
       // bottom-right ~72% of a 1920x1080 frame was unreachable.
       const plan = planAction({ action: 'left_click', coordinate: [99999, 99999] }, FRAME) as { args: string[] };
-      const [x, y] = [Number(plan.args[2]), Number(plan.args[3])];
+      // args = [mousemove, nudgeX, nudgeY, mousemove, --sync, x, y, …] (D-014), so the
+      // SYNCED target is 5/6 — reading 2/3 would silently assert about the nudge.
+      const [x, y] = [Number(plan.args[5]), Number(plan.args[6])];
 
       // Lands in the LAST capture pixel, which covers display columns 1918-1919 (and
       // rows 1078-1079). Asserting an exact 1919x1079 would be over-specifying: capture
@@ -295,7 +297,7 @@ describe('D-006 capture geometry', () => {
 
     it('is unchanged when there is no capture box', () => {
       const plan = planAction({ action: 'mouse_move', coordinate: [300, 250] }, T) as { args: string[] };
-      expect(plan.args).toEqual(['mousemove', '--sync', '300', '250']);
+      expect(plan.args).toEqual(['mousemove', '299', '250', 'mousemove', '--sync', '300', '250']);
     });
 
     it('round-trips display→capture→display within a scaled pixel', () => {
