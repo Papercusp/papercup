@@ -142,10 +142,8 @@ export async function awaitMemberDrain(opts: {
   let rosterOwnerIds: string[] = [];
   let sessionState: string | null = null;
   for (let poll = 0; ; poll += 1) {
-    let rosterReadable = false;
     try {
       const rows = await list();
-      rosterReadable = true;
       rosterOwnerIds = rows.map((r) => r.ownerId);
       if (!rosterOwnerIds.includes(memberOwnerId)) {
         const at = now();
@@ -169,9 +167,6 @@ export async function awaitMemberDrain(opts: {
     if (at - startedAt + intervalMs > timeoutMs || poll + 1 >= maxPolls) {
       return { verified: false, terminal: null, sessionState, waitedMs: at - startedAt, rosterOwnerIds };
     }
-    // Keep the local variable explicit: a successful read with the member still present is
-    // different from a degraded read, but neither is terminal and both continue polling.
-    void rosterReadable;
     await sleep(intervalMs);
   }
 }
@@ -448,7 +443,7 @@ export default defineTool({
         );
       }
     }
-    if (!kill.ok && !kill.alreadyGone) {
+    if (!kill.ok && !kill.alreadyGone && !kill.unmanaged) {
       return json({ ok: false, error: 'kill_failed', fleet: slug, member: memberOwnerId, killed: kill.data, message: 'could not drain the old member — NOT launching a replacement (would double-run the lane).' }, true);
     }
     const drainOutcome = kill.unmanaged
