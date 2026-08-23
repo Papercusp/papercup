@@ -902,6 +902,29 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(written).toContain('- ✓ ');
     });
 
+    it('keeps literal lifecycle fields and await counts VERIFIED at the writer boundary', async () => {
+      const literalStateEvidence = [
+        'events:status expected_verdict=pending',
+        'D-077 pending-fire hold',
+        'loop health check reported five live awaits',
+      ];
+
+      for (const evidence of literalStateEvidence) {
+        const b = body(
+          await call({
+            did: 'checkpointed the observed loop state',
+            checks: [{ claim: 'the observed loop state is verified', recheck: 'repeat the state probe', verified: evidence }],
+          }),
+        );
+        expect(b.ok, evidence).toBe(true);
+        expect(b.repairs, evidence).toBeUndefined();
+        const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
+        expect(written, evidence).toContain('- ✓ ');
+        expect(written, evidence).toContain(evidence);
+        expect(written, evidence).not.toContain('- ⚠ ');
+      }
+    });
+
     it('maps descriptive label/name rows to `claim` while preserving an explicit claim', () => {
       const out = parse({
         checks: [

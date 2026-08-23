@@ -286,6 +286,26 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     }
   });
 
+  it('keeps literal lifecycle fields and await counts VERIFIED', () => {
+    const literalStateEvidence = [
+      'events:status expected_verdict=pending',
+      'D-077 pending-fire hold',
+      'loop health check reported five live awaits',
+      'events:status expected_verdict=pending; D-077 pending-fire hold; loop health check reported five live awaits',
+    ];
+
+    for (const evidence of literalStateEvidence) {
+      expect(findVerificationConflict(evidence), evidence).toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim: 'the observed loop state is verified', recheck: 'repeat the state probe', verified: evidence }],
+        [],
+        Date.parse('2026-07-19T05:00:00.000Z'),
+      );
+      expect(row?.verified, evidence).toContain(evidence);
+      expect(row, evidence).not.toHaveProperty('contested');
+    }
+  });
+
   it('renders an explicitly contested row with ⚠ and never upgrades it to ✓', () => {
     const row: CheckEntry = {
       claim: 'the suite is green',
