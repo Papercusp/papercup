@@ -125,6 +125,14 @@ function sameSha(a: string | null | undefined, b: string | null | undefined): bo
   return left === right || left.startsWith(right) || right.startsWith(left);
 }
 
+function targetIsNotGreenPinned(position: PipelinePosition): boolean {
+  // `positions.inMain` answers a different question: origin/main can contain a
+  // newer or force-deployed commit than the last green pin. Legacy callers that
+  // omit the new measurement therefore fail closed too; a trace cannot recommend
+  // deploying a lineage whose green-pin containment was not measured.
+  return position.verdictProvenance.targetIncludedInGreenPin !== true;
+}
+
 function gateJudgedTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): boolean {
   // `position.gate` is the canonical projection for direct callers. The explicit
   // input field is preferred when the agent-tool wrapper supplies the same snapshot,
@@ -439,11 +447,14 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   }
   if (gate.fireStale)
     add('gate-not-firing', true, gate.fireStaleReason ?? 'The green-checkpoint is not producing fresh verdicts.');
-  if (position.targetSha && !position.positions.inMain) {
+  if (position.targetSha && targetIsNotGreenPinned(position)) {
+    const measured = position.verdictProvenance.targetIncludedInGreenPin;
     add(
-      'target-not-green-pinned',
+      measured === false ? 'target-not-green-pinned' : 'green-pin-containment-unmeasured',
       true,
-      'The target is not in origin/main and has no exact green-gate provenance yet.',
+      measured === false
+        ? 'The target is in origin/main but is not contained by the recorded green pin; main/deploy presence does not prove gate testing.'
+        : 'The target-to-green-pin ancestry could not be measured, so this trace cannot prove the target was gate-tested.',
     );
   }
   if (position.verdictProvenance.deployOrigin === 'ahead-of-gate') {
@@ -557,7 +568,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       reason: 'Wait on the exact commit reaching origin/staging before asking the gate to test it.',
     };
   }
-  if (!position.positions.inMain) {
+  if (targetIsNotGreenPinned(position)) {
     if (checkpointRun?.active) {
       return {
         name: 'checkpoint:await',
@@ -669,7 +680,10 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
     greenPinSha: testedSha,
   });
   const parity =
-    targetSha != null && input.position.positions.inMain && input.position.positions.deployed && pinParity.ok;
+    targetSha != null &&
+    input.position.verdictProvenance.targetIncludedInGreenPin === true &&
+    input.position.positions.deployed &&
+    pinParity.ok;
   const nextVerb = safeNextVerb(effectiveInput);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 
@@ -688,7 +702,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
     gate: { ...effectiveInput.gate, candidateVerdict },
     greenPin: {
       sha: testedSha,
-      targetIncluded: input.position.positions.inMain,
+      targetIncluded: input.position.verdictProvenance.targetIncludedInGreenPin ?? null,
       mainFastForwarded: input.position.verdictProvenance.mainFastForwarded,
     },
     deploy: {
@@ -703,7 +717,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       testedSha,
       deployedSha,
       state:
-        !input.position.positions.inMain || !input.position.positions.deployed
+        input.position.verdictProvenance.targetIncludedInGreenPin !== true || !input.position.positions.deployed
           ? 'target-not-included'
           : pinParity.state,
     },

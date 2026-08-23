@@ -90,8 +90,29 @@ export interface GoogleGmailDraftInput {
   references?: string | null;
 }
 
+/**
+ * A create-shaped outbound message: no thread to reply into, so `threadId` and
+ * `inReplyTo` are absent rather than empty. Used by the provider-neutral
+ * `mail:send` verb (D-019 Tier 1) whose recipients cleared the D-020 rail-2
+ * addressee check before reaching this seam.
+ */
+export interface GoogleGmailOutboundInput {
+  to: string | readonly string[];
+  cc?: readonly string[];
+  subject: string;
+  text: string;
+  threadId?: string | null;
+  inReplyTo?: string | null;
+  references?: string | null;
+}
+
 export interface GoogleGmailDraftResult {
   draftId: string;
+  messageId: string;
+  threadId: string;
+}
+
+export interface GoogleGmailSendResult {
   messageId: string;
   threadId: string;
 }
@@ -411,6 +432,53 @@ function replyReferences(references: string | null | undefined, inReplyTo: strin
   return safeHeader(combined, 'references');
 }
 
+export interface GoogleGmailEncodedMessage {
+  raw: string;
+  to: string;
+  subject: string;
+  threadId: string | null;
+}
+
+/**
+ * Encode one outbound message as base64url RFC 2822.
+ *
+ * Shared by the draft and send seams so threading is implemented exactly once.
+ * Reply threading is the part callers get wrong: Gmail needs BOTH the
+ * `threadId` on the API request AND `In-Reply-To`/`References` headers in the
+ * MIME body. Supplying only one of them produces a message that sends fine and
+ * lands OUTSIDE the thread — a silent failure, which is why no agent-facing
+ * verb is allowed to assemble this itself.
+ */
+export function buildGoogleGmailRawMessage(input: GoogleGmailOutboundInput): GoogleGmailEncodedMessage {
+  const recipients = (Array.isArray(input.to) ? input.to : [input.to])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  if (!recipients.length) throw new Error('google_gmail_to_required');
+  const to = safeHeader(recipients.join(', '), 'to', 2_000);
+  const cc = (input.cc ?? []).map((value) => String(value ?? '').trim()).filter(Boolean);
+  const subject = safeHeader(input.subject, 'subject', 998);
+  const text = input.text.trim();
+  if (!text || text.length > 100_000) throw new Error('google_gmail_draft_text_invalid');
+  const threadId = input.threadId?.trim() ? safeHeader(input.threadId, 'thread_id', 512) : null;
+  const inReplyTo = input.inReplyTo?.trim() ? safeHeader(input.inReplyTo, 'in_reply_to', 998) : null;
+
+  const headers = [`To: ${to}`];
+  if (cc.length) headers.push(`Cc: ${safeHeader(cc.join(', '), 'cc', 2_000)}`);
+  headers.push(`Subject: ${subject}`);
+  if (inReplyTo) {
+    headers.push(`In-Reply-To: ${inReplyTo}`);
+    headers.push(`References: ${replyReferences(input.references, inReplyTo)}`);
+  }
+  headers.push(
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    text,
+  );
+  return { raw: Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url'), to, subject, threadId };
+}
+
 /** Create one RFC 2822 draft reply; this seam never sends the message. */
 export async function createGoogleGmailDraft(
   accessToken: string,
@@ -419,24 +487,10 @@ export async function createGoogleGmailDraft(
 ): Promise<GoogleGmailDraftResult> {
   const token = accessToken.trim();
   if (!token) throw new Error('google_gmail_access_token_required');
-  const to = safeHeader(input.to, 'to', 2_000);
-  const subject = safeHeader(input.subject, 'subject', 998);
-  const threadId = safeHeader(input.threadId, 'thread_id', 512);
-  const inReplyTo = safeHeader(input.inReplyTo, 'in_reply_to', 998);
-  const references = replyReferences(input.references, inReplyTo);
-  const text = input.text.trim();
-  if (!text || text.length > 100_000) throw new Error('google_gmail_draft_text_invalid');
-  const raw = [
-    `To: ${to}`,
-    `Subject: ${subject}`,
-    `In-Reply-To: ${inReplyTo}`,
-    `References: ${references}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-    '',
-    text,
-  ].join('\r\n');
+  const encoded = buildGoogleGmailRawMessage(input);
+  const threadId = encoded.threadId;
+  if (!threadId) throw new Error('google_gmail_draft_thread_id_invalid');
+  const raw = encoded.raw;
   const body = await gmailRequest<{
     id?: string;
     message?: { id?: string; threadId?: string };
@@ -448,7 +502,7 @@ export async function createGoogleGmailDraft(
     'draft_create',
     {
       method: 'POST',
-      body: { message: { raw: Buffer.from(raw, 'utf8').toString('base64url'), threadId } },
+      body: { message: { raw, threadId } },
     },
   );
   const draftId = nonEmpty(body.id);
@@ -457,6 +511,43 @@ export async function createGoogleGmailDraft(
   if (!draftId || !messageId || !createdThreadId) throw new Error('google_gmail_draft_response_invalid');
   if (createdThreadId !== threadId) throw new Error('google_gmail_draft_thread_mismatch');
   return { draftId, messageId, threadId: createdThreadId };
+}
+
+/**
+ * Send one message. Reply-shaped when `threadId`/`inReplyTo` are present,
+ * create-shaped when they are not.
+ *
+ * D-020: reaching this seam means the destination was either server-resolved
+ * from a stored canonical object (rail 1) or cleared the trusted-addressee
+ * check (rail 2). This function performs NEITHER check — it is the transport,
+ * and calling it directly from a tool handler would bypass both rails.
+ */
+export async function sendGoogleGmailMessage(
+  accessToken: string,
+  input: GoogleGmailOutboundInput,
+  provided: Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin'> = {},
+): Promise<GoogleGmailSendResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_gmail_access_token_required');
+  const encoded = buildGoogleGmailRawMessage(input);
+  const body = await gmailRequest<{ id?: string; threadId?: string }>(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    '/gmail/v1/users/me/messages/send',
+    'message_send',
+    {
+      method: 'POST',
+      body: encoded.threadId ? { raw: encoded.raw, threadId: encoded.threadId } : { raw: encoded.raw },
+    },
+  );
+  const messageId = nonEmpty(body.id);
+  const threadId = nonEmpty(body.threadId);
+  if (!messageId || !threadId) throw new Error('google_gmail_send_response_invalid');
+  if (encoded.threadId && threadId !== encoded.threadId) {
+    throw new Error('google_gmail_send_thread_mismatch');
+  }
+  return { messageId, threadId };
 }
 
 /** Decode the Gmail JSON envelope carried in Pub/Sub message.data. */
