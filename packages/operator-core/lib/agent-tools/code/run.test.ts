@@ -130,6 +130,11 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('{ summary, media:');
     expect(scriptDescription).toContain('"image"|"audio"');
     expect(scriptDescription).toContain('intermediate tool calls is never emitted implicitly');
+    expect(scriptDescription).toContain('generatedImage({ image_url:');
+    expect(scriptDescription).toContain('notify(value)');
+    expect(scriptDescription).toContain('yield_control()');
+    expect(scriptDescription).toContain('store(key, value)');
+    expect(scriptDescription).toContain('never hidden session memory');
   });
 });
 
@@ -176,6 +181,32 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
     const payload = JSON.parse(String(res.content[0].text));
     expect(payload.summary).toEqual({ rendered: 2, kept: true });
     expect(payload.media).toBeUndefined();
+    expect(String(res.content[0].text)).not.toContain('aGVsbG8=');
+  });
+
+  it('appends generatedImage output with validated hint metadata and keeps replay state explicit', async () => {
+    const res = (await codeRun().fn(
+      {
+        script:
+          `store('cursor', 2); ` +
+          `generatedImage({ image_url: 'data:image/png;base64,aGVsbG8=', output_hint: 'preview' }); ` +
+          `return { rendered: true };`,
+      },
+      mkCtx(),
+    )) as unknown as { content: Array<Record<string, unknown>> };
+
+    expect(res.content).toEqual([
+      expect.objectContaining({ type: 'text' }),
+      {
+        type: 'image',
+        data: 'aGVsbG8=',
+        mimeType: 'image/png',
+        _meta: { output_hint: 'preview' },
+      },
+    ]);
+    const payload = JSON.parse(String(res.content[0].text));
+    expect(payload.summary).toEqual({ rendered: true });
+    expect(payload.state).toEqual({ cursor: 2 });
     expect(String(res.content[0].text)).not.toContain('aGVsbG8=');
   });
 
