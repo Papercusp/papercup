@@ -232,7 +232,11 @@ function googleCapabilities(
   const sharedConnected = sources.some((source) => source.credentialRef !== null);
   const granted = new Set(grantedScopes);
   return GOOGLE_CAPABILITY_DEFS.map((definition) => {
-    const source = sources.find((candidate) => candidate.kind === definition.sourceKind);
+    // The shared credential lives on a Workspace source, but capability rows
+    // may have their own source kind (YouTube is the first such capability).
+    // Keep sharedConnected scoped to Workspace kinds while resolving the
+    // per-capability toggle across every owned source.
+    const source = owned.find((candidate) => candidate.kind === definition.sourceKind);
     const enabled = source?.config.capabilityEnabled !== false;
     const missingScopes =
       sharedConnected && enabled ? definition.requiredScopes.filter((scope) => !granted.has(scope)) : [];

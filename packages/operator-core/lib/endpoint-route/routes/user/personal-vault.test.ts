@@ -223,6 +223,53 @@ describe('Personal Vault owner routes', () => {
     expect(body).not.toContain('never-serialize-google-refresh-token');
   });
 
+  it('reports a persisted disabled YouTube capability as disabled on readback', async () => {
+    mocks.listSources.mockResolvedValueOnce([
+      {
+        id: 'gmail-source',
+        workspaceId: 'ws-test',
+        kind: 'gmail',
+        ownerUserId: 'user-1',
+        credentialRef: 'google-workspace:owner-user-1',
+        status: 'connected',
+        config: {},
+        cursor: {},
+        lastError: null,
+        lastConnectedAt: '2026-08-23T00:00:00.000Z',
+        updatedAt: '2026-08-23T00:00:00.000Z',
+      },
+      {
+        id: 'youtube-source',
+        workspaceId: 'ws-test',
+        kind: 'youtube',
+        ownerUserId: 'user-1',
+        credentialRef: 'google-workspace:owner-user-1',
+        status: 'disabled',
+        config: { capabilityEnabled: false },
+        cursor: {},
+        lastError: null,
+        lastConnectedAt: '2026-08-23T00:00:00.000Z',
+        updatedAt: '2026-08-23T00:00:00.000Z',
+      },
+    ]);
+
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.integrations.google.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'youtube',
+          sourceKind: 'youtube',
+          enabled: false,
+          connected: false,
+          status: 'disabled',
+          missingScopes: [],
+        }),
+      ]),
+    );
+  });
+
   it('disconnects Google sources and clears server-side token fields without purging vault data', async () => {
     const response = await invoke(
       'DELETE',
