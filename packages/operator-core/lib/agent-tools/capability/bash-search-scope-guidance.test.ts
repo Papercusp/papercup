@@ -31,5 +31,7 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('packages/operator-core/lib');
     expect(guidance).toContain('apps/operator/public/internal/docs');
     expect(guidance).toContain('Do not run an unbounded search from the repository root');
+    expect(guidance).toContain('--max-columns 256 --max-columns-preview');
+    expect(guidance).toContain('head` limits rows, not bytes');
   });
 });

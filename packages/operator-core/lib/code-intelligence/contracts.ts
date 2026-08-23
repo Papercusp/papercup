@@ -37,7 +37,7 @@ export type CodeIntelBackend =
  * refusal and tool-routing hint gives the same actionable fallback.
  */
 export const RIPGREP_SCOPE_GUIDANCE =
-  'Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.';
+  'Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matched lines before piping to a row limit (for example, `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes.';
 
 /**
  * Line-index base per backend, MEASURED not assumed.
