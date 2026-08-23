@@ -18,47 +18,52 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
-  a11yBusFromRootCommand,
   actionCommand,
-  buildA11yTree,
-  compressA11yTree,
   elementClickPoint,
   estimateImageTokens,
   estimateTextTokens,
   findByRef,
-  parseA11yBusAddress,
-  parseWalkerOutput,
   parseA11yActionOutput,
-  renderA11yTree,
-  screenBoundsAreTrustworthy,
-  walkerCommand,
   NoAccessibilityBusError,
   type A11yActionResult,
 } from './accessibility-tree';
+import {
+  resolveA11yBus,
+  snapshotA11yTree,
+  type A11ySnapshot,
+  type SnapshotOptions,
+} from './a11y-snapshot';
 import { computerExec, resolveBoundDisplay, type ComputerCtx } from './computer';
 import { planAction, xdotoolCommand, type DesktopTarget } from './desktop-driver';
 
 /** Resolve the a11y bus a display advertises, or throw the loud refusal. */
 async function resolveBus(display: string, signal?: AbortSignal): Promise<string> {
-  const probe = a11yBusFromRootCommand(display);
-  const r = await computerExec(probe.bin, probe.args, { env: probe.env, signal });
-  const addr = parseA11yBusAddress(r.stdout.toString());
+  const addr = await resolveA11yBus(display, computerExec, signal);
   if (!addr) throw new NoAccessibilityBusError(display);
   return addr;
 }
 
-async function walk(target: DesktopTarget, signal?: AbortSignal) {
-  const bus = await resolveBus(target.display, signal);
-  const cmd = walkerCommand(target.display, bus);
-  const r = await computerExec(cmd.bin, cmd.args, { env: cmd.env, signal });
-  const parsed = parseWalkerOutput(r.stdout.toString());
-  if (!parsed) {
-    throw new Error(
-      `computer:observe — the accessibility walker produced no result on ${target.display} ` +
-        `(exit ${r.status}). ${r.stderr.slice(0, 300)}`.trim(),
-    );
+/**
+ * One snapshot, or the loud refusal these two tools have always thrown.
+ *
+ * P-008 moved the walk itself into `a11y-snapshot.ts` so `capability:computer` can
+ * share it. That module returns REASONS instead of throwing, because its other
+ * caller has to be able to fall back to pixels deliberately; these two tools have
+ * no fallback and are meant to fail loudly, so the reasons are re-raised here.
+ * `no-apps` is NOT an error — an empty bus is a real, reportable state — so it is
+ * handed back for the caller to narrate.
+ */
+async function snapshotOrThrow(
+  tool: string,
+  target: DesktopTarget,
+  opts: SnapshotOptions = {},
+): Promise<A11ySnapshot> {
+  const snap = await snapshotA11yTree(target, computerExec, opts);
+  if (!snap.ok) {
+    if (snap.reason === 'no-bus') throw new NoAccessibilityBusError(target.display);
+    if (snap.reason === 'walker-failed') throw new Error(`${tool} — ${snap.detail}`);
   }
-  return { bus, parsed };
+  return snap;
 }
 
 const observeArgs = z.object({
@@ -69,17 +74,29 @@ const observeArgs = z.object({
 
 export async function runObserve(args: z.infer<typeof observeArgs>, ctx: ComputerCtx = {}) {
   const target = await resolveBoundDisplay(ctx);
-  const { parsed } = await walk(target, ctx.signal);
-  const built = buildA11yTree(parsed.nodes);
-  const { roots, stats } = compressA11yTree(built, {
+  const snap = await snapshotOrThrow('computer:observe', target, {
     includeHidden: args.include_hidden ?? false,
+    includeBounds: args.include_bounds ?? false,
     ...(args.max_nodes ? { maxNodes: args.max_nodes } : {}),
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
   });
-  const tree = renderA11yTree(roots, { includeBounds: args.include_bounds ?? false });
+
+  if (!snap.ok) {
+    // The only reason that reaches here is `no-apps` — a successful walk of an
+    // empty bus, which must not read as "the desktop is empty".
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `${snap.detail} Take a capability:computer screenshot to see what is actually on screen.`,
+        },
+      ],
+    };
+  }
 
   // The comparison the plan asks to measure, computed on the SAME screen, so it is a
   // ratio rather than an absolute claim (see estimate* for why that matters).
-  const treeTokens = estimateTextTokens(tree);
+  const treeTokens = estimateTextTokens(snap.tree);
   const fit = target.capture ?? { width: target.width, height: target.height };
   const shotTokens = estimateImageTokens(
     Math.min(fit.width, target.width),
@@ -87,17 +104,12 @@ export async function runObserve(args: z.infer<typeof observeArgs>, ctx: Compute
   );
 
   const header =
-    parsed.apps === 0
-      ? 'No applications are registered on this desktop\'s accessibility bus. That is NOT the same as ' +
-        '"nothing is running": an app only appears here if its toolkit exports accessibility (GTK/Qt do; ' +
-        'a plain X11 client like xterm, a canvas app, or a video does not). Take a capability:computer ' +
-        'screenshot to see what is actually on screen.'
-      : `${parsed.apps} application(s) on the accessibility bus · ${stats.keptNodes} of ${stats.rawNodes} elements shown` +
-        `${stats.truncated ? ' (truncated)' : ''} · ~${treeTokens} tokens vs ~${shotTokens} for a screenshot of this desktop` +
-        `${!screenBoundsAreTrustworthy(roots) ? '\n⚠ This toolkit reports unusable screen coordinates; click by #ref (computer:click_element), not by pixel.' : ''}`;
+    `${snap.apps} application(s) on the accessibility bus · ${snap.stats.keptNodes} of ${snap.stats.rawNodes} elements shown` +
+    `${snap.stats.truncated ? ' (truncated)' : ''} · ~${treeTokens} tokens vs ~${shotTokens} for a screenshot of this desktop` +
+    `${!snap.boundsTrustworthy ? '\n⚠ This toolkit reports unusable screen coordinates; click by #ref (computer:click_element), not by pixel.' : ''}`;
 
   return {
-    content: [{ type: 'text' as const, text: parsed.apps === 0 ? header : `${header}\n\n${tree}` }],
+    content: [{ type: 'text' as const, text: `${header}\n\n${snap.tree}` }],
   };
 }
 
@@ -128,8 +140,11 @@ export async function runClickElement(args: z.infer<typeof clickArgs>, ctx: Comp
   // coordinates are believable. On GTK4/X11 every element reports (0,0) with its real
   // size, so a centre computed there sends every click to the same wrong place — and
   // the screenshot still looks right, which is what makes that failure so expensive.
-  const { parsed: walked } = await walk(target, ctx.signal);
-  const roots = compressA11yTree(buildA11yTree(walked.nodes), { includeHidden: true }).roots;
+  const snap = await snapshotOrThrow('computer:click_element', target, {
+    includeHidden: true,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  });
+  const roots = snap.ok ? snap.roots : [];
   const node = findByRef(roots, args.ref);
   if (!node) {
     throw new Error(
@@ -137,7 +152,7 @@ export async function runClickElement(args: z.infer<typeof clickArgs>, ctx: Comp
         'Refs are positions in the tree and go stale when the UI changes: call computer:observe again and use a fresh one.',
     );
   }
-  if (!screenBoundsAreTrustworthy(roots)) {
+  if (!snap.ok || !snap.boundsTrustworthy) {
     throw new Error(
       `computer:click_element — #${args.ref.replace(/^#/, '')} (${node.role}${node.name ? ` "${node.name}"` : ''}) ` +
         `exposes no activating action${parsed?.actions?.length ? ` (it has: ${parsed.actions.join(', ')} — pass one as \`action\`)` : ''}, ` +
