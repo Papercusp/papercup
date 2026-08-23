@@ -338,10 +338,10 @@ export default function AdvAutomationsTab() {
         </div>
         <div className="pc-automations__mast-actions">
           <button type="button" className="pc-automations__ghost" onClick={refreshAll} aria-label="Refresh automations">
-            <RefreshCw size={14} aria-hidden /> Refresh
+            <span className="pc-automations__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
           <button type="button" className="pc-automations__primary" onClick={() => void setAdvTab('plans')}>
-            <Plus size={14} aria-hidden /> New automation
+            <span className="pc-automations__button-inner"><Plus size={14} aria-hidden /> New automation</span>
           </button>
         </div>
       </header>
@@ -350,8 +350,10 @@ export default function AdvAutomationsTab() {
         <nav aria-label="Automation views">
           {(['catalog', 'activity', 'sources'] as const).map((candidate) => (
             <button key={candidate} type="button" data-active={view === candidate} onClick={() => void setView(candidate)}>
-              {candidate === 'catalog' ? 'Catalog' : candidate === 'activity' ? 'Activity' : 'Sources'}
-              <span>{candidate === 'catalog' ? items.length : candidate === 'activity' ? activity.length : sources.length}</span>
+              <span className="pc-automations__viewtab-inner">
+                {candidate === 'catalog' ? 'Catalog' : candidate === 'activity' ? 'Activity' : 'Sources'}
+                <span className="pc-automations__viewtab-count">{candidate === 'catalog' ? items.length : candidate === 'activity' ? activity.length : sources.length}</span>
+              </span>
             </button>
           ))}
         </nav>
@@ -453,26 +455,28 @@ function Metric({ icon: Icon, label, value, tone }: { icon: typeof Activity; lab
 function AutomationRow({ item, selected, onSelect }: { item: AutomationItem; selected: boolean; onSelect: () => void }) {
   return (
     <button type="button" className="pc-automations__row" data-selected={selected} data-state={itemState(item).toLowerCase().replaceAll(' ', '-')} onClick={onSelect}>
-      <span className="pc-automations__row-main">
-        <span className="pc-automations__row-title">
-          <i aria-hidden /> <strong>{item.label}</strong><em>{kindLabel(item.kind)}</em>
-        </span>
-        <span className="pc-automations__row-copy">{item.description}</span>
-        {item.triggers.length > 0 ? (
-          <span className="pc-automations__chips">
-            {item.triggers.slice(0, 5).map((trigger) => <span key={trigger.id}>{trigger.provider}</span>)}
+      <span className="pc-automations__row-layout">
+        <span className="pc-automations__row-main">
+          <span className="pc-automations__row-title">
+            <i aria-hidden /> <strong>{item.label}</strong><em>{kindLabel(item.kind)}</em>
           </span>
-        ) : null}
+          <span className="pc-automations__row-copy">{item.description}</span>
+          {item.triggers.length > 0 ? (
+            <span className="pc-automations__chips">
+              {item.triggers.slice(0, 5).map((trigger) => <span key={trigger.id}>{trigger.provider}</span>)}
+            </span>
+          ) : null}
+        </span>
+        <span className="pc-automations__row-state">
+          <strong>{item.timingLabel}</strong>
+          <small>{item.running ? 'Live execution observed' : item.lastAt ? `Last ${relativeTime(item.lastAt)}` : itemState(item)}</small>
+        </span>
+        <span className="pc-automations__row-spend">
+          <strong>{item.spendLabel}</strong>
+          <small>{item.kind === 'triggered-plan' ? 'Verified costs shown per run' : 'No guessed routine attribution'}</small>
+        </span>
+        <ChevronRight size={15} aria-hidden />
       </span>
-      <span className="pc-automations__row-state">
-        <strong>{item.timingLabel}</strong>
-        <small>{item.running ? 'Live execution observed' : item.lastAt ? `Last ${relativeTime(item.lastAt)}` : itemState(item)}</small>
-      </span>
-      <span className="pc-automations__row-spend">
-        <strong>{item.spendLabel}</strong>
-        <small>{item.kind === 'triggered-plan' ? 'Verified costs shown per run' : 'No guessed routine attribution'}</small>
-      </span>
-      <ChevronRight size={15} aria-hidden />
     </button>
   );
 }
@@ -538,7 +542,7 @@ function AutomationDetail({
                     else if (trigger.bindingId) onToggleBinding(trigger.bindingId, trigger.armed !== true);
                   }}
                 >
-                  {trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}
+                  <span className="pc-automations__button-inner">{trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}</span>
                 </button>
               )}
             </div>
@@ -554,10 +558,10 @@ function AutomationDetail({
         </section>
 
         <div className="pc-automations__actions">
-          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><Play size={13} aria-hidden /> Run now</button> : null}
-          {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><CalendarClock size={13} aria-hidden /> Edit schedule</button> : null}
-          {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</button> : null}
-          {automatic.some((trigger) => trigger.armed === true) ? <button type="button" className="is-warn" disabled={busy != null} onClick={onPauseAll}><Power size={13} aria-hidden /> Pause automatic triggers</button> : null}
+          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-automations__button-inner"><Play size={13} aria-hidden /> Run now</span></button> : null}
+          {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><span className="pc-automations__button-inner"><CalendarClock size={13} aria-hidden /> Edit schedule</span></button> : null}
+          {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</span></button> : null}
+          {automatic.some((trigger) => trigger.armed === true) ? <button type="button" className="is-warn" disabled={busy != null} onClick={onPauseAll}><span className="pc-automations__button-inner"><Power size={13} aria-hidden /> Pause automatic triggers</span></button> : null}
         </div>
 
         <section className="pc-automations__history">
@@ -592,7 +596,7 @@ function ActivityView({
         <div className="pc-automations__activity">
           {activity.map((item) => (
             <button type="button" key={item.id} onClick={() => onOpen(item)}>
-              <i data-status={item.status} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><em>{item.status}</em><time>{relativeTime(item.at)}</time>
+              <span className="pc-automations__activity-row-layout"><i data-status={item.status} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><em>{item.status}</em><time>{relativeTime(item.at)}</time></span>
             </button>
           ))}
           {activity.length === 0 ? <div className="pc-automations__empty">No automation activity has been recorded yet.</div> : null}

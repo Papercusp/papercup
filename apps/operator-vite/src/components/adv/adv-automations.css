@@ -40,10 +40,7 @@
 .pc-automations__mast-actions button,
 .pc-automations__actions button,
 .pc-automations__trigger button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
+  display: block;
   min-height: 32px;
   padding: 6px 11px;
   border: 1px solid var(--auto-line);
@@ -52,6 +49,7 @@
   background: var(--auto-panel-2);
   cursor: pointer;
 }
+.pc-automations__button-inner { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
 .pc-automations__mast-actions button:hover,
 .pc-automations__actions button:hover:not(:disabled),
 .pc-automations__trigger button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent), transparent 40%); }
@@ -76,16 +74,15 @@
   cursor: pointer;
 }
 .pc-automations__viewbar nav button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  display: block;
   padding: 0 12px;
   border-bottom: 2px solid transparent;
   font-size: 11px;
   font-weight: 750;
   text-transform: capitalize;
 }
-.pc-automations__viewbar nav button span { padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--fg), transparent 92%); font-size: 9px; }
+.pc-automations__viewtab-inner { display: flex; align-items: center; gap: 7px; }
+.pc-automations__viewbar nav .pc-automations__viewtab-count { padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--fg), transparent 92%); font-size: 9px; }
 .pc-automations__viewbar nav button[data-active='true'] { color: var(--accent, #38bdf8); border-bottom-color: var(--accent, #38bdf8); }
 .pc-automations__viewbar > span { color: var(--fg-mute, #7890a5); font-size: 10px; }
 .pc-automations__notice { margin-top: 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn), transparent 60%); border-radius: 8px; color: var(--warn); font-size: 11px; background: color-mix(in srgb, var(--warn), transparent 94%); }
@@ -116,10 +113,7 @@
 .pc-automations__panelhead span { color: var(--fg-mute); font-size: 9px; }
 .pc-automations__rows { max-height: calc(100vh - 330px); min-height: 560px; overflow-x: hidden; overflow-y: auto; }
 .pc-automations__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(110px, .82fr) minmax(120px, .78fr) 18px;
-  gap: 12px;
-  align-items: center;
+  display: block;
   width: 100%;
   box-sizing: border-box;
   min-height: 86px;
@@ -130,6 +124,13 @@
   text-align: left;
   background: transparent;
   cursor: pointer;
+}
+.pc-automations__row-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(110px, .82fr) minmax(120px, .78fr) 18px;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
 }
 .pc-automations__row:hover { background: color-mix(in srgb, var(--accent), transparent 96%); }
 .pc-automations__row[data-selected='true'] { box-shadow: inset 2px 0 var(--accent); background: color-mix(in srgb, var(--accent), transparent 93%); }
@@ -151,7 +152,7 @@
 .pc-automations__row-spend strong { color: #b9a4ff; }
 .pc-automations__row-state small,
 .pc-automations__row-spend small { overflow: hidden; color: var(--fg-mute); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.pc-automations__row > svg { color: var(--fg-mute); }
+.pc-automations__row-layout > svg { color: var(--fg-mute); }
 
 .pc-automations__detailbody { padding: 14px; }
 .pc-automations__detail-kicker { color: var(--accent); font-size: 8px; font-weight: 850; text-transform: uppercase; }
@@ -204,7 +205,8 @@
 .pc-automations__widepanel { margin-top: 12px; min-height: 620px; }
 .pc-automations__activity-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,380px); gap:10px; }
 .pc-automations__activity-layout .pc-automations__widepanel { min-height:620px; }
-.pc-automations__activity button { display: grid; grid-template-columns: 8px minmax(0, 1fr) 120px 90px; gap: 10px; align-items: center; width: 100%; padding: 12px; border: 0; border-bottom: 1px solid var(--auto-line); color: inherit; text-align: left; background: transparent; cursor: pointer; }
+.pc-automations__activity button { display: block; width: 100%; padding: 12px; border: 0; border-bottom: 1px solid var(--auto-line); color: inherit; text-align: left; background: transparent; cursor: pointer; }
+.pc-automations__activity-row-layout { display: grid; grid-template-columns: 8px minmax(0, 1fr) 120px 90px; gap: 10px; align-items: center; width: 100%; }
 .pc-automations__activity button:hover { background: color-mix(in srgb, var(--accent), transparent 96%); }
 .pc-automations__activity span { min-width: 0; }
 .pc-automations__activity strong,
@@ -261,7 +263,7 @@
   .pc-automations__viewbar > span { display: none; }
   .pc-automations__filters { align-items: stretch; flex-direction: column; }
   .pc-automations__filters label { min-width: 0; }
-  .pc-automations__row { grid-template-columns: 1fr 20px; }
+  .pc-automations__row-layout { grid-template-columns: 1fr 20px; }
   .pc-automations__row-state,
   .pc-automations__row-spend { display: none; }
 }
@@ -273,7 +275,7 @@
   .pc-automations__viewbar > span { display: none; }
   .pc-automations__filters { align-items: stretch; flex-direction: column; }
   .pc-automations__filters label { min-width: 0; }
-  .pc-automations__row { grid-template-columns: 1fr 20px; }
+  .pc-automations__row-layout { grid-template-columns: 1fr 20px; }
   .pc-automations__row-state,
   .pc-automations__row-spend { display: none; }
 }
