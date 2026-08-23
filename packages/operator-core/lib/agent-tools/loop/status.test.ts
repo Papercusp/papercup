@@ -90,6 +90,7 @@ describe('loop:status return guidance matches the emitted loop record', () => {
       parked: false,
       nextFireAt: null,
       lastFiredAt: '2026-08-22T09:15:00.000Z',
+      cadenceDrift: false,
     };
     getLoopStatusMock.mockResolvedValue(emitted);
 
@@ -98,6 +99,7 @@ describe('loop:status return guidance matches the emitted loop record', () => {
 
     expect(out.loop).toMatchObject(emitted);
     expect(returns).toContain('lastFiredAt');
+    expect(returns).toContain('cadenceDrift');
     expect(returns).not.toMatch(/\blastFireAt\b/);
   });
 });

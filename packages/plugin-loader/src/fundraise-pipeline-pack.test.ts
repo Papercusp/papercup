@@ -44,17 +44,21 @@ describe('fundraise-pipeline trigger pack', () => {
     expect(pack).toBeTruthy();
     expect(pack?.targets.map((t) => t.id).sort()).toEqual([
       'classify-and-draft-reply',
+      'first-touch-draft',
       'fund-research-brief',
       'investor-meeting-prep',
       'no-reply-follow-up',
       'post-meeting-followup',
+      'weekly-pipeline-review',
     ]);
     expect(pack?.bindings.map((b) => b.id).sort()).toEqual([
+      'first-touch-outreach',
       'follow-up-ladder',
       'investor-reply-to-pipeline',
       'meeting-to-investor-prep',
       'meeting-to-post-followup',
       'research-enrichment',
+      'weekly-review',
     ]);
   });
 
@@ -83,6 +87,8 @@ describe('fundraise-pipeline trigger pack', () => {
       'plan-meeting-prep.md',
       'plan-post-meeting.md',
       'plan-fund-research.md',
+      'plan-first-touch.md',
+      'plan-weekly-review.md',
     ];
     for (const file of planFiles) {
       const path = resolve(PACK_DIR, file);
@@ -163,6 +169,35 @@ describe('fundraise-pipeline trigger pack', () => {
       (b) => b.id === 'investor-reply-to-pipeline',
     );
     expect(Number(inbound?.stormPolicy?.maxRuns)).toBeGreaterThan(0);
+  });
+
+  it('never lets the agent grant its own approval', () => {
+    // The first-touch plan is the only template that writes `outreachApproval`. It must REQUEST
+    // approval and must carry the explicit prohibition on granting it, because an agent that can
+    // write `approved` makes the send-approval gate decorative.
+    //
+    // Newlines are flattened before matching: these templates are hard-wrapped prose, and a
+    // line-oriented match cannot see a phrase split across a wrap.
+    const flat = readFileSync(resolve(PACK_DIR, 'plan-first-touch.md'), 'utf8').replace(/\s+/g, ' ');
+    expect(flat).toContain("state: 'pending'");
+    expect(flat).toMatch(/Never write .?state: 'approved'/);
+    expect(flat).toContain('approval is a human act');
+
+    // The weekly review reports on the pending queue and must not resolve it itself.
+    const review = readFileSync(resolve(PACK_DIR, 'plan-weekly-review.md'), 'utf8').replace(/\s+/g, ' ');
+    expect(review).toContain('The review reports; it never approves');
+    expect(review).toContain('Do not mutate any deal from this plan');
+  });
+
+  it('routes deliberate outreach through manual bindings, never an external trigger', async () => {
+    const result = await loadPack();
+    const manualIds = (result.triggerPack?.bindings ?? [])
+      .filter((b) => b.source.kind === 'manual')
+      .map((b) => b.id)
+      .sort();
+    // A first touch and a weekly review are always deliberate acts, never event-driven ones.
+    expect(manualIds).toContain('first-touch-outreach');
+    expect(manualIds).toContain('weekly-review');
   });
 
   it('ships every binding disarmed', async () => {

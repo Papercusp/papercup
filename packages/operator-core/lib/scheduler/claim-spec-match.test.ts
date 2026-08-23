@@ -174,6 +174,7 @@ describe('WI-5272 hardened p2p/federation/rig fence — false-positive vs real-l
       paths: [], // payload.filePath was NOT read pre-fix
       plan: null,
       planItem: [],
+      fleet: null,
       age: 0,
       riskTier: null,
       redundancy: null,

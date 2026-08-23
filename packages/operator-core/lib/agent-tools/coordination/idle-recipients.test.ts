@@ -61,6 +61,7 @@ function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     effectiveIntervalSec: null,
     cadenceRatio: null,
     longestObservedGapSec: null,
+    cadenceDrift: false,
     parked: false,
     nextFireAt: null,
     lastFiredAt: null,

@@ -54,6 +54,7 @@ describe('workflows-landing-model — structural contract with operator-core', (
       bindingCount: 2,
       armedBindingCount: 1,
       failedDeliveries24h: 0,
+      social: null,
     };
     const accepted: LandingSourceInput = row;
     expect(buildSuggestionChips([accepted])).toHaveLength(1);

@@ -136,6 +136,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     lastWakeError: null,
     lastTurnAt: '2026-08-09T16:29:00.000Z',
     lastRealTurnAt: '2026-08-09T16:29:00.000Z',
+    cadenceDrift: false,
     lastWithheldAt: null,
     lifecycleBackoff: null,
     ...overrides,

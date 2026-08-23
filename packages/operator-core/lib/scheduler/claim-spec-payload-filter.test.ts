@@ -58,6 +58,7 @@ function subjectOf(p: {
     paths: [],
     plan: p.plan ?? null,
     planItem: [],
+    fleet: null,
     age: null,
     riskTier: null,
     redundancy: null,

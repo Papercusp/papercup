@@ -125,6 +125,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
     paths: [],
     plan: null,
     planItem: [],
+    fleet: null,
     age: 0,
     riskTier: null,
     redundancy: null,

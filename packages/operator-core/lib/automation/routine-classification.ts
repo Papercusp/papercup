@@ -304,6 +304,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: 'Runs a governor-bounded REM dreamer plus independent reviewer calls',
   },
   'system:goal-holder-launch': { spend: 'llm', why: 'Launches a replacement agent for an existing goal' },
+  'system:goal-start': { spend: 'llm', why: 'Activates an existing goal by launching its holder session' },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },

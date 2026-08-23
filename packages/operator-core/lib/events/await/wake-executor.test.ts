@@ -781,6 +781,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
       effectiveIntervalSec: null,
       cadenceRatio: null,
       longestObservedGapSec: null,
+      cadenceDrift: false,
       parked: false,
       parkedForSec: null,
       nextFireAt: null,

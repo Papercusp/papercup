@@ -134,6 +134,7 @@ export default defineTool({
             paths: [],
             plan: it.plan,
             planItem: [it.item],
+            fleet: null,
             age: Date.now(),
             riskTier: null,
             redundancy: null,

@@ -60,6 +60,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     effectiveIntervalSec: null,
     cadenceRatio: null,
     longestObservedGapSec: null,
+    cadenceDrift: false,
     parked: false,
     parkedForSec: null,
     nextFireAt: null,

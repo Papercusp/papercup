@@ -137,6 +137,7 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     paths: Array.isArray(payload.paths) ? payload.paths.filter((p): p is string => typeof p === 'string') : [],
     plan: spec.targetPlanItem?.slug ?? null,
     planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
+    fleet: null,
     age: Date.now(),
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     redundancy: numberOrNull(payload.redundancy),

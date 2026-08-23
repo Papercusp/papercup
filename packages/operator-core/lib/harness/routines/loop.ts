@@ -1021,6 +1021,8 @@ export interface LoopStatus {
   effectiveIntervalSec: number | null;
   cadenceRatio: number | null;
   longestObservedGapSec: number | null;
+  /** True when the existing cadence-drift advisory has enough evidence of a late fire path. */
+  cadenceDrift: boolean;
   /** EI-18712914572668391: true when this loop keeps getting re-armed (fireCount climbing,
    *  `stalled` reading false because it isn't currently PARKED) while `lastTurnAt` has not
    *  kept pace — i.e. fires are being ATTEMPTED without turns actually being PRODUCED. This
@@ -1630,6 +1632,16 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastFiredAtMs: lastFiredMs,
     longestObservedGapSec: r.longest_observed_gap_sec == null ? null : Number(r.longest_observed_gap_sec),
   });
+  const cadenceDrift = computeCadenceDrift({
+    active: Boolean(r.active),
+    intervalSec,
+    firesSinceArm,
+    expectedFiresSinceArm: cadence.expectedFiresSinceArm,
+    cadenceRatio: cadence.cadenceRatio,
+    longestObservedGapSec: cadence.longestObservedGapSec,
+    parked,
+    nextFireAt: nextFireAtIso,
+  });
   return {
     name: r.name,
     ownerId: r.target_owner_id ?? fallbackOwnerId,
@@ -1649,6 +1661,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
     armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
     ...cadence,
+    cadenceDrift,
     costCapCents: typeof costCap === 'number' ? costCap : null,
     maxFires: typeof pt?.maxFires === 'number' ? pt.maxFires : null,
     maxDurationSec: typeof pt?.maxDurationSec === 'number' ? pt.maxDurationSec : null,

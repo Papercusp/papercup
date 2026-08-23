@@ -4075,7 +4075,7 @@
       ],
       "guidance": {
         "when": "The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.",
-        "notWhen": "The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matched lines before piping to a row limit (for example, `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes..",
+        "notWhen": "Name resolution (shadowing, re-exports, generics) is lsp:query; call chains and impact are gitnexus.query. For plain text/regex, use scoped rg/grep; see /internal/docs/agent-insights/code-intelligence-backends-runbook.",
         "chaining": "code:structural to find candidate sites by shape → lsp:query op:\"symbol\" on one to confirm it resolves where you think. A structural match set is a SUPERSET of the type-correct one."
       }
     },

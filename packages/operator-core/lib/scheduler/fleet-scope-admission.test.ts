@@ -150,6 +150,7 @@ const base: ClaimSpecSubject = {
   paths: ['packages/operator-core/lib/scheduler/get-next.ts'],
   plan: 'bug-drain',
   planItem: ['P-016'],
+  fleet: null,
   age: 1_000,
   riskTier: 'moderate',
   redundancy: 1,

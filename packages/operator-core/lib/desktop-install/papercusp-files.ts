@@ -28,7 +28,7 @@ import { resolveBundledNode } from '../bundled-node';
 import { standardToolDirs } from '../tool-path';
 // WI-37920 / P-006: the ONE list of where a backend CLI can live, shared with
 // psu's own detection and the operator's spawn-PATH injection.
-import { BACKEND_AGENTS, backendSearchDirs } from '../backend-bin-resolve.mjs';
+import { BACKEND_AGENTS, backendSearchDirs, resolveOnPath } from '../backend-bin-resolve.mjs';
 export { resolveBundledNode };
 import {
   readInstallStamp,
@@ -137,6 +137,9 @@ export interface InstallResult extends InstallPaths {
   /** True when the `psu-sentinel-deep` deep-brain pane launcher shim was written
    *  (voice-public-release-readiness P-014). Same gating as psu-sentinel. */
   psuSentinelDeepShimWritten: boolean;
+  /** True when the `rg` entry point was written (P-017). FALSE means a real ripgrep
+   *  already resolves on PATH and the shim deliberately stood aside — not a failure. */
+  ripgrepShimWritten: boolean;
   /** True when the macOS "Papercusp Tutorial & Setup.app" wrapper was written (darwin only, WI-2197). */
   macTutorialAppWritten: boolean;
   /** True when the Linux per-user tutorial `.desktop` launcher was written (linux only). */
@@ -1726,6 +1729,78 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
 }
 
 /**
+ * Write the `rg` entry point (P-017 / D-001 of
+ * orchestration-surface-residue-drain-2026-08-23).
+ *
+ * WHY AN ENTRY POINT RATHER THAN A PATH ENTRY. Four agents filed `rg: command not
+ * found` inside `capability:bash` on one day, and all four named the cause as "the
+ * confined shell's PATH lacks rg". That is wrong, and a PATH-only fix changes
+ * nothing: a scan of every plausible bin dir found NO standalone ripgrep binary and
+ * no ripgrep package on the host, while the same scan found /usr/bin/git — so the
+ * instrument was sound and the absence genuine. `rg` reaches an interactive shell
+ * ONLY as a shell FUNCTION that Claude Code defines in the profile, which re-execs
+ * the claude binary with argv[0]=rg (that binary embeds ripgrep 14.1.1 +pcre2).
+ * Shell functions are not exported into a scrubbed `bash -c` child, which is
+ * exactly why a human typing the command succeeded and every operator-spawned child
+ * failed. This file supplies the missing entry point; `augmentedSpawnPath` supplies
+ * the directory.
+ *
+ * Deliberately writes ONLY when nothing else on the system provides `rg`
+ * (`resolvesElsewhere`): a real ripgrep install must always win over a shim that
+ * costs a 342MB process launch, and a host that later installs ripgrep properly
+ * should not keep executing this.
+ *
+ * `claudeExecutable` is the resolved claude binary, or undefined when none was
+ * found. Undefined still writes the shim, which then exits 127 with a pointer to
+ * grep/gitnexus — a stated "ripgrep is unavailable here" beats `command not found`,
+ * which reads as a PATH bug and sent four agents down the wrong path already.
+ */
+export async function writeRipgrepShim(
+  shimPath: string,
+  opts: { claudeExecutable?: string; resolvesElsewhere?: boolean } = {},
+): Promise<boolean> {
+  if (opts.resolvesElsewhere) return false;
+  // The stable ~/.local/bin/claude symlink is the fallback because the Claude Code
+  // installer REPOINTS it on upgrade — pinning a versioned path here would make the
+  // shim rot at the next version bump, which is the failure mode a generated file is
+  // supposed to remove.
+  const fallback = path.join(os.homedir(), '.local', 'bin', 'claude');
+  const resolved = opts.claudeExecutable && opts.claudeExecutable.length > 0 ? opts.claudeExecutable : fallback;
+  const body =
+    '#!/usr/bin/env bash\n' +
+    '# papercusp `rg` entry point — managed by Papercusp.app (installPapercuspFiles).\n' +
+    '# Refreshed on every boot; do not edit.\n' +
+    '#\n' +
+    '# There is no standalone ripgrep binary on this host. Interactive shells get `rg`\n' +
+    '# from a shell FUNCTION Claude Code defines in the profile, which re-execs the\n' +
+    '# claude binary with argv[0]=rg. Shell functions are NOT exported into a scrubbed\n' +
+    '# `bash -c` child, so non-interactive callers (capability:bash, code:run, saved\n' +
+    '# recipes, exec-sandbox) saw "command not found" while a human typing the same\n' +
+    '# command succeeded. This supplies the entry point they were missing.\n' +
+    'set -euo pipefail\n' +
+    '\n' +
+    '# CLAUDE_CODE_EXECPATH wins when the caller set it; otherwise the stable\n' +
+    '# ~/.local/bin/claude symlink, which the installer repoints on upgrade.\n' +
+    '_cc="${CLAUDE_CODE_EXECPATH:-}"\n' +
+    `if [[ -z \${_cc} || ! -x \${_cc} ]]; then\n  _cc=${JSON.stringify(resolved)}\n` +
+    'fi\n' +
+    '\n' +
+    'if [[ ! -x ${_cc} ]]; then\n' +
+    '  echo "rg: ripgrep is unavailable — no standalone ripgrep binary is installed on this host," >&2\n' +
+    '  echo "rg: and the claude executable that embeds it was not found at \'${_cc}\'." >&2\n' +
+    '  echo "rg: use grep -rn (exhaustive text search) or gitnexus.context { name } (symbol lookup)." >&2\n' +
+    '  exit 127\n' +
+    'fi\n' +
+    '\n' +
+    '# exec -a rg: the claude binary dispatches to its embedded ripgrep purely on argv[0].\n' +
+    'exec -a rg "${_cc}" "$@"\n';
+  await fs.writeFile(shimPath, body, { mode: 0o755 });
+  // writeFile honors mode only on creation; chmod to guarantee on overwrite.
+  await fs.chmod(shimPath, 0o755);
+  return true;
+}
+
+/**
  * Write the `psu-sentinel-deep` dock-pane launcher shim
  * (voice-public-release-readiness-2026-07-12 P-014/D-006 — the deep-brain
  * pane). Twin of writeSentinelShim above: registers the pane to
@@ -3110,6 +3185,20 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const psuSentinelDeepShimWritten = psuShimWritten
     ? await writeSentinelDeepShim(paths.psuSentinelDeepPath, paths.psuPath)
     : false;
+  // The `rg` entry point (P-017). Unconditional — unlike the shims above it has no
+  // launcher source to resolve; the thing it needs is either present on the host or
+  // the shim says so honestly.
+  //
+  // The self-exclusion is load-bearing: our own shim lands ON the PATH we are about
+  // to search, so a bare `resolveOnPath('rg')` would find it on the SECOND install
+  // and conclude ripgrep resolves elsewhere — freezing the shim at whatever the
+  // first install wrote and silently ending the refresh-on-every-boot contract every
+  // other shim here has.
+  const rgOnPath = resolveOnPath('rg', { env: process.env });
+  const ripgrepShimWritten = await writeRipgrepShim(paths.ripgrepPath, {
+    claudeExecutable: resolveOnPath('claude', { env: process.env }) ?? undefined,
+    resolvesElsewhere: rgOnPath !== null && path.resolve(rgOnPath) !== path.resolve(paths.ripgrepPath),
+  });
   // Put ~/.papercusp/bin on the user's shell PATH so psu/ptool resolve in ANY
   // terminal they open (the in-app "+" console sets PATH itself, but a plain
   // Terminal does not). Only when a shim actually landed.
@@ -3187,6 +3276,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     papercuspCliWritten,
     psuSentinelShimWritten,
     psuSentinelDeepShimWritten,
+    ripgrepShimWritten,
     macTutorialAppWritten,
     linuxTutorialDesktopWritten,
     linuxTutorialPinned,
