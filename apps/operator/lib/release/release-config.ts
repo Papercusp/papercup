@@ -325,7 +325,10 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
       overrides.operatorHealthUrl ??
       process.env.PAPERCUSP_HEALTH_URL ??
       `http://127.0.0.1:${port}/api/health`,
-    greenCmd: overrides.greenCmd ?? process.env.PAPERCUSP_GREEN_CMD ?? 'npm run test:affected',
+    // The gate keeps affected-workspace propagation and repo-wide guards, then narrows each
+    // workspace's unit task through the fail-wide static import graph. Any graph uncertainty
+    // expands back to the full workspace suite; post-suite assurance remains outside this command.
+    greenCmd: overrides.greenCmd ?? process.env.PAPERCUSP_GREEN_CMD ?? 'npm run test:related',
     // Empty string is a MEANINGFUL value (skip the SPA build), so it must survive the
     // precedence chain — `?? default` only fills a nullish env, never an explicit ''.
     spaBuildWorkspace:

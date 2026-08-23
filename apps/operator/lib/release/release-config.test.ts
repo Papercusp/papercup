@@ -71,7 +71,7 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
     expect(cfg.integrationBranch).toBe('staging');
     expect(cfg.systemdUnit).toBe('papercup-dev-api.service');
     expect(cfg.backgroundSystemdUnit).toBe('papercup-bg-host.service');
-    expect(cfg.greenCmd).toBe('npm run test:affected');
+    expect(cfg.greenCmd).toBe('npm run test:related');
     expect(cfg.greenCheckpointCapacityMode).toBe('shared');
   });
 

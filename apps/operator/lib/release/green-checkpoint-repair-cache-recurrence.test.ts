@@ -14,6 +14,7 @@ import {
   decidePassingTaskVerdict,
   emptyPassingTaskVerdictCache,
   mergePassingTaskVerdictUpdates,
+  passingTaskVerdictCacheEntry,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictEntry,
   passingTaskVerdictIdentityEnvironment,
@@ -233,11 +234,13 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
       }
       const initialCache = mergePassingTaskVerdictUpdates(
         emptyPassingTaskVerdictCache(),
+        INITIAL_RUN,
         initialEntries,
+        "initial-pass",
       );
       writePassingTaskVerdictCacheAtomic(cachePath, initialCache, "initial");
 
-      expect(Object.keys(initialCache.entries).sort()).toEqual(
+      expect(Object.keys(initialCache.groups[INITIAL_RUN]!.entries).sort()).toEqual(
         [tasks[0]!.key, tasks[3]!.key, tasks[5]!.key].sort(),
       );
 
@@ -277,7 +280,11 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
             decidePassingTaskVerdict({
               enabled: true,
               cacheRead: persisted,
-              entry: persisted.cache.entries[task.key],
+              entry: passingTaskVerdictCacheEntry(
+                persisted.cache,
+                INITIAL_RUN,
+                task.key,
+              ),
               identity,
             }),
           ];
@@ -455,7 +462,11 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
         decidePassingTaskVerdict({
           enabled: true,
           cacheRead: corrupt,
-          entry: corrupt.cache.entries[baseline.taskKey],
+          entry: passingTaskVerdictCacheEntry(
+            corrupt.cache,
+            INITIAL_RUN,
+            baseline.taskKey,
+          ),
           identity: baseline,
         }),
       ).toEqual({ hit: false, reason: "cache-corrupt" });

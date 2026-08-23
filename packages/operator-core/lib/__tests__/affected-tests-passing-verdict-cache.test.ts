@@ -11,6 +11,8 @@ import {
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
+  passingTaskVerdictCacheEntry,
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
@@ -103,6 +105,7 @@ describe('passing affected-task verdict identity', () => {
         PAPERCUSP_TEST_RUN_GROUP: 'initial-run',
       },
       proofGroupApplied: true,
+      cacheGroup: 'initial-run',
     });
     expect(childEnvironment).toEqual({
       CI: '1',
@@ -157,10 +160,10 @@ describe('passing affected-task verdict identity', () => {
           { status: 'miss', reason: 'dependency-closure-changed' },
           { status: 'miss', reason: 'environment-changed' },
         ],
-        { proofGroupApplied: true },
+        { proofGroupApplied: true, cacheGroup: 'initial-run' },
       ),
     ).toBe(
-      'AFFECTED_TASK_CACHE_SUMMARY hits=1 misses=3 proofIdentity=initial-run ' +
+      'AFFECTED_TASK_CACHE_SUMMARY hits=1 misses=3 proofIdentity=initial-run group=53ef7ff1e88c ' +
         'reasons={"dependency-closure-changed":1,"environment-changed":2,"identity-match":1}',
     );
   });
@@ -205,13 +208,38 @@ describe('dependency-closure hashing and persistence', () => {
     const path = join(dir, 'cache.json');
     try {
       const update = { ['@papercusp/web :: test']: passingTaskVerdictEntry(identity(), 'now') };
-      const next = mergePassingTaskVerdictUpdates(emptyPassingTaskVerdictCache(), update);
+      const next = mergePassingTaskVerdictUpdates(
+        emptyPassingTaskVerdictCache(),
+        'proof-a',
+        update,
+        '2026-08-23T00:00:00.000Z',
+      );
       writePassingTaskVerdictCacheAtomic(path, next, 'nonce');
       expect(readPassingTaskVerdictCache(path)).toEqual({ cache: next, reason: 'cache-ready' });
+      expect(passingTaskVerdictCacheEntry(next, 'proof-a', '@papercusp/web :: test')).toEqual(
+        update['@papercusp/web :: test'],
+      );
       expect(readdirSync(dir)).toEqual(['cache.json']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('retains independent proof groups and bounds old groups without cross-overwrite', () => {
+    let cache = emptyPassingTaskVerdictCache();
+    for (let i = 0; i < PASSING_TASK_VERDICT_CACHE_MAX_GROUPS + 2; i++) {
+      cache = mergePassingTaskVerdictUpdates(
+        cache,
+        `proof-${i}`,
+        { [`task-${i}`]: passingTaskVerdictEntry(identity({ taskKey: `task-${i}` })) },
+        new Date(i * 1_000).toISOString(),
+      );
+    }
+    expect(Object.keys(cache.groups)).toHaveLength(PASSING_TASK_VERDICT_CACHE_MAX_GROUPS);
+    expect(cache.groups['proof-0']).toBeUndefined();
+    expect(cache.groups['proof-1']).toBeUndefined();
+    expect(passingTaskVerdictCacheEntry(cache, 'proof-2', 'task-2')).toBeDefined();
+    expect(passingTaskVerdictCacheEntry(cache, 'proof-33', 'task-33')).toBeDefined();
   });
 });
 

@@ -9,9 +9,10 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-export const PASSING_TASK_VERDICT_CACHE_VERSION = 1;
+export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
-  "affected-passing-task-verdict-v1";
+  "affected-passing-task-verdict-v2";
+export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS = 32;
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -56,16 +57,22 @@ export function passingTaskVerdictIdentityEnvironment(environment) {
   if (proofGroup !== null) {
     identityEnvironment.PAPERCUSP_TEST_RUN_GROUP = proofGroup;
   }
+  const rawCacheGroup = identityEnvironment.PAPERCUSP_TEST_RUN_GROUP;
+  const cacheGroup =
+    typeof rawCacheGroup === "string" && rawCacheGroup.trim() !== ""
+      ? rawCacheGroup.trim().slice(0, 256)
+      : null;
   return {
     environment: identityEnvironment,
     proofGroupApplied: proofGroup !== null,
+    cacheGroup,
   };
 }
 
 /** One bounded, machine-readable composite cache verdict for gate logs. */
 export function formatPassingTaskVerdictSummary(
   decisions,
-  { proofGroupApplied = false } = {},
+  { proofGroupApplied = false, cacheGroup = null } = {},
 ) {
   let hits = 0;
   let misses = 0;
@@ -86,12 +93,13 @@ export function formatPassingTaskVerdictSummary(
   return (
     `AFFECTED_TASK_CACHE_SUMMARY hits=${hits} misses=${misses} ` +
     `proofIdentity=${proofGroupApplied ? "initial-run" : "current-run"} ` +
+    `group=${cacheGroup ? sha256(cacheGroup).slice(0, 12) : "missing"} ` +
     `reasons=${JSON.stringify(reasonCounts)}`
   );
 }
 
 export function emptyPassingTaskVerdictCache() {
-  return { version: PASSING_TASK_VERDICT_CACHE_VERSION, entries: {} };
+  return { version: PASSING_TASK_VERDICT_CACHE_VERSION, groups: {} };
 }
 
 /**
@@ -107,15 +115,27 @@ export function readPassingTaskVerdictCache(path) {
         reason: "cache-version-mismatch",
       };
     }
-    if (
-      !parsed.entries ||
-      typeof parsed.entries !== "object" ||
-      Array.isArray(parsed.entries)
-    ) {
+    if (!parsed.groups || typeof parsed.groups !== "object" || Array.isArray(parsed.groups)) {
       return {
         cache: emptyPassingTaskVerdictCache(),
         reason: "cache-shape-invalid",
       };
+    }
+    for (const group of Object.values(parsed.groups)) {
+      if (
+        !group ||
+        typeof group !== "object" ||
+        Array.isArray(group) ||
+        typeof group.updatedAt !== "string" ||
+        !group.entries ||
+        typeof group.entries !== "object" ||
+        Array.isArray(group.entries)
+      ) {
+        return {
+          cache: emptyPassingTaskVerdictCache(),
+          reason: "cache-shape-invalid",
+        };
+      }
     }
     return { cache: parsed, reason: "cache-ready" };
   } catch (error) {
@@ -124,6 +144,12 @@ export function readPassingTaskVerdictCache(path) {
       reason: error?.code === "ENOENT" ? "cache-file-missing" : "cache-corrupt",
     };
   }
+}
+
+/** Read one task verdict from the immutable candidate proof group that produced it. */
+export function passingTaskVerdictCacheEntry(cache, cacheGroup, taskKey) {
+  if (typeof cacheGroup !== "string" || cacheGroup.trim() === "") return undefined;
+  return cache?.groups?.[cacheGroup]?.entries?.[taskKey];
 }
 
 /** Write via same-directory rename so a reader observes the old complete file or the new one. */
@@ -392,9 +418,34 @@ export function passingTaskVerdictEntry(
   };
 }
 
-export function mergePassingTaskVerdictUpdates(cache, updates) {
+export function mergePassingTaskVerdictUpdates(
+  cache,
+  cacheGroup,
+  updates,
+  updatedAt = new Date().toISOString(),
+) {
+  if (typeof cacheGroup !== "string" || cacheGroup.trim() === "") {
+    return cache?.version === PASSING_TASK_VERDICT_CACHE_VERSION
+      ? cache
+      : emptyPassingTaskVerdictCache();
+  }
+  const groups = {
+    ...(cache?.groups ?? {}),
+    [cacheGroup]: {
+      updatedAt,
+      entries: {
+        ...(cache?.groups?.[cacheGroup]?.entries ?? {}),
+        ...updates,
+      },
+    },
+  };
+  const retainedGroups = Object.fromEntries(
+    Object.entries(groups)
+      .sort(([, a], [, b]) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      .slice(0, PASSING_TASK_VERDICT_CACHE_MAX_GROUPS),
+  );
   return {
     version: PASSING_TASK_VERDICT_CACHE_VERSION,
-    entries: { ...(cache?.entries ?? {}), ...updates },
+    groups: retainedGroups,
   };
 }

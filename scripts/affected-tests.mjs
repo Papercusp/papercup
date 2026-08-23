@@ -104,6 +104,7 @@ import {
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  passingTaskVerdictCacheEntry,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
@@ -407,12 +408,11 @@ const printAffected = has("--print-affected");
 // See scripts/lib/related-tests.mjs for the measured narrowing (median ~5.4x in
 // operator-core) and for why every rail widens back to the full suite on doubt.
 //
-// ⚠ DELIBERATELY OPT-IN, and NOT wired into `test:affected`. The green-checkpoint
-// gate's greenCmd IS `npm run test:affected`, and the gate is what certifies
-// `main`. Import-graph selection structurally cannot see cross-cutting breakage
-// (the classic: a required field added to a shared interface strands fixtures that
-// never import the changed file — which is why lint:required-field-strands and
-// lint:tsc exist). So selection is the developer inner loop; the gate stays broad.
+// This remains opt-in relative to the historical `test:affected` command. The
+// green-checkpoint deliberately invokes `npm run test:related`: unresolved graph
+// edges, cross-package-only changes, and unsafe lane shapes widen back to a full
+// workspace suite, while lint:required-field-strands, lint:tsc, repo-wide guards,
+// migrations, and builds remain outside this narrowing.
 const relatedOnly = has("--related");
 const runElSuite = has("--el-suite");
 const excludeArg = arg("--exclude", "");
@@ -2854,9 +2854,9 @@ if (relatedOnly && !printAffected) {
 // loud banner goes to stderr and only for an UNSCOPED git derivation big enough that it
 // cannot be one agent's edit.
 //
-// Report-only, deliberately: the wide set is CORRECT for the green-checkpoint gate, whose
-// job is to certify the whole candidate. Narrowing what the gate runs to "your" paths would
-// trade a legible slowness for an illegible false green.
+// Report-only, deliberately: this WORKSPACE set remains authoritative for the green gate.
+// `test:related` narrows unit files only after propagation; it never rewrites the candidate
+// diff to one caller's paths or suppresses the cross-cutting guards above.
 const derivationSource = derivationDegraded
   ? "git-fallback-all"
   : runAll
@@ -3182,6 +3182,8 @@ const TASK_VERDICT_CACHE_ENABLED = process.env.GREEN_CHECKPOINT === "1";
 const TASK_VERDICT_PROOF_GROUP_APPLIED =
   typeof process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP === "string" &&
   process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP.trim() !== "";
+const { cacheGroup: TASK_VERDICT_CACHE_GROUP } =
+  passingTaskVerdictIdentityEnvironment(process.env);
 const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash("sha256")
   .update(ROOT)
   .digest("hex")
@@ -3190,7 +3192,7 @@ const TASK_VERDICT_CACHE_PATH =
   process.env.AFFECTED_TASK_VERDICT_CACHE_PATH ||
   join(
     tmpdir(),
-    `papercusp-affected-passing-verdicts-v1-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`,
+    `papercusp-affected-passing-verdicts-v2-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`,
   );
 const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED
   ? readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH)
@@ -3383,36 +3385,48 @@ function runCapturedTask(
     scriptOverride == null
   ) {
     if (context.cacheProvenance?.ok) {
-      const { environment: cacheIdentityEnvironment } =
-        passingTaskVerdictIdentityEnvironment(childEnv);
-      cacheIdentity = buildPassingTaskVerdictIdentity({
-        taskKey: taskKey(context.t),
-        command: {
-          cmd,
-          argv,
-          cwd,
-          scriptText: spawnTask.ws.scripts[spawnTask.script] ?? null,
-        },
-        // Hashing happens inside the helper; raw environment values (including credentials) are
-        // never written to the cache. Keeping the COMPLETE env is conservative: an unfamiliar
-        // variable cannot silently become relevant without invalidating reuse.
+      const {
         environment: cacheIdentityEnvironment,
-        gateConfig: {
-          ...taskVerdictGateConfig,
-          batchTimeout: {
-            ...taskVerdictGateConfig.batchTimeout,
-            effectiveMs: taskTimeoutMs,
-            source: taskTimeoutSource,
+        cacheGroup: childCacheGroup,
+      } = passingTaskVerdictIdentityEnvironment(childEnv);
+      if (!childCacheGroup) {
+        cacheDecision = { hit: false, reason: "proof-group-missing" };
+      } else if (childCacheGroup !== TASK_VERDICT_CACHE_GROUP) {
+        cacheDecision = { hit: false, reason: "proof-group-mismatch" };
+      } else {
+        cacheIdentity = buildPassingTaskVerdictIdentity({
+          taskKey: taskKey(context.t),
+          command: {
+            cmd,
+            argv,
+            cwd,
+            scriptText: spawnTask.ws.scripts[spawnTask.script] ?? null,
           },
-        },
-        dependencyHash: context.cacheProvenance.hash,
-      });
-      cacheDecision = decidePassingTaskVerdict({
-        enabled: true,
-        cacheRead: taskVerdictCacheRead,
-        entry: taskVerdictCacheRead.cache.entries[taskKey(context.t)],
-        identity: cacheIdentity,
-      });
+          // Hashing happens inside the helper; raw environment values (including credentials) are
+          // never written to the cache. Keeping the COMPLETE env is conservative: an unfamiliar
+          // variable cannot silently become relevant without invalidating reuse.
+          environment: cacheIdentityEnvironment,
+          gateConfig: {
+            ...taskVerdictGateConfig,
+            batchTimeout: {
+              ...taskVerdictGateConfig.batchTimeout,
+              effectiveMs: taskTimeoutMs,
+              source: taskTimeoutSource,
+            },
+          },
+          dependencyHash: context.cacheProvenance.hash,
+        });
+        cacheDecision = decidePassingTaskVerdict({
+          enabled: true,
+          cacheRead: taskVerdictCacheRead,
+          entry: passingTaskVerdictCacheEntry(
+            taskVerdictCacheRead.cache,
+            childCacheGroup,
+            taskKey(context.t),
+          ),
+          identity: cacheIdentity,
+        });
+      }
     } else {
       cacheDecision = {
         hit: false,
@@ -3629,7 +3643,10 @@ if (TASK_VERDICT_CACHE_ENABLED) {
         status: value.__cacheStatus,
         reason: value.__cacheReason,
       })),
-      { proofGroupApplied: TASK_VERDICT_PROOF_GROUP_APPLIED },
+      {
+        proofGroupApplied: TASK_VERDICT_PROOF_GROUP_APPLIED,
+        cacheGroup: TASK_VERDICT_CACHE_GROUP,
+      },
     ),
   );
 }
@@ -3968,6 +3985,7 @@ if (
     const latest = readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH);
     const merged = mergePassingTaskVerdictUpdates(
       latest.cache,
+      TASK_VERDICT_CACHE_GROUP,
       taskVerdictCacheUpdates,
     );
     writePassingTaskVerdictCacheAtomic(
