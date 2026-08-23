@@ -357,6 +357,8 @@ export interface ListTasksFilter {
   launchedBy?: string;
   workItemId?: string;
   rootTaskId?: string;
+  /** Native Claude/Codex session id recorded after bootstrap. */
+  sessionId?: string;
   /** Include rows that ended before now — off by default, so the common read is
    *  "what is running" and history is opt-in. */
   includeEnded?: boolean;
@@ -376,10 +378,87 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
        ${filter.workItemId ? sql`AND work_item_id = ${filter.workItemId}` : sql``}
        ${filter.rootTaskId ? sql`AND root_task_id = ${filter.rootTaskId}` : sql``}
+       ${filter.sessionId ? sql`AND session_id = ${filter.sessionId}` : sql``}
      ORDER BY started_at DESC
      LIMIT ${limit}
   `;
   return rows.map(toRow);
+}
+
+/**
+ * Bind every still-live headless agent task for one stable coord owner to the
+ * native session incarnation bootstrap just recorded.
+ *
+ * `spawnHeadless` has to enrol before fork, while bootstrap learns the native
+ * session id inside the child. The stable owner id in `detail` is the hand-off
+ * key between those orderings. Updating all matching live rows is deliberate:
+ * a duplicate launch under one owner is already an anomaly, and session end
+ * must reap every subtree that identity owns rather than leave the duplicate.
+ */
+export async function bindLiveAgentSessionTasksToNativeSession(
+  input: { workspaceId?: string; coordOwnerId: string; sessionId: string },
+  inject?: Sql,
+): Promise<string[]> {
+  const coordOwnerId = input.coordOwnerId.trim();
+  const sessionId = input.sessionId.trim();
+  if (!coordOwnerId || !sessionId) return [];
+  const sql = sqlOf(inject);
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<Array<{ task_id: string }>>`
+    UPDATE harness_shared.task_ledger
+       SET session_id = ${sessionId}, updated_at = now()
+     WHERE workspace_id = ${ws}
+       AND class = 'agent-session'
+       AND state IN ('pending', 'running')
+       AND ended_at IS NULL
+       AND detail ->> 'coordOwnerId' = ${coordOwnerId}
+       AND session_id IS DISTINCT FROM ${sessionId}
+    RETURNING task_id
+  `;
+  return rows.map((row) => row.task_id);
+}
+
+/**
+ * The other half of the bootstrap/enrolment race: after the async task insert
+ * lands, bind that one row to the newest open tracked session for its stamped
+ * coord owner. Bootstrap calls the owner-keyed bulk binder above, so whichever
+ * database write lands second performs the link and no timing window remains.
+ */
+export async function bindAgentSessionTaskToLatestNativeSession(
+  taskId: string,
+  inject?: Sql,
+): Promise<string | null> {
+  if (!taskId.trim()) return null;
+  const sql = sqlOf(inject);
+  const rows = await sql<Array<{ session_id: string }>>`
+    WITH candidate AS (
+      SELECT t.task_id,
+             (
+               SELECT s.session_id
+                 FROM harness_shared.adv_sessions s
+                WHERE s.workspace_id = t.workspace_id
+                  AND s.coord_owner_id = t.detail ->> 'coordOwnerId'
+                  AND s.session_id IS NOT NULL
+                  AND s.ended_at IS NULL
+                ORDER BY s.started_at DESC, s.id DESC
+                LIMIT 1
+             ) AS session_id
+        FROM harness_shared.task_ledger t
+       WHERE t.task_id = ${taskId}
+         AND t.class = 'agent-session'
+         AND t.state IN ('pending', 'running')
+         AND t.ended_at IS NULL
+         AND COALESCE(t.detail ->> 'coordOwnerId', '') <> ''
+    )
+    UPDATE harness_shared.task_ledger t
+       SET session_id = candidate.session_id, updated_at = now()
+      FROM candidate
+     WHERE t.task_id = candidate.task_id
+       AND candidate.session_id IS NOT NULL
+       AND t.session_id IS DISTINCT FROM candidate.session_id
+    RETURNING t.session_id
+  `;
+  return rows[0]?.session_id ?? null;
 }
 
 /** Every row in a state that asserts a live OS process — the reconciler's input. */
