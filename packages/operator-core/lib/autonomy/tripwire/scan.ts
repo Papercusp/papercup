@@ -44,6 +44,7 @@ import {
   getTripwire,
   insertTripwire,
   listArmedTripwires,
+  listRecentlyRevertedTripwires,
   markTripwireCleared,
   markTripwireReverted,
   markTripwireTripped,
@@ -83,6 +84,10 @@ export interface AutonomyTrustScanDeps {
   markReverted: (id: string, nowMs: number) => Promise<void>;
   /** Read the full tripwire evidence for graduation. */
   readEvidence: (opts: { lookbackDays: number; nowMs: number }) => Promise<TripwireRow[]>;
+  /** Read successful reverts in the damper's wall-clock window. */
+  listRecentlyReverted: (sinceMs: number) => Promise<TripwireRow[]>;
+  /** Durable quarantine + synthesis write for one repeated work-item cohort. */
+  quarantineRevertLoop: (input: RevertLoopQuarantineInput) => Promise<RevertLoopQuarantineOutcome>;
   /** Read one category's policy (ceiling / graduated_level / locked / pin). */
   readPolicy: (category: AutonomyCategory) => Promise<AutonomyCategoryPolicy>;
   /** Write a category's graduated_level (clamped ≤ ceiling by the store). */
@@ -114,6 +119,10 @@ export interface AutonomyTrustScanOptions extends AutonomyGraduationPolicy {
   maxReportsPerTick: number;
   /** Compute + log, mutate nothing (supervised dry mode). */
   mineOnly: boolean;
+  /** Successful reverts of one work-item required before durable quarantine. */
+  revertLoopThreshold: number;
+  /** Wall-clock window for the successful-revert count. */
+  revertLoopWindowDays: number;
 }
 
 export const DEFAULT_AUTONOMY_TRUST_SCAN_OPTIONS: AutonomyTrustScanOptions = {
@@ -121,6 +130,8 @@ export const DEFAULT_AUTONOMY_TRUST_SCAN_OPTIONS: AutonomyTrustScanOptions = {
   lookbackDays: 90,
   maxReportsPerTick: 3,
   mineOnly: false,
+  revertLoopThreshold: 3,
+  revertLoopWindowDays: 7,
 };
 
 export function autonomyTrustScanOptionsFromPayload(payload: unknown): AutonomyTrustScanOptions {
@@ -134,6 +145,8 @@ export function autonomyTrustScanOptionsFromPayload(payload: unknown): AutonomyT
     lookbackDays: Math.max(1, num('lookbackDays', d.lookbackDays)),
     maxReportsPerTick: Math.max(0, num('maxReportsPerTick', d.maxReportsPerTick)),
     mineOnly: p.mineOnly === true,
+    revertLoopThreshold: Math.max(2, Math.floor(num('revertLoopThreshold', d.revertLoopThreshold))),
+    revertLoopWindowDays: Math.max(1, num('revertLoopWindowDays', d.revertLoopWindowDays)),
   };
 }
 
@@ -301,7 +314,212 @@ export interface AutonomyTrustScanOutcome {
   ran: boolean;
   skipReason?: 'not-armed';
   sweep?: TripwireSweepResult;
+  damper?: RevertLoopDamperResult;
   graduation?: GraduationLegResult;
+}
+
+export interface RevertLoopQuarantineInput {
+  itemId: string;
+  harness?: string;
+  rows: TripwireRow[];
+  threshold: number;
+  windowDays: number;
+  nowMs: number;
+}
+
+export interface RevertLoopQuarantineOutcome {
+  quarantined: boolean;
+  alreadyQuarantined: boolean;
+  cohortKey?: string;
+}
+
+export interface RevertLoopDamperResult {
+  successfulReverts: number;
+  repeatedItems: number;
+  quarantined: string[];
+  alreadyQuarantined: string[];
+}
+
+interface RevertLoopMarker {
+  version: 1;
+  cohortKey: string;
+  appliedAt: string;
+  threshold: number;
+  windowDays: number;
+  tripwireIds: string[];
+  source: 'autonomy-trust-scan';
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function workItemTarget(row: TripwireRow): { itemId: string; harness?: string } | null {
+  const handle = record(row.revertHandle);
+  if (handle.kind !== 'work-item-state' && handle.kind !== 'work-item-priority') return null;
+  const itemId = typeof handle.id === 'string' ? handle.id.trim() : '';
+  if (!itemId) return null;
+  const harness = typeof handle.harness === 'string' && handle.harness.trim() ? handle.harness.trim() : undefined;
+  return { itemId, ...(harness ? { harness } : {}) };
+}
+
+function markerFrom(payload: unknown): RevertLoopMarker | null {
+  const raw = record(record(payload)._revertLoopDamper);
+  if (raw.version !== 1 || typeof raw.cohortKey !== 'string' || typeof raw.appliedAt !== 'string') return null;
+  return raw as unknown as RevertLoopMarker;
+}
+
+function renderRevertLoopBrief(input: RevertLoopQuarantineInput, cohort: TripwireRow[], cohortKey: string): string {
+  const evidence = cohort
+    .map((row) => {
+      const at = row.revertedAtMs == null ? 'unknown-time' : new Date(row.revertedAtMs).toISOString();
+      return `- \`${row.id}\` at ${at}: \`${row.action ?? row.findingClass}\` · ${row.tripReason ?? 'unknown-signal'} · \`${row.revertHandle.kind}\``;
+    })
+    .join('\n');
+  return (
+    `### Revert-loop damper — AUTO-QUARANTINED\n\n` +
+    `[revert-loop-damper:${cohortKey}]\n\n` +
+    `This item had ${cohort.length} successful automatic reverts within ${input.windowDays} days ` +
+    `(threshold ${input.threshold}). It is durably parked out of self-selection until a reviewer ` +
+    `synthesizes a safer next attempt.\n\n` +
+    `Evidence:\n${evidence}\n\n` +
+    `Synthesis prompt: compare the reverted actions and trip reasons, identify the shared invalid ` +
+    `assumption or unstable precondition, then revise the approach before clearing the claim hold. ` +
+    `Do not retry the same automation unchanged.`
+  );
+}
+
+export interface RevertLoopQuarantineIo {
+  getWorkItem: (id: string, harness?: string) => Promise<{ payload: unknown } | null>;
+  getThreadWindow: (id: string, limit: number, harness?: string) => Promise<{ posts: { body: string }[] } | null>;
+  setClaimHold: (
+    id: string,
+    hold: boolean,
+    opts: { harness?: string; parkedBy?: string; parkedReason?: string },
+  ) => Promise<{ applicable: boolean } | null>;
+  comment: (id: string, body: string, author: string, opts: { harness?: string }) => Promise<unknown | null>;
+  mergePayload: (id: string, patch: Record<string, unknown>, opts: { harness?: string }) => Promise<unknown | null>;
+}
+
+async function liveRevertLoopQuarantineIo(): Promise<RevertLoopQuarantineIo> {
+  const wi = await import('../../work-items');
+  return {
+    getWorkItem: wi.getWorkItem,
+    getThreadWindow: wi.getWorkItemThreadWindow,
+    setClaimHold: wi.setWorkItemClaimHold,
+    comment: wi.commentWorkItem,
+    mergePayload: wi.mergeWorkItemPayload,
+  };
+}
+
+/** Durable park + synthesis comment, replay-safe through the existing payload/thread surfaces. */
+export async function quarantineWorkItemRevertLoop(
+  input: RevertLoopQuarantineInput,
+  io?: RevertLoopQuarantineIo,
+): Promise<RevertLoopQuarantineOutcome> {
+  const resolvedIo = io ?? (await liveRevertLoopQuarantineIo());
+  const item = await resolvedIo.getWorkItem(input.itemId, input.harness);
+  if (!item) return { quarantined: false, alreadyQuarantined: false };
+  const payload = record(item.payload);
+  const prior = markerFrom(payload);
+  const priorAt = prior ? new Date(prior.appliedAt).getTime() : Number.NEGATIVE_INFINITY;
+  const held = String(payload._claimHold) === 'true';
+  const durablyParkedByDamper = held && payload.claim_hold_by === 'autonomy-trust-scan';
+  if (prior && durablyParkedByDamper) {
+    return { quarantined: false, alreadyQuarantined: true, cohortKey: prior.cohortKey };
+  }
+
+  const eligible = input.rows
+    .filter((row) => row.revertedAtMs != null && row.revertedAtMs > priorAt)
+    .sort((a, b) => (a.revertedAtMs! - b.revertedAtMs!) || a.id.localeCompare(b.id));
+  if (eligible.length < input.threshold) {
+    return { quarantined: false, alreadyQuarantined: prior != null, ...(prior ? { cohortKey: prior.cohortKey } : {}) };
+  }
+  const cohort = eligible.slice(0, input.threshold);
+  const cohortKey = `v1:${input.itemId}:${cohort.map((row) => row.id).join('+')}`;
+  const threadMarker = `[revert-loop-damper:${cohortKey}]`;
+
+  // `_claimHold` alone is insufficient: it may be a liveness-bound `held_open`
+  // lease that the session reaper will lift. Stamp the damper's durable-park
+  // provenance unless this exact park is already present.
+  if (!durablyParkedByDamper) {
+    const applied = await resolvedIo.setClaimHold(input.itemId, true, {
+      ...(input.harness ? { harness: input.harness } : {}),
+      parkedBy: 'autonomy-trust-scan',
+      parkedReason: `revert-loop damper: ${cohort.length} successful reverts in ${input.windowDays}d`,
+    });
+    if (!applied?.applicable) return { quarantined: false, alreadyQuarantined: false, cohortKey };
+  }
+
+  const thread = await resolvedIo.getThreadWindow(input.itemId, 200, input.harness);
+  if (!thread?.posts.some((post) => post.body.includes(threadMarker))) {
+    const post = await resolvedIo.comment(
+      input.itemId,
+      renderRevertLoopBrief(input, cohort, cohortKey),
+      'autonomy-trust-scan',
+      input.harness ? { harness: input.harness } : {},
+    );
+    if (!post) throw new Error(`revert-loop damper could not write synthesis brief for ${input.itemId}`);
+  }
+
+  const marker: RevertLoopMarker = {
+    version: 1,
+    cohortKey,
+    appliedAt: new Date(input.nowMs).toISOString(),
+    threshold: input.threshold,
+    windowDays: input.windowDays,
+    tripwireIds: cohort.map((row) => row.id),
+    source: 'autonomy-trust-scan',
+  };
+  const stamped = await resolvedIo.mergePayload(
+    input.itemId,
+    { _revertLoopDamper: marker },
+    input.harness ? { harness: input.harness } : {},
+  );
+  if (!stamped) throw new Error(`revert-loop damper could not stamp ${input.itemId}`);
+  return { quarantined: true, alreadyQuarantined: false, cohortKey };
+}
+
+/** Count successful work-item reverts and quarantine each repeated target once. */
+export async function runAutonomyRevertLoopDamper(
+  deps: AutonomyTrustScanDeps,
+  opts: AutonomyTrustScanOptions,
+): Promise<RevertLoopDamperResult> {
+  const nowMs = deps.nowMs();
+  const sinceMs = nowMs - opts.revertLoopWindowDays * DAY_MS;
+  const rows = (await deps.listRecentlyReverted(sinceMs)).filter(
+    (row) => row.status === 'reverted' && row.revertedAtMs != null && row.revertedAtMs >= sinceMs,
+  );
+  const groups = new Map<string, { itemId: string; harness?: string; rows: TripwireRow[] }>();
+  for (const row of rows) {
+    const target = workItemTarget(row);
+    if (!target) continue;
+    const key = `${target.harness ?? ''}\u0000${target.itemId}`;
+    const group = groups.get(key) ?? { ...target, rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+
+  const repeated = [...groups.values()].filter((group) => group.rows.length >= opts.revertLoopThreshold);
+  const quarantined: string[] = [];
+  const alreadyQuarantined: string[] = [];
+  if (!opts.mineOnly) {
+    for (const group of repeated) {
+      const outcome = await deps.quarantineRevertLoop({
+        itemId: group.itemId,
+        ...(group.harness ? { harness: group.harness } : {}),
+        rows: group.rows,
+        threshold: opts.revertLoopThreshold,
+        windowDays: opts.revertLoopWindowDays,
+        nowMs,
+      });
+      if (outcome.quarantined) quarantined.push(group.itemId);
+      else if (outcome.alreadyQuarantined) alreadyQuarantined.push(group.itemId);
+    }
+  }
+  return { successfulReverts: rows.length, repeatedItems: repeated.length, quarantined, alreadyQuarantined };
 }
 
 /** The full trust scan: gate on arming, then sweep, then graduation. */
@@ -311,8 +529,9 @@ export async function runAutonomyTrustScan(
 ): Promise<AutonomyTrustScanOutcome> {
   if (!(await deps.isArmed())) return { ran: false, skipReason: 'not-armed' };
   const sweep = await runAutonomyTripwireSweep(deps, opts);
+  const damper = await runAutonomyRevertLoopDamper(deps, opts);
   const graduation = await runAutonomyGraduationLeg(deps, opts);
-  return { ran: true, sweep, graduation };
+  return { ran: true, sweep, damper, graduation };
 }
 
 // ───────────────────────── live PG-backed deps ─────────────────────────
@@ -397,6 +616,8 @@ export function defaultAutonomyTrustScanDeps(sql: Sql, workspaceId: string): Aut
     markTripped: (id, reason, nowMs, by) => markTripwireTripped(sql, workspaceId, id, reason, nowMs, by),
     markReverted: (id, nowMs) => markTripwireReverted(sql, workspaceId, id, nowMs),
     readEvidence: (o) => readTripwireEvidence(sql, workspaceId, o),
+    listRecentlyReverted: (sinceMs) => listRecentlyRevertedTripwires(sql, workspaceId, sinceMs),
+    quarantineRevertLoop: (input) => quarantineWorkItemRevertLoop(input),
     async readPolicy(category) {
       const { getAutonomyCategoryPolicy } = await import('../policy-store');
       return getAutonomyCategoryPolicy(sql, workspaceId, category);

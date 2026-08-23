@@ -9,11 +9,15 @@ import type { AutonomyCeiling } from '@papercusp/plan-parser';
 import {
   runAutonomyTrustScan,
   runAutonomyTripwireSweep,
+  runAutonomyRevertLoopDamper,
   runAutonomyGraduationLeg,
+  quarantineWorkItemRevertLoop,
   armTripwireForDecision,
   DEFAULT_AUTONOMY_TRUST_SCAN_OPTIONS,
   type AutonomyTrustScanDeps,
   type NotifyInput,
+  type RevertLoopQuarantineInput,
+  type RevertLoopQuarantineIo,
 } from './scan';
 import type { TripwireSignalKind, TripwireWatchSignal } from './core';
 import type { TripwireRow } from './store';
@@ -52,6 +56,7 @@ interface FakeConfig {
   armedRows?: TripwireRow[];
   signals?: TripwireWatchSignal[];
   evidence?: TripwireRow[];
+  recentReverts?: TripwireRow[];
   policies?: Map<AutonomyCategory, AutonomyCategoryPolicy>;
   revertOk?: boolean;
   nowMs?: number;
@@ -65,6 +70,7 @@ function makeDeps(cfg: FakeConfig) {
     reverts: [] as string[],
     writes: [] as { cat: AutonomyCategory; level: AutonomyCeiling }[],
     notifies: [] as NotifyInput[],
+    quarantines: [] as RevertLoopQuarantineInput[],
   };
   const deps: AutonomyTrustScanDeps = {
     isArmed: async () => cfg.armed ?? true,
@@ -78,6 +84,11 @@ function makeDeps(cfg: FakeConfig) {
     markTripped: async (id, reason) => void calls.tripped.push({ id, reason }),
     markReverted: async (id) => void calls.reverted.push(id),
     readEvidence: async () => cfg.evidence ?? [],
+    listRecentlyReverted: async () => cfg.recentReverts ?? [],
+    quarantineRevertLoop: async (input) => {
+      calls.quarantines.push(input);
+      return { quarantined: true, alreadyQuarantined: false, cohortKey: `test:${input.itemId}` };
+    },
     readPolicy: async (cat) => cfg.policies?.get(cat) ?? policy({ category: cat }),
     writeGraduatedLevel: async (cat, level) => void calls.writes.push({ cat, level }),
     notify: async (input) => {
@@ -96,12 +107,163 @@ describe('runAutonomyTrustScan arming gate', () => {
     expect(out).toEqual({ ran: false, skipReason: 'not-armed' });
   });
 
-  it('runs both legs when armed', async () => {
+  it('runs sweep, revert-loop damper, and graduation when armed', async () => {
     const { deps } = makeDeps({ armed: true });
     const out = await runAutonomyTrustScan(deps, OPTS);
     expect(out.ran).toBe(true);
     expect(out.sweep).toBeDefined();
+    expect(out.damper).toBeDefined();
     expect(out.graduation).toBeDefined();
+  });
+});
+
+describe('runAutonomyRevertLoopDamper', () => {
+  it('quarantines only after N successful work-item reverts target the same item in-window', async () => {
+    const nowMs = 10 * 86_400_000;
+    const matching = Array.from({ length: 3 }, (_, i) =>
+      row({
+        id: `tw-match-${i}`,
+        status: 'reverted',
+        armedAtMs: nowMs - (i + 1) * HOUR,
+        revertedAtMs: nowMs - i * HOUR,
+        revertHandle: { kind: i % 2 ? 'work-item-priority' : 'work-item-state', id: 'WI-9', harness: 'papercup' },
+      }),
+    );
+    const ignored = [
+      row({
+        id: 'tw-other-item',
+        status: 'reverted',
+        armedAtMs: nowMs - HOUR,
+        revertedAtMs: nowMs - HOUR,
+        revertHandle: { kind: 'work-item-state', id: 'WI-10' },
+      }),
+      row({
+        id: 'tw-not-work-item',
+        status: 'reverted',
+        armedAtMs: nowMs - HOUR,
+        revertedAtMs: nowMs - HOUR,
+        revertHandle: { kind: 'flag-flip', id: 'WI-9' },
+      }),
+      row({
+        id: 'tw-not-successful',
+        status: 'tripped',
+        armedAtMs: nowMs - HOUR,
+        revertedAtMs: null,
+        revertHandle: { kind: 'work-item-state', id: 'WI-9' },
+      }),
+    ];
+    const { deps, calls } = makeDeps({ recentReverts: [...matching, ...ignored], nowMs });
+    const out = await runAutonomyRevertLoopDamper(deps, OPTS);
+
+    expect(out).toMatchObject({ successfulReverts: 5, repeatedItems: 1, quarantined: ['WI-9'] });
+    expect(calls.quarantines).toHaveLength(1);
+    expect(calls.quarantines[0]).toMatchObject({ itemId: 'WI-9', harness: 'papercup', threshold: 3, windowDays: 7 });
+    expect(calls.quarantines[0]!.rows.map((r) => r.id).sort()).toEqual(matching.map((r) => r.id).sort());
+  });
+
+  it('reports candidates but performs no quarantine in mineOnly mode', async () => {
+    const nowMs = 1_000_000;
+    const recentReverts = Array.from({ length: 3 }, (_, i) =>
+      row({
+        id: `tw-${i}`,
+        status: 'reverted',
+        armedAtMs: nowMs - HOUR,
+        revertedAtMs: nowMs - i,
+        revertHandle: { kind: 'work-item-state', id: 'WI-9' },
+      }),
+    );
+    const { deps, calls } = makeDeps({ recentReverts, nowMs });
+    const out = await runAutonomyRevertLoopDamper(deps, { ...OPTS, mineOnly: true });
+    expect(out.repeatedItems).toBe(1);
+    expect(out.quarantined).toEqual([]);
+    expect(calls.quarantines).toEqual([]);
+  });
+
+  it('durably parks once and deduplicates the synthesis comment across complete and crash-window replays', async () => {
+    const nowMs = Date.parse('2026-08-23T12:00:00.000Z');
+    const rows = Array.from({ length: 3 }, (_, i) =>
+      row({
+        id: `tw-cohort-${i}`,
+        status: 'reverted',
+        armedAtMs: nowMs - (i + 1) * HOUR,
+        revertedAtMs: nowMs - i * HOUR,
+        revertHandle: { kind: 'work-item-state', id: 'WI-9', harness: 'papercup' },
+      }),
+    );
+    let payload: Record<string, unknown> = {};
+    const posts: { body: string }[] = [];
+    const setClaimHold = vi.fn(async () => {
+      payload = { ...payload, _claimHold: true, claim_hold_by: 'autonomy-trust-scan' };
+      return { applicable: true };
+    });
+    const comment = vi.fn(async (_id: string, body: string) => {
+      posts.push({ body });
+      return { id: 'post-1' };
+    });
+    const mergePayload = vi.fn(async (_id: string, patch: Record<string, unknown>) => {
+      payload = { ...payload, ...patch };
+      return { payload };
+    });
+    const io: RevertLoopQuarantineIo = {
+      getWorkItem: async () => ({ payload }),
+      getThreadWindow: async () => ({ posts }),
+      setClaimHold,
+      comment,
+      mergePayload,
+    };
+    const input = { itemId: 'WI-9', harness: 'papercup', rows, threshold: 3, windowDays: 7, nowMs };
+
+    expect(await quarantineWorkItemRevertLoop(input, io)).toMatchObject({ quarantined: true });
+    expect(await quarantineWorkItemRevertLoop(input, io)).toMatchObject({ alreadyQuarantined: true });
+    expect(setClaimHold).toHaveBeenCalledTimes(1);
+    expect(comment).toHaveBeenCalledTimes(1);
+
+    // Simulate a crash after comment but before the payload marker commit. The
+    // deterministic marker already in the thread prevents a duplicate comment.
+    payload = { _claimHold: true, claim_hold_by: 'autonomy-trust-scan' };
+    expect(await quarantineWorkItemRevertLoop(input, io)).toMatchObject({ quarantined: true });
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(mergePayload).toHaveBeenCalledTimes(2);
+  });
+
+  it('upgrades a pre-existing liveness lease to the damper durable park', async () => {
+    const nowMs = Date.parse('2026-08-23T12:00:00.000Z');
+    const rows = Array.from({ length: 3 }, (_, i) =>
+      row({
+        id: `tw-lease-${i}`,
+        status: 'reverted',
+        armedAtMs: nowMs - (i + 1) * HOUR,
+        revertedAtMs: nowMs - i * HOUR,
+        revertHandle: { kind: 'work-item-state', id: 'WI-9', harness: 'papercup' },
+      }),
+    );
+    let payload: Record<string, unknown> = { _claimHold: true, held_open_by: 'temporary-owner' };
+    const setClaimHold = vi.fn(async () => {
+      payload = { ...payload, claim_hold_by: 'autonomy-trust-scan' };
+      return { applicable: true };
+    });
+    const io: RevertLoopQuarantineIo = {
+      getWorkItem: async () => ({ payload }),
+      getThreadWindow: async () => ({ posts: [] }),
+      setClaimHold,
+      comment: async () => ({ id: 'post-1' }),
+      mergePayload: async (_id, patch) => {
+        payload = { ...payload, ...patch };
+        return { payload };
+      },
+    };
+
+    expect(
+      await quarantineWorkItemRevertLoop(
+        { itemId: 'WI-9', harness: 'papercup', rows, threshold: 3, windowDays: 7, nowMs },
+        io,
+      ),
+    ).toMatchObject({ quarantined: true });
+    expect(setClaimHold).toHaveBeenCalledWith(
+      'WI-9',
+      true,
+      expect.objectContaining({ parkedBy: 'autonomy-trust-scan' }),
+    );
   });
 });
 
