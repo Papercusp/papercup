@@ -393,7 +393,13 @@ export type ReconcileAction =
     }
   | { kind: 'waiting-backoff'; unit: string }
   | { kind: 'already-escalated'; unit: string }
-  | { kind: 'restart'; unit: string; backoffSec: number }
+  | {
+      kind: 'restart';
+      unit: string;
+      backoffSec: number;
+      /** Alert on the first failed restart in one continuous down episode, not every retry. */
+      notify: boolean;
+    }
   | { kind: 'escalate-start-limit-hit'; unit: string }
   | { kind: 'escalate-give-up'; unit: string; restartsInWindow: number };
 
@@ -557,7 +563,12 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
       return { action: { kind: 'already-escalated', unit: entry.name }, nextState: state };
     case 'restart':
       return {
-        action: { kind: 'restart', unit: entry.name, backoffSec: damping.action.backoffSec },
+        action: {
+          kind: 'restart',
+          unit: entry.name,
+          backoffSec: damping.action.backoffSec,
+          notify: justWentDown,
+        },
         nextState: state,
       };
     case 'escalate-give-up':
@@ -1040,9 +1051,16 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`restart of ${entry.unit} FAILED: ${msg}`);
-          await deps
-            .notify({ summary: `⚠ supervision: \`systemctl --user restart ${entry.unit}\` failed — ${msg}`, kind: 'escalation' })
-            .catch(() => {});
+          // EI-21271585349726650: the 60-second reconciler used to emit this escalation for
+          // every failed attempt in one continuous outage. The normal restart ladder already
+          // owns the retry cadence, and the give-up path pages + files a durable EI when the
+          // episode exceeds its patience budget. Reuse `wasDown`'s transition latch so this
+          // immediate failure page fires once per episode, then re-arms after real recovery.
+          if (action.notify) {
+            await deps
+              .notify({ summary: `⚠ supervision: \`systemctl --user restart ${entry.unit}\` failed — ${msg}`, kind: 'escalation' })
+              .catch(() => {});
+          }
         }
         break;
       case 'escalate-start-limit-hit':

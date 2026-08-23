@@ -489,7 +489,12 @@ describe('decideReconcile', () => {
       autoRestartFlagOn: true,
       now: 1000,
     });
-    expect(action).toEqual({ kind: 'restart', unit: 'mcp-proxy', backoffSec: BACKOFF_SEQUENCE_SEC[0] });
+    expect(action).toEqual({
+      kind: 'restart',
+      unit: 'mcp-proxy',
+      backoffSec: BACKOFF_SEQUENCE_SEC[0],
+      notify: true,
+    });
     expect(nextState.restarts).toEqual([1000]);
     expect(nextState.backoffIndex).toBe(1);
     expect(nextState.lastRestartAt).toBe(1000);
@@ -533,7 +538,12 @@ describe('decideReconcile', () => {
       autoRestartFlagOn: true,
       now: BACKOFF_SEQUENCE_SEC[0] * 1000 + 1,
     });
-    expect(second.action).toEqual({ kind: 'restart', unit: 'mcp-proxy', backoffSec: BACKOFF_SEQUENCE_SEC[1] });
+    expect(second.action).toEqual({
+      kind: 'restart',
+      unit: 'mcp-proxy',
+      backoffSec: BACKOFF_SEQUENCE_SEC[1],
+      notify: false,
+    });
   });
 
   it('systemd start-limit-hit -> escalate-start-limit-hit, latches gaveUp (no further restart attempts)', () => {
@@ -688,7 +698,12 @@ describe('decideReconcile', () => {
       autoRestartFlagOn: true,
       now: 2000,
     });
-    expect(resumed.action).toEqual({ kind: 'restart', unit: 'live-federation-gate-timer', backoffSec: BACKOFF_SEQUENCE_SEC[0] });
+    expect(resumed.action).toEqual({
+      kind: 'restart',
+      unit: 'live-federation-gate-timer',
+      backoffSec: BACKOFF_SEQUENCE_SEC[0],
+      notify: false,
+    });
   });
 
   it('activating is treated as NOT down (never restart a unit mid-start)', () => {
@@ -1118,6 +1133,42 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     });
     await expect(reconcileTick(deps)).resolves.toBeDefined();
     expect(deps.notify).toHaveBeenCalled();
+  });
+
+  it('EI-21271585349726650: pages once per continuous restart-failure episode, then re-arms after recovery', async () => {
+    let now = 0;
+    let healthy = false;
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') {
+        return healthy
+          ? 'papercup-mcp-proxy.service loaded active running Papercusp resilient MCP proxy\n'
+          : LIST_UNITS_FIXTURE;
+      }
+      if (args[0] === 'show') return 'Result=success\nNRestarts=0\nRestart=always\nLoadState=loaded\n';
+      if (args[0] === 'restart') throw new Error('systemctl restart failed');
+      return '';
+    });
+    const deps = makeDeps({
+      execUser,
+      now: () => now,
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    const failurePages = () =>
+      deps.notify.mock.calls.filter((c) => String(c[0]?.summary ?? '').includes('systemctl --user restart'));
+
+    await reconcileTick(deps);
+    now = BACKOFF_SEQUENCE_SEC[0] * 1000 + 1;
+    await reconcileTick(deps);
+    expect(failurePages()).toHaveLength(1);
+
+    healthy = true;
+    now += 1_000;
+    await reconcileTick(deps);
+
+    healthy = false;
+    now += 61_000;
+    await reconcileTick(deps);
+    expect(failurePages()).toHaveLength(2);
   });
 
   it('P-003(b): a supervised unit whose live Restart= has drifted to "no" gets a ONE-TIME escalation notify, not re-fired while still drifted', async () => {
