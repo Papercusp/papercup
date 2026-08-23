@@ -18,7 +18,8 @@ import {
   estimateTextTokens,
   findByRef,
   isInteractive,
-  parseAtSpiBusProperty,
+  a11yBusCommand,
+  parseA11yBusAddress,
   parseWalkerOutput,
   HOST_BUS_ENV_KEYS,
   NoAccessibilityBusError,
@@ -307,14 +308,39 @@ describe('findByRef + elementClickPoint', () => {
 
 const BUS = 'unix:path=/run/user/1000/at-spi/bus_99,guid=abc';
 
-describe('parseAtSpiBusProperty', () => {
-  it('reads the address a display advertises on its root window', () => {
-    expect(parseAtSpiBusProperty(`AT_SPI_BUS(STRING) = "${BUS}"`)).toBe(BUS);
+describe('parseA11yBusAddress', () => {
+  it('parses gdbus\'s tuple — the PRIMARY probe\'s output shape', () => {
+    expect(parseA11yBusAddress(`('${BUS}',)`)).toBe(BUS);
   });
 
-  it('returns null for xprop\'s absent-property answer — a real "no a11y bus here"', () => {
-    expect(parseAtSpiBusProperty('AT_SPI_BUS:  no such atom on any window.')).toBeNull();
-    expect(parseAtSpiBusProperty('')).toBeNull();
+  it('parses xprop\'s property line — the fallback probe\'s shape, same parser', () => {
+    expect(parseA11yBusAddress(`AT_SPI_BUS(STRING) = "${BUS}"`)).toBe(BUS);
+  });
+
+  it('accepts a bare address', () => {
+    expect(parseA11yBusAddress(BUS)).toBe(BUS);
+    expect(parseA11yBusAddress('unix:abstract=/tmp/dbus-x')).toBe('unix:abstract=/tmp/dbus-x');
+  });
+
+  it('returns null for the absent-property answer — a real "no a11y bus here"', () => {
+    expect(parseA11yBusAddress('AT_SPI_BUS:  no such atom on any window.')).toBeNull();
+    expect(parseA11yBusAddress('')).toBeNull();
+    expect(parseA11yBusAddress('GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown')).toBeNull();
+  });
+});
+
+describe('a11yBusCommand', () => {
+  it('asks the desktop\'s OWN session bus, and carries no DISPLAY to be steered by', () => {
+    const cmd = a11yBusCommand('unix:path=/tmp/dbus-abc');
+    expect(cmd.bin).toBe('gdbus');
+    expect(cmd.args).toContain('org.a11y.Bus');
+    expect(cmd.args).toContain('org.a11y.Bus.GetAddress');
+    expect(cmd.env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/tmp/dbus-abc');
+    expect(cmd.env.DISPLAY).toBeUndefined();
+  });
+
+  it('refuses without a session bus address rather than probing the ambient one', () => {
+    expect(() => a11yBusCommand('')).toThrow(/requires the desktop's session bus address/);
   });
 });
 
