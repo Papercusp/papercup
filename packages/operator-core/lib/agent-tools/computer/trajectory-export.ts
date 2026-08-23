@@ -42,11 +42,21 @@ export function clampFrameSeconds(sec: number): number {
 /**
  * The ffmpeg concat-demuxer script for a frame list.
  *
- * ⚠ THE LAST ENTRY IS REPEATED ON PURPOSE. The concat demuxer applies a `duration`
- * to the file that PRECEDES the next `file` directive, so the final duration is
- * ignored and the last frame flashes by — the single most common way an
- * image-sequence export ends a beat early. Repeating the last file gives it
- * something to precede.
+ * ⚠ THE LAST ENTRY IS REPEATED ON PURPOSE, and the trade is MEASURED. The concat
+ * demuxer applies a `duration` to the file PRECEDING the next `file` directive, so
+ * without a repeat the final frame gets the container's default frame duration
+ * instead of its own — it flashes by, which is the most common way an image-sequence
+ * export ends a beat early.
+ *
+ * Measured on ffmpeg 6.1.1, 6 frames x 0.500s (model: 3.000s):
+ *   with the repeat : webm 3.04s / 7 decoded frames · gif 3.04s / 7 frames
+ *   without         : webm 2.56s / 6 decoded frames · gif 2.56s / 6 frames
+ *
+ * So the repeat buys the last frame its full hold (2.56 → 3.04 ≈ the modelled 3.00)
+ * at the cost of ONE extra decoded frame that is a byte-identical duplicate of the
+ * last, plus ~0.04s of default-duration overshoot. A viewer cannot see the duplicate;
+ * a viewer very much notices the final state vanishing. Hence: keep the repeat, and
+ * expect `decoded frames === recorded frames + 1` when probing an export.
  */
 export function buildConcatScript(frames: readonly RecordedFrame[]): string {
   if (frames.length === 0) throw new Error('computer:record — cannot build a concat script for zero frames.');

@@ -138,7 +138,7 @@ export async function runRecordTrajectory(args: RecordArgs, ctx: RecordTrajector
   if (args.op === 'stop') {
     const stopped = stopRecording(target.display);
     if (!stopped) return text({ ok: true, stopped: false, reason: `no open recording on display ${target.display}` });
-    const loaded = readRecording(join(recordingsRoot(), stopped.id));
+    const loaded = readRecording(stopped.dir);
     return text({
       ok: true,
       stopped: true,

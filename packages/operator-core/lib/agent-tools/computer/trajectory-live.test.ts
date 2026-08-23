@@ -133,9 +133,11 @@ describe.skipIf(!liveEnabled)('computer:record — LIVE trajectory recording + e
 
     const gif = await exportRecording(rec.dir, { format: 'gif', exec });
     expect(gif.bytes).toBeGreaterThan(0);
-    // Every recorded step survives into the GIF — including the last one, which the
-    // concat demuxer drops unless the final `file` entry is repeated.
-    expect(probeFrameCount(gif.path)).toBe(6);
+    // Every recorded step survives into the GIF, PLUS the deliberate duplicate of the
+    // last frame — that repeat is what buys the final state its full hold instead of
+    // one default-duration flash (measured both ways; see buildConcatScript). Pinning
+    // the exact +1 is what would catch the repeat being silently dropped OR doubled.
+    expect(probeFrameCount(gif.path)).toBe(7);
 
     // eslint-disable-next-line no-console
     console.log(
@@ -151,19 +153,31 @@ describe.skipIf(!liveEnabled)('computer:record — LIVE trajectory recording + e
     const desktop = await ensureHiveDesktop(HIVE);
     __resetAllLedgersForTests();
 
+    // ⚠ The two moves MUST target different coordinates. Moving to where the pointer
+    // already is takes ~15.2s under a window manager and is then SIGKILLed by the
+    // 15s exec timeout mid-`--sync`, so the action reports FAILED and the click never
+    // fires — EI-21256574817493619, found by this very test. Distinct coordinates keep
+    // this test measuring the recorder rather than that defect.
     const before = await runComputerAction(
-      { action: 'mouse_move', coordinate: [10, 10], observe: 'none' },
+      { action: 'mouse_move', coordinate: [11, 11], observe: 'none' },
       { harnessSlug: HIVE },
     );
     startRecording({ display: desktop.display, root, note: 'invisibility check' });
     const during = await runComputerAction(
-      { action: 'mouse_move', coordinate: [10, 10], observe: 'none' },
+      { action: 'mouse_move', coordinate: [12, 12], observe: 'none' },
       { harnessSlug: HIVE },
     );
     stopRecording(desktop.display);
 
+    // Normalise the two things that legitimately differ between any two steps — the
+    // ledger seq and the coordinate — so what remains is exactly the shape and size
+    // of what the agent was handed.
     const strip = (r: typeof before) =>
-      r.content.map((c) => (c.type === 'text' ? c.text.replace(/^#\d+/, '#N') : `image:${c.data.length}`));
+      r.content.map((c) =>
+        c.type === 'text'
+          ? c.text.replace(/^#\d+/, '#N').replace(/\(\d+,\d+\)/, '(X,Y)')
+          : `image:${c.data.length}`,
+      );
     expect(strip(during)).toEqual(strip(before));
   }, 120_000);
 });

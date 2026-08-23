@@ -286,8 +286,17 @@ function enforceBounds(rec: ActiveRecording): void {
   }
 }
 
-/** Close a recording. Idempotent — a second stop returns null. */
-export function stopRecording(display: string, reason: RecordingEndReason = 'stopped'): RecordingManifest | null {
+/**
+ * Close a recording. Idempotent — a second stop returns null.
+ *
+ * Returns the DIRECTORY as well as the manifest, deliberately: a caller that
+ * rebuilt it as `join(recordingsRoot(), id)` would silently answer about the wrong
+ * place for any recording opened under a different root.
+ */
+export function stopRecording(
+  display: string,
+  reason: RecordingEndReason = 'stopped',
+): (RecordingManifest & { dir: string }) | null {
   const rec = state.byDisplay.get(display);
   if (!rec) return null;
   state.byDisplay.delete(display);
@@ -298,7 +307,7 @@ export function stopRecording(display: string, reason: RecordingEndReason = 'sto
   } catch (err) {
     rec.lastError = err instanceof Error ? err.message : String(err);
   }
-  return publicManifest(rec);
+  return { ...publicManifest(rec), dir: rec.dir };
 }
 
 /** The open recording for a display, or null. */
