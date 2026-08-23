@@ -114,6 +114,20 @@ export const FLAGS = {
   // ships dark) it is ratified ON rather than darkened. OFF ⇒ interactive cards do not mirror
   // to the inbox (they can only be answered live).
   INBOX_DURABLE_ESCALATIONS: "papercusp-inbox-durable-escalations",
+  // inbox-bulk-resolve-2026-08-23 (D-001/D-002/D-003): the Inbox's BULK RESOLVE
+  // command strip — one click hands the items the pane is CURRENTLY showing to a
+  // resolver agent, which settles what it can on the owner's behalf (every such
+  // action audited) and hands the rest back pre-recommended for one-click accept.
+  //
+  // DEFAULT ON — finished additive work, not a dark case. The strip is purely
+  // ADDITIVE to the pane: with no run it renders one idle button, and every item
+  // stays individually resolvable by hand exactly as before. Its sync query
+  // degrades to `{ run: null }` on any read failure (sync-resolver/index.ts), so
+  // a broken bulk substrate renders IDLE rather than breaking the inbox. Accepts
+  // dispatch the SAME client paths a hand-resolve uses (resolveAttentionAction /
+  // replyToAttentionItem), so asker-wake, provenance and triage-audit parity hold.
+  // OFF ⇒ the strip does not render and the pane is byte-identical to before.
+  INBOX_BULK_RESOLVE: "papercusp-inbox-bulk-resolve",
   // papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008): the
   // master switch for AUTO-implementing captured improvements. When OFF (default),
   // the improvement-implement routine is a no-op — capture (Phase 1) + triage

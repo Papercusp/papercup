@@ -185,10 +185,19 @@ async function postOp(body: Record<string, unknown>): Promise<Record<string, unk
  * run, which is the pane's real opening question ("is there a run I should be
  * showing?") — see the resolver's note in sync-resolver/index.ts.
  */
-export function useInboxBulkRun(runId?: string | null): BulkRunState {
+export function useInboxBulkRun(
+  runId?: string | null,
+  opts?: { enabled?: boolean },
+): BulkRunState {
+  // `enabled:false` holds NO subscription — a flag-off pane must not keep a
+  // live query open for a surface it never renders. The hook is still called
+  // unconditionally (hooks cannot be branched), so the gate belongs here rather
+  // than at the call site.
+  const enabled = opts?.enabled !== false;
   const { data, loading } = useSyncQuery<{ run: BulkRun | null; items: BulkRunItem[] }>({
     queryName: 'plans.attentionBulkRun',
     args: runId ? { runId } : {},
+    enabled,
   });
 
   const row = Array.isArray(data) ? data[0] : (data as { run?: BulkRun | null } | undefined);

@@ -469,7 +469,7 @@ export default function InboxPane() {
      Declared after `visible` because the strip acts on the pane's CURRENT
      filtered set, which is what `visible` is. */
   const bulkEnabled = useFlag(FLAGS.INBOX_BULK_RESOLVE);
-  const bulk = useInboxBulkRun(bulkEnabled ? bulkRunId : null);
+  const bulk = useInboxBulkRun(bulkRunId, { enabled: bulkEnabled });
   const { acceptRecommendation } = useBulkRunOps();
   const [acceptingCount, setAcceptingCount] = useState(0);
 
