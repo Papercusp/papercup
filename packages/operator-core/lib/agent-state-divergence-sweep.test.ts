@@ -70,6 +70,8 @@ describe('loadRecentCalls', () => {
     const [template] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     const query = Array.from(template).join(' ');
     expect(query).toContain('i.args_json, i.call_origin');
+    expect(query).toContain("e.body->>'plan_slug' AS declared_plan_slug");
+    expect(query).toContain("e.body->'declared_plan_items' AS declared_plan_items");
     expect(query).toContain("e.body->'declared_goal_refs' AS declared_goal_refs");
     expect(query).toContain('LEFT JOIN harness_shared.coord_event_log AS e');
     // WI-38670 live falsifier: the lifecycle intent `coord:emit` carried the old
@@ -95,6 +97,8 @@ describe('loadRecentCalls', () => {
         invoked_at: new Date(T0).toISOString(),
         intent_event_id: '42',
         goal_ref: 'WI-1',
+        declared_plan_slug: 'shared-plan',
+        declared_plan_items: ['P-016'],
         declared_goal_refs: ['WI-1', 'WI-2'],
         args_json: { source: 'test' },
         call_origin: null,
@@ -112,6 +116,8 @@ describe('loadRecentCalls', () => {
       id: 7,
       intentEventId: 42,
       goalRef: 'WI-1',
+      declaredPlanSlug: 'shared-plan',
+      declaredPlanItems: ['P-016'],
       declaredGoalRefs: ['WI-1', 'WI-2'],
     });
   });

@@ -174,6 +174,8 @@ interface CallRow {
   invoked_at: string | Date;
   intent_event_id: string | number | null;
   goal_ref: string | null;
+  declared_plan_slug: string | null;
+  declared_plan_items: unknown;
   declared_goal_refs: unknown;
   args_json: unknown;
   call_origin: string | null;
@@ -197,7 +199,9 @@ export async function loadRecentCalls(opts: {
   const since = new Date(opts.sinceMs).toISOString();
   const rows = await sql<CallRow[]>`
     SELECT i.id, i.coord_owner_id AS owner, i.tool_name, i.status, i.invoked_at,
-           i.intent_event_id, i.goal_ref, e.body->'declared_goal_refs' AS declared_goal_refs,
+           i.intent_event_id, i.goal_ref, e.body->>'plan_slug' AS declared_plan_slug,
+           e.body->'declared_plan_items' AS declared_plan_items,
+           e.body->'declared_goal_refs' AS declared_goal_refs,
            i.args_json, i.call_origin
       FROM harness_shared.tool_invocations AS i
       LEFT JOIN harness_shared.coord_event_log AS e
@@ -239,6 +243,13 @@ export async function loadRecentCalls(opts: {
     invokedAt: r.invoked_at instanceof Date ? r.invoked_at.toISOString() : String(r.invoked_at),
     intentEventId: r.intent_event_id == null ? null : Number(r.intent_event_id),
     goalRef: r.goal_ref,
+    declaredPlanSlug:
+      typeof r.declared_plan_slug === 'string' && r.declared_plan_slug.trim().length > 0
+        ? r.declared_plan_slug
+        : undefined,
+    declaredPlanItems: Array.isArray(r.declared_plan_items)
+      ? r.declared_plan_items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : undefined,
     declaredGoalRefs: Array.isArray(r.declared_goal_refs)
       ? r.declared_goal_refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
       : undefined,

@@ -110,6 +110,7 @@ registerReactionRule({
       intent: string;
       current_files?: string[];
       current_plan_slug?: string;
+      items?: string[];
       declared_goal_refs?: string[];
     };
     const { summary, body } = renderIntent({
@@ -123,6 +124,7 @@ registerReactionRule({
       summary,
       ...(body ? { body } : {}),
       ...(a.current_plan_slug ? { plan_slug: a.current_plan_slug } : {}),
+      ...(a.items && a.items.length > 0 ? { declared_plan_items: a.items } : {}),
       ...(a.declared_goal_refs ? { declared_goal_refs: a.declared_goal_refs } : {}),
       to: intentAudience(a.current_plan_slug, a.current_files),
     };

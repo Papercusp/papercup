@@ -69,6 +69,7 @@ describe('lifecycle:intent (on coord:declare-intent)', () => {
         intent: 'building the desugar',
         current_files: ['a.ts'],
         current_plan_slug: 'coord-lifecycle-automation-2026-06-04',
+        items: ['P-016'],
         declared_goal_refs: ['WI-1', 'EI-2'],
       },
       result: { ok: true, data: { ok: true } },
@@ -79,6 +80,7 @@ describe('lifecycle:intent (on coord:declare-intent)', () => {
     expect(String(a?.args.summary)).toContain('now working on: building the desugar');
     expect(String(a?.args.body)).toContain('a.ts');
     expect(a?.args.plan_slug).toBe('coord-lifecycle-automation-2026-06-04');
+    expect(a?.args.declared_plan_items).toEqual(['P-016']);
     expect(a?.args.declared_goal_refs).toEqual(['WI-1', 'EI-2']);
     // Scoped to peers on the same plan + editing the same files — NOT ['*'].
     expect(a?.args.to).toEqual(['@plan:coord-lifecycle-automation-2026-06-04', '@file:a.ts']);

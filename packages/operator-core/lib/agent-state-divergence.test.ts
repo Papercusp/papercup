@@ -77,6 +77,60 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     expect(out.divergences[0].kind).toBe('goal-drift-within-intent');
   });
 
+  it('suppresses shared-goal drift when every declaration copy proves one plan lane', () => {
+    const declaredPlanItems = ['P-016'];
+    const out = detectIntentActionDivergence([
+      call({
+        id: 1,
+        intentEventId: 100,
+        goalRef: 'WI-1',
+        declaredPlanSlug: 'shared-plan',
+        declaredPlanItems,
+      }),
+      call({
+        id: 2,
+        intentEventId: 100,
+        goalRef: 'WI-2',
+        declaredPlanSlug: 'shared-plan',
+        declaredPlanItems,
+      }),
+    ]);
+    expect(out.divergences).toHaveLength(0);
+    expect(out.coverage.comparableBuckets).toBe(1);
+    expect(out.structuralZero).toBe('agreement');
+  });
+
+  it('keeps shared-lane drift positive when plan evidence is partial or mismatched', () => {
+    const partial = detectIntentActionDivergence([
+      call({
+        id: 1,
+        intentEventId: 100,
+        goalRef: 'WI-1',
+        declaredPlanSlug: 'shared-plan',
+        declaredPlanItems: ['P-016'],
+      }),
+      call({ id: 2, intentEventId: 100, goalRef: 'WI-2', declaredPlanSlug: 'shared-plan' }),
+    ]);
+    const mismatched = detectIntentActionDivergence([
+      call({
+        id: 1,
+        intentEventId: 100,
+        goalRef: 'WI-1',
+        declaredPlanSlug: 'shared-plan',
+        declaredPlanItems: ['P-016'],
+      }),
+      call({
+        id: 2,
+        intentEventId: 100,
+        goalRef: 'WI-2',
+        declaredPlanSlug: 'other-plan',
+        declaredPlanItems: ['P-016'],
+      }),
+    ]);
+    expect(partial.divergences).toHaveLength(1);
+    expect(mismatched.divergences).toHaveLength(1);
+  });
+
   it('reports THREE goals as two findings against the first, not n squared', () => {
     const out = detectIntentActionDivergence([
       call({ id: 1, intentEventId: 100, goalRef: 'WI-1' }),

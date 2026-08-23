@@ -218,6 +218,10 @@ export interface DivergenceCall {
   invokedAt: string;
   intentEventId?: number | null;
   goalRef?: string | null;
+  /** The plan slug carried by the intent declaration event. */
+  declaredPlanSlug?: string | null;
+  /** Typed P-NNN lane items carried by the intent declaration event. */
+  declaredPlanItems?: readonly string[];
   /** Typed work-item refs explicitly covered by the declaration event. */
   declaredGoalRefs?: readonly string[];
   /** Raw args; digested internally. Absent is fine — the retry leg then cannot
@@ -438,6 +442,29 @@ function ordered(calls: readonly DivergenceCall[]): DivergenceCall[] {
 }
 
 /**
+ * A shared declared plan lane is an independent, typed explanation for seeing
+ * several work-item goals under one intent. Require every declaration copy to
+ * carry the same non-empty plan slug and at least one identical P-NNN item;
+ * absent, mismatched, or partial lane metadata must remain a positive drift.
+ */
+function hasSharedDeclaredPlanLane(bucket: readonly DivergenceCall[]): boolean {
+  const planSlugs = bucket.map((c) =>
+    typeof c.declaredPlanSlug === 'string' ? c.declaredPlanSlug.trim() : '',
+  );
+  if (planSlugs.length === 0 || planSlugs.some((slug) => slug.length === 0)) return false;
+  const planSlug = planSlugs[0];
+  if (planSlugs.some((slug) => slug !== planSlug)) return false;
+
+  const itemLists = bucket.map((c) =>
+    Array.isArray(c.declaredPlanItems)
+      ? [...new Set(c.declaredPlanItems.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()))]
+      : [],
+  );
+  if (itemLists.some((items) => items.length === 0)) return false;
+  return itemLists[0]!.some((item) => itemLists.every((items) => items.includes(item)));
+}
+
+/**
  * Find where actions diverged from declarations. Deterministic and total: same
  * input, same output, no I/O.
  *
@@ -574,7 +601,7 @@ export function detectIntentActionDivergence(
       .every(
         (refs) => Array.isArray(refs) && observedGoals.every((goal) => refs.includes(goal)),
       );
-    if (fullyDeclared) continue;
+    if (fullyDeclared || hasSharedDeclaredPlanLane(bucket)) continue;
     // Report against the FIRST goal seen — the one the intent was declared
     // under. Pairing every goal against every other would multiply one drift
     // into n² findings that all describe the same event.
