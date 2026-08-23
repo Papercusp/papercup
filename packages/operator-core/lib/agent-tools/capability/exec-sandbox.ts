@@ -306,10 +306,14 @@ const EXEC_ENV_ALLOW_EXACT: ReadonlySet<string> = new Set([
   // JVM/Android toolchains.
   'JAVA_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
   // Papercusp exec-path plumbing (non-secret): the operator base URL a helper
-  // script may need to reach the operator itself, and the two workspace-root
-  // markers the hook/exec paths already resolve worktree roots from — none of
-  // these are credentials.
+  // script may need to reach the operator itself, the workspace-root markers
+  // the hook/exec paths resolve worktree roots from, and the tracked session /
+  // workspace identity that provenance-aware helper scripts (for example
+  // scripts/verify-tauri-headless.sh) must carry into a confined child. These
+  // are identifiers, not credentials; deliberately do not widen this to every
+  // PAPERCUSP_* variable because that namespace also contains secrets.
   'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_WORKSPACE_ROOT', 'PAPERCUSP_CANONICAL_TREE',
+  'PAPERCUSP_SID', 'PAPERCUSP_WORKSPACE',
 ]);
 
 /** Whole-namespace prefixes: build-tool config vars, none of which carry app
