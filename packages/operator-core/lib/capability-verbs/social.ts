@@ -25,6 +25,7 @@ import type postgres from 'postgres';
 import {
   assertSocialPlatformUsable,
   assertSocialWriteAllowed,
+  SocialPlatformUnusableError,
   type SocialPlatformId,
   type SocialPlatformRow,
   type SocialWriteVerb,
