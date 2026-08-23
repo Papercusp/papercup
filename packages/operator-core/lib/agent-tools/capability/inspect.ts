@@ -73,6 +73,12 @@ function validateRelPath(
   return { ok: true, abs, rel };
 }
 
+function packagePathError(packageValue: string, reason: string): string {
+  return `${reason} \`package\` is a repository-relative directory path, not an npm package name. ` +
+    `Pass the directory containing tsconfig.json (for example, \`packages/operator-core\`) rather than ` +
+    `\`${packageValue}\`.`;
+}
+
 export interface InspectArgs {
   check: 'typecheck' | 'test';
   package?: string;
@@ -100,7 +106,7 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   let cwd = baseDir;
   if (args.package !== undefined) {
     const v = validateRelPath(args.package, baseDir);
-    if (!v.ok) return { ok: false, reason: 'bad_package', message: v.reason };
+    if (!v.ok) return { ok: false, reason: 'bad_package', message: packagePathError(args.package, v.reason) };
     cwd = v.abs;
   }
 
@@ -165,7 +171,7 @@ export function resolveScopedTypecheckCommand(
   }
 
   const pkg = validateRelPath(args.package, baseDir);
-  if (!pkg.ok) return { ok: false, reason: 'bad_package', message: pkg.reason };
+  if (!pkg.ok) return { ok: false, reason: 'bad_package', message: packagePathError(args.package, pkg.reason) };
   const packageRel = TSCONFIG_BASENAME.test(basename(pkg.rel)) ? dirname(pkg.rel) : pkg.rel;
 
   const normalized: string[] = [];
@@ -413,7 +419,10 @@ export default defineTool({
     package: z
       .string()
       .optional()
-      .describe('Repo-relative package dir to run in (e.g. "packages/operator-core"). REQUIRED for typecheck. For test, omit to run `npm run test:affected` at the repo root.'),
+      .describe(
+        'Repository-relative directory path (not an npm package name) to run in, e.g. "packages/operator-core". ' +
+          'It must contain tsconfig.json for typecheck. For test, omit to run `npm run test:affected` at the repo root.',
+      ),
     path: z
       .string()
       .optional()

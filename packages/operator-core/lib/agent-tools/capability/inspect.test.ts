@@ -76,6 +76,16 @@ describe('resolveInspectCommand — verb mapping', () => {
     });
   });
 
+  it('explains that package is a repository path when an npm-style name is supplied', () => {
+    const r = resolveInspectCommand({ check: 'typecheck', package: '@papercusp/operator-core' }, BASE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe('bad_package');
+      expect(r.message).toContain('repository-relative directory path, not an npm package name');
+      expect(r.message).toContain('packages/operator-core');
+    }
+  });
+
   it('typecheck with package-relative onlyPaths → the package baseline gate with repo-relative files', () => {
     expect(
       resolveScopedTypecheckCommand(
@@ -213,6 +223,7 @@ describe('resolveInspectCommand — verb mapping', () => {
 
   it('publishes self-correcting guidance for the flattened test/typecheck argument surface', () => {
     const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+    expect(shape.package.description).toMatch(/Repository-relative directory path \(not an npm package name\)/);
     expect(shape.onlyPaths.description).toMatch(/never pass with check:"test"/);
     expect(shape.path.description).toMatch(/one package-relative test file\/dir/);
     expect(shape.path.description).toMatch(/one capability:inspect call per path/);
