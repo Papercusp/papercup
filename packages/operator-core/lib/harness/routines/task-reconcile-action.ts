@@ -30,6 +30,8 @@ import {
 } from '../../task-manager/agent-session-progress-census';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { nodeResidueLivenessProbe } from '../../task-manager/residue-liveness-probe';
+import { sweepA11yBuses } from '../../desktop/a11y-bus-sweep';
+import { sweepHost } from '../../desktop/a11y-bus-sweep-io';
 import {
   appendResidueSample,
   censusTerminalResidue,
@@ -66,6 +68,13 @@ const MAX_REPORTED_UNCLAIMED_SCOPES = 20;
 /** The headless-agent progress census rides the same hourly cadence as the window one. */
 const PROGRESS_INTERVAL_MS = 60 * 60_000;
 const PROGRESS_RENOTIFY_MS = 6 * 60 * 60_000;
+/**
+ * The a11y session-bus sweep. Hourly is ample: the leak accrues at most one
+ * daemon per desktop provision, and every candidate must ALSO be 6h old before
+ * the sweep will touch it (see `a11y-bus-sweep`), so a tighter cadence would
+ * only re-scan the same untouchable set.
+ */
+const A11Y_SWEEP_INTERVAL_MS = 60 * 60_000;
 /**
  * How many quiet agent-sessions before this reports (EI-21268871278252116).
  *
@@ -109,6 +118,7 @@ let lastResidueNotifyAtMs = 0;
 /** Own watermark, so a fault in either census can never suppress the other. */
 let lastProgressAtMs: number | null = null;
 let lastProgressNotifyAtMs = 0;
+let lastA11ySweepAtMs: number | null = null;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
@@ -158,6 +168,21 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   if (isMaintDue({ lastAtMs: lastProgressAtMs, nowMs, intervalMs: PROGRESS_INTERVAL_MS })) {
     lastProgressAtMs = nowMs;
     await reportAgentSessionProgress(ctx);
+  }
+
+  if (isMaintDue({ lastAtMs: lastA11ySweepAtMs, nowMs, intervalMs: A11Y_SWEEP_INTERVAL_MS })) {
+    lastA11ySweepAtMs = nowMs;
+    // Unlike the two censuses above, this one TERMINATES processes. It is
+    // narrowly targeted by construction: only a `dbus-daemon` whose
+    // `--config-file` names one of OUR `pc-a11y-*` dirs, only when the X display
+    // it was pinned to is gone, and only after a 6h margin. It can therefore
+    // never reach an agent session, a fleet member, or the owner's desktop.
+    try {
+      sweepHost((io) => sweepA11yBuses(io));
+    } catch (err) {
+      // A sweep failure must never fail the reconcile tick that carries it.
+      console.warn('[a11y-bus-sweep] sweep failed', err);
+    }
   }
 });
 
