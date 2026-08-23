@@ -1481,6 +1481,12 @@ export interface SetCarryNoteResult {
    *  what the previous note declared without a second read. `null` when the prior
    *  note declared nothing. */
   priorDeps?: unknown;
+  /** Optimistic-CAS details when an expected content hash did not match the
+   *  row locked by this write. The row is unchanged. */
+  conflict?: {
+    expectedHash: string | null;
+    currentHash: string | null;
+  };
 }
 
 /** Same semantics as {@link setCarryNote}, plus the prior note's length (EI-9325) —
@@ -1524,6 +1530,13 @@ export async function setCarryNoteWithPrior(
      * null/blank still means CLEAR, exactly as passing a blank `note` does.
      */
     transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+    /**
+     * Optimistic-CAS baseline for a replace/patch. `undefined` keeps the legacy
+     * unconditional write contract; `null` asserts that no note existed. The
+     * comparison runs after SELECT FOR UPDATE and before guard/transform, so a
+     * stale cold successor cannot overwrite a newer carry-note.
+     */
+    expectedHash?: string | null;
     /** Internal: use the bounded admin-pool transaction for su loop writes. */
     bounded?: boolean;
   },
@@ -1544,6 +1557,20 @@ export async function setCarryNoteWithPrior(
     const priorNote = rows[0]?.note ?? null;
     const priorDeps = rows[0]?.deps ?? null;
     const priorLength = (priorNote ?? '').length;
+    if (opts?.expectedHash !== undefined) {
+      const currentHash = priorNote === null ? null : shortCarryHash(priorNote);
+      const expectedHash =
+        typeof opts.expectedHash === 'string' ? opts.expectedHash.toLowerCase() : opts.expectedHash;
+      if (currentHash !== expectedHash) {
+        return {
+          stored: priorNote,
+          priorLength,
+          blockedReason: 'expected_hash_mismatch',
+          conflict: { expectedHash: expectedHash ?? null, currentHash },
+          priorDeps,
+        };
+      }
+    }
     if (opts?.guard) {
       const blockedReason = opts.guard(priorNote, priorLength);
       if (blockedReason) return { stored: priorNote, priorLength, blockedReason, priorDeps };
