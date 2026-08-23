@@ -107,7 +107,16 @@ beforeAll(() => {
   };
   Object.defineProperty(globalThis, 'localStorage', { value: ls, configurable: true });
 });
+
+function setViewportWidth(value: number) {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value,
+  });
+}
+
 beforeEach(() => {
+  setViewportWidth(1440);
   localStorage.clear();
   H.blanketFlagOn = false;
   H.flags = {};
@@ -339,6 +348,28 @@ describe('<LeftSidebar> shell', () => {
       expect(rail.getAttribute('data-collapsed')).toBe('false');
     });
     expect(rail.getAttribute('data-tab')).toBe('pulse');
+  });
+
+  it('auto-collapses on compact entry without rewriting ?lsb and honors explicit re-expand', async () => {
+    setViewportWidth(620);
+    const { onUrlUpdate } = renderRail();
+    const rail = screen.getByTestId('left-sidebar');
+
+    await waitFor(() => expect(rail.getAttribute('data-collapsed')).toBe('true'));
+    expect(onUrlUpdate).not.toHaveBeenCalled();
+    expect(document.documentElement.style.getPropertyValue('--left-sidebar-w')).toBe(rail.style.width);
+
+    fireEvent.click(screen.getByTestId('left-sidebar-rail-expand'));
+    await waitFor(() => expect(rail.getAttribute('data-collapsed')).toBe('false'));
+
+    fireEvent.resize(window);
+    expect(rail.getAttribute('data-collapsed')).toBe('false');
+
+    setViewportWidth(1440);
+    fireEvent.resize(window);
+    setViewportWidth(620);
+    fireEvent.resize(window);
+    await waitFor(() => expect(rail.getAttribute('data-collapsed')).toBe('true'));
   });
 
   // WI-5162 (owner ask 2026-07-17): Fleet + Peers MOVED to the op-chat sidebar,

@@ -240,7 +240,15 @@ vi.mock('@/lib/router-compat/navigation', () => ({
 
 const localStorageState = new Map<string, string>();
 
+function setViewportWidth(value: number) {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value,
+  });
+}
+
 beforeEach(() => {
+  setViewportWidth(1440);
   voiceModeState.muted = false;
   inboxState.pending = 0;
   inboxState.plansNeedingYou = 0;
@@ -597,6 +605,36 @@ describe('OperatorChatSidebar collapse behavior', () => {
       expect(document.documentElement.style.getPropertyValue('--op-chat-w')).toBe('420px');
     });
     expect(document.body.classList.contains('op-chat-collapsed')).toBe(false);
+  });
+
+  it('auto-collapses on compact entry without rewriting ?chat and honors explicit re-expand', async () => {
+    setViewportWidth(620);
+    window.localStorage.setItem(wsLocalKey('papercusp.operatorChat.width'), '420');
+
+    render(<OperatorChatSidebar />);
+
+    await waitFor(() => {
+      expect(document.querySelector('.op-chat-sidebar')?.getAttribute('data-collapsed')).toBe('true');
+      expect(document.documentElement.style.getPropertyValue('--op-chat-w')).toBe(`${OPERATOR_CHAT_COLLAPSED_WIDTH}px`);
+    });
+    expect(nuqsWrites.current.chat).toBeUndefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Papercup chat' }));
+    await waitFor(() => {
+      expect(document.querySelector('.op-chat-sidebar')?.getAttribute('data-collapsed')).toBe('false');
+      expect(document.documentElement.style.getPropertyValue('--op-chat-w')).toBe('420px');
+    });
+
+    fireEvent.resize(window);
+    expect(document.querySelector('.op-chat-sidebar')?.getAttribute('data-collapsed')).toBe('false');
+
+    setViewportWidth(1440);
+    fireEvent.resize(window);
+    setViewportWidth(620);
+    fireEvent.resize(window);
+    await waitFor(() => {
+      expect(document.querySelector('.op-chat-sidebar')?.getAttribute('data-collapsed')).toBe('true');
+    });
   });
 });
 describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D-009/P-012)', () => {

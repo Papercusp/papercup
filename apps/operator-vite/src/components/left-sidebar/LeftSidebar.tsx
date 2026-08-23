@@ -37,6 +37,9 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
+// Intentional cross-tree import: operator-vite's `@` points at apps/operator,
+// where the shared two-dock layout contract lives.
+import { isCompactDockViewport } from '@/app/_components/operator-chat-layout';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
 // `Target` left with the Goals tab (2026-08-09) — it was that tab's icon and
@@ -338,11 +341,18 @@ export default function LeftSidebar() {
 
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const [hydrated, setHydrated] = useState(false);
+  const [compactAutoCollapsed, setCompactAutoCollapsed] = useState(false);
+  const compactViewportRef = useRef(false);
 
   useEffect(() => {
     setWidth(readStoredWidth());
     setHydrated(true);
   }, []);
+
+  // Compact view is presentation-only: keep ?lsb=true intact so leaving compact
+  // restores the requested layout. Crossing INTO compact collapses once; an
+  // explicit expand clears the local auto-collapse for that compact interval.
+  const presentedOpen = open && !compactAutoCollapsed;
 
   // Reserve left-side layout space (released on chromeless routes) so the app
   // docks beside the rail rather than under it.
@@ -353,7 +363,7 @@ export default function LeftSidebar() {
       document.documentElement.style.removeProperty('--left-sidebar-w');
       return;
     }
-    const offsetWidth = open ? width : COLLAPSED_WIDTH;
+    const offsetWidth = presentedOpen ? width : COLLAPSED_WIDTH;
     document.documentElement.style.setProperty('--left-sidebar-w', `${offsetWidth}px`);
     document.body.classList.add('has-left-sidebar');
     try {
@@ -361,11 +371,20 @@ export default function LeftSidebar() {
     } catch {
       /* sandbox / quota */
     }
-  }, [open, width, hydrated, chromeless]);
+  }, [presentedOpen, width, hydrated, chromeless]);
 
   useEffect(() => {
     if (!hydrated) return;
-    const onResize = () => setWidth((current) => clampWidth(current, window.innerWidth));
+    const onResize = () => {
+      const viewportWidth = window.innerWidth;
+      setWidth((current) => clampWidth(current, viewportWidth));
+      const compact = isCompactDockViewport(viewportWidth);
+      if (compact !== compactViewportRef.current) {
+        compactViewportRef.current = compact;
+        setCompactAutoCollapsed(compact);
+      }
+    };
+    onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [hydrated]);
@@ -404,7 +423,7 @@ export default function LeftSidebar() {
 
   if (chromeless) return null;
 
-  const renderedWidth = open ? (hydrated ? width : DEFAULT_WIDTH) : COLLAPSED_WIDTH;
+  const renderedWidth = presentedOpen ? (hydrated ? width : DEFAULT_WIDTH) : COLLAPSED_WIDTH;
   const active = visibleTabs.find((x) => x.id === tab) ?? visibleTabs[0];
 
   return (
@@ -414,7 +433,7 @@ export default function LeftSidebar() {
         <aside
           className="pclsb"
           data-testid="left-sidebar"
-          data-collapsed={open ? 'false' : 'true'}
+          data-collapsed={presentedOpen ? 'false' : 'true'}
           data-tab={active.id}
           style={{ width: renderedWidth }}
           // Was "<Fleet> sidebar" — stale once the Fleet tab moved out
@@ -425,13 +444,16 @@ export default function LeftSidebar() {
             chevron (re-expands to the LAST pane, no tab switch; owner ask
             2026-07-14) — then the tab icons, each of which expands straight
             INTO its own tab. */}
-        <div className="pclsb__expand-rail" aria-hidden={open}>
+        <div className="pclsb__expand-rail" aria-hidden={presentedOpen}>
           <Tooltip label="Expand sidebar" side="right">
             <button
               type="button"
               className="pclsb__rail-btn pclsb__rail-btn--expand"
               data-testid="left-sidebar-rail-expand"
-              onClick={() => setOpen(true)}
+              onClick={() => {
+                setCompactAutoCollapsed(false);
+                setOpen(true);
+              }}
               aria-label="Expand sidebar"
             >
               <PanelLeftOpen size={17} aria-hidden="true" />
@@ -446,7 +468,10 @@ export default function LeftSidebar() {
                 className={`pclsb__rail-btn pclsb__rail-btn--${x.id}`}
                 data-testid={`left-sidebar-rail-${x.id}`}
                 aria-label={`Open ${x.label(t)}`}
-                onClick={() => void setRail({ lsb: true, lst: x.id })}
+                onClick={() => {
+                  setCompactAutoCollapsed(false);
+                  void setRail({ lsb: true, lst: x.id });
+                }}
               >
                 <Icon size={17} aria-hidden="true" />
               </button>
@@ -454,8 +479,8 @@ export default function LeftSidebar() {
           })}
         </div>
 
-        <div className="pclsb__expanded-shell" aria-hidden={!open}>
-          {open && (
+        <div className="pclsb__expanded-shell" aria-hidden={!presentedOpen}>
+          {presentedOpen && (
             <>
               {/* WI-4740: the voice-controls bar that lived here is retired —
                   its buttons duplicated the chat sidebar's header controls.

@@ -11,14 +11,24 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  COMPACT_DOCK_VIEWPORT_MAX_WIDTH,
   OPERATOR_CHAT_COLLAPSED_WIDTH,
   OPERATOR_CHAT_DEFAULT_WIDTH,
   OPERATOR_CHAT_MIN_WIDTH,
   clampOperatorChatWidth,
+  isCompactDockViewport,
   operatorChatOffsetWidth,
   operatorChatWidthFromPointer,
   operatorChatWidthCeiling,
 } from './operator-chat-layout';
+
+describe('isCompactDockViewport', () => {
+  it('uses the shared 920px shell boundary and rejects non-finite measurements', () => {
+    expect(isCompactDockViewport(COMPACT_DOCK_VIEWPORT_MAX_WIDTH)).toBe(true);
+    expect(isCompactDockViewport(COMPACT_DOCK_VIEWPORT_MAX_WIDTH + 1)).toBe(false);
+    expect(isCompactDockViewport(Number.NaN)).toBe(false);
+  });
+});
 
 describe('operatorChatWidthCeiling', () => {
   it('is 75% of the viewport, floored', () => {

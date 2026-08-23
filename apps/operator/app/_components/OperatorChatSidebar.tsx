@@ -80,6 +80,7 @@ import {
   OPERATOR_CHAT_DEFAULT_WIDTH,
   OPERATOR_CHAT_OPEN_QUERY_KEY,
   clampOperatorChatWidth,
+  isCompactDockViewport,
   operatorChatWidthFromPointer,
 } from './operator-chat-layout';
 
@@ -189,6 +190,8 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   );
   const [width, setWidth] = useState<number>(OPERATOR_CHAT_DEFAULT_WIDTH);
   const [hydrated, setHydrated] = useState(false);
+  const [compactAutoCollapsed, setCompactAutoCollapsed] = useState(false);
+  const compactViewportRef = useRef(false);
 
   // Hydrate width from localStorage post-mount to keep SSR markup stable.
   useEffect(() => {
@@ -214,24 +217,37 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
     });
   }, []);
 
+  // Compact view is presentation-only: retain ?chat=true so leaving compact
+  // restores the requested layout. Crossing INTO compact collapses once; an
+  // explicit expand clears the local auto-collapse for the rest of that compact
+  // interval instead of being undone by the next resize event.
+  const presentedOpen = chatOpen && !compactAutoCollapsed;
+
   // Mirror the active offset width to a CSS var so app content shifts.
   useEffect(() => {
     if (!hydrated) return;
-    const offsetWidth = chatOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH;
+    const offsetWidth = presentedOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH;
     document.documentElement.style.setProperty('--op-chat-w', `${offsetWidth}px`);
     document.body.classList.add('has-op-chat');
-    document.body.classList.toggle('op-chat-collapsed', !chatOpen);
+    document.body.classList.toggle('op-chat-collapsed', !presentedOpen);
     try {
       window.localStorage.setItem(wsLocalKey(STORAGE_KEY), String(width));
     } catch { /* sandbox / quota */ }
     return () => { /* leave the classes in place across re-renders */ };
-  }, [chatOpen, hydrated, width]);
+  }, [presentedOpen, hydrated, width]);
 
   useEffect(() => {
     if (!hydrated) return;
     const onResize = () => {
-      setWidth((current) => clampOperatorChatWidth(current, window.innerWidth));
+      const viewportWidth = window.innerWidth;
+      setWidth((current) => clampOperatorChatWidth(current, viewportWidth));
+      const compact = isCompactDockViewport(viewportWidth);
+      if (compact !== compactViewportRef.current) {
+        compactViewportRef.current = compact;
+        setCompactAutoCollapsed(compact);
+      }
     };
+    onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [hydrated]);
@@ -287,6 +303,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   }, [setChatOpen]);
 
   const expandChat = useCallback(() => {
+    setCompactAutoCollapsed(false);
     void setChatOpen(true);
   }, [setChatOpen]);
 
@@ -306,7 +323,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // Pre-hydration: render the sidebar at its expanded default width so
   // the lazy mount lines up with the bootstrap script in layout.tsx.
   const renderedWidth = hydrated
-    ? (chatOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH)
+    ? (presentedOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH)
     : OPERATOR_CHAT_DEFAULT_WIDTH;
 
   const sidebarStyle = useMemo<React.CSSProperties>(() => ({
@@ -572,7 +589,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
       className="op-chat-sidebar"
       style={sidebarStyle}
       aria-label="Papercup chat"
-      data-collapsed={chatOpen ? 'false' : 'true'}
+      data-collapsed={presentedOpen ? 'false' : 'true'}
     >
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
       <Tooltip label="Expand Papercup chat"><button
@@ -581,7 +598,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
         onClick={expandChat}
         aria-label="Expand Papercup chat"
 
-        aria-hidden={chatOpen}
+        aria-hidden={presentedOpen}
       >
         <span className="op-chat-expand-orb" aria-hidden="true">
           <OperatorLogoMark className="op-chat-expand-logo" />
@@ -600,7 +617,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
         <span className="op-chat-expand-label">Chat</span>
         <ChevronRight className="op-chat-expand-chevron" strokeWidth={1.9} aria-hidden="true" />
       </button></Tooltip>
-      <div className="op-chat-expanded-shell" aria-hidden={!chatOpen}>
+      <div className="op-chat-expanded-shell" aria-hidden={!presentedOpen}>
         {/* WI-4738: ONE header line (owner ask 2026-07-13) — orb, name, then the
             compact controls and the collapse chevron on the same row. The old
             two-row layout (title row over a full-width controls row, with the
