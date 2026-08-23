@@ -11,7 +11,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/accounts/probe-capacity.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyPool, registerAccount, getAccount, type AccountPool } from '../../deployment/account-pool';
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
@@ -30,6 +30,8 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 const probeM = vi.fn();
 vi.mock('../../inference-gateway/capacity-probe', () => ({ probeCapacityForAccounts: probeM }));
 
+const gatewayFetchM = vi.fn();
+
 const mod = await import('./probe-capacity');
 const tool = mod.default;
 
@@ -40,8 +42,19 @@ const T0 = 1_000_000_000_000;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubGlobal('fetch', gatewayFetchM);
+  gatewayFetchM.mockResolvedValue(
+    new Response(JSON.stringify({ readmitted: ['a'], healthyAccounts: 1 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  );
   pool = emptyPool();
   pool = registerAccount(pool, { id: 'a', credentialRef: 'token:~/.papercusp/a' }, T0);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('accounts:probe-capacity — failure persistence', () => {
@@ -86,5 +99,26 @@ describe('accounts:probe-capacity — failure persistence', () => {
     ]);
     await tool.handler({} as never, {} as never);
     expect(getAccount(pool, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
+  });
+
+  it('readmits only serving Claude accounts with an account selector', async () => {
+    pool = registerAccount(pool, { id: 'walled', credentialRef: 'token:~/.papercusp/walled' }, T0 + 1);
+    pool = registerAccount(
+      pool,
+      { id: 'codex-account', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' },
+      T0 + 2,
+    );
+    probeM.mockResolvedValue([
+      { accountId: 'a', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
+      { accountId: 'walled', ok: true, status: 429, windows: {}, before: {}, unwalls: false },
+      { accountId: 'codex-account', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
+    ]);
+
+    const out = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(out.serving).toEqual(['a', 'codex-account']);
+    expect(gatewayFetchM).toHaveBeenCalledTimes(1);
+    expect(gatewayFetchM.mock.calls[0]?.[0]).toBe('http://127.0.0.1:8788/admin/readmit?account=a');
+    expect(out.gatewayReadmitted).toEqual(['a']);
   });
 });

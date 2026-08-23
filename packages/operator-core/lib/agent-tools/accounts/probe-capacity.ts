@@ -54,30 +54,38 @@ async function readmitIntoGateway(accountIds: string[]): Promise<{
   warning?: string;
 }> {
   if (accountIds.length === 0) return { converged: false, readmitted: [], healthyAccounts: null };
-  try {
-    const r = await fetch(`${gwBase()}/admin/readmit`, { method: 'POST', signal: AbortSignal.timeout(5000) });
-    if (!r.ok) {
+  const readmitted: string[] = [];
+  let healthyAccounts: number | null = null;
+  for (const accountId of accountIds) {
+    try {
+      // The gateway defaults this endpoint to Claude. Keep the account selector on every request so a
+      // successful probe cannot reopen confirmed-walled accounts (or a different provider's account) by
+      // accidentally invoking the endpoint's all-account form.
+      const r = await fetch(`${gwBase()}/admin/readmit?account=${encodeURIComponent(accountId)}`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!r.ok) {
+        return {
+          converged: false,
+          readmitted,
+          healthyAccounts,
+          warning: `projection updated, but the gateway's in-memory exclusions were NOT cleared (/admin/readmit for '${accountId}' → ${r.status}). fleet:capacity may still report these accounts as unusable.`,
+        };
+      }
+      const b = (await r.json().catch(() => ({}))) as { readmitted?: string[]; healthyAccounts?: number };
+      readmitted.push(...(Array.isArray(b.readmitted) ? b.readmitted : [accountId]));
+      if (typeof b.healthyAccounts === 'number') healthyAccounts = b.healthyAccounts;
+    } catch (e) {
       return {
         converged: false,
-        readmitted: [],
-        healthyAccounts: null,
-        warning: `projection updated, but the gateway's in-memory exclusions were NOT cleared (/admin/readmit → ${r.status}). fleet:capacity may still report these accounts as unusable.`,
+        readmitted,
+        healthyAccounts,
+        warning: `projection updated, but the gateway was unreachable at ${gwBase()} while readmitting '${accountId}' (${e instanceof Error ? e.message : String(e)}), so its in-memory exclusions still stand. fleet:capacity may still report these accounts as unusable.`,
       };
     }
-    const b = (await r.json().catch(() => ({}))) as { readmitted?: string[]; healthyAccounts?: number };
-    return {
-      converged: true,
-      readmitted: Array.isArray(b.readmitted) ? b.readmitted : [],
-      healthyAccounts: typeof b.healthyAccounts === 'number' ? b.healthyAccounts : null,
-    };
-  } catch (e) {
-    return {
-      converged: false,
-      readmitted: [],
-      healthyAccounts: null,
-      warning: `projection updated, but the gateway was unreachable at ${gwBase()} (${e instanceof Error ? e.message : String(e)}), so its in-memory exclusions still stand. fleet:capacity may still report these accounts as unusable.`,
-    };
   }
+  return { converged: true, readmitted, healthyAccounts };
 }
 
 // { data } shape (definetool-token-optimization P-003): the framework owns wire
@@ -188,11 +196,14 @@ export default defineTool({
     }
 
     // Converge the gateway's in-memory exclusions with the projection we just wrote (see
-    // readmitIntoGateway). Only for accounts that actually PROVED they serve — a 429 reply confirms a real
-    // wall, and readmitting that would just send the fleet back to hammer a capped account.
+    // readmitIntoGateway). Only for Claude accounts that actually PROVED they serve — a 429 reply confirms
+    // a real wall, and readmitting that would just send the fleet back to hammer a capped account. The
+    // gateway endpoint defaults to Claude, so Codex accounts must not be sent to this readmit path either.
     const serving = results.filter((r) => r.ok && r.status !== 429).map((r) => r.accountId);
+    const providerByAccountId = new Map(accounts.map((account) => [account.id, account.provider ?? 'claude']));
+    const servingClaude = serving.filter((accountId) => providerByAccountId.get(accountId) === 'claude');
     const gateway = apply
-      ? await readmitIntoGateway(serving)
+      ? await readmitIntoGateway(servingClaude)
       : { converged: false, readmitted: [], healthyAccounts: null as number | null };
 
     return ok({

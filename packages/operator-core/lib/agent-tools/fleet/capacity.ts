@@ -28,77 +28,6 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import type { AccountProvider } from '../../deployment/account-pool';
 import type { AccountStatusRow } from '../../deployment/account-pool-store';
 
-/** What each of the two capacity stores says, and whether they disagree. */
-export interface CapacityStoreDivergence {
-  /** True only when both sides are readable AND they disagree. An unreadable side is `null`, never
-   *  `false` — "I could not compare" must not render as "they agree". */
-  diverged: boolean | null;
-  /** The GATEWAY's live in-memory exclusion state. */
-  gatewayUsable: number | null;
-  /** The account-pool PROJECTION, written from upstream by accounts:probe-capacity. */
-  upstreamAvailable: number | null;
-  summary: string;
-  /** The concrete action that converges them, or null when there is nothing to reconcile. */
-  reconcile: string | null;
-}
-
-/**
- * Name the disagreement between the gateway's in-memory view and the upstream-written projection.
- *
- * These are two different stores answering two different questions, and for most of this system's life
- * nothing compared them. That let a real, expensive failure hide in plain sight: the gateway benches an
- * account for an edge throttle, its count drops, the serviceable-admission clamp reads that count and pins
- * fleet-wide admission — while upstream the account is serving 200s and the projection says so. Both
- * numbers are correct; the CONFLICT is the finding, and only this surface can see both halves.
- */
-export function divergenceBetweenStores(report: {
-  usableAccounts: number | null;
-  availableAccounts: number | null;
-  blind: boolean;
-  blindAccounts: number | null;
-}): CapacityStoreDivergence {
-  const gatewayUsable = report.usableAccounts;
-  const upstreamAvailable = report.availableAccounts;
-  if (gatewayUsable == null || upstreamAvailable == null) {
-    return {
-      diverged: null,
-      gatewayUsable,
-      upstreamAvailable,
-      summary:
-        'cannot compare the two stores — ' +
-        (gatewayUsable == null ? 'the gateway usable count' : 'the upstream projection') +
-        ' is unreadable. This is NOT evidence that they agree.',
-      reconcile: 'accounts:probe-capacity { apply: true } re-measures upstream and converges the gateway.',
-    };
-  }
-  if (gatewayUsable === upstreamAvailable) {
-    return {
-      diverged: false,
-      gatewayUsable,
-      upstreamAvailable,
-      summary: `both stores agree: ${gatewayUsable} account(s).`,
-      reconcile: null,
-    };
-  }
-  const staleNote = report.blind
-    ? ` ⚠ ${report.blindAccounts ?? 'several'} account(s) carry a stale or missing reading, so the projection side is itself unrefreshed.`
-    : '';
-  return {
-    diverged: true,
-    gatewayUsable,
-    upstreamAvailable,
-    summary:
-      `THE TWO STORES DISAGREE — gateway (in-memory rotation): ${gatewayUsable} usable; ` +
-      `upstream projection: ${upstreamAvailable} available. They answer different questions, so neither is ` +
-      `simply "wrong" — but any verdict quoting one of them alone is unsafe.${staleNote}` +
-      (gatewayUsable < upstreamAvailable
-        ? ' The gateway is the TIGHTER side, and its count feeds the serviceable-admission clamp — so this gap is actively throttling admission.'
-        : ''),
-    reconcile:
-      'accounts:probe-capacity { apply: true } — it re-measures upstream AND now readmits into the gateway, converging both in one action.',
-  };
-}
-
 // Re-exported so existing importers (tests, the queen-brief gather) can reach the read-model via either path.
 export { buildCapacityReport, type CapacityReport } from '../../fleet/capacity-dispatch';
 
@@ -370,6 +299,22 @@ export default defineTool({
     // split-brain-stale; a cross-provider read is never a valid reason to reject a launch.
     const accountAvailability = await readProviderAvailability(scope.provider, args.account, scope.accountRows);
     const report = buildCapacityReport(hr, { clampArmed, headroom: args.headroom, tierMap, accountAvailability });
+    // These counts all come from the SAME provider-scoped account-pool projection. Keep them together and
+    // name the edge/usage breakdown explicitly; comparing usableAccounts with availableAccounts as if one
+    // were gateway state manufactures a store divergence and prescribes a self-referential reconcile loop.
+    const accountPool = accountAvailability
+      ? {
+          provider: accountAvailability.provider ?? scope.provider,
+          total: accountAvailability.total,
+          available: accountAvailability.available,
+          usable: accountAvailability.usable,
+          edgeThrottledAccounts: accountAvailability.edgeThrottledCount ?? null,
+          usageWalledAccounts: accountAvailability.usageWalledCount ?? null,
+          sustainedlyLimitedAccounts: accountAvailability.sustainedlyLimitedCount ?? null,
+          overrideExcludedAccounts: accountAvailability.overrideExcludedCount ?? null,
+          blindAccounts: accountAvailability.blindCount ?? null,
+        }
+      : null;
     return {
       content: [
         {
@@ -388,12 +333,7 @@ export default defineTool({
             account: args.account ?? null,
             scope: scopePayload,
             ...report,
-            // THE TWO STORES, SIDE BY SIDE, WITH THE CONTRADICTION NAMED. `usableAccounts` is the GATEWAY's
-            // in-memory exclusion state; `availableAccounts` comes from the account-pool projection that
-            // accounts:probe-capacity writes from upstream. Nothing reconciled them, so both could be
-            // "right" about different objects and an agent would relay them as one fact. Only this surface
-            // sees both halves, so it owns the contradiction rather than leaving it to be noticed.
-            divergence: divergenceBetweenStores(report),
+            accountPool,
           }),
         },
       ],

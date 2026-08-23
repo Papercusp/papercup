@@ -445,3 +445,35 @@ test('fleet:capacity account-only scope resolves a Codex account instead of defa
   assert.equal(headroomSpy.mock.calls[0]?.[0]?.provider, 'codex');
   headroomSpy.mockRestore();
 });
+
+test('EI-21268415877542410: capacity reports one honest account-pool snapshot, not fake store divergence', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('healthy'),
+    acctRow('edge-throttled', { edgeThrottled: true }),
+    acctRow('usage-walled', { available: false, usageWalled: true }),
+  ]);
+
+  const res = (await capacityMod.default.handler({} as never, { role: 'su' } as never)) as {
+    content: { text: string }[];
+  };
+  const body = JSON.parse(res.content[0]!.text);
+
+  assert.equal(body.usableAccounts, 1);
+  assert.equal(body.availableAccounts, 2);
+  assert.deepEqual(body.accountPool, {
+    provider: 'claude',
+    total: 3,
+    available: 2,
+    usable: 1,
+    edgeThrottledAccounts: 1,
+    usageWalledAccounts: 1,
+    sustainedlyLimitedAccounts: 0,
+    overrideExcludedAccounts: 0,
+    blindAccounts: 0,
+  });
+  assert.equal(body.divergence, undefined, 'usable and available are both account-pool fields, not stores to reconcile');
+  headroomSpy.mockRestore();
+});
