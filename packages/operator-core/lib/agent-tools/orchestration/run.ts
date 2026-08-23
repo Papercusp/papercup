@@ -233,7 +233,63 @@ function executionEnvelope(
   return buildOutputEnvelope({ summary, ...(content.length ? { content } : {}), metrics });
 }
 
-function preflightError(code: string, message: string, args: OrchestrationSourceArgs): ToolResult {
+/** WI-40720 gap 2 — the ONE place orchestrate:run stamps its outer `tool_invocations` row.
+ *
+ *  Before this, exactly one of four return paths stamped anything: the script SUCCESS path, and
+ *  only backend/returnedContextBytes/failureClass. Preflight refusals, the saved-recipe path and
+ *  both catch paths stamped NOTHING, so an orchestrate:run that was refused, threw, or ran a saved
+ *  recipe left no telemetry row at all. The rollout gates then measured only the runs that
+ *  succeeded via a fresh script — a survivorship filter that makes failure rate and latency look
+ *  better the more often the door breaks.
+ *
+ *  Easy to miss because the file LOOKS instrumented: every path already fills `metrics` on the
+ *  returned ENVELOPE (backend, phase, executed, durationMs). That is the model-facing response,
+ *  not the telemetry row — nothing reads it back into `tool_invocations`. The envelope is what a
+ *  reader sees; `ctx.metadata` is what the gates count.
+ *
+ *  Vocabulary deliberately mirrors code:run's stamp (see agent-tools/code/run.ts) so
+ *  CODE_RUN_INSTRUMENTATION_SQL reads both doors through identical keys. */
+function stampOrchestrationRow(
+  ctx: Pick<UnifiedToolContext, 'metadata'>,
+  input: {
+    envelope: { state?: string; error?: { code?: string }; incomplete?: { reason?: string } };
+    serializedBytes: number;
+    durationMs: number;
+    phase: 'preflight' | 'execution';
+    executed: boolean;
+    source: 'script' | 'recipe';
+    requestedExecutionMode?: string;
+    extra?: Record<string, unknown>;
+  },
+): void {
+  const { envelope } = input;
+  const requested = input.requestedExecutionMode ?? 'server';
+  ctx.metadata?.({
+    backend: 'server',
+    // A requested mode the server did not honour is one of gap 4's HARD rollback triggers
+    // (server-backend mismatch), so it has to be measurable rather than inferred.
+    requestedExecutionMode: requested,
+    backendMismatch: requested !== 'server',
+    source: input.source,
+    phase: input.phase,
+    executed: input.executed,
+    durationMs: Math.max(0, input.durationMs),
+    returnedContextBytes: input.serializedBytes,
+    // The door has not spilled at this point; _mcp-handler backfills the real figure when it
+    // later projects or spills the response (WI-40720 gap 3).
+    spilledBytes: 0,
+    failureClass:
+      envelope.state === 'complete' ? null : (envelope.error?.code ?? envelope.incomplete?.reason ?? envelope.state),
+    ...(input.extra ?? {}),
+  });
+}
+
+function preflightError(
+  code: string,
+  message: string,
+  args: OrchestrationSourceArgs,
+  ctx?: Pick<UnifiedToolContext, 'metadata'>,
+): ToolResult {
   const envelope = buildOutputEnvelope({
     summary: '',
     state: 'error',
@@ -246,7 +302,23 @@ function preflightError(code: string, message: string, args: OrchestrationSource
       lifecycle: args.execution?.lifecycle ?? 'foreground',
     },
   });
-  return { content: [{ type: 'text', text: JSON.stringify(envelope) }] } as ToolResult;
+  const serialized = JSON.stringify(envelope);
+  // `ctx` is optional so existing direct callers/tests keep compiling; when it is supplied the
+  // refusal becomes countable. A preflight refusal is a REAL outcome of the door — omitting it
+  // is what let "capability unavailable" and policy refusals vanish from the failure rate.
+  if (ctx) {
+    stampOrchestrationRow(ctx, {
+      envelope,
+      serializedBytes: Buffer.byteLength(serialized, 'utf8'),
+      durationMs: 0,
+      phase: 'preflight',
+      executed: false,
+      source: args.script ? 'script' : 'recipe',
+      requestedExecutionMode: args.execution?.mode ?? 'server',
+      extra: { capabilityMiss: code === 'capability_unavailable' },
+    });
+  }
+  return { content: [{ type: 'text', text: serialized }] } as ToolResult;
 }
 
 /** Thin server-script adapter. All execution, repair, timeout, authorization and
@@ -258,7 +330,7 @@ export async function runServerScriptAdapter(
   deps: ServerScriptRunDeps = DEFAULT_DEPS,
 ): Promise<ToolResult> {
   const policyFailure = orchestrationPolicyFailure(args);
-  if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args);
+  if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args, ctx);
 
   const checked = await (deps.inspectScript ?? inspectScriptContract)({
     script: args.script,
@@ -266,7 +338,7 @@ export async function runServerScriptAdapter(
     lifecycle: args.execution?.lifecycle,
     ctx,
   });
-  if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args);
+  if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args, ctx);
 
   const captureMode = args.capture?.mode ?? 'auto';
   const startedAt = Date.now();
@@ -312,13 +384,16 @@ export async function runServerScriptAdapter(
     }
 
     const serialized = JSON.stringify(envelope);
-    ctx.metadata?.({
-      backend: 'server',
-      returnedContextBytes:
+    stampOrchestrationRow(ctx, {
+      envelope,
+      serializedBytes:
         Buffer.byteLength(serialized, 'utf8') +
         media.reduce((sum, item) => sum + Buffer.byteLength(item.data, 'utf8'), 0),
-      failureClass:
-        envelope.state === 'complete' ? null : (envelope.error?.code ?? envelope.incomplete?.reason ?? envelope.state),
+      durationMs: Math.max(0, Date.now() - startedAt),
+      phase: 'execution',
+      executed: true,
+      source: 'script',
+      requestedExecutionMode: args.execution?.mode ?? 'server',
     });
     return {
       content: [{ type: 'text', text: serialized }, ...media],
@@ -336,9 +411,21 @@ export async function runServerScriptAdapter(
         durationMs: Math.max(0, Date.now() - startedAt),
       },
     });
+    const serialized = JSON.stringify(envelope);
+    // A thrown adapter is the single most important row to record and was the one most surely
+    // missing: without it, every crash of this door was invisible to the failure-rate gate.
+    stampOrchestrationRow(ctx, {
+      envelope,
+      serializedBytes: Buffer.byteLength(serialized, 'utf8'),
+      durationMs: Math.max(0, Date.now() - startedAt),
+      phase: 'execution',
+      executed: false,
+      source: 'script',
+      requestedExecutionMode: args.execution?.mode ?? 'server',
+    });
     return {
       isError: true,
-      content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      content: [{ type: 'text', text: serialized }],
     } as ToolResult;
   }
 }
@@ -352,11 +439,19 @@ function recipeRunEnvelope(
   raw: unknown,
   args: OrchestrationSourceArgs,
   durationMs: number,
+  // WI-40720 gap 2: optional so existing direct callers/tests keep compiling; supplied by
+  // runOrchestration so the saved-recipe path stamps a telemetry row like the script path does.
+  ctx?: Pick<UnifiedToolContext, 'metadata'>,
 ): ToolResult {
   const direct = asRecord(raw);
   if (direct?.ok === false && asRecord(direct.error)) {
     const error = asRecord(direct.error)!;
-    return preflightError(String(error.code ?? 'recipe_preflight_failed'), String(error.message ?? 'recipe preflight failed'), args);
+    return preflightError(
+      String(error.code ?? 'recipe_preflight_failed'),
+      String(error.message ?? 'recipe preflight failed'),
+      args,
+      ctx,
+    );
   }
   const results = direct?.results;
   const item = Array.isArray(results) ? asRecord(results[0]) : null;
@@ -434,7 +529,7 @@ export async function runOrchestration(
   deps: { server?: ServerScriptRunDeps; recipes?: SavedRecipeAdapter } = {},
 ): Promise<ToolResult> {
   const policyFailure = orchestrationPolicyFailure(args);
-  if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args);
+  if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args, ctx);
   if (args.script) {
     return runServerScriptAdapter(args as ServerScriptRunArgs, ctx, deps.server ?? DEFAULT_DEPS);
   }
