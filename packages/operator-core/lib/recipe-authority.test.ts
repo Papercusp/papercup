@@ -765,7 +765,18 @@ describe('WI-40896 / D-048: refsMeasured separates an UNMEASURED authority set f
     const unmeasured = preFixProjection(await deriveRecipeAuthority(dynamicScript));
     const genuinelyEmpty = preFixProjection(await deriveRecipeAuthority(contextFreeScript));
 
-    // Blind: every emitted authority field is identical across two OPPOSITE situations.
-    expect(unmeasured).toEqual(genuinelyEmpty);
+    // Blind on the REFS-SCOPED fields — the ones a consumer of `refs` actually reads.
+    // These are identical across two OPPOSITE situations, which is the defect.
+    expect(unmeasured.refs).toEqual(genuinelyEmpty.refs);
+    expect(unmeasured.requiresContext).toBe(genuinelyEmpty.requiresContext);
+
+    // ...but NOT blind overall, and this suite refuses to overstate the bug: `runnable`
+    // DID already differ. That is why the fix is a marker beside `refs` rather than a
+    // new verdict field — pre-fix, the only signal lived on a field scoped to a
+    // DIFFERENT question ("may I execute this?"), so reading it as a statement about
+    // the completeness of `refs` meant borrowing an answer from an unrelated verdict.
+    // `runnable` is co-extensive with `refsMeasured` TODAY; this asserts the
+    // co-extension explicitly so that if the two ever diverge, a test says so.
+    expect(unmeasured.runnable).not.toBe(genuinelyEmpty.runnable);
   });
 });

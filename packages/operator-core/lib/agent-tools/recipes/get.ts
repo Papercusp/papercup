@@ -19,7 +19,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
+import { deriveRecipeAuthority, recipeRevision, toRecipeAuthorityMetadata } from '../../recipe-authority';
 
 export default defineTool({
   name: 'recipes:get',
