@@ -71,14 +71,18 @@ describe('EI-14500: leaked-sidecar reaper is wired and rig-scoped', () => {
   });
 });
 
-describe('EI-14500: ownership read is pipefail-safe (no SIGPIPE false-negative)', () => {
-  it('gate_owns_rig_pid captures proc info then greps a here-string (not a `| grep -q` pipeline)', () => {
+describe('EI-14500/WI-40905: ownership read is pipefail-safe and exact-run scoped', () => {
+  it('uses exact marker/$WORK reads, while the prod-port guard keeps its pipefail-safe here-string', () => {
     // The buggy shape short-circuited grep -q → SIGPIPE on tr → pipefail non-zero →
-    // owned pids misread as "not owned" → never reaped. Both ownership reads must use the
-    // capture-then-here-string form.
+    // owned pids misread as "not owned" → never reaped. The prod-port ownership read
+    // retains its capture-then-here-string form.
     const hereStrings = gate.match(/grep -qaE "papercusp-lane[^"]*" <<<"\$info"/g) ?? [];
-    // gate_owns_rig_pid (the reaper) AND guard_prod_ports (EI-11342) share the fix.
-    expect(hereStrings.length).toBeGreaterThanOrEqual(2);
+    expect(hereStrings.length).toBeGreaterThanOrEqual(1);
+    // The reaper's manual-run path is narrower: exact inherited marker, then exact
+    // $WORK fallback. Broad canonical-prefix ownership killed a live peer rig.
+    expect(gate).toContain('export PAPERCUSP_LIVE_FED_GATE_RUN="$WORK"');
+    expect(gate).toContain('[ "$marker" = "PAPERCUSP_LIVE_FED_GATE_RUN=$WORK" ]');
+    expect(gate).toContain('grep -qaF "$WORK" <<<"$info"');
     // The SIGPIPE-fragile pipeline form must be gone for the rig-ownership check.
     expect(gate).not.toMatch(/2>\/dev\/null; \} \\\s*\n\s*\| grep -qaE "papercusp-lane/);
   });

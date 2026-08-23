@@ -12,11 +12,11 @@
  *
  * The fix: a `reap_gate_sidecars` swept from the gate's EXIT trap, so it fires on EVERY
  * exit path (happy, early, non-zero, external TERM). It reaps only sidecars THIS gate
- * transitively spawned, gated by the SAME rig-ownership test the prod-port guard uses
- * (cgroup membership in this gate service — reliable in the timer run, since a setsid
- * child stays in the spawning service's cgroup and at EXIT-trap time the gate is still
- * alive so its subtree is intact — OR a cwd/cmdline under a rig sandbox), so a real
- * (prod/live) operator sidecar is NEVER touched. SIGTERM, brief grace, then SIGKILL.
+ * transitively spawned, gated by cgroup membership in this gate service (reliable in
+ * the timer run, since a setsid child stays in the spawning service's cgroup) OR an
+ * exact inherited per-run marker / cwd under this gate's own $WORK. A shared rig-prefix
+ * match is deliberately insufficient: that would reap a concurrently-live foreign run.
+ * A real prod/live operator sidecar is NEVER touched. SIGTERM, brief grace, then SIGKILL.
  *
  * Test shape: a `readFileSync` wiring guard for the trap/pgrep/escalation wiring (same
  * rationale as the sibling verify-tauri-headless-*.test.ts family — the gate boots a
@@ -77,16 +77,19 @@ describe('EI-14500 — live-federation-gate reaps its leaked packaged-server sid
     expect(forceKill).toBeGreaterThan(grace);
   });
 
-  it('ownership is gated by the same rig test as the prod-port guard (a prod/live sidecar is NEVER touched)', () => {
+  it('ownership is exact-run scoped (a prod/live or foreign rig sidecar is NEVER touched)', () => {
     const body = fnBody('gate_owns_rig_pid');
     expect(body).toBeTruthy();
     // Timer-run catch-all: a setsid child stays in the spawning SERVICE's cgroup.
     expect(body).toContain(`grep -qa 'live-federation-gate' "/proc/$pid/cgroup"`);
-    // Manual-run catch: cwd/cmdline under a rig sandbox (a lane fed dir, a rig mktemp
-    // prefix, or the gate's own $WORK). A grep here reads BOTH cwd and cmdline.
+    // Manual-run catch: an exact inherited run marker, with this gate's own $WORK
+    // as a narrow cwd/cmdline fallback. A canonical rig prefix is a class, not ownership.
+    expect(src).toContain('export PAPERCUSP_LIVE_FED_GATE_RUN="$WORK"');
+    expect(body).toContain('"/proc/$pid/environ"');
+    expect(body).toContain('[ "$marker" = "PAPERCUSP_LIVE_FED_GATE_RUN=$WORK" ]');
     expect(body).toContain('readlink -f "/proc/$pid/cwd"');
-    expect(body).toContain('papercusp-lane-[a-z0-9-]*-fed');
-    expect(body).toContain('/tmp/hive-fromrepo-smoke');
+    expect(body).toContain('grep -qaF "$WORK" <<<"$info"');
+    expect(body).not.toMatch(/grep[^\n]*\/tmp\/hive-fromrepo-smoke/);
   });
 });
 
