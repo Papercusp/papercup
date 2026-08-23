@@ -24,7 +24,16 @@
  *     lockfile-selected set of critical runtime entrypoints. The second leg catches
  *     an existing package directory whose `dist/` or native payload is incomplete,
  *     plus missing TRANSITIVE files reached by the import (EI-21252116452570853).
- *     `npm ls` additionally
+ *     A third leg scans package-LOCAL `node_modules` directories for package
+ *     directories whose `package.json` is missing or unreadable. That is the exact
+ *     partial-reify signature that left libs/generic/sse's local Vitest/TypeScript
+ *     copies present-but-unusable (EI-20863794002653922), and it applies equally to
+ *     dev tools that are intentionally outside the direct-runtime-dependency leg.
+ *     A fourth leg checks readable workspace-local packages against the workspace's
+ *     direct dependency/devDependency/optionalDependency range. npm can retain a
+ *     valid old package and lock entry after the declaration changes, while install,
+ *     dedupe, update, and prune all exit 0; that stale-but-readable node must not be
+ *     reported healthy (EI-20863794002653922). `npm ls` additionally
  *     reports every UNMET (non-optional) PEER dependency under --legacy-peer-deps,
  *     including transitive peers of test-only packages nothing imports — a real
  *     false-positive that once blocked a build for a dependency it never needed.
@@ -49,6 +58,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync as fsExistsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { satisfies, UnsupportedRange } from './check-peer-dep-conflicts.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -122,6 +132,183 @@ export function resolveWorkspaceDirs(repoRoot = REPO_ROOT, deps = {}) {
     }
   }
   return [...new Set(out)].sort();
+}
+
+function packageDirEntries(nodeModulesDir, deps = {}) {
+  const readDir =
+    deps.readDir ??
+    ((p) =>
+      readdirSync(p, { withFileTypes: true }).map((entry) => ({
+        name: entry.name,
+        isDir: entry.isDirectory(),
+        isSymlink: entry.isSymbolicLink(),
+      })));
+  let entries;
+  try {
+    entries = readDir(nodeModulesDir);
+  } catch {
+    return [];
+  }
+  return entries.filter(
+    (entry) =>
+      !entry.name.startsWith('.') &&
+      (entry.isDir === true || entry.isSymlink === true),
+  );
+}
+
+/**
+ * Find package-LOCAL installs whose directory exists but whose manifest is missing,
+ * unreadable, or malformed. Direct-runtime resolution cannot catch this class for
+ * devDependencies, and a package's own Vitest suite cannot run when its local Vitest
+ * installation is the package that is partial.
+ *
+ * Root `node_modules` is deliberately not enumerated here. The runtime-import probes
+ * cover the root's load-bearing packages, while this general scan targets npm's
+ * workspace-local duplicate installs — the corruption shape that motivated the guard.
+ */
+export function findIncompleteWorkspacePackages({
+  repoRoot = REPO_ROOT,
+  workspaceDirs,
+  deps = {},
+} = {}) {
+  const readJson =
+    deps.readJson ?? ((p) => JSON.parse(readFileSync(p, 'utf8')));
+  const dirs = workspaceDirs ?? resolveWorkspaceDirs(repoRoot, deps);
+  const incomplete = [];
+
+  const inspectPackage = (workspace, packageName, packageDir) => {
+    try {
+      const manifest = readJson(join(packageDir, 'package.json'));
+      if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+        throw new Error('package manifest is not an object');
+      }
+    } catch {
+      incomplete.push({ package: packageName, workspace });
+    }
+  };
+
+  for (const workspace of dirs) {
+    const nodeModulesDir = join(repoRoot, workspace, 'node_modules');
+    for (const entry of packageDirEntries(nodeModulesDir, deps)) {
+      if (!entry.name.startsWith('@')) {
+        inspectPackage(
+          workspace,
+          entry.name,
+          join(nodeModulesDir, entry.name),
+        );
+        continue;
+      }
+      const scopeDir = join(nodeModulesDir, entry.name);
+      for (const scopedEntry of packageDirEntries(scopeDir, deps)) {
+        inspectPackage(
+          workspace,
+          `${entry.name}/${scopedEntry.name}`,
+          join(scopeDir, scopedEntry.name),
+        );
+      }
+    }
+  }
+
+  return incomplete.sort(
+    (a, b) =>
+      a.workspace.localeCompare(b.workspace) ||
+      a.package.localeCompare(b.package),
+  );
+}
+
+const LOCAL_VERSION_FIELDS = Object.freeze([
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+]);
+
+/** Extract the semver portion from a direct npm declaration, including npm aliases. */
+export function declaredVersionRange(spec) {
+  if (typeof spec !== 'string' || spec.trim() === '') return null;
+  const raw = spec.trim();
+  if (!raw.startsWith('npm:')) return raw;
+  const separator = raw.lastIndexOf('@');
+  return separator > 'npm:'.length ? raw.slice(separator + 1) : null;
+}
+
+/**
+ * Find readable workspace-local installs whose version violates the workspace's
+ * direct declaration. Transitive local packages and peers are deliberately ignored:
+ * they are npm's graph to resolve, while direct declarations are stable intent we can
+ * check without reintroducing `npm ls --all` peer noise.
+ */
+export function findInvalidWorkspacePackageVersions({
+  repoRoot = REPO_ROOT,
+  workspaceDirs,
+  deps = {},
+} = {}) {
+  const readJson =
+    deps.readJson ?? ((p) => JSON.parse(readFileSync(p, 'utf8')));
+  const dirs = workspaceDirs ?? resolveWorkspaceDirs(repoRoot, deps);
+  const invalid = [];
+
+  for (const workspace of dirs) {
+    let workspaceManifest;
+    try {
+      workspaceManifest = readJson(join(repoRoot, workspace, 'package.json'));
+    } catch {
+      continue;
+    }
+    const declaredSpec = (packageName) => {
+      for (const field of LOCAL_VERSION_FIELDS) {
+        const spec = workspaceManifest?.[field]?.[packageName];
+        if (typeof spec === 'string') return spec;
+      }
+      return null;
+    };
+    const inspectPackage = (packageName, packageDir) => {
+      const declared = declaredSpec(packageName);
+      if (declared === null) return;
+      let installedManifest;
+      try {
+        installedManifest = readJson(join(packageDir, 'package.json'));
+      } catch {
+        return; // the incomplete-manifest leg owns this diagnosis
+      }
+      const installed = installedManifest?.version;
+      const range = declaredVersionRange(declared);
+      if (typeof installed !== 'string' || installed.trim() === '') {
+        invalid.push({ package: packageName, workspace, declared, installed: null });
+        return;
+      }
+      if (range === null) return;
+      try {
+        if (!satisfies(installed, range)) {
+          invalid.push({ package: packageName, workspace, declared, installed });
+        }
+      } catch (error) {
+        if (!(error instanceof UnsupportedRange)) throw error;
+        // File/git/workspace/tag/prerelease declarations are outside the shared
+        // matcher's intentionally bounded grammar. Skipping is safer than a false red.
+      }
+    };
+
+    const nodeModulesDir = join(repoRoot, workspace, 'node_modules');
+    for (const entry of packageDirEntries(nodeModulesDir, deps)) {
+      if (!entry.name.startsWith('@')) {
+        inspectPackage(entry.name, join(nodeModulesDir, entry.name));
+        continue;
+      }
+      const scopeDir = join(nodeModulesDir, entry.name);
+      for (const scopedEntry of packageDirEntries(scopeDir, deps)) {
+        inspectPackage(
+          `${entry.name}/${scopedEntry.name}`,
+          join(scopeDir, scopedEntry.name),
+        );
+      }
+    }
+  }
+
+  return invalid.sort(
+    (a, b) =>
+      a.workspace.localeCompare(b.workspace) ||
+      a.package.localeCompare(b.package),
+  );
 }
 
 /**
@@ -256,6 +443,58 @@ export async function findUnextractedDepsWithRetry({
   return { missing, attempts };
 }
 
+/** Retry the package-local manifest leg for the same filesystem-settle window. */
+export async function findIncompleteWorkspacePackagesWithRetry({
+  repoRoot = REPO_ROOT,
+  workspaceDirs,
+  attempts = 3,
+  delayMs = 2000,
+  deps = {},
+  onRetry,
+} = {}) {
+  const wait = deps.sleep ?? sleep;
+  let incomplete = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    incomplete = findIncompleteWorkspacePackages({
+      repoRoot,
+      workspaceDirs,
+      deps,
+    });
+    if (incomplete.length === 0) return { incomplete: [], attempts: attempt };
+    if (attempt < attempts) {
+      onRetry?.({ attempt, attempts, incomplete });
+      await wait(delayMs);
+    }
+  }
+  return { incomplete, attempts };
+}
+
+/** Retry the local-version leg for the same filesystem-settle window. */
+export async function findInvalidWorkspacePackageVersionsWithRetry({
+  repoRoot = REPO_ROOT,
+  workspaceDirs,
+  attempts = 3,
+  delayMs = 2000,
+  deps = {},
+  onRetry,
+} = {}) {
+  const wait = deps.sleep ?? sleep;
+  let invalid = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    invalid = findInvalidWorkspacePackageVersions({
+      repoRoot,
+      workspaceDirs,
+      deps,
+    });
+    if (invalid.length === 0) return { invalid: [], attempts: attempt };
+    if (attempt < attempts) {
+      onRetry?.({ attempt, attempts, invalid });
+      await wait(delayMs);
+    }
+  }
+  return { invalid, attempts };
+}
+
 /** Retry the real-import leg for the same filesystem-settle window as the directory leg. */
 export async function findUnusableRuntimeDepsWithRetry({
   repoRoot = REPO_ROOT,
@@ -307,6 +546,45 @@ export function formatRuntimeFailures(failures) {
   return lines.join("\n");
 }
 
+export function formatIncompleteWorkspacePackages(incomplete) {
+  const lines = [
+    `WORKSPACE_PACKAGES_INCOMPLETE: ${incomplete.length} package-local node_modules director${incomplete.length === 1 ? 'y exists' : 'ies exist'} without a readable package.json.`,
+    'The package directory is present but npm only partially extracted it. A package-local',
+    'test runner can therefore fail before collecting a single test; this is dependency',
+    'integrity damage, not evidence of an application-code regression.',
+    '',
+  ];
+  for (const item of incomplete) {
+    lines.push(
+      `  - ${item.package} (${item.workspace}/node_modules/${item.package})`,
+    );
+  }
+  lines.push(
+    '',
+    'FIX: npm run install:safe -- install --legacy-peer-deps   (serialized; never a bare `npm install`)',
+  );
+  return lines.join('\n');
+}
+
+export function formatInvalidWorkspacePackageVersions(invalid) {
+  const lines = [
+    `WORKSPACE_PACKAGE_VERSION_INVALID: ${invalid.length} package-local install${invalid.length === 1 ? ' violates' : 's violate'} direct workspace declarations.`,
+    'npm retained a readable but stale package-local node. Successful install/dedupe',
+    'exit codes are not repair evidence while this mismatch remains.',
+    '',
+  ];
+  for (const item of invalid) {
+    lines.push(
+      `  - ${item.package} (${item.workspace}/node_modules/${item.package}): installed ${item.installed ?? '<missing version>'}, declared ${item.declared}`,
+    );
+  }
+  lines.push(
+    '',
+    'FIX: remove the stale package-local node/lock entry, then run the serialized install and re-check this guard.',
+  );
+  return lines.join('\n');
+}
+
 function parseArgs(argv) {
   const workspaces = [];
   let attempts = 3;
@@ -339,6 +617,36 @@ export async function main(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
     return 1;
   }
 
+  const { incomplete } = await findIncompleteWorkspacePackagesWithRetry({
+    repoRoot,
+    workspaceDirs,
+    attempts,
+    delayMs,
+    onRetry: ({ attempt, attempts: total, incomplete: seen }) =>
+      console.error(
+        `workspace-package-check attempt ${attempt}/${total}: ${seen.length} incomplete package-local install(s) — retrying in ${delayMs}ms (could be a filesystem-sync race)`,
+      ),
+  });
+  if (incomplete.length > 0) {
+    console.error(formatIncompleteWorkspacePackages(incomplete));
+    return 1;
+  }
+
+  const { invalid } = await findInvalidWorkspacePackageVersionsWithRetry({
+    repoRoot,
+    workspaceDirs,
+    attempts,
+    delayMs,
+    onRetry: ({ attempt, attempts: total, invalid: seen }) =>
+      console.error(
+        `workspace-package-version-check attempt ${attempt}/${total}: ${seen.length} invalid package-local version(s) — retrying in ${delayMs}ms (could be a filesystem-sync race)`,
+      ),
+  });
+  if (invalid.length > 0) {
+    console.error(formatInvalidWorkspacePackageVersions(invalid));
+    return 1;
+  }
+
   const probeSpecifiers = resolveRuntimeContentProbes(repoRoot);
   const { failures } = await findUnusableRuntimeDepsWithRetry({
     repoRoot,
@@ -356,12 +664,21 @@ export async function main(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
   }
 
   console.log(
-    `DECLARED_DEPS_OK: every directly-declared dependency resolves on disk (${(workspaceDirs ?? resolveWorkspaceDirs(repoRoot)).length} workspace(s)); ${probeSpecifiers.length} critical runtime import(s) load`,
+    `DECLARED_DEPS_OK: every directly-declared dependency resolves on disk (${(workspaceDirs ?? resolveWorkspaceDirs(repoRoot)).length} workspace(s)); package-local manifests and direct versions are valid; ${probeSpecifiers.length} critical runtime import(s) load`,
   );
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+/**
+ * Only run as the named CLI entry. Esbuild assigns bundled modules the host
+ * bundle's `import.meta.url`, so URL equality would mistake an imported copy for
+ * the entry module and run this dependency scan during Hono host startup.
+ */
+export const isDirectCliInvocation = (entryPath = process.argv[1]) =>
+  typeof entryPath === 'string' &&
+  /(?:^|[\\/])check-declared-deps-extracted\.mjs$/.test(entryPath);
+
+if (isDirectCliInvocation()) {
   main()
     .then((status) => {
       process.exitCode = status;
