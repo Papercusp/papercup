@@ -7,15 +7,27 @@
  * request disagrees with it. This module is the one read/merge/diagnostic seam;
  * launch-on-plan, launch-agent resume, and respawn-member integrate it in P-044.
  */
-import { composeLaunchModelSpec, splitModelSpec } from '../../agent-config-constants';
+import {
+  accountFromArgv,
+  composeLaunchModelSpec,
+  flagValueFromArgv,
+  modelSpecFromArgv,
+  splitModelSpec,
+} from '../../agent-config-constants';
 import {
   getFleetHeadcountTarget,
   type FleetHeadcountConfig,
   type FleetHeadcountTarget,
 } from '../../agent-fleets-store';
 import type { MemberSpec } from '../../agent-launch-core';
+import { readAdvSessionLaunchRecordByOwner, type AdvSessionLaunchRecord } from '../../adv-sessions';
+import { parseSuLaunchSpecRecord } from '../../su-persona-render';
 
 export const SAVED_FLEET_LAUNCH_SPEC_SOURCE = 'fleet:headcount-target' as const;
+export const LEGACY_FLEET_LAUNCH_SPEC_SOURCE = 'adv_sessions.launch_spec' as const;
+export type SavedFleetLaunchSpecSource =
+  | typeof SAVED_FLEET_LAUNCH_SPEC_SOURCE
+  | typeof LEGACY_FLEET_LAUNCH_SPEC_SOURCE;
 
 export type SavedFleetLaunchField =
   | 'plan'
@@ -68,7 +80,7 @@ export interface SavedFleetLaunchSpec {
 }
 
 export interface SavedFleetLaunchSpecProvenance {
-  source: typeof SAVED_FLEET_LAUNCH_SPEC_SOURCE;
+  source: SavedFleetLaunchSpecSource;
   workspaceId: string;
   fleetSlug: string;
   target: number | null;
@@ -131,8 +143,13 @@ const SAVED_FIELD_ORDER: readonly SavedFleetLaunchField[] = [
   'extraArgs',
 ];
 
-function provenanceFor(workspaceId: string, fleetSlug: string, target: number | null): SavedFleetLaunchSpecProvenance {
-  return { source: SAVED_FLEET_LAUNCH_SPEC_SOURCE, workspaceId, fleetSlug, target };
+function provenanceFor(
+  workspaceId: string,
+  fleetSlug: string,
+  target: number | null,
+  source: SavedFleetLaunchSpecSource = SAVED_FLEET_LAUNCH_SPEC_SOURCE,
+): SavedFleetLaunchSpecProvenance {
+  return { source, workspaceId, fleetSlug, target };
 }
 
 /** Convert the validated headcount recipe to the command-neutral member spec. */
@@ -155,6 +172,132 @@ export function savedFleetLaunchSpecFromConfig(config: FleetHeadcountConfig): Sa
       ...(config.extraArgs !== undefined ? { extraArgs: [...config.extraArgs] } : {}),
     },
   };
+}
+
+type LegacyLaunchParseResult =
+  | { ok: true; config: FleetHeadcountConfig; saved: SavedFleetLaunchSpec }
+  | { ok: false; message: string };
+
+const LEGACY_AGENTS = new Set<FleetHeadcountConfig['agent']>(['claude', 'omp', 'codex']);
+const LEGACY_CARRY = new Set<NonNullable<FleetHeadcountConfig['carry']>>(['warm', 'cold']);
+const LEGACY_CONTEXT_SIZES = new Set<NonNullable<FleetHeadcountConfig['contextSize']>>(['full', 'trimmed']);
+
+function argFlag(argv: readonly string[], flag: string): string | null {
+  return flagValueFromArgv(argv, flag);
+}
+
+function booleanFlag(argv: readonly string[], flag: string): boolean {
+  const bare = `--${flag}`;
+  return argv.some((item) => item === bare || new RegExp(`(?:^|\\s)${bare}(?:\\s|$)`).test(item));
+}
+
+function matchingValue(
+  label: string,
+  stored: string | null,
+  recorded: string | null,
+): { value: string | null; error?: string } {
+  if (stored && recorded && stored !== recorded) {
+    return { value: null, error: `${label} differs between launch_spec (${stored}) and launch_argv (${recorded})` };
+  }
+  return { value: stored ?? recorded };
+}
+
+/**
+ * Convert one legacy adv_sessions record into the same command-neutral recipe
+ * used by the canonical fleet target.  This is deliberately strict: a legacy
+ * row is useful only when its owner, workspace, fleet membership, and recorded
+ * argv all attest to the same launch.  Missing data stays an error rather than
+ * becoming a fresh launch with guessed defaults.
+ */
+export function savedFleetLaunchSpecFromLegacyRecord(
+  record: AdvSessionLaunchRecord,
+  workspaceId: string,
+  fleetSlug: string,
+): LegacyLaunchParseResult {
+  if (!record || record.workspaceId !== workspaceId) {
+    return {
+      ok: false,
+      message: `Legacy adv_sessions launch record workspace does not match requested workspace \`${workspaceId}\`.`,
+    };
+  }
+  const launch = parseSuLaunchSpecRecord(record.launchSpec);
+  if (!launch) return { ok: false, message: 'Legacy adv_sessions launch_spec is missing or malformed.' };
+  if (launch.workspaceId !== workspaceId) {
+    return { ok: false, message: `Legacy launch_spec workspace \`${launch.workspaceId}\` does not match \`${workspaceId}\`.` };
+  }
+  if (launch.fleet?.slug !== fleetSlug) {
+    return { ok: false, message: `Legacy launch_spec fleet does not match requested fleet \`${fleetSlug}\`.` };
+  }
+  if (!Array.isArray(record.launchArgv) || !record.launchArgv.every((item) => typeof item === 'string')) {
+    return { ok: false, message: 'Legacy adv_sessions launch_argv is missing or malformed.' };
+  }
+  const argv = record.launchArgv as string[];
+  const recordedFleet = argFlag(argv, 'fleet');
+  if (recordedFleet !== fleetSlug) {
+    return { ok: false, message: `Legacy launch_argv fleet does not match requested fleet \`${fleetSlug}\`.` };
+  }
+
+  const plan = matchingValue('plan', launch.planSlug, argFlag(argv, 'plan'));
+  const harness = matchingValue('harness', launch.harnessSlug, argFlag(argv, 'harness'));
+  const agent = matchingValue('agent', launch.agent, argFlag(argv, 'agent'));
+  if (plan.error || harness.error || agent.error) {
+    return { ok: false, message: plan.error ?? harness.error ?? agent.error! };
+  }
+  if (!plan.value || !harness.value || !agent.value || !LEGACY_AGENTS.has(agent.value as FleetHeadcountConfig['agent'])) {
+    return { ok: false, message: 'Legacy launch record lacks a valid plan, harness, or agent.' };
+  }
+
+  const recordedModel = modelSpecFromArgv(argv);
+  const storedModel = launch.model;
+  if (storedModel && recordedModel) {
+    const stored = splitModelSpec(storedModel);
+    const recorded = splitModelSpec(recordedModel);
+    if (stored.model !== recorded.model || (stored.effort && recorded.effort && stored.effort !== recorded.effort)) {
+      return { ok: false, message: `model differs between launch_spec (${storedModel}) and launch_argv (${recordedModel})` };
+    }
+  }
+  const modelSpec = recordedModel ?? storedModel;
+  const model = splitModelSpec(modelSpec);
+
+  const account = accountFromArgv(argv);
+  const carryRaw = argFlag(argv, 'carry');
+  if (carryRaw && !LEGACY_CARRY.has(carryRaw as NonNullable<FleetHeadcountConfig['carry']>)) {
+    return { ok: false, message: `Legacy launch_argv has invalid carry \`${carryRaw}\`.` };
+  }
+  const contextSizeRaw = argFlag(argv, 'context-size');
+  if (contextSizeRaw && !LEGACY_CONTEXT_SIZES.has(contextSizeRaw as NonNullable<FleetHeadcountConfig['contextSize']>)) {
+    return { ok: false, message: `Legacy launch_argv has invalid context size \`${contextSizeRaw}\`.` };
+  }
+  const compactionRaw = argFlag(argv, 'compaction-limit');
+  const compactionLimit = compactionRaw == null ? undefined : Number(compactionRaw);
+  if (compactionRaw != null && (!Number.isSafeInteger(compactionLimit) || compactionLimit <= 0)) {
+    return { ok: false, message: `Legacy launch_argv has invalid compaction limit \`${compactionRaw}\`.` };
+  }
+
+  // These flags are not first-class FleetHeadcountConfig fields, but they are
+  // safe, supported psu passthroughs and must not silently disappear on a
+  // respawn. Preserve token-shaped records; shell-command records are handled
+  // by the dedicated first-class parsers above.
+  const extraArgs = argv.filter((item) =>
+    item === '--brain' || item === '--allow-subagents' || item === '--no-subagents' ||
+    item.startsWith('--feature=') || item.startsWith('--profile=') || item.startsWith('--add-dir='),
+  );
+  const config: FleetHeadcountConfig = {
+    plan: plan.value,
+    harness: harness.value,
+    agent: agent.value as FleetHeadcountConfig['agent'],
+    ...(model.model ? { model: model.model } : {}),
+    ...(model.effort ? { effort: model.effort } : {}),
+    ...(account ? { account } : {}),
+    headless: booleanFlag(argv, 'headless'),
+    ...(carryRaw ? { carry: carryRaw as FleetHeadcountConfig['carry'] } : {}),
+    ...(argFlag(argv, 'role') ? { role: argFlag(argv, 'role')! } : {}),
+    ...(argFlag(argv, 'launch-context') ? { launchContext: argFlag(argv, 'launch-context')! } : {}),
+    ...(contextSizeRaw ? { contextSize: contextSizeRaw as FleetHeadcountConfig['contextSize'] } : {}),
+    ...(compactionLimit !== undefined ? { compactionLimit } : {}),
+    ...(extraArgs.length ? { extraArgs } : {}),
+  };
+  return { ok: true, config, saved: savedFleetLaunchSpecFromConfig(config) };
 }
 
 function cloneSpec(spec: SavedFleetLaunchSpec): SavedFleetLaunchSpec {

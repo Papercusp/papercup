@@ -1203,6 +1203,54 @@ export async function readSuLaunchSpecByOwner(coordOwnerId: string): Promise<unk
   }
 }
 
+/**
+ * The launch data needed to recover a legacy fleet member whose fleet was
+ * created before `fleet:headcount-target` existed.  Keep this reader separate
+ * from `readSuLaunchSpecByOwner`: the latter intentionally reads the concrete
+ * `launch_spec` column for the current persona-refresh path, while this one
+ * must remain parse-safe on schemas where that column has not been added yet.
+ */
+export interface AdvSessionLaunchRecord {
+  workspaceId: string;
+  launchSpec: unknown;
+  launchArgv: unknown;
+}
+
+/** Read the newest launch record for one owner, optionally pinned to a workspace. */
+export async function readAdvSessionLaunchRecordByOwner(
+  coordOwnerId: string,
+  workspaceId?: string | null,
+): Promise<AdvSessionLaunchRecord | null> {
+  if (!coordOwnerId) return null;
+  const scope = workspaceId?.trim() || null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      workspace_id: string;
+      launch_spec: unknown;
+      launch_argv: unknown;
+    }[]>`
+      SELECT workspace_id,
+             -- to_jsonb keeps this reader parse-safe on pre-migration legacy
+             -- schemas: an absent key becomes NULL instead of a parse error.
+             to_jsonb(a)->'launch_spec' AS launch_spec,
+             to_jsonb(a)->'launch_argv' AS launch_argv
+        FROM harness_shared.adv_sessions a
+       WHERE coord_owner_id = ${coordOwnerId}
+         AND (${scope}::text IS NULL OR workspace_id = ${scope})
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const row = rows[0];
+    return row
+      ? { workspaceId: row.workspace_id, launchSpec: row.launch_spec, launchArgv: row.launch_argv }
+      : null;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'readAdvSessionLaunchRecordByOwner');
+    return null;
+  }
+}
+
 export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();
