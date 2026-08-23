@@ -28,6 +28,12 @@ const H = vi.hoisted(() => ({
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
+  // The bulk-run wiring the pane now mounts subscribes to the sync bus. Without
+  // this export the mock throws mid-render, which React reports only as "error
+  // during concurrent rendering … recovered by rendering synchronously" — an
+  // UNHANDLED error that fails the FILE while every expect still passes, so the
+  // summary reads "46 passed" next to exit 1. Same stub PlansPane.test.tsx uses.
+  onSyncBusEvent: () => () => {},
 }));
 // jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
 // (WI-5339 virtualization) — mock it to render every item (same seam as
