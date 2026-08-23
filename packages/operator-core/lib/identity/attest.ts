@@ -514,7 +514,14 @@ export async function ensureAttestationGist(
     // turns a body/signature/identity problem into an unbounded duplicate-gist
     // loop. Include the reason so the caller can repair the actual binding
     // failure instead of blindly retrying creation.
-    const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId);
+    // Reuse the credential that just authenticated the candidate listing.  In
+    // isolated launch/preflight contexts there may be no ambient `gh` config,
+    // so resolving a second token inside verifyAttestation can silently fall
+    // back to the unauthenticated 60-request pool and turn a valid existing
+    // binding into `github_api_unavailable`.
+    const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId, {
+      token: input.token,
+    });
     if (v.valid) return g.id;
     const reason = v.reason ?? 'unknown';
     throw new Error(
@@ -547,7 +554,7 @@ export async function verifyAttestation(
   gistId: string,
   claimedPubkeyBase64: string,
   claimedGithubUserId: number,
-  opts?: { skipCache?: boolean },
+  opts?: { skipCache?: boolean; token?: string },
 ): Promise<AttestationVerificationResult> {
   const cacheKey = gistId + ':' + claimedPubkeyBase64 + ':' + claimedGithubUserId;
   if (!opts?.skipCache) {
@@ -560,7 +567,12 @@ export async function verifyAttestation(
     }
   }
 
-  const result = await runVerification(gistId, claimedPubkeyBase64, claimedGithubUserId);
+  const result = await runVerification(
+    gistId,
+    claimedPubkeyBase64,
+    claimedGithubUserId,
+    opts?.token,
+  );
 
   // Cache conclusive results. API failures are inconclusive and must be
   // retried so a transient outage cannot be frozen into a denial.
@@ -600,6 +612,7 @@ async function runVerification(
   gistId: string,
   claimedPubkeyBase64: string,
   claimedGithubUserId: number,
+  tokenOverride?: string,
 ): Promise<AttestationVerificationResult> {
   const verifiedAt = Date.now();
 
@@ -613,12 +626,14 @@ async function runVerification(
   // gist is public and any token can read it).
   let gistData: { owner?: { id?: number }; files?: Record<string, { content?: string }> };
   try {
-    const token = await resolveLocalGhToken();
+    const token = tokenOverride ?? await resolveLocalGhToken();
     let resp = await fetchGist(gistId, token);
     if (resp.status === 401 && token) {
       // Stale/revoked local token — drop the cached token and finish this
       // check unauthenticated rather than wedging on a dead credential.
-      clearGhAuthTokenCache();
+      // An explicit caller token does not come from the local cache, so never
+      // evict an unrelated ambient credential on its behalf.
+      if (tokenOverride === undefined) clearGhAuthTokenCache();
       resp = await fetchGist(gistId, null);
     }
     if (resp.status === 404) {

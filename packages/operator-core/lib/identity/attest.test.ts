@@ -350,6 +350,14 @@ describe('verifyAttestation', () => {
     });
 
     expect(id).toBe('g-existing');
+    const candidateFetch = fetchMock.mock.calls.find(
+      ([url]) => url === 'https://api.github.com/gists/g-existing',
+    );
+    expect(candidateFetch).toBeTruthy();
+    expect(
+      (candidateFetch?.[1] as { headers?: Record<string, string> } | undefined)?.headers
+        ?.Authorization,
+    ).toBe('token tok');
     // It must NOT POST a new gist when an existing verified one is found.
     const posted = fetchMock.mock.calls.some(
       (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
