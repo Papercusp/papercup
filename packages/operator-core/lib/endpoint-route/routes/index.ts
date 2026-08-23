@@ -368,6 +368,7 @@ import adminMode from './admin/mode';
 import adminAccountsPin from './admin/accounts-pin';
 import adminConfig from './admin/config';
 import adminCoordInboxReply from './admin/coord-inbox-reply';
+import adminAttentionBulkResolve from './admin/attention-bulk-resolve';
 import adminCoordination from './admin/coordination';
 import adminComms from './admin/comms';
 import adminInbox from './admin/inbox';
@@ -851,6 +852,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminAccountsPin as AnyRoute[]),
   ...flatten(adminConfig as AnyRoute[]),
   ...flatten(adminCoordInboxReply as AnyRoute[]),
+  ...flatten(adminAttentionBulkResolve as AnyRoute[]),
   ...flatten(adminCoordination as AnyRoute[]),
   ...flatten(adminComms as AnyRoute[]),
   ...flatten(adminInbox as AnyRoute[]),

@@ -368,18 +368,18 @@ export const bulkRunReport = defineTool({
       }
     }
 
-    const body = bulkContent(env);
-    if (unknown.length > 0) {
-      body.content.push({
-        type: 'text' as const,
-        text: JSON.stringify({
-          note: 'ignored: not in this run\'s snapshot',
-          unknownItemIds: unknown,
-          why: 'A run acts on exactly the items the owner was looking at; widening it silently would break that guarantee.',
-        }),
-      });
-    }
-    return body;
+    if (unknown.length === 0) return bulkContent(env);
+    // Unknown ids are surfaced BESIDE the bulk envelope rather than as failures:
+    // each reported item that existed still landed, and the resolver needs to
+    // know which ids it invented or carried over from a different run.
+    return bulkContent({
+      ...(env as unknown as Record<string, unknown>),
+      ignored: {
+        reason: "not in this run's snapshot",
+        itemIds: unknown,
+        why: 'A run acts on exactly the items the owner was looking at; widening it silently would break that guarantee.',
+      },
+    });
   },
 });
 
