@@ -188,6 +188,7 @@
     "lint:drop-database-force": "node scripts/check-drop-database-force.mjs",
     "lint:affected-gate": "node scripts/lint-affected-gate.mjs",
     "lint:workspace-deps-complete": "node scripts/check-workspace-deps-complete.mjs",
+    "lint:vitest-config-enrollment": "node scripts/check-vitest-config-enrollment.mjs",
     "lint:peer-dep-conflicts": "node scripts/check-peer-dep-conflicts.mjs",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",
     "lint:no-tracked-node-modules": "node scripts/check-tracked-node-modules.mjs",
