@@ -48,6 +48,10 @@ function fakes(initialProjects: HarnessRegistry['projects'] = []) {
       calls.seeded.push(opts);
       return { seeded: true, active: false, push: false, pushReason: 'joiner_side', cron: '0 0 * * * *' };
     },
+    // This unit suite is hermetic: the real default rekeyHarness lazily boots
+    // the substrate and reaches the org-admin database. Integration coverage
+    // that exercises that boot/rekey chain supplies its own real seam.
+    rekeyHarness: async () => {},
     resolveHivePubkey: async () => HIVE_PUBKEY,
     // Normal announced links carry the verified owner binding. Tests that
     // exercise the degraded partial-stamp path override this seam to null.

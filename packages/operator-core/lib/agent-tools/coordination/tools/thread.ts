@@ -121,6 +121,10 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // The coordination log seam owns its own read handle; keeping the dispatcher's
+  // ambient workspace transaction open while a thread is reconstructed can idle it
+  // past idle_in_transaction_session_timeout on a busy fleet.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     root_msg_id: z.string().min(1),

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ATTESTATION_OAUTH_SCOPES,
   ATTESTATION_VERIFY_CACHE_TTL_MS,
+  ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS,
   DEVICE_LABEL_MAX_LENGTH,
   attestationGistFilename,
   clampDeviceLabel,
@@ -21,6 +22,12 @@ describe('ATTESTATION_OAUTH_SCOPES', () => {
 describe('ATTESTATION_VERIFY_CACHE_TTL_MS', () => {
   it('is 24 hours per memo §"Cache hit/miss"', () => {
     expect(ATTESTATION_VERIFY_CACHE_TTL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+});
+
+describe('ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS', () => {
+  it('is one minute so conclusive failures do not re-fetch indefinitely', () => {
+    expect(ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS).toBe(60 * 1000);
   });
 });
 

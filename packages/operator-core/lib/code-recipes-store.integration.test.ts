@@ -18,6 +18,7 @@ import {
   upsertRecipe,
   recordRecipeRun,
   getRecipe,
+  findActiveRecipeByStructuralFingerprint,
   listRecipes,
   mergeRecipes,
   sweepRecipes,
@@ -212,6 +213,37 @@ describe('code_recipes store (real PG)', () => {
     });
     expect(traceRows[1].recipe_id).toBe('previewed');
     expect(await getRecipe(db.adminSql, 'previewed')).toMatchObject({ runCount: 0, successCount: 0, lastRunAt: null });
+  });
+
+  it('finds the most established active recipe for an exact structural fingerprint', async () => {
+    const ws = 'ws-cr-fingerprint';
+    const executionTrace = {
+      schemaVersion: 1 as const,
+      backend: 'server' as const,
+      requirements: { tools: [], capabilities: [], premises: ['host:same'] as ['host:same'] },
+      toolGraph: { staticCalls: [], runtimeCalls: [] },
+      stableBindings: [],
+      ephemeralValues: [],
+      redactedSecretPaths: [],
+      portability: { host: 'same' as const, replayability: 'deterministic' as const, ephemeralKinds: [] },
+      structuralFingerprint: 'd'.repeat(64),
+    };
+
+    await upsertRecipe(db.adminSql, { id: 'fingerprint-low', title: 'Low', description: 'd', script: 's', potSlug: null });
+    await upsertRecipe(db.adminSql, { id: 'fingerprint-hot', title: 'Hot', description: 'd', script: 's', potSlug: null });
+    await upsertRecipe(db.adminSql, { id: 'fingerprint-retired', title: 'Retired', description: 'd', script: 's', potSlug: null });
+    await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-low', workspaceId: ws, potSlug: null, executionTrace });
+    await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-hot', workspaceId: ws, potSlug: null, executionTrace });
+    await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-hot', workspaceId: ws, potSlug: null, executionTrace });
+    await recordRecipeRun(db.adminSql, { recipeId: 'fingerprint-retired', workspaceId: ws, potSlug: null, executionTrace });
+    await db.adminSql`UPDATE harness_shared.code_recipes SET status = 'retired' WHERE id = 'fingerprint-retired'`;
+    await recordRecipeRun(db.adminSql, { recipeId: null, workspaceId: ws, potSlug: null, executionTrace, countTowardRecipe: false });
+
+    await expect(findActiveRecipeByStructuralFingerprint(
+      db.adminSql,
+      executionTrace.structuralFingerprint,
+    )).resolves.toMatchObject({ id: 'fingerprint-hot', runCount: 2, status: 'active' });
+    await expect(findActiveRecipeByStructuralFingerprint(db.adminSql, 'e'.repeat(64))).resolves.toBeNull();
   });
 
   it('listRecipes returns the global recipe corpus', async () => {

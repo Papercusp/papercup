@@ -1287,7 +1287,6 @@ export async function diagnoseFleetScopeFeatureFamilyMatch(args: {
     const ws = resolveClaimSpecWorkspace(args.workspaceId);
     if (!ws) return null;
     const spec = args.scope.record.spec;
-    if (!spec.view.filter) return null;
     const { sql } = getOrgPg();
     const { claimFloorsWhereSql } = await import('../work-items');
     const { compileFilter } = await import('./get-next');

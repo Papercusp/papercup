@@ -15,6 +15,7 @@ import {
   recipeId,
   deriveTitleDescription,
   extractToolsUsed,
+  selectRecipeCaptureTarget,
 } from './capture-recipe';
 
 // extractToolsUsed → checkScript uses a lazy-loaded TS compiler (kept out of the
@@ -125,5 +126,45 @@ describe('deriveTitleDescription — always produces a saveable title + descript
     expect(r.title).toBe('untitled recipe');
     expect(r.description).toBe('auto-captured recipe: calls no tools');
     expect(recipeSlug(r.title)).toBe('untitled-recipe'); // still produces a valid slug
+  });
+});
+
+describe('selectRecipeCaptureTarget (P-014)', () => {
+  it('prefers an exact structural-fingerprint match over stronger advisory candidates', () => {
+    expect(selectRecipeCaptureTarget({
+      proposedId: 'new-candidate',
+      exactRecipeId: 'exact-candidate',
+      similarRecipes: [{ id: 'near-candidate', similarity: 0.99 }],
+    })).toEqual({
+      id: 'exact-candidate',
+      disposition: 'exact-fingerprint-reuse',
+      matchedSimilarity: null,
+    });
+  });
+
+  it('reuses the strongest deterministic near match at the existing 0.8 threshold', () => {
+    expect(selectRecipeCaptureTarget({
+      proposedId: 'new-candidate',
+      similarRecipes: [
+        { id: 'z-candidate', similarity: 0.8 },
+        { id: 'a-candidate', similarity: 0.8 },
+        { id: 'below', similarity: 0.799 },
+      ],
+    })).toEqual({
+      id: 'a-candidate',
+      disposition: 'near-similarity-reuse',
+      matchedSimilarity: 0.8,
+    });
+  });
+
+  it('creates the proposed candidate when no exact or qualifying near match exists', () => {
+    expect(selectRecipeCaptureTarget({
+      proposedId: 'new-candidate',
+      similarRecipes: [{ id: 'below', similarity: 0.79 }],
+    })).toEqual({
+      id: 'new-candidate',
+      disposition: 'created',
+      matchedSimilarity: null,
+    });
   });
 });

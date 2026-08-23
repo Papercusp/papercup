@@ -470,4 +470,32 @@ describe('migration reservation reconciliation (WI-38354)', () => {
       },
     ]);
   });
+
+  it('does not re-emit conflicts for applied filenames removed after a collision was repaired', async () => {
+    await rootSql.unsafe('TRUNCATE harness_shared.migration_reservations');
+    await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations');
+    await rootSql.unsafe(
+      'INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2), ($3, $4)',
+      [
+        '528-restore-fed-hlc-insert-stamp.sql',
+        '0'.repeat(64),
+        '528-restore-work-items-local-fed-hlc-stamp.sql',
+        '1'.repeat(64),
+      ],
+    );
+    await rootSql.unsafe(
+      'INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent) VALUES ($1, $2, $3, $4)',
+      [528, '528-restore-fed-hlc-insert-stamp.sql', 'integration-test', 'collision repair'],
+    );
+
+    const logs: string[] = [];
+    const count = await reconcileMigrationReservations(
+      rootSql,
+      (message) => logs.push(message),
+      new Set(['528-restore-fed-hlc-insert-stamp.sql']),
+    );
+
+    expect(count).toBe(0);
+    expect(logs).toEqual([]);
+  });
 });

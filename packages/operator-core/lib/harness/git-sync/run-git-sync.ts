@@ -764,7 +764,7 @@ export interface GitSyncLockHolding {
   intent: string;
 }
 
-/** A dirty path that caused an entire repo commit group to defer. */
+/** A dirty path excluded from this pass because a live editor holds its lock. */
 export interface GitSyncSkippedPath {
   scope: string;
   path: string;
@@ -808,7 +808,7 @@ export type GitSyncOutcome = {
    *  failure mode this whole field exists to prevent, reintroduced one level up. The
    *  nullable type forces every consumer to decide which it is. */
   strandedSubmodules: StrandedSubmodule[] | null;
-  /** Live-lock paths that deferred their whole repo commit group this pass. */
+  /** Live-lock paths excluded this pass. Other unlocked paths may still sync. */
   skippedPaths?: GitSyncSkippedPath[];
   /**
    * Scopes whose fetch+merge stage completed successfully this pass, even when a
@@ -2252,10 +2252,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     }));
   if (skippedPaths.length > 0) {
     o.log(
-      `[git-sync] ${o.scope}: deferring the whole commit group because live lock(s) hold dirty path(s): ` +
+      `[git-sync] ${o.scope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
         skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
     );
-    return { committedLocal: false, dirtyPathCount, committedCount, oversized: [], contentErrors: [], skippedPaths };
   }
   if (await isDirty(runGit, repoPath)) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
@@ -2267,6 +2266,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         error: attachment.error,
         oversized,
         contentErrors,
+        skippedPaths,
       };
     }
     // EI-18 guard: never bake an unpushable blob into the range. Oversized dirty
@@ -2362,6 +2362,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     const excludePaths = [
       ...new Set([
         ...o.excludePaths,
+        // liveLockHoldings is the provenance-rich authority. Keep its paths safe
+        // even if a caller omitted the parallel excludePaths projection.
+        ...skippedPaths.map((p) => p.path),
         ...oversized.map((f) => f.path),
         ...contentErrors.map((c) => c.file),
       ]),
@@ -2510,6 +2513,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           error: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
           oversized,
           contentErrors,
+          skippedPaths,
         };
       }
     }
@@ -2552,11 +2556,12 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         error: `commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
         oversized,
         contentErrors,
+        skippedPaths,
       };
     }
     committedLocal = committedAny;
   }
-  return { committedLocal, dirtyPathCount, committedCount, oversized, contentErrors };
+  return { committedLocal, dirtyPathCount, committedCount, oversized, contentErrors, skippedPaths };
 }
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:push` step output. */
@@ -3274,7 +3279,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     committedCount: commitRes.committedCount,
   };
   let repoResult: RepoSyncResult;
-  if (commitRes.skippedPaths && commitRes.skippedPaths.length > 0) {
+  if (commitRes.skippedPaths && commitRes.skippedPaths.length > 0 && !commitRes.committedLocal) {
     repoResult = {
       status: 'skipped-locked',
       ...commitMetrics,
@@ -3397,7 +3402,11 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     return { status: 'conflict', dirtyPathCount, committedCount, conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
   if (errors.length > 0)
     return { status: 'error', dirtyPathCount, committedCount, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
-  if (skippedPaths.length > 0)
+  // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
+  // skipped verdict only when every visible dirty path was protected and the pass
+  // made no progress anywhere. A pass that committed/pushed an unlocked sibling is
+  // `synced` and still carries skippedPaths for observability + the next retry.
+  if (skippedPaths.length > 0 && !didSomething)
     return { status: 'skipped-locked', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo

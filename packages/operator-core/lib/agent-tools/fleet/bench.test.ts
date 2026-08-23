@@ -74,6 +74,7 @@ const lane = (claimable: number, matchedByFilter = claimable) => ({
   excluded: {},
   issueFamily: { claimable, matchedByFilter, excluded: {} },
   featureFamily: null,
+  familyReachability: { issue: true, feature: false },
   effective: {
     claimable,
     matchedByFilter,
@@ -264,6 +265,41 @@ describe('fleet:bench — stage mode refuses a live lane [WI-5938 acceptance]', 
 });
 
 describe('fleet:bench — list mode', () => {
+  it('keeps a registered presence-only bench visible when a harness is supplied', async () => {
+    // Presence rows are harness-agnostic. The production repro passed
+    // harness:'papercusp' and silently filtered the member before the parked
+    // await could be projected.
+    vi.mocked(groupByAgent).mockReturnValueOnce([{ agentId: 'su-worker', fleetSlug: 'p2p-git' } as never]);
+    vi.mocked(listParkedAwaitsForSubscribers).mockResolvedValueOnce([
+      {
+        subscriberId: 'su-worker',
+        eventKey: 'work-item:done:WI-40532',
+        note: '[fleet:bench] remain benched until the duplicate claim clears',
+        expiresTs: null,
+        createdAt: '2026-07-10T12:00:00.000Z',
+      },
+    ]);
+
+    const staged = await call({
+      member: 'su-worker',
+      wakeEvent: 'work-item:done:WI-40532',
+      stagedAssignment: 'remain benched until the duplicate claim clears',
+      harness: 'papercusp',
+      fleet: 'p2p-git',
+    });
+    expect(staged).toMatchObject({ ok: true, registered: true });
+
+    const out = await call({ list: true, fleet: 'p2p-git', harness: 'papercusp' });
+    expect(listFleetAssignments).toHaveBeenCalledWith({ workspaceId: 'ws-x', fleet: 'p2p-git', activeOnly: true });
+    expect(listParkedAwaitsForSubscribers).toHaveBeenCalledWith(['su-worker']);
+    expect(out).toMatchObject({
+      ok: true,
+      fleet: 'p2p-git',
+      benched_count: 1,
+      benched: [{ member: 'su-worker', event: 'work-item:done:WI-40532' }],
+    });
+  });
+
   it('resolves the caller\'s own fleet when none is passed, and filters to bench-tagged rows', async () => {
     vi.mocked(listFleetAssignments).mockResolvedValueOnce([]);
     vi.mocked(groupByAgent).mockReturnValueOnce([

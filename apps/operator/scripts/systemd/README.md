@@ -1,7 +1,7 @@
 # Clustered operator memory envelope — installation (EI-20340243384897336)
 
 `papercup-dev-api.service.d/55-memory-envelope.conf` is the versioned,
-service-wide cgroup policy for the 17-process `:3070` operator. It complements
+service-wide cgroup policy for the 11-process `:3070` operator. It complements
 the in-process memory watchdog: the watchdog recycles one leaking worker, while
 `MemoryHigh` / `MemoryMax` / `MemorySwapMax` bound the aggregate cluster.
 
@@ -37,9 +37,12 @@ systemd-analyze --user verify papercup-dev-api.service
 
 Expected effective limits are `MemoryHigh=48G`, `MemoryMax=64G`, and
 `MemorySwapMax=16G`, with no `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` in the unit's
-effective environment. Verify `:3070` health and the 17-process cluster after
-the managed restart; a configured drop-in is not proof the running cgroup
-loaded it.
+effective environment. The later memory-envelope drop-in also overrides the
+legacy `PAPERCUSP_CLUSTER=16` setting with `PAPERCUSP_CLUSTER_WORKERS=10` and
+sets `PAPERCUSP_EXPECTED_OPERATOR_PROCS=11`. Verify the boot log names
+`PAPERCUSP_CLUSTER_WORKERS=10`, `:3070` is healthy, and the running service has
+ten request workers plus one primary after the managed restart; a configured
+drop-in is not proof the running cgroup loaded it.
 
 ---
 

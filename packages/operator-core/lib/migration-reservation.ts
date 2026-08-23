@@ -27,10 +27,19 @@ export function reservationFilenameConflicts(
   migrationFiles: readonly string[],
   reservations: readonly MigrationReservationRow[],
   enforcedFrom = RESERVATION_ENFORCED_FROM,
+  activeFilenames?: ReadonlySet<string>,
 ): MigrationReservationConflict[] {
   const reservedByNumber = new Map(reservations.map((row) => [Number(row.num), row.filename]));
   const conflicts: MigrationReservationConflict[] = [];
-  for (const file of migrationFiles) {
+  // `schema_migrations` is append-only: a file that was applied before a
+  // collision was repaired can remain in history after it is removed from the
+  // tree. When the caller supplies the active tree's filenames, compare only
+  // rows that still have a runnable file. Otherwise a benign squashed-history
+  // row would re-emit a CRITICAL conflict on every boot/checkpoint run.
+  const filesToCheck = activeFilenames
+    ? migrationFiles.filter((file) => activeFilenames.has(file))
+    : migrationFiles;
+  for (const file of filesToCheck) {
     const num = migrationNumberOf(file);
     if (num === null || num < enforcedFrom || !reservedByNumber.has(num)) continue;
     const reservedFilename = reservedByNumber.get(num) ?? null;

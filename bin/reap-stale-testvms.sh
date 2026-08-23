@@ -81,6 +81,23 @@ VMCTL_TIMEOUT="${TESTVM_REAPER_VMCTL_TIMEOUT:-90}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VMCTL="$SELF_DIR/../papercusp-desktop/scripts/linux-test-vm/vmctl"
 
+# Keep the strings that the census looks for in data variables rather than in
+# the command text of a process-substitution/pipeline.  A shell launched to
+# inspect /proc can otherwise expose the very marker it is looking for in its
+# own argv, which makes a raw cmdline census report the inspector as a VM.
+TESTVM_CMDLINE_MARKER='papercusp-testvm-'
+ORCHESTRATOR_MARKERS=(
+    'vm-federation.sh'
+    'linux-test-vm/fed.sh'
+    'live-federation-gate.sh'
+    'two-instance-federation-smoke.sh'
+)
+# Populated lazily per Bash process.  A host-level census can see thousands of
+# PIDs; walking the same short parent chain once per PID turns a cheap filter
+# into a fork storm under load.
+declare -A REAPER_EXCLUDED_PIDS=()
+REAPER_ANCESTRY_ROOT=''
+
 log() { echo "[testvm-reaper] $(date -Iseconds) $*"; }
 
 # ── /proc helpers (mirrors reap-orphaned-vitest-workers.sh) ────────────────
@@ -104,21 +121,94 @@ proc_cmdline() {
     local pid="$1"
     local f="/proc/$pid/cmdline"
     [ -f "$f" ] || return 1
-    tr '\0' ' ' < "$f"
+    local arg out=''
+    # Bash can read NUL-delimited argv entries directly.  Spawning `tr` once
+    # per /proc entry made the host-level census fork-heavy enough to look
+    # stalled under fleet load.
+    while IFS= read -r -d '' arg; do
+        [ -n "$out" ] && out+=" "
+        out+="$arg"
+    done < "$f"
+    printf '%s\n' "$out"
+}
+
+# Read a process's real parent from /proc/<pid>/stat.  The comm field is
+# parenthesized and may contain spaces/parens, so strip through the final ") "
+# before taking field 2 (the ppid field in the remainder).
+proc_ppid() {
+    local pid="$1"
+    local stat_file="/proc/$pid/stat"
+    [ -f "$stat_file" ] || return 1
+    awk '{sub(/^.*\) /, ""); print $2}' "$stat_file"
+}
+
+# A match in the reaper's own process tree is not external activity.  This is
+# the Bash equivalent of scripts/proc-guard.mjs's ancestor-chain exclusion: the
+# timer may itself be launched from `bash -c '<command containing the marker>'`,
+# and the wrapper's argv is then visible to the census.  Walk by PPID instead of
+# relying on a fixed parent (systemd/user subreapers vary between hosts).  The
+# result is cached for this Bash process because this predicate runs once per
+# /proc entry.
+proc_cache_self_ancestry() {
+    local root="${BASHPID:-$$}"
+    [ "$REAPER_ANCESTRY_ROOT" = "$root" ] && return 0
+
+    REAPER_EXCLUDED_PIDS=()
+    local current="$root"
+    local hops=0
+    while [ -n "$current" ] && [ "$hops" -lt 512 ]; do
+        REAPER_EXCLUDED_PIDS["$current"]=1
+        [ "$current" = 1 ] && break
+        current=$(proc_ppid "$current" 2>/dev/null) || break
+        [ -n "$current" ] || break
+        hops=$((hops + 1))
+    done
+    REAPER_ANCESTRY_ROOT="$root"
+}
+
+proc_is_self_or_ancestor() {
+    local target="$1"
+    proc_cache_self_ancestry
+    [[ ${REAPER_EXCLUDED_PIDS["$target"]+set} ]]
+}
+
+# The marker is intentionally not enough to identify a VM: a peer's shell,
+# prompt, or census command can mention it.  The real boot path starts argv[0]
+# with qemu-system-* (or qemu-kvm); require that operational identity before
+# accepting a -name papercusp-testvm-* token.
+is_qemu_testvm_cmdline() {
+    local cmd="$1"
+    local -a argv=()
+    read -r -a argv <<< "$cmd"
+    [ "${#argv[@]}" -gt 0 ] || return 1
+
+    local executable="${argv[0]##*/}"
+    case "$executable" in
+        qemu-system-*|qemu-kvm|qemu) ;;
+        *) return 1 ;;
+    esac
+    [[ "$cmd" == *"$TESTVM_CMDLINE_MARKER"* ]] || return 1
+    return 0
 }
 
 any_orchestrator_alive() {
     local cmdline_file cmd
     for cmdline_file in /proc/[0-9]*/cmdline; do
         [ -r "$cmdline_file" ] || continue
-        cmd=$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null) || continue
-        case "$cmd" in
-            *vm-federation.sh*|*linux-test-vm/fed.sh*|*live-federation-gate.sh*|*two-instance-federation-smoke.sh*)
-                local opid="${cmdline_file%/cmdline}"; opid="${opid#/proc/}"
+        local opid="${cmdline_file%/cmdline}"; opid="${opid#/proc/}"
+        # The invoking shell (and any bash -c wrapper above it) is inspection
+        # context, not evidence of a live federation run.
+        proc_is_self_or_ancestor "$opid" && continue
+        cmd=$(proc_cmdline "$opid" 2>/dev/null) || continue
+        local marker
+        for marker in "${ORCHESTRATOR_MARKERS[@]}"; do
+            case "$cmd" in
+                *"$marker"*)
                 log "live orchestrator detected: pid=$opid cmd=${cmd:0:120}"
                 return 0
                 ;;
-        esac
+            esac
+        done
     done
     return 1
 }
@@ -137,6 +227,22 @@ vm_name_from_cmdline() {
         [ "$tok" = "-name" ] && found=1
     done
     return 1
+}
+
+# Emit candidate PIDs for the reaper.  The marker is held in a variable and the
+# helper excludes its own process/ancestor chain, so even when Bash implements
+# this call through a process-substitution shell, inspection context cannot be
+# reported as external VM activity.
+candidate_vm_pids() {
+    local cmdline_file cmd pid
+    for cmdline_file in /proc/[0-9]*/cmdline; do
+        [ -r "$cmdline_file" ] || continue
+        pid="${cmdline_file%/cmdline}"; pid="${pid#/proc/}"
+        proc_is_self_or_ancestor "$pid" && continue
+        cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
+        is_qemu_testvm_cmdline "$cmd" || continue
+        echo "$pid"
+    done
 }
 
 do_reap() {
@@ -192,15 +298,7 @@ main() {
         log "REAP candidate: $name (pid=$pid, running=${et}s >= ${MAX_AGE_SECS}s, no live orchestrator)"
         do_reap "$pid" "$name"
         reaped=$(( reaped + 1 ))
-    done < <(
-        for cmdline_file in /proc/[0-9]*/cmdline; do
-            [ -r "$cmdline_file" ] || continue
-            cmd=$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null) || continue
-            [[ "$cmd" == *"papercusp-testvm-"* ]] || continue
-            pid="${cmdline_file%/cmdline}"; pid="${pid#/proc/}"
-            echo "$pid"
-        done
-    )
+    done < <(candidate_vm_pids)
 
     log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young max_age_secs=$MAX_AGE_SECS"
 }

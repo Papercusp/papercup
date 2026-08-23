@@ -723,6 +723,11 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       reset: client.resetCalls,
       snapshots: client.snapshotCalls.length,
     }).toEqual({ start: 2, stop: 2, reset: 2, snapshots: 1 });
+    expect(client.snapshotCalls[0]?.input.labels).toEqual({
+      'papercusp-host-id': 'host-gcp-1',
+      'papercusp-managed': 'true',
+      'papercusp-workspace-id': 'workspace-gcp-1',
+    });
     expect(client.waitedOperations.length).toBeGreaterThanOrEqual(10);
 
     const destroy = await provider.plan(

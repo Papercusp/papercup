@@ -49,6 +49,11 @@ const h = vi.hoisted(() => ({
     specSetHash: null,
     wouldBlock: ['no-first-class-spec-clauses'],
   } as Record<string, unknown>,
+  coverageBarrier: null as null | {
+    arrivals: number;
+    release: Promise<void>;
+    open: () => void;
+  },
 }));
 
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -102,6 +107,26 @@ vi.mock('./agent-tools/plans/source', () => ({
 vi.mock('./agent-tools/plans/plan-spec-quality-gate', () => ({
   evaluatePlanSpecQualityGate: vi.fn(async () => h.specQuality),
 }));
+vi.mock('./plan-items/convert', async () => {
+  const actual = await vi.importActual<typeof import('./plan-items/convert')>('./plan-items/convert');
+  return {
+    ...actual,
+    listCoveredPlanItemRefs: async (...args: Parameters<typeof actual.listCoveredPlanItemRefs>) => {
+      const covered = await actual.listCoveredPlanItemRefs(...args);
+      // D-046: only the concurrency regression enables this barrier. Both callers must
+      // finish the SAME empty coverage read before either may enter the condition-key
+      // mint, deterministically reproducing the check-then-act race that created P-036's
+      // WI-40504/WI-40513 pair.
+      const barrier = h.coverageBarrier;
+      if (barrier) {
+        barrier.arrivals += 1;
+        if (barrier.arrivals >= 2) barrier.open();
+        await barrier.release;
+      }
+      return covered;
+    },
+  };
+});
 
 const run = await import('./plan-workitem-promotion-run');
 const convert = await import('./plan-items/convert');
@@ -135,7 +160,14 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
       -- P-010 drives the real claim path, which projects signal_origin (parity with
       -- work-items-claim-readiness.integration.test.ts's fixture).
-      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic',
+      -- D-046 / migration 741: the DB-serialized single-winner authority used by
+      -- upsertConditionWorkItem. The fixture must prove the real unique index, not a
+      -- mock that can accidentally preserve the old check-then-act race.
+      ADD COLUMN IF NOT EXISTS condition_key text;
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_condition_key_uq
+      ON harness_shared.work_items (workspace_id, harness_slug, condition_key)
+      WHERE condition_key IS NOT NULL;
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
       workspace_id text NOT NULL, harness_slug text NOT NULL,
       github_user_id bigint NOT NULL, github_username text NOT NULL DEFAULT '');
@@ -158,6 +190,7 @@ beforeEach(async () => {
     specSetHash: null,
     wouldBlock: ['no-first-class-spec-clauses'],
   };
+  h.coverageBarrier = null;
   h.plans.clear();
 });
 
@@ -276,6 +309,53 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(again.skipped).toBe(2);
     const idsAfterSecond = (await features()).map((r) => r.feature_id);
     expect(idsAfterSecond).toEqual(idsAfterFirst); // no new rows
+  });
+
+  it('D-046: concurrent promotion calls converge on one canonical condition-key owner and one implements edge', async () => {
+    h.plans.set(PLAN, {
+      items: [{ id: 'P-001', status: 'todo', text: 'Exactly one promoted implementation' }],
+    });
+    let open!: () => void;
+    const release = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    h.coverageBarrier = { arrivals: 0, release, open };
+
+    let results: Awaited<ReturnType<typeof run.promotePlanItems>>[];
+    try {
+      results = await Promise.all([run.promotePlanItems(base), run.promotePlanItems(base)]);
+    } finally {
+      h.coverageBarrier = null;
+    }
+
+    // Both callers observed the lane as uncovered, but the migration-741 unique key
+    // lets exactly one count as the creator; the other adopts the winner.
+    expect(results.reduce((sum, result) => sum + result.promoted, 0)).toBe(1);
+    const key = run.planPromotionConditionKey(WS, HARNESS, PLAN, 'P-001');
+    const rows = await db.sql<{ feature_id: string; status: string; condition_key: string | null }[]>`
+      SELECT feature_id, status, condition_key
+        FROM harness_shared.work_items
+       WHERE source_plan_slug = ${PLAN}
+       ORDER BY feature_id`;
+    const nonTerminal = rows.filter((row) => !wi.isSettledWorkItemState(row.status));
+    expect(nonTerminal).toHaveLength(1);
+    expect(nonTerminal[0]!.condition_key).toBe(key);
+    expect(rows.filter((row) => row.condition_key === key)).toHaveLength(1);
+
+    // Both calls link the returned winner; linkWorkItem's conflict guard collapses the
+    // duplicate write, so the plan lane has one implementation destination too.
+    const implementsLinks = await db.sql<{ src_ref: string; dst_ref: string }[]>`
+      SELECT src_ref, dst_ref
+        FROM harness_shared.coord_links
+       WHERE rel = ${convert.IMPLEMENTS_REL}
+         AND dst_kind = ${PLAN_ITEM_KIND}
+         AND dst_ref = ${planItemRef(PLAN, 'P-001')}`;
+    expect(implementsLinks).toEqual([
+      {
+        src_ref: `${HARNESS}#${nonTerminal[0]!.feature_id}`,
+        dst_ref: planItemRef(PLAN, 'P-001'),
+      },
+    ]);
   });
 
   it('EI-19946482711398073/WI-37359: an item already covered ad-hoc (relates + stamp, NO implements edge) is never re-promoted', async () => {

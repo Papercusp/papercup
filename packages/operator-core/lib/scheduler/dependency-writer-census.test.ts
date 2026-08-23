@@ -105,6 +105,17 @@ const EDGE_WRITERS: ReadonlyMap<string, WriterEntry> = new Map([
     },
   ],
   [
+    'plan-items/reconcile-linked-work-items.ts',
+    {
+      role: 'entry-point',
+      provenBy:
+        'The plan-lane dependency reconciler. Effectiveness: ' +
+        "dependency-writer-effectiveness.integration.test.ts 'plan-lane reconciliation' case — " +
+        'the canonical promoted row is served before reconciliation, withheld after the real ' +
+        'writer runs, and served again only after its plan blocker settles.',
+    },
+  ],
+  [
     'endpoint-route/routes/harness/features.ts',
     {
       role: 'entry-point',

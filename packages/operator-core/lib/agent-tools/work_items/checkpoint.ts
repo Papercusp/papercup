@@ -140,7 +140,7 @@ import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../wor
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
-import { CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
+import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -302,26 +302,20 @@ function checksSpec() {
             // the other, which is also what made coerceCarryRowShape's key -> id
             // repair inert here.
             id: CARRY_ROW_ID_SCHEMA,
-            claim: z
-              .string()
-              .min(1)
-              .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
-              .describe('The claim about external state, stated concretely.'),
-            recheck: z
-              .string()
-              .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
-              .optional()
-              .describe('The concrete probe that would falsify the claim.'),
-            verified: z
-              .string()
-              .max(CARRY_ROW_SOFT_CAPS.verified * CARRY_CAP_HARD_MULTIPLE)
-              .optional()
-              .describe(
-                'The EVIDENCE STRING (what you actually observed). For compatibility, boolean `true`/`false` ' +
-                  'is normalized before validation: `true` without evidence and `false` both remain ? PREDICTED. ' +
-                  'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
-                  'telling a successor to run `recheck` before relying on the claim.',
-              ),
+            claim: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.claim, 'The claim about external state, stated concretely.', {
+              min: 1,
+            }),
+            recheck: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.recheck,
+              'The concrete probe that would falsify the claim.',
+            ).optional(),
+            verified: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.verified,
+              'The EVIDENCE STRING (what you actually observed). For compatibility, boolean `true`/`false` ' +
+                'is normalized before validation: `true` without evidence and `false` both remain ? PREDICTED. ' +
+                'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
+                'telling a successor to run `recheck` before relying on the claim.',
+            ).optional(),
           }),
         )
         .max(CARRY_NOTE_MAX_CHECKS),

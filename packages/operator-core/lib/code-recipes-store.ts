@@ -93,7 +93,8 @@ export interface RecordRecipeRunInput {
   agentOwner?: string | null;
   agentRole?: string | null;
   success?: boolean;
-  /** true when this was a recipes:run of an existing recipe (vs an authored code:run). */
+  /** true when an existing recipe candidate was reused, either by recipes:run or
+   *  by code:run capture dedup (exact fingerprint / near-similarity match). */
   reused?: boolean;
   /** Secret-free normalized P-013 trace. Its fingerprint is stored alongside it for indexed dedup. */
   executionTrace?: NormalizedExecutionTrace | null;
@@ -391,6 +392,41 @@ export async function getRecipe(sql: postgres.Sql, id: string): Promise<CodeReci
   const rows = await sql<DbRow[]>`
     SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
      WHERE id = ${id}
+     LIMIT 1`;
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/**
+ * Resolve the active recipe candidate already representing a normalized trace.
+ *
+ * Fingerprints live on the existing per-execution `code_recipe_runs` rail (P-013),
+ * not on a second recipe index/table. When old capture behavior produced more than
+ * one recipe for the same structure, prefer the most established active candidate
+ * (run_count), then the most recently observed one, with id as the stable tie-break.
+ * Trace-only rows have no recipe_id and therefore cannot be capture targets.
+ */
+export async function findActiveRecipeByStructuralFingerprint(
+  sql: postgres.Sql,
+  structuralFingerprint: string,
+): Promise<CodeRecipeRow | null> {
+  const rows = await sql<DbRow[]>`
+    SELECT ${SELECT_COLS(sql)}
+      FROM harness_shared.code_recipes r
+     WHERE r.id = (
+       SELECT run.recipe_id
+         FROM harness_shared.code_recipe_runs run
+         JOIN harness_shared.code_recipes candidate
+           ON candidate.id = run.recipe_id
+        WHERE run.structural_fingerprint = ${structuralFingerprint}
+          AND run.recipe_id IS NOT NULL
+          AND candidate.status = 'active'
+        GROUP BY run.recipe_id, candidate.run_count, candidate.updated_at
+        ORDER BY candidate.run_count DESC,
+                 max(run.ts) DESC,
+                 candidate.updated_at DESC,
+                 run.recipe_id ASC
+        LIMIT 1
+     )
      LIMIT 1`;
   return rows[0] ? mapRow(rows[0]) : null;
 }

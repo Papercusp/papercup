@@ -85,6 +85,19 @@ export interface AutoCloseTickContext {
   seenKeys: ReadonlySet<string>;
   /** How many ran-ticks the window held (must be ≥ minAbsentTicks to act). */
   ranTickCount: number;
+  /**
+   * (WI-40769) Per-source count of ticks IN THIS WINDOW where the source's
+   * collector declared itself UNOBSERVED (`CollectorStatus.observed === false`):
+   * it skipped, or it threw. Those ticks are not absence evidence — the
+   * condition was never evaluated — so `decideAutoClose` subtracts them.
+   *
+   * This is what makes a source whose collector CAN go blind safe to
+   * absence-close: instead of excluding the source forever, the sweep simply
+   * waits until enough ticks exist where the collector actually looked. Absent
+   * / empty map ⇒ every tick observed (the pre-WI-40769 assumption, which is
+   * correct for every collector that never declares itself blind).
+   */
+  unobservedTicksBySource?: ReadonlyMap<string, number>;
   nowMs: number;
 }
 
@@ -138,6 +151,15 @@ export function decideAutoClose(
   // inFlightDispatch is the only signal that means "do not touch, someone is on it".
   if (c.inFlightDispatch) return { close: false, reason: 'in-flight-dispatch' };
   if (ctx.ranTickCount < minTicks) return { close: false, reason: 'insufficient-tick-history' };
+  // WI-40769: discount ticks where THIS source's collector observed nothing (it
+  // skipped, or it threw). A ran-tick proves the WATCHDOG ran, not that this
+  // particular collector evaluated its predicate — and silence from a collector
+  // that never looked is not evidence that the condition cleared. Counted per
+  // source so one blind collector cannot excuse another's absence.
+  const unobserved = ctx.unobservedTicksBySource?.get(watchdogSourceOf(c.watchdogKey)) ?? 0;
+  if (ctx.ranTickCount - unobserved < minTicks) {
+    return { close: false, reason: 'insufficient-observed-tick-history' };
+  }
   if (!Number.isFinite(c.createdAtMs) || ctx.nowMs - c.createdAtMs < minAge) {
     return { close: false, reason: 'too-new' };
   }
@@ -166,7 +188,15 @@ type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 export interface AutoCloseDeps {
   listOpen: () => Promise<EngineerIssue[]>;
-  recentRanTickKeys: (n: number) => Promise<{ seenKeys: Set<string>; ranTickCount: number }>;
+  recentRanTickKeys: (
+    n: number,
+  ) => Promise<{
+    seenKeys: Set<string>;
+    ranTickCount: number;
+    /** (WI-40769) Per-source blind-tick counts in the same window. Optional so
+     *  existing test injections keep compiling (absent ⇒ all ticks observed). */
+    unobservedTicksBySource?: Map<string, number>;
+  }>;
   inFlightDispatchIds: (ids: string[]) => Promise<Set<string>>;
   close: (id: string, watchdogKey: string, reason: string) => Promise<void>;
   nowMs: () => number;
@@ -255,15 +285,33 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
     // is 2000 < 17,154, so the cap cannot cover the backlog and the horizon returns.
     listOpen: () => listIssues({ state: 'open', watchdogKeyed: true, limit: 500 }),
     recentRanTickKeys: async (n: number) => {
-      const rows = await sql<{ known_open_keys: string[] }[]>`
-        SELECT known_open_keys
+      // WI-40769: `collectors` comes back alongside the keys so a BLIND tick is
+      // distinguishable from a QUIET one. It is the existing jsonb column — no
+      // migration — and pre-WI-40769 rows simply carry no `observed` field,
+      // which reads as observed:true and preserves the old behaviour exactly.
+      const rows = await sql<{ known_open_keys: string[]; collectors: unknown }[]>`
+        SELECT known_open_keys, collectors
           FROM harness_shared.watchdog_ticks
          WHERE workspace_id = ${workspaceId} AND status = 'ran'
          ORDER BY tick_at DESC
          LIMIT ${n}`;
       const seenKeys = new Set<string>();
-      for (const r of rows) for (const k of r.known_open_keys ?? []) seenKeys.add(k);
-      return { seenKeys, ranTickCount: rows.length };
+      const unobservedTicksBySource = new Map<string, number>();
+      for (const r of rows) {
+        for (const k of r.known_open_keys ?? []) seenKeys.add(k);
+        // Count each source at most ONCE per tick: a source with several
+        // collectors must not subtract more than the one tick it lost.
+        const blindHere = new Set<string>();
+        for (const c of Array.isArray(r.collectors) ? r.collectors : []) {
+          if (!c || typeof c !== 'object') continue;
+          const st = c as { observed?: unknown; unobservedSource?: unknown };
+          if (st.observed !== false) continue;
+          if (typeof st.unobservedSource !== 'string' || !st.unobservedSource) continue;
+          blindHere.add(st.unobservedSource);
+        }
+        for (const s of blindHere) unobservedTicksBySource.set(s, (unobservedTicksBySource.get(s) ?? 0) + 1);
+      }
+      return { seenKeys, ranTickCount: rows.length, unobservedTicksBySource };
     },
     inFlightDispatchIds: async (ids: string[]) => {
       if (ids.length === 0) return new Set();
@@ -377,7 +425,7 @@ export async function processAutoClose(
   const greenResolved = await resolveProvenGreenRedTests(canonical, inFlight, d, opts, out);
 
   // ── Absence-based dedup close (needs enough ran-tick history) ───────────────────────
-  const { seenKeys, ranTickCount } = await d.recentRanTickKeys(minTicks);
+  const { seenKeys, ranTickCount, unobservedTicksBySource } = await d.recentRanTickKeys(minTicks);
   if (ranTickCount >= minTicks) {
     const nowMs = d.nowMs();
     for (const i of canonical) {
@@ -392,7 +440,11 @@ export async function processAutoClose(
         signalOrigin: i.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN,
         inFlightDispatch: inFlight.has(i.id),
       };
-      const decision = decideAutoClose(candidate, { seenKeys, ranTickCount, nowMs }, opts);
+      const decision = decideAutoClose(
+        candidate,
+        { seenKeys, ranTickCount, unobservedTicksBySource, nowMs },
+        opts,
+      );
       if (!decision.close) continue;
       try {
         await d.close(i.id, watchdogKey, decision.reason);

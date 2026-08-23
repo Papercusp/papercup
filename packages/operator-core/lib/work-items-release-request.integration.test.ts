@@ -167,6 +167,33 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     expect(req?.resolution).toBe('holder-released');
   });
 
+  it('terminalized before the deadline → resolves the request as superseded, not as a consequence', async () => {
+    await seedIssue('WI-rr-terminal', { takenBy: 'peer-b' });
+    await rr.setWorkItemReleaseRequest('WI-rr-terminal', {
+      harness: H,
+      by: 'requester',
+      holder: 'peer-b',
+      reason: 'stalled',
+      onSilence: 'reclaim',
+      deadlineAt: Date.now() - 1,
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET status = 'done', updated_ts = ${Date.now()}
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-rr-terminal'`;
+
+    const resolved = await rr.resolveWorkItemReleaseRequest('WI-rr-terminal', {
+      harness: H,
+      resolution: 'consequence-reclaim',
+    });
+
+    expect(resolved).toMatchObject({ resolved: true, resolution: 'superseded' });
+    expect(rr.readWorkItemReleaseRequest(await readPayload('WI-rr-terminal'))).toMatchObject({
+      resolved: true,
+      resolution: 'superseded',
+    });
+  });
+
   it('resolving an item with NO pending request is a no-op (null)', async () => {
     await seedIssue('WI-rr-5', { takenBy: 'peer-b' });
     const res = await rr.resolveWorkItemReleaseRequest('WI-rr-5', { harness: H, resolution: 'holder-released' });

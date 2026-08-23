@@ -616,6 +616,71 @@ describe('buildReleaseTrace', () => {
       expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
     });
 
+    it('keeps the D-016 paused-routine serializer authoritative over historical fixer lineage', () => {
+      // Live shape observed on 2026-08-23: D-012/D-013 deliberately pauses the
+      // routine while WI-40086's D-016 claim-hold/qualified-tip serializer owns
+      // the gate-red-streak sequence. The inactive run-lock is measured idle;
+      // it must not erase the separate live singleton ownership cell.
+      const pausedRun = {
+        active: false,
+        activeSource: 'run-lock' as const,
+        candidate: null,
+        startedAtMs: null,
+        elapsedSec: null,
+        asOfAgeMs: 0,
+      };
+      const out = buildReleaseTrace(
+        input({
+          position: position({
+            positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+            gate: {
+              ...position().gate,
+              observedCandidate: sha,
+              ownership: {
+                assessment: 'held-live',
+                eventKey: 'gate-red-streak:papercusp',
+                workItem: 'WI-40086',
+                claimState: 'held',
+                unknown: null,
+                takenBy: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+                takenAt: '2026-08-23T00:58:23.745Z',
+                expiresAt: null,
+                holderSessionState: 'live',
+                duplicates: [],
+                thread: { recent: [], shown: 0, total: 0, topics: [], unknown: null },
+              },
+              checkpointRunInFlight: pausedRun,
+            },
+          }),
+          gate: {
+            ...redGate({
+              state: 'owner-gone',
+              covered: false,
+              spawnId: 'obsolete-fixer',
+              ownerSignature: 'RED-35',
+              ageMs: 90 * 60_000,
+              label: 'UNOWNED — obsolete release-fixer is CONFIRMED GONE.',
+            }),
+            observedCandidate: sha,
+            checkpointRunInFlight: pausedRun,
+          },
+        }),
+      );
+
+      expect(out.gate.redOwner).toMatchObject({
+        state: 'owned-live',
+        covered: true,
+        ownerSignature: 'gate-red-streak:papercusp',
+      });
+      expect(out.gate.redOwner?.label).toContain('WI-40086');
+      expect(out.gate.redOwner?.label).toContain('su-c58f545d-f8a4-4afe-b755-1bf613bd8083');
+      expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
+      expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+      expect(out.nextVerb?.name).not.toBe('testing:flakiness');
+      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).toContain('WI-40086');
+      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).not.toContain('CONFIRMED GONE');
+    });
+
     it('sends a reader to await the outcome instead of opening a second diagnosis', () => {
       const out = buildReleaseTrace(
         input({

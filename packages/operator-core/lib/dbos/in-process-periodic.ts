@@ -915,6 +915,15 @@ const releaseRequestSweepCheck: PeriodicCheck = {
       const resolved = await resolveWorkItemReleaseRequest(row.id, { harness: row.harness ?? undefined, resolution }).catch(() => null);
       if (!resolved) continue;
 
+      // The resolver can win the request CAS after the item has already settled. In
+      // that case it marks the request superseded, but the announced consequence is
+      // moot: do not release locks, mutate the item, or notify anyone with a false
+      // RECLAIMED/ESCALATED outcome (EI-21205403365070536).
+      if (resolved.resolution === 'superseded') {
+        console.warn(`[release-request-sweep] ${row.id}: consequence suppressed because the item is already terminal`);
+        continue;
+      }
+
       const deadlineIso = new Date(resolved.deadlineAt).toISOString();
       const noteBody =
         `⏰ Release request from ${resolved.by} → ${resolved.holder} EXPIRED unanswered ` +

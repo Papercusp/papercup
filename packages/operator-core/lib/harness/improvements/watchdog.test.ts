@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs'; // EI-20847917368795366: source-pinned WIRING guard
 import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
+import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources'; // WI-40769
 import {
   planWatchdogCaptures,
   collectServiceDownSignals,
@@ -31,6 +32,7 @@ import {
   isLikelyTransientTransformFailure,
   isServiceHealthStale,
   serviceDownCollectorResult,
+  defaultPapercuspCollectors, // WI-40769: the registered-collector source-declaration guard
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
   planSelfEscalations,
   withWatchdogTickLock,
@@ -1454,6 +1456,90 @@ describe('service-down freshness gate (watchdog-robustness P-004)', () => {
     expect(res.note).toMatch(/inline probe failed/);
   });
 
+  // ── WI-40769: the blind paths must DECLARE themselves unobserved ───────────
+  //
+  // A `note` is not enough. Both the sweep and this collector emit notes on paths
+  // that DID observe (the inline-probe fallback carries one), so downstream cannot
+  // tell "I looked and everything is up" from "I never looked" by prose. The
+  // structured `observed:false` + `unobservedSource` pair is what `decideAutoClose`
+  // subtracts from its absence evidence — without it, admitting service-down to
+  // AUTO_CLOSE_ELIGIBLE_SOURCES would let a monitor outage auto-resolve a genuine
+  // open outage row, because both look like six quiet ticks.
+  describe('WI-40769 — blind ticks declare observed:false', () => {
+    const now = 1_000_000;
+
+    it('the legacy skip path declares itself unobserved', async () => {
+      const res = await serviceDownCollectorResult({
+        results: [probe({ name: 'vite', up: false, status: null })],
+        at: now - 200_000,
+        now,
+        maxStaleMs: 120_000,
+        inlineProbe: false,
+      });
+      // Zero signals here means "nothing was probed", NOT "every service is up".
+      expect(res.signals).toEqual([]);
+      expect(res.observed).toBe(false);
+      expect(res.unobservedSource).toBe('service-down');
+    });
+
+    it('the inline-probe-FAILED path declares itself unobserved', async () => {
+      const res = await serviceDownCollectorResult({
+        at: now - 200_000,
+        now,
+        maxStaleMs: 120_000,
+        inlineProbe: true,
+        probe: async () => { throw new Error('probe blew up'); },
+      });
+      // It emits a signal, but that signal is about the MONITOR — every
+      // per-service condition still went unobserved this tick.
+      expect(res.signals).toHaveLength(1);
+      expect(res.observed).toBe(false);
+      expect(res.unobservedSource).toBe('service-down');
+    });
+
+    it('paths that DID observe do not claim to be blind (fresh, and inline-probe success)', async () => {
+      // The other half of the pair: if every path declared itself unobserved,
+      // service-down could never accumulate absence evidence and would never
+      // auto-close — passing the two tests above while defeating the fix.
+      const fresh = await serviceDownCollectorResult({
+        results: [probe({ name: 'vite', up: true })],
+        at: now - 10_000,
+        now,
+        maxStaleMs: 120_000,
+      });
+      expect(fresh.observed).not.toBe(false);
+
+      const inlineOk = await serviceDownCollectorResult({
+        at: now - 200_000,
+        now,
+        maxStaleMs: 120_000,
+        inlineProbe: true,
+        probe: async () => [probe({ name: 'operator' }), probe({ name: 'vite' })],
+      });
+      expect(inlineOk.observed).not.toBe(false);
+    });
+
+    it('the registered service-down collector declares its source, so a THROWN tick is attributable', async () => {
+      // The pairing promised in the AUTO_CLOSE_ELIGIBLE_SOURCES comment: when
+      // `collect()` throws there is no CollectorResult to read `unobservedSource`
+      // from, so the source must come from the registration. Without it a crashed
+      // collector's silence is unattributable and silently counts as "cleared".
+      const collectors = await defaultPapercuspCollectors('papercusp-workspace');
+      const svc = collectors.find((c) => c.name === 'papercusp-service-down');
+      expect(svc).toBeDefined();
+      expect(svc!.source).toBe('service-down');
+
+      // Every auto-close-eligible source whose collector is registered here must
+      // be able to attribute a thrown tick the same way.
+      for (const c of collectors) {
+        const derived = c.name.replace(/^papercusp-/, '');
+        if (!AUTO_CLOSE_ELIGIBLE_SOURCES.has(derived)) continue;
+        if (c.source === undefined) continue; // not yet adopted — see the field's doc
+        expect(c.source).toBe(derived);
+      }
+    });
+  });
+
   // The blind-spot regression guard: a stale snapshot must NEVER produce both
   // zero signals AND no note (the old silent-skip-under-load failure mode).
   it('a STALE snapshot is never fully blind (signals OR a note, both inline modes)', async () => {
@@ -1683,10 +1769,14 @@ describe('runWatchdogTick — tick record (watchdog-robustness P-001)', () => {
       const rec = records[0];
       expect(rec).toMatchObject({ workspaceId: 'ws-1', status: 'ran', signals: 1 });
       expect(rec.captured).toEqual(res.captured);
-      // per-collector status reflects the good + failed collector
+      // per-collector status reflects the good + failed collector.
+      // WI-40769: a collector that THREW observed nothing, so it is stamped
+      // `observed:false` — its silence must not later read as "condition cleared".
+      // No `unobservedSource` here because this test collector declares no
+      // `source`; an unattributable blind tick is recorded but discounts nothing.
       expect(rec.collectors).toEqual([
         { name: 'good', ok: true, signalCount: 1 },
-        { name: 'bad', ok: false, signalCount: 0, error: 'boom' },
+        { name: 'bad', ok: false, signalCount: 0, error: 'boom', observed: false },
       ]);
       expect(rec.selfEscalations).toEqual([]);
     } finally {

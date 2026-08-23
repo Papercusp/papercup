@@ -353,6 +353,31 @@ export interface CollectorStatus {
   error?: string;
   /** Non-error note (e.g. a deliberate skip — `service-down` on a stale snapshot, P-004). */
   note?: string;
+  /**
+   * (WI-40769) FALSE ⇒ this tick produced NO TRUSTWORTHY OBSERVATION of the
+   * collector's condition, so its silence must NOT be read as "the condition
+   * cleared". Absent/true ⇒ the collector genuinely evaluated its predicate.
+   *
+   * This is the difference between the two ways a collector can emit zero
+   * signals, which are otherwise INDISTINGUISHABLE in the tick record:
+   *   - evaluated the predicate and found nothing wrong  → absence IS evidence
+   *   - could not evaluate at all (skipped / probe threw) → absence is NOTHING
+   *
+   * Persisted inside the existing `watchdog_ticks.collectors` jsonb, so this
+   * needs no migration. The auto-close sweep subtracts unobserved ticks from
+   * its absence-evidence count (`recentRanTickKeys`), which is what lets a
+   * source whose collector CAN go blind still be absence-closed safely: it
+   * simply waits for enough ticks where the collector actually looked.
+   */
+  observed?: boolean;
+  /**
+   * (WI-40769) The watchdog SOURCE whose condition went unobserved. Required
+   * whenever `observed:false`, because the sweep discounts absence evidence
+   * PER SOURCE — a blind service-down tick must not also excuse migration-drift.
+   * Declared by the collector rather than derived from its `name`, so the
+   * mapping cannot drift as collectors are renamed.
+   */
+  unobservedSource?: WatchdogSource;
 }
 
 /**
@@ -364,6 +389,10 @@ export interface CollectorStatus {
 export interface CollectorResult {
   signals: WatchdogSignal[];
   note?: string;
+  /** (WI-40769) See `CollectorStatus.observed` — false ⇒ silence proves nothing. */
+  observed?: boolean;
+  /** (WI-40769) See `CollectorStatus.unobservedSource` — required when `observed:false`. */
+  unobservedSource?: WatchdogSource;
 }
 
 /** One durable watchdog-tick record (watchdog-robustness P-001 / D-002). */
@@ -1891,8 +1920,13 @@ export async function serviceDownCollectorResult(opts: {
     const inline = opts.inlineProbe ?? inlineProbeOnStaleEnabled();
     if (!inline) {
       // Legacy fallback (PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE=0): skip.
+      // WI-40769: this is THE blind tick — zero signals because nothing was
+      // probed, not because every service is up. Declared unobserved so the
+      // auto-close sweep cannot read the silence as a recovery.
       return {
         signals: [],
+        observed: false,
+        unobservedSource: 'service-down',
         note:
           `stale-service-health: snapshot ${ageDesc} ` +
           `(> ${Math.round(maxStaleMs / 1000)}s) — skipping service-down collection (the probe workflow may have stopped)`,
@@ -1930,6 +1964,12 @@ export async function serviceDownCollectorResult(opts: {
           severity: 'major' as const,
           findingClass: 'service-down:monitor-degraded',
         }],
+        // WI-40769: the DEGRADED signal above is about the MONITOR, not about
+        // any individual service — every per-service condition went unobserved
+        // this tick. Without this, a monitor outage would look like "every
+        // service recovered" and could auto-close a genuine open outage row.
+        observed: false,
+        unobservedSource: 'service-down',
         note: `stale-service-health: snapshot ${ageDesc} — inline probe failed (${msg})`,
       };
     }
@@ -3523,6 +3563,20 @@ export interface WatchdogCollector {
   /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
   name: string;
   /**
+   * (WI-40769) The watchdog SOURCE this collector owns. Declaring it makes a
+   * FAILED tick attributable: when `collect()` throws, the collector observed
+   * NOTHING, and without a source the sweep cannot tell which source's absence
+   * evidence to discount — so it would silently count the blind tick as
+   * "condition cleared", the exact misread this field exists to prevent.
+   *
+   * OPTIONAL because it only matters for a source in `AUTO_CLOSE_ELIGIBLE_SOURCES`
+   * (nothing else reads absence as evidence). A collector whose source is not
+   * auto-close eligible is unaffected by omitting it. `service-down` declares it
+   * because WI-40769 admits that source to the allowlist; a guard test pins the
+   * pairing so a future admission cannot forget it.
+   */
+  source?: WatchdogSource;
+  /**
    * Collect signals. May return a bare array or a `CollectorResult` to carry a
    * non-error note (P-004). Errors are caught + logged by collectWatchdogSignalsDetailed.
    */
@@ -3583,6 +3637,9 @@ export async function defaultPapercuspCollectors(
     },
     {
       name: 'papercusp-service-down',
+      // WI-40769: declared so a THROWN tick is attributable to this source and
+      // discounted from absence evidence (service-down is auto-close eligible).
+      source: 'service-down',
       collect: () => serviceDownCollectorResult({ maxStaleMs: opts.serviceHealthMaxStaleMs }),
     },
     // P-010 blind-source collectors (each conservative + behind the P-009 per-source budget).
@@ -3895,11 +3952,34 @@ export async function collectWatchdogSignalsDetailed(
       // Normalize a bare array or the richer { signals, note } shape (P-004).
       const out = Array.isArray(s.value) ? { signals: s.value } : s.value;
       signals.push(...out.signals);
-      statuses.push({ name, ok: true, signalCount: out.signals.length, ...(out.note ? { note: out.note } : {}) });
+      statuses.push({
+        name,
+        ok: true,
+        signalCount: out.signals.length,
+        ...(out.note ? { note: out.note } : {}),
+        // WI-40769: carry the blind-tick declaration through to the persisted
+        // tick record. Only stamped when the collector actually declared itself
+        // unobserved, so every existing collector's status shape is unchanged.
+        ...(out.observed === false
+          ? { observed: false, ...(out.unobservedSource ? { unobservedSource: out.unobservedSource } : {}) }
+          : {}),
+      });
     } else {
       const error = s.reason instanceof Error ? s.reason.message : String(s.reason);
       console.warn(`[improvement-watchdog] collector "${name}" failed: ${error}`);
-      statuses.push({ name, ok: false, signalCount: 0, error });
+      // WI-40769: a collector that THREW evaluated nothing, so this tick is not
+      // absence evidence for its source either. Same reasoning as the deliberate
+      // skip above — the two are indistinguishable downstream, and both were
+      // previously counted as "the condition cleared".
+      const threwSource = activeCollectors[i]?.source;
+      statuses.push({
+        name,
+        ok: false,
+        signalCount: 0,
+        error,
+        observed: false,
+        ...(threwSource ? { unobservedSource: threwSource } : {}),
+      });
     }
   }
   // P-006/P-008: drop ephemeral benchmark-instance debris (xbench / *-DELETEME / gym-eval /

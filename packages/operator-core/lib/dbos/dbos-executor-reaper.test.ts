@@ -196,6 +196,15 @@ describe('reapDeadExecutorWorkflows', () => {
     const requeueUpdate = calls.find((c) => c.text.includes('UPDATE harness_shared.routines'))!;
     expect(requeueUpdate.text).toContain("'reaped_count'");
     expect(requeueUpdate.text).toContain("COALESCE((metadata->>'reaped_count')::int, 0) + 1");
+    expect(requeueUpdate.text).toContain("target_role = 'system:git-sync'");
+    expect(requeueUpdate.text).toContain("'git_sync_history'");
+    expect(requeueUpdate.text).toContain("'status', 'reaped'");
+    expect(requeueUpdate.text).toContain("'dirty_path_count', NULL");
+    expect(requeueUpdate.text).toContain("'committed_count', NULL");
+    expect(requeueUpdate.text).toContain("'reaped', true");
+    expect(requeueUpdate.text).toContain('WITH ORDINALITY');
+    expect(requeueUpdate.text).toContain('LIMIT ?');
+    expect(requeueUpdate.values).toContain(30);
   });
 
   it('deduplicates requeued routines from multiple no-output routineFire rows', async () => {

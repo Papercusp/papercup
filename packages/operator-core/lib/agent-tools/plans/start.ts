@@ -450,6 +450,24 @@ export default defineTool({
           promotionError = (error as Error).message;
         }
 
+        let admission: Awaited<ReturnType<typeof import('./plan-admission-preflight').preflightExactPlanAdmission>> | null = null;
+        let admissionError: string | null = null;
+        try {
+          const [{ preflightExactPlanAdmission }, { resolveAgentIdentity }] = await Promise.all([
+            import('./plan-admission-preflight'),
+            import('../coordination/identity'),
+          ]);
+          admission = await preflightExactPlanAdmission({
+            workspaceId: startWorkspaceId,
+            harnessSlug,
+            planSlug: slug,
+            assignee: resolveAgentIdentity(ctx).ownerId,
+            specId: `plans-start-${slug}`,
+          });
+        } catch (error) {
+          admissionError = (error as Error).message;
+        }
+
         const promotionMessage = promotionError
           ? `Item promotion failed: ${promotionError}. The plan approval remains recorded, but no queue outcome can be claimed.`
           : promotion?.specTriadBlocked
@@ -461,6 +479,34 @@ export default defineTool({
                 : promotion
                   ? `Item promotion completed before this response: promoted ${promotion.promoted}, skipped ${promotion.skipped}.`
                   : 'Item promotion returned no outcome; verify claimable work-items before launching a fleet.';
+
+        if (!admission?.ready) {
+          ctxAny.metadata?.({
+            slug,
+            harnessSlug,
+            refused: 'admission_refused',
+            admissionReason: admission?.reason ?? 'lane-unknown',
+          });
+          return {
+            ok: false as const,
+            error: 'admission_refused' as const,
+            slug,
+            harnessSlug,
+            status: axisLive ? 'started' : null,
+            updatedAt: row?.op_updated_at,
+            autoApproved,
+            transitioned,
+            previousOpStatus: row?.prev_op_status ?? null,
+            promotion,
+            ...(promotionError ? { promotionError } : {}),
+            admission,
+            ...(admissionError ? { admissionError } : {}),
+            ...(specQuality ? { specQuality } : {}),
+            ...(checkpointConsult ? { checkpointConsult } : {}),
+            message: `${promotionMessage} ${admission ? admission.message : `Exact-plan admission could not be measured: ${admissionError ?? 'unknown error'}`}`,
+            ...(axisLive ? {} : { opStatusRetired: true as const }),
+          };
+        }
 
         return {
           ok: true as const,
@@ -475,6 +521,7 @@ export default defineTool({
           transitioned,
           previousOpStatus: row?.prev_op_status ?? null,
           promotion,
+          admission,
           ...(promotionError ? { promotionError } : {}),
           ...(specQuality ? { specQuality } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),

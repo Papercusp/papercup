@@ -48,6 +48,12 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
       'Where plans live — author them, review their items, and launch them. A plan here is the same durable object agents work from in the terminal.',
   },
   {
+    id: 'automations',
+    label: 'Automations',
+    blurb:
+      'The workspace-wide automation catalog — triggered plans, AI routines, and system tasks in one place, with their schedules, event sources, recent activity, and controls.',
+  },
+  {
     id: 'calendar',
     label: 'Calendar',
     blurb:

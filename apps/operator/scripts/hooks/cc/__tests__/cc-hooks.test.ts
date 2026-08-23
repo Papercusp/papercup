@@ -222,7 +222,7 @@ describe("cc PostToolUse locks-release hook — operator-independent paths", () 
     expect(r.stdout).toBe("");
   });
 
-  it("connection-refused is retried (bounded) before failing open — a transient restart-window refuse does not strand the lock for the full TTL", () => {
+  it("connection-refused is retried (bounded) and preserves recovery sidecars after an unconfirmed release", () => {
     const tuId = "release-retry-tu";
     fs.writeFileSync(join(cache, `${tuId}.lock`), "lock-abc\n");
     fs.writeFileSync(join(cache, `${tuId}.paths`), JSON.stringify(["a.ts"]));
@@ -235,9 +235,11 @@ describe("cc PostToolUse locks-release hook — operator-independent paths", () 
     expect(r.status).toBe(0); // release is always best-effort — never blocks the turn
     expect(r.stdout).toBe("");
     expect(elapsed).toBeGreaterThan(1500); // proves the retry loop actually ran
-    // Best-effort cleanup still happens even on a final failure (TTL covers the rest).
-    expect(fs.existsSync(join(cache, `${tuId}.lock`))).toBe(false);
-    expect(fs.existsSync(join(cache, `${tuId}.paths`))).toBe(false);
+    // EI-211603: an HTTP/transport failure is not a confirmed release. Keep the
+    // token + paths so the parent exec-completion recovery can retry instead of
+    // silently stranding the server-side lock until TTL.
+    expect(fs.existsSync(join(cache, `${tuId}.lock`))).toBe(true);
+    expect(fs.existsSync(join(cache, `${tuId}.paths`))).toBe(true);
     const marker = join(cache, "last-error.json");
     expect(fs.existsSync(marker)).toBe(true);
     expect(JSON.parse(fs.readFileSync(marker, "utf8")).handler).toBe(

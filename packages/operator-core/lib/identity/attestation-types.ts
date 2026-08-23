@@ -114,10 +114,17 @@ export type AttestationFailureReason =
 /**
  * Default cache TTL for verified attestations per memo §"Cache
  * hit/miss" (24h). Verifier helpers cache successful verifications
- * for this duration; failures aren't cached (they re-verify on next
- * use so revocation is fast).
+ * for this duration.
  */
 export const ATTESTATION_VERIFY_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+/**
+ * Cache TTL for conclusive negative verification results. A short TTL
+ * collapses repeated reads of known-invalid duplicate gists while keeping
+ * an invalid → valid transition bounded to one minute. Inconclusive API
+ * failures are never cached (see `github_api_unavailable`).
+ */
+export const ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS = 60 * 1000; // 60s
 
 /**
  * Gist filename convention. Exported so the publish + verify paths

@@ -97,9 +97,7 @@ const CLASSIFICATION: Record<string, SurfaceClaim> = {
   '_retired/snapshot-system/': 'retired',
   '_retired/legacy-web-chats/': 'retired',
   '_retired/harness-dashboard/': 'retired',
-  '_retired/inbox-pane/': 'retired',
   '_retired/work-item-mail/': 'retired',
-  'InboxPane.tsx': 'retired',
   // The Mug/Kettle left-rail tier. Retired by RELOCATION, not by gate: P-068
   // (`retire-mug-kettle-su-only-2026-08-09`) deleted `MUG_KETTLE_SYSTEM` outright, so
   // the doc no longer describes a flippable flag and this directory is where the
@@ -123,7 +121,6 @@ const CLASSIFICATION: Record<string, SurfaceClaim> = {
   'OperatorChatSidebar.component.test.tsx': 'live',
   'production-defaults.test.ts': 'live',
   'apps/operator/app/harness/': 'live',
-  'use-inbox-pending.ts': 'live',
   'agent-tools/coordination/messages.ts': 'live',
   // the guards the section names as the real enforcement — a doc claiming a guard
   // that no longer exists is the defect one level up (the `lint:no-retired` case)
@@ -187,9 +184,9 @@ describe('extractRetiredSurfaceClaims — fixture controls', () => {
   });
 
   it('POSITIVE CONTROL: fires when a LIVE counter-example has quietly been retired', () => {
-    const fixture = heading + 'the `InboxPane.tsx` data layer stays live.\n';
+    const fixture = heading + 'the `OracleDock.tsx` data layer stays live.\n';
     const got = extractRetiredSurfaceClaims(fixture, resolver);
-    const verdict = judgeRetiredSurfaceClaims(got, { 'InboxPane.tsx': 'live' });
+    const verdict = judgeRetiredSurfaceClaims(got, { 'OracleDock.tsx': 'live' });
     expect(verdict.violations).toHaveLength(1);
     expect(verdict.violations[0].message).toMatch(/named as a LIVE counter-example/);
   });

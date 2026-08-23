@@ -409,10 +409,11 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
-  it('EI-21096441920219468: a live-held dirty path defers the whole repo commit group and preserves holder intent', async () => {
+  it('WI-40770: a live-held dirty path stays excluded while the unlocked remainder syncs', async () => {
     writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
 
+    const logs: string[] = [];
     const out = await runGitSync('test', {
       repoPath: repo,
       config: cfg,
@@ -422,23 +423,49 @@ describe('runGitSync (real git, no submodule)', () => {
         owner: 'su-peer',
         intent: 'editing the source half of an atomic change',
       }],
+      log: (message) => logs.push(message),
     });
 
-    expect(out.status).toBe('skipped-locked');
-    if (out.status === 'skipped-locked') {
-      expect(out.skippedPaths).toEqual([{
-        scope: 'superproject',
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toEqual([{
+      scope: 'superproject',
+      path: 'file.txt',
+      owner: 'su-peer',
+      intent: 'editing the source half of an atomic change',
+    }]);
+    expect(logs.join('\n')).toContain('committing the unlocked remainder');
+
+    // The protected edit remains local, while unrelated finished work reaches origin.
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/file\.txt/);
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).not.toMatch(/normal\.txt/);
+  });
+
+  it('WI-40770: a repo with only live-held dirty paths still reports skipped-locked', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      // Holder provenance alone is sufficient to protect the path; callers cannot
+      // accidentally omit the parallel exclusion projection and commit through a lock.
+      liveLockHoldings: [{
         path: 'file.txt',
         owner: 'su-peer',
         intent: 'editing the source half of an atomic change',
-      }]);
-    }
+      }],
+    });
 
-    // Atomic deferral: the unlocked sibling must not land by itself. Both edits remain
-    // available for the next sweep after the live holder releases its lock.
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
-    expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/file\.txt/);
-    expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/normal\.txt/);
+    expect(out.status).toBe('skipped-locked');
+    expect(out.skippedPaths).toEqual([{
+      scope: 'superproject',
+      path: 'file.txt',
+      owner: 'su-peer',
+      intent: 'editing the source half of an atomic change',
+    }]);
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
   it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {

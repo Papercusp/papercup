@@ -22,6 +22,8 @@ import { checkScript, ensureParseCheckReady } from '@papercusp/tooldef';
 import {
   upsertRecipe,
   recordRecipeRun,
+  getRecipe,
+  findActiveRecipeByStructuralFingerprint,
   isLowValueRecipe,
   type CodeRecipeRow,
 } from '../../code-recipes-store';
@@ -169,8 +171,12 @@ export interface CaptureRecipeInput {
 }
 
 export interface CaptureRecipeResult {
-  /** The upserted recipe row. */
+  /** The created candidate, or the existing candidate selected by trace dedup. */
   row: CodeRecipeRow;
+  /** How this execution was attached to the candidate. */
+  disposition: RecipeCaptureDisposition;
+  /** Similarity for a near-match reuse; null for exact/new captures. */
+  matchedSimilarity: number | null;
   /**
    * Top-N prior recipes that ALREADY do something similar (semantic + structural
    * dedup, P-004 / D-003). SOFT/ADVISORY — surfaced in the code:run result so the
@@ -179,6 +185,50 @@ export interface CaptureRecipeResult {
    * recipe itself.
    */
   similarRecipes: SimilarRecipe[];
+}
+
+export const RECIPE_CAPTURE_NEAR_DUPLICATE_THRESHOLD = 0.8;
+
+export type RecipeCaptureDisposition =
+  | 'created'
+  | 'exact-fingerprint-reuse'
+  | 'near-similarity-reuse';
+
+export interface RecipeCaptureTarget {
+  id: string;
+  disposition: RecipeCaptureDisposition;
+  matchedSimilarity: number | null;
+}
+
+/** Deterministic P-014 target selection: exact structure, then strongest near
+ * match above the existing merge threshold, otherwise a new candidate. */
+export function selectRecipeCaptureTarget(input: {
+  proposedId: string;
+  exactRecipeId?: string | null;
+  similarRecipes: ReadonlyArray<Pick<SimilarRecipe, 'id' | 'similarity'>>;
+  nearDuplicateThreshold?: number;
+}): RecipeCaptureTarget {
+  if (input.exactRecipeId) {
+    return {
+      id: input.exactRecipeId,
+      disposition: 'exact-fingerprint-reuse',
+      matchedSimilarity: null,
+    };
+  }
+
+  const threshold = input.nearDuplicateThreshold ?? RECIPE_CAPTURE_NEAR_DUPLICATE_THRESHOLD;
+  const near = input.similarRecipes
+    .filter((candidate) => candidate.id !== input.proposedId && candidate.similarity >= threshold)
+    .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id))[0];
+  if (near) {
+    return {
+      id: near.id,
+      disposition: 'near-similarity-reuse',
+      matchedSimilarity: near.similarity,
+    };
+  }
+
+  return { id: input.proposedId, disposition: 'created', matchedSimilarity: null };
 }
 
 /**
@@ -220,9 +270,24 @@ export async function captureRecipe(
     // Compute the embedding ONCE and reuse it for both dedup + the upsert.
     const embedding = await deps.embed(`${title}\n${description}`).catch(() => null);
 
-    // DEDUP (SOFT, P-004): rank prior recipes BEFORE the upsert (exclude the new
-    // id so a re-run never matches itself). Best-effort — a failure must not break
-    // the run, so degrade to [].
+    // P-014: exact normalized structure reuses the established active candidate.
+    // This indexed lookup rides the P-013 run ledger; failure remains soft so a
+    // capture still falls through to hybrid matching / creation.
+    let exactRecipe: CodeRecipeRow | null = null;
+    if (input.executionTrace?.structuralFingerprint) {
+      try {
+        exactRecipe = await findActiveRecipeByStructuralFingerprint(
+          deps.sql,
+          input.executionTrace.structuralFingerprint,
+        );
+      } catch (err) {
+        log(`code:run recipe fingerprint dedup failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+      }
+    }
+
+    // DEDUP (SOFT, P-004/P-014): rank prior recipes before creating anything.
+    // When exact structure already picked a target, exclude that candidate from
+    // the advisory search so the remaining results stay useful.
     let similarRecipes: SimilarRecipe[] = [];
     try {
       const sourceAuthority = await deriveRecipeAuthority(input.script);
@@ -233,7 +298,7 @@ export async function captureRecipe(
           description,
           toolsUsed,
           embedding,
-          excludeId: id,
+          excludeId: exactRecipe?.id ?? id,
           limit: 5,
           recommendationContext: recipeAuthorityContextFromDescriptor(sourceAuthority, {
             workspace: input.workspaceId,
@@ -246,34 +311,53 @@ export async function captureRecipe(
       log(`code:run recipe dedup failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
     }
 
-    // P-004: don't SURFACE low-value recipes for reuse — a ≤1-tool wrapper or an
-    // auto-derived-title throwaway is noise to suggest re-running (the agent can call the
-    // one tool directly). They still capture (D-012) + age out via the weekly sweep; they
-    // just don't pollute the code:run reuse nudge.
-    similarRecipes = similarRecipes.filter((r) => !isLowValueRecipe(r));
-
-    const row = await upsertRecipe(deps.sql, {
-      id,
-      title,
-      description,
-      script: input.script,
-      authorRole: input.role,
-      toolsUsed,
-      embedding,
-      createdBy: input.ownerId,
-      potSlug,
+    let target = selectRecipeCaptureTarget({
+      proposedId: id,
+      exactRecipeId: exactRecipe?.id,
+      similarRecipes,
     });
 
+    // Reusing a cross-title exact/near candidate must not overwrite its canonical
+    // title/script with the latest concrete binding values. The execution row is
+    // the update: it moves usage counters and retains the new normalized trace.
+    // A candidate can disappear between the advisory read and this fetch; fall
+    // back to creating the proposed candidate instead of losing capture.
+    let row = target.disposition === 'created'
+      ? null
+      : exactRecipe?.id === target.id
+        ? exactRecipe
+        : await getRecipe(deps.sql, target.id);
+    if (!row || row.status !== 'active') {
+      target = { id, disposition: 'created', matchedSimilarity: null };
+      row = await upsertRecipe(deps.sql, {
+        id,
+        title,
+        description,
+        script: input.script,
+        authorRole: input.role,
+        toolsUsed,
+        embedding,
+        createdBy: input.ownerId,
+        potSlug,
+      });
+    }
+
     await recordRecipeRun(deps.sql, {
-      recipeId: id,
+      recipeId: row.id,
       workspaceId: input.workspaceId,
       potSlug,
       agentOwner: input.ownerId,
       agentRole: input.role,
       success: true,
-      reused: false,
+      reused: target.disposition !== 'created',
       executionTrace: input.executionTrace,
     });
+
+    // P-004: don't SURFACE the selected target (already represented by
+    // disposition/recipeId) or low-value wrappers. They still capture and count;
+    // they simply do not pollute the advisory reuse nudge.
+    similarRecipes = similarRecipes.filter((candidate) =>
+      candidate.id !== row.id && !isLowValueRecipe(candidate));
 
     // Live-update the /admin/recipes dashboard (code-recipes-2026-06-21 P-009):
     // a fresh capture / re-run shifts the recipe list AND the candidate worklist,
@@ -281,7 +365,12 @@ export async function captureRecipe(
     // capture helper stays PG-only and unit-testable without the sync-sse bus.
     await notifyRecipesChanged(log);
 
-    return { row, similarRecipes };
+    return {
+      row,
+      disposition: target.disposition,
+      matchedSimilarity: target.matchedSimilarity,
+      similarRecipes,
+    };
   } catch (err) {
     log(`code:run recipe capture failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
     return null;

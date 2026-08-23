@@ -8,6 +8,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND,
+  MEMORY_WATCHDOG_LIMIT_MB_REQUEST,
+} from './memory-watchdog';
+import { resolveClusterWorkers } from './cluster-fork';
 
 const dropInPath = fileURLToPath(
   new URL('../../../apps/operator/scripts/systemd/papercup-dev-api.service.d/55-memory-envelope.conf', import.meta.url),
@@ -18,6 +23,16 @@ function directive(text: string, name: string): string | undefined {
     .split('\n')
     .map((line) => line.trim())
     .find((line) => line.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+}
+
+function environmentValue(text: string, name: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('Environment='))
+    .map((line) => line.slice('Environment='.length))
+    .find((assignment) => assignment.startsWith(`${name}=`))
     ?.slice(name.length + 1);
 }
 
@@ -40,5 +55,23 @@ describe('papercup-dev-api service memory envelope (EI-20340243384897336)', () =
     expect(swapMaxGiB).toBe(16);
     expect(highGiB).toBeLessThan(maxGiB);
     expect(swapMaxGiB).toBeLessThan(highGiB);
+  });
+
+  it('caps the cluster so every process at its recycle ceiling stays below MemoryHigh', () => {
+    const highMiB = Number.parseInt(directive(dropIn, 'MemoryHigh') ?? '', 10) * 1024;
+    const workers = Number(environmentValue(dropIn, 'PAPERCUSP_CLUSTER_WORKERS'));
+    const expectedProcesses = Number(environmentValue(dropIn, 'PAPERCUSP_EXPECTED_OPERATOR_PROCS'));
+    const aggregateRecycleCeilingMiB =
+      MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND + workers * MEMORY_WATCHDOG_LIMIT_MB_REQUEST;
+
+    expect(workers).toBe(10);
+    expect(expectedProcesses).toBe(workers + 1);
+    expect(
+      resolveClusterWorkers(
+        { PAPERCUSP_CLUSTER: '16', PAPERCUSP_CLUSTER_WORKERS: String(workers) },
+        32,
+      ),
+    ).toBe(workers);
+    expect(highMiB - aggregateRecycleCeilingMiB).toBeGreaterThanOrEqual(4 * 1024);
   });
 });

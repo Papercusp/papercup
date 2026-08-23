@@ -105,6 +105,21 @@ describe('release-request-sweep check', () => {
     expect(notifyAttention).not.toHaveBeenCalled();
   });
 
+  it('terminalized before the deadline — superseded CAS produces no consequence side effects', async () => {
+    const row = dueRow({ onSilence: 'reclaim' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'superseded' });
+
+    await check.tick();
+
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
+    expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(notifyAttention).not.toHaveBeenCalled();
+  });
+
   it('onSilence:"escalate" — CAS wins → pages the owner, item is NEVER released', async () => {
     const row = dueRow({ onSilence: 'escalate' });
     findDueReleaseRequests.mockResolvedValue([row]);

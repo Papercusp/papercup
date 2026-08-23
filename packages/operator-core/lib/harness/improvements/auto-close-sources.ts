@@ -116,6 +116,36 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // already-recovered routine. The open-dup guard only suppresses a re-file WHILE one is
   // open, so draining one merely clears the way for the next.
   'routine-failure',
+  // WI-40769: ADMITTED, and the two things that previously made it unsafe are now
+  // both closed. Before this, service-down could be RAISED but never LOWERED —
+  // measured 2026-08-23: `service-down:operator` (EI-20100362973577553) open 12
+  // days asserting nothing is listening while the operator answered 200 in 86ms,
+  // and `service-down:staging-api` (EI-19478400954666484) open 19 days. Three of
+  // the five non-terminal service-down rows all-time were stale in exactly this
+  // way. Note the defect was never OVER-FILING — `payload.watchdogKey` dedup works
+  // (one open row per service, not a flood); it was that a filed row had no path
+  // back to closed, so a self-clearing outage became permanent claimable backlog.
+  //
+  // 1. THE COLLECTOR NO LONGER GOES BLIND SILENTLY. `serviceDownCollectorResult`
+  //    used to skip collection on a stale service-health snapshot (the P-004
+  //    freshness gate), which is what the `migration-drift` entry above cites as
+  //    the disqualifier. It now runs a fresh bounded `probeAll()` INLINE on a
+  //    stale snapshot and emits off that, and if the inline probe itself throws it
+  //    emits a LOUD `service-down:monitor-degraded` signal. So it degrades loud,
+  //    not silent — the same property that qualified migration-drift. Measured
+  //    over 3 days: 288 ran-ticks, 286 clean, 2 on the inline-probe fallback, 0 on
+  //    the legacy skip.
+  // 2. THE REMAINING BLIND PATHS ARE NOW DECLARED, NOT INFERRED. The legacy skip
+  //    (PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE=0) and the inline-probe
+  //    failure both return `observed:false, unobservedSource:'service-down'`, and
+  //    `decideAutoClose` subtracts those ticks from the absence evidence. So a
+  //    monitor outage can no longer read as "every service recovered" — the sweep
+  //    waits for ticks where the collector actually looked.
+  //
+  // ⚠ Do NOT re-add a source here on the strength of (1) alone. It is (2) that
+  // makes a can-go-blind collector safe: without a declared unobserved tick, a
+  // quiet tick and a blind tick are INDISTINGUISHABLE in the tick record.
+  'service-down',
 ]);
 
 /** The same evidence window used by the auto-close sweep and its claim floor. */

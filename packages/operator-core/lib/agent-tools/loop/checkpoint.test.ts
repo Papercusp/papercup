@@ -175,6 +175,7 @@ const {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
+  CARRY_ROW_SOFT_CAPS,
   CARRY_ROW_ID_MAX,
 } = await import('../../carry-note');
 
@@ -1029,6 +1030,21 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(b.repairs).toHaveLength(1);
       expect(b.repairs[0]).toMatchObject({ field: 'checks[0].recheck', kind: 'truncated' });
       expect(b.repairs[0].detail).toContain('360');
+    });
+
+    it('publishes each row soft cap alongside its hard input backstop', () => {
+      type JsonNode = { [key: string]: unknown };
+      const schema = (tool.args as unknown as { toJSONSchema: () => unknown }).toJSONSchema() as JsonNode;
+      const properties = ((schema.properties as JsonNode).checks as JsonNode).items as JsonNode;
+      const rowProperties = properties.properties as Record<string, JsonNode>;
+
+      for (const [field, softCap] of Object.entries(CARRY_ROW_SOFT_CAPS)) {
+        expect(rowProperties[field]).toMatchObject({
+          maxLength: softCap * CARRY_CAP_HARD_MULTIPLE,
+          'x-soft-maxLength': softCap,
+        });
+        expect(rowProperties[field].description).toContain(`Soft cap: ${softCap} chars`);
+      }
     });
 
     it('truncates an overlong narrative field to the soft cap rather than rejecting the call', async () => {

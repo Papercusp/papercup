@@ -410,6 +410,11 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
+  // withPlanLock opens the short transaction that owns the advisory lock and
+  // read-modify-write. The bulk handler can run several items and its revision /
+  // federation hooks run after commit, so an ambient dispatcher transaction would
+  // sit idle across that work and hit idle_in_transaction_session_timeout.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,

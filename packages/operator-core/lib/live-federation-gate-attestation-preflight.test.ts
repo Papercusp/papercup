@@ -284,13 +284,11 @@ describe('live-federation gate GitHub REST preflight', () => {
     expect(result.stdout).toContain('user=aviynw code=unhealthy http=403 attempts=3');
   });
 
-  it('leaves a missing token to the smoke while still probing the other identity', () => {
+  it('fails closed on a missing token while still probing the other identity', () => {
     const result = runGithubRestPreflight({ missingUser: 'aviynw' });
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(1);
     expect(result.calls).toEqual(['papercupai']);
-    expect(result.stdout).toContain(
-      'user=aviynw code=token_missing detail=no-gh-token; smoke-will-surface',
-    );
+    expect(result.stdout).toContain('user=aviynw code=token_missing detail=no-gh-token');
   });
 
   it('runs before the build and again after content-matrix but before from-repo', () => {

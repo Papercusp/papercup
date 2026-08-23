@@ -55,7 +55,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     ]);
     const res = await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
 
-    expect(res).toEqual({ committedAny: true });
+    expect(res).toEqual({ committedAny: true, committedCount: 1 });
     // staged exactly ag1's files (sorted), nothing about c.ts
     const add = calls.find((c) => c[0] === 'add');
     expect(add).toEqual(['add', '--', 'a.ts', 'b.ts']);
@@ -86,7 +86,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
   it('is a no-op when nothing is attributed (flag-OFF degradation): no add, no commit', async () => {
     const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0 M b.ts\0' });
     const res = await commitAttributedGroups(runGit, '/repo', new Map(), [], MSG);
-    expect(res).toEqual({ committedAny: false });
+    expect(res).toEqual({ committedAny: false, committedCount: 0 });
     expect(calls.some((c) => c[0] === 'add' || c.includes('commit'))).toBe(false);
   });
 
@@ -112,7 +112,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
 
     const { runGit: g2 } = fakeGit({ porcelain: ' M a.ts\0', commitResults: [{ code: 1, stdout: 'nothing to commit' }] });
     const res2 = await commitAttributedGroups(g2, '/repo', attribution, [], MSG);
-    expect(res2).toEqual({ committedAny: false }); // benign — no error
+    expect(res2).toEqual({ committedAny: false, committedCount: 0 }); // benign — no error
   });
 
   it('emits Papercusp-Agent/Work-Item/Session/Plan trailers when the attribution carries them (P-004 attribution)', async () => {

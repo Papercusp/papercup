@@ -1105,7 +1105,13 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
 export function planSharedHiveCapture(
   incident: MonitorIncident,
   harness: string,
-): { title: string; severity: 'critical' | 'major' | 'minor' | 'nit'; watchdogKey: string } {
+): { title: string; severity: 'critical' | 'major' | 'minor' | 'nit'; watchdogKey: string } | null {
+  // Returning an orphaned claim to the backlog is the monitor's intended,
+  // healthy recovery path—not a defect. Keep the incident available to the
+  // caller for the holder notification below, but do not manufacture a
+  // permanent backlog bug for every successful sweep.
+  if (incident.kind === 'orphaned-taken-by') return null;
+
   // Per-(kind, harness) so two scopes breaching the same way in one pass are two
   // signals. Built here rather than at the call site so title and identity cannot
   // drift apart — a per-harness title with a shared key is the same bug again.
@@ -1130,12 +1136,6 @@ export function planSharedHiveCapture(
     case 'presence-ghost':
       return {
         title: `shared-hive invariant: presence ghost anchoring live leases in ${harness}`,
-        severity: 'minor',
-        watchdogKey: key,
-      };
-    case 'orphaned-taken-by':
-      return {
-        title: `shared-hive invariant: orphaned taken_by swept in ${harness}`,
         severity: 'minor',
         watchdogKey: key,
       };
@@ -1356,21 +1356,23 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
         residentInProcess,
         fileIncident: async (incident) => {
           const plan = planSharedHiveCapture(incident, scope.harness_slug);
-          await captureImprovement({
-            title: plan.title,
-            kind: 'bug',
-            severity: plan.severity,
-            dedupScope: 'open',
-            // EI-20579195481991931: without this, the second scope to breach in a
-            // pass is declined as a hard-semantic duplicate of the first (see
-            // planSharedHiveCapture). Same key across ticks still dedups exactly.
-            watchdogKey: plan.watchdogKey,
-            foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
-            subTopic: 'shared-hive',
-            body: `${incident.title}\n\nForensics: ${JSON.stringify(incident.detail)}\n(shared-hive-loop-e2e-testing-2026-06-10 P-012/P-013; check source: packages/operator-core/lib/shared-pot-loop/fleet-monitors.ts.)`,
-          }).catch(() => {
-            /* a capture failure must not abort the remaining incidents */
-          });
+          if (plan) {
+            await captureImprovement({
+              title: plan.title,
+              kind: 'bug',
+              severity: plan.severity,
+              dedupScope: 'open',
+              // EI-20579195481991931: without this, the second scope to breach in a
+              // pass is declined as a hard-semantic duplicate of the first (see
+              // planSharedHiveCapture). Same key across ticks still dedups exactly.
+              watchdogKey: plan.watchdogKey,
+              foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
+              subTopic: 'shared-hive',
+              body: `${incident.title}\n\nForensics: ${JSON.stringify(incident.detail)}\n(shared-hive-loop-e2e-testing-2026-06-10 P-012/P-013; check source: packages/operator-core/lib/shared-pot-loop/fleet-monitors.ts.)`,
+            }).catch(() => {
+              /* a capture failure must not abort the remaining incidents */
+            });
+          }
           // WI-39736 fix property 2 — an involuntary release must NOTIFY the holder,
           // not only leave an audit trail. The filed improvement above is a backlog
           // row nobody reads in time; the holder is the one party who is, right now,

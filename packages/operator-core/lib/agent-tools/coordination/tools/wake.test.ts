@@ -36,13 +36,29 @@ describe('coord:wake', () => {
     wakeRecipients.mockResolvedValue({ targets: ['su-bee-FULL'], keys: [], woken: 1, staged: 0 });
   });
 
-  it('resolves the handle and fires the inbox-wake key, reporting woken', async () => {
+  it('resolves the handle and reports a queued wake without claiming pickup', async () => {
     const res = out(await wake.handler({ to: 'su-bee' } as never, ctx));
     expect(resolveRecipients).toHaveBeenCalled();
     // wakeRecipients fired on the RESOLVED full ownerId
     expect(wakeRecipients.mock.calls[0][0]).toEqual(['su-bee-FULL']);
-    expect(res).toMatchObject({ ok: true, to: 'su-bee-FULL', woken: 1 });
-    expect(res.warning).toBeUndefined();
+    expect(res).toMatchObject({
+      ok: true,
+      to: 'su-bee-FULL',
+      queued: 1,
+      woken: 0,
+      pickupConfirmed: false,
+    });
+    expect(res.warning).toMatch(/pickup is NOT confirmed/i);
+  });
+
+  it('keeps queued count separate from the execution-confirmed pickup field', async () => {
+    wakeRecipients.mockResolvedValue({ targets: ['su-bee-FULL'], keys: [], woken: 2, staged: 0 });
+
+    const res = out(await wake.handler({ to: 'su-bee' } as never, ctx));
+
+    expect(res.queued).toBe(2);
+    expect(res.woken).toBe(0);
+    expect(res.pickupConfirmed).toBe(false);
   });
 
   it('passes the note as the wake summary when given', async () => {
@@ -61,7 +77,9 @@ describe('coord:wake', () => {
     resolveRecipients.mockResolvedValue({ resolved: ['su-dead'], unknown: [], ambiguous: [] });
     reportIdleRecipients.mockResolvedValue({ idle: ['su-dead'], live: [], unknown: [], degraded: false });
     const res = out(await wake.handler({ to: 'su-dead' } as never, ctx));
+    expect(res.queued).toBe(0);
     expect(res.woken).toBe(0);
+    expect(res.pickupConfirmed).toBe(false);
     expect(res.recipient_dead).toEqual(['su-dead']);
     expect(res.warning).toMatch(/RELAUNCH|relaunch/);
   });
@@ -71,7 +89,9 @@ describe('coord:wake', () => {
     resolveRecipients.mockResolvedValue({ resolved: ['su-paused'], unknown: [], ambiguous: [] });
     reportIdleRecipients.mockResolvedValue({ idle: [], live: ['su-paused'], unknown: [], degraded: false });
     const res = out(await wake.handler({ to: 'su-paused' } as never, ctx));
+    expect(res.queued).toBe(0);
     expect(res.recipient_dead).toBeUndefined();
+    expect(res.pickupConfirmed).toBe(false);
     expect(res.warning).toMatch(/confirm/i);
   });
 
@@ -86,7 +106,9 @@ describe('coord:wake', () => {
       degraded: false,
     });
     const res = out(await wake.handler({ to: 'su-loopy' } as never, ctx));
+    expect(res.queued).toBe(0);
     expect(res.recipient_dead).toBeUndefined();
+    expect(res.pickupConfirmed).toBe(false);
     expect(res.recipient_dormant_scheduled).toEqual([
       { ownerId: 'su-loopy', parked: false, nextFireAt: '2026-07-26T06:33:29.794Z' },
     ]);

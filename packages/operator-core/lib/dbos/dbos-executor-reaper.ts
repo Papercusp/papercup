@@ -85,6 +85,8 @@ const DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS = (() => {
 })();
 /** How often the recurring sweep runs. */
 const DEFAULT_REAP_INTERVAL_MS = 2 * 60 * 1000; // 2 min
+/** Keep enough reaped/completed ticks to cover the git-sync stall alarm window. */
+const GIT_SYNC_HISTORY_LIMIT = 30;
 
 export interface ExecutorReaperResult {
   /** Stuck PENDING/ENQUEUED workflows cancelled (dedup freed). */
@@ -360,6 +362,7 @@ export async function reapDeadExecutorWorkflows(
         // it (git-sync's recordOutcome, and the clear below drops it) — so persistent
         // reaping is a durable, queryable signal the git-sync-stall-watchdog alarms on
         // (paired with the fire_started_at breadcrumb the fire stamps at its top).
+        const reapedAt = Date.now();
         await sql`
           UPDATE harness_shared.routines
              SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now()),
@@ -373,7 +376,35 @@ export async function reapDeadExecutorWorkflows(
                         'dbos-executor-reaper',
                         'reaped_count',
                         COALESCE((metadata->>'reaped_count')::int, 0) + 1
-                      ),
+                      )
+                   || CASE
+                        WHEN target_role = 'system:git-sync' THEN jsonb_build_object(
+                          'git_sync_history',
+                          COALESCE((
+                            SELECT jsonb_agg(item ORDER BY ord)
+                              FROM (
+                                SELECT item, ord
+                                  FROM jsonb_array_elements(
+                                    (CASE
+                                       WHEN jsonb_typeof(metadata->'git_sync_history') = 'array'
+                                         THEN metadata->'git_sync_history'
+                                       ELSE '[]'::jsonb
+                                     END) || jsonb_build_array(jsonb_build_object(
+                                       'ts', ${reapedAt},
+                                       'status', 'reaped',
+                                       'dirty_path_count', NULL,
+                                       'committed_count', NULL,
+                                       'error', 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
+                                       'reaped', true
+                                     ))
+                                  ) WITH ORDINALITY AS history(item, ord)
+                                 ORDER BY ord DESC
+                                 LIMIT ${GIT_SYNC_HISTORY_LIMIT}
+                              ) AS retained
+                          ), '[]'::jsonb)
+                        )
+                        ELSE '{}'::jsonb
+                      END,
                  updated_at = now()
            WHERE id = ANY(${requeueRoutineIds})
              AND active = true`;

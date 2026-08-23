@@ -1238,6 +1238,26 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(loopVerdict(id)).toBe(expected);
         }
       });
+
+      it('publishes the same soft row caps as loop:checkpoint while retaining the hard backstop', async () => {
+        type JsonNode = { [key: string]: unknown };
+        const schemaOf = (candidate: unknown) => {
+          const args = (candidate as { args: { toJSONSchema: () => unknown } }).args;
+          const schema = args.toJSONSchema() as JsonNode;
+          const checks = (schema.properties as JsonNode).checks as JsonNode;
+          return ((checks.items as JsonNode).properties as Record<string, JsonNode>);
+        };
+        const loopCheckpoint = (await import('../loop/checkpoint')).default;
+        const workItemRows = schemaOf(checkpoint);
+        const loopRows = schemaOf(loopCheckpoint);
+
+        for (const field of ['claim', 'recheck', 'verified'] as const) {
+          const softCap = CARRY_ROW_SOFT_CAPS[field];
+          const expected = { maxLength: softCap * CARRY_CAP_HARD_MULTIPLE, 'x-soft-maxLength': softCap };
+          expect(workItemRows[field]).toMatchObject(expected);
+          expect(loopRows[field]).toMatchObject(expected);
+        }
+      });
     });
 
     // P-013 (EI-20281899810081153) moved the DEFAULT to rowsMode:'merge' on BOTH

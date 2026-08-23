@@ -387,6 +387,8 @@ describe('code:run → recipe capture (P-003)', () => {
         script: 'return { kept: true };',
         updatedAt: '2026-08-22T20:00:00.000Z',
       } as never,
+      disposition: 'created',
+      matchedSimilarity: null,
       similarRecipes: [],
     });
     const metadata = vi.fn();
@@ -409,6 +411,7 @@ describe('code:run → recipe capture (P-003)', () => {
       recipeCacheHit: false,
       recipeCandidateCount: 0,
       recipeId: 'metric-recipe',
+      recipeCaptureDisposition: 'created',
     });
     expect(stamped.recipeRevision).toMatch(/^[0-9a-f]{64}$/);
     expect(stamped.durationMs).toEqual(expect.any(Number));
@@ -552,6 +555,8 @@ describe('code:run → similarRecipes result shaping', () => {
         createdAt: '2026-08-12T00:00:00.000Z',
         updatedAt: '2026-08-12T00:00:00.000Z',
       },
+      disposition: 'near-similarity-reuse',
+      matchedSimilarity: 0.9,
       similarRecipes: [recipe(1), recipe(2), recipe(3), recipe(4)],
     });
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');

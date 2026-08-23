@@ -69,6 +69,10 @@ import {
 import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { startVerdictForRow } from '../plans/plan-start-gate';
+import {
+  buildExactPlanClaimSpec,
+  claimableStatesForKinds as exactPlanClaimableStatesForKinds,
+} from '../plans/plan-admission-preflight';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
 import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
@@ -836,11 +840,8 @@ export function resolveMemberBriefText(
  * `['open']`. Returns undefined for a pure feature-family set — the unified `['open']` floor
  * default already fits, so there is nothing to pin. Exported for a unit test.
  */
-const ISSUE_FAMILY_CLAIM_KINDS = new Set(['bug', 'change', 'task']);
 export function claimableStatesForKinds(kinds: readonly string[]): string[] | undefined {
-  const hasIssue = kinds.some((k) => ISSUE_FAMILY_CLAIM_KINDS.has(k));
-  if (!hasIssue) return undefined;
-  return ['open'];
+  return exactPlanClaimableStatesForKinds(kinds);
 }
 
 /**
@@ -901,20 +902,7 @@ export function buildFleetPlanClaimSpec(
   planSlug: string,
   kinds?: readonly string[],
 ): Record<string, unknown> {
-  const planLeaf = { field: 'plan', op: '=', value: planSlug };
-  const filter = kinds && kinds.length ? { all: [planLeaf, { field: 'kind', op: 'in', value: [...kinds] }] } : planLeaf;
-  // P-010: only a kind-scoped plan spec derives states (a pure plan lane keeps the unified
-  // ['open'] floor default — plan-promoted items vary in status, so don't over-pin here).
-  const states = kinds && kinds.length ? claimableStatesForKinds(kinds) : undefined;
-  return {
-    specVersion: '1.0',
-    specId: `fleet-launch-${fleetSlug}-plan`,
-    revision: 1,
-    view: { filter },
-    rank: DEFAULT_CLAIM_SPEC.rank,
-    limits: DEFAULT_CLAIM_SPEC.limits,
-    ...(states ? { states } : {}),
-  };
+  return buildExactPlanClaimSpec(`fleet-launch-${fleetSlug}-plan`, planSlug, kinds);
 }
 
 /**
@@ -1743,6 +1731,47 @@ export default defineTool({
       }
     }
 
+    // P-058: promotion is not proof that an exact plan can feed a fleet. Read the
+    // plan DAG, its promoted rows, and both structurally reachable scheduler
+    // families before creating a fleet row or opening a terminal. Unknown is a
+    // refusal here: spawning idle workers hides the admission defect.
+    let admission: Awaited<ReturnType<typeof import('../plans/plan-admission-preflight').preflightExactPlanAdmission>> | null = null;
+    let admissionError: string | null = null;
+    if (planSlug) {
+      try {
+        const { preflightExactPlanAdmission } = await import('../plans/plan-admission-preflight');
+        admission = await preflightExactPlanAdmission({
+          workspaceId: planWorkspaceId,
+          harnessSlug: planHarnessSlug,
+          planSlug,
+          assignee: ownerId,
+          specId: `fleet-launch-${fleetSlug}-plan`,
+          fleetSlug,
+          claimKinds: args.claimKinds,
+        });
+      } catch (error) {
+        admissionError = (error as Error).message;
+      }
+      if (!admission?.ready) {
+        return json(
+          {
+            ok: false,
+            error: 'admission_refused',
+            fleet: fleetSlug,
+            plan: planSlug,
+            harness: planHarnessSlug,
+            promotionFailsafe,
+            admission,
+            ...(admissionError ? { admissionError } : {}),
+            message: admission
+              ? `Exact-plan admission refused before fleet creation: ${admission.message}`
+              : `Exact-plan admission could not be measured before fleet creation: ${admissionError ?? 'unknown error'}`,
+          },
+          true,
+        );
+      }
+    }
+
     // Ensure the fleet (idempotent) with the caller as owner + leader, then label the
     // caller's presence — same path as fleet:create.
     let leaderRole = 'leader';
@@ -2424,6 +2453,7 @@ export default defineTool({
           requestedOpenCount,
           claimSpecApplied,
           promotionFailsafe,
+          admission,
           remotePlacements,
           failedPlacements,
           message: lines.join('\n'),
@@ -3731,6 +3761,7 @@ export default defineTool({
         memberBaselineApplied: baselineApplied,
         claimSpecApplied,
         promotionFailsafe,
+        admission,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath,
         perMemberLaunchContextPaths,

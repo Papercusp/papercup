@@ -105,7 +105,14 @@ mkdirSync(join(repoDir, '.git'), { recursive: true });
 mkdirSync(noGitDir, { recursive: true });
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
-const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] }));
+const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({
+  status: 'nothing',
+  dirtyPathCount: 0,
+  committedCount: 0,
+  oversized: [],
+  contentErrors: [],
+  strandedSubmodules: [],
+}));
 // The stash-check sweep (checkForNewStashes) also imports discoverSubmodulesRecursive
 // from this module — without it on the mock, its best-effort catch console.warns and
 // vitest-fail-on-console reds every test whose tick reaches the sweep (EI-14928 class:
@@ -305,6 +312,12 @@ const routinePatches = (): Array<Record<string, unknown>> =>
     (p) => !('fire_started_at' in p) && !('known_stash_shas' in p) && !('git_sync_activity' in p),
   );
 
+/** The optional fourth bind is the completed-tick history entry. */
+const routineHistoryEntries = (): Array<Record<string, unknown>> =>
+  unsafeCalls
+    .filter((c) => c.text.includes("'git_sync_history'"))
+    .map((c) => JSON.parse(String(c.params[3])) as Record<string, unknown>);
+
 /** EI-21049559233457671: the whole-fire marker is intentionally asserted separately
  * from the local-stage outcome patch. */
 const gitSyncActivityPatches = (): Array<Record<string, unknown>> =>
@@ -345,6 +358,8 @@ const ctx: SystemActionCtx = {
 
 const syncedOutcome: GitSyncOutcome = {
   status: 'synced',
+  dirtyPathCount: 4,
+  committedCount: 2,
   headSha: 'abc123def456',
   pushed: ['libs/generic/sync', 'superproject'],
   merged: ['superproject'],
@@ -354,6 +369,8 @@ const syncedOutcome: GitSyncOutcome = {
 };
 const conflictOutcome: GitSyncOutcome = {
   status: 'conflict',
+  dirtyPathCount: 3,
+  committedCount: 1,
   conflicts: [{ scope: 'libs/generic/sync', conflictedFiles: ['src/a.ts', 'src/b.ts'] }],
   errors: [],
   pushed: ['libs/papercusp'],
@@ -364,6 +381,8 @@ const conflictOutcome: GitSyncOutcome = {
 };
 const errorOutcome: GitSyncOutcome = {
   status: 'error',
+  dirtyPathCount: 2,
+  committedCount: 0,
   errors: [{ scope: 'superproject', message: 'push failed: HTTP 500' }],
   pushed: [],
   merged: [],
@@ -374,6 +393,8 @@ const errorOutcome: GitSyncOutcome = {
 /** EI-438: a tick that quarantined a broken .mdx (synced everything else). */
 const contentErrorOutcome: GitSyncOutcome = {
   status: 'synced',
+  dirtyPathCount: 2,
+  committedCount: 1,
   headSha: 'def789',
   pushed: ['superproject'],
   merged: [],
@@ -442,7 +463,7 @@ describe('registry population', () => {
 
 describe('WI-1416 durable-fire breadcrumbs', () => {
   it('stamps fire_started_at as the FIRST metadata write of every fire (before locks/gate)', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action(ctx);
 
@@ -483,7 +504,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     mkdirSync(join(ambientSibling, '.git'), { recursive: true });
     registryProjects = [{ slug: 'papercup', path: canonicalRepo }];
     ambientRegistryProjects = [{ slug: 'papercup', path: ambientSibling }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await fireGitSyncNow('papercup', 'ws-42', canonicalRepo);
 
@@ -900,7 +921,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
   it('a harness with NO extra_lock_resources acquires only its own per-slug resource', async () => {
     registryProjects = [{ slug: 'otherapp', path: repoDir }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({ ...ctx, installSlug: 'otherapp', triggerConfig: {} });
 
@@ -1028,13 +1049,34 @@ describe('clean sync outcome', () => {
       }),
     ]);
 
+    const historyWrites = unsafeCalls.filter((c) => c.text.includes("'git_sync_history'"));
+    expect(historyWrites).toHaveLength(1);
+    expect(historyWrites[0].text).toContain('jsonb_array_elements');
+    expect(historyWrites[0].text).toContain('WITH ORDINALITY');
+    expect(historyWrites[0].text).toContain('LIMIT 30');
+    expect(routineHistoryEntries()).toEqual([
+      expect.objectContaining({
+        ts: expect.any(Number),
+        status: 'synced',
+        dirty_path_count: 4,
+        committed_count: 2,
+        error: null,
+        reaped: false,
+      }),
+    ]);
+
     expect(appendPipelineEventMock).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         workspaceId: 'ws-42',
         installSlug: 'papercup',
         kind: 'git_sync',
         status: 'synced',
-        detail: expect.objectContaining({ headSha: 'abc123def456', consecutiveErrorTicks: 0 }),
+        detail: expect.objectContaining({
+          headSha: 'abc123def456',
+          consecutiveErrorTicks: 0,
+          dirtyPathCount: 4,
+          committedCount: 2,
+        }),
       }));
 
     // a clean pass clears the conflict escalation AND (errTicks 0) the error one —
@@ -1069,7 +1111,7 @@ describe('clean sync outcome', () => {
   });
 
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action(ctx);
 
@@ -1098,6 +1140,8 @@ describe('clean sync outcome', () => {
     }];
     runGitSyncMock.mockResolvedValue({
       status: 'skipped-locked',
+      dirtyPathCount: 1,
+      committedCount: 0,
       skippedPaths,
       oversized: [],
       contentErrors: [],
@@ -1124,7 +1168,7 @@ describe('clean sync outcome', () => {
   });
 
   it('maps the routine trigger_config onto the pipeline config', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({
       ...ctx,
@@ -1159,7 +1203,7 @@ describe('clean sync outcome', () => {
     async (mode) => {
       potGitMode = mode;
       registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
-      runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+      runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});
       try {
         await action(ctx);
@@ -1187,7 +1231,7 @@ describe('clean sync outcome', () => {
   it('EI-20232774599730947: a pre-seeded P2P member stays superproject commit-only and honors its explicit submodule-origin push', async () => {
     potGitMode = 'bridged';
     registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [], strandedSubmodules: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({
       ...ctx,

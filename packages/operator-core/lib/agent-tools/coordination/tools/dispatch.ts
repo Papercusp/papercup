@@ -10,7 +10,7 @@
  * `wakeable` to know whether the wake could even land. D-002: that whole
  * reverse-engineering step is the bug. coord:dispatch collapses it into one call:
  *
- *   assign the lane  +  deliver+wake the note  +  report pickup ({ woken, delivered })
+ *   assign the lane  +  deliver+wake the note  +  report queued delivery ({ queued, pickupConfirmed, delivered })
  *
  * and FLAGS the target's sessionState so a dispatch to an `ended` (not-wakeable)
  * session is a LOUD miss (the lane is still assigned durably, but no live process
@@ -92,8 +92,12 @@ export interface DispatchResult {
    *  so the receiver reads what to do without re-fetching the plan. 0/absent
    *  when no items were assigned or none resolved. */
   itemsHydrated?: number;
-  /** How many of the target's wake awaits actually fired (0 = nobody was listening). */
+  /** Execution-confirmed turn pickups. The current wake substrate does not provide that handshake, so this stays 0. */
   woken: number;
+  /** Durable wake deliveries matched/queued. Queueing is not proof a turn executed. */
+  queued?: number;
+  /** False until a later checkpoint/activity observation proves the target took a turn. */
+  pickupConfirmed?: boolean;
   /** EI-5957: >0 when the wake STAGED (target in MANUAL wake-mode — the hive
    *  pause/edit gate) instead of delivering. The lane is assigned durably but the
    *  directed note was queued for owner review, NOT delivered — see `warning`. */
@@ -308,8 +312,8 @@ export async function composeDispatch(
 
   // 3. Deliver the directed note AND wake the target NOW (coord:send wake:'required').
   //    This is the critical leg: it persists the inbox row (durable) AND fires the
-  //    target's own coord:inbox-wake key, returning the authoritative pickup signal
-  //    (woken / recipient_absent / recipient_dead). We do NOT re-implement any of it.
+  //    target's own coord:inbox-wake key, returning the authoritative queued-delivery
+  //    signal (queued / recipient_absent / recipient_dead). It does not confirm a turn.
   const sendEnv = (await call('coord:send', {
     to: [args.to],
     summary: args.note,
@@ -331,7 +335,7 @@ export async function composeDispatch(
     wake: 'required',
     // D-048: `expects` is required and never defaulted. Dispatch hands the target WORK
     // and wakes it to start now, so the expectation is 'action' — not 'ack' (we are not
-    // asking it to confirm receipt; the wake result already reports pickup) and never
+    // asking it to confirm receipt; pickup must be verified separately) and never
     // 'none' (a dispatch nobody is obliged to act on is not a dispatch).
     expects: 'action',
   })) as { results?: Array<Record<string, unknown>> } | undefined;
@@ -357,7 +361,10 @@ export async function composeDispatch(
     args.to;
 
   const wake = r0.wake ?? {};
-  const woken = typeof wake.woken === 'number' ? wake.woken : 0;
+  // coord:send's wake.woken is the event engine's matched/queued count; the
+  // detached wake pump has not yet proved that the target executed a turn.
+  const queued = typeof wake.woken === 'number' ? wake.woken : 0;
+  const woken = 0;
   // EI-5957: a wake STAGES (never delivers) when the target is in MANUAL wake-mode.
   const staged = typeof wake.staged === 'number' ? wake.staged : 0;
 
@@ -380,6 +387,8 @@ export async function composeDispatch(
     assigned,
     delivered: typeof r0.msg_id === 'string' ? r0.msg_id : null,
     woken,
+    queued,
+    pickupConfirmed: false,
     ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
     ...(staged > 0 ? { staged } : {}),
     ...(wake.recipient_absent ? { recipient_absent: true } : {}),
@@ -418,7 +427,7 @@ export async function composeDispatch(
       `${assigned?.ok ? ' — the lane was assigned durably (survives), but' : ' —'} the wake landed nowhere: ` +
       'this target needs claim/session reconciliation and then a RELAUNCH/resume, not a wake. Re-dispatch to a `parked`/`live` agent ' +
       '(coord:presence → wakeable:true) or respawn this one.';
-  } else if (staged > 0 && woken === 0) {
+  } else if (staged > 0 && queued === 0) {
     // EI-5957: the target is ALIVE but in MANUAL wake-mode, so the directed note
     // STAGED for owner review instead of delivering — the #1 leader-steering trap
     // (a quiet staged:1 read as delivered while the member ran off-mandate). The
@@ -430,11 +439,16 @@ export async function composeDispatch(
       `this directive until the staged wake is RELEASED (coord:wake-queue { action: "release_all", agent: "${resolvedTo}" }) ` +
       `or it is flipped to auto (coord:wake-mode { agent: "${resolvedTo}", mode: "auto" }). A fleet leader ` +
       'steering its own members almost always wants them on auto.';
-  } else if (wake.recipient_absent && woken === 0) {
+  } else if (wake.recipient_absent && queued === 0) {
     result.warning =
       `coord:dispatch woke nobody for ${resolvedTo} (it is live-but-paused or just ended its turn) — the ` +
       'note was injected to its inbox and the lane assigned, but confirm pickup (coord:presence) before ' +
       'assuming it is being worked.';
+  } else if (queued > 0) {
+    const pickupWarning =
+      `coord:dispatch queued ${queued} durable wake delivery for ${resolvedTo}, but pickup is NOT confirmed — ` +
+      'verify a fresh work-item checkpoint or activity timestamp before treating the assigned lane as active.';
+    result.warning = result.warning ? `${result.warning} ${pickupWarning}` : pickupWarning;
   }
 
   return result;
@@ -443,12 +457,12 @@ export async function composeDispatch(
 export default defineTool({
   name: 'coord:dispatch',
   description:
-    'One call assigns plan items to `to`, inlines their bodies, delivers `note`, wakes the target, and reports ({ assigned: { requested, assigned, failed, partial }, woken, delivered, sessionState, itemsHydrated }). All-refused assignment is `ok:false` with wake evidence preserved. Omit `planSlug`+`items` for a directed wake; ended/dead targets are loud misses requiring relaunch.',
+    'One call assigns plan items to `to`, inlines their bodies, delivers `note`, queues a wake, and reports ({ assigned, queued, pickupConfirmed:false, delivered, sessionState, itemsHydrated }). Queueing is not proof a turn executed: verify a fresh checkpoint/activity timestamp. All-refused assignment is `ok:false`; ended/dead targets are loud misses requiring relaunch.',
   guidance: {
-    when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + wakes + confirms. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
+    when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
     notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
     chaining:
-      'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `assigned` counts plus `woken`/`warning`. An all-refused lane is `ok:false` even when the note/wake succeeded; the woken target then orients, claims any durable lane, and works it.',
+      'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `assigned` plus `queued`/`warning`, then verify pickup from a fresh checkpoint/activity timestamp. An all-refused lane is `ok:false` even when the note/wake queued.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

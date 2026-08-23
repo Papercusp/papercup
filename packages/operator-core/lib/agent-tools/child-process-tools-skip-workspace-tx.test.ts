@@ -143,6 +143,18 @@ const INDIRECT_SHELL_OUT: ReadonlyMap<string, string> = new Map([
       'server-side tx kill, which is why raising that budget did not stop the failures. ' +
       'Never reads ctx.tx (EI-21107910194803524).',
   ],
+  [
+    'coordination/tools/thread.ts',
+    'Reconstructs a thread through the coordination-log read seam, which owns its own ' +
+      'storage handle and never reads ctx.tx. A long thread/read under fleet load must ' +
+      'not keep the dispatcher transaction idle (EI-21201603407107997).',
+  ],
+  [
+    'plans/add-item.ts',
+    'Runs each append through withPlanLock, which opens its own short advisory-lock ' +
+      'transaction; revision and federation hooks run after commit. The handler never ' +
+      'reads ctx.tx, and bulk additions can span multiple locked writes (EI-21201603407107997).',
+  ],
 ]);
 
 describe('idle-tx recurrence guard — the predicate has teeth', () => {

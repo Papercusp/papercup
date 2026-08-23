@@ -23,7 +23,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
-import { CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
+import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import {
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
@@ -246,17 +246,16 @@ export default defineTool({
           z
             .array(
               z.object({
-                claim: z
-                  .string()
-                  .min(1)
-                  .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
-                  .describe('The pending owner-gated action/decision, stated concretely.'),
+                claim: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.claim,
+                  'The pending owner-gated action/decision, stated concretely.',
+                  { min: 1 },
+                ),
                 id: CARRY_ROW_ID_SCHEMA,
-                recheck: z
-                  .string()
-                  .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
-                  .optional()
-                  .describe('A concrete command a successor runs to re-check it.'),
+                recheck: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.recheck,
+                  'A concrete command a successor runs to re-check it.',
+                ).optional(),
               }),
             )
             .max(CARRY_NOTE_MAX_WALLS * CARRY_CAP_HARD_MULTIPLE),
@@ -293,36 +292,24 @@ export default defineTool({
           },
           z.array(
             z.object({
-              claim: z
-                .string()
-                .min(1)
-                .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
-                .describe('The external-state claim, stated concretely.'),
+              claim: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.claim, 'The external-state claim, stated concretely.', {
+                min: 1,
+              }),
               id: CARRY_ROW_ID_SCHEMA,
-              recheck: z
-                .string()
-                .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
-                .optional()
-                .describe('Concrete probe to run before relying on the claim.'),
-              verified: z
-                .string()
-                .max(CARRY_ROW_SOFT_CAPS.verified * CARRY_CAP_HARD_MULTIPLE)
-                .optional()
-                .describe(
-                  'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
-                    'NOT a boolean (`true`/`false` is rejected) and NOT `{status, evidence}` — this ONE string field ' +
-                    'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
-                    'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
-                    'boolean flag to set.',
-                ),
-              contested: z
-                .string()
-                .max(CARRY_ROW_SOFT_CAPS.contested * CARRY_CAP_HARD_MULTIPLE)
-                .optional()
-                .describe(
-                  'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
-                    'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
-                ),
+              recheck: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.recheck, 'Concrete probe to run before relying on the claim.').optional(),
+              verified: carryRowTextSchema(
+                CARRY_ROW_SOFT_CAPS.verified,
+                'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
+                  'NOT a boolean (`true`/`false` is rejected) and NOT `{status, evidence}` — this ONE string field ' +
+                  'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
+                  'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
+                  'boolean flag to set.',
+              ).optional(),
+              contested: carryRowTextSchema(
+                CARRY_ROW_SOFT_CAPS.contested,
+                'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
+                  'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
+              ).optional(),
             }),
           ).max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
         )

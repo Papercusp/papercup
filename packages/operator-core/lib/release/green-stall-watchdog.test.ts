@@ -647,6 +647,98 @@ describe('evaluatePausedGreenCheckpoint (EI-21190903677660085)', () => {
     expect(evaluatePausedGreenCheckpoint(snapshot, NOW)).toEqual({ overdue: false, reason: null });
   });
 
+  it('suppresses the overdue alarm only for the exact live D-012/D-016 serializer shape', () => {
+    const liveSerializerEvidence = {
+      pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+      serializerItemId: 'WI-40086',
+      serializerClaimHold: true,
+      serializerOwner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+      serializerHoldReason: 'D-016 sole serializer hold: observe the acceptance gate',
+      serializerOwnerLive: true,
+    } as const;
+    expect(
+      evaluatePausedGreenCheckpoint(
+        {
+          ...overdue,
+          ...liveSerializerEvidence,
+        },
+        NOW,
+      ),
+    ).toEqual({ overdue: false, reason: null });
+  });
+
+  it.each([
+    [
+      'pause marker names no item',
+      {
+        ...overdue,
+        pauseReason: 'D-012/D-013 quiescence hold: WI-40086',
+        serializerItemId: 'WI-40086',
+        serializerClaimHold: true,
+        serializerOwner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+        serializerHoldReason: 'D-016 sole serializer hold: observe the acceptance gate',
+        serializerOwnerLive: true,
+      },
+    ],
+    [
+      'serializer item does not match the pause marker',
+      {
+        ...overdue,
+        pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+        serializerItemId: 'WI-40087',
+        serializerClaimHold: true,
+        serializerOwner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+        serializerHoldReason: 'D-016 sole serializer hold: observe the acceptance gate',
+        serializerOwnerLive: true,
+      },
+    ],
+    [
+      'claim hold is absent',
+      {
+        ...overdue,
+        pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+        serializerItemId: 'WI-40086',
+        serializerClaimHold: false,
+        serializerOwner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+        serializerHoldReason: 'D-016 sole serializer hold: observe the acceptance gate',
+        serializerOwnerLive: true,
+      },
+    ],
+    [
+      'serializer reason is not D-016',
+      {
+        ...overdue,
+        pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+        serializerItemId: 'WI-40086',
+        serializerClaimHold: true,
+        serializerOwner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+        serializerHoldReason: 'manual hold',
+        serializerOwnerLive: true,
+      },
+    ],
+    [
+      'owner liveness is stale/unknown',
+      {
+        ...overdue,
+        pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+        serializerItemId: 'WI-40086',
+        serializerClaimHold: true,
+        serializerOwner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+        serializerHoldReason: 'D-016 sole serializer hold: observe the acceptance gate',
+        serializerOwnerLive: false,
+      },
+    ],
+  ])('%s fails open to the overdue alarm', (_label, snapshot) => {
+    expect(
+      evaluatePausedGreenCheckpoint(
+        {
+          ...snapshot,
+        },
+        NOW,
+      ).overdue,
+    ).toBe(true);
+  });
+
   it('serializes the pause owner, pause time, next fire, and reason in the durable body', () => {
     const verdict = evaluatePausedGreenCheckpoint(overdue, NOW);
     const body = JSON.parse(
@@ -737,6 +829,19 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
     },
   };
 
+  const liveSerializerOverdueRow = {
+    ...overdueRow,
+    pause: {
+      ...overdueRow.pause,
+      reason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+    },
+    serializer_item_id: 'WI-40086',
+    serializer_claim_hold: true,
+    serializer_owner: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+    serializer_hold_reason: 'D-016 sole serializer hold: observe the acceptance gate',
+    serializer_owner_live: true,
+  };
+
   it('alarms once and writes the independent durable paused-watchdog row', async () => {
     const { sql, calls } = makeFakeSql({ pausedRows: [overdueRow] });
     const result = await checkGreenStall(sql);
@@ -783,6 +888,17 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
     expect(broadcastSevereEventResolvedMock).toHaveBeenCalledWith(
       expect.objectContaining({ conditionKey: 'green-checkpoint-paused:papercusp' }),
     );
+  });
+
+  it('does not alarm when the DB read finds the exact live serializer/quiescence exception', async () => {
+    const { sql, calls } = makeFakeSql({ pausedRows: [liveSerializerOverdueRow] });
+    const result = await checkGreenStall(sql);
+
+    expect(result).toEqual({ alarmed: [], recovered: [], suppressed: [] });
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+    expect(calls.some((call) => String(call[0]).includes('harness_shared.work_items'))).toBe(true);
+    expect(calls.some((call) => String(call[0]).includes('harness_shared.coord_presence'))).toBe(true);
   });
 });
 

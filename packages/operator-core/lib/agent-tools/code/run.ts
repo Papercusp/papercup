@@ -17,8 +17,9 @@ import {
 } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
-import { captureRecipe } from './capture-recipe';
+import { captureRecipe, type RecipeCaptureDisposition } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
 import { recipeRevision } from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
@@ -369,12 +370,13 @@ export default defineTool({
     invocationMetadata.durationMs = Math.max(0, Date.now() - runStartedAtMs);
     invocationMetadata.failureClass = codeRunFailureClass(result);
     invocationMetadata.recipeCapture = recipeCapture ? 'captured' : 'not-captured';
-    invocationMetadata.recipeReuse = false;
-    invocationMetadata.recipeCacheHit = false;
+    invocationMetadata.recipeReuse = recipeCapture?.disposition !== undefined && recipeCapture.disposition !== 'created';
+    invocationMetadata.recipeCacheHit = recipeCapture?.disposition === 'exact-fingerprint-reuse';
     invocationMetadata.recipeCandidateCount = similarRecipes.length;
     if (recipeCapture) {
       invocationMetadata.recipeId = recipeCapture.id;
       invocationMetadata.recipeRevision = recipeCapture.revision;
+      invocationMetadata.recipeCaptureDisposition = recipeCapture.disposition;
     }
     invocationMetadata.effectiveStatus = !result.ok
       ? 'error'
@@ -431,6 +433,7 @@ export function isRecipeCaptureEligible(
 interface CodeRunRecipeCapture {
   id: string;
   revision: string;
+  disposition: RecipeCaptureDisposition;
   similarRecipes: SimilarRecipe[];
 }
 
@@ -1337,6 +1340,7 @@ async function maybeCaptureRecipe(
       ? {
           id: captured.row.id,
           revision: recipeRevision(captured.row.script, captured.row.updatedAt),
+          disposition: captured.disposition,
           similarRecipes: captured.similarRecipes,
         }
       : null;
@@ -1365,7 +1369,7 @@ async function maybeRecordTraceOnly(
     }
     const potSlug = await resolveLearningPotSlug({
       workspaceId,
-      harnessSlug: ctx.harnessSlug ?? null,
+      harnessSlug: resolveConcreteHarnessSlug(undefined, ctx),
     });
     await recordRecipeRun(getOrgPg().sql, {
       recipeId: null,

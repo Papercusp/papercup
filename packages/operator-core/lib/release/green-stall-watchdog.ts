@@ -48,6 +48,7 @@ import {
 import { integrationRoot } from '../release-deploy-launch';
 import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
+import { PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -124,6 +125,15 @@ const WATCHDOG_KIND = 'green-checkpoint-watchdog';
 const PAUSED_GREEN_CHECKPOINT_PHASE = 'green-checkpoint-paused-watchdog';
 const PAUSED_GREEN_CHECKPOINT_KIND = 'green-checkpoint-paused-watchdog';
 const PAUSED_GREEN_CHECKPOINT_CONDITION_PREFIX = 'green-checkpoint-paused:';
+const QUIESCENCE_PAUSE_MARKER = 'D-012/D-013 live quiescence hold under ';
+const SERIALIZER_HOLD_REASON_PREFIX = 'D-016 sole serializer hold:';
+
+/**
+ * The paused gate is deliberately quiet only for the one accountable
+ * serializer/quiescence shape. Keep this tied to the canonical presence
+ * freshness window so a parked/dead owner cannot suppress the alarm forever.
+ */
+const LIVE_SERIALIZER_PRESENCE_STALE_MS = PRESENCE_STALE_MS;
 
 export interface GreenStallThresholds {
   fireStaleMs?: number;
@@ -200,6 +210,12 @@ export interface PausedGreenCheckpointSnapshot {
   pauseReason?: string | null;
   pausedBy?: string | null;
   pausedAtMs?: number | null;
+  /** DB-backed evidence for the exact D-012/D-016 serializer exception. */
+  serializerItemId?: string | null;
+  serializerClaimHold?: boolean;
+  serializerOwner?: string | null;
+  serializerHoldReason?: string | null;
+  serializerOwnerLive?: boolean;
 }
 
 export interface PausedGreenCheckpointVerdict {
@@ -226,6 +242,26 @@ export function evaluatePausedGreenCheckpoint(
   if (!hasPauseEvidence || s.nextFireMs == null || !Number.isFinite(s.nextFireMs) || now <= s.nextFireMs) {
     return { overdue: false, reason: null };
   }
+
+  // D-012/D-013 deliberately pauses the gate while D-016's sole serializer
+  // owns the held work-item. Suppress only when every discriminator agrees:
+  // the pause marker names the same item, that item still carries the durable
+  // claim hold + exact serializer reason, and its canonical owner is fresh.
+  // Any missing/unknown leg fails open to the ordinary overdue alarm.
+  const quiescenceItemId =
+    typeof s.pauseReason === 'string' && s.pauseReason.startsWith(QUIESCENCE_PAUSE_MARKER)
+      ? s.pauseReason.slice(QUIESCENCE_PAUSE_MARKER.length).match(/^((?:WI|EI)-\d+):/)?.[1] ?? null
+      : null;
+  const liveSerializerQuiescence =
+    quiescenceItemId != null &&
+    s.serializerItemId === quiescenceItemId &&
+    s.serializerClaimHold === true &&
+    typeof s.serializerOwner === 'string' &&
+    s.serializerOwner.length > 0 &&
+    typeof s.serializerHoldReason === 'string' &&
+    s.serializerHoldReason.startsWith(SERIALIZER_HOLD_REASON_PREFIX) &&
+    s.serializerOwnerLive === true;
+  if (liveSerializerQuiescence) return { overdue: false, reason: null };
 
   const pauseReason = displayPauseText(s.pauseReason ?? null, '(no pause reason recorded)');
   const pausedBy = displayPauseText(s.pausedBy ?? null, '(unknown pause owner)');
@@ -941,6 +977,11 @@ type PausedGreenCheckpointRoutineRow = {
   target_role: string | null;
   next_fire_ms: string | number | null;
   pause: unknown;
+  serializer_item_id: string | null;
+  serializer_claim_hold: boolean | null;
+  serializer_owner: string | null;
+  serializer_hold_reason: string | null;
+  serializer_owner_live: boolean | null;
 };
 
 type PausedGreenCheckpointEscalationRow = {
@@ -983,16 +1024,45 @@ async function checkPausedGreenCheckpoint(
   const out = { alarmed: [] as string[], recovered: [] as string[] };
   try {
     const rows = await sql<PausedGreenCheckpointRoutineRow[]>`
-      SELECT install_slug,
-             workspace_id,
-             active,
-             group_slug,
-             target_role,
-             extract(epoch from next_fire_at) * 1000 AS next_fire_ms,
-             metadata->'pause' AS pause
-        FROM harness_shared.routines
-       WHERE group_slug = 'release'
-         AND target_role = 'system:green-checkpoint'`;
+      SELECT r.install_slug,
+             r.workspace_id,
+             r.active,
+             r.group_slug,
+             r.target_role,
+             extract(epoch from r.next_fire_at) * 1000 AS next_fire_ms,
+             r.metadata->'pause' AS pause,
+             serializer.feature_id AS serializer_item_id,
+             serializer.claim_hold AS serializer_claim_hold,
+             serializer.held_open_by AS serializer_owner,
+             serializer.held_open_reason AS serializer_hold_reason,
+             serializer.owner_live AS serializer_owner_live
+        FROM harness_shared.routines r
+        LEFT JOIN LATERAL (
+          SELECT wi.feature_id,
+                 (wi.payload->>'_claimHold') = 'true' AS claim_hold,
+                 wi.payload->>'held_open_by' AS held_open_by,
+                 wi.payload->>'held_open_reason' AS held_open_reason,
+                 true AS owner_live
+            FROM harness_shared.work_items wi
+            JOIN harness_shared.coord_presence cp
+              ON cp.workspace_id = wi.workspace_id
+             AND cp.owner_id = wi.payload->>'held_open_by'
+             AND cp.revoked_at IS NULL
+             AND cp.heartbeat_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
+             AND cp.last_active_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
+           WHERE wi.workspace_id = r.workspace_id
+             AND wi.harness_slug = r.install_slug
+             AND wi.feature_id = substring(
+                   r.metadata->'pause'->>'reason'
+                   FROM '^D-012/D-013 live quiescence hold under ((WI|EI)-[0-9]+):'
+                 )
+             AND (wi.payload->>'_claimHold') = 'true'
+             AND wi.payload->>'held_open_reason' LIKE ${`${SERIALIZER_HOLD_REASON_PREFIX}%`}
+           ORDER BY wi.updated_ts DESC NULLS LAST
+           LIMIT 1
+        ) serializer ON true
+       WHERE r.group_slug = 'release'
+         AND r.target_role = 'system:green-checkpoint'`;
 
     for (const row of rows) {
       const pause = readPausedGreenCheckpointPause(row.pause);
@@ -1003,6 +1073,11 @@ async function checkPausedGreenCheckpoint(
           groupSlug: row.group_slug,
           targetRole: row.target_role,
           nextFireMs: Number.isFinite(nextFireMs) ? nextFireMs : null,
+          serializerItemId: row.serializer_item_id,
+          serializerClaimHold: row.serializer_claim_hold ?? undefined,
+          serializerOwner: row.serializer_owner,
+          serializerHoldReason: row.serializer_hold_reason,
+          serializerOwnerLive: row.serializer_owner_live ?? undefined,
           ...pause,
         },
         nowMs,

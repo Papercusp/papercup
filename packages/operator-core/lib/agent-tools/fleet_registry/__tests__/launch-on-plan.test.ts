@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/spec-pool-preview';
 
+const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
+
 const spawnConsoleMock = vi.fn();
 const spawnHeadlessMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
@@ -143,6 +145,11 @@ vi.mock('../../plans/source', () => ({
   readPlanBySlug: (...args: unknown[]) => readPlanBySlugMock(...args),
 }));
 
+vi.mock('../../plans/plan-admission-preflight', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
+}));
+
 vi.mock('../_shared', () => ({
   fleetRoleFor: () => 'leader',
   json: (payload: Record<string, unknown>, isError = false) => ({
@@ -255,6 +262,13 @@ describe('memberSpecIndexForLaunch', () => {
 });
 
 beforeEach(() => {
+  admissionMocks.preflight.mockReset();
+  admissionMocks.preflight.mockResolvedValue({
+    ready: true,
+    status: 'ready',
+    reason: 'ready',
+    message: 'exact-plan admission ready',
+  });
   assembleRolePromptMock.mockReset();
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/tmp/fleet' } });
   resolveProjectDirMock.mockReset();
@@ -2839,6 +2853,45 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.promotionFailsafe).toBeNull();
+  });
+
+  it('refuses exact-plan admission after promotion but before fleet creation or terminal spawn', async () => {
+    promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 3 });
+    admissionMocks.preflight.mockResolvedValueOnce({
+      ready: false,
+      status: 'refused',
+      reason: 'family-disagreement',
+      message: 'Actionable promoted families disagree with the exact-plan lane reachability/counts.',
+    });
+
+    const res = await tool.handler(
+      { name: 'Refused Admission', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect((res as any).isError).toBe(true);
+    expect(payload).toMatchObject({
+      ok: false,
+      error: 'admission_refused',
+      fleet: 'refused-admission',
+      plan: 'my-plan',
+      promotionFailsafe: { ran: true, promoted: 0, skipped: 3 },
+      admission: { ready: false, reason: 'family-disagreement' },
+    });
+    expect(admissionMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'my-plan',
+      assignee: 'owner-1',
+      specId: 'fleet-launch-refused-admission-plan',
+      fleetSlug: 'refused-admission',
+    }));
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 });
 

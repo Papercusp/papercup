@@ -1127,6 +1127,18 @@ async function readPriorBootstrapMeta(slug: string, workspaceId: string): Promis
  */
 const BOOTSTRAP_PERSISTENT_MISS_THRESHOLD = 6;
 
+/** A bounded forensic record for one completed git-sync tick. */
+interface GitSyncHistoryEntry {
+  ts: number;
+  status: GitSyncOutcome['status'];
+  dirty_path_count: number;
+  committed_count: number;
+  error: string | null;
+  reaped: false;
+}
+
+const GIT_SYNC_HISTORY_LIMIT = 30;
+
 /** Merge a partial metadata patch onto the git-sync routine's JSONB.
  *
  *  The `workspace_id` predicate is LOAD-BEARING, not defensive: `install_slug` is NOT
@@ -1137,8 +1149,44 @@ const BOOTSTRAP_PERSISTENT_MISS_THRESHOLD = 6;
  *
  *  Param order deliberately matches the signature ($1 slug, $2 workspaceId, $3 patch) —
  *  do not "simplify" workspaceId to a trailing $3 to avoid re-indexing test assertions. */
-async function patchRoutineMetadata(slug: string, workspaceId: string, patch: Record<string, unknown>): Promise<void> {
+async function patchRoutineMetadata(
+  slug: string,
+  workspaceId: string,
+  patch: Record<string, unknown>,
+  historyEntry?: GitSyncHistoryEntry,
+): Promise<void> {
   const { sql } = getOrgPg();
+  if (historyEntry) {
+    // Keep the latest metadata patch and the bounded history append in ONE UPDATE.
+    // Reading the old array and appending inside the same row update prevents two
+    // concurrent metadata writers from losing a tick. Invalid/legacy history values
+    // are treated as empty rather than making the routine writer fail.
+    await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb || jsonb_build_object(
+                    'git_sync_history',
+                    COALESCE((
+                      SELECT jsonb_agg(item ORDER BY ord)
+                        FROM (
+                          SELECT item, ord
+                            FROM jsonb_array_elements(
+                              (CASE
+                                 WHEN jsonb_typeof(metadata->'git_sync_history') = 'array'
+                                   THEN metadata->'git_sync_history'
+                                 ELSE '[]'::jsonb
+                               END) || jsonb_build_array($4::jsonb)
+                            ) WITH ORDINALITY AS history(item, ord)
+                           ORDER BY ord DESC
+                           LIMIT ${GIT_SYNC_HISTORY_LIMIT}
+                        ) AS retained
+                    ), '[]'::jsonb)
+                  ),
+              updated_at = now()
+        WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:git-sync'`,
+      [slug, workspaceId, JSON.stringify(patch), JSON.stringify(historyEntry)],
+    );
+    return;
+  }
   await sql.unsafe(
     `UPDATE harness_shared.routines
         SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
@@ -1188,6 +1236,7 @@ async function recordOutcome(
   // status used to drop the error list entirely, e.g. a libs/papercusp push failure
   // hidden behind a libs/generic/sync conflict).
   const errors = 'errors' in outcome ? outcome.errors : [];
+  const errorMessage = errors.map((e) => `${e.scope}: ${e.message}`).join('; ');
   const skippedPaths = outcome.skippedPaths ?? [];
   const skippedLocked = outcome.status === 'skipped-locked';
   const localSyncRecordedAt = Date.now();
@@ -1223,7 +1272,7 @@ async function recordOutcome(
     last_conflicts: outcome.status === 'conflict' ? outcome.conflicts.map((c) => c.scope) : [],
     last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
     // GAP-3: clear the stale single error on any non-error outcome (JSONB `||` keeps old keys).
-    last_error: outcome.status === 'error' ? errors.map((e) => `${e.scope}: ${e.message}`).join('; ') : null,
+    last_error: outcome.status === 'error' ? errorMessage : null,
     // EI-18 counters: ticks-of-uninterrupted-error + the oversized set (scope:path keys).
     consecutive_error_ticks: consecutiveErrorTicks,
     last_oversized: outcome.oversized.map(oversizedKey),
@@ -1237,7 +1286,14 @@ async function recordOutcome(
     reaped_count: 0,
     ...(outcome.status === 'synced'
       ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha }
-      : {}),
+    : {}),
+  }, {
+    ts: localSyncRecordedAt,
+    status: outcome.status,
+    dirty_path_count: outcome.dirtyPathCount,
+    committed_count: outcome.committedCount,
+    error: errorMessage || null,
+    reaped: false,
   });
 }
 
@@ -4381,6 +4437,8 @@ async function recordAndEscalateTick(a: {
       errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
       oversized: outcome.oversized.length,
       contentErrors: outcome.contentErrors.length,
+      dirtyPathCount: outcome.dirtyPathCount,
+      committedCount: outcome.committedCount,
       skippedPaths: outcome.skippedPaths ?? [],
       consecutiveErrorTicks: errTicks,
       ...(outcome.status === 'synced' ? { headSha: outcome.headSha } : {}),

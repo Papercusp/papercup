@@ -31,6 +31,7 @@ import {
   AttestationVerificationResult,
   DeviceKeypairId,
   ATTESTATION_VERIFY_CACHE_TTL_MS,
+  ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS,
   attestationGistFilename,
 } from './attestation-types';
 
@@ -484,7 +485,9 @@ export async function ensureAttestationGist(
  *   4. Claimed pubkey matches body's device_pubkey
  *   5. Ed25519 signature over canonical payload is valid
  *
- * Results are cached for ATTESTATION_VERIFY_CACHE_TTL_MS (24h).
+ * Successful results are cached for ATTESTATION_VERIFY_CACHE_TTL_MS (24h).
+ * Conclusive failures are cached briefly to collapse repeated reads of known-
+ * invalid gists; github_api_unavailable is inconclusive and is never cached.
  * Pass `skipCache: true` in opts to force re-verification (e.g. after
  * a revocation signal).
  */
@@ -497,16 +500,19 @@ export async function verifyAttestation(
   const cacheKey = gistId + ':' + claimedPubkeyBase64 + ':' + claimedGithubUserId;
   if (!opts?.skipCache) {
     const cached = getCache().get(cacheKey);
-    if (cached && Date.now() - cached.cachedAt < ATTESTATION_VERIFY_CACHE_TTL_MS) {
+    const cacheTtl = cached?.result.valid
+      ? ATTESTATION_VERIFY_CACHE_TTL_MS
+      : ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS;
+    if (cached && Date.now() - cached.cachedAt < cacheTtl) {
       return cached.result;
     }
   }
 
   const result = await runVerification(gistId, claimedPubkeyBase64, claimedGithubUserId);
 
-  // Only cache successful verifications — failures re-verify on next call
-  // so revocation is detected promptly.
-  if (result.valid) {
+  // Cache conclusive results. API failures are inconclusive and must be
+  // retried so a transient outage cannot be frozen into a denial.
+  if (result.valid || (result.reason !== undefined && result.reason !== 'github_api_unavailable')) {
     getCache().set(cacheKey, { result, cachedAt: Date.now() });
   }
 

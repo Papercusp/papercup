@@ -9,8 +9,9 @@
  * one-line nudge, NO durable inbox row required.
  *
  * Distinct from its siblings:
- *   - coord:dispatch — assign a LANE + deliver a note + wake + confirm pickup (the rich
- *     "hand off work" primitive). Use it when you are giving the agent something to do.
+ *   - coord:dispatch — assign a LANE + deliver a note + queue a wake (the rich
+ *     "hand off work" primitive). Use it when you are giving the agent something to do;
+ *     verify pickup separately from a fresh checkpoint or activity timestamp.
  *   - coord:send {wake:'required'} — deliver a contextual MESSAGE and wake.
  *   - coord:wake — JUST wake (the target re-orients on its own claimed lane). Use it when
  *     the work is already assigned (plan_items:assign / a prior dispatch) and you only need
@@ -38,10 +39,10 @@ export default defineTool({
     "Wake a PARKED agent NOW so it starts a turn and re-orients on its already-claimed lane — the discoverable alias for the events:emit coord:inbox-wake:<id> key (which agents kept 404ing on as coord:wake/coord:nudge). Single-target (never '*'). Optional `note` is a one-line nudge; omit for a bare wake. To ALSO hand off a lane, use coord:dispatch; to deliver a contextual message, coord:send {wake:'required'}.",
   guidance: {
     when: 'The work is ALREADY assigned to the target (plan_items:assign or a prior dispatch) and you just need it to start a turn and pick it up — a re-orient nudge. Pick a `parked` target (coord:presence → sessionState:parked).',
-    notWhen: 'You are assigning a NEW lane — use coord:dispatch (assign+wake+confirm). You have a contextual message to deliver — use coord:send {wake:\'required\'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.',
-    chaining: 'coord:presence (find a parked target) → coord:wake { to } → check `woken`/`warning`. The woken target: coord:orient → claim + work its lane.',
+    notWhen: 'You are assigning a NEW lane — use coord:dispatch (assign+deliver+queue). You have a contextual message to deliver — use coord:send {wake:\'required\'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.',
+    chaining: 'coord:presence (find a parked target) → coord:wake { to } → check `queued`/`warning`, then verify pickup from a fresh checkpoint or activity timestamp. A queued wake is not proof that a turn executed.',
     returns:
-      '{ ok, to, woken, recipient_dead?, recipient_dormant_scheduled?, recipient_alive_not_wakeable?, warning? }. A miss reports WHICH kind: `recipient_dead` (genuinely `ended`, no scheduled fire) is a LOUD miss — relaunch it, never treat as silent woken:0. `recipient_dormant_scheduled` (an armed loop) means delivery is DEFERRED, not lost — its next fire ETA is included. `recipient_alive_not_wakeable` means the session-log liveness oracle (the SAME one fleet:assignments reads) confirms the target is ALIVE despite having no active wake-watcher right now (e.g. mid-turn, never registered one) — never relaunch on that alone; retry the wake or use a durable surface instead.',
+      '{ ok, to, queued, woken:0, pickupConfirmed:false, recipient_dead?, recipient_dormant_scheduled?, recipient_alive_not_wakeable?, warning? }. `queued` counts matched durable wake deliveries; it does NOT prove a turn executed. `woken` stays 0 until an execution-confirming handshake exists. Verify pickup from a fresh checkpoint/activity timestamp. A queue miss still reports WHICH kind: `recipient_dead` (genuinely `ended`, no scheduled fire) is a LOUD miss; `recipient_dormant_scheduled` means deferred; `recipient_alive_not_wakeable` means alive without a watcher.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -109,7 +110,11 @@ export default defineTool({
       source: identity.ownerId,
       workspaceId,
     });
-    const woken = fan.woken;
+    // emitAwaitedEvent returns the number of matching wake deliveries QUEUED,
+    // before the detached pump runs. It cannot confirm that a turn executed.
+    // Keep that truth explicit instead of exposing a false pickup signal.
+    const queued = fan.woken;
+    const woken = 0;
 
     // A wake that woke nobody: classify whether the target is genuinely dead (no live
     // session watching its key) so the miss is a LOUD relaunch signal, not a silent 0.
@@ -120,7 +125,7 @@ export default defineTool({
     let recipient_dormant_scheduled: import('../inbox-wake').DormantScheduledInfo[] | undefined;
     let recipient_alive_not_wakeable: string[] | undefined;
     let warning: string | undefined;
-    if (woken === 0 && fan.staged === 0) {
+    if (queued === 0 && fan.staged === 0) {
       try {
         const report = await reportIdleRecipients([to], { workspaceId });
         if (report.idle.length > 0) {
@@ -167,12 +172,22 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             to,
+            queued,
             woken,
+            pickupConfirmed: false,
             ...(fan.staged > 0 ? { staged: fan.staged } : {}),
             ...(recipient_dead ? { recipient_dead } : {}),
             ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
             ...(recipient_alive_not_wakeable ? { recipient_alive_not_wakeable } : {}),
-            ...(warning ? { warning } : {}),
+            ...(warning
+              ? { warning }
+              : queued > 0
+                ? {
+                    warning:
+                      `coord:wake queued ${queued} durable wake delivery for ${to}, but pickup is NOT confirmed — ` +
+                      'verify a fresh work-item checkpoint or activity timestamp before treating the target as running.',
+                  }
+                : {}),
           }),
         },
       ],

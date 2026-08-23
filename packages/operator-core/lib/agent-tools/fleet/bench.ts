@@ -275,9 +275,14 @@ export default defineTool({
       // never leaks into the workspace filter as if it were a real workspace id
       // (see fleet:assignments' handler for the full incident writeup).
       const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+      // Fleet membership is carried by presence rows, which are intentionally
+      // harness-agnostic (`harness_slug IS NULL`).  A harness-wide filter here
+      // drops a benched member who has no active claim—the exact row needed to
+      // discover the registered bench.  The fleet slug is the authoritative
+      // scope for this roster; keep the optional harness out of this read.
       const rows = await listFleetAssignments({
         workspaceId,
-        harness: args.harness,
+        fleet,
         activeOnly: true,
       });
       const memberIds = groupByAgent(rows)

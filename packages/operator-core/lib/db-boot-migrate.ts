@@ -46,7 +46,7 @@ import { checkMigrationDrift, resolveSqlDir, sqlDirCandidates } from './migratio
 import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from './migration-deploy-guard';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RESERVATION_ENFORCED_FROM, migrationNumberOf, reservationFilenameConflicts } from './migration-reservation';
@@ -172,6 +172,7 @@ export function missingReservationRows(
 export async function reconcileMigrationReservations(
   client: postgres.Sql,
   log: (s: string) => void = (s) => console.log(`[boot-migrate] ${s}`),
+  activeFilenames?: ReadonlySet<string>,
 ): Promise<number> {
   try {
     const applied = await client<{ filename: string }[]>`
@@ -181,6 +182,8 @@ export async function reconcileMigrationReservations(
     const conflicts = reservationFilenameConflicts(
       applied.map((row) => row.filename),
       reserved,
+      RESERVATION_ENFORCED_FROM,
+      activeFilenames,
     );
     if (conflicts.length > 0) {
       log(
@@ -476,7 +479,16 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     // (that is exactly the 815 case: applied by a peer's boot at 23:05Z, then
     // red-pinning the gate for two hours), so gating this on "did I apply
     // something just now" would skip the case it exists for. Fail-soft inside.
-    await reconcileMigrationReservations(client);
+    let activeFilenames: Set<string> | undefined;
+    try {
+      activeFilenames = new Set((await readdir(sqlDir)).filter((file) => file.endsWith('.sql')));
+    } catch (e) {
+      // Keep the reconciliation fail-soft if the tree disappears between
+      // resolveSqlDir() and the directory read; without a trustworthy active
+      // set, the DB-only diagnostics remain the safer signal.
+      console.warn(`[boot-migrate] active migration filename read skipped: ${(e as Error)?.message ?? String(e)}`);
+    }
+    await reconcileMigrationReservations(client, undefined, activeFilenames);
     if (failed.length > 0) {
       const files = failed.map((f) => f.file).join(', ');
       console.error(

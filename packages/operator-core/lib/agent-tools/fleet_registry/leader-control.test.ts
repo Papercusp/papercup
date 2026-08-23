@@ -277,7 +277,7 @@ describe('ensureFleetLeaderControl', () => {
   it('preserves an inactive loop control payload and pending watches during recovery', async () => {
     const priorGoal = 'lead the fleet at the widened fallback cadence';
     const priorKickoff =
-      '⏸ BACKOFF PREMISE — re-check the blocked gate before proceeding.\n\ncustom monitor kickoff';
+      '⏸ BACKOFF PREMISE — re-check blockedOn.event `release:green` before proceeding.\n\ncustom monitor kickoff';
     getLoopStatus.mockResolvedValue({
       active: false,
       harnessSlug: 'papercusp',
@@ -300,7 +300,20 @@ describe('ensureFleetLeaderControl', () => {
       mode: 'monitor',
       armedAt: '2026-08-22T23:00:00.000Z',
     });
-    listActiveAwaits.mockResolvedValue(activeWatches());
+    // This await belongs to the loop's blocker, not fleet-leadership control. Recovery
+    // may reconcile its own five standing watches, but must never consume this pending
+    // await while replacing the inactive routine row.
+    listActiveAwaits.mockResolvedValue([
+      ...activeWatches(),
+      {
+        id: 99,
+        eventKey: 'release:green',
+        policy: 'wake',
+        once: true,
+        wakeHandle: { kind: 'psu-socket' },
+        boundTo: { kind: 'loop', ref: 'loop-1' },
+      },
+    ]);
 
     const out = await ensureFleetLeaderControl(input);
 

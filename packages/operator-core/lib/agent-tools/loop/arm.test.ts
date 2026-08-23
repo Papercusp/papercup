@@ -696,6 +696,7 @@ const priorLoop = (over: Partial<Parameters<typeof computeLoopOverwriteNote>[0] 
   kickoff: 'You are continuing your OWN warm session toward: watch WI-5672 for the next live-fed-gate fire',
   fireCount: 48,
   carry: 'cold' as const,
+  continuation: 'settle' as const,
   mode: 'work' as const,
   armedAt: '2026-07-20T00:00:00.000Z',
   ...over,

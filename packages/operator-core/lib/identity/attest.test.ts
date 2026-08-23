@@ -3,7 +3,10 @@ import { join } from 'node:path';
 import { rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { generateKeyPairSync, sign as nodeSign, createPublicKey } from 'node:crypto';
-import { attestationGistFilename } from './attestation-types';
+import {
+  ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS,
+  attestationGistFilename,
+} from './attestation-types';
 
 // Deterministic gh-token seam: verifyAttestation now resolves the local gh
 // token for its gist fetch (WI-1544 quota guard) — never shell out to the
@@ -401,7 +404,8 @@ describe('verifyAttestation', () => {
     clearAttestationQuotaGuards();
     const { pubkeyBase64 } = makeFakeGistResponse();
     const filename = attestationGistFilename(pubkeyBase64);
-    const fetchMock = vi.fn(async (url: unknown) => {
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      void init;
       if (typeof url === 'string' && url.includes('/gists?')) {
         return {
           ok: true,
@@ -630,7 +634,7 @@ describe('verifyAttestation', () => {
     vi.unstubAllGlobals();
   });
 
-  it('does not cache failed verifications', async () => {
+  it('caches conclusive failed verifications for the negative TTL', async () => {
     const { verifyAttestation, clearAttestationCache } = await import('./attest');
     clearAttestationCache();
 
@@ -639,6 +643,39 @@ describe('verifyAttestation', () => {
 
     await verifyAttestation('bad-gist', 'YWJj', 9999);
     await verifyAttestation('bad-gist', 'YWJj', 9999);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('re-fetches a conclusive failure after the negative TTL expires', async () => {
+    const { verifyAttestation, clearAttestationCache } = await import('./attest');
+    clearAttestationCache();
+
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    vi.stubGlobal('fetch', mockFetch);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now');
+    dateNow.mockReturnValue(now);
+
+    await verifyAttestation('expiring-bad-gist', 'YWJj', 9999);
+    dateNow.mockReturnValue(now + ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS + 1);
+    await verifyAttestation('expiring-bad-gist', 'YWJj', 9999);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    dateNow.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not cache inconclusive github_api_unavailable results', async () => {
+    const { verifyAttestation, clearAttestationCache } = await import('./attest');
+    clearAttestationCache();
+
+    const mockFetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    await verifyAttestation('unavailable-gist', 'YWJj', 9999);
+    await verifyAttestation('unavailable-gist', 'YWJj', 9999);
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();

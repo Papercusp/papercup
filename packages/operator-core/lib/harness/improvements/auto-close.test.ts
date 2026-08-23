@@ -55,8 +55,9 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
     expect(decideAutoClose({ ...baseCandidate, state: 'resolved' }, baseCtx)).toMatchObject({ close: false, reason: 'not-open' });
     expect(decideAutoClose({ ...baseCandidate, watchdogKey: '' }, baseCtx)).toMatchObject({ close: false, reason: 'no-watchdog-key' });
     expect(decideAutoClose({ ...baseCandidate, signalOrigin: 'drill' }, baseCtx)).toMatchObject({ close: false, reason: 'non-organic' });
-    // service-down is a live-state source, deliberately NOT in the eligible allowlist.
-    expect(decideAutoClose({ ...baseCandidate, watchdogKey: 'service-down:operator' }, baseCtx)).toMatchObject({ close: false, reason: 'ineligible-source' });
+    // WI-40769: service-down IS eligible now (see the allowlist comment), so the
+    // ineligible-source guard needs a genuinely unlisted source to demonstrate itself.
+    expect(decideAutoClose({ ...baseCandidate, watchdogKey: 'orphaned-dispatch:x' }, baseCtx)).toMatchObject({ close: false, reason: 'ineligible-source' });
     expect(decideAutoClose({ ...baseCandidate, inFlightDispatch: true }, baseCtx)).toMatchObject({ close: false, reason: 'in-flight-dispatch' });
     // EI-7317: an assignee WITH a live in-flight dispatch still blocks (real active work) —
     // 'in-flight-dispatch' wins regardless of assignee, since that's the actual "someone is
@@ -75,17 +76,61 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
   });
 
   it('accepts every eligible source and rejects an unlisted one', () => {
-    for (const src of ['stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression', 'routine-failure']) {
+    for (const src of ['stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression', 'routine-failure', 'service-down']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(true);
     }
-    // service-down is deliberately excluded: its P-004 freshness gate SKIPS collection
-    // (silently, no signal) when the probe workflow itself has stalled — a quiet tick
-    // can mean "the monitor died", not "the service recovered", so absence is NOT a
-    // reliable resolution signal for it (unlike migration-drift, which fires loud on
-    // its own check failure — see the EI-1760 comment on AUTO_CLOSE_ELIGIBLE_SOURCES).
-    for (const src of ['service-down', 'orphaned-dispatch', 'insight-staleness']) {
+    for (const src of ['orphaned-dispatch', 'insight-staleness']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(false);
     }
+  });
+
+  // ── WI-40769: the blind-tick guard ────────────────────────────────────────
+  //
+  // The defect this closes: `service-down` could be RAISED but never LOWERED, so a
+  // self-clearing outage became permanent claimable backlog (measured 2026-08-23 —
+  // `service-down:operator` open 12 days asserting nothing was listening while the
+  // operator answered 200 in 86ms). Admitting it to the allowlist is only SAFE
+  // because a tick where the collector observed nothing no longer counts as
+  // evidence that the condition cleared.
+  //
+  // These two tests are a PAIR and must stay one: the first proves the new guard
+  // blocks, the second proves it does not block everything (a guard that always
+  // refuses would also "pass" the first test while silently disabling auto-close).
+  describe('blind ticks are not absence evidence', () => {
+    const svc: AutoCloseCandidate = { ...baseCandidate, watchdogKey: 'service-down:operator' };
+
+    it('refuses to close when the source\'s collector went blind during the window', () => {
+      // 6 ran-ticks, but the service-down collector skipped/threw on 1 of them, so
+      // only 5 ticks actually LOOKED at the service — one short of the 6 required.
+      // Reading this as "absent for 6 ticks" is the monitor-outage-looks-like-recovery
+      // misread; it would auto-resolve a genuine, still-broken outage row.
+      const d = decideAutoClose(svc, {
+        ...baseCtx,
+        unobservedTicksBySource: new Map([['service-down', 1]]),
+      });
+      expect(d).toMatchObject({ close: false, reason: 'insufficient-observed-tick-history' });
+    });
+
+    it('still closes when the blind ticks belong to a DIFFERENT source', () => {
+      // Absence evidence is discounted PER SOURCE. A blind migration-drift tick says
+      // nothing about whether service-down was evaluated, so it must not defer an
+      // otherwise-good service-down close — otherwise one flaky collector would
+      // freeze auto-close for every source at once.
+      const d = decideAutoClose(svc, {
+        ...baseCtx,
+        unobservedTicksBySource: new Map([['migration-drift', 3]]),
+      });
+      expect(d.close).toBe(true);
+    });
+
+    it('treats a pre-WI-40769 tick record (no unobserved data) as fully observed', () => {
+      // Back-compat: rows written before this change carry no `observed` field, and
+      // the field is optional on the context. Absent ⇒ every tick observed, which is
+      // exactly the pre-change behaviour — so deploying this cannot retroactively
+      // freeze auto-close on the existing tick history.
+      expect(decideAutoClose(svc, baseCtx).close).toBe(true);
+      expect(decideAutoClose(svc, { ...baseCtx, unobservedTicksBySource: new Map() }).close).toBe(true);
+    });
   });
 
   it('EI-21095659198152574: NEVER absence-closes repeated-tool-error without positive verification', () => {
@@ -182,7 +227,13 @@ describe('processAutoClose — flag gate + orchestration', () => {
       // Genuinely active work: assigned AND a live in-flight dispatch row → stays blocked.
       mkIssue({ id: 'EI-inflight', watchdogKey: 'stalled-feature:papercup', assignee: 'su-active' }),
       mkIssue({ id: 'EI-new', watchdogKey: 'smoke-fail:fresh', createdAt: new Date(NOW - 5 * 60_000).toISOString() }), // too new
-      mkIssue({ id: 'EI-ineligible', watchdogKey: 'service-down:operator' }), // ineligible source
+      // WI-40769: service-down is ELIGIBLE now, so the ineligible-source case needs a
+      // genuinely unlisted source. `orphaned-dispatch` is not in the allowlist.
+      mkIssue({ id: 'EI-ineligible', watchdogKey: 'orphaned-dispatch:x' }), // ineligible source
+      // WI-40769: and the admitted source closes through the full path — this is the
+      // stale `service-down:operator` row (open 12 days against a live 200/86ms
+      // operator) that had no route back to closed before this change.
+      mkIssue({ id: 'EI-servicedown', watchdogKey: 'service-down:operator' }),
       // P-003: a red-test key is now absence-INELIGIBLE — it must survive this sweep even
       // though its signal is absent, old enough, unassigned and organic. Only the
       // positive-green path may retire it.
@@ -197,8 +248,31 @@ describe('processAutoClose — flag gate + orchestration', () => {
       nowMs: () => NOW,
     };
     const out = await processAutoClose('ws', {}, deps);
-    expect(closed.sort()).toEqual(['EI-abandoned-assigned', 'EI-close'].sort());
-    expect(out.map((o) => o.issueId).sort()).toEqual(['EI-abandoned-assigned', 'EI-close'].sort());
+    expect(closed.sort()).toEqual(['EI-abandoned-assigned', 'EI-close', 'EI-servicedown'].sort());
+    expect(out.map((o) => o.issueId).sort()).toEqual(['EI-abandoned-assigned', 'EI-close', 'EI-servicedown'].sort());
+  });
+
+  it('WI-40769: a blind service-down tick window defers the close instead of resolving it', async () => {
+    // The same stale row as above, but the collector went blind during the window.
+    // This is the failure the whole change guards: a MONITOR outage produces the
+    // same six quiet ticks as a genuine recovery, and closing on it would resolve
+    // an outage row while the service is still down and nobody is watching.
+    process.env[FLAG_ENV] = '1';
+    const closed: string[] = [];
+    const deps: AutoCloseDeps = {
+      listOpen: async () => [mkIssue({ id: 'EI-servicedown', watchdogKey: 'service-down:operator' })],
+      recentRanTickKeys: async () => ({
+        seenKeys: new Set<string>(),
+        ranTickCount: 6,
+        unobservedTicksBySource: new Map([['service-down', 2]]),
+      }),
+      inFlightDispatchIds: async () => new Set(),
+      close: async (id) => { closed.push(id); },
+      nowMs: () => NOW,
+    };
+    const out = await processAutoClose('ws', {}, deps);
+    expect(closed).toEqual([]);
+    expect(out).toEqual([]);
   });
 
   it('does nothing when tick history is insufficient (fresh watchdog)', async () => {

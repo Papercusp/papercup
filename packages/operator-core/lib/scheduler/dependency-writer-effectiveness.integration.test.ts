@@ -13,7 +13,7 @@
  *
  * WHAT THIS ADDS OVER THE P-010 CASES in plan-workitem-promotion-run.integration.test.ts.
  * Those prove the PROMOTION and BACKFILL writers gate. The census
- * (dependency-writer-census.test.ts) enumerates seven modules that can write an edge; this
+ * (dependency-writer-census.test.ts) enumerates every module that can write an edge; this
  * file covers the ones P-010 does not:
  *
  *   • the work-item LINK door      (work-items.ts        → mirrorWorkItemBlockingEdge)
@@ -21,6 +21,8 @@
  *   • the ISSUE link door          (issues-engineer.ts   → the same pair, issue-family source)
  *   • syncFeatureBlockEdges itself (feature-blockers-edges.ts — the writer behind the features
  *     HTTP route and the pot-eval port, both of which forward ids to it unchanged)
+ *   • plan-lane reconciliation (reconcile-linked-work-items.ts), which translates a plan
+ *     item's current blockedBy set onto its canonical promoted work-item
  *   • the BACKFILL's UNION obligation (INV-10), which no test covered at all: the promotion
  *     path's REPLACE semantics is correct there and is what its test asserts, so "a backfill
  *     silently deletes hand-authored edges" was unguarded.
@@ -105,11 +107,26 @@ vi.mock('../agent-tools/plans/source', () => ({
       },
     };
   },
+  getPlanRow: async (slug: string) => {
+    const p = h.plans.get(slug);
+    return p
+      ? { items: p.items.map((i) => ({ id: i.id, status: i.status, text: i.text ?? '', blockedBy: i.blockedBy ?? [] })) }
+      : null;
+  },
+  planItemsForRow: (row: { items: { id: string; status: string; text?: string; blockedBy?: string[] }[] }) =>
+    row.items.map((i) => ({
+      id: i.id,
+      storedStatus: i.status,
+      text: i.text ?? '',
+      decisionRefs: [],
+      blockedBy: i.blockedBy ?? [],
+    })),
 }));
 
 const run = await import('../plan-workitem-promotion-run');
 const wi = await import('../work-items');
 const { syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
+const { reconcilePlanAuthoredDependenciesNow } = await import('../plan-items/reconcile-linked-work-items');
 const { featureRef, FEATURE_KIND } = await import('../issue-blocks-merge');
 // The issue-family endpoint kind, taken from the module that OWNS it rather than written as a
 // literal here: a test that re-declares a convention cannot detect that convention changing.
@@ -135,7 +152,11 @@ beforeAll(async () => {
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
-      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic',
+      ADD COLUMN IF NOT EXISTS condition_key text;
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_condition_key_uq
+      ON harness_shared.work_items (workspace_id, harness_slug, condition_key)
+      WHERE condition_key IS NOT NULL;
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
       workspace_id text NOT NULL, harness_slug text NOT NULL,
       github_user_id bigint NOT NULL, github_username text NOT NULL DEFAULT '');
@@ -409,6 +430,48 @@ describe('syncFeatureBlockEdges writes EFFECTIVE edges, and REPLACES on every ca
     // The proof it is a real deletion and not just a missing row: satisfy ONLY the second
     // blocker and the item is served, while the first is still non-terminal.
     await setFeatureStatus(second, 'passed');
+    expect(await claim()).toBe(blocked);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WRITER: plan-items/reconcile-linked-work-items.ts — plan blockedBy → feature edges
+// ---------------------------------------------------------------------------
+
+// @covers INV-04 INV-05
+describe('plan-lane reconciliation writes edges that gate the claim door', () => {
+  it('withholds the canonical promoted row until its current plan blocker settles', async () => {
+    const ids = await promoteFeatures([
+      { id: 'P-001', text: 'Plan prerequisite' },
+      { id: 'P-002', text: 'Plan dependent' },
+    ]);
+    const blocker = ids.get('Plan prerequisite')!;
+    const blocked = ids.get('Plan dependent')!;
+    await setFeatureStatus(blocker, 'wip');
+    await setFeatureStatus(blocked, 'open');
+
+    // Positive control: before the plan edge is authored, this exact item is served.
+    expect(await claim()).toBe(blocked);
+    await db.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET taken_by=NULL, status='open'
+       WHERE feature_id=${blocked}`;
+
+    // Change only the plan dependency, then run the real reconciliation writer.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Plan prerequisite' },
+        { id: 'P-002', status: 'todo', text: 'Plan dependent', blockedBy: ['P-001'] },
+      ],
+    });
+    expect(await reconcilePlanAuthoredDependenciesNow(PLAN, 'P-002', H)).toMatchObject({
+      canonicalId: blocked,
+      resolved: [blocker],
+    });
+
+    // The edge is effective, not merely present: the real claim door now withholds.
+    expect(await claim()).toBeNull();
+    await setFeatureStatus(blocker, 'passed');
     expect(await claim()).toBe(blocked);
   });
 });

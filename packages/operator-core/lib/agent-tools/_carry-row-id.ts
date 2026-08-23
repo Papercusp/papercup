@@ -24,6 +24,28 @@ import { CARRY_CAP_HARD_MULTIPLE, CARRY_ROW_ID_MAX } from '../carry-note';
 
 const CARRY_ROW_ID_INPUT_HARD_MAX = CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE;
 
+/**
+ * Shared text schema for carried wall/check fields.
+ *
+ * The handler has a deliberate soft cap: values over it are accepted, truncated,
+ * and reported so one slightly-too-long field cannot discard the whole checkpoint.
+ * Keep the hard Zod backstop as a sanity limit, but publish the soft limit beside
+ * it so generated tool schemas do not make the stored contract look 4x larger.
+ */
+export function carryRowTextSchema(
+  softMax: number,
+  description: string,
+  options: { min?: number } = {},
+) {
+  let schema = z.string();
+  if (options.min !== undefined) schema = schema.min(options.min);
+  const hardMax = softMax * CARRY_CAP_HARD_MULTIPLE;
+  return schema.max(hardMax).meta({ 'x-soft-maxLength': softMax }).describe(
+    `${description} Soft cap: ${softMax} chars; longer values are accepted and truncated with a reported repair. ` +
+      `Hard input backstop: ${hardMax} chars; larger values are rejected.`,
+  );
+}
+
 export const CARRY_ROW_ID_SCHEMA = z
   .string()
   .max(CARRY_ROW_ID_INPUT_HARD_MAX)

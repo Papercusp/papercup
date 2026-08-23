@@ -88,13 +88,42 @@ else
   ok "no longer detects the orchestrator once it's dead"
 fi
 
-# ── 4. end-to-end: MAX_AGE_SECS gating via a fake testvm-shaped process ─────
+# ── 3. self/inspection exclusion and end-to-end age gating ──────────────────
 echo "3. end-to-end candidate/age gating (DRY_RUN, no real vmctl call)"
 
-exec -a papercusp-testvm-selftest bash -c 'trap "exit 0" TERM; while true; do sleep 1; done' selftest-arg0 -name papercusp-testvm-selftest-marker &
+# A wrapper whose argv mentions an orchestrator is not evidence of an active
+# run when it is an ancestor of this inspection.  This reproduces the
+# `bash -c '<command containing vm-federation.sh>'` self-match shape.
+ancestor_out="$(
+  bash -c 'bash -c '\''source "$1"; any_orchestrator_alive'\'' inner "$1"' \
+    outer "$DIR/reap-stale-testvms.sh" "vm-federation.sh" 2>&1
+)"
+if [ -z "$ancestor_out" ]; then
+  ok "ancestor wrapper text is excluded from orchestrator detection"
+else
+  bad "ancestor wrapper text was treated as a live orchestrator: $ancestor_out"
+fi
+
+# The real boot path's argv[0] is qemu-system-x86_64.  A shell/census command
+# may carry the VM marker and even a -name-looking argument, but it is not a VM.
+is_qemu_testvm_cmdline 'qemu-system-x86_64 -name papercusp-testvm-fed-a -m 16384' \
+  && ok "accepts a real QEMU test-VM command line" \
+  || bad "rejected a real QEMU test-VM command line"
+is_qemu_testvm_cmdline 'bash -c inspect census -name papercusp-testvm-inspection-shell' \
+  && bad "accepted an inspection shell as a QEMU test VM" \
+  || ok "rejects an inspection shell carrying the VM marker"
+
+exec -a qemu-system-x86_64 bash -c 'trap "exit 0" TERM; while true; do sleep 1; done' selftest-arg0 -name papercusp-testvm-selftest-marker &
 fake_vm_pid=$!
 PIDS+=("$fake_vm_pid")
 for _ in 1 2 3 4 5; do [ -r "/proc/$fake_vm_pid/cmdline" ] && break; sleep 0.2; done
+
+# This is the process shape that used to be admitted by raw marker matching:
+# it is a live shell with `-name papercusp-testvm-*` in argv, not QEMU.
+exec -a bash bash -c 'trap "exit 0" TERM; while true; do sleep 1; done' census-arg0 -name papercusp-testvm-inspection-shell &
+fake_inspection_pid=$!
+PIDS+=("$fake_inspection_pid")
+for _ in 1 2 3 4 5; do [ -r "/proc/$fake_inspection_pid/cmdline" ] && break; sleep 0.2; done
 
 DRY_RUN=1
 MAX_AGE_SECS=100000   # a freshly-spawned fake process is always younger than this
@@ -120,6 +149,11 @@ if echo "$out" | grep -q "REAP candidate: selftest-marker"; then
   ok "with MAX_AGE_SECS=0 the fake VM is correctly identified as a reap candidate"
 else
   bad "expected a REAP candidate line for selftest-marker, got: $out"
+fi
+if echo "$out" | grep -q "inspection-shell"; then
+  bad "the census shell was reported as a VM candidate: $out"
+else
+  ok "a shell carrying -name papercusp-testvm-* is excluded from VM candidates"
 fi
 if echo "$out" | grep -q "DRY-RUN: would reap selftest-marker"; then
   ok "DRY_RUN mode logs the intended action without calling vmctl/kill"

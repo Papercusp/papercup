@@ -29,6 +29,7 @@ import type {
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { GCP_CLOUD_PLATFORM_SCOPE } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
+import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } from './gcp-safety';
 
 export { createGcpWorkspaceHostApiClient, GoogleComputeWorkspaceHostApiClient } from './gcp-api-client';
 export type { GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
@@ -791,15 +792,6 @@ function stableName(prefix: string, hostId: string): string {
   return `${prefix}-${body}-${suffix}`;
 }
 
-function gcpLabel(value: string): string {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^[-_]+|[-_]+$/g, '');
-  if (normalized.length > 0 && normalized.length <= 63) return normalized;
-  return `id-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
-}
-
 /** Compute Engine requestId: deterministic, non-zero RFC-4122 UUID. */
 export function gcpWorkspaceHostRequestUuid(idempotencyKey: string): string {
   const hex = createHash('sha256')
@@ -893,10 +885,12 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
 
 function labels(desired: WorkspaceHostDesiredSpec, workspaceId: string): Readonly<Record<string, string>> {
   const entries = new Map<string, string>();
-  for (const [key, value] of Object.entries(desired.labels ?? {})) entries.set(gcpLabel(key), gcpLabel(value));
-  entries.set('papercusp-host-id', gcpLabel(desired.hostId));
-  entries.set('papercusp-managed', 'true');
-  entries.set('papercusp-workspace-id', gcpLabel(workspaceId));
+  for (const [key, value] of Object.entries(desired.labels ?? {})) {
+    entries.set(gcpWorkspaceHostLabelValue(key), gcpWorkspaceHostLabelValue(value));
+  }
+  entries.set(GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId, gcpWorkspaceHostLabelValue(desired.hostId));
+  entries.set(GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed, 'true');
+  entries.set(GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId, gcpWorkspaceHostLabelValue(workspaceId));
   return Object.fromEntries([...entries.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
@@ -915,8 +909,11 @@ function assertExactSshFirewall(observed: GcpFirewallObservation, expectedSource
 }
 
 function assertManagedHostResource(observed: GcpResourceObservation, hostId: string, resourceLabel: string): void {
-  const expectedHostLabel = gcpLabel(hostId);
-  if (observed.labels?.['papercusp-managed'] !== 'true' || observed.labels['papercusp-host-id'] !== expectedHostLabel) {
+  const expectedHostLabel = gcpWorkspaceHostLabelValue(hostId);
+  if (
+    observed.labels?.[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed] !== 'true' ||
+    observed.labels[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId] !== expectedHostLabel
+  ) {
     throw new Error(`GCP ${resourceLabel} '${observed.name}' is not labeled as managed by workspace host '${hostId}'`);
   }
 }
@@ -1195,7 +1192,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           request: {
             name,
             sourceDisk: disk.providerId,
-            labels: { 'papercusp-host-id': gcpLabel(request.host.hostId) },
+            labels: {
+              [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: gcpWorkspaceHostLabelValue(request.host.hostId),
+              [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
+              [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: gcpWorkspaceHostLabelValue(ctx.workspaceId),
+            },
           },
         } satisfies GcpStepInput,
       });
@@ -1505,7 +1506,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             request: {
               name: stableName('pc-destroy', `${request.host.hostId}-${disk.providerId}`),
               sourceDisk: disk.providerId,
-              labels: { 'papercusp-host-id': gcpLabel(request.host.hostId) },
+              labels: {
+                [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: gcpWorkspaceHostLabelValue(request.host.hostId),
+                [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
+                [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: gcpWorkspaceHostLabelValue(ctx.workspaceId),
+              },
             },
           } satisfies GcpStepInput,
         });

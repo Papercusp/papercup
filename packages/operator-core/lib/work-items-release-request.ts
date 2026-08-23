@@ -43,6 +43,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 export type ReleaseRequestOnSilence = 'reclaim' | 'escalate' | 'nothing';
 
@@ -53,9 +54,9 @@ export type ReleaseRequestResolution =
   | 'consequence-escalate'
   | 'consequence-nothing'
   /** The item was freed by a DIFFERENT, already-authorized force-release (WI-4198's
-   *  holder-not-live/queen/leads-holder-fleet basis) before the request's own deadline —
-   *  the pending request is now moot (its holder no longer holds it), so it resolves
-   *  without the announced onSilence consequence ever needing to fire. */
+   *  holder-not-live/queen/leads-holder-fleet basis) before the request's own deadline, or
+   *  the item terminalized before the deadline — the pending request is now moot, so it
+   *  resolves without the announced onSilence consequence ever needing to fire. */
   | 'superseded';
 
 export interface WorkItemReleaseRequest {
@@ -187,7 +188,14 @@ export async function resolveWorkItemReleaseRequest(
     UPDATE harness_shared.work_items
        SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
              'release_request_resolved', true,
-             'release_request_resolution', ${opts.resolution}::text,
+             -- A terminal item is already settled. Mark the request moot while
+             -- preserving the CAS, so the deadline sweep cannot emit a false
+             -- reclaim after completion wins the race (EI-21205403365070536).
+             'release_request_resolution', CASE
+               WHEN COALESCE(status, '') = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+                 THEN 'superseded'::text
+               ELSE ${opts.resolution}::text
+             END,
              'release_request_resolved_at', ${resolvedAt}::bigint
            ),
            updated_ts = ${Date.now()}

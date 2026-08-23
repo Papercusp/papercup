@@ -46,6 +46,10 @@ function world(initial: HarnessRegistry['projects'] = []) {
       state.routines.add(opts.installSlug);
       return { seeded: true, active: true, push: false, pushReason: 'joiner', cron: '0 0 * * * *' };
     },
+    // Keep the composed round-trip hermetic. The production default lazily
+    // boots/rekeys substrates and reaches the org-admin database; real boot
+    // coverage belongs in the dedicated integration suites.
+    rekeyHarness: async () => {},
   };
 
   const leaveDeps: LeaveHiveDeps = {

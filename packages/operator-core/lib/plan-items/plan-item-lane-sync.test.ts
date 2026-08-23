@@ -21,6 +21,8 @@ import {
   decideLaneGate,
   planLaneBlockerRef,
   restoreStateAfterUngate,
+  selectCanonicalLinkedWorkItem,
+  type LinkedWorkItem,
   type PlanLaneSyncStatus,
 } from './reconcile-linked-work-items';
 
@@ -245,6 +247,43 @@ describe('restoreStateAfterUngate — what an un-park restores TO [WI-37914]', (
 describe('planLaneBlockerRef', () => {
   it('is a stable, plan-item-scoped ref', () => {
     expect(planLaneBlockerRef('p', 'P-001')).toBe('plan-lane:p#P-001');
+  });
+});
+
+function linked(over: { id: string; createdAt: string; state?: string; viaImplementsEdge?: boolean }): LinkedWorkItem {
+  return {
+    id: over.id,
+    createdAt: over.createdAt,
+    state: over.state ?? 'open',
+    viaImplementsEdge: over.viaImplementsEdge ?? true,
+  } as unknown as LinkedWorkItem;
+}
+
+describe('selectCanonicalLinkedWorkItem — one mutable row per plan lane [D-046]', () => {
+  it('prefers proven implementations, elects the earliest deterministically, and reports every other nonterminal row', () => {
+    const stampOnly = linked({
+      id: 'WI-0001',
+      createdAt: '2026-08-22T00:00:00.000Z',
+      viaImplementsEdge: false,
+    });
+    const later = linked({ id: 'WI-0003', createdAt: '2026-08-22T00:00:02.000Z' });
+    const canonical = linked({ id: 'WI-0002', createdAt: '2026-08-22T00:00:01.000Z' });
+    const terminal = linked({ id: 'WI-0000', createdAt: '2026-08-21T00:00:00.000Z', state: 'resolved' });
+
+    const selected = selectCanonicalLinkedWorkItem([stampOnly, later, terminal, canonical]);
+
+    expect(selected.canonical?.id).toBe('WI-0002');
+    expect(selected.duplicates.map((row) => row.id)).toEqual(['WI-0001', 'WI-0003']);
+  });
+
+  it('falls back to stamp-only rows and uses id as the stable createdAt tie-break', () => {
+    const selected = selectCanonicalLinkedWorkItem([
+      linked({ id: 'WI-b', createdAt: '2026-08-22T00:00:00.000Z', viaImplementsEdge: false }),
+      linked({ id: 'WI-a', createdAt: '2026-08-22T00:00:00.000Z', viaImplementsEdge: false }),
+    ]);
+
+    expect(selected.canonical?.id).toBe('WI-a');
+    expect(selected.duplicates.map((row) => row.id)).toEqual(['WI-b']);
   });
 });
 

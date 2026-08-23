@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -128,9 +128,12 @@ vi.mock('../agent-tools/plans/source', async () => {
 const {
   reconcileLinkedWorkItemsForPlanItem,
   reconcileOrphanedPlanItemWorkItems,
+  reconcilePlanAuthoredDependenciesNow,
   resyncPlanItemLaneNow,
   planLaneBlockerRef,
+  PLAN_AUTHORED_BLOCKERS_KEY,
 } = await import('./reconcile-linked-work-items');
+const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
 const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import(
   '../events/builtin-actions'
 );
@@ -161,7 +164,12 @@ beforeAll(async () => {
       rel text NOT NULL, created_by text,
       created_at timestamptz DEFAULT now() NOT NULL
     )`);
+  await rootSql.unsafe(`
+    CREATE UNIQUE INDEX coord_links_identity_uq
+      ON harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+  `);
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await rootSql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   h.sql = rootSql;
 }, 90_000);
 
@@ -170,7 +178,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items`;
+  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.work_item_deps`;
   h2.items.clear();
   setWorkItemState.mockClear();
   setWorkItemStateWithAliasInfo.mockClear();
@@ -1130,6 +1138,53 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       'blocked',
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
     );
+  });
+
+  it('D-050: replaces only plan-authored blocker edges while preserving an unrelated live blocker', async () => {
+    const plan = 'p-dependency-replace';
+    const target = stub({
+      id: 'F-target',
+      harness: 'sheets',
+      state: 'todo',
+      family: 'feature',
+      payload: {
+        [PLAN_AUTHORED_BLOCKERS_KEY]: {
+          planSlug: plan,
+          itemId: 'P-003',
+          blockerWorkItemIds: ['F-old'],
+        },
+      },
+    });
+    stub({ id: 'F-old', harness: 'sheets', state: 'todo', family: 'feature' });
+    stub({ id: 'F-new', harness: 'sheets', state: 'todo', family: 'feature' });
+    stub({ id: 'F-manual', harness: 'sheets', state: 'todo', family: 'feature' });
+    await edge({ plan, item: 'P-001', srcKind: 'feature', srcRef: 'sheets#F-old' });
+    await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
+    await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
+    await syncFeatureBlockEdges('sheets', 'F-target', ['F-old', 'F-manual'], {
+      enforceAcyclicity: false,
+    });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-001', status: 'todo', blockedBy: [] },
+        { id: 'P-002', status: 'todo', blockedBy: [] },
+        { id: 'P-003', status: 'todo', blockedBy: ['P-002'] },
+      ],
+    });
+
+    const result = await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+
+    expect(result).toEqual({
+      canonicalId: 'F-target',
+      desired: ['F-manual', 'F-new'],
+      resolved: ['F-new'],
+    });
+    expect((await getFeatureBlockers('sheets')).get('F-target')?.sort()).toEqual(['F-manual', 'F-new']);
+    expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual({
+      planSlug: plan,
+      itemId: 'P-003',
+      blockerWorkItemIds: ['F-new'],
+    });
   });
 
   it('never clobbers independent in-flight progress even when the lane just went blocked', async () => {

@@ -66,6 +66,34 @@ describe('migration reservation filename guard', () => {
     expect(guard).toContain('WHERE num = 882');
     expect(guard).toContain("reserved_filename <> '882-oauth-flow-private-context.sql'");
   });
+
+  it('ignores an applied historical filename that is no longer in the active tree', () => {
+    expect(
+      reservationFilenameConflicts(
+        ['528-restore-fed-hlc-insert-stamp.sql', '528-restore-work-items-local-fed-hlc-stamp.sql'],
+        [{ num: 528, filename: '528-restore-fed-hlc-insert-stamp.sql' }],
+        494,
+        new Set(['528-restore-fed-hlc-insert-stamp.sql']),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still reports a mismatch for a conflicting filename that remains active', () => {
+    expect(
+      reservationFilenameConflicts(
+        ['880-session-turn-parts-backfill.sql'],
+        [{ num: 880, filename: '880-oauth-flow-private-context.sql' }],
+        494,
+        new Set(['880-session-turn-parts-backfill.sql']),
+      ),
+    ).toEqual([
+      {
+        num: 880,
+        file: '880-session-turn-parts-backfill.sql',
+        reservedFilename: '880-oauth-flow-private-context.sql',
+      },
+    ]);
+  });
 });
 
 describe('missingReservationRows', () => {

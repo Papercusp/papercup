@@ -11,6 +11,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
+
 const H = vi.hoisted(() => {
   const state: {
     txCalls: { strings: readonly string[]; values: unknown[] }[];
@@ -104,6 +106,10 @@ vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false })),
 }));
 
+vi.mock('../plan-admission-preflight', () => ({
+  preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
+}));
+
 vi.mock('../plan-spec-quality-gate', () => ({
   evaluatePlanSpecQualityGate: vi.fn(async () => H.state.specQuality),
 }));
@@ -159,6 +165,13 @@ const run = async (args: Record<string, unknown>) =>
   };
 
 beforeEach(() => {
+  admissionMocks.preflight.mockReset();
+  admissionMocks.preflight.mockResolvedValue({
+    ready: true,
+    status: 'ready',
+    reason: 'ready',
+    message: 'exact-plan admission ready',
+  });
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
@@ -354,6 +367,30 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       promotionError: 'promotion boom',
     });
     expect(res.data.results[0].message).toContain('Item promotion failed: promotion boom');
+  });
+
+  it('refuses a start whose exact-plan admission is not ready while preserving promotion evidence', async () => {
+    admissionMocks.preflight.mockResolvedValueOnce({
+      ready: false,
+      status: 'refused',
+      reason: 'promotion-lag',
+      message: 'Actionable plan items lack a promoted row: P-002.',
+    });
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'admission_refused',
+      status: null,
+      opStatusRetired: true,
+      promotion: { promoted: 0, skipped: 0, flagOff: false },
+      admission: { ready: false, reason: 'promotion-lag' },
+    });
+    expect(res.data.results[0].message).toContain('Actionable plan items lack a promoted row: P-002.');
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+    expectNoOpStatusWrite();
   });
 
   it('WI-5825: still detects plan_not_found — the retired branch reads the SAME key the write used', async () => {

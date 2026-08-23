@@ -5411,7 +5411,7 @@
           "POST"
         ]
       },
-      "description": "One call assigns plan items to `to`, inlines their bodies, delivers `note`, wakes the target, and reports ({ assigned: { requested, assigned, failed, partial }, woken, delivered, sessionState, itemsHydrated }). All-refused assignment is `ok:false` with wake evidence preserved. Omit `planSlug`+`items` for a directed wake; ended/dead targets are loud misses requiring relaunch.",
+      "description": "One call assigns plan items to `to`, inlines their bodies, delivers `note`, queues a wake, and reports ({ assigned, queued, pickupConfirmed:false, delivered, sessionState, itemsHydrated }). Queueing is not proof a turn executed: verify a fresh checkpoint/activity timestamp. All-refused assignment is `ok:false`; ended/dead targets are loud misses requiring relaunch.",
       "capabilities": [
         "coord:write"
       ],
@@ -5433,9 +5433,9 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — \"su-7a2a, take fleet-dispatch P-001..P-004\". One call assigns + wakes + confirms. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.",
+        "when": "You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — \"su-7a2a, take fleet-dispatch P-001..P-004\". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.",
         "notWhen": "Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never \"*\". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.",
-        "chaining": "coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `assigned` counts plus `woken`/`warning`. An all-refused lane is `ok:false` even when the note/wake succeeded; the woken target then orients, claims any durable lane, and works it."
+        "chaining": "coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `assigned` plus `queued`/`warning`, then verify pickup from a fresh checkpoint/activity timestamp. An all-refused lane is `ok:false` even when the note/wake queued."
       }
     },
     {
@@ -6356,8 +6356,8 @@
       ],
       "guidance": {
         "when": "The work is ALREADY assigned to the target (plan_items:assign or a prior dispatch) and you just need it to start a turn and pick it up — a re-orient nudge. Pick a `parked` target (coord:presence → sessionState:parked).",
-        "notWhen": "You are assigning a NEW lane — use coord:dispatch (assign+wake+confirm). You have a contextual message to deliver — use coord:send {wake:'required'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.",
-        "chaining": "coord:presence (find a parked target) → coord:wake { to } → check `woken`/`warning`. The woken target: coord:orient → claim + work its lane."
+        "notWhen": "You are assigning a NEW lane — use coord:dispatch (assign+deliver+queue). You have a contextual message to deliver — use coord:send {wake:'required'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.",
+        "chaining": "coord:presence (find a parked target) → coord:wake { to } → check `queued`/`warning`, then verify pickup from a fresh checkpoint or activity timestamp. A queued wake is not proof that a turn executed."
       }
     },
     {

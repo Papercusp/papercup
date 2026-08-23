@@ -47,8 +47,17 @@ const baseArgs: DispatchArgs = {
   items: ['P-001', 'P-002'],
 };
 
+function expectQueuedWake(
+  result: { queued?: number; woken: number; pickupConfirmed?: boolean },
+  queued = 1,
+) {
+  expect(result.queued).toBe(queued);
+  expect(result.woken).toBe(0);
+  expect(result.pickupConfirmed).toBe(false);
+}
+
 describe('composeDispatch', () => {
-  it('full dispatch to a PARKED target: assigns lane + delivers note + wakes, reports pickup', async () => {
+  it('full dispatch to a PARKED target: assigns lane + delivers note + queues wake without pickup', async () => {
     const { call, calls } = mockCall({
       'coord:presence': presence([
         { ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true },
@@ -81,8 +90,8 @@ describe('composeDispatch', () => {
     expect(res.wakeable).toBe(true);
     expect(res.assigned).toMatchObject({ ok: true, planSlug: baseArgs.planSlug, items: ['P-001', 'P-002'] });
     expect(res.delivered).toBe('m-1');
-    expect(res.woken).toBe(1);
-    expect(res.warning).toBeUndefined();
+    expectQueuedWake(res);
+    expect(res.warning).toMatch(/pickup is NOT confirmed/i);
     expect(res.recipient_absent).toBeUndefined();
   });
 
@@ -101,7 +110,9 @@ describe('composeDispatch', () => {
     const res = await composeDispatch({ ...baseArgs, to: 'su-dead', items: ['P-001'] }, call);
 
     expect(res.sessionState).toBe('ended');
+    expect(res.queued).toBe(0);
     expect(res.woken).toBe(0);
+    expect(res.pickupConfirmed).toBe(false);
     expect(res.recipient_dead).toEqual(['su-dead']);
     expect(res.assigned?.ok).toBe(true); // the durable lane still landed
     expect(res.warning).toMatch(/RELAUNCH|relaunch/);
@@ -119,7 +130,7 @@ describe('composeDispatch', () => {
     );
     expect(calls.map((c) => c.name)).toEqual(['coord:presence', 'coord:send']); // NO assign
     expect(res.assigned).toBeNull();
-    expect(res.woken).toBe(1);
+    expectQueuedWake(res);
     expect(res.delivered).toBe('m-1');
   });
 
@@ -134,7 +145,7 @@ describe('composeDispatch', () => {
     const res = await composeDispatch(baseArgs, call);
     expect(res.sessionState).toBeNull();
     expect(res.wakeable).toBeNull();
-    expect(res.woken).toBe(1); // the wake still fired
+    expectQueuedWake(res); // the durable wake was queued, but pickup is unconfirmed
     expect(calls.map((c) => c.name)).toContain('coord:send');
   });
 
@@ -149,7 +160,7 @@ describe('composeDispatch', () => {
     const res = await composeDispatch(baseArgs, call);
     expect(res.assigned?.ok).toBe(false);
     expect(res.assigned?.error).toMatch(/cross-user/);
-    expect(res.woken).toBe(1); // the critical leg still ran
+    expectQueuedWake(res); // the critical leg still queued the durable wake
     expect(calls.map((c) => c.name)).toContain('coord:send');
   });
 
@@ -176,7 +187,7 @@ describe('composeDispatch', () => {
       failed: 1,
       partial: false,
     });
-    expect(res.woken).toBe(1);
+    expectQueuedWake(res);
     expect(res.delivered).toBe('m-1');
     expect(res.warning).toMatch(/assigned 0 of 1 requested/);
   });
@@ -205,7 +216,7 @@ describe('composeDispatch', () => {
       failed: 1,
       partial: true,
     });
-    expect(res.woken).toBe(1);
+    expectQueuedWake(res);
   });
 
   it('EI-5957: a MANUAL-mode target (staged, woken 0) gets the LOUD "STAGED not delivered" warning', async () => {
@@ -225,7 +236,9 @@ describe('composeDispatch', () => {
       }),
     });
     const res = await composeDispatch({ ...baseArgs, to: 'su-manual', items: ['P-001'] }, call);
+    expect(res.queued).toBe(0);
     expect(res.woken).toBe(0);
+    expect(res.pickupConfirmed).toBe(false);
     expect(res.staged).toBe(1);
     expect(res.recipient_dead).toBeUndefined();
     expect(res.recipient_absent).toBeUndefined();
@@ -247,8 +260,10 @@ describe('composeDispatch', () => {
       }),
     });
     const res = await composeDispatch({ ...baseArgs, to: 'su-paused', items: ['P-001'] }, call);
+    expect(res.queued).toBe(0);
     expect(res.recipient_absent).toBe(true);
     expect(res.recipient_dead).toBeUndefined();
+    expect(res.pickupConfirmed).toBe(false);
     expect(res.warning).toMatch(/confirm pickup/i);
   });
 
@@ -329,7 +344,7 @@ describe('composeDispatch', () => {
       expect(sendArgs.body).toHaveLength(1);
       expect(sendArgs.body?.[0]?.text).toBe(baseArgs.note);
       expect(res.itemsHydrated).toBeUndefined();
-      expect(res.woken).toBe(1); // the critical leg is unaffected by the hydration failure
+      expectQueuedWake(res); // the critical leg is unaffected by the hydration failure
     });
 
     it('skips hydration entirely for a pure directed wake (no planSlug/items)', async () => {
@@ -367,7 +382,7 @@ describe('composeDispatch', () => {
       ]);
       expect(res.warning).toMatch(/skipped 1 of 2 requested item/);
       // the directed note still delivers — dispatch is not aborted by a partial skip
-      expect(res.woken).toBe(1);
+      expectQueuedWake(res);
     });
 
     it('keeps an item already live-claimed BY THE TARGET ITSELF (re-affirming your own claim is not a collision)', async () => {
@@ -441,7 +456,7 @@ describe('composeDispatch', () => {
       expect(calls.map((c) => c.name)).not.toContain('plan_items:assign');
       expect(res.assigned).toBeNull();
       expect(res.skippedItems).toHaveLength(2);
-      expect(res.woken).toBe(1); // the wake itself is not blocked by a fully-skipped lane
+      expectQueuedWake(res); // the wake itself is not blocked by a fully-skipped lane
     });
 
     it('fail-open: a plan_items:status read error degrades to the pre-fix unfiltered behavior', async () => {
@@ -457,7 +472,7 @@ describe('composeDispatch', () => {
       const assignCall = calls.find((c) => c.name === 'plan_items:assign');
       expect(assignCall?.args).toMatchObject({ itemIds: ['P-001', 'P-002'] }); // unfiltered
       expect(res.skippedItems).toBeUndefined();
-      expect(res.woken).toBe(1);
+      expectQueuedWake(res);
     });
   });
 });

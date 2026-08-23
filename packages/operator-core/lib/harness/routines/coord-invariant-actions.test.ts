@@ -817,31 +817,35 @@ describe('planClaimIntegrityAlarms (fleet-reliability-verification-2026-07-10 P-
 });
 
 describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
+  const requireCapturePlan = (...args: Parameters<typeof planSharedHiveCapture>) => {
+    const plan = planSharedHiveCapture(...args);
+    expect(plan).not.toBeNull();
+    return plan!;
+  };
+
   it('maps every incident kind to a STABLE dedup title + severity', () => {
     const detail = { whatever: true };
-    expect(planSharedHiveCapture({ kind: 'double-completion', title: 'noisy: F-123 by pk-abc…', detail }, 'h1')).toEqual({
+    expect(requireCapturePlan({ kind: 'double-completion', title: 'noisy: F-123 by pk-abc…', detail }, 'h1')).toEqual({
       title: 'shared-hive invariant: cross-swarm double completion in h1',
       severity: 'major',
       watchdogKey: 'shared-hive:double-completion:h1',
     });
-    expect(planSharedHiveCapture({ kind: 'outbox-health', title: 'depth 12345 > 10000', detail }, 'h1')).toEqual({
+    expect(requireCapturePlan({ kind: 'outbox-health', title: 'depth 12345 > 10000', detail }, 'h1')).toEqual({
       title: 'shared-hive invariant: substrate outbox depth/age breach in h1',
       severity: 'major',
       watchdogKey: 'shared-hive:outbox-health:h1',
     });
-    expect(planSharedHiveCapture({ kind: 'presence-ghost', title: 'ghost pk-xyz… holds 3', detail }, 'h1')).toEqual({
+    expect(requireCapturePlan({ kind: 'presence-ghost', title: 'ghost pk-xyz… holds 3', detail }, 'h1')).toEqual({
       title: 'shared-hive invariant: presence ghost anchoring live leases in h1',
       severity: 'minor',
       watchdogKey: 'shared-hive:presence-ghost:h1',
     });
-    expect(planSharedHiveCapture({ kind: 'orphaned-taken-by', title: '2 cleared', detail }, 'h1')).toEqual({
-      title: 'shared-hive invariant: orphaned taken_by swept in h1',
-      severity: 'minor',
-      watchdogKey: 'shared-hive:orphaned-taken-by:h1',
-    });
+    // A successful orphan sweep is healthy recovery, not a defect. The caller
+    // still receives the incident so it can notify the swept holder.
+    expect(planSharedHiveCapture({ kind: 'orphaned-taken-by', title: '2 cleared', detail }, 'h1')).toBeNull();
     // The volatile per-incident text never leaks into the dedup title.
-    expect(planSharedHiveCapture({ kind: 'double-completion', title: 'F-999 other noise', detail }, 'h1').title).toBe(
-      planSharedHiveCapture({ kind: 'double-completion', title: 'F-123 different noise', detail }, 'h1').title,
+    expect(requireCapturePlan({ kind: 'double-completion', title: 'F-999 other noise', detail }, 'h1').title).toBe(
+      requireCapturePlan({ kind: 'double-completion', title: 'F-123 different noise', detail }, 'h1').title,
     );
   });
 
@@ -864,12 +868,11 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
       'double-completion',
       'outbox-health',
       'presence-ghost',
-      'orphaned-taken-by',
     ] as const;
 
     for (const kind of kinds) {
-      const a = planSharedHiveCapture({ kind, title: 'volatile text A', detail }, 'papercusp');
-      const b = planSharedHiveCapture({ kind, title: 'volatile text B', detail }, 'hello-world-3-pot');
+      const a = requireCapturePlan({ kind, title: 'volatile text A', detail }, 'papercusp');
+      const b = requireCapturePlan({ kind, title: 'volatile text B', detail }, 'hello-world-3-pot');
       // Two scopes breaching the same way are TWO signals, never one.
       expect(a.watchdogKey).not.toBe(b.watchdogKey);
       // …and the harness is what distinguishes them, not the volatile text.
@@ -880,14 +883,14 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
       expect(a.title).not.toBe(b.title);
       // Cross-TICK dedup is preserved: the same scope + kind is the same signal
       // however much the per-incident text changed between passes.
-      expect(planSharedHiveCapture({ kind, title: 'a later, different reading', detail }, 'papercusp').watchdogKey).toBe(
+      expect(requireCapturePlan({ kind, title: 'a later, different reading', detail }, 'papercusp').watchdogKey).toBe(
         a.watchdogKey,
       );
     }
 
     // Different KINDS in one harness are also different signals — otherwise a
     // noisy minor (orphan sweep) could swallow the major it shares a scope with.
-    const perKind = kinds.map((kind) => planSharedHiveCapture({ kind, title: 't', detail }, 'papercusp').watchdogKey);
+    const perKind = kinds.map((kind) => requireCapturePlan({ kind, title: 't', detail }, 'papercusp').watchdogKey);
     expect(new Set(perKind).size).toBe(kinds.length);
   });
 
@@ -913,7 +916,7 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
     };
 
     const real = (k: string, h: string): Plan =>
-      planSharedHiveCapture({ kind: k as 'outbox-health', title: 'volatile', detail }, h);
+      requireCapturePlan({ kind: k as 'outbox-health', title: 'volatile', detail }, h);
 
     // The control FAILS the property — on the peer-silence kind (no key to tell
     // the scopes apart, which is exactly how papercusp got swallowed)…
@@ -930,8 +933,8 @@ describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
     const detail = { whatever: true };
     // "the monitor resolved zero scopes" is a fact about the whole pass, so it
     // must NOT be harness-keyed — otherwise it re-files once per harness.
-    const a = planSharedHiveCapture({ kind: 'monitor-scope-empty', title: 'x', detail }, 'papercusp');
-    const b = planSharedHiveCapture({ kind: 'monitor-scope-empty', title: 'x', detail }, 'hello-world-3-pot');
+    const a = requireCapturePlan({ kind: 'monitor-scope-empty', title: 'x', detail }, 'papercusp');
+    const b = requireCapturePlan({ kind: 'monitor-scope-empty', title: 'x', detail }, 'hello-world-3-pot');
     expect(a.watchdogKey).toBe(b.watchdogKey);
     expect(a.title).toBe(b.title);
   });
