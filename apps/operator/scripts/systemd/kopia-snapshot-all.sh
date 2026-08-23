@@ -68,7 +68,7 @@ run_kopia_snapshot() {
     shift
     printf "%s\n" "$$" >"$pid_file"
     exec "$@"
-  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "$@" >"$output_file" 2>&1 &
+  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--parallel=1" "$@" >"$output_file" 2>&1 &
   sudo_pid=$!
   wait "$sudo_pid"
   rc=$?

@@ -7,6 +7,14 @@ Type=oneshot
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# The hot sweep reached 12.6-20.3G while overlapping other scheduled heavy
+# work. Match the daily Kopia unit's proven envelope; snapshot-all.sh also pins
+# Kopia to --parallel=1 so the cgroup is a safety boundary, not the first brake.
+MemoryAccounting=yes
+MemoryHigh=8G
+MemoryMax=12G
+MemorySwapMax=0
+TimeoutStopSec=30s
 ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode scheduled --label hot -- %h/.config/kopia/snapshot-all.sh
 # If oomd kills the user-owned guard while root Kopia survives sudo, validate
 # and kill only the exact PID this invocation recorded.

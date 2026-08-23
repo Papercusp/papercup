@@ -350,6 +350,15 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotService).toContain('ExecStopPost=%h/.config/kopia/snapshot-all.sh --cleanup');
   });
 
+  it('bounds the hot snapshot with the proven daily parallelism and memory envelope', () => {
+    expect(hotScript).toContain('snapshot create "--parallel=1" "$@"');
+    expect(hotService).toContain('MemoryAccounting=yes');
+    expect(hotService).toContain('MemoryHigh=8G');
+    expect(hotService).toContain('MemoryMax=12G');
+    expect(hotService).toContain('MemorySwapMax=0');
+    expect(hotService).toContain('TimeoutStopSec=30s');
+  });
+
   it('hot cleanup kills only the exact recorded root Kopia child', () => {
     const { dir } = fixture();
     const stateDir = join(dir, 'state');
