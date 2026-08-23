@@ -197,6 +197,132 @@ describe('live-federation gate attestation write preflight', () => {
   });
 });
 
+function runGithubRestPreflight(opts: { failUser?: string; missingUser?: string } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'fed-github-rest-preflight-'));
+  const calls = join(dir, 'calls');
+  const gh = join(dir, 'gh');
+  const curl = join(dir, 'curl');
+  const sleep = join(dir, 'sleep');
+
+  writeFileSync(
+    gh,
+    `#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = auth ] && [ "\${2:-}" = token ] && [ "\${3:-}" = --user ]; then
+  [ "\${MISSING_USER:-}" = "\${4:-}" ] && exit 1
+  printf 'tok-%s\\n' "\${4:-}"
+  exit 0
+fi
+exit 97
+`,
+  );
+  writeFileSync(
+    curl,
+    `#!/usr/bin/env bash
+set -u
+header=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -H) header="\${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+token="\${header#Authorization: Bearer }"
+user="\${token#tok-}"
+printf '%s\\n' "$user" >>"$CALLS_FILE"
+if [ "\${FAIL_USER:-}" = "$user" ]; then
+  printf '403'
+else
+  printf '200'
+fi
+`,
+  );
+  writeFileSync(sleep, '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(gh, 0o755);
+  chmodSync(curl, 0o755);
+  chmodSync(sleep, 0o755);
+
+  const script = [
+    'set -uo pipefail',
+    'P_A_USER=papercupai',
+    'P_B_USER=aviynw',
+    extractFn('preflight_github_rest_accounts'),
+    'preflight_github_rest_accounts',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH ?? ''}`,
+      CALLS_FILE: calls,
+      FAIL_USER: opts.failUser ?? '',
+      MISSING_USER: opts.missingUser ?? '',
+    },
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    calls: existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : [],
+  };
+}
+
+describe('live-federation gate GitHub REST preflight', () => {
+  it('probes both smoke identities, not only the first account', () => {
+    const result = runGithubRestPreflight();
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.calls).toEqual(['papercupai', 'aviynw']);
+    expect(result.stdout).toContain('user=papercupai code=ok http=200');
+    expect(result.stdout).toContain('user=aviynw code=ok http=200');
+  });
+
+  it('retries a second-account REST wall three times and returns non-zero', () => {
+    const result = runGithubRestPreflight({ failUser: 'aviynw' });
+    expect(result.status).toBe(1);
+    expect(result.calls).toEqual(['papercupai', 'aviynw', 'aviynw', 'aviynw']);
+    expect(result.stdout).toContain('user=aviynw code=unhealthy http=403 attempts=3');
+  });
+
+  it('leaves a missing token to the smoke while still probing the other identity', () => {
+    const result = runGithubRestPreflight({ missingUser: 'aviynw' });
+    expect(result.status).toBe(0);
+    expect(result.calls).toEqual(['papercupai']);
+    expect(result.stdout).toContain(
+      'user=aviynw code=token_missing detail=no-gh-token; smoke-will-surface',
+    );
+  });
+
+  it('runs before the build and again after content-matrix but before from-repo', () => {
+    const definitions = gate.indexOf('P_A_USER="${P_A_USER:-papercupai}"');
+    const firstCall = gate.indexOf('GH_PREFLIGHT_OUTPUT="$(preflight_github_rest_accounts');
+    const build = gate.indexOf('# ── 2. fresh artifact:');
+    const matrixVerdict = gate.indexOf('log "content-matrix → $MATRIX_RES"');
+    const secondCall = gate.indexOf(
+      'GH_FROMREPO_PREFLIGHT_OUTPUT="$(preflight_github_rest_accounts',
+    );
+    const fromRepo = gate.indexOf('FROMREPO_RES="$(run_smoke from-repo');
+    expect(definitions).toBeGreaterThan(-1);
+    expect(firstCall).toBeGreaterThan(definitions);
+    expect(build).toBeGreaterThan(firstCall);
+    expect(secondCall).toBeGreaterThan(matrixVerdict);
+    expect(fromRepo).toBeGreaterThan(secondCall);
+  });
+
+  it('makes a late wall explicitly partial while preserving the force override', () => {
+    const start = gate.indexOf(
+      'GH_FROMREPO_PREFLIGHT_OUTPUT="$(preflight_github_rest_accounts',
+    );
+    const end = gate.indexOf('FROMREPO_RES="$(run_smoke from-repo');
+    const lateBoundary = gate.slice(start, end);
+    expect(lateBoundary).toContain('FROMREPO_RES="SKIPPED-GITHUB-API"');
+    expect(lateBoundary).toContain('WITNESS_RES="SKIPPED-GITHUB-API"');
+    expect(lateBoundary).toContain('check_staleness');
+    expect(lateBoundary).toContain('GATE: PARTIAL (github-api-unhealthy-before-from-repo)');
+    expect(lateBoundary).toContain('GATE_FORCE=1 — proceeding anyway');
+  });
+});
+
 /**
  * WI-39359 / WI-40008 — the credential wall must not blind coverage that can
  * still authenticate, and must not launch a vacuous matrix when identity auth
