@@ -46,6 +46,29 @@
 #                             [--fake-destructive]
 #                             [--i-know-this-deletes --sandbox-root <dir>]
 #
+# HISTORICAL MODE — prove a guard catches the version that actually preceded a
+# fix, without guessing that HEAD is still pre-fix (git-sync commits the tree
+# continuously):
+#   scripts/mutation-probe.sh --file <tracked-path> \
+#                             --against-commit <sha> \
+#                             --must-be-absent <literal> \
+#                             --positive-control <literal> \
+#                             --calibration <command containing {}> \
+#                             --test <command containing {}>
+#   scripts/mutation-probe.sh --file <tracked-path> \
+#                             --against-last-without <literal> \
+#                             --positive-control <literal> \
+#                             --calibration <command containing {}> \
+#                             --test <command containing {}>
+#
+# Historical mode freezes both the current working-tree bytes and the selected
+# commit's bytes before either command runs. `{}` is replaced with a fresh
+# per-run copy of the appropriate frozen snapshot. Every positive control must
+# be present in BOTH snapshots; calibration must pass against BOTH; the guard
+# test must pass against current and then produce the requested historical
+# verdict. `--against-commit` requires `--must-be-absent`; the content-selected
+# form uses its selector as that absence control automatically.
+#
 # ⛔ DESTRUCTIVE SUBJECTS (EI-20566003853444873 — the 2026-08-15 incident)
 #   This script's original blast-radius model protected THE FILE UNDER TEST and
 #   nothing else. Executing a mutant of code that DELETES means running
@@ -149,6 +172,12 @@ TEST_CMD=""
 EXPECT="caught"
 IN_TREE=0
 SWEEP_ACK=""
+AGAINST_COMMIT=""
+AGAINST_LAST_WITHOUT=""
+MUST_BE_ABSENT=""
+CALIBRATION_CMD=""
+POSITIVE_CONTROLS=()
+HISTORICAL_MODE=0
 DELETES_ACK=0
 FAKE_DESTRUCTIVE=0
 SANDBOX_ROOT=""
@@ -171,6 +200,11 @@ while [ $# -gt 0 ]; do
     --in-tree) IN_TREE=1; shift ;;
     --sweep-lock-held)   SWEEP_ACK="lock-held";      shift ;;
     --accept-sweep-race) SWEEP_ACK="race-accepted";  shift ;;
+    --against-commit)     AGAINST_COMMIT="${2:-}"; shift 2 || die "--against-commit needs a value" ;;
+    --against-last-without) AGAINST_LAST_WITHOUT="${2:-}"; shift 2 || die "--against-last-without needs a value" ;;
+    --must-be-absent)     MUST_BE_ABSENT="${2:-}"; shift 2 || die "--must-be-absent needs a value" ;;
+    --positive-control)   POSITIVE_CONTROLS+=("${2:-}"); shift 2 || die "--positive-control needs a value" ;;
+    --calibration)        CALIBRATION_CMD="${2:-}"; shift 2 || die "--calibration needs a value" ;;
     --fake-destructive)    FAKE_DESTRUCTIVE=1; shift ;;
     --i-know-this-deletes) DELETES_ACK=1;      shift ;;
     --sandbox-root) SANDBOX_ROOT="${2:-}"; shift 2 || die "--sandbox-root needs a value" ;;
@@ -184,7 +218,6 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$FILE" ]     || die "missing --file"
-[ -n "$MUTATE" ]   || die "missing --mutate"
 [ -n "$TEST_CMD" ] || die "missing --test"
 [ -f "$FILE" ]     || die "no such file: $FILE"
 # Resolve --file to an ABSOLUTE path before anything substitutes it. The two
@@ -198,6 +231,37 @@ done
 FILE="$(cd "$(dirname "$FILE")" 2>/dev/null && pwd)/$(basename "$FILE")"
 [ -f "$FILE" ] || die "could not resolve --file to an absolute path: $FILE"
 case "$EXPECT" in caught|survived) ;; *) die "--expect must be 'caught' or 'survived'" ;; esac
+
+if [ -n "$AGAINST_COMMIT" ] || [ -n "$AGAINST_LAST_WITHOUT" ] || [ -n "$MUST_BE_ABSENT" ] || [ -n "$CALIBRATION_CMD" ] || [ "${#POSITIVE_CONTROLS[@]}" -gt 0 ]; then
+  HISTORICAL_MODE=1
+fi
+
+if [ "$HISTORICAL_MODE" -eq 1 ]; then
+  [ -z "$MUTATE" ] || die "--mutate cannot be combined with historical mode; historical mode supplies the before-fix snapshot"
+  [ "$IN_TREE" -eq 0 ] || die "historical mode is always copy-out; drop --in-tree"
+  [ -z "$SWEEP_ACK" ] || die "--sweep-lock-held / --accept-sweep-race only apply to --in-tree mutation mode"
+  [ -n "$AGAINST_COMMIT" ] || [ -n "$AGAINST_LAST_WITHOUT" ] || die "historical mode needs exactly one of --against-commit or --against-last-without"
+  [ -z "$AGAINST_COMMIT" ] || [ -z "$AGAINST_LAST_WITHOUT" ] || die "pick exactly one of --against-commit or --against-last-without"
+  [ "${#POSITIVE_CONTROLS[@]}" -gt 0 ] || die "historical mode requires at least one --positive-control literal"
+  [ -n "$CALIBRATION_CMD" ] || die "historical mode requires --calibration <command containing {}>"
+  case "$TEST_CMD" in
+    *"{}"*) ;;
+    *) die "historical --test must contain {} (the frozen current/historical snapshot path)" ;;
+  esac
+  case "$CALIBRATION_CMD" in
+    *"{}"*) ;;
+    *) die "--calibration must contain {} (the frozen current/historical snapshot path)" ;;
+  esac
+  if [ -n "$AGAINST_COMMIT" ]; then
+    [ -n "$MUST_BE_ABSENT" ] || die "--against-commit requires --must-be-absent <literal> so the selected commit is proven to be the before-fix side"
+  else
+    [ -z "$MUST_BE_ABSENT" ] || [ "$MUST_BE_ABSENT" = "$AGAINST_LAST_WITHOUT" ] || die "--against-last-without already supplies the absence control; do not pass a different --must-be-absent literal"
+    MUST_BE_ABSENT="$AGAINST_LAST_WITHOUT"
+  fi
+else
+  [ -n "$MUTATE" ] || die "missing --mutate"
+  [ -z "$AGAINST_COMMIT" ] && [ -z "$AGAINST_LAST_WITHOUT" ] || die "historical selector requires --calibration and --positive-control; use historical mode deliberately"
+fi
 # The `{}` requirement is MODE-SPECIFIC, and the asymmetry is deliberate — do not "tidy" it
 # back into an unconditional check (EI-19455888914364007).
 #
@@ -369,6 +433,84 @@ trap 'finish "$?"' EXIT
 trap 'finish 130' INT
 trap 'finish 143' TERM
 
+CURRENT_SNAPSHOT=""
+HISTORICAL_SNAPSHOT=""
+HISTORICAL_SHA=""
+GIT_ROOT=""
+REL_FILE=""
+
+if [ "$HISTORICAL_MODE" -eq 1 ]; then
+  # Historical mode never reads the working file again after this point. The
+  # current bytes are a frozen snapshot too: git-sync may advance the tree
+  # while a long guard suite runs, and comparing a live current file to a
+  # historical blob would make the two sides observe different revisions.
+  CURRENT_SNAPSHOT="$SCRATCH/current.snapshot"
+  cp -p "$BASE" "$CURRENT_SNAPSHOT" || die "could not freeze the current snapshot"
+
+  GIT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null)" \
+    || die "--against-commit / --against-last-without requires --file to be inside a Git worktree"
+  case "$FILE" in
+    "$GIT_ROOT"/*) REL_FILE="${FILE#"$GIT_ROOT"/}" ;;
+    *) die "--file is not inside the Git worktree root: $GIT_ROOT" ;;
+  esac
+  git -C "$GIT_ROOT" ls-files --error-unmatch -- "$REL_FILE" >/dev/null 2>&1 \
+    || die "historical mode requires a tracked --file; Git has no path '$REL_FILE' in $GIT_ROOT"
+
+  if [ -n "$AGAINST_COMMIT" ]; then
+    HISTORICAL_SHA="$(git -C "$GIT_ROOT" rev-parse --verify "${AGAINST_COMMIT}^{commit}" 2>/dev/null)" \
+      || die "could not resolve --against-commit '$AGAINST_COMMIT' to a commit"
+  else
+    CANDIDATE="$SCRATCH/historical-candidate"
+    CANDIDATE_ERR="$SCRATCH/historical-candidate.err"
+    while IFS= read -r sha; do
+      # Materialize each candidate instead of piping git show to grep: grep -q
+      # can close the pipe early, and pipefail would turn that SIGPIPE into a
+      # false "token absent" result.
+      if git -C "$GIT_ROOT" show "$sha:$REL_FILE" >"$CANDIDATE" 2>"$CANDIDATE_ERR"; then
+        if ! grep -Fq -- "$AGAINST_LAST_WITHOUT" "$CANDIDATE"; then
+          HISTORICAL_SHA="$sha"
+          break
+        fi
+      fi
+    done < <(git -C "$GIT_ROOT" rev-list HEAD -- "$REL_FILE")
+    [ -n "$HISTORICAL_SHA" ] || die "no reachable commit on HEAD has '$REL_FILE' without the required literal '$AGAINST_LAST_WITHOUT'"
+  fi
+
+  HISTORICAL_SNAPSHOT="$SCRATCH/historical.snapshot"
+  git -C "$GIT_ROOT" show "$HISTORICAL_SHA:$REL_FILE" >"$HISTORICAL_SNAPSHOT" 2>"$SCRATCH/historical-show.err" \
+    || die "commit '$HISTORICAL_SHA' does not contain '$REL_FILE': $(head -3 "$SCRATCH/historical-show.err" 2>/dev/null)"
+  if cmp -s "$CURRENT_SNAPSHOT" "$HISTORICAL_SNAPSHOT"; then
+    die "historical snapshot is byte-identical to the frozen current snapshot (selected commit is not a before-fix source)"
+  fi
+
+  # The absence control is the guard against selecting the fixed side by
+  # mistake. --against-last-without proves it while selecting; explicit
+  # --against-commit needs the caller to name the construct that must be
+  # absent. Check both sides again after extraction so the evidence is local,
+  # deterministic, and visible in the probe output.
+  grep -Fq -- "$MUST_BE_ABSENT" "$CURRENT_SNAPSHOT" \
+    || die "absence control '$MUST_BE_ABSENT' is not present in the frozen current snapshot"
+  if grep -Fq -- "$MUST_BE_ABSENT" "$HISTORICAL_SNAPSHOT"; then
+    die "absence control '$MUST_BE_ABSENT' is present in historical commit $HISTORICAL_SHA; this is not a before-fix snapshot"
+  fi
+
+  [ "${#POSITIVE_CONTROLS[@]}" -gt 0 ] || die "historical mode requires positive controls"
+  for control in "${POSITIVE_CONTROLS[@]}"; do
+    [ -n "$control" ] || die "--positive-control literals must not be empty"
+    grep -Fq -- "$control" "$CURRENT_SNAPSHOT" \
+      || die "positive control '$control' is absent from the frozen current snapshot"
+    grep -Fq -- "$control" "$HISTORICAL_SNAPSHOT" \
+      || die "positive control '$control' is absent from historical commit $HISTORICAL_SHA"
+  done
+
+  log "historical source: commit=$HISTORICAL_SHA path=$REL_FILE"
+  log "frozen snapshots: current=$CURRENT_SNAPSHOT historical=$HISTORICAL_SNAPSHOT"
+  log "absence control: $MUST_BE_ABSENT"
+  for control in "${POSITIVE_CONTROLS[@]}"; do
+    log "positive control: $control"
+  done
+fi
+
 # ---------------------------------------------------------------------------
 # Destructive-subject gate (EI-20566003853444873, the 2026-08-15 incident).
 # Everything above only READS the subject; the first EXECUTION of anything is
@@ -378,10 +520,14 @@ trap 'finish 143' TERM
 # ---------------------------------------------------------------------------
 DESTRUCTIVE_ERE='\b(rm|rmdir|unlink|shred|truncate)\b|\bmkfs(\.[[:alnum:]]+)?\b|\bdd\b[^|;&()]*\bof=|\bfind\b[^|;&()]*-delete'
 SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
-CMD_HITS="$(printf '%s' "$TEST_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
-if [ -n "$SUBJ_HITS$CMD_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
+HIST_SUBJ_HITS=""
+if [ "$HISTORICAL_MODE" -eq 1 ]; then
+  HIST_SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$HISTORICAL_SNAPSHOT" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+fi
+CMD_HITS="$(printf '%s\n%s' "$TEST_CMD" "$CALIBRATION_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+if [ -n "$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
   die "REFUSING: the probe would EXECUTE destructive code, and nothing sandboxes what a mutant DOES.
-      Matched destructive primitives — subject: ${SUBJ_HITS:-none}; --test command: ${CMD_HITS:-none}
+      Matched destructive primitives — current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}
 
       This script's guarantees protect the FILE UNDER TEST, never the filesystem the
       mutant runs against. Executing a mutant of deletion code means running
