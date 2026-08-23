@@ -1573,8 +1573,10 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                 WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}
                   AND id = ${writtenId}))
     RETURNING key, confidence, expires_at, created_by`;
-  const fact = rowToFact(rows[0]) as AssertFactResult;
-  if (rows[0].retired_keys.length > 0) fact.retiredKeys = rows[0].retired_keys;
+  const row = rows[0];
+  if (!row) throw new Error('facts:assert — write returned no row');
+  const fact = rowToFact(row) as AssertFactResult;
+  if (row.retired_keys?.length) fact.retiredKeys = row.retired_keys;
 
   // P-006 / D-011: disclose every repair. Attached only when something was actually
   // repaired, so `if (result.normalized)` stays a correct read on the common path.

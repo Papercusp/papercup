@@ -20,9 +20,9 @@
  * does not write".
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentFact, AssertFactInput, FactCapPreview } from '../../agent-facts/store';
+import type { AgentFact, AssertFactInput, AssertFactResult, FactCapPreview } from '../../agent-facts/store';
 
-const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AgentFact>>());
+const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AssertFactResult>>());
 const factVersionsSpy = vi.hoisted(() => vi.fn());
 const previewSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<FactCapPreview>>());
 const resolveFactFederationSlugSpy = vi.hoisted(() => vi.fn<() => Promise<string | null>>());
