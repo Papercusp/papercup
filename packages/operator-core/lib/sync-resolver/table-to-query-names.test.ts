@@ -41,9 +41,7 @@ describe('queryNamesForTriggerEvent', () => {
   // operator_account_override was mapped from the start; the pool was not, so
   // continuous usage updates were invisible to a tab left open.
   it('maps operator_account_pool → accounts.pool (WI-6796: the tab live-updates on a gateway usage write)', () => {
-    expect(queryNamesForTriggerEvent('harness_shared.operator_account_pool.changed')).toEqual([
-      'accounts.pool',
-    ]);
+    expect(queryNamesForTriggerEvent('harness_shared.operator_account_pool.changed')).toEqual(['accounts.pool']);
   });
 
   it('maps operator_account_override → accounts.pool too — the sibling override table (both feed the same tab)', () => {
@@ -87,10 +85,7 @@ describe('queryNamesForTriggerEvent', () => {
         workspace_id: 'w1',
         harness_slug: 'acme-hive',
       }),
-    ).toEqual([
-      'hive.steering',
-      { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
-    ]);
+    ).toEqual(['hive.steering', { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } }]);
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {
@@ -98,20 +93,14 @@ describe('queryNamesForTriggerEvent', () => {
     // arm / disarm writes — and the routine engine's schedule_active flips — must
     // push the Calendar (plans.scheduledOccurrences) + Routines (plans.schedule) panes.
     const names = queryNamesForTriggerEvent('harness_shared.harness_plans.changed');
-    expect(names).toEqual(
-      expect.arrayContaining(['plans.schedule', 'plans.scheduledOccurrences']),
-    );
-    expect(names).toEqual(
-      expect.arrayContaining(['advSessions.list', 'advSessions.summary']),
-    );
+    expect(names).toEqual(expect.arrayContaining(['plans.schedule', 'plans.scheduledOccurrences']));
+    expect(names).toEqual(expect.arrayContaining(['advSessions.list', 'advSessions.summary']));
     // and it still busts the directory + per-plan reads it always did
     expect(names).toEqual(expect.arrayContaining(['plans.list', 'plans.get']));
   });
 
   it('invalidates Sessions rows and the exact companion together on a ledger write', () => {
-    expect(
-      queryNamesForTriggerEvent('harness_shared.adv_sessions.changed'),
-    ).toEqual(
+    expect(queryNamesForTriggerEvent('harness_shared.adv_sessions.changed')).toEqual(
       expect.arrayContaining(['advSessions.list', 'advSessions.summary']),
     );
   });
@@ -123,20 +112,10 @@ describe('queryNamesForTriggerEvent', () => {
       'designSketches.byFeature',
     ]);
     expect(queryNamesForTriggerEvent('harness_shared.work_items.changed')).toEqual(
-      expect.arrayContaining([
-        'designFeatures.byHarness',
-        'designFeatures.summary',
-      ]),
+      expect.arrayContaining(['designFeatures.byHarness', 'designFeatures.summary']),
     );
-    expect(
-      queryNamesForTriggerEvent(
-        'harness_shared.harness_features_consolidated.changed',
-      ),
-    ).toEqual(
-      expect.arrayContaining([
-        'designFeatures.byHarness',
-        'designFeatures.summary',
-      ]),
+    expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
+      expect.arrayContaining(['designFeatures.byHarness', 'designFeatures.summary']),
     );
   });
 
@@ -411,28 +390,33 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   });
 
   it('refreshes every Conversations source list/detail from its backing tables', () => {
-    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_conversations']).toEqual(expect.arrayContaining([
-      'conversations.questionsList',
-      expect.objectContaining({ name: 'conversations.questionDetail' }),
-    ]));
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_conversations']).toEqual(
+      expect.arrayContaining([
+        'conversations.questionsList',
+        expect.objectContaining({ name: 'conversations.questionDetail' }),
+      ]),
+    );
     for (const table of ['harness_shared.coord_threads', 'harness_shared.coord_thread_posts']) {
-      expect(TABLE_TO_QUERY_NAMES[table]).toEqual(expect.arrayContaining([
-        'conversations.deliberationList',
-        'conversations.deliberationDetail',
-        'conversations.questionDetail',
-      ]));
+      expect(TABLE_TO_QUERY_NAMES[table]).toEqual(
+        expect.arrayContaining([
+          'conversations.deliberationList',
+          'conversations.deliberationDetail',
+          'conversations.questionDetail',
+        ]),
+      );
     }
-    expect(TABLE_TO_QUERY_NAMES['harness_shared.agent_chats_consolidated']).toEqual(expect.arrayContaining([
-      'conversations.agentChatList',
-      expect.objectContaining({ name: 'conversations.agentChatDetail' }),
-    ]));
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.agent_chats_consolidated']).toEqual(
+      expect.arrayContaining([
+        'conversations.agentChatList',
+        expect.objectContaining({ name: 'conversations.agentChatDetail' }),
+      ]),
+    );
     // harness_shared.messages_consolidated entry retired with the work-item
     // mail read queries — see retire-work-item-mail-surface-2026-07-26 P-004.
     expect(TABLE_TO_QUERY_NAMES['harness_shared.messages_consolidated']).toBeUndefined();
-    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toEqual(expect.arrayContaining([
-      'conversations.questionsList',
-      'conversations.questionDetail',
-    ]));
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toEqual(
+      expect.arrayContaining(['conversations.questionsList', 'conversations.questionDetail']),
+    );
     expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_entity_subscriptions']).toContain('conversations.questionDetail');
   });
 
