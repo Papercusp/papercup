@@ -1146,6 +1146,36 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.checks).toBe(2);
     });
 
+    it('ACCEPTS an explicit `contested` row — schema parity with loop:checkpoint (EI-21234745917984459)', async () => {
+      // The storage/normalize/render layer already supported `contested` end to end:
+      // CARRY_ROW_SOFT_CAPS.contested exists, normalizeCheckEntries is imported from
+      // ../../carry-note (the SAME normalizer loop:checkpoint uses) and already reads
+      // `verified ?? contested`, and renderCheckLine already emits ⚠. ONLY this tool's
+      // strict row schema rejected the key, so an identical payload was valid on one
+      // carry surface and `invalid_args` on the other — the same shape as the `id` gap
+      // WI-7264 closed, one field over. Until this, the only route to the CONTESTED tier
+      // here was smuggling a magic phrase through `verified` and relying on the
+      // findVerificationConflict auto-downgrade: implicit where the sibling is explicit.
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'mid-verification',
+        checks: [
+          {
+            claim: 'the suite is green',
+            recheck: 'npm run test:file -- x.test.ts',
+            contested: 'STILL RUNNING at 09:15Z',
+          },
+        ],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('- ⚠ the suite is green');
+      expect(stored).toContain('evidence: STILL RUNNING at 09:15Z');
+      // The whole point of the tier: it must NEVER read as the affirmative one.
+      expect(stored).not.toContain('- ✓ the suite is green');
+    });
+
     it('CARRIES ROWS FORWARD across a plain replace that drops the body — the silent-drop guard', async () => {
       // A rewrite that does not re-state the checks must not lose them: that silent
       // drop is exactly how a claim outlives the probe that would falsify it.
