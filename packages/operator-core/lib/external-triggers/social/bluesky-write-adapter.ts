@@ -34,7 +34,7 @@ import type {
   SocialPostOutcome,
   SocialReplyRequest,
   SocialReplyOutcome,
-  SocialWriteAdapter,
+  SocialReplyCapableAdapter,
 } from '../../capability-verbs/social';
 // `OutboundContext` is declared in resolve.ts and only IMPORTED by social.ts, so
 // it must be taken from its origin rather than re-exported through the verb
@@ -125,7 +125,7 @@ function publicUrl(repo: string, rkey: string): string {
  * two Bluesky accounts, and a singleton would quietly publish to whichever was
  * registered last.
  */
-export function createBlueskyWriteAdapter(deps: BlueskyWriteAdapterDeps): SocialWriteAdapter {
+export function createBlueskyWriteAdapter(deps: BlueskyWriteAdapterDeps): SocialReplyCapableAdapter {
   const now = deps.now ?? (() => new Date());
 
   async function publish(
