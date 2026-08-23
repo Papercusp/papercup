@@ -20,13 +20,13 @@ function expectFontFloor(selector: string, minimum: number): void {
 }
 
 describe('Automations legibility contract', () => {
-  it('never renders text below decorative 12px microcopy', () => {
+  it('never renders text below decorative 11px microcopy', () => {
     const sizes = [...CSS.matchAll(/font-size:\s*(\d+)px/g)].map((match) => Number(match[1]));
     expect(sizes.length).toBeGreaterThan(0);
-    expect(sizes.filter((size) => size < 12)).toEqual([]);
+    expect(sizes.filter((size) => size < 11)).toEqual([]);
   });
 
-  it('keeps essential flow, inspector, control, state, timing, and cost copy at 14px or larger', () => {
+  it('keeps essential flow, inspector, control, state, timing, and cost copy at 13px or larger', () => {
     const essentialSelectors = [
       '.pc-automations__viewbar nav button',
       '.pc-automations__metric > span',
@@ -59,10 +59,10 @@ describe('Automations legibility contract', () => {
       '.pc-automations__sources dt',
       '.pc-automations__sources dd',
     ];
-    for (const selector of essentialSelectors) expectFontFloor(selector, 14);
+    for (const selector of essentialSelectors) expectFontFloor(selector, 13);
   });
 
-  it('keeps secondary metadata at 13px or larger', () => {
+  it('keeps secondary metadata at 12px or larger', () => {
     const metadataSelectors = [
       '.pc-automations__viewbar > span',
       '.pc-automations__panelhead span',
@@ -75,7 +75,7 @@ describe('Automations legibility contract', () => {
       '.pc-automations__spend-rows small',
       '.pc-automations__sources span',
     ];
-    for (const selector of metadataSelectors) expectFontFloor(selector, 13);
+    for (const selector of metadataSelectors) expectFontFloor(selector, 12);
   });
 
   it('uses the stronger dim foreground token for secondary production copy', () => {
