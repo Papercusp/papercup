@@ -9,7 +9,7 @@
  * over HTTP.
  */
 import { spawn as childSpawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, delimiter, resolve } from 'node:path';
 import type { PluginSpawn } from '@papercusp/plugin-sdk';
 
@@ -53,7 +53,17 @@ export function augmentedSpawnPath(cwd?: string): string {
       current = parent;
     }
   }
-  const prepend = [process.env.PAPERCUSP_SIDECAR_BIN ?? '', ...localBinDirs];
+  const home = process.env.HOME ?? '';
+  const userNodeBinDirs = home ? discoverUserNodeBinDirs(home) : [];
+  const prepend = [
+    process.env.PAPERCUSP_SIDECAR_BIN ?? '',
+    ...localBinDirs,
+    // systemd-launched operator services commonly omit the user's Rust and
+    // versioned Node prefixes. Keep the same toolchain surface available to
+    // capability:bash children as the interactive psu shell.
+    ...(home ? [join(home, '.cargo', 'bin')] : []),
+    ...userNodeBinDirs,
+  ];
   const extra = [
     dirname(process.execPath), // the running node → its sibling npx/npm
     '/home/linuxbrew/.linuxbrew/bin',
@@ -83,6 +93,24 @@ export function augmentedSpawnPath(cwd?: string): string {
   return [...prepend, ...(process.env.PATH ?? '').split(delimiter), ...extra]
     .filter((d) => d && !seen.has(d) && (seen.add(d), true))
     .join(delimiter);
+}
+
+/**
+ * Discover versioned user Node prefixes without pinning today's major (node25
+ * → node26). The running node's sibling bin is already included above; these
+ * additional prefixes cover a systemd service launched with a different Node
+ * binary while preserving the user's managed CLIs for child shell commands.
+ */
+function discoverUserNodeBinDirs(home: string): string[] {
+  const localDir = join(home, '.local');
+  try {
+    return readdirSync(localDir, { withFileTypes: true })
+      .filter((entry) => /^node[^/]*$/.test(entry.name) && entry.isDirectory())
+      .map((entry) => join(localDir, entry.name, 'bin'))
+      .filter((dir) => existsSync(dir));
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve a basename to an absolute path against `path`; returns the bare

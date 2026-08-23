@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { delimiter, dirname, join } from 'node:path';
-import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 let lastChild: FakeChild;
@@ -194,6 +194,24 @@ describe('pluginSpawnImpl — PATH augmentation (the `spawn npx ENOENT` fix)', (
     expect(process.env.PAPERCUSP_SIDECAR_BIN).toBeUndefined(); // sanity: not set in the test env
     const dirs = augmentedSpawnPath().split(delimiter);
     expect(dirs.every((d) => d.length > 0)).toBe(true);
+  });
+
+  it('keeps Cargo and versioned user Node bins visible with a minimal service PATH', () => {
+    const home = mkdtempSync(join(tmpdir(), 'plugin-spawn-toolchain-'));
+    const cargoBin = join(home, '.cargo', 'bin');
+    const nodeBin = join(home, '.local', 'node25', 'bin');
+    mkdirSync(cargoBin, { recursive: true });
+    mkdirSync(nodeBin, { recursive: true });
+    try {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('PATH', '/usr/bin');
+      const dirs = augmentedSpawnPath().split(delimiter);
+      expect(dirs).toContain(cargoBin);
+      expect(dirs).toContain(nodeBin);
+      expect(dirs.indexOf(cargoBin)).toBeLessThan(dirs.indexOf('/usr/bin'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   // Recurrence guard (2026-08-03): DEFAULT_BACKEND_CMDS.omp is the bare
