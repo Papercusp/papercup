@@ -74,7 +74,11 @@ export const MIN_PAGE_BYTES = 512;
  * this exists to prevent, so the guarantee stays unconditional and the caller
  * gets a stated reason rather than a corrupt page.
  */
-export function doorSafePageBytes(absPath: string, requestedBytes: number): number {
+export function doorSafePageBytes(
+  absPath: string,
+  requestedBytes: number,
+  reference?: ScratchReferenceManifest,
+): number {
   const envelopeChars = JSON.stringify({
     ok: true,
     file_path: absPath,
@@ -82,6 +86,7 @@ export function doorSafePageBytes(absPath: string, requestedBytes: number): numb
     byte_offset: Number.MAX_SAFE_INTEGER,
     byte_length: Number.MAX_SAFE_INTEGER,
     total_bytes: Number.MAX_SAFE_INTEGER,
+    ...(reference ? { reference } : {}),
     eof: false,
     data: '',
     next_cursor: {
@@ -280,7 +285,11 @@ export default defineTool({
       const start = Math.min(args.byte_offset, bytes.length);
       // WI-39670: clamp to what survives the resultEach door. Requesting the
       // schema's max would otherwise return base64 the door truncates mid-string.
-      const effectiveLimit = doorSafePageBytes(abs, args.byte_limit);
+      // A scratch reference contributes its manifest to every byte-page
+      // response. Include the parsed manifest in the ceiling calculation;
+      // otherwise the page fits for a legacy file but the outer tools:invoke
+      // result door projects `data` mid-base64 after adding `reference`.
+      const effectiveLimit = doorSafePageBytes(abs, args.byte_limit, reference);
       if (effectiveLimit < MIN_PAGE_BYTES) {
         return err(
           'path_too_long_for_byte_window',
