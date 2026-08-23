@@ -277,6 +277,9 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
+    expect(hooks.hooks.PostToolUse[0].matcher).toBe(
+      '^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$',
+    );
     // With NO sid given, no activity (+ merged coord-fold) hook — it needs an
     // identity to report/fold under.
     expect(hooks.hooks.PostToolUse).toHaveLength(1);
@@ -316,6 +319,8 @@ describe('writeRoleCodexHome', () => {
     const postLock = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-locks-release.sh'),
     );
+    expect(preLock.matcher).toBe('apply_patch|Edit|Write');
+    expect(postLock.matcher).toBe('^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$');
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='role-abc-9'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
@@ -903,6 +908,8 @@ describe('writeSuCodexHome', () => {
     const postLock = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-locks-release.sh'),
     );
+    expect(preLock.matcher).toBe('apply_patch|Edit|Write');
+    expect(postLock.matcher).toBe('^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$');
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");

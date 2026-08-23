@@ -171,8 +171,11 @@ async function run(
   return { status, stdout: stdout.trim() };
 }
 
-async function runPost(input: object): Promise<{ status: number | null; stdout: string }> {
-  const { status, stdout } = await runHookProcess('bash', [POST_HOOK], {
+async function runPost(
+  input: object,
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string }> {
+  const { status, stdout } = await runHookProcess("bash", [POST_HOOK], {
     input: JSON.stringify(input),
     env: {
       ...process.env,
@@ -180,6 +183,7 @@ async function runPost(input: object): Promise<{ status: number | null; stdout: 
       PAPERCUSP_LOCKS_CACHE_DIR: cache,
       PAPERCUSP_WORKSPACE_ROOT: ws,
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+      ...extraEnv,
     },
   });
   return { status, stdout: stdout.trim() };
@@ -385,6 +389,202 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
       coordination_domain: fs.realpathSync(repo),
     });
     expect(fs.existsSync(join(cache, 'tu-domain-release.domain'))).toBe(false);
+  });
+
+  it.each(["exec", "functions.exec"])(
+    "failed nested apply_patch is recovered when its %s parent completes",
+    async (parentToolName) => {
+      const identity = {
+        PAPERCUSP_LOCK_SID: "test-parent-owner",
+        PAPERCUSP_SID: "test-parent-owner",
+      };
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: sub/failed-nested.ts",
+        "@@",
+        "-before",
+        "+after",
+        "*** End Patch",
+      ].join("\n");
+      nextInner = { ok: true, lock_id: "failed-nested-lock" };
+      const pre = await run(
+        {
+          tool_name: "apply_patch",
+          tool_input: patch,
+          tool_use_id: "tu-failed-nested",
+          session_id: "s",
+          cwd: repo,
+        },
+        identity,
+      );
+      expect(pre.status).toBe(0);
+      expect(fs.existsSync(join(cache, "tu-failed-nested.lock"))).toBe(true);
+
+      recoveryQueueInner = {
+        active_locks: [
+          {
+            lock_id: "failed-nested-lock",
+            path: "sub/failed-nested.ts",
+            owner: "$REQUEST_OWNER",
+          },
+        ],
+        waiting: [],
+      };
+      recoveryReleaseInner = {
+        ok: true,
+        released: ["sub/failed-nested.ts"],
+        held_before: 1,
+      };
+      const parent = await runPost(
+        {
+          tool_name: parentToolName,
+          tool_input: {
+            source: `const result = await tools.apply_patch(${JSON.stringify(patch)}); text(result);`,
+          },
+          tool_use_id: `tu-parent-${parentToolName.replace(/\W/g, "-")}`,
+          session_id: "s",
+          cwd: repo,
+        },
+        identity,
+      );
+
+      expect(parent.status).toBe(0);
+      expect(requests.map((request) => request.body.params.name)).toEqual([
+        "locks:acquire",
+        "locks:queue",
+        "locks:release",
+      ]);
+      expect(requests[1].body.params.arguments).toEqual({
+        owner: "test-parent-owner",
+        paths: ["sub/failed-nested.ts"],
+      });
+      expect(requests[2].body.params.arguments).toMatchObject({
+        lock_id: "failed-nested-lock",
+        paths: ["sub/failed-nested.ts"],
+        coordination_domain: fs.realpathSync(repo),
+      });
+      for (const suffix of ["lock", "paths", "domain"]) {
+        expect(fs.existsSync(join(cache, `tu-failed-nested.${suffix}`))).toBe(
+          false,
+        );
+      }
+    },
+  );
+
+  it("retains failed-nested sidecars when the parent cannot prove the queue response shape", async () => {
+    const identity = {
+      PAPERCUSP_LOCK_SID: "test-queue-unknown-owner",
+      PAPERCUSP_SID: "test-queue-unknown-owner",
+    };
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: sub/queue-unknown.ts",
+      "@@",
+      "-before",
+      "+after",
+      "*** End Patch",
+    ].join("\n");
+    nextInner = { ok: true, lock_id: "queue-unknown-lock" };
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patch,
+        tool_use_id: "tu-queue-unknown",
+        session_id: "s",
+        cwd: repo,
+      },
+      identity,
+    );
+    expect(pre.status).toBe(0);
+
+    recoveryQueueInner = { ok: true };
+    const parent = await runPost(
+      {
+        tool_name: "functions.exec",
+        tool_input: {
+          source: `await tools.apply_patch(${JSON.stringify(patch)});`,
+        },
+        tool_use_id: "tu-parent-queue-unknown",
+        session_id: "s",
+        cwd: repo,
+      },
+      identity,
+    );
+
+    expect(parent.status).toBe(0);
+    expect(requests.map((request) => request.body.params.name)).toEqual([
+      "locks:acquire",
+      "locks:queue",
+    ]);
+    for (const suffix of ["lock", "paths", "domain"]) {
+      expect(fs.existsSync(join(cache, `tu-queue-unknown.${suffix}`))).toBe(
+        true,
+      );
+    }
+    expect(
+      JSON.parse(fs.readFileSync(join(cache, "last-error.json"), "utf8")),
+    ).toMatchObject({
+      handler: "posttooluse",
+      phase: "parent-recovery-queue",
+      owner: "test-queue-unknown-owner",
+    });
+  });
+
+  it("retains the release token when an HTTP-200 locks:release verdict is unconfirmed", async () => {
+    const identity = {
+      PAPERCUSP_LOCK_SID: "test-unconfirmed-owner",
+      PAPERCUSP_SID: "test-unconfirmed-owner",
+    };
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: sub/unconfirmed-release.ts",
+      "@@",
+      "-before",
+      "+after",
+      "*** End Patch",
+    ].join("\n");
+    nextInner = { ok: true, lock_id: "unconfirmed-release-lock" };
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patch,
+        tool_use_id: "tu-unconfirmed-release",
+        session_id: "s",
+        cwd: repo,
+      },
+      identity,
+    );
+    expect(pre.status).toBe(0);
+
+    recoveryReleaseInner = { ok: true, released: [], held_before: 1 };
+    const post = await runPost(
+      {
+        tool_name: "apply_patch",
+        tool_input: patch,
+        tool_use_id: "tu-unconfirmed-release",
+        session_id: "s",
+        cwd: repo,
+      },
+      identity,
+    );
+
+    expect(post.status).toBe(0);
+    expect(requests.map((request) => request.body.params.name)).toEqual([
+      "locks:acquire",
+      "locks:release",
+    ]);
+    for (const suffix of ["lock", "paths", "domain"]) {
+      expect(
+        fs.existsSync(join(cache, `tu-unconfirmed-release.${suffix}`)),
+      ).toBe(true);
+    }
+    expect(
+      JSON.parse(fs.readFileSync(join(cache, "last-error.json"), "utf8")),
+    ).toMatchObject({
+      handler: "posttooluse",
+      phase: "release",
+      owner: "test-unconfirmed-owner",
+    });
   });
 
   it('already-held grant → allow without caching a PostToolUse release token', async () => {

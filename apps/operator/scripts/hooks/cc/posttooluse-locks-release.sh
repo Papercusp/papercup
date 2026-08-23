@@ -4,10 +4,10 @@
 #
 # Reads the cached lock_id from
 #   $PAPERCUSP_LOCKS_CACHE_DIR/<tool_use_id>.lock
-# and calls locks:release. If the cache is missing (Pre didn't run, or
-# already released) we no-op. Always exit 0 — surfacing release noise to
-# the agent changes nothing, and the lock's TTL covers any missed
-# release anyway.
+# and calls locks:release. If the matching cache is missing, a completed
+# Codex code-mode parent may recover an orphaned nested apply_patch token;
+# other calls no-op. Always exit 0 — surfacing release noise to the agent
+# changes nothing, and the lock's TTL covers any missed release anyway.
 #
 # EI-63: ALSO reads the sidecar $PAPERCUSP_LOCKS_CACHE_DIR/<tool_use_id>.paths
 # (written by the matching PreToolUse's _grant()) and, when present, passes it
@@ -39,11 +39,14 @@ INPUT=$(cat)
 
 # Fail-open backstop: release is best-effort (TTL covers a missed one), so
 # never let a Python error exit non-zero from this hook.
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || exit 0
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" <<'PYEOF' || exit 0
 import json, os, re, sys, time, urllib.request, urllib.parse
+from pathlib import Path
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
+raw, operator_url, token, agent_id, cache_dir, hook_dir = sys.argv[1:7]
+sys.path.insert(0, hook_dir)
+from mcp_response import parse_mcp_response  # noqa: E402
 
 
 def write_marker(name, value):
@@ -69,6 +72,8 @@ except Exception:
 tool_use_id = payload.get('tool_use_id', '')
 if not isinstance(tool_use_id, str) or not tool_use_id:
     sys.exit(0)
+tool_name = payload.get('tool_name', '') or ''
+tool_input = payload.get('tool_input', '')
 
 # Claude's PreToolUse batch path writes a marker for every native edit before
 # allowing any member of the batch to run.  Those edits share one union lock;
@@ -112,8 +117,181 @@ def owner_marker_name(kind):
     safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:160] or 'unknown'
     return 'owner-' + safe + '-last-' + kind + '.json'
 
+
+def _is_conn_refused(exc):
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    if isinstance(getattr(exc, 'reason', None), ConnectionRefusedError):
+        return True
+    text = str(exc)
+    return 'Connection refused' in text or 'Errno 111' in text
+
+
+RETRY_BACKOFFS = (0.4, 0.8, 1.2)
+
+
+def cleanup_sidecars(base_path):
+    for suffix in ('.lock', '.paths', '.domain'):
+        try:
+            os.remove(base_path + suffix)
+        except Exception:
+            pass
+
+
+def mark_release_success(mode='posttooluse'):
+    value = {'ts': now_iso(), 'owner': owner, 'mode': mode}
+    write_marker('last-success.json', value)
+    write_marker(owner_marker_name('success'), value)
+
+
+def mark_release_error(phase, detail):
+    value = {
+        'ts': now_iso(), 'handler': 'posttooluse', 'phase': phase,
+        'detail': str(detail)[:200], 'operator_url': operator_url,
+        'owner': owner,
+    }
+    write_marker('last-error.json', value)
+    write_marker(owner_marker_name('error'), value)
+
+
+def tool_request(name, arguments):
+    body = json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': name, 'arguments': arguments},
+    }).encode()
+    return urllib.request.Request(
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+        + urllib.parse.quote(owner, safe=''),
+        data=body,
+        headers={
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        },
+        method='POST',
+    )
+
+
+def call_tool(name, arguments):
+    last_exc = None
+    for attempt in range(len(RETRY_BACKOFFS) + 1):
+        try:
+            raw_response = urllib.request.urlopen(
+                tool_request(name, arguments), timeout=10,
+            ).read().decode('utf-8', errors='replace')
+            inner, rpc_error, phase = parse_mcp_response(raw_response)
+            if rpc_error is not None:
+                return None, 'rpc: ' + str(rpc_error)[:200]
+            if phase != 'ok' or not isinstance(inner, dict):
+                return None, 'response: ' + str(phase)
+            return inner, None
+        except Exception as exc:
+            last_exc = exc
+            if _is_conn_refused(exc) and attempt < len(RETRY_BACKOFFS):
+                time.sleep(RETRY_BACKOFFS[attempt])
+                continue
+            break
+    return None, str(last_exc)[:200]
+
+
+def release_confirmed(inner, expected_paths):
+    if not isinstance(inner, dict) or inner.get('ok') is False:
+        return False
+    row = inner
+    results = inner.get('results')
+    if isinstance(results, list) and results:
+        rows = [result for result in results if isinstance(result, dict)]
+        if not rows or any(result.get('ok') is False for result in rows):
+            return False
+        row = rows[0]
+    released = row.get('released')
+    held_before = row.get('held_before', row.get('heldBefore'))
+    if isinstance(released, list):
+        if expected_paths and all(path in released for path in expected_paths):
+            return True
+        return (not expected_paths and bool(released)) or (
+            held_before == 0 and not released
+        )
+    # Compatibility with authorities predating released/held_before.
+    return inner.get('ok') is True
+
+
+def recover_failed_code_mode_edit(current_cache_path):
+    """Release cached nested apply_patch locks when its parent exec completes."""
+    if tool_name not in ('exec', 'functions.exec', 'functions__exec'):
+        return
+    try:
+        source = tool_input if isinstance(tool_input, str) else json.dumps(tool_input)
+    except Exception:
+        return
+    if 'apply_patch' not in source or '*** Begin Patch' not in source:
+        return
+
+    def path_named_in_patch(path):
+        return any(
+            marker + path in source
+            for marker in (
+                '*** Add File: ',
+                '*** Update File: ',
+                '*** Delete File: ',
+                '*** Move to: ',
+            )
+        )
+
+    for lock_file in Path(cache_dir).glob('*.lock'):
+        base = str(lock_file)[:-len('.lock')]
+        if str(lock_file) == current_cache_path:
+            continue
+        try:
+            lock_id = lock_file.read_text().strip()
+            paths = json.loads(Path(base + '.paths').read_text())
+            domain = Path(base + '.domain').read_text().strip()
+        except Exception:
+            continue
+        if not lock_id or not domain or not isinstance(paths, list) or not paths:
+            continue
+        if not all(isinstance(path, str) and path_named_in_patch(path) for path in paths):
+            continue
+
+        queued, queue_error = call_tool('locks:queue', {
+            'owner': owner,
+            'paths': paths,
+        })
+        if queue_error is not None or not isinstance(queued, dict):
+            mark_release_error('parent-recovery-queue', queue_error or 'invalid queue response')
+            continue
+        rows = queued.get('active_locks', queued.get('activeLocks'))
+        if not isinstance(rows, list):
+            mark_release_error('parent-recovery-queue', 'invalid active_locks response')
+            continue
+        owned = [
+            row for row in rows
+            if isinstance(row, dict)
+            and (row.get('lock_id') or row.get('lockId')) == lock_id
+            and (row.get('owner') or row.get('ownerId')) == owner
+        ]
+        if not owned:
+            cleanup_sidecars(base)
+            continue
+
+        released, release_error = call_tool('locks:release', {
+            'lock_id': lock_id,
+            'paths': paths,
+            'coordination_domain': domain,
+        })
+        if release_error is not None or not release_confirmed(released, paths):
+            mark_release_error(
+                'parent-recovery-release',
+                release_error or released or 'release not confirmed',
+            )
+            continue
+        cleanup_sidecars(base)
+        mark_release_success('parent-recovery')
+
+
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')
 if not os.path.exists(cache_path):
+    recover_failed_code_mode_edit(cache_path)
     sys.exit(0)
 
 try:
@@ -169,24 +347,6 @@ if release_paths:
 if coordination_domain:
     release_args['coordination_domain'] = coordination_domain
 
-body = json.dumps({
-    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-    'params': {'name': 'locks:release', 'arguments': release_args},
-}).encode()
-
-req = urllib.request.Request(
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-    + urllib.parse.quote(owner, safe=''),
-    data=body,
-    headers={
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/event-stream',
-    },
-    method='POST',
-)
-
-
 # EI-1400: a single-shot release used to give up instantly on ANY transport
 # error (including a transient connection-refused during the :3070 restart
 # window that follows a lib/** edit — the host has no hot-reload, so an
@@ -200,56 +360,15 @@ req = urllib.request.Request(
 # connection-refused retry (same backoff shape) so a short restart window
 # doesn't turn into a ~20-minute stray lock. Any non-refused error still
 # fails open immediately (best-effort; TTL still covers a genuine miss).
-def _is_conn_refused(exc):
-    if isinstance(exc, ConnectionRefusedError):
-        return True
-    if isinstance(getattr(exc, 'reason', None), ConnectionRefusedError):
-        return True
-    s = str(exc)
-    return 'Connection refused' in s or 'Errno 111' in s
-
-
-RETRY_BACKOFFS = (0.4, 0.8, 1.2)
-_last_exc = None
-_released = False
-for _attempt in range(len(RETRY_BACKOFFS) + 1):
-    try:
-        urllib.request.urlopen(req, timeout=10).read()
-        _released = True
-        break
-    except Exception as e:
-        _last_exc = e
-        if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
-            time.sleep(RETRY_BACKOFFS[_attempt])
-            continue
-        break
-
-if _released:
-    value = {'ts': now_iso(), 'owner': owner}
-    write_marker('last-success.json', value)
-    write_marker(owner_marker_name('success'), value)
+# EI-211603: an HTTP 200 is not itself a release verdict. Parse the MCP body,
+# confirm the selected paths were released, and retain the cache token on an
+# unconfirmed outcome so a parent exec completion can recover it.
+released, release_error = call_tool('locks:release', release_args)
+if release_error is None and release_confirmed(released, release_paths or []):
+    mark_release_success()
+    cleanup_sidecars(cache_path[:-len('.lock')])
 else:
-    # Best-effort; TTL covers a missed release. Record for /coord health.
-    value = {
-        'ts': now_iso(), 'handler': 'posttooluse', 'phase': 'connect',
-        'detail': str(_last_exc)[:200], 'operator_url': operator_url,
-        'owner': owner,
-    }
-    write_marker('last-error.json', value)
-    write_marker(owner_marker_name('error'), value)
-
-try:
-    os.remove(cache_path)
-except Exception:
-    pass
-try:
-    os.remove(paths_cache_path)
-except Exception:
-    pass
-try:
-    os.remove(domain_cache_path)
-except Exception:
-    pass
+    mark_release_error('release', release_error or released or 'release not confirmed')
 
 sys.exit(0)
 PYEOF

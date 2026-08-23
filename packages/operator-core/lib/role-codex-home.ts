@@ -91,7 +91,12 @@ export interface RoleCodexHome {
 
 /** codex's file-edit tool is `apply_patch` (canonical); `Edit`/`Write` are
  *  documented matcher aliases. (developers.openai.com/codex/hooks, PR #18391) */
-const CODEX_LOCK_MATCHER = 'apply_patch|Edit|Write';
+const CODEX_LOCK_PRE_MATCHER = 'apply_patch|Edit|Write';
+/** EI-211603: a failed code-mode `apply_patch` can omit its nested
+ *  PostToolUse event. The parent code-mode call still completes, so the
+ *  release hook also observes its canonical/compatibility aliases and can
+ *  recover only the cached lock paths named in that parent's source. */
+const CODEX_LOCK_POST_MATCHER = `^(?:${CODEX_LOCK_PRE_MATCHER}|exec|functions\\.exec|functions__exec)$`;
 
 /**
  * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
@@ -494,7 +499,7 @@ export function writeCodexLockHooks(
   type CodexHook = { matcher: string; hooks: { type: 'command'; command: string }[] };
   const postToolUse: CodexHook[] = [
     {
-      matcher: CODEX_LOCK_MATCHER,
+      matcher: CODEX_LOCK_POST_MATCHER,
       hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${post}` }],
     },
   ];
@@ -576,7 +581,7 @@ export function writeCodexLockHooks(
 
   const preToolUse: CodexHook[] = [
     {
-      matcher: CODEX_LOCK_MATCHER,
+      matcher: CODEX_LOCK_PRE_MATCHER,
       hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
     },
   ];
