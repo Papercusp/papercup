@@ -84,7 +84,11 @@ import {
   readD026QuiescenceEvidence,
   type D026QuiescenceEvidence,
 } from './single-primary-check';
-import { infraCritAmbientOnly } from './thresholds';
+import {
+  infraCritAmbientOnly,
+  POOL_PROJECTION_STALE_WARN_MS,
+  projectionWriteStalled,
+} from './thresholds';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -609,18 +613,22 @@ export function evaluateLivenessAlarm(
     }
   }
 
-  // 5. LLM substrate starved — every pool account paused. ONLY trusted when the
-  //    snapshot is FRESH: when the bg routine engine is frozen (tickStale →
-  //    health-tick-stale already fires) the in-engine account-state read is
-  //    blinded into a false all-paused reading (EI-1695: accounts:status showed
-  //    7/8 available during the freeze). Suppressing it here folds the false
-  //    rate-starvation blocker into the one health-tick-stale root cause.
+  // 5. LLM substrate starved — every pool account unavailable. Trust BOTH clocks:
+  //    the health snapshot must be fresh, and the usage-window projection inside
+  //    it must still be receiving writes. A fresh tick can faithfully re-read an
+  //    OLD projection and turn stale usage walls into a confident pool-wide outage
+  //    (EI-21169582379092366). The tokens panel already detects that independent
+  //    projection-write stall through the shared predicate below; do not page the
+  //    derived accounts-starved blocker until upstream capacity is measured again.
   const tk = health.panels.tokens?.data;
-  if (!tickStale && tk && tk.accountsTotal > 0 && tk.accountsAvailable === 0) {
+  const poolProjectionStale = tk
+    ? projectionWriteStalled(tk, POOL_PROJECTION_STALE_WARN_MS)
+    : false;
+  if (!tickStale && !poolProjectionStale && tk && tk.accountsTotal > 0 && tk.accountsAvailable === 0) {
     signals.push({
       key: 'accounts-starved',
       severity: 'blocker',
-      summary: `all ${tk.accountsTotal} LLM pool account(s) paused — the fleet is rate-starved.`,
+      summary: `all ${tk.accountsTotal} LLM pool account(s) unavailable by a fresh capacity projection — the fleet is rate-starved.`,
     });
   }
 
@@ -1074,7 +1082,7 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   if (s.startsWith('Queen loop dark') || s.startsWith('Mug loop dark')) return 'queen-dark';
   if (s.startsWith('Overwatch supervisor loop dark') || s.startsWith('Kettle supervisor loop dark'))
     return 'overwatch-dark';
-  if (/LLM pool account\(s\) paused/.test(s)) return 'accounts-starved';
+  if (/LLM pool account\(s\) (?:paused|unavailable by a fresh capacity projection)/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".
   const fireStaleMatch = /^([^@\s]+)@\S+ has not fired in/.exec(s);

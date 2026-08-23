@@ -334,6 +334,41 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(keys).not.toContain('health-tick-stale');
   });
 
+  it('EI-21169582379092366: a fresh health tick suppresses accounts-starved when its pool projection is stale', () => {
+    const h = mkHealth({
+      panels: {
+        tokens: {
+          data: {
+            accountsTotal: 12,
+            accountsAvailable: 0,
+            spendUsd: 1,
+            poolProjectionFreshestAgeMs: 31 * 60_000,
+          },
+        },
+      },
+    });
+    const keys = evaluateLivenessAlarm(h, 60_000, { snapshotStaleMs: 6 * 60_000 }).map((s) => s.key);
+    expect(keys).not.toContain('accounts-starved');
+    expect(keys).not.toContain('health-tick-stale');
+  });
+
+  it('EI-21169582379092366: a fresh pool projection still supports accounts-starved', () => {
+    const h = mkHealth({
+      panels: {
+        tokens: {
+          data: {
+            accountsTotal: 12,
+            accountsAvailable: 0,
+            spendUsd: 1,
+            poolProjectionFreshestAgeMs: 29 * 60_000,
+          },
+        },
+      },
+    });
+    expect(evaluateLivenessAlarm(h, 60_000, { snapshotStaleMs: 6 * 60_000 }).map((s) => s.key))
+      .toContain('accounts-starved');
+  });
+
   it('catch-all: an unforeseen crit panel still surfaces (no silent miss)', () => {
     const h = mkHealth({ panels: { deploy: { status: 'crit', summary: 'release refs unreadable' } } });
     const sigs = evaluateLivenessAlarm(h, null);
@@ -1336,6 +1371,7 @@ describe('deriveSignatureFromSummary (legacy classifier)', () => {
     expect(deriveSignatureFromSummary('[infra-liveness] Queen loop dark (started, no live wake) — ...')).toBe('queen-dark');
     expect(deriveSignatureFromSummary('[infra-liveness] Overwatch supervisor loop dark — ...')).toBe('overwatch-dark');
     expect(deriveSignatureFromSummary('[infra-liveness] all 8 LLM pool account(s) paused — the fleet is rate-starved.')).toBe('accounts-starved');
+    expect(deriveSignatureFromSummary('[infra-liveness] all 8 LLM pool account(s) unavailable by a fresh capacity projection — the fleet is rate-starved.')).toBe('accounts-starved');
     expect(deriveSignatureFromSummary('[infra-liveness] Bees / fleet: no bees running')).toBe('panel:bees');
     expect(deriveSignatureFromSummary('[infra-liveness] Work items: 500 items — 0 todo/0 in-flight — REAPER WEDGED')).toBe('panel:workItems');
   });
