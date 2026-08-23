@@ -38,7 +38,7 @@ import {
   fleetSpecBeeKey,
 } from '../../scheduler/claim-spec-store';
 import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
-import { validateClaimSpec } from '../../scheduler/claim-spec';
+import { claimSpecSchema, validateClaimSpec } from '../../scheduler/claim-spec';
 import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/get-next';
 import { specIsIssueFamilyOnly } from './get_next';
 
@@ -220,11 +220,9 @@ export default defineTool({
         .min(1)
         .optional()
         .describe("a fleet slug — baselines against that fleet's own sentinel spec"),
-      proposed: z
-        .record(z.string(), z.unknown())
-        .describe(
-          'the candidate spec, same grammar and validation as scheduler:set_claim_spec\'s `spec` arg (see it for the full shape) — an invalid one is rejected here exactly as it would be there.',
-        ),
+      proposed: claimSpecSchema.describe(
+        'the candidate spec, same grammar and validation as scheduler:set_claim_spec\'s `spec` arg — all required fields are exposed here so a read-only preview can be formed without a trial-and-error write.',
+      ),
       harness: z
         .string()
         .min(1)

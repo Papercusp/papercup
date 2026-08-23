@@ -71,39 +71,16 @@ export const GAIA_TOOL_SPECS: GaiaToolSpec[] = [
 /* HTML → text (pure)                                                          */
 /* -------------------------------------------------------------------------- */
 
-/** A handful of common HTML entities, decoded after tag stripping. */
-const ENTITIES: Record<string, string> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&#39;': "'",
-  '&apos;': "'",
-  '&nbsp;': ' ',
-};
-
 /**
- * Reduce an HTML document to readable text: drop `<script>`/`<style>`/`<noscript>`/`<svg>` bodies and HTML
- * comments, turn block-closing tags into newlines, strip remaining tags, decode common entities, collapse
- * runs of blank lines. Good enough for the static/server-rendered pages most GAIA lookups hit.
+ * Re-exported from `lib/html-to-text.ts`, where it now lives.
+ *
+ * It moved when the Mastodon adapter became its second caller: a status's
+ * `content` is documented as HTML, and the alternatives were to import this
+ * benchmark module (with its Brave client, python runner and file reader) into
+ * the trigger layer, or to keep a second copy. The re-export means every
+ * existing caller and its tests are untouched.
  */
-export function htmlToText(html: string): string {
-  let s = html;
-  s = s.replace(/<!--[\s\S]*?-->/g, ' ');
-  s = s.replace(/<(script|style|noscript|svg|head)\b[\s\S]*?<\/\1>/gi, ' ');
-  // Block-level closers / breaks → newlines so structure survives.
-  s = s.replace(/<\/(p|div|li|tr|h[1-6]|section|article|header|footer|table|ul|ol|blockquote)>/gi, '\n');
-  s = s.replace(/<br\s*\/?>/gi, '\n');
-  s = s.replace(/<li\b[^>]*>/gi, '\n- ');
-  s = s.replace(/<[^>]+>/g, ' '); // remaining tags
-  s = s.replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(Number(d)));
-  s = s.replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)));
-  for (const [k, v] of Object.entries(ENTITIES)) s = s.split(k).join(v);
-  s = s.replace(/[ \t\f\v]+/g, ' ');
-  s = s.replace(/ *\n */g, '\n');
-  s = s.replace(/\n{3,}/g, '\n\n');
-  return s.trim();
-}
+export { htmlToText };
 
 /* -------------------------------------------------------------------------- */
 /* Brave search (pure parse + injectable backend)                              */

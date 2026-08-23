@@ -4,6 +4,34 @@ import {
   deltaFamilyScopeIncomplete,
   FAMILY_SCOPE_BLIND_SPOT_WARNING,
 } from './preview_spec_delta';
+import previewSpecDeltaTool from './preview_spec_delta';
+
+const proposedSpecWithoutRevision = {
+  specVersion: '1.0',
+  specId: 'preview-test',
+  view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+  rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  states: ['open'],
+};
+
+describe('scheduler:preview_spec_delta args — proposed spec is self-describing', () => {
+  it('publishes revision as required and accepts the complete shared claim-spec shape', () => {
+    const missingRevision = previewSpecDeltaTool.args.safeParse({
+      fleet: 'fleet-a',
+      proposed: proposedSpecWithoutRevision,
+    });
+    expect(missingRevision.success).toBe(false);
+    if (!missingRevision.success) {
+      expect(missingRevision.error.issues.some((issue) => issue.path.join('.') === 'proposed.revision')).toBe(true);
+    }
+
+    const complete = previewSpecDeltaTool.args.safeParse({
+      fleet: 'fleet-a',
+      proposed: { ...proposedSpecWithoutRevision, revision: 1 },
+    });
+    expect(complete.success).toBe(true);
+  });
+});
 
 describe('resolvePreviewHarness — operator scope must not become a literal harness', () => {
   it('rejects an unscoped operator context instead of previewing an empty `*` lane', () => {
