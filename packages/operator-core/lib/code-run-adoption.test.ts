@@ -7,7 +7,16 @@
  * boundary so a drift between metric and nudge flips RED.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD, TURN_GAP_MS } from './code-run-batch-nudge';
+import {
+  BATCH_NUDGE_THRESHOLD,
+  EXCLUDED_TOOL_NORMS,
+  FANOUT_DISTINCT_THRESHOLD,
+  PREFERRED_DOOR_NORMS,
+  TURN_GAP_MS,
+  isPreferredDoor,
+  sqlNormList,
+} from './code-run-batch-nudge';
+import { NUDGE_CONVERSION_SQL } from './code-run-nudge-telemetry';
 import {
   isBatchableSpawn,
   spawnRowsFromCalls,
@@ -556,5 +565,81 @@ describe('spawnRowsFromCalls — excludes poller tools from the work counts (P-0
       { spawnId: 'r1', role: 'cup', day: '2026-07-03', toolName: 'work_items:get' },
     ]);
     expect(isBatchableSpawn(rows[0])).toBe(true);
+  });
+});
+
+/** WI-40720 / P-020. The preferred-door set was hand-copied across NINE sites in three files, and
+ *  they had already drifted: `orchestrate:run` shipped as a first-class door and appeared in none of
+ *  them, so preferred-door usage was missing from adoption, from nudge conversion, and from the
+ *  rollout telemetry gates. The old comment said the copies were "kept in lockstep by the
+ *  agent-insight doc + the metric test" — documentation is not a mechanism, which is what these
+ *  tests replace it with.
+ *
+ *  The guard is deliberately written against the SET, never against the literal 'orchestraterun':
+ *  a test that hardcodes today's members is just a tenth copy, and would pass while the eleventh
+ *  site drifts. Add a door to PREFERRED_DOOR_NORMS and every assertion below re-derives. */
+describe('preferred-door norms are DERIVED from one source, not restated per call site', () => {
+  it('every SQL predicate that filters on doors carries the whole set', () => {
+    // If a future predicate is hardcoded instead of interpolated, it will be missing whichever
+    // door was added most recently — which is exactly how orchestrate:run went missing.
+    for (const norm of PREFERRED_DOOR_NORMS) {
+      expect(CODE_RUN_INSTRUMENTATION_SQL, `instrumentation SQL omits ${norm}`).toContain(`'${norm}'`);
+      expect(NATIVE_EXEC_ROUTING_SQL, `native-exec routing SQL omits ${norm}`).toContain(`'${norm}'`);
+      expect(NUDGE_CONVERSION_SQL, `nudge-conversion SQL omits ${norm}`).toContain(`'${norm}'`);
+      expect(buildCodeRunAdoptionQuery(7), `adoption SQL omits ${norm}`).toContain(`'${norm}'`);
+    }
+  });
+
+  it('orchestrate:run specifically is measured — the door whose absence motivated this', () => {
+    // Not a restatement of the set: this pins the REGRESSION. Dropping orchestrate:run back out
+    // of PREFERRED_DOOR_NORMS is the concrete mistake to catch, and the loop above would happily
+    // pass on a shrunken set.
+    expect(PREFERRED_DOOR_NORMS.has('orchestraterun')).toBe(true);
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain("'orchestraterun'");
+  });
+
+  it('a preferred door is never also a nudge target', () => {
+    // You do not tell an orchestrate:run call to "use code:run". This holds by construction —
+    // EXCLUDED_TOOL_NORMS is built FROM PREFERRED_DOOR_NORMS — and this pins that construction.
+    for (const norm of PREFERRED_DOOR_NORMS) {
+      expect(EXCLUDED_TOOL_NORMS.has(norm), `${norm} is a door but is nudgeable`).toBe(true);
+    }
+  });
+
+  it('the adoption work-count predicate excludes the doors AND the pollers, which are different concepts', () => {
+    const sql = buildCodeRunAdoptionQuery(7);
+    for (const norm of EXCLUDED_TOOL_NORMS) expect(sql).toContain(`'${norm}'`);
+    // The poller exclusion (P-006) is composed separately and must not be folded into the door set.
+    expect(sql).toContain("'activityrecent'");
+    expect(EXCLUDED_TOOL_NORMS.has('activityrecent')).toBe(false);
+  });
+
+  it('isPreferredDoor accepts every door in BOTH the verb and MCP spellings', () => {
+    // The runtime twin of the SQL guard above. A call site asking `toolName === 'code:run'`
+    // silently excludes the other doors AND the `code_run` spelling of its own door.
+    for (const norm of PREFERRED_DOOR_NORMS) {
+      expect(isPreferredDoor(norm), `${norm} bare`).toBe(true);
+    }
+    expect(isPreferredDoor('code:run')).toBe(true);
+    expect(isPreferredDoor('code_run')).toBe(true);
+    expect(isPreferredDoor('recipes:run')).toBe(true);
+    expect(isPreferredDoor('orchestrate:run')).toBe(true);
+    expect(isPreferredDoor('orchestrate_run')).toBe(true);
+  });
+
+  it('isPreferredDoor rejects near-misses rather than matching loosely', () => {
+    // Normalization strips punctuation, so the risk is over-matching, not under-matching.
+    expect(isPreferredDoor('work_items:get')).toBe(false);
+    expect(isPreferredDoor('recipes:search')).toBe(false);
+    expect(isPreferredDoor('orchestrate:trace')).toBe(false);
+    expect(isPreferredDoor('')).toBe(false);
+  });
+
+  it('sqlNormList emits a stable, quoted, injection-safe list', () => {
+    expect(sqlNormList(new Set(['bbb', 'aaa']))).toBe("'aaa','bbb'");
+    // Sorted, so a set reordering cannot produce a spurious SQL diff.
+    expect(sqlNormList(PREFERRED_DOOR_NORMS)).toBe(sqlNormList(new Set([...PREFERRED_DOOR_NORMS].reverse())));
+    // Single quotes are escaped rather than terminating the literal.
+    expect(sqlNormList(new Set(["o'brien"]))).toBe("'o''brien'");
   });
 });

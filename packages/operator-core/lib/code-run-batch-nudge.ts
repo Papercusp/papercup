@@ -186,13 +186,36 @@ export function canRoleActOnCodeRun(role: string): boolean {
   return !deny || !matchesAny('capability:bash', deny);
 }
 
-/** Normalized names of the batch/reuse tools themselves — never nudge these (you don't tell a
- *  `code:run` call to "use code:run"), and never count them toward the fan-out tally. Normalization
- *  strips `:`/`_`/`-` so both the verb form (`code:run`) and the MCP form (`code_run`) match. */
-const EXCLUDED_NORMALIZED: ReadonlySet<string> = new Set<string>([
+/** THE PREFERRED DOORS — normalized names whose use IS the adoption we are measuring: batching a
+ *  multi-call flow into one routed execution instead of hand-looping. This is the SINGLE SOURCE for
+ *  that set. It is exported because `code-run-adoption.ts` and `code-run-nudge-telemetry.ts` both
+ *  measure the same doors, and this module is already their shared dependency (both import from
+ *  here; it imports from neither), so there is exactly one place to add the next door.
+ *
+ *  ⚠ It previously was NOT one place. The same set was hand-copied across 9 sites in 3 files — 6
+ *  copies of this set and 3 of {@link EXCLUDED_TOOL_NORMS} — and `code-run-adoption.ts` even said so
+ *  out loud: "kept in lockstep by the agent-insight doc + the metric test". They had already drifted:
+ *  `orchestrate:run` shipped as a first-class door and was absent from every one of them, so
+ *  preferred-door usage was silently missing from adoption, from nudge conversion, and from the
+ *  rollout telemetry gates. Lockstep-by-documentation is not a mechanism (P-020 / WI-40720).
+ *
+ *  Normalization strips `:`/`_`/`-` and lowercases, so the verb form (`code:run`) and the MCP form
+ *  (`code_run`) both land on the same entry. Keep entries in normalized form. */
+export const PREFERRED_DOOR_NORMS: ReadonlySet<string> = new Set<string>([
   'coderun',
-  'codetools',
   'recipesrun',
+  'orchestraterun',
+]);
+
+/** Normalized names of the batch/reuse tools themselves — never nudge these (you don't tell a
+ *  `code:run` call to "use code:run"), and never count them toward the fan-out tally.
+ *
+ *  DERIVED from {@link PREFERRED_DOOR_NORMS} plus the non-executing recipe surface, so adding a new
+ *  door in one place automatically stops the nudge from firing at it. That derivation is the point:
+ *  the two sets drifting apart is precisely how `orchestrate:run` ended up nudgeable. */
+export const EXCLUDED_TOOL_NORMS: ReadonlySet<string> = new Set<string>([
+  ...PREFERRED_DOOR_NORMS,
+  'codetools',
   'recipessearch',
   'recipeslist',
   'recipesget',
@@ -200,6 +223,30 @@ const EXCLUDED_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'recipessweep',
   'recipescandidates',
 ]);
+
+/** Render a norm set as a SQL literal list for an `IN (...)` predicate — e.g. `'coderun','recipesrun'`.
+ *  Lets the SQL predicates in the sibling metric modules interpolate the SAME constant the TypeScript
+ *  sets use, instead of restating it. Entries are compile-time literals from the sets above (never
+ *  caller input), and each is single-quote-escaped, so this cannot carry injection. Sorted so the
+ *  emitted SQL is stable and diffable. */
+export function sqlNormList(norms: ReadonlySet<string>): string {
+  return [...norms]
+    .sort()
+    .map((n) => `'${n.replace(/'/g, "''")}'`)
+    .join(',');
+}
+
+/** Is this RAW tool name one of the preferred doors? Takes the un-normalized name (`code:run`,
+ *  `orchestrate_run`, …) and normalizes before testing, so callers never hand-compare against a
+ *  string literal. Use this anywhere a code path currently asks `toolName === 'code:run'`: that
+ *  literal comparison is the runtime twin of the nine duplicated set copies, and it is why the
+ *  MCP post-door backfill enriched code:run alone while recipes:run and orchestrate:run spilled
+ *  with no telemetry at all (WI-40720 gap 3). */
+export function isPreferredDoor(toolName: string): boolean {
+  return PREFERRED_DOOR_NORMS.has(normalize(toolName));
+}
+
+const EXCLUDED_NORMALIZED: ReadonlySet<string> = EXCLUDED_TOOL_NORMS;
 
 /** AMBIENT tools — fired by client hooks / status lines / wake plumbing on their own cadence, not
  *  authored by the agent's reasoning, so they are NOT a batchable flow: counting them made the
@@ -797,8 +844,10 @@ export const MAX_PREEMPT_PER_SESSION = 3;
 /** How many ids the skeleton lists inline before eliding the rest. */
 const MAX_PREEMPT_IDS = 12;
 
-/** Normalized names of the batch tools whose USE means "this caller is already batching". */
-const BATCHING_NORMALIZED: ReadonlySet<string> = new Set<string>(['coderun', 'recipesrun']);
+/** Normalized names of the batch tools whose USE means "this caller is already batching".
+ *  Derived from {@link PREFERRED_DOOR_NORMS} so a newly-shipped door counts as batching on day one
+ *  rather than when someone remembers to update a second copy. */
+const BATCHING_NORMALIZED: ReadonlySet<string> = PREFERRED_DOOR_NORMS;
 
 /** Verb suffixes that mark a LIST-SHAPED read — one whose rows are the natural unit of a
  *  follow-up call. Matched against the normalized (punctuation-stripped) tool name, so both

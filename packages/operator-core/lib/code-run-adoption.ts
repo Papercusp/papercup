@@ -33,7 +33,15 @@
  * (also runnable via dev:pg_query — see the agent-insight doc) and pre-aggregates per spawn so a
  * large tool_invocations table never streams raw rows over the wire.
  */
-import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD, TURN_GAP_MS, clusterTurns } from './code-run-batch-nudge';
+import {
+  BATCH_NUDGE_THRESHOLD,
+  EXCLUDED_TOOL_NORMS,
+  FANOUT_DISTINCT_THRESHOLD,
+  PREFERRED_DOOR_NORMS,
+  TURN_GAP_MS,
+  clusterTurns,
+  sqlNormList,
+} from './code-run-batch-nudge';
 
 /** Injectable query runner (mirrors harness-insights/load-token-rollups.ts). */
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
@@ -64,7 +72,11 @@ WITH code_runs AS (
   FROM harness_shared.tool_invocations
   WHERE invoked_at >= now() - (($1)::int || ' days')::interval
     AND transport = 'mcp'
-    AND lower(replace(replace(tool_name, ':', ''), '_', '')) = 'coderun'
+    -- WI-40720: was \`= 'coderun'\` — a single door, so the rollout telemetry gates below
+    -- (bytes/run, failure rate, recipe reuse, backend routing) measured code:run alone and
+    -- silently omitted every recipes:run and orchestrate:run execution. \`runs\` now means
+    -- PREFERRED-DOOR runs, which is what a staged default-on rollout has to be graded on.
+    AND lower(replace(replace(tool_name, ':', ''), '_', '')) IN (${sqlNormList(PREFERRED_DOOR_NORMS)})
 ), backend_counts AS (
   SELECT COALESCE(NULLIF(metadata_json->>'backend', ''), 'unknown') AS backend,
          count(*)::int AS runs
@@ -146,7 +158,7 @@ WITH native AS (
   FROM harness_shared.tool_invocations
   WHERE invoked_at >= now() - (($1)::int || ' days')::interval
     AND transport = 'mcp' AND spawn_id IS NOT NULL
-    AND lower(replace(replace(tool_name, ':', ''), '_', '')) IN ('coderun','recipesrun')
+    AND lower(replace(replace(tool_name, ':', ''), '_', '')) IN (${sqlNormList(PREFERRED_DOOR_NORMS)})
 )
 SELECT native.calls AS native_calls, native.sessions AS native_sessions,
        routed.calls AS routed_calls, routed.sessions AS routed_sessions
@@ -167,22 +179,14 @@ export async function readNativeExecRouting(runQuery: RunQuery, sinceDays: numbe
   };
 }
 
-/** Normalized names of the batch tools — excluded from the "work" counts (mirrors the nudge's
- *  EXCLUDED set; kept in lockstep by the agent-insight doc + the metric test). */
-const BATCH_TOOL_NORMS = [
-  'coderun',
-  'codetools',
-  'recipesrun',
-  'recipessearch',
-  'recipeslist',
-  'recipesget',
-  'recipesmerge',
-  'recipessweep',
-  'recipescandidates',
-] as const;
+/** Normalized names of the batch tools — excluded from the "work" counts.
+ *  IMPORTED from `code-run-batch-nudge`, not re-listed here. It used to be a local copy annotated
+ *  "mirrors the nudge's EXCLUDED set; kept in lockstep by the agent-insight doc + the metric test" —
+ *  and it had already fallen out of lockstep (WI-40720). A doc is not a mechanism. */
+const BATCH_TOOL_NORMS: ReadonlySet<string> = EXCLUDED_TOOL_NORMS;
 
-/** Normalized names that count as ACTUAL code:run adoption (the execution of a batch). */
-const BATCH_RUNNER_NORMS: ReadonlySet<string> = new Set(['coderun', 'recipesrun']);
+/** Normalized names that count as ACTUAL preferred-door adoption (the execution of a batch). */
+const BATCH_RUNNER_NORMS: ReadonlySet<string> = PREFERRED_DOOR_NORMS;
 
 /** Normalized names of NON-AGENT POLLER tools, excluded from the work counts
  *  (code-run-self-state-adoption-2026-07-03 P-006). The 2026-07-03 audit found a single
@@ -318,7 +322,7 @@ export function spawnRowsFromCalls(calls: CallRow[]): SpawnAdoptionRow[] {
     }
     const norm = normalize(c.toolName);
     if (BATCH_RUNNER_NORMS.has(norm)) a.usedCodeRun = true;
-    if (!BATCH_TOOL_NORMS.includes(norm as (typeof BATCH_TOOL_NORMS)[number]) && !POLLER_TOOL_NORMS.has(norm)) {
+    if (!BATCH_TOOL_NORMS.has(norm) && !POLLER_TOOL_NORMS.has(norm)) {
       a.workCalls.push({ toolName: c.toolName, at: c.invokedAt });
     }
   }
@@ -436,7 +440,7 @@ per_spawn AS (
     spawn_id,
     max(role) AS role,
     max(day)  AS day,
-    bool_or(norm IN ('coderun','recipesrun')) AS used_code_run
+    bool_or(norm IN (${sqlNormList(PREFERRED_DOOR_NORMS)})) AS used_code_run
   FROM calls
   GROUP BY spawn_id
 ),
@@ -444,10 +448,13 @@ work_rows AS (
   SELECT spawn_id, tool_name, invoked_at
   FROM calls
   WHERE norm NOT IN (
-    'coderun','codetools','recipesrun','recipessearch','recipeslist',
-    'recipesget','recipesmerge','recipessweep','recipescandidates',
+    -- EXCLUDED_TOOL_NORMS — the batch/reuse surface itself, interpolated from the one shared
+    -- constant rather than restated, so this predicate cannot drift from the TS set again.
+    ${sqlNormList(EXCLUDED_TOOL_NORMS)},
     -- POLLER_TOOL_NORMS (P-006): machine-cadence reads are not batchable LLM decisions.
-    'activityrecent'
+    -- Composed separately on purpose: a poller is a DIFFERENT concept from a batch door,
+    -- so it must not be folded into EXCLUDED_TOOL_NORMS.
+    ${sqlNormList(POLLER_TOOL_NORMS)}
   )
 ),
 gapped AS (

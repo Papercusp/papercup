@@ -14,6 +14,7 @@
  * (window + exponential-backoff gated), so per-fire inserts need no batching.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { PREFERRED_DOOR_NORMS, sqlNormList } from './code-run-batch-nudge';
 import type { BatchNudgeKind } from './code-run-batch-nudge';
 
 export interface BatchNudgeFire {
@@ -51,8 +52,9 @@ export function recordBatchNudgeFire(fire: BatchNudgeFire): Promise<void> {
   return work;
 }
 
-/** The nudge→conversion read (P-005): of sessions nudged in the window, how many called
- *  code:run / recipes:run AFTER their first nudge? Runnable via dev:pg_query; also consumed
+/** The nudge→conversion read (P-005): of sessions nudged in the window, how many called a
+ *  PREFERRED DOOR (code:run / recipes:run / orchestrate:run — the set is interpolated from
+ *  PREFERRED_DOOR_NORMS, never restated) AFTER their first nudge? Runnable via dev:pg_query; also consumed
  *  by dev:code_run_adoption. $1 = window days. */
 export const NUDGE_CONVERSION_SQL = `
 WITH fires AS (
@@ -68,7 +70,7 @@ converted AS (
     SELECT 1 FROM harness_shared.tool_invocations ti
     WHERE ti.invoked_at >= f.first_fire
       AND ti.invoked_at >= now() - (($1)::int || ' days')::interval
-      AND lower(regexp_replace(ti.tool_name, '[^a-zA-Z0-9]', '', 'g')) IN ('coderun', 'recipesrun')
+      AND lower(regexp_replace(ti.tool_name, '[^a-zA-Z0-9]', '', 'g')) IN (${sqlNormList(PREFERRED_DOOR_NORMS)})
       AND (ti.spawn_id = f.session_key OR ti.run_id = f.session_key)
   )
 )
