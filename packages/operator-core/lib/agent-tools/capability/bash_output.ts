@@ -8,8 +8,10 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   JOB_LOG_END_MARKER_PREFIX,
@@ -26,7 +28,7 @@ import {
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
 import { getTask, getTaskByBashJobId } from '../../task-manager/store';
-import { isTerminalState, type TaskRow } from '../../task-manager/types';
+import { isTerminalState, serviceUnitForTask, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
 import { readProcessCgroupPath, readProcessCmdline } from '../../task-manager/cgroup-read';
 
@@ -310,6 +312,50 @@ export function diagnoseFromLedger(
   // regardless) settle this row to `stranded` in its own time; report honestly that
   // this read could not confirm either way.
   return { kind: 'ledger_inconclusive' };
+}
+
+type ScopeActiveExec = (
+  file: string,
+  args: readonly string[],
+  options: { timeout?: number; maxBuffer?: number },
+) => Promise<{ stdout: string; stderr?: string }>;
+
+const execFileAsync = promisify(execFile) as unknown as ScopeActiveExec;
+const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
+
+/**
+ * Ask the user systemd whether a durable bash-job service is still active.
+ *
+ * The PID/cgroup identity probe above is the strongest proof when all of its
+ * pins are available, but a freshly enrolled scope can briefly have an
+ * inconclusive row while its child is already queued behind pc-heavy. The unit
+ * name is minted from the task id and is independent of the worker-local JOBS
+ * map, PID timing, and cgroup-read races. Only accept the canonical service
+ * name for a confined bash-job row; an arbitrary unit must never become a
+ * liveness oracle. Failing to query systemd remains inconclusive, never dead.
+ */
+export async function taskScopeIsActive(
+  row: Pick<TaskRow, 'taskId' | 'class' | 'confined' | 'scopeUnit'>,
+  execFn: ScopeActiveExec = execFileAsync,
+): Promise<boolean> {
+  if (
+    row.class !== 'bash-job' ||
+    !row.confined ||
+    !row.scopeUnit ||
+    row.scopeUnit !== serviceUnitForTask(row.taskId)
+  ) {
+    return false;
+  }
+  try {
+    const { stdout } = await execFn(
+      'systemctl',
+      ['--user', 'show', '-p', 'ActiveState', '--value', row.scopeUnit],
+      { timeout: 2_000, maxBuffer: 64 * 1024 },
+    );
+    return LIVE_SCOPE_ACTIVE_STATES.has(stdout.trim());
+  } catch {
+    return false;
+  }
 }
 
 /** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
@@ -719,8 +765,14 @@ export default defineTool({
         const strandedLog: StrandedJobLogInspection = stranded
           ? inspectStrandedJobLog(stranded, args.filter)
           : { terminal: null, output: '' };
+        // A log can grow between stat/read or be read through a stale worker's
+        // cursor. When no filter was requested, prefer the independently
+        // captured tail whenever the first inspection returned empty despite
+        // bytes being present. A filter with no matches is legitimately empty.
+        const recoveredStrandedOutput =
+          !args.filter && strandedLog.output.length === 0 && stranded?.tail ? stranded.tail : strandedLog.output;
         const strandedOutput = {
-          output_tail: strandedLog.output,
+          output_tail: recoveredStrandedOutput,
           ...(strandedLog.filterError ? { filter_error: strandedLog.filterError } : {}),
         };
         const recoveredLogPath = stranded?.logPath ?? ledgerRow?.logPath ?? undefined;
@@ -767,7 +819,7 @@ export default defineTool({
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_log_marker: true,
                   ...strandedOutput,
-                  output: strandedLog.output,
+                  output: recoveredStrandedOutput,
                 }),
               },
             ],
@@ -800,7 +852,12 @@ export default defineTool({
           };
         }
 
-        if (ledgerVerdict.kind === 'confirmed_alive') {
+        const scopeActive =
+          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow
+            ? await taskScopeIsActive(ledgerRow)
+            : false;
+
+        if (ledgerVerdict.kind === 'confirmed_alive' || scopeActive) {
           // EI-20218784292451325: a durable liveness proof is a successful
           // recovery, not a tool failure. The worker-local JOBS map may be
           // missing after a cross-worker read, but the task is still healthy;
@@ -815,6 +872,7 @@ export default defineTool({
           // 0 for the job's entire (confirmed-alive) run. `argv` is
           // `['bash', '-o', 'pipefail', '-c', <the raw command>]` (see
           // startBackground) — the raw command is always its LAST element.
+          const processAlive = ledgerVerdict.kind === 'confirmed_alive' ? ledgerVerdict : null;
           const ledgerArgv = ledgerRow?.argv;
           const rawCommand = ledgerArgv && ledgerArgv.length > 0 ? ledgerArgv[ledgerArgv.length - 1] : undefined;
           const bufferingStage = rawCommand ? detectBufferingLastStage(rawCommand) : null;
@@ -832,9 +890,14 @@ export default defineTool({
                   status: 'running',
                   exit_code: null,
                   running: true,
-                  pid: ledgerVerdict.pid,
-                  scope_unit: ledgerVerdict.scopeUnit,
+                  ...(processAlive?.pid ?? ledgerRow?.pid
+                    ? { pid: processAlive?.pid ?? ledgerRow?.pid }
+                    : {}),
+                  scope_unit: processAlive?.scopeUnit ?? ledgerRow?.scopeUnit ?? null,
                   recovered_from_ledger: true,
+                  ...(scopeActive
+                    ? { recovered_from_scope: true, liveness_proof: 'systemd_active_state' }
+                    : { liveness_proof: 'process_identity_and_cgroup' }),
                   tracking_lost: true,
                   output_is_tail: true,
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
@@ -842,14 +905,20 @@ export default defineTool({
                   ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                   ...(diedMarkerWritten ? { job_died_marker_written: true } : {}),
                   ...strandedOutput,
-                  output: strandedLog.output,
+                  output: recoveredStrandedOutput,
                   advice:
-                    `This job's in-memory tracking is gone, but its real OS process (pid ${ledgerVerdict.pid}` +
-                    `${ledgerVerdict.scopeUnit ? `, systemd scope ${ledgerVerdict.scopeUnit}` : ''}) is CONFIRMED ` +
-                    'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
-                    'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
-                    `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
-                    confirmedAliveStopAdvice(),
+                    scopeActive
+                      ? `This job's in-memory tracking is gone, but its durable systemd service ${ledgerRow?.scopeUnit} is ` +
+                        'CONFIRMED ACTIVE — verified just now with systemd ActiveState, independent of the worker-local ' +
+                        'registry and PID/cgroup probe. It may be queued behind pc-heavy and still produce no new output. ' +
+                        'Do NOT re-run capability:bash — that would start a SECOND concurrent job and double the load. ' +
+                        `${growthAdvice}${readPathAdvice}. To stop ${confirmedAliveStopAdvice()}`
+                      : `This job's in-memory tracking is gone, but its real OS process (pid ${processAlive?.pid}` +
+                        `${processAlive?.scopeUnit ? `, systemd scope ${processAlive.scopeUnit}` : ''}) is CONFIRMED ` +
+                        'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
+                        'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
+                        `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
+                        confirmedAliveStopAdvice(),
                 }),
               },
             ],
@@ -877,7 +946,7 @@ export default defineTool({
                     ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                     recovered_from_ledger: true,
                     ...strandedOutput,
-                    output: strandedLog.output,
+                  output: recoveredStrandedOutput,
                   }),
                 },
               ],
