@@ -1857,7 +1857,7 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
     killedBySignal?: string | null;
 }): Promise<void>;
 /**
- * Best-effort "my session RESUMED" report — the inverse of reportSessionEnded.
+ * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
  * `psu --resume` revives the agent process, but launchResume takes the no-POST
  * path (it reuses the original coord identity + adv row), so the row keeps the
  * ended_at/exit_code from the prior exit and the running agent stays recorded as
@@ -1865,7 +1865,9 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
  * instant it resumes, before it ever touches coord. psu is the live parent of
  * the resumed child (same property the supervisor beat + the end-report ride).
- * Fire-and-forget, bounded, never rejects — a resume must never wait on it.
+ * The endpoint's explicit `reactivated:true` response is the single-winner claim:
+ * a manual resume must not spawn unless it successfully re-activates the ended row.
+ * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
  * Exported with injectables for tests.
  */
 export function reportSessionResumed(advSessionId: any, { fetchImpl, operatorUrl, token, timeoutMs }?: {
@@ -1873,7 +1875,7 @@ export function reportSessionResumed(advSessionId: any, { fetchImpl, operatorUrl
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
-}): Promise<void>;
+}): Promise<boolean>;
 /**
  * Best-effort "my managed host RESPAWNED the child under a fresh native id"
  * report (WI-5075) — the third lifecycle sibling next to ended/resumed. A P-018
